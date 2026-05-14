@@ -162,7 +162,7 @@ fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeigh
             let rms_w_off: i32 = l * dim;
             let rms_w: *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
             
-            // Wait, how to cast integers? Akar doesn't have 'as f32' yet natively.
+            // Wait, how to cast integers? Vx doesn't have 'as f32' yet natively.
             // We assume dim=256 for Stories15M.
             let dim_f: f32 = 256.0;
             let hidden_dim_f: f32 = 512.0; 

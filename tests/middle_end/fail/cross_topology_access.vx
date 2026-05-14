@@ -1,4 +1,4 @@
-// RUN: akarc %s | FileCheck %s
+// RUN: vxc %s | FileCheck %s
 
 // Middle-end test exposing potentially invalid memref copies
 // (e.g. from memory space 1 to memory space 2 directly without host bounce)

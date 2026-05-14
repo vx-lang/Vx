@@ -1,4 +1,4 @@
-// RUN: ! akarc %s
+// RUN: ! vxc %s
 
 fn requires_specific_topology(t: Tensor<f32, [128, 256], Topology::ANE>) {}
 

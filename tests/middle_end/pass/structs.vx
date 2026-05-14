@@ -1,4 +1,4 @@
-// RUN: akarc %s | FileCheck %s
+// RUN: vxc %s | FileCheck %s
 
 struct Config {
     dim: i32,

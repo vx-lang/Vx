@@ -8,7 +8,7 @@ extern {
 fn main() -> i32 {
     unsafe {
         let f: *mut i8 = fopen("test_output.txt", "w");
-        fputs("Hello, File I/O from Akar!\n", f);
+        fputs("Hello, File I/O from Vx!\n", f);
         fclose(f);
         printf("Done: %d\n", 0);
     }

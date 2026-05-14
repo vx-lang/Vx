@@ -1,4 +1,4 @@
-// RUN: akarc %s
+// RUN: vxc %s
 
 fn main() -> i32 {
   // Assigning a boolean to a f32 Tensor should fail semantic analysis!

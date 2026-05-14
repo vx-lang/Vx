@@ -1,4 +1,4 @@
-// RUN: akarc %s | lli | FileCheck %s
+// RUN: vxc %s | lli | FileCheck %s
 
 fn main(d: Tensor<i32>) -> Tensor<i32> {
   let a: Tensor<i32> = 10;

@@ -1,4 +1,4 @@
-// RUN: akarc %s | FileCheck %s
+// RUN: vxc %s | FileCheck %s
 
 trait Dimension {
   fn dim(self: Tensor<f32>) -> Tensor<i32>;

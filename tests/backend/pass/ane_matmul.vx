@@ -1,4 +1,4 @@
-// RUN: akarc %s | mlir-opt -convert-scf-to-cf -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true" -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
+// RUN: vxc %s | mlir-opt -convert-scf-to-cf -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true" -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
 // RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
 // RUN: %t | FileCheck %s
 
@@ -34,8 +34,8 @@ fn main() -> Verified<Tensor> {
   return Verified(result);
 }
 
-// CHECK: [Akar Hardware Dispatcher] Offloading computation to Apple Silicon accelerators...
-// CHECK: [Akar Hardware Dispatcher] Accelerator SGEMM execution completed successfully.
+// CHECK: [Vx Hardware Dispatcher] Offloading computation to Apple Silicon accelerators...
+// CHECK: [Vx Hardware Dispatcher] Accelerator SGEMM execution completed successfully.
 // CHECK: Unranked Memref
 // CHECK: [24,   24,   24,   24]
 // CHECK: [24,   24,   24,   24]

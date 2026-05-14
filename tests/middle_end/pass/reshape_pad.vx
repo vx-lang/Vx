@@ -1,4 +1,4 @@
-// RUN: akarc %s -o %t.mlir
+// RUN: vxc %s -o %t.mlir
 // RUN: FileCheck %s < %t.mlir
 
 enum PadMode {

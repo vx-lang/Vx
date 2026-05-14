@@ -1,4 +1,4 @@
-// RUN: akarc %s
+// RUN: vxc %s
 
 // Expect execution trap/segfault when trying to run an NPU execution block on host JIT
 // The goal is to expose that our compiler JIT backend does not yet sandbox NPU pointers,

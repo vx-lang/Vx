@@ -1,4 +1,4 @@
-// RUN: akarc %s -o %t.mlir
+// RUN: vxc %s -o %t.mlir
 // RUN: FileCheck %s < %t.mlir
 
 fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [4, 64, 64]> {

@@ -1,4 +1,4 @@
-// RUN: akarc %s | FileCheck %s
+// RUN: vxc %s | FileCheck %s
 
 extern "C" {
   fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;

@@ -8,7 +8,7 @@
 
 extern "C" int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
-        // std::cout << "[Akar Dispatcher] Offloading to Apple AMX (Accelerate)..." << std::endl;
+        // std::cout << "[Vx Dispatcher] Offloading to Apple AMX (Accelerate)..." << std::endl;
         
         // cblas_sgemv computes: y = alpha * A * x + beta * y
         // A is d x n, x is n x 1, y is d x 1
@@ -21,7 +21,7 @@ extern "C" int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d) {
                     0.0f, // beta
                     xout, 1); // y, incy
 
-        // std::cout << "[Akar Dispatcher] AMX execution completed successfully." << std::endl;
+        // std::cout << "[Vx Dispatcher] AMX execution completed successfully." << std::endl;
         return 1;
     }
 }
@@ -82,7 +82,7 @@ extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
         
         MLModel *model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (!model) {
-            std::cerr << "[Akar Dispatcher] Failed to load CoreML model. Falling back to AMX. Error: " << [[error localizedDescription] UTF8String] << std::endl;
+            std::cerr << "[Vx Dispatcher] Failed to load CoreML model. Falling back to AMX. Error: " << [[error localizedDescription] UTF8String] << std::endl;
             cblas_sgemv(CblasRowMajor, CblasNoTrans, d, n, 1.0f, w, n, x, 1, 0.0f, xout, 1);
             return 1;
         }
@@ -100,7 +100,7 @@ extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
 
         id<MLFeatureProvider> outputFeatures = [model predictionFromFeatures:inputFeatures error:&error];
         if (error) {
-            std::cerr << "[Akar Dispatcher] CoreML prediction failed! Error: " << [[error localizedDescription] UTF8String] << std::endl;
+            std::cerr << "[Vx Dispatcher] CoreML prediction failed! Error: " << [[error localizedDescription] UTF8String] << std::endl;
             return 0;
         }
 

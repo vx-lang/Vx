@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Akar Compiler - Pre-commit validation script
+# Vx Compiler - Pre-commit validation script
 # This script enforces our project rules before allowing a commit.
 
 set -e
 
 echo "======================================"
-echo "Running Pre-commit Checks for Akar..."
+echo "Running Pre-commit Checks for Vx..."
 echo "======================================"
 
 # Rule 1: Markdown Formatting

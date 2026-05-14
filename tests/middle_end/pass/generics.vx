@@ -1,4 +1,4 @@
-// RUN: akarc %s | FileCheck %s
+// RUN: vxc %s | FileCheck %s
 
 // Generic function with implicit type deduction
 fn process<T>(val: T) -> T {
