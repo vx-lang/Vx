@@ -48,6 +48,6 @@ Unimpeded access to the lowest levels of the underlying execution silicon.
 
 ## 7. Strong System Interoperability
 Clean interoperability with the pre-existing low-level world (Operating Systems, Kernels, POSIX).
-- `[ ]` Foreign Function Interface (FFI) for importing `extern "C"` functions
+- `[x]` Foreign Function Interface (FFI) for importing `extern "C"` functions
 - `[ ]` Akar function exporting formatted to the standard C ABI
 - `[ ]` Static and Dynamic linking capabilities against host OS binaries
