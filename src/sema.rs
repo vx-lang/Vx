@@ -240,7 +240,7 @@ impl TypeChecker {
 
     fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
         match stmt {
-            Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
+            Statement::LetDecl(name, _is_mut, ty_ann, expr, _) => {
                 let ty = self.check_expr(expr);
 
                 if let Some(ann) = ty_ann {
@@ -253,7 +253,7 @@ impl TypeChecker {
                     self.insert(name.clone(), ty);
                 }
             }
-            Statement::ForLoop(iter, start, end, body) => {
+            Statement::ForLoop(iter, start, end, body, _) => {
                 self.check_expr(start);
                 self.check_expr(end);
                 self.push_scope();
@@ -263,7 +263,7 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            Statement::If(cond, then_block, else_block) => {
+            Statement::If(cond, then_block, else_block, _) => {
                 let cond_ty = self.check_expr(cond);
                 if cond_ty != Type::Scalar(ElementType::Bool) {
                     self.errors
@@ -283,14 +283,14 @@ impl TypeChecker {
                     self.pop_scope();
                 }
             }
-            Statement::Assign(lhs, rhs) | Statement::CompoundAssign(lhs, _, rhs) => {
+            Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
                 let lhs_ty = self.check_expr(lhs);
                 let rhs_ty = self.check_expr(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
             }
-            Statement::Return(expr) => {
+            Statement::Return(expr, _) => {
                 let ty = self.check_expr(expr);
                 if !self.is_assignable(return_type, &ty) {
                     self.errors.push(format!(
@@ -299,7 +299,7 @@ impl TypeChecker {
                     ));
                 }
             }
-            Statement::SpawnOn(top, stmts) => {
+            Statement::SpawnOn(top, stmts, _) => {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = top.clone();
@@ -336,19 +336,19 @@ impl TypeChecker {
                 self.active_topology = prev_top;
                 self.active_memory = prev_mem;
             }
-            Statement::ExprStmt(expr) => {
+            Statement::ExprStmt(expr, _) => {
                 self.check_expr(expr);
             }
-            Statement::Assert(expr, _msg) => {
+            Statement::Assert(expr, _msg, _) => {
                 let ty = self.check_expr(expr);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());
                 }
             }
-            Statement::Comptime(stmts) => {
+            Statement::Comptime(stmts, _) => {
                 for s in stmts {
-                    if let Statement::Assert(expr, msg) = s {
+                    if let Statement::Assert(expr, msg, _) = s {
                         let ty = self.check_expr(expr);
                         if ty != Type::Scalar(ElementType::Bool) {
                             self.errors
@@ -369,7 +369,9 @@ impl TypeChecker {
                             );
                         }
                     } else {
-                        self.check_statement(s, return_type);
+                        if !self.in_unsafe_block {
+                            self.check_statement(&mut *s, return_type);
+                        }
                     }
                 }
             }
@@ -378,11 +380,11 @@ impl TypeChecker {
 
     fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
         match expr {
-            Expr::Number(n) => Some(Value::Number(*n)),
-            Expr::Identifier(n) if n == "true" => Some(Value::Bool(true)),
-            Expr::Identifier(n) if n == "false" => Some(Value::Bool(false)),
-            Expr::Identifier(n) => env.get(n).cloned(),
-            Expr::BinaryOp(lhs, op, rhs) => {
+            Expr::Number(n, _) => Some(Value::Number(*n)),
+            Expr::Identifier(n, _) if n == "true" => Some(Value::Bool(true)),
+            Expr::Identifier(n, _) if n == "false" => Some(Value::Bool(false)),
+            Expr::Identifier(n, _) => env.get(n).cloned(),
+            Expr::BinaryOp(lhs, op, rhs, _) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 match (l, r, op) {
@@ -401,14 +403,14 @@ impl TypeChecker {
                     _ => None,
                 }
             }
-            Expr::UnaryOp(UnaryOp::Not, inner) => {
+            Expr::UnaryOp(UnaryOp::Not, inner, _) => {
                 if let Value::Bool(b) = self.eval_expr(inner, env)? {
                     Some(Value::Bool(!b))
                 } else {
                     None
                 }
             }
-            Expr::FunctionCall(name, args) => {
+            Expr::FunctionCall(name, args, _) => {
                 let func = self.ast_functions.get(name)?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -428,26 +430,26 @@ impl TypeChecker {
 
     fn eval_statement(&self, stmt: &Statement, env: &mut HashMap<String, Value>) -> Option<Value> {
         match stmt {
-            Statement::LetDecl(name, _, _, expr) => {
+            Statement::LetDecl(name, _, _, expr, _) => {
                 if let Some(val) = self.eval_expr(expr, env) {
                     env.insert(name.clone(), val);
                 }
                 None
             }
-            Statement::Assign(Expr::Identifier(name), rhs) => {
+            Statement::Assign(Expr::Identifier(name, _), rhs, _) => {
                 if let Some(val) = self.eval_expr(rhs, env) {
                     env.insert(name.clone(), val);
                 }
                 None
             }
-            Statement::Return(expr) => self.eval_expr(expr, env),
+            Statement::Return(expr, _) => self.eval_expr(expr, env),
             _ => None,
         }
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
@@ -496,7 +498,7 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::EnumVariant(enum_name, variant) => {
+            Expr::EnumVariant(enum_name, variant, _) => {
                 if let Some(variants) = self.enums.get(enum_name) {
                     if !variants.contains(variant) {
                         self.errors.push(format!(
@@ -509,13 +511,13 @@ impl TypeChecker {
                 }
                 Type::Enum(enum_name.clone())
             }
-            Expr::Number(_) => Type::Scalar(ElementType::F32),
-            Expr::StringLiteral(_) => Type::Pointer(
+            Expr::Number(..) => Type::Scalar(ElementType::F32),
+            Expr::StringLiteral(..) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
                 None,
                 false, // const
             ),
-            Expr::Transfer(inner_expr, target_mem) => {
+            Expr::Transfer(inner_expr, target_mem, _) => {
                 let inner_ty = self.check_expr(inner_expr);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
@@ -528,7 +530,7 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::FunctionCall(name, args) => {
+            Expr::FunctionCall(name, args, _) => {
                 // Mocking built-ins
                 for arg in args.iter_mut() {
                     self.check_expr(arg);
@@ -641,13 +643,13 @@ impl TypeChecker {
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
-            Expr::Array(elements) => {
+            Expr::Array(elements, _) => {
                 for el in elements {
                     self.check_expr(el);
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::MemberAccess(obj, member) => {
+            Expr::MemberAccess(obj, member, _) => {
                 let obj_ty = self.check_expr(obj);
                 let mut base_ty = obj_ty.clone();
                 if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
@@ -676,7 +678,7 @@ impl TypeChecker {
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::IndexAccess(obj, idx) => {
+            Expr::IndexAccess(obj, idx, _) => {
                 let obj_ty = self.check_expr(obj);
                 self.check_expr(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
@@ -689,7 +691,7 @@ impl TypeChecker {
                     Type::Scalar(ElementType::F32)
                 }
             }
-            Expr::MethodCall(obj, _method, args) => {
+            Expr::MethodCall(obj, _method, args, _) => {
                 let mut base_ty = self.check_expr(obj);
                 for arg in args.iter_mut() {
                     self.check_expr(arg);
@@ -706,7 +708,7 @@ impl TypeChecker {
 
                         let mut is_exact = true;
                         if args.len() >= 2 {
-                            if let Expr::EnumVariant(enum_name, variant) = &args[1] {
+                            if let Expr::EnumVariant(enum_name, variant, _) = &args[1] {
                                 if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim")
                                 {
                                     is_exact = false;
@@ -724,7 +726,7 @@ impl TypeChecker {
                             }
                         }
 
-                        if let Expr::Array(new_dims) = &args[0] {
+                        if let Expr::Array(new_dims, _) = &args[0] {
                             let empty_env = HashMap::new();
                             let mut src_elements = 1.0;
                             for d in dims {
@@ -770,9 +772,9 @@ impl TypeChecker {
                             self.errors.push("transpose requires exactly 1 argument (an array of permutation indices)".to_string());
                             return base_ty;
                         }
-                        if let Expr::Array(perm) = &args[0] {
+                        if let Expr::Array(perm, _) = &args[0] {
                             let empty_env = HashMap::new();
-                            let mut new_dims = vec![Expr::Number(0.0); dims.len()];
+                            let mut new_dims = vec![Expr::Number(0.0, Span::default()); dims.len()];
                             if perm.len() != dims.len() {
                                 self.errors.push(
                                     "transpose permutation map length must match tensor rank"
@@ -874,7 +876,8 @@ impl TypeChecker {
                         call_args.push(a.clone());
                     }
 
-                    let mut func_call = Expr::FunctionCall(mangled_name, call_args);
+                    let mut func_call =
+                        Expr::FunctionCall(mangled_name, call_args, Span::default());
                     let ret_ty = self.check_expr(&mut func_call);
 
                     // Replace the AST node in-place!
@@ -889,13 +892,13 @@ impl TypeChecker {
                     let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
-                        Topology::NPU(Box::new(Expr::Number(0.0))),
+                        Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
                     ); // Default to NPU[0]
-                    *expr = Expr::Transfer(obj.clone(), target_mem);
+                    *expr = Expr::Transfer(obj.clone(), target_mem, Span::default());
                 } else if _method == "to_host" {
                     let target_mem = MemorySpace::HostDRAM;
                     base_ty = Type::Pinned(Box::new(base_ty), Topology::Host);
-                    *expr = Expr::Transfer(obj.clone(), target_mem);
+                    *expr = Expr::Transfer(obj.clone(), target_mem, Span::default());
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let is_mut = _method == "as_mut_ptr";
                     match &base_ty {
@@ -940,7 +943,7 @@ impl TypeChecker {
                 }
                 base_ty
             }
-            Expr::BinaryOp(lhs, op, rhs) => {
+            Expr::BinaryOp(lhs, op, rhs, _) => {
                 let lhs_ty = self.check_expr(lhs);
                 let rhs_ty = self.check_expr(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
@@ -959,20 +962,20 @@ impl TypeChecker {
                     _ => lhs_ty,
                 }
             }
-            Expr::MemorySpace(_) | Expr::Topology(_) => {
+            Expr::MemorySpace(..) | Expr::Topology(..) => {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::UnaryOp(op, inner) => {
+            Expr::UnaryOp(op, inner, _) => {
                 self.check_expr(inner);
                 match op {
                     UnaryOp::Not => Type::Scalar(ElementType::Bool),
                 }
             }
-            Expr::Borrow(inner, is_mut) => {
+            Expr::Borrow(inner, is_mut, _) => {
                 let inner_ty = self.check_expr(inner);
                 Type::Borrow(Box::new(inner_ty), None, *is_mut)
             }
-            Expr::Dereference(inner) => {
+            Expr::Dereference(inner, _) => {
                 if !self.in_unsafe_block {
                     self.errors
                         .push("Dereference of raw pointer outside of unsafe block!".to_string());
@@ -987,23 +990,26 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::UnsafeBlock(stmts, _ret_expr) => {
+            Expr::UnsafeBlock(stmts, _ret_expr, _) => {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
                 let mut last_type = Type::Tensor(ElementType::F32, vec![], None);
                 for s in stmts.iter_mut() {
-                    if let Statement::ExprStmt(ref mut expr) = s {
+                    if let Statement::ExprStmt(ref mut expr, _) = s {
                         last_type = self.check_expr(expr);
                     } else {
-                        self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
+                        self.check_statement(
+                            &mut *s,
+                            &Type::Tensor(ElementType::F32, vec![], None),
+                        );
                     }
                 }
                 self.pop_scope();
                 self.in_unsafe_block = prev_unsafe;
                 last_type
             }
-            Expr::StructInit(name, fields) => {
+            Expr::StructInit(name, fields, _) => {
                 if !self.structs.contains_key(name) {
                     self.errors.push(format!("Unknown struct {}", name));
                 }
@@ -1151,7 +1157,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
         let mut checker = TypeChecker::new();
@@ -1173,7 +1179,7 @@ fn bad_matmul() -> Tensor {
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
         let mut checker = TypeChecker::new();
@@ -1198,7 +1204,7 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize());
+        let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
         assert!(
@@ -1226,7 +1232,7 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize());
+        let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
 
@@ -1249,7 +1255,7 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize());
+        let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
 

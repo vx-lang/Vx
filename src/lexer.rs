@@ -158,6 +158,7 @@ pub struct Token {
     pub kind: TokenType,
     pub line: usize,
     pub column: usize,
+    pub length: usize,
 }
 
 pub struct Lexer<'a> {
@@ -266,13 +267,14 @@ impl<'a> Lexer<'a> {
             "comptime" => TokenType::Comptime,
             "assert" => TokenType::Assert,
             "enum" => TokenType::Enum,
-            _ => TokenType::Identifier(text),
+            _ => TokenType::Identifier(text.clone()),
         };
 
         Token {
             kind,
             line: self.line,
             column: start_col,
+            length: text.len(),
         }
     }
 
@@ -296,9 +298,10 @@ impl<'a> Lexer<'a> {
         }
 
         Token {
-            kind: TokenType::Number(text),
+            kind: TokenType::Number(text.clone()),
             line: self.line,
             column: start_col,
+            length: text.len(),
         }
     }
 
@@ -315,6 +318,7 @@ impl<'a> Lexer<'a> {
                     kind: TokenType::Eof,
                     line: self.line,
                     column: self.column,
+                    length: 0,
                 }
             }
         };
@@ -330,9 +334,10 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 return Token {
-                    kind: TokenType::Whitespace(ws),
+                    kind: TokenType::Whitespace(ws.clone()),
                     line: self.line,
                     column: start_col,
+                    length: ws.len(),
                 };
             }
 
@@ -350,9 +355,10 @@ impl<'a> Lexer<'a> {
                         comment.push(self.advance().unwrap());
                     }
                     return Token {
-                        kind: TokenType::Comment(comment),
+                        kind: TokenType::Comment(comment.clone()),
                         line: self.line,
                         column: start_col,
+                        length: comment.len(),
                     };
                 }
             }
@@ -406,9 +412,10 @@ impl<'a> Lexer<'a> {
                 text.push(char_to_push);
             }
             return Token {
-                kind: TokenType::StringLiteral(text),
+                kind: TokenType::StringLiteral(text.clone()),
                 line: self.line,
                 column: start_col,
+                length: text.len() + 2, // including the quotes
             };
         }
 
@@ -511,6 +518,7 @@ impl<'a> Lexer<'a> {
             kind,
             line: self.line,
             column: start_col,
+            length: self.column - start_col,
         }
     }
 

@@ -1,18 +1,20 @@
 use crate::ast::*;
 use crate::lexer::{Token, TokenType};
 
-pub struct Parser {
+pub struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     generic_params: Vec<String>, // Tracks generic parameters in scope
+    source: &'a str,
 }
 
-impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+impl<'a> Parser<'a> {
+    pub fn new(tokens: Vec<Token>, source: &'a str) -> Self {
         Self {
             tokens,
             pos: 0,
             generic_params: Vec::new(),
+            source,
         }
     }
 
@@ -47,11 +49,13 @@ impl Parser {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            Err(format!(
-                "Error at {}:{}: {}",
-                self.peek().line,
-                self.peek().column,
-                msg
+            let token = self.peek();
+            Err(crate::error::format_compiler_error(
+                self.source,
+                token.line,
+                token.column,
+                token.length.max(1),
+                msg,
             ))
         }
     }
@@ -283,7 +287,7 @@ impl Parser {
                 _ => return Err("Unknown binary operator".to_string()),
             };
             let right = self.parse_binary_expr(op_prec + 1)?;
-            left = Expr::BinaryOp(Box::new(left), op, Box::new(right));
+            left = Expr::BinaryOp(Box::new(left), op, Box::new(right), Span::default());
         }
 
         Ok(left)
@@ -307,14 +311,18 @@ impl Parser {
     fn parse_primary_expr(&mut self) -> Result<Expr, String> {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
-            return Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner)));
+            return Ok(Expr::UnaryOp(
+                UnaryOp::Not,
+                Box::new(inner),
+                Span::default(),
+            ));
         } else if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_primary_expr()?;
-            return Ok(Expr::Borrow(Box::new(inner), is_mut));
+            return Ok(Expr::Borrow(Box::new(inner), is_mut, Span::default()));
         } else if self.match_token(&TokenType::Star) {
             let inner = self.parse_primary_expr()?;
-            return Ok(Expr::Dereference(Box::new(inner)));
+            return Ok(Expr::Dereference(Box::new(inner), Span::default()));
         } else if self.match_token(&TokenType::Unsafe) {
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
             let mut stmts = Vec::new();
@@ -322,7 +330,7 @@ impl Parser {
                 stmts.push(self.parse_statement()?);
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            return Ok(Expr::UnsafeBlock(stmts, None));
+            return Ok(Expr::UnsafeBlock(stmts, None, Span::default()));
         }
 
         let mut expr = if self.match_token(&TokenType::Transfer) {
@@ -331,7 +339,7 @@ impl Parser {
             self.consume(&TokenType::Comma, "Expected ','")?;
             let mem = self.parse_memory_space()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
-            Expr::Transfer(Box::new(inner), mem)
+            Expr::Transfer(Box::new(inner), mem, Span::default())
         } else if self.match_token(&TokenType::LeftBracket) {
             let mut elements = Vec::new();
             if !self.check(&TokenType::RightBracket) {
@@ -343,17 +351,17 @@ impl Parser {
                 }
             }
             self.consume(&TokenType::RightBracket, "Expected ']'")?;
-            Expr::Array(elements)
+            Expr::Array(elements, Span::default())
         } else if self.check(&TokenType::Memory) {
-            Expr::MemorySpace(self.parse_memory_space()?)
+            Expr::MemorySpace(self.parse_memory_space()?, Span::default())
         } else if self.check(&TokenType::Topology) {
-            Expr::Topology(self.parse_topology()?)
+            Expr::Topology(self.parse_topology()?, Span::default())
         } else if self.check(&TokenType::Verified) {
             self.advance();
             self.consume(&TokenType::LeftParen, "Expected '(' after Verified")?;
             let inner = self.parse_expr()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
-            Expr::FunctionCall("Verified".to_string(), vec![inner])
+            Expr::FunctionCall("Verified".to_string(), vec![inner], Span::default())
         } else {
             let token = self.advance().clone();
             match token.kind {
@@ -384,7 +392,7 @@ impl Parser {
                             }
                         }
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
-                        Expr::FunctionCall(call_name, args)
+                        Expr::FunctionCall(call_name, args, Span::default())
                     } else if self.check(&TokenType::LeftBrace) {
                         let is_struct_init = {
                             let mut lookahead = self.pos;
@@ -439,31 +447,31 @@ impl Parser {
                                 }
                             }
                             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                            Expr::StructInit(call_name, fields)
+                            Expr::StructInit(call_name, fields, Span::default())
                         } else if self.match_token(&TokenType::DoubleColon) {
                             let variant = match self.advance().kind.clone() {
                                 TokenType::Identifier(v) => v,
                                 _ => return Err("Expected enum variant after ::".to_string()),
                             };
-                            Expr::EnumVariant(call_name, variant)
+                            Expr::EnumVariant(call_name, variant, Span::default())
                         } else {
-                            Expr::Identifier(call_name)
+                            Expr::Identifier(call_name, Span::default())
                         }
                     } else if self.match_token(&TokenType::DoubleColon) {
                         let variant = match self.advance().kind.clone() {
                             TokenType::Identifier(v) => v,
                             _ => return Err("Expected enum variant after ::".to_string()),
                         };
-                        Expr::EnumVariant(call_name, variant)
+                        Expr::EnumVariant(call_name, variant, Span::default())
                     } else {
-                        Expr::Identifier(call_name)
+                        Expr::Identifier(call_name, Span::default())
                     }
                 }
                 TokenType::Number(s) => {
                     let n = s.parse::<f64>().map_err(|_| "Invalid number".to_string())?;
-                    Expr::Number(n)
+                    Expr::Number(n, Span::default())
                 }
-                TokenType::StringLiteral(s) => Expr::StringLiteral(s),
+                TokenType::StringLiteral(s) => Expr::StringLiteral(s, Span::default()),
                 _ => return Err(format!("Expected expression, found {:?}", token.kind)),
             }
         };
@@ -486,14 +494,14 @@ impl Parser {
                         }
                     }
                     self.consume(&TokenType::RightParen, "Expected ')'")?;
-                    expr = Expr::MethodCall(Box::new(expr), ident, args);
+                    expr = Expr::MethodCall(Box::new(expr), ident, args, Span::default());
                 } else {
-                    expr = Expr::MemberAccess(Box::new(expr), ident);
+                    expr = Expr::MemberAccess(Box::new(expr), ident, Span::default());
                 }
             } else if self.match_token(&TokenType::LeftBracket) {
                 let index = self.parse_expr()?;
                 self.consume(&TokenType::RightBracket, "Expected ']'")?;
-                expr = Expr::IndexAccess(Box::new(expr), Box::new(index));
+                expr = Expr::IndexAccess(Box::new(expr), Box::new(index), Span::default());
             } else {
                 break;
             }
@@ -522,7 +530,13 @@ impl Parser {
                 self.consume(&TokenType::Equals, "Expected '='")?;
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::LetDecl(name, is_mut, type_annotation, expr))
+                Ok(Statement::LetDecl(
+                    name,
+                    is_mut,
+                    type_annotation,
+                    expr,
+                    Span::default(),
+                ))
             }
             TokenType::Comptime => {
                 self.advance();
@@ -534,7 +548,7 @@ impl Parser {
                     stmts.push(self.parse_statement()?);
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}' after comptime block")?;
-                Ok(Statement::Comptime(stmts))
+                Ok(Statement::Comptime(stmts, Span::default()))
             }
             TokenType::Assert => {
                 self.advance();
@@ -556,13 +570,13 @@ impl Parser {
                     "Expected ')' after assert condition",
                 )?;
                 self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
-                Ok(Statement::Assert(Box::new(expr), msg))
+                Ok(Statement::Assert(Box::new(expr), msg, Span::default()))
             }
             TokenType::Return => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::Return(expr))
+                Ok(Statement::Return(expr, Span::default()))
             }
             TokenType::Spawn => {
                 self.advance();
@@ -576,7 +590,7 @@ impl Parser {
                     stmts.push(self.parse_statement()?);
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                Ok(Statement::SpawnOn(top, stmts))
+                Ok(Statement::SpawnOn(top, stmts, Span::default()))
             }
             TokenType::If => {
                 self.advance();
@@ -603,7 +617,12 @@ impl Parser {
                         else_block = Some(block);
                     }
                 }
-                Ok(Statement::If(Box::new(cond), then_block, else_block))
+                Ok(Statement::If(
+                    Box::new(cond),
+                    then_block,
+                    else_block,
+                    Span::default(),
+                ))
             }
             TokenType::For => {
                 self.advance();
@@ -626,6 +645,7 @@ impl Parser {
                     Box::new(start),
                     Box::new(end),
                     stmts,
+                    Span::default(),
                 ))
             }
             _ => {
@@ -633,18 +653,23 @@ impl Parser {
                 if self.match_token(&TokenType::Equals) {
                     let rhs = self.parse_expr()?;
                     self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::Assign(expr, rhs))
+                    Ok(Statement::Assign(expr, rhs, Span::default()))
                 } else if self.match_token(&TokenType::PlusEquals) {
                     let rhs = self.parse_expr()?;
                     self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::CompoundAssign(expr, BinaryOp::Add, rhs))
+                    Ok(Statement::CompoundAssign(
+                        expr,
+                        BinaryOp::Add,
+                        rhs,
+                        Span::default(),
+                    ))
                 } else {
-                    if let Expr::UnsafeBlock(_, _) = &expr {
+                    if let Expr::UnsafeBlock(..) = &expr {
                         self.match_token(&TokenType::Semicolon); // Optional
                     } else {
                         self.consume(&TokenType::Semicolon, "Expected ';'")?;
                     }
-                    Ok(Statement::ExprStmt(expr))
+                    Ok(Statement::ExprStmt(expr, Span::default()))
                 }
             }
         }
@@ -979,7 +1004,7 @@ mod tests {
     fn test_parse_empty_function(#[case] input: &str) {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name, "main");
@@ -999,7 +1024,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
 
@@ -1027,7 +1052,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     #[test]
     fn test_parse_let_mut_with_type() {
         let input = "fn main() -> Tensor { let mut x: Tensor = Tensor([1, 2]); }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         let func = &program.functions[0];
         if let Statement::LetDecl(name, is_mut, ty, expr) = &func.body[0] {
@@ -1053,7 +1078,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     #[test]
     fn test_parse_for_loop() {
         let input = "fn main() -> Tensor { for i in 0..10 { x = 5; } }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(iter, start, end, body) = &program.functions[0].body[0] {
             assert_eq!(iter, "i");
@@ -1061,7 +1086,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(**end, Expr::Number(10.0));
             assert_eq!(body.len(), 1);
             if let Statement::Assign(lhs, rhs) = &body[0] {
-                assert_eq!(*lhs, Expr::Identifier("x".to_string()));
+                assert_eq!(*lhs, Expr::Identifier("x".to_string(), Span::default()));
                 assert_eq!(*rhs, Expr::Number(5.0));
             } else {
                 panic!("Expected Assign");
@@ -1074,12 +1099,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     #[test]
     fn test_parse_compound_assign() {
         let input = "fn main() -> Tensor { x[0] += y * z; }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::CompoundAssign(lhs, op, rhs) = &program.functions[0].body[0] {
             assert_eq!(*op, BinaryOp::Add);
             if let Expr::IndexAccess(arr, idx) = lhs {
-                assert_eq!(**arr, Expr::Identifier("x".to_string()));
+                assert_eq!(**arr, Expr::Identifier("x".to_string(), Span::default()));
                 assert_eq!(**idx, Expr::Number(0.0));
             } else {
                 panic!("Expected IndexAccess");
@@ -1100,7 +1125,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     #[test]
     fn test_parse_member_and_method() {
         let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::ExprStmt(expr) = &program.functions[0].body[0] {
             if let Expr::MethodCall(obj, method, args) = expr {
@@ -1108,7 +1133,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 assert_eq!(args.len(), 1);
                 if let Expr::MemberAccess(inner_obj, member) = &**obj {
                     assert_eq!(member, "shape");
-                    assert_eq!(**inner_obj, Expr::Identifier("x".to_string()));
+                    assert_eq!(
+                        **inner_obj,
+                        Expr::Identifier("x".to_string(), Span::default())
+                    );
                 } else {
                     panic!("Expected MemberAccess");
                 }
@@ -1138,12 +1166,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             }
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         let func = &program.functions[0];
         assert_eq!(func.name, "custom_matmul");
-        if let Statement::SpawnOn(_, stmts) = &func.body[0] {
+        if let Statement::SpawnOn(_, stmts, _) = &func.body[0] {
             assert_eq!(stmts.len(), 3); // Let, For, Return
         } else {
             panic!("Expected SpawnOn");
@@ -1166,7 +1194,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             return c.value < 20;
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
 
         assert_eq!(program.structs.len(), 1);
@@ -1191,7 +1219,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         }
 
         // Body should have unsafe block
-        if let Statement::ExprStmt(Expr::UnsafeBlock(stmts, None)) = &func.body[0] {
+        if let Statement::ExprStmt(Expr::UnsafeBlock(stmts, None, _), _) = &func.body[0] {
             assert_eq!(stmts.len(), 2);
         } else {
             panic!("Expected UnsafeBlock");
@@ -1205,7 +1233,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
 
         assert_eq!(program.externs.len(), 1);

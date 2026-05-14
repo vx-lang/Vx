@@ -14,9 +14,13 @@ fn main() {
     let mut run_jit = false;
     let mut filename = "";
 
+    let mut print_ast = false;
+
     for arg in args.iter().skip(1) {
         if arg == "-p" {
             parse_only = true;
+        } else if arg == "--print-ast" {
+            print_ast = true;
         } else if arg == "--emit-mlir" {
             emit_mlir = true;
         } else if arg == "--run" {
@@ -39,15 +43,24 @@ fn main() {
         let tokens = lexer.tokenize();
 
         if parse_only {
-            let mut parser = parser::Parser::new(tokens);
+            let mut parser = parser::Parser::new(tokens, &source);
             match parser.parse() {
-                Ok(ast) => println!("{:#?}", ast),
+                Ok(ast) => {
+                    if print_ast {
+                        akarc::ast_printer::AstPrinter::print_program(&ast);
+                    } else {
+                        println!("{:#?}", ast);
+                    }
+                }
                 Err(e) => eprintln!("Parse Error: {}", e),
             }
         } else {
-            let mut parser = parser::Parser::new(tokens);
+            let mut parser = parser::Parser::new(tokens, &source);
             match parser.parse() {
                 Ok(mut ast) => {
+                    if print_ast {
+                        akarc::ast_printer::AstPrinter::print_program(&ast);
+                    }
                     let mut checker = sema::TypeChecker::new();
                     match checker.check_program(&mut ast) {
                         Ok(monomorphized_ast) => {
@@ -76,6 +89,6 @@ fn main() {
             }
         }
     } else {
-        println!("Usage: akarc [-p] [--emit-mlir] [--run] <source_file.ak>");
+        println!("Usage: akarc [-p] [--print-ast] [--emit-mlir] [--run] <source_file.ak>");
     }
 }

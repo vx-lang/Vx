@@ -1,3 +1,10 @@
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+    pub length: usize,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Topology {
     Host,
@@ -113,138 +120,169 @@ pub enum UnaryOp {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
-    Identifier(String),
-    EnumVariant(String, String),
-    Number(f64),
-    StringLiteral(String),
-    Transfer(Box<Expr>, MemorySpace),
-    FunctionCall(String, Vec<Expr>),
-    Array(Vec<Expr>),
-    MemberAccess(Box<Expr>, String),
-    IndexAccess(Box<Expr>, Box<Expr>),
-    MethodCall(Box<Expr>, String, Vec<Expr>),
-    BinaryOp(Box<Expr>, BinaryOp, Box<Expr>),
-    UnaryOp(UnaryOp, Box<Expr>),
-    Borrow(Box<Expr>, bool), // &expr or &mut expr
-    Dereference(Box<Expr>),  // *expr
-    UnsafeBlock(Vec<Statement>, Option<Box<Expr>>),
-    StructInit(String, Vec<(String, Expr)>),
-    MemorySpace(MemorySpace),
-    Topology(Topology),
+    Identifier(String, Span),
+    EnumVariant(String, String, Span),
+    Number(f64, Span),
+    StringLiteral(String, Span),
+    Transfer(Box<Expr>, MemorySpace, Span),
+    FunctionCall(String, Vec<Expr>, Span),
+    Array(Vec<Expr>, Span),
+    MemberAccess(Box<Expr>, String, Span),
+    IndexAccess(Box<Expr>, Box<Expr>, Span),
+    MethodCall(Box<Expr>, String, Vec<Expr>, Span),
+    BinaryOp(Box<Expr>, BinaryOp, Box<Expr>, Span),
+    UnaryOp(UnaryOp, Box<Expr>, Span),
+    Borrow(Box<Expr>, bool, Span), // &expr or &mut expr
+    Dereference(Box<Expr>, Span),  // *expr
+    UnsafeBlock(Vec<Statement>, Option<Box<Expr>>, Span),
+    StructInit(String, Vec<(String, Expr)>, Span),
+    MemorySpace(MemorySpace, Span),
+    Topology(Topology, Span),
 }
 
 impl Expr {
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Expr {
         match self {
-            Expr::Transfer(expr, mem) => {
-                Expr::Transfer(Box::new(expr.substitute(mapping)), mem.clone())
-            }
-            Expr::FunctionCall(name, args) => Expr::FunctionCall(
+            Expr::Transfer(expr, mem, _) => Expr::Transfer(
+                Box::new(expr.substitute(mapping)),
+                mem.clone(),
+                Span::default(),
+            ),
+            Expr::FunctionCall(name, args, span) => Expr::FunctionCall(
                 name.clone(),
                 args.iter().map(|a| a.substitute(mapping)).collect(),
+                span.clone(),
             ),
-            Expr::Array(items) => {
-                Expr::Array(items.iter().map(|a| a.substitute(mapping)).collect())
-            }
-            Expr::MemberAccess(expr, member) => {
-                Expr::MemberAccess(Box::new(expr.substitute(mapping)), member.clone())
-            }
-            Expr::IndexAccess(expr, idx) => Expr::IndexAccess(
+            Expr::Array(items, _) => Expr::Array(
+                items.iter().map(|a| a.substitute(mapping)).collect(),
+                Span::default(),
+            ),
+            Expr::MemberAccess(expr, member, _) => Expr::MemberAccess(
+                Box::new(expr.substitute(mapping)),
+                member.clone(),
+                Span::default(),
+            ),
+            Expr::IndexAccess(expr, idx, span) => Expr::IndexAccess(
                 Box::new(expr.substitute(mapping)),
                 Box::new(idx.substitute(mapping)),
+                span.clone(),
             ),
-            Expr::MethodCall(expr, method, args) => Expr::MethodCall(
+            Expr::MethodCall(expr, method, args, span) => Expr::MethodCall(
                 Box::new(expr.substitute(mapping)),
                 method.clone(),
                 args.iter().map(|a| a.substitute(mapping)).collect(),
+                span.clone(),
             ),
-            Expr::BinaryOp(lhs, op, rhs) => Expr::BinaryOp(
+            Expr::BinaryOp(lhs, op, rhs, span) => Expr::BinaryOp(
                 Box::new(lhs.substitute(mapping)),
                 op.clone(),
                 Box::new(rhs.substitute(mapping)),
+                span.clone(),
             ),
-            Expr::UnaryOp(op, expr) => {
-                Expr::UnaryOp(op.clone(), Box::new(expr.substitute(mapping)))
+            Expr::UnaryOp(op, expr, _) => Expr::UnaryOp(
+                op.clone(),
+                Box::new(expr.substitute(mapping)),
+                Span::default(),
+            ),
+            Expr::Borrow(expr, is_mut, _) => {
+                Expr::Borrow(Box::new(expr.substitute(mapping)), *is_mut, Span::default())
             }
-            Expr::Borrow(expr, is_mut) => Expr::Borrow(Box::new(expr.substitute(mapping)), *is_mut),
-            Expr::Dereference(expr) => Expr::Dereference(Box::new(expr.substitute(mapping))),
-            Expr::UnsafeBlock(stmts, ret) => Expr::UnsafeBlock(
+            Expr::Dereference(expr, _) => {
+                Expr::Dereference(Box::new(expr.substitute(mapping)), Span::default())
+            }
+            Expr::UnsafeBlock(stmts, ret, span) => Expr::UnsafeBlock(
                 stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span.clone(),
             ),
-            Expr::StructInit(name, fields) => Expr::StructInit(
+            Expr::StructInit(name, fields, span) => Expr::StructInit(
                 name.clone(),
                 fields
                     .iter()
                     .map(|(n, e)| (n.clone(), e.substitute(mapping)))
                     .collect(),
+                span.clone(),
             ),
-            Expr::Identifier(_)
-            | Expr::EnumVariant(_, _)
-            | Expr::Number(_)
-            | Expr::StringLiteral(_)
-            | Expr::MemorySpace(_)
-            | Expr::Topology(_) => self.clone(),
+            Expr::Identifier(..)
+            | Expr::EnumVariant(..)
+            | Expr::Number(..)
+            | Expr::StringLiteral(..)
+            | Expr::MemorySpace(..)
+            | Expr::Topology(..) => self.clone(),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
-    LetDecl(String, bool, Option<Type>, Expr), // (name, is_mut, type_annotation, expr)
-    Return(Expr),
-    SpawnOn(Topology, Vec<Statement>),
-    ExprStmt(Expr),
-    ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // (iterator, start, end, body)
-    If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>), // (condition, then_block, else_block)
-    Assign(Expr, Expr),                                    // lhs = rhs
-    CompoundAssign(Expr, BinaryOp, Expr),                  // lhs += rhs
-    Comptime(Vec<Statement>),                              // comptime { ... }
-    Assert(Box<Expr>, Option<String>),                     // assert(expr, "message")
+    LetDecl(String, bool, Option<Type>, Expr, Span), // (name, is_mut, type_annotation, expr)
+    Return(Expr, Span),
+    SpawnOn(Topology, Vec<Statement>, Span),
+    ExprStmt(Expr, Span),
+    ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>, Span), // (iterator, start, end, body)
+    If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>, Span), // (condition, then_block, else_block)
+    Assign(Expr, Expr, Span),                                    // lhs = rhs
+    CompoundAssign(Expr, BinaryOp, Expr, Span),                  // lhs += rhs
+    Comptime(Vec<Statement>, Span),                              // comptime { ... }
+    Assert(Box<Expr>, Option<String>, Span),                     // assert(expr, "message")
 }
 
 impl Statement {
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Statement {
         match self {
-            Statement::LetDecl(name, is_mut, ty_ann, expr) => Statement::LetDecl(
+            Statement::LetDecl(name, is_mut, ty_ann, expr, span) => Statement::LetDecl(
                 name.clone(),
                 *is_mut,
                 ty_ann.as_ref().map(|t| t.substitute(mapping)),
                 expr.substitute(mapping),
+                span.clone(),
             ),
-            Statement::Return(expr) => Statement::Return(expr.substitute(mapping)),
-            Statement::SpawnOn(top, stmts) => Statement::SpawnOn(
+            Statement::Return(expr, _) => {
+                Statement::Return(expr.substitute(mapping), Span::default())
+            }
+            Statement::SpawnOn(top, stmts, span) => Statement::SpawnOn(
                 top.clone(),
                 stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                span.clone(),
             ),
-            Statement::ExprStmt(expr) => Statement::ExprStmt(expr.substitute(mapping)),
-            Statement::ForLoop(iter, start, end, body) => Statement::ForLoop(
+            Statement::ExprStmt(expr, _) => {
+                Statement::ExprStmt(expr.substitute(mapping), Span::default())
+            }
+            Statement::ForLoop(iter, start, end, body, span) => Statement::ForLoop(
                 iter.clone(),
                 Box::new(start.substitute(mapping)),
                 Box::new(end.substitute(mapping)),
                 body.iter().map(|s| s.substitute(mapping)).collect(),
+                span.clone(),
             ),
-            Statement::If(cond, then_block, else_block) => Statement::If(
+            Statement::If(cond, then_block, else_block, span) => Statement::If(
                 Box::new(cond.substitute(mapping)),
                 then_block.iter().map(|s| s.substitute(mapping)).collect(),
                 else_block
                     .as_ref()
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
+                span.clone(),
             ),
-            Statement::Assign(lhs, rhs) => {
-                Statement::Assign(lhs.substitute(mapping), rhs.substitute(mapping))
-            }
-            Statement::CompoundAssign(lhs, op, rhs) => Statement::CompoundAssign(
+            Statement::Assign(lhs, rhs, _) => Statement::Assign(
+                lhs.substitute(mapping),
+                rhs.substitute(mapping),
+                Span::default(),
+            ),
+            Statement::CompoundAssign(lhs, op, rhs, span) => Statement::CompoundAssign(
                 lhs.substitute(mapping),
                 op.clone(),
                 rhs.substitute(mapping),
+                span.clone(),
             ),
-            Statement::Comptime(stmts) => {
-                Statement::Comptime(stmts.iter().map(|s| s.substitute(mapping)).collect())
-            }
-            Statement::Assert(expr, msg) => {
-                Statement::Assert(Box::new(expr.substitute(mapping)), msg.clone())
-            }
+            Statement::Comptime(stmts, _) => Statement::Comptime(
+                stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                Span::default(),
+            ),
+            Statement::Assert(expr, msg, _) => Statement::Assert(
+                Box::new(expr.substitute(mapping)),
+                msg.clone(),
+                Span::default(),
+            ),
         }
     }
 }

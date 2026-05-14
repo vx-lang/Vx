@@ -1,0 +1,34 @@
+{
+  "name": "akar-lang",
+  "displayName": "Akar Language",
+  "description": "Syntax highlighting and language support for Akar",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "akar",
+        "aliases": [
+          "Akar",
+          "akar"
+        ],
+        "extensions": [
+          ".ak"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "akar",
+        "scopeName": "source.akar",
+        "path": "./syntaxes/akar.tmLanguage.json"
+      }
+    ]
+  }
+}

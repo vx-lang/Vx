@@ -1,5 +1,7 @@
 pub mod ast;
+pub mod ast_printer;
 pub mod codegen;
+pub mod error;
 pub mod formatter;
 pub mod jit;
 pub mod lexer;

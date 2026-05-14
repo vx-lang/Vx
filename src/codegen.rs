@@ -141,7 +141,7 @@ impl MlirGenerator {
                     shape_str = "?x?".to_string();
                 } else {
                     for (i, dim) in dims.iter().enumerate() {
-                        if let crate::ast::Expr::Number(n) = dim {
+                        if let crate::ast::Expr::Number(n, _) = dim {
                             shape_str.push_str(&format!("{}", *n as i64));
                         } else {
                             shape_str.push('?');
@@ -219,13 +219,13 @@ impl MlirGenerator {
 
     fn flatten_indices(&mut self, expr: &Expr) -> Option<(String, String, Vec<String>)> {
         match expr {
-            Expr::IndexAccess(base, idx) => {
+            Expr::IndexAccess(base, idx, _) => {
                 let (base_name, base_ty, mut indices) = self.flatten_indices(base)?;
                 let (idx_val, _) = self.generate_expr(idx, "index");
                 indices.push(idx_val);
                 Some((base_name, base_ty, indices))
             }
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 if let Some((ssa, ty)) = self.env.get(name) {
                     Some((ssa.clone(), ty.clone(), Vec::new()))
                 } else {
@@ -273,7 +273,7 @@ impl MlirGenerator {
         self.push_indent();
 
         for stmt in &func.body {
-            if let Statement::Return(_) = stmt {
+            if let Statement::Return(..) = stmt {
                 if is_main {
                     // Ignore explicit returns in main for simplicity
                     continue;
@@ -294,7 +294,7 @@ impl MlirGenerator {
 
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
-            Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
+            Statement::LetDecl(name, _is_mut, ty_ann, expr, _) => {
                 if let Some(Type::Tensor(el_ty, _, _)) = ty_ann {
                     let ty_str = match el_ty {
                         ElementType::F32 => "f32",
@@ -337,7 +337,7 @@ impl MlirGenerator {
                 }
                 self.env.insert(name.clone(), (val, val_ty));
             }
-            Statement::ForLoop(iter, start, end, body) => {
+            Statement::ForLoop(iter, start, end, body, _) => {
                 let (mut start_val, start_ty) = self.generate_expr(start, "index");
                 if start_ty != "index" {
                     let cast_val = self.next_var();
@@ -374,7 +374,7 @@ impl MlirGenerator {
                 self.pop_indent();
                 self.write_line("}");
             }
-            Statement::If(cond, then_block, else_block) => {
+            Statement::If(cond, then_block, else_block, _) => {
                 let (cond_val, _) = self.generate_expr(cond, "i1");
 
                 self.write_line(&format!("scf.if {} {{", cond_val));
@@ -395,7 +395,7 @@ impl MlirGenerator {
                 }
                 self.write_line("}");
             }
-            Statement::Assign(lhs, rhs) => {
+            Statement::Assign(lhs, rhs, _) => {
                 if let Some((base, base_ty, indices)) = self.flatten_indices(lhs) {
                     let mut rhs_expected = "any".to_string();
                     if base_ty.starts_with("memref<") {
@@ -442,7 +442,7 @@ impl MlirGenerator {
                     }
                 }
             }
-            Statement::CompoundAssign(lhs, op, rhs) => {
+            Statement::CompoundAssign(lhs, op, rhs, _) => {
                 if *op == BinaryOp::Add {
                     let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
                     let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
@@ -463,8 +463,8 @@ impl MlirGenerator {
                             sum, lhs_val, rhs_val, self.current_el_ty
                         ));
                     }
-                    if let Expr::IndexAccess(arr, _) = lhs {
-                        if let Expr::Identifier(name) = &**arr {
+                    if let Expr::IndexAccess(arr, _, _) = lhs {
+                        if let Expr::Identifier(name, _) = &**arr {
                             if let Some((mem_val, _)) = self.env.get(name) {
                                 self.write_line(&format!(
                                     "memref.store {}, {}[] : memref<{}>",
@@ -472,7 +472,7 @@ impl MlirGenerator {
                                 ));
                             }
                         }
-                    } else if let Expr::Identifier(name) = lhs {
+                    } else if let Expr::Identifier(name, _) = lhs {
                         if let Some((mem_val, stored_ty)) = self.env.get(name).cloned() {
                             if stored_ty.starts_with("memref<") {
                                 self.write_line(&format!(
@@ -502,8 +502,8 @@ impl MlirGenerator {
                             prod, lhs_val, rhs_val, self.current_el_ty
                         ));
                     }
-                    if let Expr::IndexAccess(arr, _) = lhs {
-                        if let Expr::Identifier(name) = &**arr {
+                    if let Expr::IndexAccess(arr, _, _) = lhs {
+                        if let Expr::Identifier(name, _) = &**arr {
                             if let Some((mem_val, _)) = self.env.get(name) {
                                 self.write_line(&format!(
                                     "memref.store {}, {}[] : memref<{}>",
@@ -511,7 +511,7 @@ impl MlirGenerator {
                                 ));
                             }
                         }
-                    } else if let Expr::Identifier(name) = lhs {
+                    } else if let Expr::Identifier(name, _) = lhs {
                         if let Some((mem_val, stored_ty)) = self.env.get(name).cloned() {
                             if stored_ty.starts_with("memref<") {
                                 self.write_line(&format!(
@@ -525,11 +525,11 @@ impl MlirGenerator {
                     unimplemented!("Compound assignment operator not yet supported");
                 }
             }
-            Statement::Return(expr) => {
+            Statement::Return(expr, _) => {
                 let (val, ty) = self.generate_expr(expr, _current_ret_ty);
                 self.write_line(&format!("return {} : {}", val, ty));
             }
-            Statement::SpawnOn(top, stmts) => {
+            Statement::SpawnOn(top, stmts, _) => {
                 let top_str = match top {
                     Topology::NPU(_) => "NPU",
                     Topology::AccCore(_) => "AccCore",
@@ -575,17 +575,17 @@ impl MlirGenerator {
 
                 self.write_line("// --- END SPAWN ---");
             }
-            Statement::ExprStmt(expr) => {
+            Statement::ExprStmt(expr, _) => {
                 self.generate_expr(expr, "any");
             }
-            Statement::Assert(expr, msg) => {
+            Statement::Assert(expr, msg, _) => {
                 let (val, _ty) = self.generate_expr(expr, "i1");
                 let abort_msg = msg
                     .clone()
                     .unwrap_or_else(|| "Runtime assertion failed".to_string());
                 self.write_line(&format!("cf.assert {}, \"{}\"", val, abort_msg));
             }
-            Statement::Comptime(_) => {
+            Statement::Comptime(..) => {
                 // Zero-cost abstraction. Stripped out during lowering!
             }
         }
@@ -594,7 +594,7 @@ impl MlirGenerator {
     // Returns (SSA variable name, MLIR type string)
     fn generate_expr(&mut self, expr: &Expr, expected_ty: &str) -> (String, String) {
         match expr {
-            Expr::Identifier(name) => {
+            Expr::Identifier(name, _) => {
                 if name == "true" {
                     let res = self.next_var();
                     self.write_line(&format!("{} = arith.constant true", res));
@@ -641,7 +641,7 @@ impl MlirGenerator {
                     (format!("%{}", name), expected_ty.to_string())
                 }
             }
-            Expr::Number(n) => {
+            Expr::Number(n, _) => {
                 let res = self.next_var();
                 let mut scalar_expected = expected_ty.to_string();
                 if scalar_expected.starts_with("memref<") {
@@ -676,7 +676,7 @@ impl MlirGenerator {
                     (res, "i64".to_string())
                 }
             }
-            Expr::EnumVariant(enum_name, variant) => {
+            Expr::EnumVariant(enum_name, variant, _) => {
                 let res = self.next_var();
                 let mut index = 0;
                 if let Some(variants) = self.enums.get(enum_name) {
@@ -687,7 +687,7 @@ impl MlirGenerator {
                 self.write_line(&format!("{} = arith.constant {} : i32", res, index));
                 (res, "i32".to_string())
             }
-            Expr::StringLiteral(s) => {
+            Expr::StringLiteral(s, _) => {
                 let global_name = format!("str_{}", self.var_counter);
                 self.var_counter += 1;
                 let mut content = s.clone();
@@ -714,7 +714,7 @@ impl MlirGenerator {
                 ));
                 (res, "!llvm.ptr<0>".to_string())
             }
-            Expr::Transfer(inner, mem_space) => {
+            Expr::Transfer(inner, mem_space, _) => {
                 let (inner_val, inner_ty) = self.generate_expr(inner, expected_ty);
                 let addr_space = match mem_space {
                     MemorySpace::NPUHBM => 1,
@@ -758,7 +758,7 @@ impl MlirGenerator {
                     (inner_val, inner_ty)
                 }
             }
-            Expr::FunctionCall(name, args) => {
+            Expr::FunctionCall(name, args, _) => {
                 if name == "print" {
                     let (arg_val, _) = self
                         .generate_expr(&args[0], &format!("memref<?x?x{}>", self.current_el_ty));
@@ -775,7 +775,7 @@ impl MlirGenerator {
                     ));
                     return ("".to_string(), "()".to_string());
                 } else if name.starts_with("Tensor") && args.len() == 1 {
-                    if let Expr::Array(dims) = &args[0] {
+                    if let Expr::Array(dims, _) = &args[0] {
                         let mut dim_vals = Vec::new();
                         for dim in dims {
                             let (d_val, _) = self.generate_expr(dim, "index");
@@ -853,8 +853,8 @@ impl MlirGenerator {
                 ));
                 (res, ret_ty.to_string())
             }
-            Expr::IndexAccess(base, idx) => {
-                if let Expr::MemberAccess(inner_base, member) = &**base {
+            Expr::IndexAccess(base, idx, _) => {
+                if let Expr::MemberAccess(inner_base, member, _) = &**base {
                     if member == "shape" {
                         let (base_val, _) = self.generate_expr(inner_base, "any");
                         let (idx_val, _) = self.generate_expr(idx, "index");
@@ -949,7 +949,7 @@ impl MlirGenerator {
                     }
                 }
             }
-            Expr::MemberAccess(base, member) => {
+            Expr::MemberAccess(base, member, _) => {
                 if member == "shape" {
                     // Mock shape access by returning a dummy index
                     let res = self.next_var();
@@ -982,7 +982,7 @@ impl MlirGenerator {
                 // Fallback
                 self.generate_expr(base, expected_ty)
             }
-            Expr::MethodCall(base, _method, _args) => {
+            Expr::MethodCall(base, _method, _args, _) => {
                 if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let (base_val, _) = self.generate_expr(base, expected_ty);
                     let res = self.next_var();
@@ -1001,9 +1001,9 @@ impl MlirGenerator {
                     let res = self.next_var();
 
                     let mut shape_str = String::new();
-                    if let crate::ast::Expr::Array(d_args) = &_args[0] {
+                    if let crate::ast::Expr::Array(d_args, _) = &_args[0] {
                         for (i, d) in d_args.iter().enumerate() {
-                            if let crate::ast::Expr::Number(n) = d {
+                            if let crate::ast::Expr::Number(n, _) = d {
                                 shape_str.push_str(&format!("{}", *n as i64));
                             } else {
                                 shape_str.push('?');
@@ -1027,7 +1027,7 @@ impl MlirGenerator {
 
                     let mut is_exact = true;
                     if _args.len() >= 2 {
-                        if let crate::ast::Expr::EnumVariant(enum_name, variant) = &_args[1] {
+                        if let crate::ast::Expr::EnumVariant(enum_name, variant, _) = &_args[1] {
                             if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim") {
                                 is_exact = false;
                             }
@@ -1073,11 +1073,11 @@ impl MlirGenerator {
                             let shape_part = &base_ty[7..end_idx];
                             if !shape_part.contains('?') {
                                 let dims: Vec<&str> = shape_part.split('x').collect();
-                                if let crate::ast::Expr::Array(p_args) = &_args[0] {
+                                if let crate::ast::Expr::Array(p_args, _) = &_args[0] {
                                     if p_args.len() == dims.len() {
                                         let mut new_shape = String::new();
                                         for (i, p) in p_args.iter().enumerate() {
-                                            if let crate::ast::Expr::Number(n) = p {
+                                            if let crate::ast::Expr::Number(n, _) = p {
                                                 new_shape.push_str(dims[*n as usize]);
                                             } else {
                                                 new_shape.push('?');
@@ -1110,7 +1110,7 @@ impl MlirGenerator {
                     self.generate_expr(base, expected_ty)
                 }
             }
-            Expr::BinaryOp(lhs, op, rhs) => {
+            Expr::BinaryOp(lhs, op, rhs, _) => {
                 let is_cmp = matches!(
                     op,
                     BinaryOp::Eq
@@ -1126,7 +1126,7 @@ impl MlirGenerator {
                 let (rhs_val, rhs_ty) = self.generate_expr(rhs, &lhs_ty);
 
                 // If LHS was a generic number and RHS has a specific type, regenerate LHS with RHS type
-                if is_cmp && lhs_ty == "i64" && rhs_ty != "i64" && matches!(**lhs, Expr::Number(_))
+                if is_cmp && lhs_ty == "i64" && rhs_ty != "i64" && matches!(**lhs, Expr::Number(..))
                 {
                     let (new_lhs_val, new_lhs_ty) = self.generate_expr(lhs, &rhs_ty);
                     lhs_val = new_lhs_val;
@@ -1212,7 +1212,7 @@ impl MlirGenerator {
                 }
                 (res, self.current_el_ty.clone())
             }
-            Expr::UnaryOp(op, inner) => {
+            Expr::UnaryOp(op, inner, _) => {
                 let (inner_val, _inner_ty) = self.generate_expr(inner, expected_ty);
                 match op {
                     UnaryOp::Not => {
@@ -1228,14 +1228,14 @@ impl MlirGenerator {
                     }
                 }
             }
-            Expr::Borrow(inner, _) => {
+            Expr::Borrow(inner, _, _) => {
                 let (val, _) = self.generate_expr(inner, expected_ty);
                 let res = self.next_var();
                 self.write_line(&format!("// borrow {} -> {}", val, res));
                 self.write_line(&format!("{} = llvm.mlir.undef : !llvm.ptr<0>", res));
                 (res, "!llvm.ptr<0>".to_string())
             }
-            Expr::Dereference(inner) => {
+            Expr::Dereference(inner, _) => {
                 let (val, _) = self.generate_expr(inner, expected_ty);
                 let res = self.next_var();
                 self.write_line(&format!("// deref {} -> {}", val, res));
@@ -1245,11 +1245,11 @@ impl MlirGenerator {
                 ));
                 (res, "f32".to_string())
             }
-            Expr::UnsafeBlock(stmts, _) => {
+            Expr::UnsafeBlock(stmts, _, _) => {
                 let mut last_val = "".to_string();
                 let mut last_ty = "i64".to_string();
                 for stmt in stmts {
-                    if let Statement::ExprStmt(expr) = stmt {
+                    if let Statement::ExprStmt(expr, _) = stmt {
                         let (val, ty) = self.generate_expr(expr, expected_ty);
                         last_val = val;
                         last_ty = ty;
@@ -1265,7 +1265,7 @@ impl MlirGenerator {
                     (last_val, last_ty)
                 }
             }
-            Expr::StructInit(name, fields) => {
+            Expr::StructInit(name, fields, _) => {
                 let struct_decl = self.structs.get(name).unwrap().clone();
                 let struct_ty = self.lower_type(&Type::Struct(name.clone()));
 
@@ -1293,7 +1293,7 @@ impl MlirGenerator {
                 }
                 (current_struct, struct_ty)
             }
-            Expr::Array(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
+            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) => {
                 let res = self.next_var();
                 self.write_line(&format!("{} = arith.constant 0 : i64", res));
                 (res, "i64".to_string())
