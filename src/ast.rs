@@ -1,9 +1,9 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum Topology {
     Host,
-    NPU(usize),
-    AccCore(usize),
-    Slice(Box<Topology>, usize, usize), // For NPU[0..4] etc.
+    NPU(Box<Expr>),
+    AccCore(Box<Expr>),
+    Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
 }
 
 #[derive(Debug, PartialEq, Clone)]
