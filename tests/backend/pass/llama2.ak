@@ -57,6 +57,8 @@ extern {
     fn akar_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
     fn akar_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
     fn akar_safe_printf(piece: *mut i8) -> i32;
+    fn akar_read_prompt_file(filepath: *const i8) -> *mut i8;
+    fn akar_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
 }
 
 fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
@@ -441,14 +443,27 @@ fn main() -> i32 {
 
         let tokenizer_ptr: *mut i8 = akar_build_tokenizer("tokenizer.bin", config.vocab_size);
 
+        let prompt_str: *mut i8 = akar_read_prompt_file("prompt.txt");
+        let prompt_tokens: *mut i32 = akar_encode_prompt(tokenizer_ptr, prompt_str);
+        let num_prompt_tokens: i32 = prompt_tokens[0];
+
         // Generation Loop! (Token 1 is BOS)
-        let mut token: i32 = 1;
+        let mut token: i32 = prompt_tokens[1]; // Usually BOS
         let mut pos: i32 = 0;
         
         // We'll generate 20 tokens
         for step in 0..20 {
             let logits: *mut f32 = transformer(token, pos, config, state, weights);
-            let next: i32 = sample_argmax(logits, config.vocab_size);
+            
+            let mut next: i32 = 0;
+            if pos < num_prompt_tokens - 1 {
+                // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
+                let next_idx: i32 = pos + 2;
+                next = prompt_tokens[next_idx];
+            } else {
+                // GENERATE: Sample from logits
+                next = sample_argmax(logits, config.vocab_size);
+            }
             
             let piece: *mut i8 = akar_decode_token(tokenizer_ptr, token, next);
             let print_status: i32 = akar_safe_printf(piece);

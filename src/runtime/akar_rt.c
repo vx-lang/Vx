@@ -159,3 +159,97 @@ void akar_safe_printf(char *piece) {
     printf("%s", piece);
     fflush(stdout);
 }
+
+int str_lookup(char *str, Tokenizer* t) {
+    // Naive linear search since sorted_vocab is not populated
+    for (int i = 0; i < t->vocab_size; i++) {
+        if (t->vocab[i] && strcmp(str, t->vocab[i]) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int* akar_encode_prompt(void* tokenizer_ptr, const char* text) {
+    Tokenizer* t = (Tokenizer*)tokenizer_ptr;
+    
+    if (text == NULL || text[0] == '\0') {
+        int* tokens = malloc(2 * sizeof(int));
+        tokens[0] = 1; // length
+        tokens[1] = 1; // BOS
+        return tokens;
+    }
+
+    // Allocate enough space (length at [0], tokens from [1])
+    int* tokens = malloc((strlen(text) + 4) * sizeof(int));
+    int n_tokens = 0;
+    
+    // add BOS
+    tokens[1 + n_tokens++] = 1;
+
+    // dummy implementation: just treat the whole text as one byte sequence, 
+    // or properly encode bytes.
+    // For stories15M, let's just encode chars one by one for simplicity if not found.
+    for (const char *c = text; *c != '\0'; c++) {
+        char single[2] = {*c, '\0'};
+        int id = str_lookup(single, t);
+        if (id != -1) {
+            tokens[1 + n_tokens++] = id;
+        } else {
+            // fallback byte
+            tokens[1 + n_tokens++] = (unsigned char)*c + 3; // roughly
+        }
+    }
+    
+    // In a real BPE we would merge pairs here.
+    // We will do a simple merge for testing.
+    while (1) {
+        float best_score = -1e10;
+        int best_id = -1;
+        int best_idx = -1;
+
+        for (int i=0; i < n_tokens-1; i++) {
+            char str_buffer[256];
+            if (tokens[1+i] < 0 || tokens[1+i] >= t->vocab_size || tokens[1+i+1] < 0 || tokens[1+i+1] >= t->vocab_size) {
+                printf("OUT OF BOUNDS: %d or %d\n", tokens[1+i], tokens[1+i+1]);
+                exit(1);
+            }
+            if (!t->vocab[tokens[1+i]] || !t->vocab[tokens[1+i+1]]) {
+                printf("NULL VOCAB: %d or %d\n", tokens[1+i], tokens[1+i+1]);
+                exit(1);
+            }
+            sprintf(str_buffer, "%s%s", t->vocab[tokens[1+i]], t->vocab[tokens[1+i+1]]);
+            int id = str_lookup(str_buffer, t);
+            if (id != -1 && t->vocab_scores[id] > best_score) {
+                best_score = t->vocab_scores[id];
+                best_id = id;
+                best_idx = i;
+            }
+        }
+
+        if (best_idx == -1) break; // no more merges
+
+        // merge
+        tokens[1 + best_idx] = best_id;
+        for (int i = best_idx + 1; i < n_tokens - 1; i++) {
+            tokens[1 + i] = tokens[1 + i + 1];
+        }
+        n_tokens--;
+    }
+    
+    tokens[0] = n_tokens;
+    return tokens;
+}
+
+char* akar_read_prompt_file(const char* filepath) {
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *string = malloc(fsize + 1);
+    fread(string, 1, fsize, f);
+    fclose(f);
+    string[fsize] = 0;
+    return string;
+}
