@@ -411,8 +411,25 @@ impl MlirGenerator {
                     } else {
                         format!("memref<{}, {}>", stripped, addr_space)
                     };
+                    let c0 = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : index", c0));
+                    let c1 = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 1 : index", c1));
+                    let dim0 = self.next_var();
+                    self.write_line(&format!(
+                        "{} = memref.dim {}, {} : {}",
+                        dim0, inner_val, c0, inner_ty
+                    ));
+                    let dim1 = self.next_var();
+                    self.write_line(&format!(
+                        "{} = memref.dim {}, {} : {}",
+                        dim1, inner_val, c1, inner_ty
+                    ));
                     let alloc_val = self.next_var();
-                    self.write_line(&format!("{} = memref.alloc() : {}", alloc_val, new_ty));
+                    self.write_line(&format!(
+                        "{} = memref.alloc({}, {}) : {}",
+                        alloc_val, dim0, dim1, new_ty
+                    ));
                     self.write_line(&format!(
                         "memref.copy {}, {} : {} to {}",
                         inner_val, alloc_val, inner_ty, new_ty

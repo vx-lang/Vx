@@ -15,8 +15,12 @@ fn process(t_host: Tensor<f32>) -> Tensor<f32> {
 }
 
 // CHECK: func.func @process(%t_host: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:   %v1 = memref.alloc() : memref<?x?xf32, 1>
-// CHECK:   memref.copy %t_host, %v1 : memref<?x?xf32> to memref<?x?xf32, 1>
+// CHECK:   %v1 = arith.constant 0 : index
+// CHECK:   %v2 = arith.constant 1 : index
+// CHECK:   %v3 = memref.dim %t_host, %v1 : memref<?x?xf32>
+// CHECK:   %v4 = memref.dim %t_host, %v2 : memref<?x?xf32>
+// CHECK:   %v5 = memref.alloc(%v3, %v4) : memref<?x?xf32, 1>
+// CHECK:   memref.copy %t_host, %v5 : memref<?x?xf32> to memref<?x?xf32, 1>
 // CHECK:   // --- BEGIN SPAWN ON NPU ---
 // CHECK:   // --- END SPAWN ---
 // CHECK:   return %t_host : memref<?x?xf32>

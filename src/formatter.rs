@@ -5,15 +5,15 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let mut formatted = String::new();
     let mut indent_level: isize = 0;
     let indent_str = " ".repeat(indent_spaces);
-    
+
     let mut is_new_line = true;
-    
+
     loop {
         let token = lexer.next_token();
         if token.kind == TokenType::Eof {
             break;
         }
-        
+
         match token.kind {
             TokenType::Whitespace(ws) => {
                 if ws.contains('\n') {
@@ -32,14 +32,16 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
             }
             TokenType::RightBrace => {
                 indent_level -= 1;
-                if indent_level < 0 { indent_level = 0; }
-                
+                if indent_level < 0 {
+                    indent_level = 0;
+                }
+
                 if is_new_line {
                     let current_indent = indent_str.repeat(indent_level as usize);
                     formatted.push_str(&current_indent);
                     is_new_line = false;
                 }
-                
+
                 formatted.push('}');
             }
             TokenType::LeftBrace => {
@@ -48,7 +50,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     formatted.push_str(&current_indent);
                     is_new_line = false;
                 }
-                
+
                 formatted.push('{');
                 indent_level += 1;
             }
@@ -66,11 +68,11 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     formatted.push_str(&current_indent);
                     is_new_line = false;
                 }
-                
+
                 formatted.push_str(&other.to_string());
             }
         }
     }
-    
+
     formatted
 }

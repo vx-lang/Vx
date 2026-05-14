@@ -6,13 +6,13 @@
 fn strip_pin_and_deref(t: Tensor<f32>) -> Tensor<f32> {
   unsafe {
     let ptr: *const Tensor<f32> = t.as_ptr();
-    // Dereferencing an NPU pointer on CPU!
+    let val: f32 = *ptr; // Dereferencing an NPU pointer on CPU!
   }
   return t;
 }
 
 fn main() -> Tensor<f32> {
-  let t_host: Tensor<f32> = 1.0;
+  let t_host: Tensor<f32> = Tensor([1, 1]);
   let t_device: Tensor<f32> = t_host.to_device();
 
   // Pass the NPU tensor to a Host function to strip the Pinned wrapper

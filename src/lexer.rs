@@ -320,7 +320,7 @@ impl<'a> Lexer<'a> {
                     column: start_col,
                 };
             }
-            
+
             if c == '/' {
                 let mut temp = self.source.clone();
                 temp.next();

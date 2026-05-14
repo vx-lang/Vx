@@ -154,8 +154,28 @@ fn test_middle_end() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
                 run_middle_end_test(&path);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_middle_end_fail() {
+    let dir = Path::new("tests/middle_end/fail");
+    if dir.exists() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+                let result = std::panic::catch_unwind(|| {
+                    run_middle_end_test(&path);
+                });
+                assert!(
+                    result.is_err(),
+                    "Expected {} to fail, but it succeeded!",
+                    path.display()
+                );
             }
         }
     }
@@ -167,8 +187,28 @@ fn test_backend() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
                 run_backend_test(&path);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_backend_fail() {
+    let dir = Path::new("tests/backend/fail");
+    if dir.exists() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+                let result = std::panic::catch_unwind(|| {
+                    run_backend_test(&path);
+                });
+                assert!(
+                    result.is_err(),
+                    "Expected {} to fail, but it succeeded!",
+                    path.display()
+                );
             }
         }
     }

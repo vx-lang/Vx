@@ -4,7 +4,7 @@
 // (e.g. from memory space 1 to memory space 2 directly without host bounce)
 
 fn main() -> Tensor<f32> {
-  let t_host: Tensor<f32> = 1.0;
+  let t_host: Tensor<f32> = Tensor([1, 1]);
   let t_device: Tensor<f32> = t_host.to_device();
 
   // In actual hardware, NPU to NPU might require Host bounce, but we just generate memref.copy
