@@ -453,8 +453,8 @@ fn main() -> i32 {
         let mut token: i32 = prompt_tokens[1]; // Usually BOS
         let mut pos: i32 = 0;
         
-        // We'll generate 100 tokens
-        for step in 0..100 {
+        // We'll generate 2 tokens for testing to avoid slowing down cargo test
+        for step in 0..2 {
             let logits: *mut f32 = transformer(token, pos, config, state, weights);
             
             let mut next: i32 = 0;
