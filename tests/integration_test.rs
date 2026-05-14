@@ -125,3 +125,16 @@ fn test_integration_function_calls() {
     "#;
     assert!(run_pipeline(input).is_ok());
 }
+
+#[test]
+fn test_integration_logical_ops() {
+    let input = r#"
+    fn logic_test(a: Tensor, b: Tensor) -> Tensor {
+        let is_less = a < b;
+        let is_eq = a == b;
+        let c = is_less && is_eq;
+        return a;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
