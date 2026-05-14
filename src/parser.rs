@@ -27,6 +27,7 @@ impl Parser {
         &self.peek().kind == kind
     }
 
+    #[allow(dead_code)]
     fn match_token(&mut self, kind: &TokenType) -> bool {
         if self.check(kind) {
             self.advance();
@@ -36,6 +37,7 @@ impl Parser {
         }
     }
 
+    #[allow(dead_code)]
     fn consume(&mut self, kind: &TokenType, msg: &str) -> Result<&Token, String> {
         if self.check(kind) {
             Ok(self.advance())
@@ -47,7 +49,7 @@ impl Parser {
     // Parsing logic goes here...
     // (This is a simplified stub for demonstration)
     pub fn parse(&mut self) -> Result<Program, String> {
-        let mut functions = Vec::new();
+        let functions = Vec::new();
         while !self.check(&TokenType::Eof) {
             // Simplified parsing
             self.advance();
