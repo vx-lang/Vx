@@ -1,0 +1,9 @@
+// RUN: akarc %s
+
+fn main() -> i32 {
+  // Assigning a boolean to a f32 Tensor should fail semantic analysis!
+  let t_host: Tensor<f32> = true;
+  return 0;
+}
+
+// EXPECT_FAIL: Type mismatch

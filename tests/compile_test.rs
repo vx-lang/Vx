@@ -150,7 +150,7 @@ fn test_frontend_fail() {
 
 #[test]
 fn test_middle_end() {
-    let dir = Path::new("tests/middle_end");
+    let dir = Path::new("tests/middle_end/pass");
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -183,7 +183,7 @@ fn test_middle_end_fail() {
 
 #[test]
 fn test_backend() {
-    let dir = Path::new("tests/backend");
+    let dir = Path::new("tests/backend/pass");
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
