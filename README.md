@@ -10,17 +10,17 @@
 
 **Vx** (pronounced *"vee-ex"*) is a general-purpose systems programming language designed to unify CPU, GPU, NPU, and accelerator workloads. 
 
-Historically, leveraging heterogeneous hardware required disjointed toolchains, painful FFI boundaries, and complex vendor-specific frameworks (like CUDA, Metal, or OpenCL). **Vx treats hardware diversity not as a challenge, but as a first-class citizen.** It bridges execution topologies and memory domains under a single, elegant, and mathematically verifiable syntax.
+Historically, leveraging heterogeneous hardware required disjointed toolchains, painful FFI boundaries, and complex vendor-specific frameworks (like CUDA, Metal, or OpenCL). **Vx treats hardware diversity not as a challenge, but as a first-class citizen.** It bridges execution topologies and memory domains under a single, verifiable syntax.
 
 ## Core Philosophy
 
-The language is strictly governed by 7 core tenets:
+The language is governed by 7 core tenets:
 
-1. **Heterogeneous Compute**: Address spaces and compute topologies (CPUs, GPUs, NPUs) are first-class primitives. Distributed and parallel computations are expressed directly natively (e.g., `spawn on(Topology::NPU[0])`).
-2. **Ease of Verified Computation**: Hardware-aware type systems, explicit topologies, and `Verified<T>` wrappers allow programmers to mathematically verify computation correctness and data locality.
-3. **Uncompromising Performance**: Designed for heavy Ahead-Of-Time (AOT) optimizations. The compiler lowers directly to MLIR and LLVM IR for optimal native machine code.
-4. **Deterministic Memory Control**: No mandatory garbage collection. Absolute programmatic control over memory layouts, lifetimes, and pointer arithmetic.
-5. **Zero-Cost Abstractions**: High-level constructs compile down to optimal machine code with zero hidden runtime overhead.
+1. **Heterogeneous Compute**: Address spaces and compute topologies (CPUs, GPUs, NPUs) are first-class primitives. Distributed and parallel computations are expressed natively (e.g., `spawn on(Topology::NPU[0])`).
+2. **Ease of Verified Computation**: Hardware-aware type systems, explicit topologies, and `Verified<T>` wrappers allow programmers to verify computation correctness and data locality.
+3. **High Performance**: Designed for Ahead-Of-Time (AOT) optimizations. The compiler lowers directly to MLIR and LLVM IR for optimal native machine code.
+4. **Deterministic Memory Control**: No mandatory garbage collection. Programmers have control over memory layouts, lifetimes, and pointer arithmetic.
+5. **Zero-Cost Abstractions**: High-level constructs compile down to optimal machine code with no runtime overhead.
 6. **Direct Hardware Access**: Native support for inline assembly, memory-mapped I/O, and CPU/SIMD intrinsics.
 7. **Strong System Interoperability**: Seamless C ABI interoperability and zero-overhead FFI to interact directly with existing OS kernels and C-ecosystem libraries.
 
@@ -29,7 +29,7 @@ The language is strictly governed by 7 core tenets:
 In Vx, you have explicit, type-safe control over where data lives and where code executes:
 
 ```rust
-// Declare a mathematically verified matrix multiplication
+// Declare a verified matrix multiplication
 fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
     
     // Explicitly dispatch computation to an AI Accelerator
@@ -45,7 +45,7 @@ fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM
             }
         }
         
-        // Return a mathematically verified result
+        // Return a verified result
         return Verified(result);
     }
 }
@@ -53,7 +53,7 @@ fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM
 
 ## Usage & Tooling
 
-The Vx compiler (`vxc`) is written in Rust and utilizes the LLVM/MLIR infrastructure for lowering and execution. 
+The Vx compiler (`vxc`) is written in Rust and utilizes the LLVM/MLIR infrastructure for lowering and execution.
 
 ### Building the Compiler
 ```bash
