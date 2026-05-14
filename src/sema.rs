@@ -218,6 +218,7 @@ impl TypeChecker {
         match stmt {
             Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
                 let ty = self.check_expr(expr);
+
                 if let Some(ann) = ty_ann {
                     if !self.is_assignable(ann, &ty) {
                         self.errors
@@ -624,7 +625,7 @@ impl TypeChecker {
             Expr::BinaryOp(lhs, op, rhs) => {
                 let lhs_ty = self.check_expr(lhs);
                 let rhs_ty = self.check_expr(rhs);
-                if lhs_ty != rhs_ty {
+                if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors
                         .push("Type mismatch in binary operation".to_string());
                 }
