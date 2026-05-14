@@ -49,6 +49,7 @@ extern {
     fn akar_cosf(x: f32) -> f32;
     fn akar_sinf(x: f32) -> f32;
     fn akar_powf(x: f32, y: f32) -> f32;
+    fn akar_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32;
     
     fn akar_load_config(filepath: *const i8) -> *mut i32;
     fn akar_load_weights(filepath: *const i8) -> *mut f32;
@@ -181,7 +182,89 @@ fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeigh
             let wv_l: *mut f32 = akar_advance_ptr(w.wv, wv_off);
             let status4: i32 = matmul(s_v, s.xb, wv_l, dim, kv_dim);
 
-            // skip rope and attention loops for now to see if it compiles
+            // RoPE relative positional encoding
+            for i in 0..kv_dim {
+                let div: i32 = i / 2;
+                let mul: i32 = div * 2;
+                let rem: i32 = i - mul;
+                if rem == 0 {
+                    let fcr: f32 = akar_get_rope_freq(pos, i, head_size);
+                    let fci: f32 = akar_cosf(fcr);
+                    let fsi: f32 = akar_sinf(fcr);
+                    
+                    let roff: i32 = i;
+                    let roff_1: i32 = i + 1;
+                    
+                    let q0: f32 = s.q[roff];
+                    let q1: f32 = s.q[roff_1];
+                    s.q[roff]   = q0 * fci - q1 * fsi;
+                    s.q[roff_1] = q0 * fsi + q1 * fci;
+                    
+                    let k0: f32 = s_k[roff];
+                    let k1: f32 = s_k[roff_1];
+                    s_k[roff]   = k0 * fci - k1 * fsi;
+                    s_k[roff_1] = k0 * fsi + k1 * fci;
+                }
+            }
+
+            // Multi-head self-attention
+            let pos_1: i32 = pos + 1;
+            for h in 0..p.n_heads {
+                let q_off: i32 = h * head_size;
+                let att_off: i32 = h * seq_len;
+                let att_h: *mut f32 = akar_advance_ptr(s.att, att_off);
+                
+                for t in 0..pos_1 {
+                    let h_kv_mul: i32 = h / kv_mul;
+                    let k_cache_off: i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
+                    let k_t: *mut f32 = akar_advance_ptr(s.key_cache, k_cache_off);
+                    let mut score: f32 = 0.0;
+                    for i in 0..head_size {
+                        let qv: f32 = s.q[q_off + i];
+                        let kv: f32 = k_t[i];
+                        score += qv * kv;
+                    }
+                    
+                    let head_size_f: f32 = 32.0; // Wait, 256/8 = 32
+                    let factor: f32 = 1.0 / akar_sqrtf(head_size_f);
+                    score = score * factor;
+                    att_h[t] = score;
+                }
+                
+                let mut max_val: f32 = att_h[0];
+                for t in 1..pos_1 {
+                    let val: f32 = att_h[t];
+                    if val > max_val { max_val = val; }
+                }
+                
+                let mut sum: f32 = 0.0;
+                for t in 0..pos_1 {
+                    let val: f32 = att_h[t];
+                    let exp_val: f32 = akar_expf(val - max_val);
+                    att_h[t] = exp_val;
+                    sum += exp_val;
+                }
+                
+                for t in 0..pos_1 {
+                    let val: f32 = att_h[t];
+                    att_h[t] = val / sum;
+                }
+                
+                let xb_off: i32 = h * head_size;
+                for i in 0..head_size {
+                    let mut val: f32 = 0.0;
+                    for t in 0..pos_1 {
+                        let h_kv_mul: i32 = h / kv_mul;
+                        let v_cache_off: i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
+                        let v_t: *mut f32 = akar_advance_ptr(s.value_cache, v_cache_off);
+                        let a: f32 = att_h[t];
+                        let v: f32 = v_t[i];
+                        val += a * v;
+                    }
+                    s.xb[xb_off + i] = val;
+                }
+            }
+
             // final matmul
             let wo_off: i32 = l * dim * dim;
             let wo_l: *mut f32 = akar_advance_ptr(w.wo, wo_off);

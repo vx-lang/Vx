@@ -11,6 +11,19 @@ float akar_expf(float x) {
     return expf(x);
 }
 
+float akar_cosf(float x) {
+    return cosf(x);
+}
+
+float akar_sinf(float x) {
+    return sinf(x);
+}
+
+float akar_get_rope_freq(int pos, int i, int head_size) {
+    float freq = 1.0f / powf(10000.0f, (float)i / (float)head_size);
+    return (float)pos * freq;
+}
+
 float benchmark_start_time = 0.0f;
 
 float start_benchmark() {

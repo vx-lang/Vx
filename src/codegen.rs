@@ -337,8 +337,24 @@ impl MlirGenerator {
                 self.env.insert(name.clone(), (val, val_ty));
             }
             Statement::ForLoop(iter, start, end, body) => {
-                let (start_val, _) = self.generate_expr(start, "index");
-                let (end_val, _) = self.generate_expr(end, "index");
+                let (mut start_val, start_ty) = self.generate_expr(start, "index");
+                if start_ty != "index" {
+                    let cast_val = self.next_var();
+                    self.write_line(&format!(
+                        "{} = arith.index_cast {} : {} to index",
+                        cast_val, start_val, start_ty
+                    ));
+                    start_val = cast_val;
+                }
+                let (mut end_val, end_ty) = self.generate_expr(end, "index");
+                if end_ty != "index" {
+                    let cast_val = self.next_var();
+                    self.write_line(&format!(
+                        "{} = arith.index_cast {} : {} to index",
+                        cast_val, end_val, end_ty
+                    ));
+                    end_val = cast_val;
+                }
                 let step_val = self.next_var();
                 self.write_line(&format!("{} = arith.constant 1 : index", step_val));
 
@@ -771,7 +787,16 @@ impl MlirGenerator {
                     } else {
                         self.current_el_ty.clone()
                     };
-                    let (val, ty) = self.generate_expr(arg, &arg_expected_ty);
+                    let (mut val, mut ty) = self.generate_expr(arg, &arg_expected_ty);
+                    if ty == "index" && arg_expected_ty != "index" {
+                        let cast_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i32",
+                            cast_val, val
+                        ));
+                        val = cast_val;
+                        ty = "i32".to_string();
+                    }
                     arg_vals.push(val);
                     arg_tys.push(ty);
                 }
