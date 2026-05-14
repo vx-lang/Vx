@@ -28,20 +28,69 @@ extern {
     fn free(ptr: *mut f32) -> i32;
     fn printf(format: *const i8, val: f32) -> i32;
     fn akar_sqrtf(x: f32) -> f32;
+    fn akar_expf(x: f32) -> f32;
 }
 
-fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32) -> i32 {
+fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32, size_f: f32) -> i32 {
     let mut ss: f32 = 0.0;
     for j in 0..size {
         let val: f32 = x[j];
         ss += val * val;
     }
     
-    let size_f: f32 = 0.0; // Needs cast or intrinsic for proper size conversion
-    // For simplicity in test, let's hardcode size_f logic later or assume input size_f
-    // ss = ss / size_f + 1e-5;
-    // ss = 1.0 / akar_sqrtf(ss);
+    ss = ss / size_f + 0.00001;
+    unsafe {
+        ss = 1.0 / akar_sqrtf(ss);
+    }
     
+    for j in 0..size {
+        let val: f32 = x[j];
+        let w: f32 = weight[j];
+        let temp: f32 = ss * val;
+        o[j] = w * temp;
+    }
+    
+    return 0;
+}
+
+fn softmax(x: *mut f32, size: i32) -> i32 {
+    let mut max_val: f32 = x[0];
+    for i in 1..size {
+        let val: f32 = x[i];
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    
+    let mut sum: f32 = 0.0;
+    for i in 0..size {
+        let val: f32 = x[i];
+        let diff: f32 = val - max_val;
+        unsafe {
+            x[i] = akar_expf(diff);
+        }
+        let exp_val: f32 = x[i];
+        sum += exp_val;
+    }
+    
+    for i in 0..size {
+        let val: f32 = x[i];
+        x[i] = val / sum;
+    }
+    return 0;
+}
+
+fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
+    for i in 0..d {
+        let mut val: f32 = 0.0;
+        for j in 0..n {
+            let idx: i32 = i * n + j;
+            let w_val: f32 = w[idx];
+            let x_val: f32 = x[j];
+            val += w_val * x_val;
+        }
+        xout[i] = val;
+    }
     return 0;
 }
 

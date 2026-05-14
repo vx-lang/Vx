@@ -527,6 +527,15 @@ impl MlirGenerator {
                         return (cast_res, "index".to_string());
                     }
 
+                    if expected_ty != "index" && expected_ty.starts_with("i") && ty_res == "index" {
+                        let cast_res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to {}",
+                            cast_res, ssa_res, expected_ty
+                        ));
+                        return (cast_res, expected_ty.to_string());
+                    }
+
                     (ssa_res, ty_res)
                 } else {
                     (format!("%{}", name), expected_ty.to_string())
