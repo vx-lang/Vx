@@ -1,13 +1,12 @@
-# Akar Abstract Syntax Tree (AST) Reference
+# Akar AST Reference Guide
 
-This document outlines the Abstract Syntax Tree (AST) definitions used by the Akar compiler. This reference serves as a structural map for components like `akar-format`, `akarc` semantic analysis, and third-party tooling integrating with Akar's core.
+This document formally details the Abstract Syntax Tree (AST) definitions for the Akar programming language. As a language designed for heterogeneous hardware (CPUs, NPUs, Accelerators), Akar's AST includes first-class constructs for topology, memory spaces, and explicit data transfers.
 
-The AST is located in `src/ast.rs`.
+The AST is primarily defined in `src/ast.rs` and forms the foundation for semantic analysis (`sema.rs`) and MLIR code generation (`codegen.rs`).
 
----
+## High-Level Program Structure
 
-## 1. Top-Level Program Structure
-The root of any parsed Akar file is the `Program` struct, which contains all definitions in a flat list (declarations are globally scoped in a single file module).
+An Akar `Program` is the root node of the AST. It encapsulates all top-level declarations within a single compilation unit.
 
 ```rust
 pub struct Program {
@@ -19,120 +18,144 @@ pub struct Program {
 }
 ```
 
-### 1.1 Declarations
-- **`ExternDecl`**: C FFI function declarations (`extern "C" { fn foo(); }`).
-  - `name`: String
-  - `params`: `Vec<(String, Type)>`
-  - `return_type`: `Type`
-- **`StructDecl`**: User-defined data types (`struct Foo<T> { x: T }`).
-  - `name`: String
-  - `generics`: `Vec<(String, Option<String>)>` (Name, Optional Trait Bound)
-  - `fields`: `Vec<(String, Type)>`
-- **`TraitDecl`**: Interface definitions (`trait Foo { fn bar(); }`).
-  - `name`: String
-  - `methods`: `Vec<(method_name, params, return_type)>`
-- **`ImplBlock`**: Trait implementations or inherent methods (`impl Foo for Bar { ... }`).
-  - `trait_name`: `Option<String>` (None for inherent impls)
-  - `target_type`: `Type`
-  - `methods`: `Vec<Function>`
-- **`Function`**: Executable blocks (`fn main() { ... }`).
-  - `name`: String
-  - `generics`: `Vec<(String, Option<String>)>`
-  - `params`: `Vec<(String, Type)>`
-  - `return_type`: `Type`
-  - `body`: `Vec<Statement>`
+## Topologies & Memory Spaces
 
----
+Akar explicitly models hardware locality to prevent unexpected, implicit cross-device memory operations.
 
-## 2. Hardware Topologies & Memory Contexts
-Akar natively encodes heterogeneous hardware contexts into the AST.
+### Topology
+Topologies define *where* computation executes. They can represent the Host CPU, an NPU cluster, or specific slices of a distributed topology.
 
-### 2.1 `Topology`
-Represents the execution environment or domain.
-- `Host`: The CPU or primary orchestration host.
-- `NPU(Box<Expr>)`: A specific Neural Processing Unit (e.g. `NPU[0]`).
-- `AccCore(Box<Expr>)`: An Accelerator Core.
-- `Slice(Box<Topology>, Start, End)`: A range of hardware units (e.g., `NPU[0..4]`).
+```rust
+pub enum Topology {
+    Host,
+    NPU(Box<Expr>),                             // e.g., NPU[0]
+    AccCore(Box<Expr>),                         // e.g., AccCore[1]
+    Slice(Box<Topology>, Box<Expr>, Box<Expr>), // e.g., NPU[0..4]
+}
+```
 
-### 2.2 `MemorySpace`
-Represents distinct physical memory regions.
-- `HostDRAM`: System main memory.
-- `NPUHBM`: High Bandwidth Memory attached to an NPU.
-- `LocalSRAM`: Fast local accelerator memory.
+### Memory Space
+Memory Spaces define *where* data resides physically.
 
----
+```rust
+pub enum MemorySpace {
+    HostDRAM,   // System CPU memory
+    NPUHBM,     // High Bandwidth Memory attached to NPU
+    LocalSRAM,  // Fast, small scratchpad memory on Accelerator Cores
+}
+```
 
-## 3. Type System (`Type`)
-The type system incorporates safety primitives, memory contexts, and basic scalar types.
+## Type System
+
+Akar features a strictly verified, generic-capable type system.
 
 ```rust
 pub enum Type {
-    Tensor(ElementType),                           // e.g. Tensor<f32>
-    Matrix,                                      // High-level matrix type
-    Ref(Box<Type>, MemorySpace),                 // e.g. Ref<T, Memory::HostDRAM>
-    Borrow(Box<Type>, Option<MemorySpace>, bool),// e.g. &mut T or &T
-    Pointer(Box<Type>, Option<MemorySpace>, bool),// e.g. *mut T or *const T
-    Struct(String),                              // Custom Struct type
-    Verified(Box<Type>),                         // Verified<T> bounds
-    Pinned(Box<Type>, Topology),                 // Pinned<T, NPU[0]>
-    Generic(String),                             // e.g. T
-    GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
+    Tensor(ElementType),
+    Matrix,
+    Ref(Box<Type>, MemorySpace),                  // Reference bound to a specific memory space
+    Borrow(Box<Type>, Option<MemorySpace>, bool), // &T or &mut T
+    Pointer(Box<Type>, Option<MemorySpace>, bool),// *const T or *mut T
+    Struct(String),                               // User-defined structs
+    Verified(Box<Type>),                          // Formally verified types
+    Pinned(Box<Type>, Topology),                  // Memory physically pinned to a topology
+    Generic(String),                              // Generic type parameter 'T'
+    GenericInstance(Box<Type>, Vec<Type>),        // E.g., Config<f32>
 }
 ```
 
-### `ElementType`
-Scalars supported by the compiler: `Bool`, `BF16`, `F16`, `F32`, `F64`, `I4` through `I128`, and `U4` through `U128`.
+### Element Types
+Native scalar primitives supported in `Tensor`s:
+* **Floating Point**: `F16`, `BF16`, `F32`, `F64`
+* **Signed Integer**: `I4`, `I8`, `I16`, `I32`, `I64`, `I128`
+* **Unsigned Integer**: `U4`, `U8`, `U16`, `U32`, `U64`, `U128`
+* **Boolean**: `Bool`
 
----
+## Expressions (`Expr`)
 
-## 4. Statements (`Statement`)
-Execution flow is defined by the following statements:
-
-```rust
-pub enum Statement {
-    LetDecl(String, bool, Option<Type>, Expr),             // let mut x: T = expr;
-    Return(Expr),                                          // return expr;
-    SpawnOn(Topology, Vec<Statement>),                     // spawn on(NPU[0]) { ... }
-    ExprStmt(Expr),                                        // func_call();
-    ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // for i in 0..10 { ... }
-    Assign(Expr, Expr),                                    // a = b;
-    CompoundAssign(Expr, BinaryOp, Expr),                  // a += b;
-}
-```
-
----
-
-## 5. Expressions (`Expr`)
-Mathematical, logical, and memory-based computations.
+Expressions represent operations that evaluate to a value.
 
 ```rust
 pub enum Expr {
-    Identifier(String),                       // x
-    Number(f64),                              // 3.14 (Floats map dynamically)
-    Transfer(Box<Expr>, MemorySpace),         // Implicitly derived from .to_device()
-    FunctionCall(String, Vec<Expr>),          // foo(a, b)
-    Array(Vec<Expr>),                         // [1, 2, 3]
-    MemberAccess(Box<Expr>, String),          // obj.field
-    IndexAccess(Box<Expr>, Box<Expr>),        // arr[i]
-    MethodCall(Box<Expr>, String, Vec<Expr>), // obj.method(a)
-    BinaryOp(Box<Expr>, BinaryOp, Box<Expr>), // a + b
-    UnaryOp(UnaryOp, Box<Expr>),              // !a
-    Borrow(Box<Expr>, bool),                  // &mut a / &a
-    Dereference(Box<Expr>),                   // *a
+    Identifier(String),
+    Number(f64),
+    Transfer(Box<Expr>, MemorySpace),               // Explicit data movement (to_device / to_host)
+    FunctionCall(String, Vec<Expr>),
+    Array(Vec<Expr>),
+    MemberAccess(Box<Expr>, String),                // obj.field
+    IndexAccess(Box<Expr>, Box<Expr>),              // arr[idx]
+    MethodCall(Box<Expr>, String, Vec<Expr>),       // obj.method(args)
+    BinaryOp(Box<Expr>, BinaryOp, Box<Expr>),       // lhs + rhs
+    UnaryOp(UnaryOp, Box<Expr>),                    // !expr
+    Borrow(Box<Expr>, bool),                        // &expr or &mut expr
+    Dereference(Box<Expr>),                         // *expr
     UnsafeBlock(Vec<Statement>, Option<Box<Expr>>), // unsafe { ... }
-    StructInit(String, Vec<(String, Expr)>),  // Config { x: 1 }
-    MemorySpace(MemorySpace),                 // Memory::HostDRAM literal
-    Topology(Topology),                       // Topology::NPU[0] literal
+    StructInit(String, Vec<(String, Expr)>),        // Point { x: 1.0, y: 2.0 }
+    MemorySpace(MemorySpace),
+    Topology(Topology),
 }
 ```
 
-### `BinaryOp`
-`Add`, `Sub`, `Mul`, `Div`, `Eq`, `NotEq`, `Lt`, `Gt`, `Le`, `Ge`, `And`, `Or`.
+## Statements (`Statement`)
 
-### `UnaryOp`
-`Not`.
+Statements represent actions or control flow operations that do not yield a usable value directly.
 
----
+```rust
+pub enum Statement {
+    LetDecl(String, bool, Option<Type>, Expr),             // let [mut] name: Type = expr;
+    Return(Expr),                                          // return expr;
+    SpawnOn(Topology, Vec<Statement>),                     // spawn on(Topology::NPU[0]) { ... }
+    ExprStmt(Expr),                                        // func();
+    ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // for i in 0..10 { ... }
+    Assign(Expr, Expr),                                    // lhs = rhs;
+    CompoundAssign(Expr, BinaryOp, Expr),                  // lhs += rhs;
+}
+```
 
-## 6. Helper Utilities
-The AST structures include `substitute` methods allowing dynamic type substitutions during the Monomorphization pass of the Semantic Analyzer.
+## Declarations
+
+### Functions
+```rust
+pub struct Function {
+    pub name: String,
+    pub generics: Vec<(String, Option<String>)>, // e.g., <T: Trait>
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+    pub body: Vec<Statement>,
+}
+```
+
+### Structs
+```rust
+pub struct StructDecl {
+    pub name: String,
+    pub generics: Vec<(String, Option<String>)>,
+    pub fields: Vec<(String, Type)>,
+}
+```
+
+### Traits & Impls
+```rust
+pub struct TraitDecl {
+    pub name: String,
+    pub methods: Vec<(String, Vec<(String, Type)>, Type)>,
+}
+
+pub struct ImplBlock {
+    pub trait_name: Option<String>,
+    pub target_type: Type,
+    pub methods: Vec<Function>,
+}
+```
+
+### Extern (FFI)
+```rust
+pub struct ExternDecl {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+}
+```
+
+> [!NOTE]
+> The AST fully supports generic substitution via the `substitute()` method implemented on `Type`, `Expr`, and `Statement`. This powers the monomorphization engine in `sema.rs` to generate statically verified, hardware-specific machine code paths without runtime overhead.
