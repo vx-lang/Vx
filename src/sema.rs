@@ -82,7 +82,7 @@ impl TypeChecker {
                 self.check_expr(start);
                 self.check_expr(end);
                 self.push_scope();
-                self.insert(iter.clone(), Type::Tensor); // mock scalar type
+                self.insert(iter.clone(), Type::Tensor(ElementType::F32)); // mock scalar type
                 for s in body {
                     self.check_statement(s, return_type);
                 }
@@ -137,14 +137,14 @@ impl TypeChecker {
                     Some(ty) => ty,
                     None => {
                         self.errors.push(format!("Undefined variable '{}'", name));
-                        Type::Tensor // Default placeholder on error
+                        Type::Tensor(ElementType::F32) // Default placeholder on error
                     }
                 }
             }
             Expr::Number(_) => {
                 // Primitive number, we'll represent it as a generic Matrix for now or create a Scalar type.
                 // Let's just use Tensor.
-                Type::Tensor
+                Type::Tensor(ElementType::F32)
             }
             Expr::Transfer(inner_expr, target_mem) => {
                 let inner_ty = self.check_expr(inner_expr);
@@ -155,7 +155,7 @@ impl TypeChecker {
                             "Cannot transfer non-reference type: {:?}",
                             inner_ty
                         ));
-                        Type::Tensor
+                        Type::Tensor(ElementType::F32)
                     }
                 }
             }
@@ -165,8 +165,15 @@ impl TypeChecker {
                     self.check_expr(arg);
                 }
 
-                if name == "Tensor" {
-                    Type::Tensor
+                if name.starts_with("Tensor") {
+                    let el_ty = match name.as_str() {
+                        "Tensor_f64" => ElementType::F64,
+                        "Tensor_bf16" => ElementType::BF16,
+                        "Tensor_i32" => ElementType::I32,
+                        "Tensor_i64" => ElementType::I64,
+                        _ => ElementType::F32,
+                    };
+                    Type::Tensor(el_ty)
                 } else if name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
@@ -181,28 +188,28 @@ impl TypeChecker {
                         self.errors
                             .push("Function 'print' expects 1 argument".to_string());
                     }
-                    Type::Tensor
+                    Type::Tensor(ElementType::F32)
                 } else if let Some(ret_ty) = self.functions.get(name) {
                     ret_ty.clone()
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
-                    Type::Tensor
+                    Type::Tensor(ElementType::F32)
                 }
             }
             Expr::Array(elements) => {
                 for el in elements {
                     self.check_expr(el);
                 }
-                Type::Tensor
+                Type::Tensor(ElementType::F32)
             }
             Expr::MemberAccess(obj, _member) => {
                 self.check_expr(obj);
-                Type::Tensor
+                Type::Tensor(ElementType::F32)
             }
             Expr::IndexAccess(obj, idx) => {
                 self.check_expr(obj);
                 self.check_expr(idx);
-                Type::Tensor
+                Type::Tensor(ElementType::F32)
             }
             Expr::MethodCall(obj, _method, args) => {
                 let mut base_ty = self.check_expr(obj);
@@ -218,9 +225,9 @@ impl TypeChecker {
             Expr::BinaryOp(lhs, _op, rhs) => {
                 self.check_expr(lhs);
                 self.check_expr(rhs);
-                Type::Tensor
+                Type::Tensor(ElementType::F32)
             }
-            Expr::MemorySpace(_) | Expr::Topology(_) => Type::Tensor,
+            Expr::MemorySpace(_) | Expr::Topology(_) => Type::Tensor(ElementType::F32),
         }
     }
 

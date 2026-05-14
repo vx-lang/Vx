@@ -6,6 +6,7 @@ pub struct MlirGenerator {
     indent_level: usize,
     var_counter: usize,
     env: HashMap<String, String>,
+    current_el_ty: String,
 }
 
 impl Default for MlirGenerator {
@@ -21,6 +22,7 @@ impl MlirGenerator {
             indent_level: 0,
             var_counter: 0,
             env: HashMap::new(),
+            current_el_ty: "f32".to_string(),
         }
     }
 
@@ -51,6 +53,10 @@ impl MlirGenerator {
 
         // Hardcode external function declarations
         self.write_line("func.func private @printMemrefF32(memref<*xf32>)");
+        self.write_line("func.func private @printMemrefF64(memref<*xf64>)");
+        self.write_line("func.func private @printMemrefI32(memref<*xi32>)");
+        self.write_line("func.func private @printMemrefI64(memref<*xi64>)");
+        self.write_line("func.func private @printMemrefBF16(memref<*xbf16>)");
 
         for func in &program.functions {
             self.generate_function(func);
@@ -61,9 +67,23 @@ impl MlirGenerator {
         self.output.clone()
     }
 
-    fn lower_type(&self, _ty: &Type) -> String {
-        // Lower Tensors to dynamic 2D memrefs for now
-        "memref<?x?xf32>".to_string()
+    fn lower_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Tensor(el_ty) => {
+                let ty_str = match el_ty {
+                    ElementType::F32 => "f32",
+                    ElementType::F64 => "f64",
+                    ElementType::BF16 => "bf16",
+                    ElementType::I32 => "i32",
+                    ElementType::I64 => "i64",
+                };
+                format!("memref<?x?x{}>", ty_str)
+            }
+            Type::Matrix => "memref<?x?xf32>".to_string(),
+            Type::Ref(inner, _) => self.lower_type(inner),
+            Type::Verified(inner) => self.lower_type(inner),
+            Type::Pinned(inner, _) => self.lower_type(inner),
+        }
     }
 
     fn flatten_indices(&mut self, expr: &Expr) -> Option<(String, Vec<String>)> {
@@ -92,10 +112,23 @@ impl MlirGenerator {
         }
 
         let is_main = func.name == "main";
+        let true_ret_str = self.lower_type(&func.return_type);
         let ret_str = if is_main {
             "i32".to_string()
         } else {
-            self.lower_type(&func.return_type)
+            true_ret_str.clone()
+        };
+
+        self.current_el_ty = if true_ret_str.contains("bf16") {
+            "bf16".to_string()
+        } else if true_ret_str.contains("f64") {
+            "f64".to_string()
+        } else if true_ret_str.contains("i32") {
+            "i32".to_string()
+        } else if true_ret_str.contains("i64") {
+            "i64".to_string()
+        } else {
+            "f32".to_string()
         };
 
         self.write_line(&format!(
@@ -154,12 +187,13 @@ impl MlirGenerator {
             }
             Statement::Assign(lhs, rhs) => {
                 if let Some((base, indices)) = self.flatten_indices(lhs) {
-                    let (rhs_val, _) = self.generate_expr(rhs, "f32");
+                    let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
                     self.write_line(&format!(
-                        "memref.store {}, {}[{}] : memref<?x?xf32>",
+                        "memref.store {}, {}[{}] : memref<?x?x{}>",
                         rhs_val,
                         base,
-                        indices.join(", ")
+                        indices.join(", "),
+                        self.current_el_ty
                     ));
                 }
             }
@@ -167,22 +201,29 @@ impl MlirGenerator {
                 if let Some((base, indices)) = self.flatten_indices(lhs) {
                     let load_val = self.next_var();
                     self.write_line(&format!(
-                        "{} = memref.load {}[{}] : memref<?x?xf32>",
+                        "{} = memref.load {}[{}] : memref<?x?x{}>",
                         load_val,
                         base,
-                        indices.join(", ")
+                        indices.join(", "),
+                        self.current_el_ty
                     ));
-                    let (rhs_val, _) = self.generate_expr(rhs, "f32");
+                    let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
                     let add_val = self.next_var();
+                    let op_prefix = if self.current_el_ty.starts_with("i") {
+                        "arith.addi"
+                    } else {
+                        "arith.addf"
+                    };
                     self.write_line(&format!(
-                        "{} = arith.addf {}, {} : f32",
-                        add_val, load_val, rhs_val
+                        "{} = {} {}, {} : {}",
+                        add_val, op_prefix, load_val, rhs_val, self.current_el_ty
                     ));
                     self.write_line(&format!(
-                        "memref.store {}, {}[{}] : memref<?x?xf32>",
+                        "memref.store {}, {}[{}] : memref<?x?x{}>",
                         add_val,
                         base,
-                        indices.join(", ")
+                        indices.join(", "),
+                        self.current_el_ty
                     ));
                 }
             }
@@ -224,14 +265,19 @@ impl MlirGenerator {
                 if expected_ty == "index" {
                     self.write_line(&format!("{} = arith.constant {} : index", res, *n as i64));
                     (res, "index".to_string())
-                } else if expected_ty == "f32" {
-                    let float_str = if n.fract() == 0.0 {
+                } else if expected_ty == self.current_el_ty.as_str() {
+                    let float_str = if n.fract() == 0.0 && !expected_ty.starts_with("i") {
                         format!("{}.0", n)
+                    } else if expected_ty.starts_with("i") {
+                        format!("{}", *n as i64)
                     } else {
                         n.to_string()
                     };
-                    self.write_line(&format!("{} = arith.constant {} : f32", res, float_str));
-                    (res, "f32".to_string())
+                    self.write_line(&format!(
+                        "{} = arith.constant {} : {}",
+                        res, float_str, expected_ty
+                    ));
+                    (res, expected_ty.to_string())
                 } else {
                     self.write_line(&format!("{} = arith.constant {} : i64", res, *n as i64));
                     (res, "i64".to_string())
@@ -243,18 +289,21 @@ impl MlirGenerator {
             }
             Expr::FunctionCall(name, args) => {
                 if name == "print" {
-                    let (arg_val, _) = self.generate_expr(&args[0], "memref<?x?xf32>");
+                    let (arg_val, _) = self
+                        .generate_expr(&args[0], &format!("memref<?x?x{}>", self.current_el_ty));
                     let cast_val = self.next_var();
                     self.write_line(&format!(
-                        "{} = memref.cast {} : memref<?x?xf32> to memref<*xf32>",
-                        cast_val, arg_val
+                        "{} = memref.cast {} : memref<?x?x{}> to memref<*x{}>",
+                        cast_val, arg_val, self.current_el_ty, self.current_el_ty
                     ));
                     self.write_line(&format!(
-                        "func.call @printMemrefF32({}) : (memref<*xf32>) -> ()",
-                        cast_val
+                        "func.call @printMemref{}({}) : (memref<*x{}>) -> ()",
+                        self.current_el_ty.to_uppercase(),
+                        cast_val,
+                        self.current_el_ty
                     ));
                     return ("".to_string(), "()".to_string());
-                } else if name == "Tensor" && args.len() == 1 {
+                } else if name.starts_with("Tensor") && args.len() == 1 {
                     if let Expr::Array(dims) = &args[0] {
                         let mut dim_vals = Vec::new();
                         for dim in dims {
@@ -263,11 +312,12 @@ impl MlirGenerator {
                         }
                         let res = self.next_var();
                         self.write_line(&format!(
-                            "{} = memref.alloc({}) : memref<?x?xf32>",
+                            "{} = memref.alloc({}) : memref<?x?x{}>",
                             res,
-                            dim_vals.join(", ")
+                            dim_vals.join(", "),
+                            self.current_el_ty
                         ));
-                        return (res, "memref<?x?xf32>".to_string());
+                        return (res, format!("memref<?x?x{}>", self.current_el_ty));
                     }
                 } else if name == "Verified" {
                     return self.generate_expr(&args[0], expected_ty);
@@ -276,13 +326,14 @@ impl MlirGenerator {
                 let mut arg_vals = Vec::new();
                 let mut arg_tys = Vec::new();
                 for arg in args {
-                    let (val, ty) = self.generate_expr(arg, "memref<?x?xf32>");
+                    let (val, ty) =
+                        self.generate_expr(arg, &format!("memref<?x?x{}>", self.current_el_ty));
                     arg_vals.push(val);
                     arg_tys.push(ty);
                 }
 
                 let res = self.next_var();
-                let ret_ty = "memref<?x?xf32>";
+                let ret_ty = format!("memref<?x?x{}>", self.current_el_ty);
 
                 self.write_line(&format!(
                     "{} = func.call @{}({}) : ({}) -> {}",
@@ -301,8 +352,8 @@ impl MlirGenerator {
                         let (idx_val, _) = self.generate_expr(idx, "index");
                         let res = self.next_var();
                         self.write_line(&format!(
-                            "{} = memref.dim {}, {} : memref<?x?xf32>",
-                            res, base_val, idx_val
+                            "{} = memref.dim {}, {} : memref<?x?x{}>",
+                            res, base_val, idx_val, self.current_el_ty
                         ));
                         return (res, "index".to_string());
                     }
@@ -311,12 +362,13 @@ impl MlirGenerator {
                 if let Some((base_name, indices)) = self.flatten_indices(expr) {
                     let res = self.next_var();
                     self.write_line(&format!(
-                        "{} = memref.load {}[{}] : memref<?x?xf32>",
+                        "{} = memref.load {}[{}] : memref<?x?x{}>",
                         res,
                         base_name,
-                        indices.join(", ")
+                        indices.join(", "),
+                        self.current_el_ty
                     ));
-                    (res, "f32".to_string())
+                    (res, self.current_el_ty.clone())
                 } else {
                     ("".to_string(), "".to_string())
                 }
@@ -336,20 +388,27 @@ impl MlirGenerator {
                 self.generate_expr(base, expected_ty)
             }
             Expr::BinaryOp(lhs, op, rhs) => {
-                let (lhs_val, _) = self.generate_expr(lhs, "f32");
-                let (rhs_val, _) = self.generate_expr(rhs, "f32");
+                let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
+                let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
                 let res = self.next_var();
+                let is_int = self.current_el_ty.starts_with("i");
                 match op {
-                    BinaryOp::Add => self.write_line(&format!(
-                        "{} = arith.addf {}, {} : f32",
-                        res, lhs_val, rhs_val
-                    )),
-                    BinaryOp::Mul => self.write_line(&format!(
-                        "{} = arith.mulf {}, {} : f32",
-                        res, lhs_val, rhs_val
-                    )),
+                    BinaryOp::Add => {
+                        let op_str = if is_int { "arith.addi" } else { "arith.addf" };
+                        self.write_line(&format!(
+                            "{} = {} {}, {} : {}",
+                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
+                    BinaryOp::Mul => {
+                        let op_str = if is_int { "arith.muli" } else { "arith.mulf" };
+                        self.write_line(&format!(
+                            "{} = {} {}, {} : {}",
+                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
                 }
-                (res, "f32".to_string())
+                (res, self.current_el_ty.clone())
             }
             Expr::Array(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 let res = self.next_var();

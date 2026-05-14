@@ -13,9 +13,18 @@ pub enum MemorySpace {
     LocalSRAM,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ElementType {
+    F32,
+    F64,
+    BF16,
+    I32,
+    I64,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
-    Tensor,
+    Tensor(ElementType),
     Matrix,
     Ref(Box<Type>, MemorySpace),
     Verified(Box<Type>),

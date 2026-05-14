@@ -123,7 +123,29 @@ impl Parser {
                 _ => return Err("Expected type identifier".to_string()),
             };
             match ident.as_str() {
-                "Tensor" => Ok(Type::Tensor),
+                "Tensor" => {
+                    let mut el_ty = ElementType::F32;
+                    if let TokenType::LeftAngle = &self.peek().kind {
+                        self.advance(); // consume '<'
+                        let ty_ident = match self.advance().kind.clone() {
+                            TokenType::Identifier(s) => s,
+                            _ => return Err("Expected element type after '<'".to_string()),
+                        };
+                        el_ty = match ty_ident.as_str() {
+                            "f32" => ElementType::F32,
+                            "f64" => ElementType::F64,
+                            "bf16" => ElementType::BF16,
+                            "i32" => ElementType::I32,
+                            "i64" => ElementType::I64,
+                            _ => return Err(format!("Unknown element type {}", ty_ident)),
+                        };
+                        match self.advance().kind {
+                            TokenType::RightAngle => {}
+                            _ => return Err("Expected '>' after element type".to_string()),
+                        }
+                    }
+                    Ok(Type::Tensor(el_ty))
+                }
                 "Matrix" => Ok(Type::Matrix),
                 _ => Err(format!("Unknown type {}", ident)),
             }
@@ -196,6 +218,21 @@ impl Parser {
             let token = self.advance().clone();
             match token.kind {
                 TokenType::Identifier(s) => {
+                    let mut call_name = s;
+                    if call_name == "Tensor" {
+                        if let TokenType::LeftAngle = &self.peek().kind {
+                            self.advance(); // consume '<'
+                            let ty_ident = match self.advance().kind.clone() {
+                                TokenType::Identifier(s) => s,
+                                _ => return Err("Expected element type after '<'".to_string()),
+                            };
+                            match self.advance().kind {
+                                TokenType::RightAngle => {}
+                                _ => return Err("Expected '>' after element type".to_string()),
+                            }
+                            call_name = format!("Tensor_{}", ty_ident);
+                        }
+                    }
                     if self.match_token(&TokenType::LeftParen) {
                         let mut args = Vec::new();
                         if !self.check(&TokenType::RightParen) {
@@ -207,9 +244,9 @@ impl Parser {
                             }
                         }
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
-                        Expr::FunctionCall(s, args)
+                        Expr::FunctionCall(call_name, args)
                     } else {
-                        Expr::Identifier(s)
+                        Expr::Identifier(call_name)
                     }
                 }
                 TokenType::Number(s) => {
@@ -431,7 +468,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         assert_eq!(func.params[0].0, "a");
 
         // Assert return type is Verified<Tensor>
-        assert_eq!(func.return_type, Type::Verified(Box::new(Type::Tensor)));
+        assert_eq!(
+            func.return_type,
+            Type::Verified(Box::new(Type::Tensor(ElementType::F32)))
+        );
 
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
@@ -452,7 +492,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         if let Statement::LetDecl(name, is_mut, ty, expr) = &func.body[0] {
             assert_eq!(name, "x");
             assert!(is_mut);
-            assert_eq!(ty, &Some(Type::Tensor));
+            assert_eq!(ty, &Some(Type::Tensor(ElementType::F32)));
             if let Expr::FunctionCall(func_name, args) = expr {
                 assert_eq!(func_name, "Tensor");
                 assert_eq!(args.len(), 1);
