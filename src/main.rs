@@ -1,7 +1,6 @@
-pub mod ast;
-pub mod lexer;
-pub mod parser;
-use lexer::Lexer;
+use akarc::lexer::Lexer;
+use akarc::parser;
+use akarc::sema;
 use std::env;
 use std::fs;
 
@@ -40,9 +39,20 @@ fn main() {
                 Err(e) => eprintln!("Parse Error: {}", e),
             }
         } else {
-            println!("Successfully lexed {} tokens.", tokens.len());
-            for t in tokens {
-                println!("Token: [{:?}] at line {}:{}", t.kind, t.line, t.column);
+            let mut parser = parser::Parser::new(tokens);
+            match parser.parse() {
+                Ok(ast) => {
+                    let mut checker = sema::TypeChecker::new();
+                    if checker.check_program(&ast) {
+                        println!("Semantic analysis passed!");
+                    } else {
+                        eprintln!("Semantic Errors:");
+                        for err in checker.errors {
+                            eprintln!(" - {}", err);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Parse Error: {}", e),
             }
         }
     } else {
