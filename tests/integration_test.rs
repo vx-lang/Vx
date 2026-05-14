@@ -28,13 +28,13 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     // 3. Semantic Analysis
     let mut checker = TypeChecker::new();
     let is_valid = checker.check_program(&ast);
-    
+
     if !checker.errors.is_empty() {
         for err in &checker.errors {
             println!("Semantic Error: {}", err);
         }
     }
-    
+
     assert!(is_valid, "Semantic analysis failed on integration test");
 }
 

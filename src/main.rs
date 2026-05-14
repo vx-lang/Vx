@@ -37,7 +37,7 @@ fn main() {
 
         let mut lexer = Lexer::new(&source);
         let tokens = lexer.tokenize();
-        
+
         if parse_only {
             let mut parser = parser::Parser::new(tokens);
             match parser.parse() {

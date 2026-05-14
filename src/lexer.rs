@@ -1,26 +1,57 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
     // Keywords
-    Fn, Let, Mut, For, In, Return, Spawn, On, Transfer, Unroll, Across, Match,
-    
+    Fn,
+    Let,
+    Mut,
+    For,
+    In,
+    Return,
+    Spawn,
+    On,
+    Transfer,
+    Unroll,
+    Across,
+    Match,
+
     // Types & Topology
-    Topology, Memory, Ref, Verified, Pinned, HardwareState,
-    
+    Topology,
+    Memory,
+    Ref,
+    Verified,
+    Pinned,
+    HardwareState,
+
     // Identifiers & Literals
     Identifier(String),
     Number(String),
-    
+
     // Symbols
-    LeftParen, RightParen,
-    LeftBrace, RightBrace,
-    LeftBracket, RightBracket,
-    LeftAngle, RightAngle,
-    Colon, DoubleColon, Semicolon, Comma,
-    Equals, PlusEquals, Arrow, Plus, Minus, Star, Slash,
-    Dot, DoubleDot,
-    
+    LeftParen,
+    RightParen,
+    LeftBrace,
+    RightBrace,
+    LeftBracket,
+    RightBracket,
+    LeftAngle,
+    RightAngle,
+    Colon,
+    DoubleColon,
+    Semicolon,
+    Comma,
+    Equals,
+    PlusEquals,
+    Arrow,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Dot,
+    DoubleDot,
+
     // Special
-    Eof, Unknown(char),
+    Eof,
+    Unknown(char),
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +118,7 @@ impl<'a> Lexer<'a> {
     fn identifier_or_keyword(&mut self, start_char: char, start_col: usize) -> Token {
         let mut text = String::new();
         text.push(start_char);
-        
+
         while let Some(&c) = self.peek() {
             if c.is_alphanumeric() || c == '_' {
                 text.push(self.advance().unwrap());
@@ -118,13 +149,17 @@ impl<'a> Lexer<'a> {
             _ => TokenType::Identifier(text),
         };
 
-        Token { kind, line: self.line, column: start_col }
+        Token {
+            kind,
+            line: self.line,
+            column: start_col,
+        }
     }
 
     fn number(&mut self, start_char: char, start_col: usize) -> Token {
         let mut text = String::new();
         text.push(start_char);
-        
+
         while let Some(&c) = self.peek() {
             if c.is_ascii_digit() {
                 text.push(self.advance().unwrap());
@@ -140,7 +175,11 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Token { kind: TokenType::Number(text), line: self.line, column: start_col }
+        Token {
+            kind: TokenType::Number(text),
+            line: self.line,
+            column: start_col,
+        }
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -149,7 +188,13 @@ impl<'a> Lexer<'a> {
         let start_col = self.column;
         let c = match self.advance() {
             Some(c) => c,
-            None => return Token { kind: TokenType::Eof, line: self.line, column: self.column },
+            None => {
+                return Token {
+                    kind: TokenType::Eof,
+                    line: self.line,
+                    column: self.column,
+                }
+            }
         };
 
         if c.is_alphabetic() || c == '_' {
@@ -209,7 +254,11 @@ impl<'a> Lexer<'a> {
             _ => TokenType::Unknown(c),
         };
 
-        Token { kind, line: self.line, column: start_col }
+        Token {
+            kind,
+            line: self.line,
+            column: start_col,
+        }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {

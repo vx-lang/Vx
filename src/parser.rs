@@ -42,7 +42,12 @@ impl Parser {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            Err(format!("Error at {}:{}: {}", self.peek().line, self.peek().column, msg))
+            Err(format!(
+                "Error at {}:{}: {}",
+                self.peek().line,
+                self.peek().column,
+                msg
+            ))
         }
     }
 
@@ -307,7 +312,12 @@ impl Parser {
                     stmts.push(self.parse_statement()?);
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                Ok(Statement::ForLoop(iter, Box::new(start), Box::new(end), stmts))
+                Ok(Statement::ForLoop(
+                    iter,
+                    Box::new(start),
+                    Box::new(end),
+                    stmts,
+                ))
             }
             _ => {
                 let expr = self.parse_expr()?;
@@ -333,7 +343,7 @@ impl Parser {
             TokenType::Identifier(s) => s,
             _ => return Err("Expected function name".to_string()),
         };
-        
+
         self.consume(&TokenType::LeftParen, "Expected '('")?;
         let mut params = Vec::new();
         if !self.check(&TokenType::RightParen) {
@@ -345,25 +355,30 @@ impl Parser {
                 self.consume(&TokenType::Colon, "Expected ':'")?;
                 let p_type = self.parse_type()?;
                 params.push((p_name, p_type));
-                
+
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }
             }
         }
         self.consume(&TokenType::RightParen, "Expected ')'")?;
-        
+
         self.consume(&TokenType::Arrow, "Expected '->'")?;
         let return_type = self.parse_type()?;
-        
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             body.push(self.parse_statement()?);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-        
-        Ok(Function { name, params, return_type, body })
+
+        Ok(Function {
+            name,
+            params,
+            return_type,
+            body,
+        })
     }
 
     pub fn parse(&mut self) -> Result<Program, String> {
@@ -409,15 +424,15 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
-        
+
         let func = &program.functions[0];
         assert_eq!(func.name, "distributed_matmul");
         assert_eq!(func.params.len(), 2);
         assert_eq!(func.params[0].0, "a");
-        
+
         // Assert return type is Verified<Tensor>
         assert_eq!(func.return_type, Type::Verified(Box::new(Type::Tensor)));
-        
+
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
         if let Statement::SpawnOn(top, stmts) = &func.body[0] {
@@ -443,9 +458,15 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 assert_eq!(args.len(), 1);
                 if let Expr::Array(elements) = &args[0] {
                     assert_eq!(elements.len(), 2);
-                } else { panic!("Expected array"); }
-            } else { panic!("Expected function call"); }
-        } else { panic!("Expected LetDecl"); }
+                } else {
+                    panic!("Expected array");
+                }
+            } else {
+                panic!("Expected function call");
+            }
+        } else {
+            panic!("Expected LetDecl");
+        }
     }
 
     #[test]
@@ -461,8 +482,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             if let Statement::Assign(lhs, rhs) = &body[0] {
                 assert_eq!(*lhs, Expr::Identifier("x".to_string()));
                 assert_eq!(*rhs, Expr::Number(5.0));
-            } else { panic!("Expected Assign"); }
-        } else { panic!("Expected ForLoop"); }
+            } else {
+                panic!("Expected Assign");
+            }
+        } else {
+            panic!("Expected ForLoop");
+        }
     }
 
     #[test]
@@ -475,14 +500,20 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             if let Expr::IndexAccess(arr, idx) = lhs {
                 assert_eq!(**arr, Expr::Identifier("x".to_string()));
                 assert_eq!(**idx, Expr::Number(0.0));
-            } else { panic!("Expected IndexAccess"); }
-            
+            } else {
+                panic!("Expected IndexAccess");
+            }
+
             if let Expr::BinaryOp(left, binop, right) = rhs {
                 assert_eq!(*binop, BinaryOp::Mul);
                 assert_eq!(**left, Expr::Identifier("y".to_string()));
                 assert_eq!(**right, Expr::Identifier("z".to_string()));
-            } else { panic!("Expected BinaryOp"); }
-        } else { panic!("Expected CompoundAssign"); }
+            } else {
+                panic!("Expected BinaryOp");
+            }
+        } else {
+            panic!("Expected CompoundAssign");
+        }
     }
 
     #[test]
@@ -497,9 +528,15 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 if let Expr::MemberAccess(inner_obj, member) = &**obj {
                     assert_eq!(member, "shape");
                     assert_eq!(**inner_obj, Expr::Identifier("x".to_string()));
-                } else { panic!("Expected MemberAccess"); }
-            } else { panic!("Expected MethodCall"); }
-        } else { panic!("Expected ExprStmt"); }
+                } else {
+                    panic!("Expected MemberAccess");
+                }
+            } else {
+                panic!("Expected MethodCall");
+            }
+        } else {
+            panic!("Expected ExprStmt");
+        }
     }
 
     #[test]
@@ -527,6 +564,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         assert_eq!(func.name, "custom_matmul");
         if let Statement::SpawnOn(_, stmts) = &func.body[0] {
             assert_eq!(stmts.len(), 3); // Let, For, Return
-        } else { panic!("Expected SpawnOn"); }
+        } else {
+            panic!("Expected SpawnOn");
+        }
     }
 }

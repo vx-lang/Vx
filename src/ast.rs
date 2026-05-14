@@ -50,8 +50,8 @@ pub enum Statement {
     SpawnOn(Topology, Vec<Statement>),
     ExprStmt(Expr),
     ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // (iterator, start, end, body)
-    Assign(Expr, Expr), // lhs = rhs
-    CompoundAssign(Expr, BinaryOp, Expr), // lhs += rhs
+    Assign(Expr, Expr),                                    // lhs = rhs
+    CompoundAssign(Expr, BinaryOp, Expr),                  // lhs += rhs
 }
 
 #[derive(Debug, PartialEq, Clone)]

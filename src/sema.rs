@@ -48,7 +48,8 @@ impl TypeChecker {
     pub fn check_program(&mut self, program: &Program) -> bool {
         // First pass: collect function signatures
         for func in &program.functions {
-            self.functions.insert(func.name.clone(), func.return_type.clone());
+            self.functions
+                .insert(func.name.clone(), func.return_type.clone());
         }
 
         // Second pass: check function bodies
@@ -94,12 +95,15 @@ impl TypeChecker {
             Statement::Return(expr) => {
                 let ty = self.check_expr(expr);
                 if !self.is_assignable(return_type, &ty) {
-                    self.errors.push(format!("Type mismatch on return. Expected {:?}, got {:?}", return_type, ty));
+                    self.errors.push(format!(
+                        "Type mismatch on return. Expected {:?}, got {:?}",
+                        return_type, ty
+                    ));
                 }
             }
             Statement::SpawnOn(top, stmts) => {
                 self.push_scope();
-                
+
                 // Validate topology expression if it contains one
                 match top {
                     Topology::NPU(expr) | Topology::AccCore(expr) => {
@@ -145,11 +149,12 @@ impl TypeChecker {
             Expr::Transfer(inner_expr, target_mem) => {
                 let inner_ty = self.check_expr(inner_expr);
                 match inner_ty {
-                    Type::Ref(base_ty, _) => {
-                        Type::Ref(base_ty, target_mem.clone())
-                    }
+                    Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     _ => {
-                        self.errors.push(format!("Cannot transfer non-reference type: {:?}", inner_ty));
+                        self.errors.push(format!(
+                            "Cannot transfer non-reference type: {:?}",
+                            inner_ty
+                        ));
                         Type::Tensor
                     }
                 }
@@ -162,14 +167,20 @@ impl TypeChecker {
 
                 if name == "custom_matmul" {
                     if args.len() != 2 {
-                        self.errors.push(format!("Function 'custom_matmul' expects 2 arguments, got {}", args.len()));
+                        self.errors.push(format!(
+                            "Function 'custom_matmul' expects 2 arguments, got {}",
+                            args.len()
+                        ));
                     }
                     Type::Ref(Box::new(Type::Tensor), MemorySpace::NPUHBM)
                 } else if name == "Tensor" {
                     Type::Tensor
                 } else if name == "Verified" {
                     if args.len() != 1 {
-                        self.errors.push(format!("Function 'Verified' expects 1 argument, got {}", args.len()));
+                        self.errors.push(format!(
+                            "Function 'Verified' expects 1 argument, got {}",
+                            args.len()
+                        ));
                     }
                     let inner_ty = self.check_expr(&args[0]);
                     Type::Verified(Box::new(inner_ty))
@@ -211,9 +222,7 @@ impl TypeChecker {
                 self.check_expr(rhs);
                 Type::Tensor
             }
-            Expr::MemorySpace(_) | Expr::Topology(_) => {
-                Type::Tensor
-            }
+            Expr::MemorySpace(_) | Expr::Topology(_) => Type::Tensor,
         }
     }
 
@@ -264,7 +273,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
 
         let mut checker = TypeChecker::new();
         let success = checker.check_program(&program);
-        
+
         for err in &checker.errors {
             println!("Error: {}", err);
         }
