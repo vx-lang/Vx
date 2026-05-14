@@ -2,6 +2,7 @@
 #import <Accelerate/Accelerate.h>
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <CoreML/CoreML.h>
 #include "npu_dispatch.h"
 #include <iostream>
 
@@ -74,18 +75,41 @@ extern "C" int akar_dispatch_gpu(float* xout, float* x, float* w, int n, int d) 
 
 extern "C" int akar_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
-        // std::cout << "[Akar Dispatcher] Offloading to Apple Neural Engine (ANE)..." << std::endl;
+        NSURL *modelURL = [NSURL fileURLWithPath:@"matmul.mlmodelc"];
+        NSError *error = nil;
+        MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
+        config.computeUnits = MLComputeUnitsAll; // Prioritize Apple Neural Engine (ANE)
         
-        // This is a stub for the actual CoreML integration using a precompiled .mlmodelc
-        // In a full implementation, we would map the pointers to MLMultiArray and invoke predictionFromFeatures.
+        MLModel *model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
+        if (!model) {
+            std::cerr << "[Akar Dispatcher] Failed to load CoreML model. Falling back to AMX. Error: " << [[error localizedDescription] UTF8String] << std::endl;
+            cblas_sgemv(CblasRowMajor, CblasNoTrans, d, n, 1.0f, w, n, x, 1, 0.0f, xout, 1);
+            return 1;
+        }
+
+        // Wrap inputs in MLMultiArray (Zero-copy wrapping)
+        NSArray<NSNumber *> *shapeW = @[@(d), @(n)];
+        NSArray<NSNumber *> *stridesW = @[@(n), @(1)];
+        MLMultiArray *arrayW = [[MLMultiArray alloc] initWithDataPointer:w shape:shapeW dataType:MLMultiArrayDataTypeFloat32 strides:stridesW deallocator:^(void *bytes) {} error:&error];
+
+        NSArray<NSNumber *> *shapeX = @[@(n), @(1)];
+        NSArray<NSNumber *> *stridesX = @[@(1), @(1)];
+        MLMultiArray *arrayX = [[MLMultiArray alloc] initWithDataPointer:x shape:shapeX dataType:MLMultiArrayDataTypeFloat32 strides:stridesX deallocator:^(void *bytes) {} error:&error];
+
+        id<MLFeatureProvider> inputFeatures = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"w": arrayW, @"x": arrayX} error:&error];
+
+        id<MLFeatureProvider> outputFeatures = [model predictionFromFeatures:inputFeatures error:&error];
+        if (error) {
+            std::cerr << "[Akar Dispatcher] CoreML prediction failed! Error: " << [[error localizedDescription] UTF8String] << std::endl;
+            return 0;
+        }
+
+        MLMultiArray *outArray = [outputFeatures featureValueForName:@"res"].multiArrayValue;
         
-        // std::cout << "[Akar Dispatcher] Initializing CoreML MLModel from 'matmul.mlmodelc'..." << std::endl;
-        // std::cout << "[Akar Dispatcher] Binding MLMultiArray inputs for MatMul (" << d << "x" << n << ")..." << std::endl;
-        
-        // Fallback to CPU/AMX for the test stub
-        cblas_sgemv(CblasRowMajor, CblasNoTrans, d, n, 1.0f, w, n, x, 1, 0.0f, xout, 1);
-        
-        // std::cout << "[Akar Dispatcher] CoreML ANE execution completed successfully." << std::endl;
+        // Copy data back (MLMultiArray might not be contiguous, so copy manually or via memcpy if contiguous)
+        // For d x 1, it is essentially 1D contiguous.
+        memcpy(xout, outArray.dataPointer, d * sizeof(float));
+
         return 1;
     }
 }
