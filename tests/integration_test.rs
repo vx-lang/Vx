@@ -26,12 +26,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
 
     // 2. Parsing
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse().expect("Failed to parse AST");
+    let mut ast = parser.parse().expect("Failed to parse AST");
     assert_eq!(ast.functions.len(), 2);
 
     // 3. Semantic Analysis
     let mut checker = TypeChecker::new();
-    let is_valid = checker.check_program(&ast);
+    let is_valid = checker.check_program(&mut ast).is_ok();
 
     if !checker.errors.is_empty() {
         for err in &checker.errors {
@@ -46,17 +46,20 @@ fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse().map_err(|e| vec![e])?;
+    let mut ast = parser.parse().map_err(|e| vec![e])?;
     let mut checker = TypeChecker::new();
-    if checker.check_program(&ast) {
-        let mut codegen = akarc::codegen::MlirGenerator::new();
-        let _mlir_str = codegen.generate(&ast);
-        Ok(ast)
-    } else {
-        for err in &checker.errors {
-            println!("run_pipeline semantic error: {}", err);
+    match checker.check_program(&mut ast) {
+        Ok(monomorphized_ast) => {
+            let mut codegen = akarc::codegen::MlirGenerator::new();
+            let _mlir_str = codegen.generate(&monomorphized_ast);
+            Ok(monomorphized_ast)
         }
-        Err(checker.errors)
+        Err(errs) => {
+            for err in &errs {
+                println!("run_pipeline semantic error: {}", err);
+            }
+            Err(errs)
+        }
     }
 }
 

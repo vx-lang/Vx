@@ -47,31 +47,28 @@ fn main() {
         } else {
             let mut parser = parser::Parser::new(tokens);
             match parser.parse() {
-                Ok(ast) => {
+                Ok(mut ast) => {
                     let mut checker = sema::TypeChecker::new();
-                    if checker.check_program(&ast) {
-                        if emit_mlir {
-                            let mut codegen = akarc::codegen::MlirGenerator::new();
-                            let mlir_str = codegen.generate(&ast);
-                            println!("{}", mlir_str);
-                        } else if run_jit {
-                            let mut codegen = akarc::codegen::MlirGenerator::new();
-                            let mlir_str = codegen.generate(&ast);
-                            match akarc::jit::execute_mlir(&mlir_str) {
-                                Ok(out) => {
-                                    println!("\n=== EXECUTION OUTPUT ===");
-                                    println!("{}", out);
-                                    println!("========================");
+                    match checker.check_program(&mut ast) {
+                        Ok(monomorphized_ast) => {
+                            if emit_mlir {
+                                let mut codegen = akarc::codegen::MlirGenerator::new();
+                                let mlir_str = codegen.generate(&monomorphized_ast);
+                                println!("{}", mlir_str);
+                            } else if run_jit {
+                                let mut codegen = akarc::codegen::MlirGenerator::new();
+                                let mlir_str = codegen.generate(&monomorphized_ast);
+                                match akarc::jit::execute_mlir(&mlir_str) {
+                                    Ok(output) => println!("{}", output),
+                                    Err(e) => eprintln!("Execution Error: {}", e),
                                 }
-                                Err(e) => eprintln!("JIT Execution Failed:\n{}", e),
                             }
-                        } else {
-                            println!("Semantic analysis passed!");
                         }
-                    } else {
-                        eprintln!("Semantic Errors:");
-                        for err in checker.errors {
-                            eprintln!(" - {}", err);
+                        Err(errs) => {
+                            eprintln!("Semantic Errors:");
+                            for err in errs {
+                                eprintln!(" - {}", err);
+                            }
                         }
                     }
                 }

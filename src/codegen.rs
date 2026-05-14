@@ -122,6 +122,9 @@ impl MlirGenerator {
                 format!("!llvm.ptr<{}>", addr_space)
             }
             Type::Struct(name) => format!("!llvm.struct<\"{}\">", name),
+            Type::Generic(_) | Type::GenericInstance(_, _) => {
+                panic!("Generic types should have been monomorphized before codegen!");
+            }
         }
     }
 

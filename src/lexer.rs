@@ -16,6 +16,8 @@ pub enum TokenType {
     Struct,
     Unsafe,
     Extern,
+    Trait,
+    Impl,
 
     // Types & Topology
     Topology,
@@ -163,6 +165,8 @@ impl<'a> Lexer<'a> {
             "struct" => TokenType::Struct,
             "unsafe" => TokenType::Unsafe,
             "extern" => TokenType::Extern,
+            "trait" => TokenType::Trait,
+            "impl" => TokenType::Impl,
             _ => TokenType::Identifier(text),
         };
 

@@ -15,16 +15,18 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     let tokens = lexer.tokenize();
 
     let mut parser = Parser::new(tokens);
-    let ast_res = parser.parse();
-
-    if !expect_pass && ast_res.is_err() {
-        return; // Expected fail and failed parsing
-    }
-
-    let ast = ast_res.unwrap_or_else(|_| panic!("Parse failed on {:?}", path));
+    let mut program = match parser.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            if !expect_pass {
+                return;
+            }
+            panic!("Parse failed on {:?}", path);
+        }
+    };
 
     let mut checker = TypeChecker::new();
-    let is_valid = checker.check_program(&ast);
+    let is_valid = checker.check_program(&mut program).is_ok();
 
     if expect_pass {
         assert!(
@@ -54,16 +56,16 @@ fn run_middle_end_test(path: &Path) {
 
     let mut lexer = Lexer::new(&source);
     let mut parser = Parser::new(lexer.tokenize());
-    let ast = parser.parse().unwrap();
+    let mut program = parser.parse().expect("Failed to parse");
+
     let mut checker = TypeChecker::new();
-    assert!(
-        checker.check_program(&ast),
-        "Semantic analysis failed on {:?}",
-        path
-    );
+    let monomorphized_program = match checker.check_program(&mut program) {
+        Ok(p) => p,
+        Err(errors) => panic!("Semantic check failed: {:?}", errors),
+    };
 
     let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&ast);
+    let mlir_str = codegen.generate(&monomorphized_program);
 
     // Verify // CHECK: lines in order
     let mut current_idx = 0;
@@ -89,17 +91,23 @@ fn run_backend_test(path: &Path) {
 
     let mut lexer = Lexer::new(&source);
     let mut parser = Parser::new(lexer.tokenize());
-    let ast = parser.parse().unwrap();
+    let mut program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
+    };
+
     let mut checker = TypeChecker::new();
-    assert!(
-        checker.check_program(&ast),
-        "Semantic analysis failed on {:?}: {:?}",
-        path,
-        checker.errors
-    );
+    let monomorphized_program = match checker.check_program(&mut program) {
+        Ok(p) => p,
+        Err(errors) => panic!(
+            "Semantic check failed on '{}':\n{:?}",
+            path.display(),
+            errors
+        ),
+    };
 
     let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&ast);
+    let mlir_str = codegen.generate(&monomorphized_program);
 
     let out = execute_mlir(&mlir_str).expect("JIT execution failed");
 

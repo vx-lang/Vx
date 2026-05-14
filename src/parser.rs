@@ -4,11 +4,16 @@ use crate::lexer::{Token, TokenType};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    generic_params: Vec<String>, // Tracks generic parameters in scope
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            generic_params: Vec::new(),
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -134,6 +139,14 @@ impl Parser {
             self.consume(&TokenType::RightAngle, "Expected '>'")?;
             Ok(Type::Pinned(Box::new(inner), top))
         } else {
+            let token = self.peek().clone();
+            if let TokenType::Identifier(ref s) = token.kind {
+                if self.generic_params.contains(s) {
+                    self.advance();
+                    return Ok(Type::Generic(s.clone()));
+                }
+            }
+
             let ident = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
                 _ => return Err("Expected type identifier".to_string()),
@@ -164,7 +177,29 @@ impl Parser {
                     Ok(Type::Tensor(el_ty))
                 }
                 "Matrix" => Ok(Type::Matrix),
-                _ => Ok(Type::Struct(ident)), // Custom user struct
+                _ => {
+                    // Check for GenericInstance like Config<f32>
+                    if self.check(&TokenType::LeftAngle) {
+                        self.advance(); // consume '<'
+                        let mut type_args = Vec::new();
+                        while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
+                            type_args.push(self.parse_type()?);
+                            if !self.match_token(&TokenType::Comma) {
+                                break;
+                            }
+                        }
+                        self.consume(
+                            &TokenType::RightAngle,
+                            "Expected '>' after generic type arguments",
+                        )?;
+                        Ok(Type::GenericInstance(
+                            Box::new(Type::Struct(ident)),
+                            type_args,
+                        ))
+                    } else {
+                        Ok(Type::Struct(ident))
+                    }
+                }
             }
         }
     }
@@ -448,14 +483,46 @@ impl Parser {
         }
     }
 
+    fn parse_generic_params(&mut self) -> Result<Vec<(String, Option<String>)>, String> {
+        let mut generics = Vec::new();
+        if self.match_token(&TokenType::LeftAngle) {
+            while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
+                let name = match self.advance().kind.clone() {
+                    TokenType::Identifier(s) => s,
+                    _ => return Err("Expected generic parameter name".to_string()),
+                };
+                self.generic_params.push(name.clone());
+                let mut bound = None;
+                if self.match_token(&TokenType::Colon) {
+                    bound = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => Some(s),
+                        _ => return Err("Expected trait bound identifier".to_string()),
+                    };
+                }
+                generics.push((name, bound));
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(
+                &TokenType::RightAngle,
+                "Expected '>' after generic parameters",
+            )?;
+        }
+        Ok(generics)
+    }
+
     fn parse_function(&mut self) -> Result<Function, String> {
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
+
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
             _ => return Err("Expected function name".to_string()),
         };
 
-        self.consume(&TokenType::LeftParen, "Expected '('")?;
+        let generics = self.parse_generic_params()?;
+
+        self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
@@ -484,8 +551,14 @@ impl Parser {
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
+        // Remove generic params from scope
+        for _ in 0..generics.len() {
+            self.generic_params.pop();
+        }
+
         Ok(Function {
             name,
+            generics,
             params,
             return_type,
             body,
@@ -494,10 +567,13 @@ impl Parser {
 
     fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
+
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
             _ => return Err("Expected struct name".to_string()),
         };
+
+        let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields = Vec::new();
@@ -516,7 +592,16 @@ impl Parser {
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
-        Ok(StructDecl { name, fields })
+        // Remove generic params from scope
+        for _ in 0..generics.len() {
+            self.generic_params.pop();
+        }
+
+        Ok(StructDecl {
+            name,
+            generics,
+            fields,
+        })
     }
 
     fn parse_extern_block(&mut self) -> Result<Vec<ExternDecl>, String> {
@@ -573,13 +658,102 @@ impl Parser {
         Ok(externs)
     }
 
+    fn parse_trait_decl(&mut self) -> Result<TraitDecl, String> {
+        self.consume(&TokenType::Trait, "Expected 'trait'")?;
+        let name = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s,
+            _ => return Err("Expected trait name".to_string()),
+        };
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+
+        let mut methods = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
+            let method_name = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected method name".to_string()),
+            };
+            self.consume(&TokenType::LeftParen, "Expected '('")?;
+            let mut params = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    let p_name = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err("Expected parameter name".to_string()),
+                    };
+                    self.consume(&TokenType::Colon, "Expected ':'")?;
+                    let p_type = self.parse_type()?;
+                    params.push((p_name, p_type));
+
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            self.consume(&TokenType::Arrow, "Expected '->'")?;
+            let return_type = self.parse_type()?;
+            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            methods.push((method_name, params, return_type));
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        Ok(TraitDecl { name, methods })
+    }
+
+    fn parse_impl_block(&mut self) -> Result<ImplBlock, String> {
+        self.consume(&TokenType::Impl, "Expected 'impl'")?;
+
+        // Either `impl Trait for Type` or `impl Type`
+        let mut trait_name = None;
+        let target_type;
+
+        // Since we don't have lookahead to distinguish `impl Trait for Type` from `impl Type`,
+        // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
+        // Wait, parse_type handles `Struct(name)`, which is an identifier!
+        // We can just peek ahead.
+        let parsed_type = self.parse_type()?;
+        if let TokenType::Identifier(s) = &self.peek().kind {
+            if s == "for" {
+                self.advance(); // consume 'for'
+                if let Type::Struct(name) = parsed_type {
+                    trait_name = Some(name);
+                } else {
+                    return Err("Expected trait name before 'for'".to_string());
+                }
+                target_type = self.parse_type()?;
+            } else {
+                target_type = parsed_type;
+            }
+        } else {
+            target_type = parsed_type;
+        }
+
+        self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
+        let mut methods = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            methods.push(self.parse_function()?);
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        Ok(ImplBlock {
+            trait_name,
+            target_type,
+            methods,
+        })
+    }
+
     pub fn parse(&mut self) -> Result<Program, String> {
         let mut externs = Vec::new();
         let mut structs = Vec::new();
+        let mut traits = Vec::new();
+        let mut impls = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenType::Eof) {
             if self.check(&TokenType::Extern) {
                 externs.extend(self.parse_extern_block()?);
+            } else if self.check(&TokenType::Trait) {
+                traits.push(self.parse_trait_decl()?);
+            } else if self.check(&TokenType::Impl) {
+                impls.push(self.parse_impl_block()?);
             } else if self.check(&TokenType::Struct) {
                 structs.push(self.parse_struct_decl()?);
             } else if self.check(&TokenType::Fn) {
@@ -594,6 +768,8 @@ impl Parser {
         Ok(Program {
             externs,
             structs,
+            traits,
+            impls,
             functions,
         })
     }

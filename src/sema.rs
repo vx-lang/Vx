@@ -4,6 +4,8 @@ use std::collections::HashMap;
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, Type>>,
     functions: HashMap<String, (Type, bool)>, // Maps function name to (return type, is_unsafe)
+    generic_functions: HashMap<String, Function>,
+    pub monomorphized_functions: Vec<Function>,
     structs: HashMap<String, StructDecl>,
     pub errors: Vec<String>,
     in_unsafe_block: bool,
@@ -20,6 +22,8 @@ impl TypeChecker {
         Self {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
+            generic_functions: HashMap::new(),
+            monomorphized_functions: Vec::new(),
             structs: HashMap::new(),
             errors: Vec::new(),
             in_unsafe_block: false,
@@ -49,7 +53,7 @@ impl TypeChecker {
         None
     }
 
-    pub fn check_program(&mut self, program: &Program) -> bool {
+    pub fn check_program(&mut self, program: &mut Program) -> Result<Program, Vec<String>> {
         // Collect structs
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
@@ -61,33 +65,133 @@ impl TypeChecker {
                 .insert(ext.name.clone(), (ext.return_type.clone(), true));
         }
 
+        let mut functions_to_check = Vec::new();
+
         // First pass: collect function signatures
         for func in &program.functions {
-            self.functions
-                .insert(func.name.clone(), (func.return_type.clone(), false));
+            if !func.generics.is_empty() {
+                self.generic_functions
+                    .insert(func.name.clone(), func.clone());
+            } else {
+                self.functions
+                    .insert(func.name.clone(), (func.return_type.clone(), false));
+                functions_to_check.push(func.clone());
+            }
         }
 
-        // Second pass: check function bodies
-        for func in &program.functions {
-            self.check_function(func);
+        // Second pass: check non-generic function bodies
+        // (This will recursively trigger monomorphization if they call generic functions)
+        for mut func in functions_to_check {
+            self.check_function(&mut func);
+            self.monomorphized_functions.push(func);
         }
-        self.errors.is_empty()
+
+        if self.errors.is_empty() {
+            let mut new_program = program.clone();
+            new_program.functions = self.monomorphized_functions.clone();
+            Ok(new_program)
+        } else {
+            Err(self.errors.clone())
+        }
     }
 
-    fn check_function(&mut self, func: &Function) {
+    fn unify_types(
+        &self,
+        generic_ty: &Type,
+        concrete_ty: &Type,
+        mapping: &mut HashMap<String, Type>,
+    ) -> bool {
+        match (generic_ty, concrete_ty) {
+            (Type::Generic(name), _) => {
+                if let Some(existing) = mapping.get(name) {
+                    existing == concrete_ty
+                } else {
+                    mapping.insert(name.clone(), concrete_ty.clone());
+                    true
+                }
+            }
+            (Type::Tensor(e1), Type::Tensor(e2)) => e1 == e2,
+            (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
+                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+            }
+            (Type::Borrow(t1, m1, mut1), Type::Borrow(t2, m2, mut2)) => {
+                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+            }
+            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
+            (Type::GenericInstance(b1, args1), Type::GenericInstance(b2, args2)) => {
+                if args1.len() != args2.len() {
+                    return false;
+                }
+                if !self.unify_types(b1, b2, mapping) {
+                    return false;
+                }
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    if !self.unify_types(a1, a2, mapping) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Type::Struct(n1), Type::Struct(n2)) => n1 == n2,
+            // Fallback for simple equality (e.g. Matrix)
+            (t1, t2) => t1 == t2,
+        }
+    }
+
+    fn instantiate_function(
+        &mut self,
+        generic_func: &Function,
+        type_args: &HashMap<String, Type>,
+    ) -> Function {
+        // Create mangled name
+        let mut mangled_name = generic_func.name.clone();
+        for (g_name, _) in &generic_func.generics {
+            if let Some(ty) = type_args.get(g_name) {
+                // simple mangling
+                mangled_name.push_str(
+                    &format!("_{:?}", ty)
+                        .replace(" ", "")
+                        .replace("(", "")
+                        .replace(")", ""),
+                );
+            }
+        }
+
+        let new_params = generic_func
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), t.substitute(type_args)))
+            .collect();
+        let new_ret = generic_func.return_type.substitute(type_args);
+        let new_body = generic_func
+            .body
+            .iter()
+            .map(|s| s.substitute(type_args))
+            .collect();
+
+        Function {
+            name: mangled_name,
+            generics: Vec::new(),
+            params: new_params,
+            return_type: new_ret,
+            body: new_body,
+        }
+    }
+
+    fn check_function(&mut self, func: &mut Function) {
         self.push_scope();
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());
         }
 
-        for stmt in &func.body {
-            self.check_statement(stmt, &func.return_type);
+        for stmt in &mut func.body {
+            self.check_statement(stmt, &func.return_type.clone());
         }
 
         self.pop_scope();
     }
 
-    fn check_statement(&mut self, stmt: &Statement, return_type: &Type) {
+    fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
         match stmt {
             Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
                 let ty = self.check_expr(expr);
@@ -156,7 +260,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_expr(&mut self, expr: &Expr) -> Type {
+    fn check_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Identifier(name) => {
                 match self.lookup(name) {
@@ -187,7 +291,7 @@ impl TypeChecker {
             }
             Expr::FunctionCall(name, args) => {
                 // Mocking built-ins
-                for arg in args {
+                for arg in args.iter_mut() {
                     self.check_expr(arg);
                 }
 
@@ -207,7 +311,7 @@ impl TypeChecker {
                             args.len()
                         ));
                     }
-                    let inner_ty = self.check_expr(&args[0]);
+                    let inner_ty = self.check_expr(&mut args[0]);
                     Type::Verified(Box::new(inner_ty))
                 } else if name == "print" {
                     if args.len() != 1 {
@@ -220,6 +324,49 @@ impl TypeChecker {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", name));
                     }
                     ret_ty.clone()
+                } else if let Some(generic_func) = self.generic_functions.get(name).cloned() {
+                    // Type deduction
+                    let mut mapping = HashMap::new();
+                    let mut success = true;
+                    if args.len() != generic_func.params.len() {
+                        self.errors.push(format!(
+                            "Generic function '{}' expects {} arguments, got {}",
+                            name,
+                            generic_func.params.len(),
+                            args.len()
+                        ));
+                        success = false;
+                    } else {
+                        for (i, arg) in args.iter_mut().enumerate() {
+                            let arg_ty = self.check_expr(arg);
+                            let param_ty = &generic_func.params[i].1;
+                            if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
+                                self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
+                                success = false;
+                            }
+                        }
+                    }
+
+                    if success {
+                        // Instantiate
+                        let mut inst_func = self.instantiate_function(&generic_func, &mapping);
+                        let inst_ret = inst_func.return_type.clone();
+                        let inst_name = inst_func.name.clone();
+
+                        // Rewrite AST name
+                        *name = inst_name.clone();
+
+                        // Check if we already instantiated it
+                        if !self.functions.contains_key(&inst_name) {
+                            self.functions
+                                .insert(inst_name.clone(), (inst_ret.clone(), false));
+                            self.check_function(&mut inst_func);
+                            self.monomorphized_functions.push(inst_func);
+                        }
+                        inst_ret
+                    } else {
+                        Type::Tensor(ElementType::F32)
+                    }
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
                     Type::Tensor(ElementType::F32)
@@ -239,7 +386,7 @@ impl TypeChecker {
                 }
 
                 if let Type::Struct(struct_name) = &base_ty {
-                    if let Some(decl) = self.structs.get(struct_name) {
+                    if let Some(decl) = self.structs.get(struct_name).cloned() {
                         for (f_name, f_type) in &decl.fields {
                             if f_name == member {
                                 return f_type.clone();
@@ -267,7 +414,7 @@ impl TypeChecker {
             }
             Expr::MethodCall(obj, _method, args) => {
                 let mut base_ty = self.check_expr(obj);
-                for arg in args {
+                for arg in args.iter_mut() {
                     self.check_expr(arg);
                 }
 
@@ -460,10 +607,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
-        let program = parser.parse().unwrap();
+        let mut program = parser.parse().unwrap();
 
         let mut checker = TypeChecker::new();
-        let success = checker.check_program(&program);
+        let success = checker.check_program(&mut program).is_ok();
 
         for err in &checker.errors {
             println!("Error: {}", err);
@@ -482,10 +629,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
-        let program = parser.parse().unwrap();
+        let mut program = parser.parse().unwrap();
 
         let mut checker = TypeChecker::new();
-        let success = checker.check_program(&program);
+        let success = checker.check_program(&mut program).is_ok();
         assert!(!success);
         assert!(!checker.errors.is_empty());
     }
@@ -507,10 +654,10 @@ fn bad_matmul() -> Tensor {
         "#;
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize());
-        let program = parser.parse().unwrap();
+        let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
         assert!(
-            checker.check_program(&program),
+            checker.check_program(&mut program).is_ok(),
             "Semantic checking failed: {:?}",
             checker.errors
         );
@@ -535,10 +682,10 @@ fn bad_matmul() -> Tensor {
         "#;
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize());
-        let program = parser.parse().unwrap();
+        let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
 
-        let success = checker.check_program(&program);
+        let success = checker.check_program(&mut program).is_ok();
         assert!(!success);
         assert!(checker
             .errors
@@ -558,11 +705,11 @@ fn bad_matmul() -> Tensor {
         "#;
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize());
-        let program = parser.parse().unwrap();
+        let mut program = parser.parse().unwrap();
         let mut checker = TypeChecker::new();
 
         assert!(
-            checker.check_program(&program),
+            checker.check_program(&mut program).is_ok(),
             "Semantic checking failed for methods: {:?}",
             checker.errors
         );
