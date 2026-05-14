@@ -171,12 +171,52 @@ impl Parser {
                             "Bool" => ElementType::Bool,
                             _ => return Err(format!("Unknown element type {}", ty_ident)),
                         };
+                        let mut dims = Vec::new();
+                        if self.match_token(&TokenType::Comma) {
+                            if self.match_token(&TokenType::LeftBracket) {
+                                while !self.check(&TokenType::RightBracket)
+                                    && !self.check(&TokenType::Eof)
+                                {
+                                    dims.push(self.parse_expr()?);
+                                    if !self.match_token(&TokenType::Comma) {
+                                        break;
+                                    }
+                                }
+                                self.consume(
+                                    &TokenType::RightBracket,
+                                    "Expected ']' after Tensor dimensions",
+                                )?;
+                            } else {
+                                return Err("Expected '[' for Tensor dimensions".to_string());
+                            }
+                        }
+
+                        let mut top = None;
+                        if self.match_token(&TokenType::Comma)
+                            && self.match_token(&TokenType::Identifier("Topology".to_string()))
+                        {
+                            self.consume(&TokenType::DoubleColon, "Expected '::' after Topology")?;
+                            // Need to parse Topology... For now let's just parse the basic ones
+                            if let TokenType::Identifier(t_name) = &self.peek().kind {
+                                let t = t_name.clone();
+                                self.advance();
+                                if t == "ANE" {
+                                    top = Some(Topology::ANE);
+                                } else if t == "Host" {
+                                    top = Some(Topology::Host);
+                                } else if t == "AMX" {
+                                    top = Some(Topology::AMX);
+                                }
+                            }
+                        }
+
                         match self.advance().kind {
                             TokenType::RightAngle => {}
-                            _ => return Err("Expected '>' after element type".to_string()),
+                            _ => return Err("Expected '>' after Tensor parameters".to_string()),
                         }
+                        return Ok(Type::Tensor(el_ty, dims, top));
                     }
-                    Ok(Type::Tensor(el_ty))
+                    Ok(Type::Tensor(el_ty, Vec::new(), None))
                 }
                 "Matrix" => Ok(Type::Matrix),
                 "f32" => Ok(Type::Scalar(ElementType::F32)),
@@ -926,7 +966,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         // Assert return type is Verified<Tensor>
         assert_eq!(
             func.return_type,
-            Type::Verified(Box::new(Type::Tensor(ElementType::F32)))
+            Type::Verified(Box::new(Type::Tensor(ElementType::F32, vec![], None)))
         );
 
         // Assert body has one statement (spawn on)
@@ -948,7 +988,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         if let Statement::LetDecl(name, is_mut, ty, expr) = &func.body[0] {
             assert_eq!(name, "x");
             assert!(is_mut);
-            assert_eq!(ty, &Some(Type::Tensor(ElementType::F32)));
+            assert_eq!(ty, &Some(Type::Tensor(ElementType::F32, vec![], None)));
             if let Expr::FunctionCall(func_name, args) = expr {
                 assert_eq!(func_name, "Tensor");
                 assert_eq!(args.len(), 1);
@@ -1127,7 +1167,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         assert_eq!(program.externs[0].name, "malloc");
         assert_eq!(program.externs[0].params.len(), 1);
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
-            assert_eq!(**inner, Type::Tensor(ElementType::F32));
+            assert_eq!(**inner, Type::Tensor(ElementType::F32, vec![], None));
         } else {
             panic!("Expected pointer return type");
         }

@@ -21,6 +21,8 @@ Because address spaces are distinct, data movement is elevated to a fundamental 
 ### 2.3 The Ontology of Distributed State
 Execution across isolated, heterogeneous memories introduces non-determinism. The language incorporates temporal logic directly into its core semantics to manage synchronization, ensuring valid program states without relying on opaque runtime overhead.
 
+* **Compile-Time Execution Engine (`comptime`)**: An embedded AST interpreter that enforces tensor layouts, hardware assertions, and constraint solving *ahead-of-time*. Shapes and mathematical verification occur as a zero-cost abstraction during Semantic Analysis.
+
 ## 3. Hybrid Routing & Control Mechanics
 To serve both rapid development and strict performance requirements, the language supports both compiler-inferred and user-defined execution routing.
 

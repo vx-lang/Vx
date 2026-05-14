@@ -120,7 +120,7 @@ impl MlirGenerator {
 
     fn lower_type(&self, ty: &Type) -> String {
         match ty {
-            Type::Tensor(el_ty) => {
+            Type::Tensor(el_ty, _, _) => {
                 let ty_str = match el_ty {
                     ElementType::F32 => "f32",
                     ElementType::F64 => "f64",
@@ -267,7 +267,7 @@ impl MlirGenerator {
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
             Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
-                if let Some(Type::Tensor(el_ty)) = ty_ann {
+                if let Some(Type::Tensor(el_ty, _, _)) = ty_ann {
                     let ty_str = match el_ty {
                         ElementType::F32 => "f32",
                         ElementType::F64 => "f64",

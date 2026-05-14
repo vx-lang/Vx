@@ -1,0 +1,8 @@
+// RUN: ! akarc %s
+
+fn requires_specific_layout(t: Tensor<f32, [128, 256]>) {}
+
+fn main() {
+    let t: Tensor<f32, [128, 128]> = 1.0;
+    requires_specific_layout(t);
+}

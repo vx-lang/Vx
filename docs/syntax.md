@@ -7,8 +7,8 @@ This document outlines the core syntax of the **Akar** programming language. Aka
 Akar programs are structured into modules, functions, and scopes.
 
 ```rust
-// A basic function
-fn compute_metrics(data: Ref<Tensor, Host_DRAM>) -> Verified<Tensor> {
+// A basic function with statically verified layouts
+fn compute_metrics(data: Ref<Tensor<f32, [128, 256]>, Host_DRAM>) -> Verified<Tensor<f32, [128, 256]>> {
     // Variable declaration
     let intermediate = data.map(|x| x * 2.0);
     return intermediate;
@@ -44,7 +44,10 @@ Memory::LocalSRAM
 To explicitly route computation to a specific topology, Akar uses the `spawn on` block. This overrides the compiler's default cost-model inferred routing.
 
 ```rust
-fn distributed_matmul(a: Tensor, b: Tensor) {
+fn distributed_matmul(a: Tensor<f32, [M, K]>, b: Tensor<f32, [K, N]>) -> Tensor<f32, [M, N]> {
+    comptime {
+        assert(a.shape[1] == b.shape[0], "Inner dimensions must match for matmul!");
+    }
     // Spawn computation on a specific NPU core
     spawn on(Topology::Acc1Core[0]) {
         let result = custom_matmul(a, b);

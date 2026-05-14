@@ -38,7 +38,7 @@ pub enum ElementType {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
-    Tensor(ElementType),
+    Tensor(ElementType, Vec<Expr>, Option<Topology>),
     Matrix,
     Ref(Box<Type>, MemorySpace),
     Borrow(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
@@ -71,6 +71,10 @@ impl Type {
             }
             Type::Pointer(inner, mem, is_mut) => {
                 Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
+            }
+            Type::Tensor(el_ty, dims, top) => {
+                let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
+                Type::Tensor(*el_ty, new_dims, top.clone())
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),

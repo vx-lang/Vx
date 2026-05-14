@@ -12,11 +12,11 @@ In Akar, a reference intrinsically encodes both the data type and its physical o
 The fundamental data reference type is `Ref<T, Memory>`.
 
 ```rust
-// A reference to a Matrix located in the Host's DRAM
+// A reference to a generic Matrix located in the Host's DRAM
 let host_matrix: Ref<Matrix, Memory::Host_DRAM> = ...;
 
-// A reference to a Matrix located in an NPU's High Bandwidth Memory
-let npu_matrix: Ref<Matrix, Memory::NPU_HBM> = ...;
+// A reference to a Tensor with statically known layouts [128, 256] in NPU's High Bandwidth Memory
+let npu_tensor: Ref<Tensor<f32, [128, 256]>, Memory::NPU_HBM> = ...;
 ```
 
 **Type Checking Rule 1 (Spatial Isolation):**
@@ -31,7 +31,28 @@ let npu_matrix_b = transfer(host_matrix, Memory::NPU_HBM);
 let c = npu_matrix_b + npu_matrix;
 ```
 
-## 2. Hardware-Aware Typestates
+```
+
+## 2. Compile-Time Layouts & Shapes
+
+Akar brings tensor dimensions and bounds checking entirely into the type system via `comptime` const-generics. Instead of relying on runtime panics for dimension mismatches, the `Sema` pass executes layout verification ahead-of-time.
+
+```rust
+// Tensor shapes are encoded directly in the type.
+fn batch_norm(input: Tensor<f32, [N, C, H, W]>) -> Tensor<f32, [N, C, H, W]> { ... }
+
+// Dimension assertions are evaluated at compile time
+fn matmul(A: Tensor<f32, [M, K]>, B: Tensor<f32, [K, N]>) -> Tensor<f32, [M, N]> {
+    comptime {
+        assert(A.shape[1] == B.shape[0], "Inner dimensions must match!");
+    }
+    // ...
+}
+```
+
+If dimensions are statically evaluated to mismatch, the compiler will refuse to compile, effectively removing zero-day out-of-bounds runtime errors for standard tensor operations.
+
+## 3. Hardware-Aware Typestates
 
 Akar models the non-deterministic nature of distributed, heterogeneous execution using typestates. Computations and tasks are typed based on their topological binding and availability.
 

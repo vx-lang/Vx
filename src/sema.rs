@@ -142,7 +142,9 @@ impl TypeChecker {
                     true
                 }
             }
-            (Type::Tensor(e1), Type::Tensor(e2)) => e1 == e2,
+            (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
+                e1 == e2 && d1 == d2 && t1 == t2
+            }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
             }
@@ -180,12 +182,19 @@ impl TypeChecker {
         for (g_name, _) in &generic_func.generics {
             if let Some(ty) = type_args.get(g_name) {
                 // simple mangling
-                mangled_name.push_str(
-                    &format!("_{:?}", ty)
-                        .replace(" ", "")
-                        .replace("(", "")
-                        .replace(")", ""),
-                );
+                let mut type_str = format!("_{:?}", ty)
+                    .replace("(", "")
+                    .replace(")", "")
+                    .replace(" ", "")
+                    .replace("[", "")
+                    .replace("]", "")
+                    .replace(",", "_")
+                    .replace("_None", "")
+                    .replace("\"", "");
+                while type_str.contains("__") {
+                    type_str = type_str.replace("__", "_");
+                }
+                mangled_name.push_str(&type_str);
             }
         }
 
@@ -470,7 +479,7 @@ impl TypeChecker {
                     }
                     None => {
                         self.errors.push(format!("Undefined variable '{}'", name));
-                        Type::Tensor(ElementType::F32) // Default placeholder on error
+                        Type::Tensor(ElementType::F32, vec![], None) // Default placeholder on error
                     }
                 }
             }
@@ -489,7 +498,7 @@ impl TypeChecker {
                             "Cannot transfer non-reference type: {:?}",
                             inner_ty
                         ));
-                        Type::Tensor(ElementType::F32)
+                        Type::Tensor(ElementType::F32, vec![], None)
                     }
                 }
             }
@@ -507,7 +516,7 @@ impl TypeChecker {
                         "Tensor_i64" => ElementType::I64,
                         _ => ElementType::F32,
                     };
-                    Type::Tensor(el_ty)
+                    Type::Tensor(el_ty, vec![], None)
                 } else if name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
@@ -522,7 +531,7 @@ impl TypeChecker {
                         self.errors
                             .push("Function 'print' expects 1 argument".to_string());
                     }
-                    Type::Tensor(ElementType::F32)
+                    Type::Tensor(ElementType::F32, vec![], None)
                 } else if let Some((ret_ty, is_unsafe)) = self.functions.get(name) {
                     if *is_unsafe && !self.in_unsafe_block {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", name));
@@ -599,18 +608,18 @@ impl TypeChecker {
                         }
                         inst_ret
                     } else {
-                        Type::Tensor(ElementType::F32)
+                        Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
-                    Type::Tensor(ElementType::F32)
+                    Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
             Expr::Array(elements) => {
                 for el in elements {
                     self.check_expr(el);
                 }
-                Type::Tensor(ElementType::F32)
+                Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::MemberAccess(obj, member) => {
                 let obj_ty = self.check_expr(obj);
@@ -639,7 +648,7 @@ impl TypeChecker {
                     self.errors
                         .push("Member access on non-struct type".to_string());
                 }
-                Type::Tensor(ElementType::F32)
+                Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::IndexAccess(obj, idx) => {
                 let obj_ty = self.check_expr(obj);
@@ -648,7 +657,7 @@ impl TypeChecker {
                     *inner
                 } else if let Type::Borrow(inner, _, _) = obj_ty {
                     *inner
-                } else if let Type::Tensor(el_ty) = obj_ty {
+                } else if let Type::Tensor(el_ty, _, _) = obj_ty {
                     Type::Scalar(el_ty)
                 } else {
                     Type::Scalar(ElementType::F32)
@@ -677,10 +686,19 @@ impl TypeChecker {
 
                 if let Some((mut method_func, ib)) = found_method {
                     // Create a unique mangled name for the method based on the target type
-                    let mangled_name = format!("{:?}_{}", ib.target_type, _method)
-                        .replace(" ", "")
-                        .replace("(", "")
+                    let mut mangled_name = format!("{:?}_{}", ib.target_type, _method)
+                        .replace("(", "_")
                         .replace(")", "")
+                        .replace(" ", "")
+                        .replace("[", "")
+                        .replace("]", "")
+                        .replace(",", "_")
+                        .replace("_None", "");
+                    // Clean up multiple underscores
+                    while mangled_name.contains("__") {
+                        mangled_name = mangled_name.replace("__", "_");
+                    }
+                    mangled_name = mangled_name
                         .replace("\"", "")
                         .replace("Tensor", "Tensor_")
                         .replace("Generic", "Gen_");
@@ -733,8 +751,12 @@ impl TypeChecker {
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let is_mut = _method == "as_mut_ptr";
                     match &base_ty {
-                        Type::Tensor(el_ty) => {
-                            base_ty = Type::Pointer(Box::new(Type::Tensor(*el_ty)), None, is_mut);
+                        Type::Tensor(el_ty, dims, top) => {
+                            base_ty = Type::Pointer(
+                                Box::new(Type::Tensor(*el_ty, dims.clone(), top.clone())),
+                                None,
+                                is_mut,
+                            );
                         }
                         Type::Borrow(inner, mem, mutability) => {
                             if is_mut && !mutability {
@@ -754,8 +776,8 @@ impl TypeChecker {
                     }
                 } else if _method == "len" {
                     match &base_ty {
-                        Type::Tensor(_) | Type::Borrow(_, _, _) | Type::Pointer(_, _, _) => {
-                            base_ty = Type::Tensor(ElementType::I64);
+                        Type::Tensor(_, _, _) | Type::Borrow(_, _, _) | Type::Pointer(_, _, _) => {
+                            base_ty = Type::Tensor(ElementType::I64, vec![], None);
                         }
                         _ => {
                             self.errors
@@ -789,7 +811,9 @@ impl TypeChecker {
                     _ => lhs_ty,
                 }
             }
-            Expr::MemorySpace(_) | Expr::Topology(_) => Type::Tensor(ElementType::F32),
+            Expr::MemorySpace(_) | Expr::Topology(_) => {
+                Type::Tensor(ElementType::F32, vec![], None)
+            }
             Expr::UnaryOp(op, inner) => {
                 self.check_expr(inner);
                 match op {
@@ -819,12 +843,12 @@ impl TypeChecker {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
-                let mut last_type = Type::Tensor(ElementType::F32);
+                let mut last_type = Type::Tensor(ElementType::F32, vec![], None);
                 for s in stmts.iter_mut() {
                     if let Statement::ExprStmt(ref mut expr) = s {
                         last_type = self.check_expr(expr);
                     } else {
-                        self.check_statement(s, &Type::Tensor(ElementType::F32));
+                        self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
                     }
                 }
                 self.pop_scope();
@@ -863,8 +887,8 @@ impl TypeChecker {
         }
 
         // Allow numeric coercions for scalar literals (mock behavior for now)
-        if let Type::Tensor(t_target) = target {
-            if let Type::Tensor(t_source) = source {
+        if let Type::Tensor(t_target, _dims_target, _top_target) = target {
+            if let Type::Tensor(t_source, _dims_source, _top_source) = source {
                 if t_target == t_source {
                     return true;
                 }
@@ -890,7 +914,7 @@ impl TypeChecker {
         }
 
         // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
-        if let Type::Tensor(t_target) = target {
+        if let Type::Tensor(t_target, _, _) = target {
             if let Type::Scalar(t_source) = source {
                 if t_target == t_source {
                     return true;
