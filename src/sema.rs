@@ -283,6 +283,8 @@ impl TypeChecker {
                     Topology::NPU(_) => MemorySpace::NPUHBM,
                     Topology::AccCore(_) => MemorySpace::LocalSRAM,
                     Topology::Host => MemorySpace::HostDRAM,
+                    Topology::AMX => MemorySpace::HostDRAM,
+                    Topology::ANE => MemorySpace::NPUHBM,
                     Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
                 };
 
@@ -297,7 +299,7 @@ impl TypeChecker {
                         let _t1 = self.check_expr(start);
                         let _t2 = self.check_expr(end);
                     }
-                    Topology::Host => {}
+                    Topology::Host | Topology::AMX | Topology::ANE => {}
                 }
 
                 for s in stmts {
@@ -321,7 +323,9 @@ impl TypeChecker {
                 match self.lookup(name) {
                     Some((ty, top)) => {
                         // Enforce Topology Boundaries!
-                        let mut is_valid = top == self.active_topology;
+                        let mut is_valid = top == self.active_topology
+                            || (top == Topology::Host
+                                && matches!(self.active_topology, Topology::AMX | Topology::ANE));
                         if let Type::Pinned(_, pinned_top) = &ty {
                             if *pinned_top == self.active_topology {
                                 is_valid = true;
@@ -330,13 +334,13 @@ impl TypeChecker {
                         if let Type::Ref(_, MemorySpace::NPUHBM) = &ty {
                             if matches!(
                                 self.active_topology,
-                                Topology::NPU(_) | Topology::Slice(_, _, _)
+                                Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE
                             ) {
                                 is_valid = true;
                             }
                         }
                         if let Type::Ref(_, MemorySpace::HostDRAM) = &ty {
-                            if matches!(self.active_topology, Topology::Host) {
+                            if matches!(self.active_topology, Topology::Host | Topology::AMX) {
                                 is_valid = true;
                             }
                         }

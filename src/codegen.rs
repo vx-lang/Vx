@@ -77,7 +77,8 @@ impl MlirGenerator {
         self.write_line("func.func private @printMemrefBF16(memref<*xbf16>)");
 
         // Emit external FFI function declarations
-        self.write_line("func.func private @akar_dispatch_npu(memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>) -> i1 attributes { llvm.emit_c_interface }");
+        self.write_line("func.func private @akar_dispatch_amx(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
+        self.write_line("func.func private @akar_dispatch_ane(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
 
         for ext in &program.externs {
             let mut arg_types = Vec::new();
@@ -148,9 +149,9 @@ impl MlirGenerator {
             Type::Verified(inner) => self.lower_type(inner),
             Type::Pinned(inner, top) => {
                 let addr_space = match top {
-                    Topology::NPU(_) | Topology::Slice(_, _, _) => 1,
+                    Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE => 1,
                     Topology::AccCore(_) => 2,
-                    Topology::Host => 0,
+                    Topology::Host | Topology::AMX => 0,
                 };
                 let inner_ty_str = self.lower_type(inner);
                 if inner_ty_str.starts_with("memref<")
@@ -470,23 +471,35 @@ impl MlirGenerator {
                 let top_str = match top {
                     Topology::NPU(_) => "NPU",
                     Topology::AccCore(_) => "AccCore",
+                    Topology::AMX => "AMX",
+                    Topology::ANE => "ANE",
                     _ => "Generic",
                 };
                 self.write_line(&format!("// --- BEGIN SPAWN ON {} ---", top_str));
 
-                // Hardware execution path Simulation: If NPU and MatMul parameters exist, offload!
-                if matches!(top, Topology::NPU(_))
-                    && self.env.contains_key("a")
-                    && self.env.contains_key("b")
-                    && self.env.contains_key("result")
+                // Hardware execution path Simulation: If AMX or ANE and MatMul parameters exist, offload!
+                if (matches!(top, Topology::AMX) || matches!(top, Topology::ANE))
+                    && self.env.contains_key("xout")
+                    && self.env.contains_key("x")
+                    && self.env.contains_key("w")
+                    && self.env.contains_key("n")
+                    && self.env.contains_key("d")
                 {
-                    let a_val = self.env.get("a").unwrap().0.clone();
-                    let b_val = self.env.get("b").unwrap().0.clone();
-                    let result_val = self.env.get("result").unwrap().0.clone();
+                    let xout_val = self.env.get("xout").unwrap().0.clone();
+                    let x_val = self.env.get("x").unwrap().0.clone();
+                    let w_val = self.env.get("w").unwrap().0.clone();
+                    let n_val = self.env.get("n").unwrap().0.clone();
+                    let d_val = self.env.get("d").unwrap().0.clone();
+
+                    let func_name = if matches!(top, Topology::AMX) {
+                        "akar_dispatch_amx"
+                    } else {
+                        "akar_dispatch_ane"
+                    };
 
                     let success_val = self.next_var();
-                    self.write_line(&format!("{} = func.call @akar_dispatch_npu({}, {}, {}) : (memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>) -> i1", 
-                        success_val, a_val, b_val, result_val));
+                    self.write_line(&format!("{} = func.call @{}({}, {}, {}, {}, {}) : (!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32", 
+                        success_val, func_name, xout_val, x_val, w_val, n_val, d_val));
                 } else {
                     for s in stmts {
                         self.generate_statement(s, _current_ret_ty);

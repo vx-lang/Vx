@@ -83,6 +83,8 @@ impl Parser {
                     Err("Expected index for AccCore".to_string())
                 }
             }
+            "AMX" => Ok(Topology::AMX),
+            "ANE" => Ok(Topology::ANE),
             _ => Err(format!("Unknown topology {}", ident)),
         }
     }

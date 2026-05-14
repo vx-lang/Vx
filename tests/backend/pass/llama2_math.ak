@@ -81,15 +81,33 @@ fn softmax(x: *mut f32, size: i32) -> i32 {
 }
 
 fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
-    for i in 0..d {
-        let mut val: f32 = 0.0;
-        for j in 0..n {
-            let idx: i32 = i * n + j;
-            let w_val: f32 = w[idx];
-            let x_val: f32 = x[j];
-            val += w_val * x_val;
+    spawn on(Topology::AMX) {
+        for i in 0..d {
+            let mut val: f32 = 0.0;
+            for j in 0..n {
+                let idx: i32 = i * n + j;
+                let w_val: f32 = w[idx];
+                let x_val: f32 = x[j];
+                val += w_val * x_val;
+            }
+            xout[i] = val;
         }
-        xout[i] = val;
+    }
+    return 0;
+}
+
+fn matmul_ane(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
+    spawn on(Topology::ANE) {
+        for i in 0..d {
+            let mut val: f32 = 0.0;
+            for j in 0..n {
+                let idx: i32 = i * n + j;
+                let w_val: f32 = w[idx];
+                let x_val: f32 = x[j];
+                val += w_val * x_val;
+            }
+            xout[i] = val;
+        }
     }
     return 0;
 }
