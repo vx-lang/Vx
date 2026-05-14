@@ -85,6 +85,7 @@ impl Parser {
             }
             "AMX" => Ok(Topology::AMX),
             "ANE" => Ok(Topology::ANE),
+            "GPU" => Ok(Topology::GPU),
             _ => Err(format!("Unknown topology {}", ident)),
         }
     }
@@ -206,6 +207,8 @@ impl Parser {
                                     top = Some(Topology::Host);
                                 } else if t == "AMX" {
                                     top = Some(Topology::AMX);
+                                } else if t == "GPU" {
+                                    top = Some(Topology::GPU);
                                 }
                             }
                         }

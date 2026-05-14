@@ -84,6 +84,7 @@ impl MlirGenerator {
         // Emit external FFI function declarations
         self.write_line("func.func private @akar_dispatch_amx(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
         self.write_line("func.func private @akar_dispatch_ane(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
+        self.write_line("func.func private @akar_dispatch_gpu(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
 
         for ext in &program.externs {
             let mut arg_types = Vec::new();
@@ -177,7 +178,7 @@ impl MlirGenerator {
                 let addr_space = match top {
                     Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE => 1,
                     Topology::AccCore(_) => 2,
-                    Topology::Host | Topology::AMX => 0,
+                    Topology::Host | Topology::AMX | Topology::GPU => 0,
                 };
                 let inner_ty_str = self.lower_type(inner);
                 if inner_ty_str.starts_with("memref<")
@@ -534,12 +535,15 @@ impl MlirGenerator {
                     Topology::AccCore(_) => "AccCore",
                     Topology::AMX => "AMX",
                     Topology::ANE => "ANE",
+                    Topology::GPU => "GPU",
                     _ => "Generic",
                 };
                 self.write_line(&format!("// --- BEGIN SPAWN ON {} ---", top_str));
 
-                // Hardware execution path Simulation: If AMX or ANE and MatMul parameters exist, offload!
-                if (matches!(top, Topology::AMX) || matches!(top, Topology::ANE))
+                // Hardware execution path Simulation: If AMX, ANE, or GPU and MatMul parameters exist, offload!
+                if (matches!(top, Topology::AMX)
+                    || matches!(top, Topology::ANE)
+                    || matches!(top, Topology::GPU))
                     && self.env.contains_key("xout")
                     && self.env.contains_key("x")
                     && self.env.contains_key("w")
@@ -554,6 +558,8 @@ impl MlirGenerator {
 
                     let func_name = if matches!(top, Topology::AMX) {
                         "akar_dispatch_amx"
+                    } else if matches!(top, Topology::GPU) {
+                        "akar_dispatch_gpu"
                     } else {
                         "akar_dispatch_ane"
                     };

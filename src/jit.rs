@@ -46,6 +46,12 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "Accelerate",
             "-framework",
             "Foundation",
+            "-framework",
+            "Metal",
+            "-framework",
+            "MetalPerformanceShaders",
+            "-framework",
+            "CoreML",
             "-o",
             "target/jit/libnpu_dispatch.dylib",
         ]);

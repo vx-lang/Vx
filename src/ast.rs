@@ -5,6 +5,7 @@ pub enum Topology {
     AccCore(Box<Expr>),
     AMX,
     ANE,
+    GPU,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
 }
 

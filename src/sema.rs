@@ -309,6 +309,7 @@ impl TypeChecker {
                     Topology::Host => MemorySpace::HostDRAM,
                     Topology::AMX => MemorySpace::HostDRAM,
                     Topology::ANE => MemorySpace::NPUHBM,
+                    Topology::GPU => MemorySpace::HostDRAM,
                     Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
                 };
 
@@ -323,7 +324,7 @@ impl TypeChecker {
                         let _t1 = self.check_expr(start);
                         let _t2 = self.check_expr(end);
                     }
-                    Topology::Host | Topology::AMX | Topology::ANE => {}
+                    Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
                 }
 
                 for s in stmts {
@@ -455,7 +456,10 @@ impl TypeChecker {
                         // Enforce Topology Boundaries!
                         let mut is_valid = top == self.active_topology
                             || (top == Topology::Host
-                                && matches!(self.active_topology, Topology::AMX | Topology::ANE));
+                                && matches!(
+                                    self.active_topology,
+                                    Topology::AMX | Topology::ANE | Topology::GPU
+                                ));
                         if let Type::Pinned(_, pinned_top) = &ty {
                             if *pinned_top == self.active_topology {
                                 is_valid = true;
@@ -470,7 +474,10 @@ impl TypeChecker {
                             }
                         }
                         if let Type::Ref(_, MemorySpace::HostDRAM) = &ty {
-                            if matches!(self.active_topology, Topology::Host | Topology::AMX) {
+                            if matches!(
+                                self.active_topology,
+                                Topology::Host | Topology::AMX | Topology::GPU | Topology::ANE
+                            ) {
                                 is_valid = true;
                             }
                         }

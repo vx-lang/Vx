@@ -385,7 +385,7 @@ fn softmax(x: *mut f32, size: i32) -> i32 {
 }
 
 fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
-    spawn on(Topology::AMX) {
+    spawn on(Topology::GPU) {
         for i in 0..d {
             let mut val: f32 = 0.0;
             for j in 0..n {
