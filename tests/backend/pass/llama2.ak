@@ -201,8 +201,8 @@ fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeigh
             let w1_l: *mut f32 = akar_advance_ptr(w.w1, w1_off);
             let w3_off: i32 = l * dim * hidden_dim;
             let w3_l: *mut f32 = akar_advance_ptr(w.w3, w3_off);
-            let status7: i32 = matmul(s.hb, s.xb, w1_l, dim, hidden_dim);
-            let status8: i32 = matmul(s.hb2, s.xb, w3_l, dim, hidden_dim);
+            let status7: i32 = matmul_ane(s.hb, s.xb, w1_l, dim, hidden_dim);
+            let status8: i32 = matmul_ane(s.hb2, s.xb, w3_l, dim, hidden_dim);
 
             // SwiGLU
             for i in 0..hidden_dim {
@@ -218,7 +218,7 @@ fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeigh
 
             let w2_off: i32 = l * dim * hidden_dim;
             let w2_l: *mut f32 = akar_advance_ptr(w.w2, w2_off);
-            let status9: i32 = matmul(s.xb, s.hb, w2_l, hidden_dim, dim);
+            let status9: i32 = matmul_ane(s.xb, s.hb, w2_l, hidden_dim, dim);
 
             for i in 0..dim {
                 let x_val: f32 = x[i];
@@ -299,6 +299,22 @@ fn softmax(x: *mut f32, size: i32) -> i32 {
 
 fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
     spawn on(Topology::AMX) {
+        for i in 0..d {
+            let mut val: f32 = 0.0;
+            for j in 0..n {
+                let idx: i32 = i * n + j;
+                let w_val: f32 = w[idx];
+                let x_val: f32 = x[j];
+                val += w_val * x_val;
+            }
+            xout[i] = val;
+        }
+    }
+    return 0;
+}
+
+fn matmul_ane(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
+    spawn on(Topology::ANE) {
         for i in 0..d {
             let mut val: f32 = 0.0;
             for j in 0..n {

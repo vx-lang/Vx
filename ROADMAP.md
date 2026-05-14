@@ -7,6 +7,9 @@ Treating topologies, execution spaces, and disparate memory domains as first-cla
 - `[x]` Basic `spawn on(Topology::...)` syntax
 - `[x]` Explicit memory space type enforcement (`Memory::NPU_HBM`, `Host_DRAM`)
 - `[x]` Data movement explicit primitives (`transfer()`)
+  - **Rule 1**: Default address spaces strictly map to the CPU.
+  - **Rule 2**: Compiler implicitly infers target address spaces during assignment (`let i = K;` where `K` is `ANE_SRAM` infers `i` as `ANE_SRAM`).
+  - **Rule 3**: Even zero-cost memory boundaries (like Apple A16 shared memory to ANE) mandate an explicit `transfer()` call to satisfy the topology type-checker and ensure mathematical locality proofs.
 - `[ ]` Cross-topology synchronization primitives (Barriers, Mutexes, Atomics)
 - `[ ]` Compile-time hardware capability queries and limits
 
@@ -58,4 +61,5 @@ Establishing a robust native library to reduce reliance on raw C-FFI for common 
 - `[ ]` Implement native File I/O library (wrapping underlying OS descriptors)
 - `[ ]` Implement robust String and text manipulation primitives
 - `[ ]` Core mathematical functions and constants
+- `[ ]` Native Topologically-Aware Tensors (`Tensor<f32, ANE_SRAM>`) backing to MLIR `memref`
 - `[ ]` Standardized collection types (Vectors, HashMaps)

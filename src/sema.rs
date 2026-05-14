@@ -314,6 +314,73 @@ impl TypeChecker {
             Statement::ExprStmt(expr) => {
                 self.check_expr(expr);
             }
+            Statement::Assert(expr, _msg) => {
+                let ty = self.check_expr(expr);
+                if ty != Type::Scalar(ElementType::Bool) {
+                    self.errors
+                        .push("Assertion condition must be boolean".to_string());
+                }
+            }
+            Statement::Comptime(stmts) => {
+                for s in stmts {
+                    if let Statement::Assert(expr, msg) = s {
+                        let ty = self.check_expr(expr);
+                        if ty != Type::Scalar(ElementType::Bool) {
+                            self.errors
+                                .push("Assertion condition must be boolean".to_string());
+                        }
+                        if let Some(b) = self.eval_expr_bool(expr) {
+                            if !b {
+                                let m = msg
+                                    .clone()
+                                    .unwrap_or_else(|| "Comptime assertion failed".to_string());
+                                self.errors.push(format!("Comptime assert failed: {}", m));
+                            }
+                        } else {
+                            self.errors.push(
+                                "Could not evaluate comptime assert condition statically"
+                                    .to_string(),
+                            );
+                        }
+                    } else {
+                        self.check_statement(s, return_type);
+                    }
+                }
+            }
+        }
+    }
+
+    fn eval_expr_bool(&self, expr: &Expr) -> Option<bool> {
+        match expr {
+            Expr::Identifier(n) if n == "true" => Some(true),
+            Expr::Identifier(n) if n == "false" => Some(false),
+            Expr::BinaryOp(lhs, op, rhs) => {
+                if let (Expr::Number(a), Expr::Number(b)) = (&**lhs, &**rhs) {
+                    match op {
+                        BinaryOp::Eq => Some(a == b),
+                        BinaryOp::NotEq => Some(a != b),
+                        BinaryOp::Lt => Some(a < b),
+                        BinaryOp::Gt => Some(a > b),
+                        BinaryOp::Le => Some(a <= b),
+                        BinaryOp::Ge => Some(a >= b),
+                        _ => None,
+                    }
+                } else if let (Some(a), Some(b)) =
+                    (self.eval_expr_bool(lhs), self.eval_expr_bool(rhs))
+                {
+                    match op {
+                        BinaryOp::Eq => Some(a == b),
+                        BinaryOp::NotEq => Some(a != b),
+                        BinaryOp::And => Some(a && b),
+                        BinaryOp::Or => Some(a || b),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            Expr::UnaryOp(UnaryOp::Not, inner) => self.eval_expr_bool(inner).map(|b| !b),
+            _ => None,
         }
     }
 

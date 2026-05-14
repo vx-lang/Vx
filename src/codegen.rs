@@ -511,6 +511,16 @@ impl MlirGenerator {
             Statement::ExprStmt(expr) => {
                 self.generate_expr(expr, "any");
             }
+            Statement::Assert(expr, msg) => {
+                let (val, _ty) = self.generate_expr(expr, "i1");
+                let abort_msg = msg
+                    .clone()
+                    .unwrap_or_else(|| "Runtime assertion failed".to_string());
+                self.write_line(&format!("cf.assert {}, \"{}\"", val, abort_msg));
+            }
+            Statement::Comptime(_) => {
+                // Zero-cost abstraction. Stripped out during lowering!
+            }
         }
     }
 

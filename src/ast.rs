@@ -187,6 +187,8 @@ pub enum Statement {
     If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>), // (condition, then_block, else_block)
     Assign(Expr, Expr),                                    // lhs = rhs
     CompoundAssign(Expr, BinaryOp, Expr),                  // lhs += rhs
+    Comptime(Vec<Statement>),                              // comptime { ... }
+    Assert(Box<Expr>, Option<String>),                     // assert(expr, "message")
 }
 
 impl Statement {
@@ -225,6 +227,12 @@ impl Statement {
                 op.clone(),
                 rhs.substitute(mapping),
             ),
+            Statement::Comptime(stmts) => {
+                Statement::Comptime(stmts.iter().map(|s| s.substitute(mapping)).collect())
+            }
+            Statement::Assert(expr, msg) => {
+                Statement::Assert(Box::new(expr.substitute(mapping)), msg.clone())
+            }
         }
     }
 }

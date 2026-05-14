@@ -469,6 +469,40 @@ impl Parser {
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::LetDecl(name, is_mut, type_annotation, expr))
             }
+            TokenType::Comptime => {
+                self.advance();
+                self.consume(&TokenType::LeftBrace, "Expected '{' after 'comptime'")?;
+                let mut stmts = Vec::new();
+                while self.peek().kind != TokenType::RightBrace
+                    && self.peek().kind != TokenType::Eof
+                {
+                    stmts.push(self.parse_statement()?);
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}' after comptime block")?;
+                Ok(Statement::Comptime(stmts))
+            }
+            TokenType::Assert => {
+                self.advance();
+                self.consume(&TokenType::LeftParen, "Expected '(' after 'assert'")?;
+                let expr = self.parse_expr()?;
+                let mut msg = None;
+                if self.match_token(&TokenType::Comma) {
+                    if let TokenType::StringLiteral(s) = self.peek().kind.clone() {
+                        msg = Some(s);
+                        self.advance();
+                    } else {
+                        return Err(
+                            "Expected string literal message after comma in assert".to_string()
+                        );
+                    }
+                }
+                self.consume(
+                    &TokenType::RightParen,
+                    "Expected ')' after assert condition",
+                )?;
+                self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
+                Ok(Statement::Assert(Box::new(expr), msg))
+            }
             TokenType::Return => {
                 self.advance();
                 let expr = self.parse_expr()?;

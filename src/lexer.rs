@@ -20,6 +20,8 @@ pub enum TokenType {
     Extern,
     Trait,
     Impl,
+    Comptime,
+    Assert,
 
     // Types & Topology
     Topology,
@@ -96,6 +98,8 @@ impl std::fmt::Display for TokenType {
             TokenType::Extern => write!(f, "extern"),
             TokenType::Trait => write!(f, "trait"),
             TokenType::Impl => write!(f, "impl"),
+            TokenType::Comptime => write!(f, "comptime"),
+            TokenType::Assert => write!(f, "assert"),
 
             TokenType::Topology => write!(f, "Topology"),
             TokenType::Memory => write!(f, "Memory"),
@@ -257,6 +261,8 @@ impl<'a> Lexer<'a> {
             "extern" => TokenType::Extern,
             "trait" => TokenType::Trait,
             "impl" => TokenType::Impl,
+            "comptime" => TokenType::Comptime,
+            "assert" => TokenType::Assert,
             _ => TokenType::Identifier(text),
         };
 

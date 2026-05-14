@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    comptime {
+        assert(256 == 512, "Hardware dimensions are completely mismatched!");
+    }
+    return 0;
+}
