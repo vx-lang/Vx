@@ -1,13 +1,13 @@
-//! Akar Build Script (`build.rs`)
+//! Vx Build Script (`build.rs`)
 //!
-//! This script is automatically executed by Cargo before compiling the `akarc` compiler.
+//! This script is automatically executed by Cargo before compiling the `vxc` compiler.
 //!
-//! # Why does Akar need this?
-//! Akar supports two execution modes: JIT Execution and AOT (Ahead-of-Time) Compilation.
+//! # Why does Vx need this?
+//! Vx supports two execution modes: JIT Execution and AOT (Ahead-of-Time) Compilation.
 //!
 //! 1. **JIT Execution**: Managed dynamically by `src/jit.rs`, which shells out to `clang++` at
 //!    runtime to build `.dylib` files for `lli`.
-//! 2. **AOT Compilation**: If a user uses `akarc` to compile their Akar code into a standalone
+//! 2. **AOT Compilation**: If a user uses `vxc` to compile their Vx code into a standalone
 //!    executable binary, the linker needs a static version of the Objective-C++ hardware dispatcher.
 //!
 //! This script ensures that `libnpu_dispatch.a` is pre-compiled into Cargo's `OUT_DIR` so that
@@ -79,6 +79,6 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
         println!("cargo:rustc-link-lib=framework=CoreML");
     } else {
-        panic!("Akar v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Other operating systems are not currently supported.");
+        panic!("Vx v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Other operating systems are not currently supported.");
     }
 }

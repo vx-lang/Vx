@@ -1,10 +1,10 @@
-# Akar Design Document: Tensor Layout Conversions and Reshaping
+# Vx Design Document: Tensor Layout Conversions and Reshaping
 
 ## Motivation
-In the Akar language, tensor shapes and topologies are fully encoded in the static type system (e.g., `Tensor<f32, [128, 128], Topology::ANE>`).
+In the Vx language, tensor shapes and topologies are fully encoded in the static type system (e.g., `Tensor<f32, [128, 128], Topology::ANE>`).
 While the `as` keyword enables developers to cast element types and memory spaces, using it to convert between distinct shapes (e.g., `Tensor<f32, [128, 128]>` to `Tensor<f32, [4, 64, 64]>`) introduces dangerous ambiguity. The compiler implicitly enforces a C-style contiguous row-major boundary. This hides the order of the dimensions during the split, potentially resulting in silent performance degradation or logical bugs if the user actually intended to permute axes or view blocks differently.
 
-Akar is built for ML/Systems developers who desire the familiarity of Python/PyTorch with the zero-cost guarantees of a compiled language. We need an intuitive, unambiguous syntax for reshaping and transposing multidimensional tensors.
+Vx is built for ML/Systems developers who desire the familiarity of Python/PyTorch with the zero-cost guarantees of a compiled language. We need an intuitive, unambiguous syntax for reshaping and transposing multidimensional tensors.
 
 ## Explored Alternatives
 
@@ -39,7 +39,7 @@ let b = Tensor::concat([b1, b2, h, w]);
 
 ## Chosen Solution: PyTorch-style Method Chaining
 
-Instead of overloading `as` or forcing string-based DSLs, Akar will implement built-in intrinsic methods directly on the `Tensor` type: `.reshape()` and `.transpose()`.
+Instead of overloading `as` or forcing string-based DSLs, Vx will implement built-in intrinsic methods directly on the `Tensor` type: `.reshape()` and `.transpose()`.
 
 ```rust
 let matrix_2d: Tensor<f32, [128, 128]> = ...;
@@ -51,7 +51,7 @@ let matrix_3d_blocks: Tensor<f32, [4, 64, 64]> = matrix_2d
 ```
 
 ### Why We Chose This
-1. **Familiarity**: It perfectly matches the mental model of ML practitioners transitioning from Python (NumPy/PyTorch) to Akar.
+1. **Familiarity**: It perfectly matches the mental model of ML practitioners transitioning from Python (NumPy/PyTorch) to Vx.
 2. **Zero-Cost**: Unlike Python, these methods are statically evaluated intrinsics. They do not execute at runtime; they instruct the compiler to output LLVM MLIR `memref.collapse_shape`, `memref.expand_shape`, and `memref.transpose` views.
 3. **Safety**: Because they return new static types, subsequent type-checking ensures that the transformations align precisely with expected function signatures.
 4. **Compile-time Checks**: The methods hook seamlessly into our newly built `comptime` evaluator, ensuring all shape arithmetic (e.g., verifying `128 * 128 == 4 * 64 * 64`) is mathematically sound during compilation.

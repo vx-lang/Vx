@@ -1,12 +1,12 @@
-# Akar Generics: Design Decisions
+# Vx Generics: Design Decisions
 
-Akar introduces zero-cost monomorphized generics to provide highly reusable, statically typed abstractions. When extending the compiler to support generics, several critical design decisions were made to align with our core philosophies of predictable execution and deterministic memory control.
+Vx introduces zero-cost monomorphized generics to provide highly reusable, statically typed abstractions. When extending the compiler to support generics, several critical design decisions were made to align with our core philosophies of predictable execution and deterministic memory control.
 
 ## 1. Static Monomorphization over Dynamic Dispatch
 **Decision:** We opted for static monomorphization (like C++ templates or Rust generics) rather than dynamic dispatch (like Java's type erasure or Swift's witness tables).
 **Rationale:**
-- **Zero-Cost Abstractions:** Akar's primary domain is high-performance systems and heterogeneous compute. Dynamic dispatch introduces runtime overhead via vtable lookups and prevents aggressive compiler optimizations (like inlining or MLIR loop fusion).
-- **MLIR Compatibility:** Akar lowers directly to MLIR. Emitting distinct, concrete functions (`func.func @process_TensorF32`) maps perfectly to MLIR's strongly-typed static `memref` architecture.
+- **Zero-Cost Abstractions:** Vx's primary domain is high-performance systems and heterogeneous compute. Dynamic dispatch introduces runtime overhead via vtable lookups and prevents aggressive compiler optimizations (like inlining or MLIR loop fusion).
+- **MLIR Compatibility:** Vx lowers directly to MLIR. Emitting distinct, concrete functions (`func.func @process_TensorF32`) maps perfectly to MLIR's strongly-typed static `memref` architecture.
 - **Trade-off:** This decision increases compilation times and binary sizes (code bloat) since a new function is generated for every unique type signature combination. We explicitly accepted this trade-off in favor of maximum runtime performance.
 
 ## 2. Implicit Type Deduction

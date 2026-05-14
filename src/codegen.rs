@@ -105,9 +105,9 @@ impl MlirGenerator {
         self.write_line("func.func private @printMemrefBF16(memref<*xbf16>)");
 
         // Emit external FFI function declarations
-        self.write_line("func.func private @akar_dispatch_amx(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
-        self.write_line("func.func private @akar_dispatch_ane(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
-        self.write_line("func.func private @akar_dispatch_gpu(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
+        self.write_line("func.func private @vx_dispatch_amx(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
+        self.write_line("func.func private @vx_dispatch_ane(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
+        self.write_line("func.func private @vx_dispatch_gpu(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
 
         for ext in &program.externs {
             let mut arg_types = Vec::new();
@@ -588,11 +588,11 @@ impl MlirGenerator {
                     let d_val = self.env.get("d").unwrap().0.clone();
 
                     let func_name = if matches!(top, Topology::AMX) {
-                        "akar_dispatch_amx"
+                        "vx_dispatch_amx"
                     } else if matches!(top, Topology::GPU) {
-                        "akar_dispatch_gpu"
+                        "vx_dispatch_gpu"
                     } else {
-                        "akar_dispatch_ane"
+                        "vx_dispatch_ane"
                     };
 
                     let success_val = self.next_var();
@@ -825,9 +825,9 @@ impl MlirGenerator {
                     return self.generate_expr(&args[0], expected_ty);
                 }
 
-                let ret_ty = if name == "akar_print_float"
-                    || name == "akar_print_int"
-                    || name == "akar_print_tensor_f32"
+                let ret_ty = if name == "vx_print_float"
+                    || name == "vx_print_int"
+                    || name == "vx_print_tensor_f32"
                 {
                     "i32".to_string()
                 } else if name.starts_with("Tensor") {
@@ -856,9 +856,9 @@ impl MlirGenerator {
                 for (i, arg) in args.iter().enumerate() {
                     let arg_expected_ty = if i < expected_arg_tys.len() {
                         expected_arg_tys[i].clone()
-                    } else if name == "akar_print_float" {
+                    } else if name == "vx_print_float" {
                         "f32".to_string()
-                    } else if name == "akar_print_int" {
+                    } else if name == "vx_print_int" {
                         "i32".to_string()
                     } else if ret_ty.starts_with("memref") {
                         format!("memref<?x?x{}>", self.current_el_ty)

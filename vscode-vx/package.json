@@ -1,7 +1,7 @@
 {
-  "name": "akar-lang",
-  "displayName": "Akar Language",
-  "description": "Syntax highlighting and language support for Akar",
+  "name": "vx-lang",
+  "displayName": "Vx Language",
+  "description": "Syntax highlighting and language support for Vx",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.60.0"
@@ -12,22 +12,22 @@
   "contributes": {
     "languages": [
       {
-        "id": "akar",
+        "id": "vx",
         "aliases": [
-          "Akar",
-          "akar"
+          "Vx",
+          "vx"
         ],
         "extensions": [
-          ".ak"
+          ".vx"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "akar",
-        "scopeName": "source.akar",
-        "path": "./syntaxes/akar.tmLanguage.json"
+        "language": "vx",
+        "scopeName": "source.vx",
+        "path": "./syntaxes/vx.tmLanguage.json"
       }
     ]
   }

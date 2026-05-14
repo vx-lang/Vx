@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::Path;
 
-use akarc::codegen::MlirGenerator;
-use akarc::jit::execute_mlir;
-use akarc::lexer::Lexer;
-use akarc::parser::Parser;
-use akarc::sema::TypeChecker;
+use vxc::codegen::MlirGenerator;
+use vxc::jit::execute_mlir;
+use vxc::lexer::Lexer;
+use vxc::parser::Parser;
+use vxc::sema::TypeChecker;
 
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) {
@@ -126,7 +126,7 @@ fn test_frontend_pass() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_frontend_test(&path, true);
             }
         }
@@ -139,7 +139,7 @@ fn test_frontend_fail() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_frontend_test(&path, false);
             }
         }
@@ -152,7 +152,7 @@ fn test_middle_end() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_middle_end_test(&path);
             }
         }
@@ -165,7 +165,7 @@ fn test_middle_end_fail() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let result = std::panic::catch_unwind(|| {
                     run_middle_end_test(&path);
                 });
@@ -185,7 +185,7 @@ fn test_backend() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_backend_test(&path);
             }
         }
@@ -198,7 +198,7 @@ fn test_backend_fail() {
     if dir.exists() {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("ak") {
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let result = std::panic::catch_unwind(|| {
                     run_backend_test(&path);
                 });

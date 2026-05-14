@@ -3,23 +3,23 @@
 #include <time.h>
 #include <math.h>
 
-float akar_sqrtf(float x) {
+float vx_sqrtf(float x) {
     return sqrtf(x);
 }
 
-float akar_expf(float x) {
+float vx_expf(float x) {
     return expf(x);
 }
 
-float akar_cosf(float x) {
+float vx_cosf(float x) {
     return cosf(x);
 }
 
-float akar_sinf(float x) {
+float vx_sinf(float x) {
     return sinf(x);
 }
 
-float akar_get_rope_freq(int pos, int i, int head_size) {
+float vx_get_rope_freq(int pos, int i, int head_size) {
     float freq = 1.0f / powf(10000.0f, (float)i / (float)head_size);
     return (float)pos * freq;
 }
@@ -53,8 +53,8 @@ void print_f32(float val) {
 }
 
 
-void akar_print(int64_t tensor_id) {
-    printf("[Akar Runtime] Computation finished! Final tensor ID: %lld\n", tensor_id);
+void vx_print(int64_t tensor_id) {
+    printf("[Vx Runtime] Computation finished! Final tensor ID: %lld\n", tensor_id);
 }
 
 void printMemrefBF16(void* rank, void* ptr) {
@@ -72,7 +72,7 @@ void printMemrefBF16(void* rank, void* ptr) {
 #include <ctype.h>
 
 // Mmap the checkpoint file
-int* akar_load_config(const char* filepath) {
+int* vx_load_config(const char* filepath) {
     int fd = open(filepath, O_RDONLY);
     if (fd == -1) return NULL;
     int* config_out = (int*)malloc(7 * sizeof(int));
@@ -81,11 +81,11 @@ int* akar_load_config(const char* filepath) {
     return config_out;
 }
 
-float* akar_malloc_f32(int num_elements) {
+float* vx_malloc_f32(int num_elements) {
     return (float*)malloc(num_elements * sizeof(float));
 }
 
-float* akar_load_weights(const char* filepath) {
+float* vx_load_weights(const char* filepath) {
     int fd = open(filepath, O_RDONLY);
     if (fd == -1) return NULL;
     size_t file_size = lseek(fd, 0, SEEK_END);
@@ -93,7 +93,7 @@ float* akar_load_weights(const char* filepath) {
     return data + 7;
 }
 
-float* akar_advance_ptr(float* ptr, int offset) {
+float* vx_advance_ptr(float* ptr, int offset) {
     return ptr + offset;
 }
 
@@ -112,7 +112,7 @@ typedef struct {
     unsigned char byte_pieces[512];
 } Tokenizer;
 
-void* akar_build_tokenizer(const char* filepath, int vocab_size) {
+void* vx_build_tokenizer(const char* filepath, int vocab_size) {
     Tokenizer* t = malloc(sizeof(Tokenizer));
     t->vocab_size = vocab_size;
     t->vocab = malloc(vocab_size * sizeof(char*));
@@ -137,7 +137,7 @@ void* akar_build_tokenizer(const char* filepath, int vocab_size) {
     return t;
 }
 
-char* akar_decode_token(void* tokenizer_ptr, int prev_token, int token) {
+char* vx_decode_token(void* tokenizer_ptr, int prev_token, int token) {
     Tokenizer* t = (Tokenizer*)tokenizer_ptr;
     char *piece = t->vocab[token];
     if (prev_token == 1 && piece[0] == ' ') { piece++; }
@@ -150,7 +150,7 @@ char* akar_decode_token(void* tokenizer_ptr, int prev_token, int token) {
     return piece;
 }
 
-void akar_safe_printf(char *piece) {
+void vx_safe_printf(char *piece) {
     if (piece == NULL || piece[0] == '\0') { return; }
     if (piece[1] == '\0') {
         unsigned char byte_val = piece[0];
@@ -162,13 +162,13 @@ void akar_safe_printf(char *piece) {
     fflush(stdout);
 }
 
-int akar_print_int(int val) {
+int vx_print_int(int val) {
     printf("[%d] ", val);
     fflush(stdout);
     return 0;
 }
 
-int akar_print_float(float val) {
+int vx_print_float(float val) {
     printf("[%f] ", val);
     fflush(stdout);
     return 0;
@@ -184,7 +184,7 @@ int str_lookup(char *str, Tokenizer* t) {
     return -1;
 }
 
-int* akar_encode_prompt(void* tokenizer_ptr, const char* text) {
+int* vx_encode_prompt(void* tokenizer_ptr, const char* text) {
     Tokenizer* t = (Tokenizer*)tokenizer_ptr;
     
     if (text == NULL || text[0] == '\0') {
@@ -222,7 +222,7 @@ int* akar_encode_prompt(void* tokenizer_ptr, const char* text) {
     return tokens;
 }
 
-char* akar_read_prompt_file(const char* filepath) {
+char* vx_read_prompt_file(const char* filepath) {
     FILE *f = fopen(filepath, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);

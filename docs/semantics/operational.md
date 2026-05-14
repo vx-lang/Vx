@@ -1,12 +1,12 @@
-# Operational Semantics of Akar
+# Operational Semantics of Vx
 
-This document details the Structural Operational Semantics (SOS) of the Akar programming language. SOS describes how an Akar program executes step-by-step as a sequence of state transitions.
+This document details the Structural Operational Semantics (SOS) of the Vx programming language. SOS describes how an Vx program executes step-by-step as a sequence of state transitions.
 
 ## 1. The Execution State
 
 Standard imperative languages define state as a tuple $\langle S, \sigma \rangle$ where $S$ is the statement to execute and $\sigma$ is the memory store.
 
-Akar introduces heterogeneous computing, meaning the active execution state must track which topology is executing the instruction and maintain segmented stores for the Host CPU and discrete Accelerators.
+Vx introduces heterogeneous computing, meaning the active execution state must track which topology is executing the instruction and maintain segmented stores for the Host CPU and discrete Accelerators.
 
 We define the configuration state as:
 $$\langle S, \sigma_{Host}, \tau_{Acc} \rangle_\Omega$$
@@ -37,7 +37,7 @@ $$
 $$
 
 ### 2.2 Control Flow (`for` Loops)
-Akar supports explicit bounded iteration. Let $[start, end)$ denote the iteration bounds.
+Vx supports explicit bounded iteration. Let $[start, end)$ denote the iteration bounds.
 
 $$
 \frac{
@@ -104,7 +104,7 @@ $$
 $$
 
 ### 2.6 Logical and Relational Operators
-Akar supports boolean computation evaluating down to the $\mathbb{V}_{Tensor}^{\text{Bool}}$ domain (or scalar boolean equivalence).
+Vx supports boolean computation evaluating down to the $\mathbb{V}_{Tensor}^{\text{Bool}}$ domain (or scalar boolean equivalence).
 
 For a relational binary operator $\oplus \in \{ <, >, \leq, \geq, ==, \neq \}$:
 $$

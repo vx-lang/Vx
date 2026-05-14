@@ -1,10 +1,10 @@
-# Akar Language Syntax
+# Vx Language Syntax
 
-This document outlines the core syntax of the **Akar** programming language. Akar uses a C-family, Rust-like syntax but introduces novel constructs for spatial and temporal logic, distributed state, and hardware topologies.
+This document outlines the core syntax of the **Vx** programming language. Vx uses a C-family, Rust-like syntax but introduces novel constructs for spatial and temporal logic, distributed state, and hardware topologies.
 
 ## 1. Basic Structure
 
-Akar programs are structured into modules, functions, and scopes.
+Vx programs are structured into modules, functions, and scopes.
 
 ```rust
 // A basic function with statically verified layouts
@@ -17,7 +17,7 @@ fn compute_metrics(data: Ref<Tensor<f32, [128, 256]>, Host_DRAM>) -> Verified<Te
 
 ## 2. Topologies & Memory Spaces
 
-Akar introduces hardware-aware keywords: `Topology` and `Memory`.
+Vx introduces hardware-aware keywords: `Topology` and `Memory`.
 
 ### Topologies
 Topologies represent physical compute resources (e.g., CPU, GPU, NPU, TPU).
@@ -41,7 +41,7 @@ Memory::LocalSRAM
 
 ## 3. Spatial Execution Scopes: `spawn on`
 
-To explicitly route computation to a specific topology, Akar uses the `spawn on` block. This overrides the compiler's default cost-model inferred routing.
+To explicitly route computation to a specific topology, Vx uses the `spawn on` block. This overrides the compiler's default cost-model inferred routing.
 
 ```rust
 fn distributed_matmul(a: Tensor<f32, [M, K]>, b: Tensor<f32, [K, N]>) -> Tensor<f32, [M, N]> {
@@ -83,7 +83,7 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
 
 ## 5. Hardware-Aware Typestates
 
-Akar encodes execution modes as types to handle non-deterministic hardware availability.
+Vx encodes execution modes as types to handle non-deterministic hardware availability.
 
 ### 5.1 The Agile Default: `Verified<T>`
 Yielded by standard operations. The compiler guarantees execution but routes it dynamically based on the best available hardware.

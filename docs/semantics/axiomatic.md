@@ -1,12 +1,12 @@
-# Axiomatic Semantics of Akar
+# Axiomatic Semantics of Vx
 
-Axiomatic semantics use assertions to mathematically prove that programs satisfy their specifications. Akar extends classical Hoare logic to reason about memory boundaries and hardware topology execution states.
+Axiomatic semantics use assertions to mathematically prove that programs satisfy their specifications. Vx extends classical Hoare logic to reason about memory boundaries and hardware topology execution states.
 
 ## 1. Context-Aware Hoare Triples
 
 A standard Hoare triple $\{ P \} \ S \ \{ Q \}$ states that if precondition $P$ holds before $S$ executes, then postcondition $Q$ will hold afterward.
 
-Because Akar operates over multiple topologies, assertions must be context-aware. Let $\Omega$ represent the active execution topology context. We define the context-aware triple as:
+Because Vx operates over multiple topologies, assertions must be context-aware. Let $\Omega$ represent the active execution topology context. We define the context-aware triple as:
 
 $$ \{ P \} \ S \ \{ Q \}_\Omega $$
 
@@ -17,7 +17,7 @@ We define $\text{Valid}(x, t)$ as an assertion that the reference $x$ is accessi
 
 ## 2. Axiomatic Rules for Hardware State
 
-Akar's `Verified` and `Pinned` types mathematically guarantee type safety, but the axiomatic rules define the spatial safety of hardware execution.
+Vx's `Verified` and `Pinned` types mathematically guarantee type safety, but the axiomatic rules define the spatial safety of hardware execution.
 
 ### 2.1 The Spawn Rule
 
@@ -66,7 +66,7 @@ $$
 
 ### 3.3 For-Loop Rule (Topology Bound)
 
-Because `for` loops in Akar execute fully within the current topology context, the invariant $I$ must hold within $\Omega$.
+Because `for` loops in Vx execute fully within the current topology context, the invariant $I$ must hold within $\Omega$.
 
 $$
 \frac{ \{ I(i) \land \text{Valid}(\text{Env}, \Omega) \} \ S \ \{ I(i+1) \}_\Omega }{ \{ I(start) \} \ \text{for } i \text{ in } start..end \{ S \} \ \{ I(end) \}_\Omega } \text{ (For-Loop)}

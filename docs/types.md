@@ -1,11 +1,11 @@
-# Akar Type System
+# Vx Type System
 
-This document outlines the topology-aware type system of the **Akar** programming language. Akar's type system is designed to catch data-movement bugs, misaligned execution targets, and hardware saturation at compile time.
+This document outlines the topology-aware type system of the **Vx** programming language. Vx's type system is designed to catch data-movement bugs, misaligned execution targets, and hardware saturation at compile time.
 
 ## 1. Core Philosophy: Address Spaces as First-Class Types
 
 In standard languages, a pointer `*mut T` or reference `&T` only encodes the data type, assuming a uniform, flat memory address space.
-In Akar, a reference intrinsically encodes both the data type and its physical or logical address space.
+In Vx, a reference intrinsically encodes both the data type and its physical or logical address space.
 
 ### The `Ref<T, Memory>` Type
 
@@ -35,7 +35,7 @@ let c = npu_matrix_b + npu_matrix;
 
 ## 2. Compile-Time Layouts & Shapes
 
-Akar brings tensor dimensions and bounds checking entirely into the type system via `comptime` const-generics. Instead of relying on runtime panics for dimension mismatches, the `Sema` pass executes layout verification ahead-of-time.
+Vx brings tensor dimensions and bounds checking entirely into the type system via `comptime` const-generics. Instead of relying on runtime panics for dimension mismatches, the `Sema` pass executes layout verification ahead-of-time.
 
 ```rust
 // Tensor shapes are encoded directly in the type.
@@ -54,7 +54,7 @@ If dimensions are statically evaluated to mismatch, the compiler will refuse to 
 
 ## 3. Hardware-Aware Typestates
 
-Akar models the non-deterministic nature of distributed, heterogeneous execution using typestates. Computations and tasks are typed based on their topological binding and availability.
+Vx models the non-deterministic nature of distributed, heterogeneous execution using typestates. Computations and tasks are typed based on their topological binding and availability.
 
 ### 2.1 `Verified<T>`: The Agile Compute Type
 
@@ -80,7 +80,7 @@ let strict_task: Pinned<Tensor, Topology::NPU[0]> = matmul(A, B);
 
 ## 3. The Hardware State Monad
 
-Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Akar represents this via the `HardwareState` enum, which acts like a monad.
+Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Vx represents this via the `HardwareState` enum, which acts like a monad.
 
 ```rust
 enum HardwareState<T, Topo> {
@@ -112,7 +112,7 @@ match target {
 
 ## 4. Effect Tracking for Synchronization
 
-Akar tracks synchronization and side-effects across address spaces as part of the function signature.
+Vx tracks synchronization and side-effects across address spaces as part of the function signature.
 
 ```rust
 // This function signature indicates that it performs asynchronous data

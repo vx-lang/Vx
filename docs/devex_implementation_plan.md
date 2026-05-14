@@ -1,14 +1,14 @@
-# Akar Developer Experience (Dev-Ex) Tools Implementation Plan
+# Vx Developer Experience (Dev-Ex) Tools Implementation Plan
 
-This document outlines the approach for building robust developer tooling for the Akar systems programming language. The goal is to dramatically improve the developer experience by adding VSCode syntax highlighting, an AST text pretty-printer, and Clang-style precise compiler error squigglies.
+This document outlines the approach for building robust developer tooling for the Vx systems programming language. The goal is to dramatically improve the developer experience by adding VSCode syntax highlighting, an AST text pretty-printer, and Clang-style precise compiler error squigglies.
 
 ## 1. VSCode Extension (Syntax Highlighter)
-We will create a lightweight VSCode extension inside a new `vscode-akar/` directory in the repository.
+We will create a lightweight VSCode extension inside a new `vscode-vx/` directory in the repository.
 
 **Components:**
-- `package.json`: Registers the `.ak` extension and defines the language configuration.
+- `package.json`: Registers the `.vx` extension and defines the language configuration.
 - `language-configuration.json`: Configures auto-closing brackets, comments (`//`), and folding.
-- `syntaxes/akar.tmLanguage.json`: A TextMate grammar that correctly identifies:
+- `syntaxes/vx.tmLanguage.json`: A TextMate grammar that correctly identifies:
   - **Keywords**: `fn`, `let`, `mut`, `spawn`, `on`, `unsafe`, `comptime`, `match`, etc.
   - **Topology / Hardware Identifiers**: `Topology`, `MemorySpace`, `Host`, `GPU`, `AMX`, `ANE`.
   - **Types**: `i32`, `f32`, `memref`, `bool`.
@@ -27,7 +27,7 @@ To provide precise squiggly-line error reporting (e.g., `~~~~^~~~`), we need to 
 
 **Approach:**
 - **Lexer Upgrade**: Enhance the `Token` struct in `src/lexer.rs` to track `length` (or the raw `&str` slice) so we know exactly how many `~` to draw.
-- **Error Formatter**: Create an `AkarError` struct or utility function `format_compiler_error(source, line, column, length, message)` that takes the original source code, extracts the specific line, and renders the pointer string beneath it.
+- **Error Formatter**: Create an `VxError` struct or utility function `format_compiler_error(source, line, column, length, message)` that takes the original source code, extracts the specific line, and renders the pointer string beneath it.
 - **Parser & Sema Integration**: Update `parser.rs` and `sema.rs` to pass along the source code string (or a line index array) and the token locations so they can emit these rich, visually formatted errors instead of basic `"Error at L:C"` strings.
 
 ## User Review Required

@@ -2,10 +2,10 @@
 
 The goal is to implement deterministically controlled memory representations using Custom Structs, safe Borrows (`&`), and raw Pointers (`*mut`), alongside a strict Rust-like borrow checker with an `unsafe` escape hatch.
 
-## The "Stack Frame" Concept in Akar
+## The "Stack Frame" Concept in Vx
 You raised an excellent question: *How do we store a pointer to vmem on a call-stack?*
 
-Because Akar compiles to MLIR/LLVM IR, the concept of a pointer is inextricably linked to an **Address Space**. On the host CPU call stack (which lives in Address Space 0, `Host_DRAM`), allocating space for a pointer to `NPU_HBM` (Address Space 1) simply allocates a 64-bit integer slot on the CPU's local stack.
+Because Vx compiles to MLIR/LLVM IR, the concept of a pointer is inextricably linked to an **Address Space**. On the host CPU call stack (which lives in Address Space 0, `Host_DRAM`), allocating space for a pointer to `NPU_HBM` (Address Space 1) simply allocates a 64-bit integer slot on the CPU's local stack.
 
 LLVM represents this natively as `!llvm.ptr<1>`. The hardware safely stores the 64-bit address on the CPU stack, but the compiler statically guarantees that the CPU cannot emit a normal `load` instruction against a `ptr<1>`, preventing hardware faults! Therefore, storing remote pointers is trivial and mathematically safe, provided our type system correctly tracks the `MemorySpace` attached to every reference/pointer.
 

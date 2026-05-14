@@ -16,7 +16,7 @@ But always make sure that you understand the code that you are writing. And writ
 If you are unsure about anything, then ask me.
 
 
-## Adding Akar language features
+## Adding Vx language features
 - When adding a language feature, make sure that:
   - You also add a test for it in the `tests` directory.
   - You also update all the other files that are related to the new feature.

@@ -1,6 +1,6 @@
-# Bootstrapping the Akar Programming Language
+# Bootstrapping the Vx Programming Language
 
-This document outlines the high-level roadmap and architectural plan for bootstrapping **Akar**, a natively heterogeneous and topology-aware systems programming language.
+This document outlines the high-level roadmap and architectural plan for bootstrapping **Vx**, a natively heterogeneous and topology-aware systems programming language.
 
 ## User Review Required
 
@@ -13,7 +13,7 @@ This document outlines the high-level roadmap and architectural plan for bootstr
 > Please provide your thoughts on the following architectural decisions before we start writing code:
 
 1. **Compiler Implementation Language**: We have officially migrated the scaffolding to **Rust** based on your feedback and `agents/Coding.md` rules! I have deleted the C++ project and rewritten the Lexer in pure Rust. However, our environment's `rustup` toolchain is still returning an `(os error 17)` on `~/.rustup`, so we cannot compile it just yet.
-2. **Intermediate Representation (IR)**: We will definitely proceed with **MLIR**. This will allow us to define an Akar dialect that natively encodes topologies before lowering to specific accelerator dialects.
+2. **Intermediate Representation (IR)**: We will definitely proceed with **MLIR**. This will allow us to define an Vx dialect that natively encodes topologies before lowering to specific accelerator dialects.
 3. **Runtime Model**: You asked about having two modes like eager/lazy. This is exactly the right approach! I recommend a **Dual-Mode Execution Model**:
    - **Strict Mode (Eager / Thin Runtime)**: When you use `Pinned<T, Topo>`, the code compiles down to direct LLVM/MLIR intrinsics. There is no runtime overhead; it's just raw instructions and DMA transfers. If it can't run, it errors.
    - **Agile Mode (Lazy / Fat Runtime)**: When you use `Verified<T>`, the execution becomes lazy. The runtime builds a Directed Acyclic Graph (DAG) of the computation and dynamically dispatches tasks to available hardware (acting like a smart JIT scheduler or IREE runtime).
@@ -33,17 +33,17 @@ Before writing a parser, we need a formal specification of the new constructs. W
 ### Phase 2: Compiler Scaffolding & Frontend
 We will initialize the compiler repository and build the frontend.
 - **Lexer & Parser:** Create the AST (Abstract Syntax Tree) to parse standard code plus the new `spawn on` and `transfer` blocks.
-- **AST Definition:** Structs to represent the parsed Akar code.
+- **AST Definition:** Structs to represent the parsed Vx code.
 
 ### Phase 3: Semantic Analysis & Topology Checker
-This is the "secret sauce" of Akar.
+This is the "secret sauce" of Vx.
 - **Type Checking:** Standard type inference.
 - **Spatial Validation:** Ensuring `Ref<Matrix, NPU_HBM>` cannot be added directly to `Ref<Matrix, Host_DRAM>` without a `transfer` primitive.
 - **Execution State Resolution:** Resolving the monadic `try_pin` hardware bridges.
 
 ### Phase 4: Intermediate Representation (IR) Lowering
 - Map the verified AST into an IR (likely MLIR).
-- Define the `akar` MLIR dialect.
+- Define the `vx` MLIR dialect.
 - Lower standard compute to `llvm` dialect, and heterogeneous compute to specific hardware dialects (e.g., `gpu` or `amdgpu` or custom accelerator dialects).
 
 ---

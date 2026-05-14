@@ -22,9 +22,9 @@ tag v1.0
 Tagger: Aditya <aditya@example.com>
 Date:   Mon May 11 21:18:00 2026 -0700
 
-Release v1.0: Akar Language Bootstrap Milestone
+Release v1.0: Vx Language Bootstrap Milestone
 
-This marks the v1.0 milestone for the Akar Systems Programming Language...
+This marks the v1.0 milestone for the Vx Systems Programming Language...
 (Rest of the release notes)
 
 commit ed34e59b2...

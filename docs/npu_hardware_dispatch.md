@@ -1,16 +1,16 @@
 # NPU Hardware Dispatch Architecture
 
-This document details the exact process of how the Akar compiler intercepts `Topology::NPU` memory boundaries and dynamically offloads computations to Apple Silicon hardware directly from the JIT compilation engine.
+This document details the exact process of how the Vx compiler intercepts `Topology::NPU` memory boundaries and dynamically offloads computations to Apple Silicon hardware directly from the JIT compilation engine.
 
 ## Architectural Overview
 
-A key goal of Akar is to simulate and program heterogeneous execution environments (CPUs, GPUs, NPUs, etc.) directly as first-class citizens using topologies. To simulate actual hardware acceleration on Mac systems, the Akar compiler avoids Python or slow remote calls. Instead, it utilizes an Objective-C++ dispatcher that triggers the Apple Matrix Coprocessor (AMX) directly through the macOS Accelerate framework.
+A key goal of Vx is to simulate and program heterogeneous execution environments (CPUs, GPUs, NPUs, etc.) directly as first-class citizens using topologies. To simulate actual hardware acceleration on Mac systems, the Vx compiler avoids Python or slow remote calls. Instead, it utilizes an Objective-C++ dispatcher that triggers the Apple Matrix Coprocessor (AMX) directly through the macOS Accelerate framework.
 
 Here is the entire flow of the compilation and execution pipeline:
 
 ```mermaid
 sequenceDiagram
-    participant Source as Akar Source (.ak)
+    participant Source as Vx Source (.vx)
     participant MLIR_Gen as MLIR Codegen (codegen.rs)
     participant JIT as JIT Engine (jit.rs)
     participant LLI as LLVM LLI Execution
@@ -18,7 +18,7 @@ sequenceDiagram
 
     Source->>MLIR_Gen: spawn on(Topology::NPU[0]) { ... }
     Note over MLIR_Gen: Identifies NPU Block
-    MLIR_Gen->>MLIR_Gen: Injects func.call @akar_dispatch_npu
+    MLIR_Gen->>MLIR_Gen: Injects func.call @vx_dispatch_npu
     MLIR_Gen-->>JIT: Emits standard MLIR module
 
     JIT->>JIT: clang++ -framework Accelerate
@@ -30,7 +30,7 @@ sequenceDiagram
     JIT->>LLI: lli --load=./libnpu_dispatch.dylib
 
     LLI->>LLI: Executes Main Loop
-    LLI->>Hardware: FFI Call: _mlir_ciface_akar_dispatch_npu()
+    LLI->>Hardware: FFI Call: _mlir_ciface_vx_dispatch_npu()
     Note over Hardware: cblas_sgemm (Matrix Multiply)
     Hardware-->>LLI: Updates memref buffers
     LLI-->>Source: Prints result (24.0)
@@ -43,7 +43,7 @@ During MLIR generation, when the compiler visits a `Statement::SpawnOn` block, i
 If it detects `Topology::NPU(_)`, it analyzes the environment for the required parameters (in our simulated case: `a`, `b`, and `result` tensors). Instead of emitting nested `scf.for` loops in MLIR, it completely replaces the computational block with an external FFI call to the dispatcher:
 
 ```mlir
-%success = func.call @akar_dispatch_npu(%a, %b, %result) : (memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>) -> i1
+%success = func.call @vx_dispatch_npu(%a, %b, %result) : (memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>) -> i1
 ```
 
 Crucially, the function signature is declared with `attributes { llvm.emit_c_interface }`. This prevents MLIR from unrolling the `memref` struct into 7 separate arguments, and instead wraps them in C-compatible pointers.
@@ -53,7 +53,7 @@ Crucially, the function signature is declared with `attributes { llvm.emit_c_int
 The external call requires a concrete C function. We define this in an Objective-C++ file `runtime/npu_dispatch.mm`. Because of the `llvm.emit_c_interface` attribute, the function signature must strictly follow MLIR's C ABI convention (`_mlir_ciface_<name>`):
 
 ```cpp
-extern "C" bool _mlir_ciface_akar_dispatch_npu(MemRef2D* input_a, MemRef2D* input_b, MemRef2D* output_ref)
+extern "C" bool _mlir_ciface_vx_dispatch_npu(MemRef2D* input_a, MemRef2D* input_b, MemRef2D* output_ref)
 ```
 
 Inside this function, we extract the matrix dimensions from the `MemRef2D` structs (e.g., `input_a->sizes[0]`) and invoke `cblas_sgemm` from Apple's `Accelerate` framework. This explicitly offloads the floating-point matrix multiplication to the dedicated hardware matrix coprocessor.
@@ -69,7 +69,7 @@ clang++ -shared -fPIC -fobjc-arc -O3 runtime/npu_dispatch.mm -framework Accelera
 It then feeds the `libnpu_dispatch.dylib` directly into LLVM's execution engine via the `--load` flag:
 
 ```bash
-lli --load=./libakar_rt.dylib --load=./libnpu_dispatch.dylib temp.ll
+lli --load=./libvx_rt.dylib --load=./libnpu_dispatch.dylib temp.ll
 ```
 
 ## Step 4: Unified Memory Architecture (UMA) & Zero-Copy Execution
@@ -78,7 +78,7 @@ In a traditional discrete GPU environment (e.g., an Nvidia card connected via PC
 
 However, Apple Silicon utilizes a **Unified Memory Architecture (UMA)**, meaning the CPU and the AMX share the exact same physical RAM. Our implementation takes full advantage of this to achieve **true zero-copy execution**.
 
-Consider this snippet from `tests/backend/pass/ane_matmul.ak`:
+Consider this snippet from `tests/backend/pass/ane_matmul.vx`:
 
 ```rust
 // 1. Memory allocated in standard RAM
@@ -107,4 +107,4 @@ Behind the scenes:
 
 ## Summary
 
-This architecture gives Akar a **zero-overhead FFI** into native machine code. It successfully simulates disaggregated, heterogeneous hardware by replacing AST blocks with dynamic JIT-loaded native libraries that talk directly to silicon, seamlessly modeling zero-copy shared memory systems.
+This architecture gives Vx a **zero-overhead FFI** into native machine code. It successfully simulates disaggregated, heterogeneous hardware by replacing AST blocks with dynamic JIT-loaded native libraries that talk directly to silicon, seamlessly modeling zero-copy shared memory systems.

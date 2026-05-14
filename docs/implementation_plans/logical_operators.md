@@ -1,11 +1,11 @@
 # Implementation Plan: Logical Operators
 
-We will implement logical (`&&`, `||`, `!`) and relational (`==`, `!=`, `<`, `>`, `<=`, `>=`) operators into the Akar compiler. This feature touches the entire pipeline from lexing to MLIR generation.
+We will implement logical (`&&`, `||`, `!`) and relational (`==`, `!=`, `<`, `>`, `<=`, `>=`) operators into the Vx compiler. This feature touches the entire pipeline from lexing to MLIR generation.
 
 ## User Review Required
 
 > [!IMPORTANT]
-> Akar currently lacks an explicit boolean element type in `ElementType`. I propose adding `ElementType::Bool` (lowering to MLIR's `i1`) so that comparisons evaluate to `Tensor<Bool>` (or a scalar boolean). Alternatively, we could reuse `I8`. Please approve the addition of `ElementType::Bool` or suggest an alternative.
+> Vx currently lacks an explicit boolean element type in `ElementType`. I propose adding `ElementType::Bool` (lowering to MLIR's `i1`) so that comparisons evaluate to `Tensor<Bool>` (or a scalar boolean). Alternatively, we could reuse `I8`. Please approve the addition of `ElementType::Bool` or suggest an alternative.
 
 ## Proposed Changes
 
@@ -40,8 +40,8 @@ We will implement logical (`&&`, `||`, `!`) and relational (`==`, `!=`, `<`, `>`
 - [MODIFY] Update `docs/syntax.md` to document the new operators.
 - [NEW] Add `docs/tutorial/logical_operators.md` as required by our project guidelines.
 - [MODIFY] Update `docs/semantics/operational.md` to formally define boolean evaluation transitions.
-- [NEW] Create `tests/backend/logical_ops.ak` to test MLIR codegen and execution natively.
+- [NEW] Create `tests/backend/logical_ops.vx` to test MLIR codegen and execution natively.
 
 ## Verification Plan
 1. Run `cargo test` to ensure `Lexer`, `Parser`, and `Sema` validate logical structures.
-2. Run backend test (`logical_ops.ak`) through `lli` to ensure the runtime behaves mathematically correctly when evaluating combinations of `&&` and `<`.
+2. Run backend test (`logical_ops.vx`) through `lli` to ensure the runtime behaves mathematically correctly when evaluating combinations of `&&` and `<`.

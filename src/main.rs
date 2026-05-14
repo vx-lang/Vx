@@ -1,12 +1,12 @@
-use akarc::lexer::Lexer;
-use akarc::parser;
-use akarc::sema;
 use std::env;
 use std::fs;
+use vxc::lexer::Lexer;
+use vxc::parser;
+use vxc::sema;
 
 fn main() {
-    println!("Akar Compiler (akarc) - Bootstrap Phase (Rust)");
-    println!("==============================================");
+    println!("Vx Compiler (vxc) - Bootstrap Phase (Rust)");
+    println!("============================================");
 
     let args: Vec<String> = env::args().collect();
     let mut parse_only = false;
@@ -47,7 +47,7 @@ fn main() {
             match parser.parse() {
                 Ok(ast) => {
                     if print_ast {
-                        akarc::ast_printer::AstPrinter::print_program(&ast);
+                        vxc::ast_printer::AstPrinter::print_program(&ast);
                     } else {
                         println!("{:#?}", ast);
                     }
@@ -59,19 +59,19 @@ fn main() {
             match parser.parse() {
                 Ok(mut ast) => {
                     if print_ast {
-                        akarc::ast_printer::AstPrinter::print_program(&ast);
+                        vxc::ast_printer::AstPrinter::print_program(&ast);
                     }
                     let mut checker = sema::TypeChecker::new();
                     match checker.check_program(&mut ast) {
                         Ok((monomorphized_ast, module_asts)) => {
                             if emit_mlir {
-                                let mut codegen = akarc::codegen::MlirGenerator::new();
+                                let mut codegen = vxc::codegen::MlirGenerator::new();
                                 let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
                                 println!("{}", mlir_str);
                             } else if run_jit {
-                                let mut codegen = akarc::codegen::MlirGenerator::new();
+                                let mut codegen = vxc::codegen::MlirGenerator::new();
                                 let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                                match akarc::jit::execute_mlir(&mlir_str) {
+                                match vxc::jit::execute_mlir(&mlir_str) {
                                     Ok(output) => println!("{}", output),
                                     Err(e) => eprintln!("Execution Error: {}", e),
                                 }
@@ -89,6 +89,6 @@ fn main() {
             }
         }
     } else {
-        println!("Usage: akarc [-p] [--print-ast] [--emit-mlir] [--run] <source_file.ak>");
+        println!("Usage: vxc [-p] [--print-ast] [--emit-mlir] [--run] <source_file.vx>");
     }
 }

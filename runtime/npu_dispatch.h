@@ -18,8 +18,8 @@ typedef struct {
 } MemRef2D;
 
 // Dispatch the matmul to the AMX (Accelerate) or ANE (CoreML)
-int akar_dispatch_amx(float* xout, float* x, float* w, int n, int d);
-int akar_dispatch_ane(float* xout, float* x, float* w, int n, int d);
+int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d);
+int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d);
 
 #ifdef __cplusplus
 }

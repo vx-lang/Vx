@@ -1,10 +1,10 @@
-# Denotational Semantics of Akar
+# Denotational Semantics of Vx
 
-This document outlines the denotational semantics of the Akar language. The primary objective is to formalize the mapping of Akar's syntax—specifically heterogeneous features like `Topology`, `Memory`, `Verified`, and `Pinned`—to strict mathematical domains.
+This document outlines the denotational semantics of the Vx language. The primary objective is to formalize the mapping of Vx's syntax—specifically heterogeneous features like `Topology`, `Memory`, `Verified`, and `Pinned`—to strict mathematical domains.
 
 ## 1. Semantic Domains
 
-Akar requires a dual-domain structure to distinguish between the Host (CPU) memory space and discrete Hardware Topologies (NPUs, GPUs).
+Vx requires a dual-domain structure to distinguish between the Host (CPU) memory space and discrete Hardware Topologies (NPUs, GPUs).
 
 ### 1.1 Memory and Location Domains
 - **$Loc$**: A countably infinite set of memory locations.
@@ -17,7 +17,7 @@ Akar requires a dual-domain structure to distinguish between the Host (CPU) memo
   - $\mathbb{T} = \{ NPU[0], NPU[1], ..., AccCore[0], ... \} \cup \{ Host \}$
 
 ### 1.3 Value Domains
-Values in Akar include primitive numbers, matrices (Tensors), and specialized hardware-bound states.
+Values in Vx include primitive numbers, matrices (Tensors), and specialized hardware-bound states.
 
 - **$\mathbb{N}, \mathbb{R}$**: Standard numerical types (`i64`, `f64`, `bf16`). Let $\mathcal{T}$ be the set of valid numeric types $\mathcal{T} = \{\text{f32}, \text{f64}, \text{bf16}, \text{i32}, \text{i64}\}$.
 - **$\mathbb{V}_{Tensor}^{\tau}$**: A multi-dimensional array parameterised by an element type $\tau \in \mathcal{T}$, mapping indices to values of type $\tau$.
@@ -27,7 +27,7 @@ Values in Akar include primitive numbers, matrices (Tensors), and specialized ha
 - **$\mathbb{V}$**: The domain of all evaluated values: $\mathbb{V} = \mathbb{R} \cup \bigcup_{\tau \in \mathcal{T}} \mathbb{V}_{Tensor}^{\tau} \cup \mathbb{V}_{Ref}$
 
 ### 1.4 State Monads
-Akar's correctness centers around the hardware execution monad. We formalize this using the `HardwareState` enum and the `Verified` mathematical wrapper.
+Vx's correctness centers around the hardware execution monad. We formalize this using the `HardwareState` enum and the `Verified` mathematical wrapper.
 
 - **$\mathcal{V}erified[\mathbb{V}]$**: Represents a value computation whose type constraints have been mathematically proven, but whose hardware execution bounds (Topology) have not yet been localized.
 - **$\mathcal{P}inned[\mathbb{V}, \mathbb{T}]$**: Represents a verified computation strictly bound to execute on a specific topology $t \in \mathbb{T}$.
@@ -41,7 +41,7 @@ The hardware state mathematically bridges these two:
 
 - **Environment ($Env$)**: Maps variable identifiers ($Id$) to their evaluated values or locations.
   - $\rho \in Env : Id \to \mathbb{V} \cup Loc$
-- **Store ($Store$)**: Maps locations to values. Because Akar has discrete memory topologies, the store is partitioned.
+- **Store ($Store$)**: Maps locations to values. Because Vx has discrete memory topologies, the store is partitioned.
   - $\sigma \in Store : Loc \to \mathbb{V}$
   - $\sigma = \sigma_{Host} \cup \sigma_{Topo}$
 

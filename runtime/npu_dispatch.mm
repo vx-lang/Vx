@@ -6,7 +6,7 @@
 #include "npu_dispatch.h"
 #include <iostream>
 
-extern "C" int akar_dispatch_amx(float* xout, float* x, float* w, int n, int d) {
+extern "C" int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
         // std::cout << "[Akar Dispatcher] Offloading to Apple AMX (Accelerate)..." << std::endl;
         
@@ -26,7 +26,7 @@ extern "C" int akar_dispatch_amx(float* xout, float* x, float* w, int n, int d) 
     }
 }
 
-extern "C" int akar_dispatch_gpu(float* xout, float* x, float* w, int n, int d) {
+extern "C" int vx_dispatch_gpu(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (!device) {
@@ -73,7 +73,7 @@ extern "C" int akar_dispatch_gpu(float* xout, float* x, float* w, int n, int d) 
 }
 
 
-extern "C" int akar_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
+extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
         NSURL *modelURL = [NSURL fileURLWithPath:@"matmul.mlmodelc"];
         NSError *error = nil;

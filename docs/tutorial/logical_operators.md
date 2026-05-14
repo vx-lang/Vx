@@ -1,10 +1,10 @@
-# Logical and Relational Operators in Akar
+# Logical and Relational Operators in Vx
 
-Akar provides comprehensive support for boolean logic and relation evaluations, both natively as scalars and across bounded Topology tensors.
+Vx provides comprehensive support for boolean logic and relation evaluations, both natively as scalars and across bounded Topology tensors.
 
 ## Relational Operators
 
-You can compare tensors or scalars using standard operators. Akar evaluates these and inherently maps them to the `Tensor<Bool>` domain (lowering directly to hardware-efficient MLIR `i1` types).
+You can compare tensors or scalars using standard operators. Vx evaluates these and inherently maps them to the `Tensor<Bool>` domain (lowering directly to hardware-efficient MLIR `i1` types).
 
 - `==` : Equal
 - `!=` : Not Equal
@@ -13,7 +13,7 @@ You can compare tensors or scalars using standard operators. Akar evaluates thes
 - `<=` : Less Than or Equal
 - `>=` : Greater Than or Equal
 
-```akar
+```vx
 fn test_relations() -> Tensor<Bool> {
     let a: Tensor<i32> = 10;
     let b: Tensor<i32> = 20;
@@ -30,7 +30,7 @@ Complex boolean operations can be evaluated natively:
 - `||` : Logical OR
 - `!` : Logical NOT
 
-```akar
+```vx
 fn validate_bounds(val: Tensor<i32>) -> Tensor<Bool> {
     let lower_bound: Tensor<i32> = 0;
     let upper_bound: Tensor<i32> = 100;
@@ -42,4 +42,4 @@ fn validate_bounds(val: Tensor<i32>) -> Tensor<Bool> {
 ```
 
 ## Interaction with Generic Tensors
-By abstracting boolean logic to `Tensor<Bool>`, Akar maintains full compatibility with its heterogeneous hardware abstraction. You can execute `&&` conditions seamlessly on a spawned NPU, and seamlessly pipe the resulting `Tensor<Bool>` back to the host for flow control!
+By abstracting boolean logic to `Tensor<Bool>`, Vx maintains full compatibility with its heterogeneous hardware abstraction. You can execute `&&` conditions seamlessly on a spawned NPU, and seamlessly pipe the resulting `Tensor<Bool>` back to the host for flow control!

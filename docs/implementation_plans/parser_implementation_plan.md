@@ -1,6 +1,6 @@
-# Extend Parser to Support `test.ak`
+# Extend Parser to Support `test.vx`
 
-This plan details the implementation of a recursive descent parser in `src/parser.rs` to successfully parse the `test.ak` snippet and related constructs defined in `src/ast.rs`.
+This plan details the implementation of a recursive descent parser in `src/parser.rs` to successfully parse the `test.vx` snippet and related constructs defined in `src/ast.rs`.
 
 The goal is to generate a full `Program` AST from the token stream for basic constructs like functions, variables, basic types, and the unique `spawn on` construct.
 
@@ -18,7 +18,7 @@ No significant changes are needed in `src/ast.rs` right now, as it already suppo
 ### Parser
 We will implement the following parsing methods in `src/parser.rs`.
 
-#### [MODIFY] [parser.rs](file:///Users/adityak/go/akar/src/parser.rs)
+#### [MODIFY] [parser.rs](file:///Users/adityak/go/vx/src/parser.rs)
 Add recursive descent methods to `Parser`:
 1. **`parse_function`**:
    - Expects `Fn` token, followed by an identifier.
@@ -42,8 +42,8 @@ Add recursive descent methods to `Parser`:
 ## Verification Plan
 
 ### Automated Tests
-- I will write a unit test in `src/parser.rs` that tokenizes and parses the exact content of `test.ak`.
+- I will write a unit test in `src/parser.rs` that tokenizes and parses the exact content of `test.vx`.
 - I will run `cargo test` to verify that `parser::parse` produces the correct AST.
 
 ### Manual Verification
-- We can add a simple `-p` (parse-only) flag to `src/main.rs` that prints out the AST using `println!("{:#?}", program)` to verify the parser handles the `test.ak` file correctly.
+- We can add a simple `-p` (parse-only) flag to `src/main.rs` that prints out the AST using `println!("{:#?}", program)` to verify the parser handles the `test.vx` file correctly.

@@ -1,6 +1,6 @@
-# Akar Compiler Roadmap
+# Vx Compiler Roadmap
 
-This document serves as the master tracking sheet for the Akar compiler. It maps our implemented features against the 7 foundational Core Philosophies defined in the project.
+This document serves as the master tracking sheet for the Vx compiler. It maps our implemented features against the 7 foundational Core Philosophies defined in the project.
 
 ## 1. Heterogeneous Compute & Address Spaces
 Treating topologies, execution spaces, and disparate memory domains as first-class primitives.
@@ -24,7 +24,7 @@ Allowing programmers to safely and mathematically verify computation boundaries.
 Bypassing runtime overhead and relying entirely on heavy ahead-of-time (AOT) optimizations.
 - `[x]` Direct lowering to MLIR and LLVM IR for execution
 - `[x]` High-performance heterogeneous JIT compilation via `lli` integration
-- `[ ]` Introduce custom `akar` MLIR dialect for specialized hardware topology modeling
+- `[ ]` Introduce custom `vx` MLIR dialect for specialized hardware topology modeling
 - `[ ]` Core MLIR optimization passes (Loop Unrolling, LICM)
 - `[ ]` Auto-Vectorization passes
 - `[ ]` Dead Code Elimination (DCE)
@@ -53,7 +53,7 @@ Unimpeded access to the lowest levels of the underlying execution silicon.
 ## 7. Strong System Interoperability
 Clean interoperability with the pre-existing low-level world (Operating Systems, Kernels, POSIX).
 - `[x]` Foreign Function Interface (FFI) for importing `extern "C"` functions
-- `[ ]` Akar function exporting formatted to the standard C ABI
+- `[ ]` Vx function exporting formatted to the standard C ABI
 - `[ ]` Static and Dynamic linking capabilities against host OS binaries
 
 ## 8. Standard Library Ecosystem

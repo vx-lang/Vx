@@ -2,13 +2,13 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use akarc::formatter::format_file;
+use vxc::formatter::format_file;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: akar-format [--indent <spaces>] <file1.ak> <file2.ak> ...");
+        eprintln!("Usage: vx-format [--indent <spaces>] <file1.vx> <file2.vx> ...");
         std::process::exit(1);
     }
 

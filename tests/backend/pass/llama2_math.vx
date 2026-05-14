@@ -27,8 +27,8 @@ extern {
     fn malloc(size: i64) -> *mut f32;
     fn free(ptr: *mut f32) -> i32;
     fn printf(format: *const i8, val: f32) -> i32;
-    fn akar_sqrtf(x: f32) -> f32;
-    fn akar_expf(x: f32) -> f32;
+    fn vx_sqrtf(x: f32) -> f32;
+    fn vx_expf(x: f32) -> f32;
 }
 
 fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32, size_f: f32) -> i32 {
@@ -40,7 +40,7 @@ fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32, size_f: f32) -
     
     ss = ss / size_f + 0.00001;
     unsafe {
-        ss = 1.0 / akar_sqrtf(ss);
+        ss = 1.0 / vx_sqrtf(ss);
     }
     
     for j in 0..size {
@@ -67,7 +67,7 @@ fn softmax(x: *mut f32, size: i32) -> i32 {
         let val: f32 = x[i];
         let diff: f32 = val - max_val;
         unsafe {
-            x[i] = akar_expf(diff);
+            x[i] = vx_expf(diff);
         }
         let exp_val: f32 = x[i];
         sum += exp_val;

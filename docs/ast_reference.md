@@ -1,12 +1,12 @@
-# Akar AST Reference Guide
+# Vx AST Reference Guide
 
-This document formally details the Abstract Syntax Tree (AST) definitions for the Akar programming language. As a language designed for heterogeneous hardware (CPUs, NPUs, Accelerators), Akar's AST includes first-class constructs for topology, memory spaces, and explicit data transfers.
+This document formally details the Abstract Syntax Tree (AST) definitions for the Vx programming language. As a language designed for heterogeneous hardware (CPUs, NPUs, Accelerators), Vx's AST includes first-class constructs for topology, memory spaces, and explicit data transfers.
 
 The AST is primarily defined in `src/ast.rs` and forms the foundation for semantic analysis (`sema.rs`) and MLIR code generation (`codegen.rs`).
 
 ## High-Level Program Structure
 
-An Akar `Program` is the root node of the AST. It encapsulates all top-level declarations within a single compilation unit.
+An Vx `Program` is the root node of the AST. It encapsulates all top-level declarations within a single compilation unit.
 
 ```rust
 pub struct Program {
@@ -20,7 +20,7 @@ pub struct Program {
 
 ## Topologies & Memory Spaces
 
-Akar explicitly models hardware locality to prevent unexpected, implicit cross-device memory operations.
+Vx explicitly models hardware locality to prevent unexpected, implicit cross-device memory operations.
 
 ### Topology
 Topologies define *where* computation executes. They can represent the Host CPU, an NPU cluster, or specific slices of a distributed topology.
@@ -47,7 +47,7 @@ pub enum MemorySpace {
 
 ## Type System
 
-Akar features a strictly verified, generic-capable type system.
+Vx features a strictly verified, generic-capable type system.
 
 ```rust
 pub enum Type {

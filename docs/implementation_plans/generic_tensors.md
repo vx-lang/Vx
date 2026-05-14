@@ -1,11 +1,11 @@
 # Generic Tensor Types & Execution Tests
 
-To write execution tests for `f32`, `bf16`, and `int64`, Akar needs to support parametrizing `Tensor` with different hardware element types. Currently, everything is hardcoded to `f32` (`memref<?x?xf32>`).
+To write execution tests for `f32`, `bf16`, and `int64`, Vx needs to support parametrizing `Tensor` with different hardware element types. Currently, everything is hardcoded to `f32` (`memref<?x?xf32>`).
 
 ## User Review Required
 
 > [!IMPORTANT]
-> Since Akar is a systems language, I propose adding Rust-like generic type parsing for Tensors. For example: `Tensor<bf16>`, `Tensor<i64>`.
+> Since Vx is a systems language, I propose adding Rust-like generic type parsing for Tensors. For example: `Tensor<bf16>`, `Tensor<i64>`.
 > Does this syntax look good to you? If so, I will implement the parser for `<T>` and lower these directly into MLIR `bf16` and `i64` dialects.
 
 ## Proposed Changes
@@ -26,8 +26,8 @@ To write execution tests for `f32`, `bf16`, and `int64`, Akar needs to support p
 - Dynamically invoke `@printMemrefBF16` or `@printMemrefI64` based on the tensor's element type.
 
 ### 4. Tests (`tests/backend/`)
-- `matmul_bf16.ak`: Testing `custom_matmul` with `Tensor<bf16>`.
-- `matmul_i64.ak`: Testing `custom_matmul` with `Tensor<i64>`.
+- `matmul_bf16.vx`: Testing `custom_matmul` with `Tensor<bf16>`.
+- `matmul_i64.vx`: Testing `custom_matmul` with `Tensor<i64>`.
 - Both will include `EXPECT` statements to verify the correct math via JIT.
 
 ## Verification Plan

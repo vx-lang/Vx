@@ -1,11 +1,11 @@
-# Formal Semantics of Akar Generics
+# Formal Semantics of Vx Generics
 
-Akar's generics are resolved completely statically via monomorphization. We define the semantics of generics as a source-to-source program transformation that occurs prior to runtime operational execution.
+Vx's generics are resolved completely statically via monomorphization. We define the semantics of generics as a source-to-source program transformation that occurs prior to runtime operational execution.
 
 ## 1. Type Substitution Environment
 
 Let $\Gamma$ be the standard typing environment mapping variables to types.
-We introduce $\Delta$, the generic type mapping environment, which maps generic parameter identifiers (e.g., $T$) to concrete Akar types.
+We introduce $\Delta$, the generic type mapping environment, which maps generic parameter identifiers (e.g., $T$) to concrete Vx types.
 
 A substitution operation $S[\Delta]$ takes an AST node $S$ and replaces all occurrences of $T$ where $T \in \text{dom}(\Delta)$ with $\Delta(T)$.
 

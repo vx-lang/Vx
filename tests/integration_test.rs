@@ -1,6 +1,6 @@
-use akarc::lexer::Lexer;
-use akarc::parser::Parser;
-use akarc::sema::TypeChecker;
+use vxc::lexer::Lexer;
+use vxc::parser::Parser;
+use vxc::sema::TypeChecker;
 
 #[test]
 fn test_distributed_matmul_integration() {
@@ -42,7 +42,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
     assert!(is_valid, "Semantic analysis failed on integration test");
 }
 
-fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
+fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(tokens, input);
@@ -50,7 +50,7 @@ fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
     let mut checker = TypeChecker::new();
     match checker.check_program(&mut program) {
         Ok((monomorphized_ast, module_asts)) => {
-            let mut codegen = akarc::codegen::MlirGenerator::new();
+            let mut codegen = vxc::codegen::MlirGenerator::new();
             let _mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
             Ok(monomorphized_ast)
         }

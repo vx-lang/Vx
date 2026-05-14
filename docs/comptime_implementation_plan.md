@@ -1,6 +1,6 @@
 # Compile-Time Evaluation (`comptime`) & Assertions
 
-To align with Akar's philosophy of "Ease of Verified Computation," we will implement first-class assertion primitives. Rather than relying on macros, we will introduce a `comptime` block and a built-in `assert` keyword. This enables verifiable mathematical boundaries directly in the AST, supporting both runtime safety and ahead-of-time evaluation.
+To align with Vx's philosophy of "Ease of Verified Computation," we will implement first-class assertion primitives. Rather than relying on macros, we will introduce a `comptime` block and a built-in `assert` keyword. This enables verifiable mathematical boundaries directly in the AST, supporting both runtime safety and ahead-of-time evaluation.
 
 ## User Review Required
 Please review the proposed approach for compile-time constant evaluation below. In this initial iteration, `sema.rs` will include a basic interpreter to statically evaluate expressions inside `comptime` blocks. Does this align with your vision for `constexpr`-style evaluation?
@@ -27,5 +27,5 @@ Please review the proposed approach for compile-time constant evaluation below. 
 - **Comptime Blocks**: Strip `Statement::Comptime` blocks during codegen. Since they are guaranteed to have executed during Semantic Analysis, they do not produce runtime MLIR overhead (zero-cost abstraction).
 
 ## Verification Plan
-1. Add an integration test `tests/backend/pass/assert_runtime.ak` to verify MLIR aborts gracefully.
-2. Add a compiler failure test `tests/backend/fail/assert_comptime.ak` to verify that `comptime { assert(false); }` successfully halts the compilation process.
+1. Add an integration test `tests/backend/pass/assert_runtime.vx` to verify MLIR aborts gracefully.
+2. Add a compiler failure test `tests/backend/fail/assert_comptime.vx` to verify that `comptime { assert(false); }` successfully halts the compilation process.

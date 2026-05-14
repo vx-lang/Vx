@@ -22,7 +22,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
 
     let mut clang_cmd = Command::new(&cc);
     clang_cmd.args(&cflags);
-    clang_cmd.args(["src/runtime/akar_rt.c", "-o", "target/jit/libakar_rt.dylib"]);
+    clang_cmd.args(["src/runtime/vx_rt.c", "-o", "target/jit/libvx_rt.dylib"]);
 
     let clang_status = clang_cmd.status().map_err(|e| e.to_string())?;
 
@@ -63,7 +63,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         }
     } else {
         return Err(
-            "Akar JIT execution currently requires macOS Apple Silicon for hardware dispatch."
+            "Vx JIT execution currently requires macOS Apple Silicon for hardware dispatch."
                 .to_string(),
         );
     }
@@ -114,7 +114,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     println!("[JIT] Executing via LLI...");
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
         .args([
-            "--load=target/jit/libakar_rt.dylib",
+            "--load=target/jit/libvx_rt.dylib",
             "--load=target/jit/libnpu_dispatch.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
