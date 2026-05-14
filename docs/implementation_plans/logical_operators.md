@@ -4,7 +4,7 @@ We will implement logical (`&&`, `||`, `!`) and relational (`==`, `!=`, `<`, `>`
 
 ## User Review Required
 
-> [!IMPORTANT]  
+> [!IMPORTANT]
 > Akar currently lacks an explicit boolean element type in `ElementType`. I propose adding `ElementType::Bool` (lowering to MLIR's `i1`) so that comparisons evaluate to `Tensor<Bool>` (or a scalar boolean). Alternatively, we could reuse `I8`. Please approve the addition of `ElementType::Bool` or suggest an alternative.
 
 ## Proposed Changes
