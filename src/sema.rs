@@ -1,9 +1,16 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Bool(bool),
+    Number(f64),
+}
+
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, (Type, Topology)>>,
     functions: HashMap<String, (Type, bool)>, // Maps function name to (return type, is_unsafe)
+    ast_functions: HashMap<String, Function>, // For constexpr evaluation
     generic_functions: HashMap<String, Function>,
     pub monomorphized_functions: Vec<Function>,
     structs: HashMap<String, StructDecl>,
@@ -26,6 +33,7 @@ impl TypeChecker {
         Self {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
+            ast_functions: HashMap::new(),
             generic_functions: HashMap::new(),
             monomorphized_functions: Vec::new(),
             structs: HashMap::new(),
@@ -98,6 +106,7 @@ impl TypeChecker {
             } else {
                 self.functions
                     .insert(func.name.clone(), (func.return_type.clone(), false));
+                self.ast_functions.insert(func.name.clone(), func.clone());
                 functions_to_check.push(func.clone());
             }
         }
@@ -329,7 +338,8 @@ impl TypeChecker {
                             self.errors
                                 .push("Assertion condition must be boolean".to_string());
                         }
-                        if let Some(b) = self.eval_expr_bool(expr) {
+                        let empty_env = HashMap::new();
+                        if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
                             if !b {
                                 let m = msg
                                     .clone()
@@ -350,36 +360,71 @@ impl TypeChecker {
         }
     }
 
-    fn eval_expr_bool(&self, expr: &Expr) -> Option<bool> {
+    fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
         match expr {
-            Expr::Identifier(n) if n == "true" => Some(true),
-            Expr::Identifier(n) if n == "false" => Some(false),
+            Expr::Number(n) => Some(Value::Number(*n)),
+            Expr::Identifier(n) if n == "true" => Some(Value::Bool(true)),
+            Expr::Identifier(n) if n == "false" => Some(Value::Bool(false)),
+            Expr::Identifier(n) => env.get(n).cloned(),
             Expr::BinaryOp(lhs, op, rhs) => {
-                if let (Expr::Number(a), Expr::Number(b)) = (&**lhs, &**rhs) {
-                    match op {
-                        BinaryOp::Eq => Some(a == b),
-                        BinaryOp::NotEq => Some(a != b),
-                        BinaryOp::Lt => Some(a < b),
-                        BinaryOp::Gt => Some(a > b),
-                        BinaryOp::Le => Some(a <= b),
-                        BinaryOp::Ge => Some(a >= b),
-                        _ => None,
+                let l = self.eval_expr(lhs, env)?;
+                let r = self.eval_expr(rhs, env)?;
+                match (l, r, op) {
+                    (Value::Number(a), Value::Number(b), BinaryOp::Eq) => Some(Value::Bool(a == b)),
+                    (Value::Number(a), Value::Number(b), BinaryOp::NotEq) => {
+                        Some(Value::Bool(a != b))
                     }
-                } else if let (Some(a), Some(b)) =
-                    (self.eval_expr_bool(lhs), self.eval_expr_bool(rhs))
-                {
-                    match op {
-                        BinaryOp::Eq => Some(a == b),
-                        BinaryOp::NotEq => Some(a != b),
-                        BinaryOp::And => Some(a && b),
-                        BinaryOp::Or => Some(a || b),
-                        _ => None,
-                    }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Lt) => Some(Value::Bool(a < b)),
+                    (Value::Number(a), Value::Number(b), BinaryOp::Gt) => Some(Value::Bool(a > b)),
+                    (Value::Number(a), Value::Number(b), BinaryOp::Le) => Some(Value::Bool(a <= b)),
+                    (Value::Number(a), Value::Number(b), BinaryOp::Ge) => Some(Value::Bool(a >= b)),
+                    (Value::Bool(a), Value::Bool(b), BinaryOp::Eq) => Some(Value::Bool(a == b)),
+                    (Value::Bool(a), Value::Bool(b), BinaryOp::NotEq) => Some(Value::Bool(a != b)),
+                    (Value::Bool(a), Value::Bool(b), BinaryOp::And) => Some(Value::Bool(a && b)),
+                    (Value::Bool(a), Value::Bool(b), BinaryOp::Or) => Some(Value::Bool(a || b)),
+                    _ => None,
+                }
+            }
+            Expr::UnaryOp(UnaryOp::Not, inner) => {
+                if let Value::Bool(b) = self.eval_expr(inner, env)? {
+                    Some(Value::Bool(!b))
                 } else {
                     None
                 }
             }
-            Expr::UnaryOp(UnaryOp::Not, inner) => self.eval_expr_bool(inner).map(|b| !b),
+            Expr::FunctionCall(name, args) => {
+                let func = self.ast_functions.get(name)?;
+                let mut local_env = HashMap::new();
+                for (i, arg_expr) in args.iter().enumerate() {
+                    let arg_val = self.eval_expr(arg_expr, env)?;
+                    local_env.insert(func.params[i].0.clone(), arg_val);
+                }
+                for stmt in &func.body {
+                    if let Some(ret_val) = self.eval_statement(stmt, &mut local_env) {
+                        return Some(ret_val);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_statement(&self, stmt: &Statement, env: &mut HashMap<String, Value>) -> Option<Value> {
+        match stmt {
+            Statement::LetDecl(name, _, _, expr) => {
+                if let Some(val) = self.eval_expr(expr, env) {
+                    env.insert(name.clone(), val);
+                }
+                None
+            }
+            Statement::Assign(Expr::Identifier(name), rhs) => {
+                if let Some(val) = self.eval_expr(rhs, env) {
+                    env.insert(name.clone(), val);
+                }
+                None
+            }
+            Statement::Return(expr) => self.eval_expr(expr, env),
             _ => None,
         }
     }
@@ -387,6 +432,9 @@ impl TypeChecker {
     fn check_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Identifier(name) => {
+                if name == "true" || name == "false" {
+                    return Type::Scalar(ElementType::Bool);
+                }
                 match self.lookup(name) {
                     Some((ty, top)) => {
                         // Enforce Topology Boundaries!

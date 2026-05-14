@@ -528,6 +528,16 @@ impl MlirGenerator {
     fn generate_expr(&mut self, expr: &Expr, expected_ty: &str) -> (String, String) {
         match expr {
             Expr::Identifier(name) => {
+                if name == "true" {
+                    let res = self.next_var();
+                    self.write_line(&format!("{} = arith.constant true", res));
+                    return (res, "i1".to_string());
+                } else if name == "false" {
+                    let res = self.next_var();
+                    self.write_line(&format!("{} = arith.constant false", res));
+                    return (res, "i1".to_string());
+                }
+
                 let env_val = self.env.get(name).cloned();
                 if let Some((ssa, ty)) = env_val {
                     let mut ssa_res = ssa.clone();
@@ -869,37 +879,57 @@ impl MlirGenerator {
                 }
             }
             Expr::BinaryOp(lhs, op, rhs) => {
-                let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
-                let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
+                let is_cmp = matches!(
+                    op,
+                    BinaryOp::Eq
+                        | BinaryOp::NotEq
+                        | BinaryOp::Lt
+                        | BinaryOp::Gt
+                        | BinaryOp::Le
+                        | BinaryOp::Ge
+                );
+
+                let op_hint = if is_cmp { "any" } else { expected_ty };
+                let (mut lhs_val, mut lhs_ty) = self.generate_expr(lhs, op_hint);
+                let (rhs_val, rhs_ty) = self.generate_expr(rhs, &lhs_ty);
+
+                // If LHS was a generic number and RHS has a specific type, regenerate LHS with RHS type
+                if is_cmp && lhs_ty == "i64" && rhs_ty != "i64" && matches!(**lhs, Expr::Number(_))
+                {
+                    let (new_lhs_val, new_lhs_ty) = self.generate_expr(lhs, &rhs_ty);
+                    lhs_val = new_lhs_val;
+                    lhs_ty = new_lhs_ty;
+                }
+
                 let res = self.next_var();
-                let is_int = self.current_el_ty.starts_with("i");
+                let is_int = lhs_ty.starts_with("i") || lhs_ty == "index";
                 match op {
                     BinaryOp::Add => {
                         let op_str = if is_int { "arith.addi" } else { "arith.addf" };
                         self.write_line(&format!(
                             "{} = {} {}, {} : {}",
-                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                            res, op_str, lhs_val, rhs_val, lhs_ty
                         ));
                     }
                     BinaryOp::Mul => {
                         let op_str = if is_int { "arith.muli" } else { "arith.mulf" };
                         self.write_line(&format!(
                             "{} = {} {}, {} : {}",
-                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                            res, op_str, lhs_val, rhs_val, lhs_ty
                         ));
                     }
                     BinaryOp::Sub => {
                         let op_str = if is_int { "arith.subi" } else { "arith.subf" };
                         self.write_line(&format!(
                             "{} = {} {}, {} : {}",
-                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                            res, op_str, lhs_val, rhs_val, lhs_ty
                         ));
                     }
                     BinaryOp::Div => {
                         let op_str = if is_int { "arith.divsi" } else { "arith.divf" };
                         self.write_line(&format!(
                             "{} = {} {}, {} : {}",
-                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                            res, op_str, lhs_val, rhs_val, lhs_ty
                         ));
                     }
                     BinaryOp::Eq
@@ -921,12 +951,12 @@ impl MlirGenerator {
                         if is_int {
                             self.write_line(&format!(
                                 "{} = arith.cmpi \"{}\", {}, {} : {}",
-                                res, pred_i, lhs_val, rhs_val, self.current_el_ty
+                                res, pred_i, lhs_val, rhs_val, lhs_ty
                             ));
                         } else {
                             self.write_line(&format!(
                                 "{} = arith.cmpf \"{}\", {}, {} : {}",
-                                res, pred_f, lhs_val, rhs_val, self.current_el_ty
+                                res, pred_f, lhs_val, rhs_val, lhs_ty
                             ));
                         }
                         return (res, "i1".to_string());
