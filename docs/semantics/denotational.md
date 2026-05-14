@@ -62,9 +62,9 @@ $\mathcal{E} \llbracket e \rrbracket : Env \to Store \to (\mathbb{V} \times Stor
   $\langle l, \sigma_{Host}[l \mapsto v] \rangle$
 
 ### 3.3 Topology Spawn
-The `spawn on` construct transitions the evaluation context from $\sigma_{Host}$ to $\sigma_{Topo}$. 
+The `spawn on` construct transitions the evaluation context from $\sigma_{Host}$ to $\sigma_{Topo}$.
 
-Let $t \in \mathbb{T}$ be a target topology. 
+Let $t \in \mathbb{T}$ be a target topology.
 $\mathcal{E} \llbracket \text{spawn on}(t) \{ S \} \rrbracket \rho \sigma =$
   Let $\sigma' = \mathcal{C} \llbracket S \rrbracket \rho \sigma_{Topo}$.
   If computation is successful, returns $\mathcal{P}inned[\mathbb{V}, t]$.

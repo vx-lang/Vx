@@ -24,11 +24,11 @@ The compiler strictly prohibits direct operations between types in different mem
 
 ```rust
 // COMPILE ERROR: Cannot add variables in different address spaces
-let c = host_matrix + npu_matrix; 
+let c = host_matrix + npu_matrix;
 
 // CORRECT: Must explicitly transfer ownership
 let npu_matrix_b = transfer(host_matrix, Memory::NPU_HBM);
-let c = npu_matrix_b + npu_matrix; 
+let c = npu_matrix_b + npu_matrix;
 ```
 
 ## 2. Hardware-Aware Typestates
@@ -37,7 +37,7 @@ Akar models the non-deterministic nature of distributed, heterogeneous execution
 
 ### 2.1 `Verified<T>`: The Agile Compute Type
 
-When you define a computation without specifying an exact physical target, the compiler returns a `Verified<T>`. 
+When you define a computation without specifying an exact physical target, the compiler returns a `Verified<T>`.
 
 ```rust
 let task: Verified<Tensor> = matmul(A, B);
@@ -65,7 +65,7 @@ Because physical hardware may be saturated, failed, or unavailable, bridging `Ve
 enum HardwareState<T, Topo> {
     // The hardware is available and the computation is successfully pinned.
     Available(Pinned<T, Topo>),
-    
+
     // The hardware is saturated or unavailable. Returns the original unpinned computation.
     Saturated(Verified<T>),
 }
@@ -94,10 +94,10 @@ match target {
 Akar tracks synchronization and side-effects across address spaces as part of the function signature.
 
 ```rust
-// This function signature indicates that it performs asynchronous data 
+// This function signature indicates that it performs asynchronous data
 // movement to the NPU and has temporal side-effects.
-fn pipeline() -> Verified<()> 
-    effects(DataMovement(Memory::Host_DRAM -> Memory::NPU_HBM)) 
+fn pipeline() -> Verified<()>
+    effects(DataMovement(Memory::Host_DRAM -> Memory::NPU_HBM))
 {
     // ...
 }

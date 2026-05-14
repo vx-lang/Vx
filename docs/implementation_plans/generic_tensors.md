@@ -1,11 +1,11 @@
 # Generic Tensor Types & Execution Tests
 
-To write execution tests for `f32`, `bf16`, and `int64`, Akar needs to support parametrizing `Tensor` with different hardware element types. Currently, everything is hardcoded to `f32` (`memref<?x?xf32>`). 
+To write execution tests for `f32`, `bf16`, and `int64`, Akar needs to support parametrizing `Tensor` with different hardware element types. Currently, everything is hardcoded to `f32` (`memref<?x?xf32>`).
 
 ## User Review Required
 
 > [!IMPORTANT]
-> Since Akar is a systems language, I propose adding Rust-like generic type parsing for Tensors. For example: `Tensor<bf16>`, `Tensor<i64>`. 
+> Since Akar is a systems language, I propose adding Rust-like generic type parsing for Tensors. For example: `Tensor<bf16>`, `Tensor<i64>`.
 > Does this syntax look good to you? If so, I will implement the parser for `<T>` and lower these directly into MLIR `bf16` and `i64` dialects.
 
 ## Proposed Changes

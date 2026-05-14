@@ -4,7 +4,7 @@ This implementation plan outlines the architectural phases required to take our 
 
 ## User Review Required
 > [!IMPORTANT]
-> Please review the chosen technologies (MLIR `melior` crate, LLVM ORC JIT) to ensure they align with your vision for the project. 
+> Please review the chosen technologies (MLIR `melior` crate, LLVM ORC JIT) to ensure they align with your vision for the project.
 
 ## Phase 1: Semantic Analysis (Type Checking)
 Before generating code, we must validate the AST for correctness.

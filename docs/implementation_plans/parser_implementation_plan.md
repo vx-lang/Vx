@@ -1,6 +1,6 @@
 # Extend Parser to Support `test.ak`
 
-This plan details the implementation of a recursive descent parser in `src/parser.rs` to successfully parse the `test.ak` snippet and related constructs defined in `src/ast.rs`. 
+This plan details the implementation of a recursive descent parser in `src/parser.rs` to successfully parse the `test.ak` snippet and related constructs defined in `src/ast.rs`.
 
 The goal is to generate a full `Program` AST from the token stream for basic constructs like functions, variables, basic types, and the unique `spawn on` construct.
 
@@ -16,7 +16,7 @@ The goal is to generate a full `Program` AST from the token stream for basic con
 No significant changes are needed in `src/ast.rs` right now, as it already supports `LetDecl`, `Return`, `SpawnOn`, `ExprStmt`, `Transfer`, and topologies.
 
 ### Parser
-We will implement the following parsing methods in `src/parser.rs`. 
+We will implement the following parsing methods in `src/parser.rs`.
 
 #### [MODIFY] [parser.rs](file:///Users/adityak/go/akar/src/parser.rs)
 Add recursive descent methods to `Parser`:

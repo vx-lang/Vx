@@ -36,11 +36,11 @@ Because hardware can fail or saturate, we rely on the `HardwareState` monad to b
 Let $c$ be a computation bounded by $\text{Verified}<T>$, meaning $\{ P \} \ c \ \{ Q \}_{Math}$ is proven. Let $t \in \mathbb{T}$ be the target topology.
 
 $$
-\frac{ 
-  \{ P \land \text{Available}(t) \} \ \text{try\_pin}(c, t) \ \{ Q \}_t \quad 
-  \{ P \land \neg \text{Available}(t) \} \ \text{fallback}(c) \ \{ Q \}_{Fallback} 
-}{ 
-  \{ P \} \ \text{match try\_pin}(c, t) \{ \dots \} \ \{ Q \}_{Host} 
+\frac{
+  \{ P \land \text{Available}(t) \} \ \text{try\_pin}(c, t) \ \{ Q \}_t \quad
+  \{ P \land \neg \text{Available}(t) \} \ \text{fallback}(c) \ \{ Q \}_{Fallback}
+}{
+  \{ P \} \ \text{match try\_pin}(c, t) \{ \dots \} \ \{ Q \}_{Host}
 } \text{ (HardwareState Match)}
 $$
 

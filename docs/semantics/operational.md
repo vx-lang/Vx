@@ -4,7 +4,7 @@ This document details the Structural Operational Semantics (SOS) of the Akar pro
 
 ## 1. The Execution State
 
-Standard imperative languages define state as a tuple $\langle S, \sigma \rangle$ where $S$ is the statement to execute and $\sigma$ is the memory store. 
+Standard imperative languages define state as a tuple $\langle S, \sigma \rangle$ where $S$ is the statement to execute and $\sigma$ is the memory store.
 
 Akar introduces heterogeneous computing, meaning the active execution state must track which topology is executing the instruction and maintain segmented stores for the Host CPU and discrete Accelerators.
 
@@ -42,21 +42,21 @@ The `spawn on` construct evaluates a block of code strictly within the domain of
 Let $t \in \mathbb{T}$ be a valid topology identifier (e.g., `Topology::NPU[0]`).
 
 $$
-\frac{ 
-  \text{HardwareAvailable}(t) \quad 
-  \langle S, \sigma, \tau \rangle_{t} \to^* \langle v, \sigma', \tau' \rangle_{t} 
-}{ 
-  \langle \text{spawn on}(t) \{ S \}, \sigma, \tau \rangle_{Host} \to \langle \text{Available}(\text{Pinned}(v, t)), \sigma', \tau' \rangle_{Host} 
+\frac{
+  \text{HardwareAvailable}(t) \quad
+  \langle S, \sigma, \tau \rangle_{t} \to^* \langle v, \sigma', \tau' \rangle_{t}
+}{
+  \langle \text{spawn on}(t) \{ S \}, \sigma, \tau \rangle_{Host} \to \langle \text{Available}(\text{Pinned}(v, t)), \sigma', \tau' \rangle_{Host}
 } \text{ (Spawn-Success)}
 $$
 
 If the hardware is unavailable, the operational semantic rule evaluates the fallback state instead:
 
 $$
-\frac{ 
+\frac{
   \neg \text{HardwareAvailable}(t)
-}{ 
-  \langle \text{spawn on}(t) \{ S \}, \sigma, \tau \rangle_{Host} \to \langle \text{Saturated}(\text{Verified}(S)), \sigma, \tau \rangle_{Host} 
+}{
+  \langle \text{spawn on}(t) \{ S \}, \sigma, \tau \rangle_{Host} \to \langle \text{Saturated}(\text{Verified}(S)), \sigma, \tau \rangle_{Host}
 } \text{ (Spawn-Fail)}
 $$
 
@@ -78,7 +78,7 @@ Assignment natively checks the element type $\mathcal{T}$ of the Tensor to ensur
 
 $$
 \frac{
-  \langle E, \sigma, \tau \rangle_\Omega \to^* \langle v, \sigma, \tau \rangle_\Omega \quad 
+  \langle E, \sigma, \tau \rangle_\Omega \to^* \langle v, \sigma, \tau \rangle_\Omega \quad
   \text{TypeOf}(v) == \mathcal{T} \quad
   l = \text{LocOf}(x[\vec{i}])
 }{

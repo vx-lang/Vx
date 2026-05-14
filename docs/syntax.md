@@ -62,10 +62,10 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
     spawn on(Topology::NPU[0]) {
         // Explicitly transfer data from Host DRAM to NPU HBM
         let local_data = transfer(host_input, Memory::NPU_HBM);
-        
+
         // Execute computation on the local data
         let result = process(local_data);
-        
+
         // Transfer result back to Host DRAM
         let host_result = transfer(result, Memory::Host_DRAM);
     }
@@ -98,11 +98,11 @@ let target_compute = async_result.try_pin(Topology::Acc1Core);
 
 match target_compute {
     HardwareState::Available(pinned) => {
-        pinned.execute(); 
+        pinned.execute();
     },
     HardwareState::Saturated(fallback) => {
         // Hardware is busy/unavailable, fallback to agile execution
-        fallback.execute_anywhere(); 
+        fallback.execute_anywhere();
     }
 }
 ```
