@@ -28,7 +28,7 @@ define { ptr, ptr, i64, [2 x i64], [2 x i64] } @custom_matmul(ptr %0, ptr %1, i6
   %26 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %25, i64 %5, 4, 0
   %27 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %26, i64 %4, 3, 1
   %28 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %27, i64 %6, 4, 1
-  %29 = call ptr @malloc(i64 128)
+  %29 = call ptr @malloc(i64 64)
   %30 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %29, 0
   %31 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %30, ptr %29, 1
   %32 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %31, i64 0, 2
@@ -56,8 +56,8 @@ define { ptr, ptr, i64, [2 x i64], [2 x i64] } @custom_matmul(ptr %0, ptr %1, i6
   %46 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, 4, 0
   %47 = mul nuw nsw i64 %38, %46
   %48 = add nuw nsw i64 %47, %42
-  %49 = getelementptr inbounds nuw double, ptr %45, i64 %48
-  store double 0.000000e+00, ptr %49, align 8
+  %49 = getelementptr inbounds nuw float, ptr %45, i64 %48
+  store float 0.000000e+00, ptr %49, align 4
   br label %50
 
 50:                                               ; preds = %53, %44
@@ -70,28 +70,28 @@ define { ptr, ptr, i64, [2 x i64], [2 x i64] } @custom_matmul(ptr %0, ptr %1, i6
   %55 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, 4, 0
   %56 = mul nuw nsw i64 %38, %55
   %57 = add nuw nsw i64 %56, %42
-  %58 = getelementptr inbounds nuw double, ptr %54, i64 %57
-  %59 = load double, ptr %58, align 8
+  %58 = getelementptr inbounds nuw float, ptr %54, i64 %57
+  %59 = load float, ptr %58, align 4
   %60 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, 1
   %61 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, 4, 0
   %62 = mul nuw nsw i64 %38, %61
   %63 = add nuw nsw i64 %62, %51
-  %64 = getelementptr inbounds nuw double, ptr %60, i64 %63
-  %65 = load double, ptr %64, align 8
+  %64 = getelementptr inbounds nuw float, ptr %60, i64 %63
+  %65 = load float, ptr %64, align 4
   %66 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %21, 1
   %67 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %21, 4, 0
   %68 = mul nuw nsw i64 %51, %67
   %69 = add nuw nsw i64 %68, %42
-  %70 = getelementptr inbounds nuw double, ptr %66, i64 %69
-  %71 = load double, ptr %70, align 8
-  %72 = fmul double %65, %71
-  %73 = fadd double %59, %72
+  %70 = getelementptr inbounds nuw float, ptr %66, i64 %69
+  %71 = load float, ptr %70, align 4
+  %72 = fmul float %65, %71
+  %73 = fadd float %59, %72
   %74 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, 1
   %75 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, 4, 0
   %76 = mul nuw nsw i64 %38, %75
   %77 = add nuw nsw i64 %76, %42
-  %78 = getelementptr inbounds nuw double, ptr %74, i64 %77
-  store double %73, ptr %78, align 8
+  %78 = getelementptr inbounds nuw float, ptr %74, i64 %77
+  store float %73, ptr %78, align 4
   %79 = add i64 %51, 1
   br label %50
 
@@ -108,7 +108,7 @@ define { ptr, ptr, i64, [2 x i64], [2 x i64] } @custom_matmul(ptr %0, ptr %1, i6
 }
 
 define i32 @main() {
-  %1 = call ptr @malloc(i64 128)
+  %1 = call ptr @malloc(i64 64)
   %2 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %1, 0
   %3 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %2, ptr %1, 1
   %4 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %3, i64 0, 2
@@ -116,7 +116,7 @@ define i32 @main() {
   %6 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %5, i64 4, 3, 1
   %7 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %6, i64 4, 4, 0
   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %7, i64 1, 4, 1
-  %9 = call ptr @malloc(i64 128)
+  %9 = call ptr @malloc(i64 64)
   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %9, 0
   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, ptr %9, 1
   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 0, 2
@@ -144,14 +144,14 @@ define i32 @main() {
   %26 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 4, 0
   %27 = mul nuw nsw i64 %18, %26
   %28 = add nuw nsw i64 %27, %22
-  %29 = getelementptr inbounds nuw double, ptr %25, i64 %28
-  store double 2.000000e+00, ptr %29, align 8
+  %29 = getelementptr inbounds nuw float, ptr %25, i64 %28
+  store float 2.000000e+00, ptr %29, align 4
   %30 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 1
   %31 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 4, 0
   %32 = mul nuw nsw i64 %18, %31
   %33 = add nuw nsw i64 %32, %22
-  %34 = getelementptr inbounds nuw double, ptr %30, i64 %33
-  store double 3.000000e+00, ptr %34, align 8
+  %34 = getelementptr inbounds nuw float, ptr %30, i64 %33
+  store float 3.000000e+00, ptr %34, align 4
   %35 = add i64 %22, 1
   br label %21
 
@@ -180,7 +180,7 @@ define i32 @main() {
   %55 = insertvalue { i64, ptr } { i64 2, ptr poison }, ptr %54, 1
   %56 = extractvalue { i64, ptr } %55, 0
   %57 = extractvalue { i64, ptr } %55, 1
-  call void @printMemrefF64(i64 %56, ptr %57)
+  call void @printMemrefF32(i64 %56, ptr %57)
   ret i32 0
 }
 
