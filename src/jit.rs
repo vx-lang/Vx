@@ -16,16 +16,15 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     println!("[JIT] Compiling C Runtime...");
-    let clang_status = Command::new("clang")
-        .args([
-            "-shared",
-            "-fPIC",
-            "src/runtime/akar_rt.c",
-            "-o",
-            "target/jit/libakar_rt.dylib",
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
+    let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
+    let cflags_env = std::env::var("CFLAGS").unwrap_or_else(|_| "-shared -fPIC".to_string());
+    let cflags: Vec<&str> = cflags_env.split_whitespace().collect();
+
+    let mut clang_cmd = Command::new(&cc);
+    clang_cmd.args(&cflags);
+    clang_cmd.args(["src/runtime/akar_rt.c", "-o", "target/jit/libakar_rt.dylib"]);
+
+    let clang_status = clang_cmd.status().map_err(|e| e.to_string())?;
 
     if !clang_status.success() {
         return Err("Failed to compile C runtime".to_string());
@@ -33,23 +32,25 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
 
     if cfg!(target_os = "macos") {
         println!("[JIT] Compiling Objective-C++ NPU Dispatcher...");
-        let npu_status = Command::new("clang++")
-            .args([
-                "-shared",
-                "-fPIC",
-                "-fobjc-arc",
-                "-O3",
-                "-Wno-deprecated-declarations",
-                "runtime/npu_dispatch.mm",
-                "-framework",
-                "Accelerate",
-                "-framework",
-                "Foundation",
-                "-o",
-                "target/jit/libnpu_dispatch.dylib",
-            ])
-            .status()
-            .map_err(|e| e.to_string())?;
+        let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+        let cxxflags_env = std::env::var("CXXFLAGS").unwrap_or_else(|_| {
+            "-shared -fPIC -fobjc-arc -O3 -Wno-deprecated-declarations".to_string()
+        });
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
+
+        let mut cxx_cmd = Command::new(&cxx);
+        cxx_cmd.args(&cxxflags);
+        cxx_cmd.args([
+            "runtime/npu_dispatch.mm",
+            "-framework",
+            "Accelerate",
+            "-framework",
+            "Foundation",
+            "-o",
+            "target/jit/libnpu_dispatch.dylib",
+        ]);
+
+        let npu_status = cxx_cmd.status().map_err(|e| e.to_string())?;
 
         if !npu_status.success() {
             return Err("Failed to compile Objective-C++ NPU Dispatcher".to_string());

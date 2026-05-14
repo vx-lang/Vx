@@ -28,33 +28,44 @@ fn main() {
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
         let lib_path = PathBuf::from(&out_dir).join("libnpu_dispatch.a");
 
+        // Determine compiler and flags
+        let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+        let cxxflags_env =
+            env::var("CXXFLAGS").unwrap_or_else(|_| "-O3 -Wno-deprecated-declarations".to_string());
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
+
         // Compile the Objective-C++ runtime file
-        let status = Command::new("clang++")
-            .args([
-                "-c",
-                "runtime/npu_dispatch.mm",
-                "-o",
-                obj_path.to_str().unwrap(),
-                "-fobjc-arc",
-                "-O3",
-                "-Wno-deprecated-declarations",
-            ])
+        let mut clang_cmd = Command::new(&cxx);
+        clang_cmd.args([
+            "-c",
+            "runtime/npu_dispatch.mm",
+            "-o",
+            obj_path.to_str().unwrap(),
+            "-fobjc-arc",
+        ]);
+        clang_cmd.args(&cxxflags);
+
+        let status = clang_cmd
             .status()
-            .expect("Failed to execute clang++");
+            .unwrap_or_else(|_| panic!("Failed to execute {}", cxx));
 
         assert!(status.success(), "clang++ compilation failed");
 
-        // Create the static archive
-        let status = Command::new("ar")
-            .args([
-                "rcs",
-                lib_path.to_str().unwrap(),
-                obj_path.to_str().unwrap(),
-            ])
-            .status()
-            .expect("Failed to execute ar");
+        // Determine archiver and flags
+        let ar = env::var("AR").unwrap_or_else(|_| "ar".to_string());
+        let arflags_env = env::var("ARFLAGS").unwrap_or_else(|_| "rcs".to_string());
+        let arflags: Vec<&str> = arflags_env.split_whitespace().collect();
 
-        assert!(status.success(), "ar archiving failed");
+        // Create the static archive
+        let mut ar_cmd = Command::new(&ar);
+        ar_cmd.args(&arflags);
+        ar_cmd.args([lib_path.to_str().unwrap(), obj_path.to_str().unwrap()]);
+
+        let status = ar_cmd
+            .status()
+            .unwrap_or_else(|_| panic!("Failed to execute {}", ar));
+
+        assert!(status.success(), "{} archiving failed", ar);
 
         // Tell cargo to link against the generated library
         println!("cargo:rustc-link-search=native={}", out_dir);
