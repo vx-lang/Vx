@@ -472,6 +472,32 @@ impl<'a> Parser<'a> {
                     Expr::Number(n, Span::default())
                 }
                 TokenType::StringLiteral(s) => Expr::StringLiteral(s, Span::default()),
+                TokenType::Import => {
+                    self.consume(&TokenType::LeftParen, "Expected '(' after import")?;
+                    let path = match self.advance().kind.clone() {
+                        TokenType::StringLiteral(s) => s,
+                        _ => return Err("Expected string literal in import".to_string()),
+                    };
+                    self.consume(&TokenType::RightParen, "Expected ')' after import path")?;
+                    Expr::Import(path, Span::default())
+                }
+                TokenType::Comptime => {
+                    self.consume(&TokenType::LeftBrace, "Expected '{' for comptime block")?;
+                    let mut stmts = Vec::new();
+                    let mut ret_expr = None;
+                    while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                        let stmt = self.parse_statement()?;
+                        if self.check(&TokenType::RightBrace) {
+                            if let Statement::ExprStmt(e, _) = stmt {
+                                ret_expr = Some(Box::new(e));
+                                break;
+                            }
+                        }
+                        stmts.push(stmt);
+                    }
+                    self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                    Expr::ComptimeBlock(stmts, ret_expr, Span::default())
+                }
                 _ => return Err(format!("Expected expression, found {:?}", token.kind)),
             }
         };

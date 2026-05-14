@@ -214,6 +214,7 @@ impl MlirGenerator {
                 panic!("Generic types should have been monomorphized before codegen!");
             }
             Type::Enum(_) => "i32".to_string(),
+            Type::Module(..) => "none".to_string(),
         }
     }
 
@@ -1293,10 +1294,32 @@ impl MlirGenerator {
                 }
                 (current_struct, struct_ty)
             }
-            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) => {
+            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) | Expr::Import(..) => {
                 let res = self.next_var();
                 self.write_line(&format!("{} = arith.constant 0 : i64", res));
                 (res, "i64".to_string())
+            }
+            Expr::ComptimeBlock(stmts, ret, _) => {
+                let mut last_val = "".to_string();
+                let mut last_ty = "i64".to_string();
+                for stmt in stmts {
+                    if let Statement::ExprStmt(expr, _) = stmt {
+                        let (val, ty) = self.generate_expr(expr, expected_ty);
+                        last_val = val;
+                        last_ty = ty;
+                    } else {
+                        self.generate_statement(stmt, expected_ty);
+                    }
+                }
+                if let Some(r) = ret {
+                    self.generate_expr(r, expected_ty)
+                } else if last_val.is_empty() {
+                    let res = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : i64", res));
+                    (res, "i64".to_string())
+                } else {
+                    (last_val, last_ty)
+                }
             }
         }
     }

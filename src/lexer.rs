@@ -21,6 +21,7 @@ pub enum TokenType {
     Trait,
     Impl,
     Comptime,
+    Import,
     Assert,
     Enum,
 
@@ -100,6 +101,7 @@ impl std::fmt::Display for TokenType {
             TokenType::Trait => write!(f, "trait"),
             TokenType::Impl => write!(f, "impl"),
             TokenType::Comptime => write!(f, "comptime"),
+            TokenType::Import => write!(f, "import"),
             TokenType::Assert => write!(f, "assert"),
 
             TokenType::Topology => write!(f, "Topology"),
@@ -265,6 +267,7 @@ impl<'a> Lexer<'a> {
             "trait" => TokenType::Trait,
             "impl" => TokenType::Impl,
             "comptime" => TokenType::Comptime,
+            "import" => TokenType::Import,
             "assert" => TokenType::Assert,
             "enum" => TokenType::Enum,
             _ => TokenType::Identifier(text.clone()),

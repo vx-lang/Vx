@@ -56,8 +56,9 @@ pub enum Type {
     Enum(String),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),
-    Generic(String),                       // e.g. T
-    GenericInstance(Box<Type>, Vec<Type>), // e.g. Config<f32>
+    Generic(String),                                         // e.g. T
+    GenericInstance(Box<Type>, Vec<Type>),                   // e.g. Config<f32>
+    Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
 }
 
 impl Type {
@@ -135,9 +136,11 @@ pub enum Expr {
     Borrow(Box<Expr>, bool, Span), // &expr or &mut expr
     Dereference(Box<Expr>, Span),  // *expr
     UnsafeBlock(Vec<Statement>, Option<Box<Expr>>, Span),
+    ComptimeBlock(Vec<Statement>, Option<Box<Expr>>, Span),
     StructInit(String, Vec<(String, Expr)>, Span),
     MemorySpace(MemorySpace, Span),
     Topology(Topology, Span),
+    Import(String, Span),
 }
 
 impl Expr {
@@ -147,6 +150,12 @@ impl Expr {
                 Box::new(expr.substitute(mapping)),
                 mem.clone(),
                 Span::default(),
+            ),
+            Expr::Import(path, span) => Expr::Import(path.clone(), span.clone()),
+            Expr::ComptimeBlock(stmts, ret, span) => Expr::ComptimeBlock(
+                stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span.clone(),
             ),
             Expr::FunctionCall(name, args, span) => Expr::FunctionCall(
                 name.clone(),

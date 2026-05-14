@@ -530,6 +530,55 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::Import(path, _) => {
+                // Read file and parse it
+                let source = match std::fs::read_to_string(&*path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.errors
+                            .push(format!("Failed to load module '{}': {}", path, e));
+                        return Type::Module(path.clone(), std::collections::HashMap::new());
+                    }
+                };
+                let mut lexer = crate::lexer::Lexer::new(&source);
+                let mut parser = crate::parser::Parser::new(lexer.tokenize(), &source);
+                match parser.parse() {
+                    Ok(mut ast) => {
+                        let mut sub_checker = TypeChecker::new();
+                        let _ = sub_checker.check_program(&mut ast);
+                        // Merge exported signatures
+                        let mut exported = std::collections::HashMap::new();
+                        for (name, (ty, _)) in sub_checker.functions {
+                            exported.insert(name, ty);
+                        }
+                        for (name, _) in sub_checker.structs {
+                            exported.insert(name.clone(), Type::Struct(name));
+                        }
+                        Type::Module(path.clone(), exported)
+                    }
+                    Err(e) => {
+                        self.errors
+                            .push(format!("Failed to parse module '{}': {}", path, e));
+                        Type::Module(path.clone(), std::collections::HashMap::new())
+                    }
+                }
+            }
+            Expr::ComptimeBlock(stmts, ret, _) => {
+                self.push_scope();
+                for stmt in stmts {
+                    if let Statement::ExprStmt(ref mut expr, _) = stmt {
+                        self.check_expr(expr);
+                    } else {
+                        self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
+                    }
+                }
+                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+                if let Some(r) = ret {
+                    ret_ty = self.check_expr(r);
+                }
+                self.pop_scope();
+                ret_ty
+            }
             Expr::FunctionCall(name, args, _) => {
                 // Mocking built-ins
                 for arg in args.iter_mut() {
@@ -671,6 +720,13 @@ impl TypeChecker {
                         self.errors
                             .push(format!("Unknown struct '{}'", struct_name));
                     }
+                } else if let Type::Module(ref path, ref exports) = base_ty {
+                    if let Some(exported_ty) = exports.get(member) {
+                        return exported_ty.clone();
+                    } else {
+                        self.errors
+                            .push(format!("Module '{}' does not export '{}'", path, member));
+                    }
                 } else if member != "shape" {
                     // default behavior for Tensor.shape
                     self.errors
@@ -695,6 +751,21 @@ impl TypeChecker {
                 let mut base_ty = self.check_expr(obj);
                 for arg in args.iter_mut() {
                     self.check_expr(arg);
+                }
+
+                if let Type::Module(ref path, ref exports) = base_ty {
+                    if let Some(exported_ty) = exports.get(_method) {
+                        let func_call =
+                            Expr::FunctionCall(_method.clone(), args.clone(), Span::default());
+                        *expr = func_call;
+                        return exported_ty.clone();
+                    } else {
+                        self.errors.push(format!(
+                            "Module '{}' does not export function '{}'",
+                            path, _method
+                        ));
+                        return Type::Tensor(ElementType::F32, vec![], None);
+                    }
                 }
 
                 // --- COMPILER INTRINSICS ---

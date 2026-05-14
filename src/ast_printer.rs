@@ -125,6 +125,17 @@ impl AstPrinter {
             Expr::EnumVariant(enum_name, variant, _) => {
                 println!("{}{}Enum({}::{})", indent, prefix, enum_name, variant);
             }
+            Expr::Import(path, _) => {
+                println!("{}{}Import(\"{}\")", indent, prefix, path);
+            }
+            Expr::ComptimeBlock(stmts, ret, _) => {
+                println!("{}{}ComptimeBlock", indent, prefix);
+                let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
+                Self::print_statements(stmts, &new_indent);
+                if let Some(r) = ret {
+                    Self::print_expr(r, &new_indent, true);
+                }
+            }
             _ => println!("{}{}{:?}", indent, prefix, expr), // Fallback
         }
     }
