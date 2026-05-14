@@ -1,2 +1,4 @@
 target/
 .rustup/
+*.bin
+test_output.txt

@@ -52,3 +52,10 @@ Clean interoperability with the pre-existing low-level world (Operating Systems,
 - `[x]` Foreign Function Interface (FFI) for importing `extern "C"` functions
 - `[ ]` Akar function exporting formatted to the standard C ABI
 - `[ ]` Static and Dynamic linking capabilities against host OS binaries
+
+## 8. Standard Library Ecosystem
+Establishing a robust native library to reduce reliance on raw C-FFI for common application needs.
+- `[ ]` Implement native File I/O library (wrapping underlying OS descriptors)
+- `[ ]` Implement robust String and text manipulation primitives
+- `[ ]` Core mathematical functions and constants
+- `[ ]` Standardized collection types (Vectors, HashMaps)

@@ -704,14 +704,17 @@ impl TypeChecker {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
-                for s in stmts {
-                    // For a true expression block, we'd need to pass a valid return type instead of a dummy one
-                    // But for now, we just check the statements.
-                    self.check_statement(s, &Type::Tensor(ElementType::F32));
+                let mut last_type = Type::Tensor(ElementType::F32);
+                for s in stmts.iter_mut() {
+                    if let Statement::ExprStmt(ref mut expr) = s {
+                        last_type = self.check_expr(expr);
+                    } else {
+                        self.check_statement(s, &Type::Tensor(ElementType::F32));
+                    }
                 }
                 self.pop_scope();
                 self.in_unsafe_block = prev_unsafe;
-                Type::Tensor(ElementType::F32) // Unsafe block returns unit/tensor for now
+                last_type
             }
             Expr::StructInit(name, fields) => {
                 if !self.structs.contains_key(name) {

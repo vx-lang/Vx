@@ -54,6 +54,9 @@ impl MlirGenerator {
     }
 
     pub fn generate(&mut self, program: &Program) -> String {
+        for s in &program.structs {
+            self.structs.insert(s.name.clone(), s.clone());
+        }
         for ext in &program.externs {
             let ret_ty = self.lower_type(&ext.return_type);
             self.functions.insert(ext.name.clone(), ret_ty);
@@ -61,9 +64,6 @@ impl MlirGenerator {
         for func in &program.functions {
             let ret_ty = self.lower_type(&func.return_type);
             self.functions.insert(func.name.clone(), ret_ty);
-        }
-        for s in &program.structs {
-            self.structs.insert(s.name.clone(), s.clone());
         }
 
         self.write_line("module {");
@@ -974,12 +974,24 @@ impl MlirGenerator {
                 (res, "f32".to_string())
             }
             Expr::UnsafeBlock(stmts, _) => {
+                let mut last_val = "".to_string();
+                let mut last_ty = "i64".to_string();
                 for stmt in stmts {
-                    self.generate_statement(stmt, expected_ty);
+                    if let Statement::ExprStmt(expr) = stmt {
+                        let (val, ty) = self.generate_expr(expr, expected_ty);
+                        last_val = val;
+                        last_ty = ty;
+                    } else {
+                        self.generate_statement(stmt, expected_ty);
+                    }
                 }
-                let res = self.next_var();
-                self.write_line(&format!("{} = arith.constant 0 : i64", res));
-                (res, "i64".to_string())
+                if last_val.is_empty() {
+                    let res = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : i64", res));
+                    (res, "i64".to_string())
+                } else {
+                    (last_val, last_ty)
+                }
             }
             Expr::StructInit(name, fields) => {
                 let struct_decl = self.structs.get(name).unwrap().clone();
