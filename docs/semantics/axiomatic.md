@@ -63,3 +63,11 @@ The `transfer` keyword updates the memory bounds of a reference, making it valid
 $$
 \frac{ \{ \text{Valid}(x, t_{src}) \} }{ \{ \text{True} \} \ \text{transfer}(x, \text{Memory::}t_{dst}) \ \{ \text{Valid}(x, t_{dst}) \land \neg \text{Valid}(x, t_{src}) \}_{Host} } \text{ (Transfer-Move)}
 $$
+
+### 3.3 For-Loop Rule (Topology Bound)
+
+Because `for` loops in Akar execute fully within the current topology context, the invariant $I$ must hold within $\Omega$.
+
+$$
+\frac{ \{ I(i) \land \text{Valid}(\text{Env}, \Omega) \} \ S \ \{ I(i+1) \}_\Omega }{ \{ I(start) \} \ \text{for } i \text{ in } start..end \{ S \} \ \{ I(end) \}_\Omega } \text{ (For-Loop)}
+$$

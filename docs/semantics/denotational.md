@@ -19,12 +19,12 @@ Akar requires a dual-domain structure to distinguish between the Host (CPU) memo
 ### 1.3 Value Domains
 Values in Akar include primitive numbers, matrices (Tensors), and specialized hardware-bound states.
 
-- **$\mathbb{N}, \mathbb{R}$**: Standard numerical types (`i64`, `f64`, `bf16`).
-- **$\mathbb{V}_{Tensor}$**: A multi-dimensional array mapping indices to numerical types.
-  - $\mathbb{V}_{Tensor} = (\mathbb{N} \times \dots \times \mathbb{N}) \to \mathbb{R}$
+- **$\mathbb{N}, \mathbb{R}$**: Standard numerical types (`i64`, `f64`, `bf16`). Let $\mathcal{T}$ be the set of valid numeric types $\mathcal{T} = \{\text{f32}, \text{f64}, \text{bf16}, \text{i32}, \text{i64}\}$.
+- **$\mathbb{V}_{Tensor}^{\tau}$**: A multi-dimensional array parameterised by an element type $\tau \in \mathcal{T}$, mapping indices to values of type $\tau$.
+  - $\mathbb{V}_{Tensor}^{\tau} = (\mathbb{N} \times \dots \times \mathbb{N}) \to \tau$
 - **$\mathbb{V}_{Ref}$**: A typed pointer bounding a value to a memory space.
   - $\mathbb{V}_{Ref} = \mathbb{M} \times Type$
-- **$\mathbb{V}$**: The domain of all evaluated values: $\mathbb{V} = \mathbb{R} \cup \mathbb{V}_{Tensor} \cup \mathbb{V}_{Ref}$
+- **$\mathbb{V}$**: The domain of all evaluated values: $\mathbb{V} = \mathbb{R} \cup \bigcup_{\tau \in \mathcal{T}} \mathbb{V}_{Tensor}^{\tau} \cup \mathbb{V}_{Ref}$
 
 ### 1.4 State Monads
 Akar's correctness centers around the hardware execution monad. We formalize this using the `HardwareState` enum and the `Verified` mathematical wrapper.
@@ -56,12 +56,18 @@ $\mathcal{E} \llbracket e \rrbracket : Env \to Store \to (\mathbb{V} \times Stor
 - $\mathcal{E} \llbracket x \rrbracket \rho \sigma = \langle \sigma(\rho(x)), \sigma \rangle$ if $\rho(x) \in Loc$
 
 ### 3.2 Tensor Allocation
-- $\mathcal{E} \llbracket \text{Tensor}(d_1, d_2) \rrbracket \rho \sigma_{Host} =$
-  Let $v \in \mathbb{V}_{Tensor}$ be a zero-initialized matrix of dimension $d_1 \times d_2$.
+- $\mathcal{E} \llbracket \text{Tensor}_{\tau}(d_1, d_2) \rrbracket \rho \sigma_{Host} =$
+  Let $v \in \mathbb{V}_{Tensor}^{\tau}$ be a zero-initialized matrix of dimension $d_1 \times d_2$.
   Let $l \in Loc_{Host}$ be a fresh memory location.
   $\langle l, \sigma_{Host}[l \mapsto v] \rangle$
 
-### 3.3 Topology Spawn
+### 3.3 Memory Binding
+The `.with_memory()` method assigns a spatial bounds to a previously host-allocated structure, effectively creating a `Ref` constrained to the target memory.
+- $\mathcal{E} \llbracket e\text{.with\_memory}(m) \rrbracket \rho \sigma =$
+  Let $\langle l, \sigma' \rangle = \mathcal{E} \llbracket e \rrbracket \rho \sigma$ where $l \in \mathbb{M}_{Host}$.
+  Return $\langle \text{Ref}(l, m), \sigma' \rangle$.
+
+### 3.4 Topology Spawn
 The `spawn on` construct transitions the evaluation context from $\sigma_{Host}$ to $\sigma_{Topo}$.
 
 Let $t \in \mathbb{T}$ be a target topology.

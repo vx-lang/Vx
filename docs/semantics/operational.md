@@ -36,7 +36,26 @@ $$
 \frac{ }{ \langle \text{skip} ; S_2, \sigma, \tau \rangle_{Host} \to \langle S_2, \sigma, \tau \rangle_{Host} }
 $$
 
-### 2.2 The `spawn on` Construct
+### 2.2 Control Flow (`for` Loops)
+Akar supports explicit bounded iteration. Let $[start, end)$ denote the iteration bounds.
+
+$$
+\frac{
+  start < end \quad \langle S[start/i], \sigma, \tau \rangle_\Omega \to \langle S', \sigma', \tau' \rangle_\Omega
+}{
+  \langle \text{for } i \text{ in } start..end \{ S \}, \sigma, \tau \rangle_\Omega \to \langle \text{for } i \text{ in } (start+1)..end \{ S \}, \sigma', \tau' \rangle_\Omega
+}
+$$
+
+$$
+\frac{
+  start \geq end
+}{
+  \langle \text{for } i \text{ in } start..end \{ S \}, \sigma, \tau \rangle_\Omega \to \langle \text{skip}, \sigma, \tau \rangle_\Omega
+}
+$$
+
+### 2.3 The `spawn on` Construct
 The `spawn on` construct evaluates a block of code strictly within the domain of a specific topology. This transitions the $\Omega$ context label.
 
 Let $t \in \mathbb{T}$ be a valid topology identifier (e.g., `Topology::NPU[0]`).
@@ -60,7 +79,18 @@ $$
 } \text{ (Spawn-Fail)}
 $$
 
-### 2.3 Memory Transfers (`transfer`)
+### 2.4 Memory Space Tracking (`.with_memory`)
+When a tensor is allocated in Host memory, applying `.with_memory(m)` casts it to a bounded reference.
+
+$$
+\frac{
+  \langle E, \sigma, \tau \rangle_\Omega \to^* \langle l, \sigma, \tau \rangle_\Omega \quad l \in Loc
+}{
+  \langle E\text{.with\_memory}(m), \sigma, \tau \rangle_\Omega \to \langle \text{Ref}(l, m), \sigma, \tau \rangle_\Omega
+}
+$$
+
+### 2.5 Memory Transfers (`transfer`)
 Transfer operations shift values from one topological store to another.
 
 $$
@@ -73,7 +103,7 @@ $$
 }
 $$
 
-### 2.4 Vectorized Assignment
+### 2.6 Vectorized Assignment
 Assignment natively checks the element type $\mathcal{T}$ of the Tensor to ensure soundness.
 
 $$
