@@ -887,17 +887,42 @@ impl TypeChecker {
         }
 
         // Allow numeric coercions for scalar literals (mock behavior for now)
-        if let Type::Tensor(t_target, _dims_target, _top_target) = target {
-            if let Type::Tensor(t_source, _dims_source, _top_source) = source {
+        if let Type::Tensor(t_target, dims_target, top_target) = target {
+            if let Type::Tensor(t_source, dims_source, top_source) = source {
+                let mut el_match = false;
                 if t_target == t_source {
-                    return true;
+                    el_match = true;
+                } else if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
+                    // Literals currently parse as f32, so we allow f32 to coerce
+                    el_match = true;
                 }
-                // Literals currently parse as f32, so we allow f32 to coerce to any tensor element type
-                // except Bool, to catch logical bugs
-                if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
-                    return true;
+
+                if !el_match {
+                    return false;
                 }
-                return false;
+
+                if top_target.is_some() && top_target != top_source {
+                    return false;
+                }
+
+                if !dims_target.is_empty() && !dims_source.is_empty() {
+                    if dims_target.len() != dims_source.len() {
+                        return false;
+                    }
+                    let empty_env = std::collections::HashMap::new();
+                    for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
+                        let vt = self.eval_expr(dt, &empty_env);
+                        let vs = self.eval_expr(ds, &empty_env);
+                        if vt.is_some() && vs.is_some() {
+                            if vt != vs {
+                                return false;
+                            }
+                        } else if dt != ds {
+                            return false;
+                        }
+                    }
+                }
+                return true;
             }
         }
 

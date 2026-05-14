@@ -120,7 +120,7 @@ impl MlirGenerator {
 
     fn lower_type(&self, ty: &Type) -> String {
         match ty {
-            Type::Tensor(el_ty, _, _) => {
+            Type::Tensor(el_ty, dims, _) => {
                 let ty_str = match el_ty {
                     ElementType::F32 => "f32",
                     ElementType::F64 => "f64",
@@ -129,7 +129,28 @@ impl MlirGenerator {
                     ElementType::I64 => "i64",
                     _ => unimplemented!("Element type currently unsupported in MLIR backend"),
                 };
-                format!("memref<?x?x{}>", ty_str)
+
+                let mut shape_str = String::new();
+                if dims.is_empty() {
+                    shape_str = "?x?".to_string();
+                } else {
+                    for (i, dim) in dims.iter().enumerate() {
+                        if let crate::ast::Expr::Number(n) = dim {
+                            shape_str.push_str(&format!("{}", *n as i64));
+                        } else {
+                            shape_str.push('?');
+                        }
+                        if i < dims.len() - 1 {
+                            shape_str.push('x');
+                        }
+                    }
+                }
+
+                if !shape_str.is_empty() && !shape_str.ends_with('x') {
+                    shape_str.push('x');
+                }
+
+                format!("memref<{}{}>", shape_str, ty_str)
             }
             Type::Scalar(el_ty) => {
                 let ty_str = match el_ty {
