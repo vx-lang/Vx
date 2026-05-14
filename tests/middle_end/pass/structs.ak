@@ -1,0 +1,29 @@
+// RUN: akarc %s | FileCheck %s
+
+struct Config {
+    dim: i32,
+    norm_eps: f32,
+}
+
+fn main() -> i32 {
+    let conf = Config {
+        dim: 288,
+        norm_eps: 0.00001,
+    };
+    
+    let a = conf.dim;
+    let b = conf.norm_eps;
+
+    return 0;
+}
+
+// CHECK: func.func @main() -> i32 {
+// CHECK: = llvm.mlir.undef : !llvm.struct<"Config", (i32, f32)>
+// CHECK: = arith.constant 288 : i32
+// CHECK: = llvm.insertvalue %
+// CHECK: = arith.constant 0.00001 : f32
+// CHECK: = llvm.insertvalue %
+// CHECK: = llvm.extractvalue %
+// CHECK: = llvm.extractvalue %
+// CHECK: return %
+// CHECK: }

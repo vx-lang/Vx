@@ -4,7 +4,7 @@ fn expects_host(t: Tensor<f32>) -> Tensor<f32> {
   return t;
 }
 
-fn main() -> i32 {
+fn main() -> Tensor<Bool> {
   let host_tensor: Tensor<f32> = 1.0;
 
   // Transfer to device

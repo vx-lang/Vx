@@ -1,6 +1,15 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
+
+float akar_sqrtf(float x) {
+    return sqrtf(x);
+}
+
+float akar_expf(float x) {
+    return expf(x);
+}
 
 float benchmark_start_time = 0.0f;
 
@@ -24,6 +33,10 @@ void trace_start() {
 
 void trace_end() {
     printf("[TRACE END] Event ID: 100\n");
+}
+
+void print_f32(float val) {
+    printf("%f\n", val);
 }
 
 

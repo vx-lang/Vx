@@ -177,6 +177,12 @@ impl Parser {
                     Ok(Type::Tensor(el_ty))
                 }
                 "Matrix" => Ok(Type::Matrix),
+                "f32" => Ok(Type::Scalar(ElementType::F32)),
+                "f64" => Ok(Type::Scalar(ElementType::F64)),
+                "i32" => Ok(Type::Scalar(ElementType::I32)),
+                "i64" => Ok(Type::Scalar(ElementType::I64)),
+                "bf16" => Ok(Type::Scalar(ElementType::BF16)),
+                "Bool" => Ok(Type::Scalar(ElementType::Bool)),
                 _ => {
                     // Check for GenericInstance like Config<f32>
                     if self.check(&TokenType::LeftAngle) {

@@ -233,7 +233,7 @@ impl TypeChecker {
                 self.check_expr(start);
                 self.check_expr(end);
                 self.push_scope();
-                self.insert(iter.clone(), Type::Tensor(ElementType::F32)); // mock scalar type
+                self.insert(iter.clone(), Type::Scalar(ElementType::I64));
                 for s in body {
                     self.check_statement(s, return_type);
                 }
@@ -335,11 +335,7 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::Number(_) => {
-                // Primitive number, we'll represent it as a generic Matrix for now or create a Scalar type.
-                // Let's just use Tensor.
-                Type::Tensor(ElementType::F32)
-            }
+            Expr::Number(_) => Type::Scalar(ElementType::F32),
             Expr::Transfer(inner_expr, target_mem) => {
                 let inner_ty = self.check_expr(inner_expr);
                 match inner_ty {
@@ -502,9 +498,17 @@ impl TypeChecker {
                 Type::Tensor(ElementType::F32)
             }
             Expr::IndexAccess(obj, idx) => {
-                self.check_expr(obj);
+                let obj_ty = self.check_expr(obj);
                 self.check_expr(idx);
-                Type::Tensor(ElementType::F32)
+                if let Type::Pointer(inner, _, _) = obj_ty {
+                    *inner
+                } else if let Type::Borrow(inner, _, _) = obj_ty {
+                    *inner
+                } else if let Type::Tensor(el_ty) = obj_ty {
+                    Type::Scalar(el_ty)
+                } else {
+                    Type::Scalar(ElementType::F32)
+                }
             }
             Expr::MethodCall(obj, _method, args) => {
                 let mut base_ty = self.check_expr(obj);
@@ -723,6 +727,30 @@ impl TypeChecker {
                     return true;
                 }
                 return false;
+            }
+        }
+
+        if let Type::Scalar(t_target) = target {
+            if let Type::Scalar(t_source) = source {
+                if t_target == t_source {
+                    return true;
+                }
+                // Allow numeric coercions
+                if t_target != &ElementType::Bool && t_source != &ElementType::Bool {
+                    return true;
+                }
+            }
+        }
+
+        // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
+        if let Type::Tensor(t_target) = target {
+            if let Type::Scalar(t_source) = source {
+                if t_target == t_source {
+                    return true;
+                }
+                if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
+                    return true;
+                }
             }
         }
 

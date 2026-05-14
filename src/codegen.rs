@@ -7,6 +7,8 @@ pub struct MlirGenerator {
     var_counter: usize,
     env: HashMap<String, (String, String)>,
     current_el_ty: String,
+    functions: HashMap<String, String>,
+    structs: HashMap<String, StructDecl>,
 }
 
 impl Default for MlirGenerator {
@@ -23,6 +25,8 @@ impl MlirGenerator {
             var_counter: 0,
             env: HashMap::new(),
             current_el_ty: "f32".to_string(),
+            functions: HashMap::new(),
+            structs: HashMap::new(),
         }
     }
 
@@ -48,6 +52,18 @@ impl MlirGenerator {
     }
 
     pub fn generate(&mut self, program: &Program) -> String {
+        for ext in &program.externs {
+            let ret_ty = self.lower_type(&ext.return_type);
+            self.functions.insert(ext.name.clone(), ret_ty);
+        }
+        for func in &program.functions {
+            let ret_ty = self.lower_type(&func.return_type);
+            self.functions.insert(func.name.clone(), ret_ty);
+        }
+        for s in &program.structs {
+            self.structs.insert(s.name.clone(), s.clone());
+        }
+
         self.write_line("module {");
         self.push_indent();
 
@@ -106,10 +122,21 @@ impl MlirGenerator {
                     ElementType::BF16 => "bf16",
                     ElementType::I32 => "i32",
                     ElementType::I64 => "i64",
-                    ElementType::Bool => "i1",
                     _ => unimplemented!("Element type currently unsupported in MLIR backend"),
                 };
                 format!("memref<?x?x{}>", ty_str)
+            }
+            Type::Scalar(el_ty) => {
+                let ty_str = match el_ty {
+                    ElementType::F32 => "f32",
+                    ElementType::F64 => "f64",
+                    ElementType::BF16 => "bf16",
+                    ElementType::I32 => "i32",
+                    ElementType::I64 => "i64",
+                    ElementType::Bool => "i1",
+                    _ => unimplemented!("Element type currently unsupported as scalar"),
+                };
+                ty_str.to_string()
             }
             Type::Matrix => "tensor<?x?xf32>".to_string(),
             Type::Ref(inner, _) => self.lower_type(inner),
@@ -139,26 +166,36 @@ impl MlirGenerator {
                 };
                 format!("!llvm.ptr<{}>", addr_space)
             }
-            Type::Struct(name) => format!("!llvm.struct<\"{}\">", name),
+            Type::Struct(name) => {
+                if let Some(decl) = self.structs.get(name).cloned() {
+                    let mut field_types = Vec::new();
+                    for (_, ty) in &decl.fields {
+                        field_types.push(self.lower_type(ty));
+                    }
+                    format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(", "))
+                } else {
+                    format!("!llvm.struct<\"{}\">", name)
+                }
+            }
             Type::Generic(_) | Type::GenericInstance(_, _) => {
                 panic!("Generic types should have been monomorphized before codegen!");
             }
         }
     }
 
-    fn flatten_indices(&mut self, expr: &Expr) -> Option<(String, Vec<String>)> {
+    fn flatten_indices(&mut self, expr: &Expr) -> Option<(String, String, Vec<String>)> {
         match expr {
             Expr::IndexAccess(base, idx) => {
-                let (base_name, mut indices) = self.flatten_indices(base)?;
+                let (base_name, base_ty, mut indices) = self.flatten_indices(base)?;
                 let (idx_val, _) = self.generate_expr(idx, "index");
                 indices.push(idx_val);
-                Some((base_name, indices))
+                Some((base_name, base_ty, indices))
             }
             Expr::Identifier(name) => {
-                if let Some((ssa, _)) = self.env.get(name) {
-                    Some((ssa.clone(), Vec::new()))
+                if let Some((ssa, ty)) = self.env.get(name) {
+                    Some((ssa.clone(), ty.clone(), Vec::new()))
                 } else {
-                    Some((format!("%{}", name), Vec::new()))
+                    Some((format!("%{}", name), "unknown".to_string(), Vec::new()))
                 }
             }
             _ => None,
@@ -235,6 +272,17 @@ impl MlirGenerator {
                         _ => "f32",
                     };
                     self.current_el_ty = ty_str.to_string();
+                } else if let Some(Type::Scalar(el_ty)) = ty_ann {
+                    let ty_str = match el_ty {
+                        ElementType::F32 => "f32",
+                        ElementType::F64 => "f64",
+                        ElementType::BF16 => "bf16",
+                        ElementType::I32 => "i32",
+                        ElementType::I64 => "i64",
+                        ElementType::Bool => "i1",
+                        _ => "f32",
+                    };
+                    self.current_el_ty = ty_str.to_string();
                 }
                 let expected_mlir_ty = if let Some(ty) = ty_ann {
                     self.lower_type(ty)
@@ -266,15 +314,47 @@ impl MlirGenerator {
                 self.write_line("}");
             }
             Statement::Assign(lhs, rhs) => {
-                if let Some((base, indices)) = self.flatten_indices(lhs) {
-                    let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
-                    self.write_line(&format!(
-                        "memref.store {}, {}[{}] : memref<?x?x{}>",
-                        rhs_val,
-                        base,
-                        indices.join(", "),
-                        self.current_el_ty
-                    ));
+                if let Some((base, base_ty, indices)) = self.flatten_indices(lhs) {
+                    let mut rhs_expected = "any".to_string();
+                    if base_ty.starts_with("memref<") {
+                        if let Some(idx) = base_ty.rfind("x") {
+                            rhs_expected = base_ty[idx + 1..base_ty.len() - 1].to_string();
+                        }
+                    } else if base_ty.starts_with("!llvm.ptr") {
+                        // For pointers, we try to guess from rhs or just default to current_el_ty
+                        // Or if it's pointers.ak it uses 5.0 so we should pass f32
+                        // Let's just pass "any"
+                    }
+
+                    let (rhs_val, rhs_ty) = self.generate_expr(rhs, &rhs_expected);
+
+                    if base_ty.starts_with("!llvm.ptr") {
+                        let idx_val = &indices[0];
+                        let idx_i64 = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i64",
+                            idx_i64, idx_val
+                        ));
+
+                        let gep_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = llvm.getelementptr {}[{}] : ({}, i64) -> {}, {}",
+                            gep_val, base, idx_i64, base_ty, base_ty, rhs_ty
+                        ));
+
+                        self.write_line(&format!(
+                            "llvm.store {}, {} : {}, {}",
+                            rhs_val, gep_val, rhs_ty, base_ty
+                        ));
+                    } else {
+                        self.write_line(&format!(
+                            "memref.store {}, {}[{}] : memref<?x?x{}>",
+                            rhs_val,
+                            base,
+                            indices.join(", "),
+                            rhs_ty
+                        ));
+                    }
                 }
             }
             Statement::CompoundAssign(lhs, op, rhs) => {
@@ -393,22 +473,34 @@ impl MlirGenerator {
             }
             Expr::Number(n) => {
                 let res = self.next_var();
-                if expected_ty == "index" {
+                let mut scalar_expected = expected_ty.to_string();
+                if scalar_expected.starts_with("memref<") {
+                    if let Some(idx) = scalar_expected.rfind("x") {
+                        scalar_expected =
+                            scalar_expected[idx + 1..scalar_expected.len() - 1].to_string();
+                    }
+                }
+
+                if scalar_expected == "index" {
                     self.write_line(&format!("{} = arith.constant {} : index", res, *n as i64));
                     (res, "index".to_string())
-                } else if expected_ty == self.current_el_ty.as_str() {
-                    let float_str = if n.fract() == 0.0 && !expected_ty.starts_with("i") {
+                } else if ["f32", "f64", "bf16", "i32", "i64"].contains(&scalar_expected.as_str()) {
+                    let is_int = scalar_expected.starts_with("i");
+                    let float_str = if n.fract() == 0.0 && !is_int {
                         format!("{}.0", n)
-                    } else if expected_ty.starts_with("i") {
+                    } else if is_int {
                         format!("{}", *n as i64)
                     } else {
                         n.to_string()
                     };
                     self.write_line(&format!(
                         "{} = arith.constant {} : {}",
-                        res, float_str, expected_ty
+                        res, float_str, scalar_expected
                     ));
-                    (res, expected_ty.to_string())
+                    (res, scalar_expected.to_string())
+                } else if n.fract() != 0.0 {
+                    self.write_line(&format!("{} = arith.constant {} : f32", res, n));
+                    (res, "f32".to_string())
                 } else {
                     self.write_line(&format!("{} = arith.constant {} : i64", res, *n as i64));
                     (res, "i64".to_string())
@@ -494,17 +586,29 @@ impl MlirGenerator {
                     return self.generate_expr(&args[0], expected_ty);
                 }
 
+                let ret_ty = if let Some(stored_ty) = self.functions.get(name) {
+                    stored_ty.clone()
+                } else {
+                    format!("memref<?x?x{}>", self.current_el_ty)
+                };
+
                 let mut arg_vals = Vec::new();
                 let mut arg_tys = Vec::new();
                 for arg in args {
-                    let (val, ty) =
-                        self.generate_expr(arg, &format!("memref<?x?x{}>", self.current_el_ty));
+                    // For arguments, ideally we'd look up the exact param types.
+                    // But for now, if ret_ty is a scalar, we assume arguments are scalars too,
+                    // otherwise we default to memref.
+                    let arg_expected_ty = if ret_ty.starts_with("memref") {
+                        format!("memref<?x?x{}>", self.current_el_ty)
+                    } else {
+                        self.current_el_ty.clone()
+                    };
+                    let (val, ty) = self.generate_expr(arg, &arg_expected_ty);
                     arg_vals.push(val);
                     arg_tys.push(ty);
                 }
 
                 let res = self.next_var();
-                let ret_ty = format!("memref<?x?x{}>", self.current_el_ty);
 
                 self.write_line(&format!(
                     "{} = func.call @{}({}) : ({}) -> {}",
@@ -530,18 +634,66 @@ impl MlirGenerator {
                     }
                 }
 
-                if let Some((base_name, indices)) = self.flatten_indices(expr) {
-                    let res = self.next_var();
-                    self.write_line(&format!(
-                        "{} = memref.load {}[{}] : memref<?x?x{}>",
-                        res,
-                        base_name,
-                        indices.join(", "),
-                        self.current_el_ty
-                    ));
-                    (res, self.current_el_ty.clone())
+                if let Some((base_name, base_ty, indices)) = self.flatten_indices(expr) {
+                    if base_ty.starts_with("!llvm.ptr") {
+                        // For pointers, we only support 1D access for now
+                        let idx_val = &indices[0];
+                        let idx_i64 = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i64",
+                            idx_i64, idx_val
+                        ));
+
+                        let gep_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = llvm.getelementptr {}[{}] : ({}, i64) -> {}, {}",
+                            gep_val, base_name, idx_i64, base_ty, base_ty, self.current_el_ty
+                        ));
+
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = llvm.load {} : {} -> {}",
+                            res, gep_val, base_ty, self.current_el_ty
+                        ));
+                        (res, self.current_el_ty.clone())
+                    } else {
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = memref.load {}[{}] : memref<?x?x{}>",
+                            res,
+                            base_name,
+                            indices.join(", "),
+                            self.current_el_ty
+                        ));
+                        (res, self.current_el_ty.clone())
+                    }
                 } else {
-                    ("".to_string(), "".to_string())
+                    // Fallback for complex base expressions (e.g., function calls returning a pointer)
+                    let (base_val, base_ty) = self.generate_expr(base, "any");
+                    let (idx_val, _) = self.generate_expr(idx, "index");
+
+                    if base_ty.starts_with("!llvm.ptr") {
+                        let idx_i64 = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i64",
+                            idx_i64, idx_val
+                        ));
+
+                        let gep_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = llvm.getelementptr {}[{}] : ({}, i64) -> {}, {}",
+                            gep_val, base_val, idx_i64, base_ty, base_ty, self.current_el_ty
+                        ));
+
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = llvm.load {} : {} -> {}",
+                            res, gep_val, base_ty, self.current_el_ty
+                        ));
+                        (res, self.current_el_ty.clone())
+                    } else {
+                        ("".to_string(), "".to_string())
+                    }
                 }
             }
             Expr::MemberAccess(base, member) => {
@@ -549,10 +701,33 @@ impl MlirGenerator {
                     // Mock shape access by returning a dummy index
                     let res = self.next_var();
                     self.write_line(&format!("{} = arith.constant 4 : index", res));
-                    (res, "index".to_string())
-                } else {
-                    self.generate_expr(base, expected_ty)
+                    return (res, "index".to_string());
                 }
+
+                let (base_val, base_ty) = self.generate_expr(base, "any");
+
+                // Parse struct name from !llvm.struct<"Name", (...)>
+                if let Some(start_idx) = base_ty.find("\"") {
+                    if let Some(end_idx) = base_ty[start_idx + 1..].find("\"") {
+                        let struct_name = &base_ty[start_idx + 1..start_idx + 1 + end_idx];
+                        if let Some(decl) = self.structs.get(struct_name).cloned() {
+                            if let Some(field_idx) =
+                                decl.fields.iter().position(|(n, _)| n == member)
+                            {
+                                let field_ty = self.lower_type(&decl.fields[field_idx].1);
+                                let res = self.next_var();
+                                self.write_line(&format!(
+                                    "{} = llvm.extractvalue {}[{}] : {}",
+                                    res, base_val, field_idx, base_ty
+                                ));
+                                return (res, field_ty);
+                            }
+                        }
+                    }
+                }
+
+                // Fallback
+                self.generate_expr(base, expected_ty)
             }
             Expr::MethodCall(base, _method, _args) => {
                 if _method == "as_ptr" || _method == "as_mut_ptr" {
@@ -697,15 +872,32 @@ impl MlirGenerator {
                 (res, "i64".to_string())
             }
             Expr::StructInit(name, fields) => {
-                for (_, f_expr) in fields {
-                    self.generate_expr(f_expr, expected_ty);
-                }
-                let res = self.next_var();
+                let struct_decl = self.structs.get(name).unwrap().clone();
+                let struct_ty = self.lower_type(&Type::Struct(name.clone()));
+
+                let mut current_struct = self.next_var();
                 self.write_line(&format!(
-                    "{} = llvm.mlir.undef : !llvm.struct<\"{}\">",
-                    res, name
+                    "{} = llvm.mlir.undef : {}",
+                    current_struct, struct_ty
                 ));
-                (res, format!("!llvm.struct<\"{}\">", name))
+
+                for (field_name, f_expr) in fields {
+                    let field_idx = struct_decl
+                        .fields
+                        .iter()
+                        .position(|(n, _)| n == field_name)
+                        .unwrap();
+                    let field_ty = self.lower_type(&struct_decl.fields[field_idx].1);
+                    let (f_val, _) = self.generate_expr(f_expr, &field_ty);
+
+                    let next_struct = self.next_var();
+                    self.write_line(&format!(
+                        "{} = llvm.insertvalue {}, {}[{}] : {}",
+                        next_struct, f_val, current_struct, field_idx, struct_ty
+                    ));
+                    current_struct = next_struct;
+                }
+                (current_struct, struct_ty)
             }
             Expr::Array(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 let res = self.next_var();

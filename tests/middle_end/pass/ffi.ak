@@ -12,5 +12,5 @@ fn main() -> Tensor<i32> {
 }
 
 // CHECK: func.func private @malloc(memref<?x?xi32>) -> !llvm.ptr<0>
-// CHECK: arith.constant 1024 : i64
-// CHECK: func.call @malloc(%v0) : (i64) -> memref<?x?xi32>
+// CHECK: = arith.constant 1024 : i32
+// CHECK: func.call @malloc(%v0) : (i32) -> !llvm.ptr<0>

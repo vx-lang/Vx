@@ -1,0 +1,35 @@
+// RUN: akarc %s | mlir-opt --convert-scf-to-cf --expand-strided-metadata --lower-affine --finalize-memref-to-llvm --convert-func-to-llvm --convert-cf-to-llvm --convert-arith-to-llvm --reconcile-unrealized-casts | mlir-translate --mlir-to-llvmir | lli --load=./libakar_rt.dylib
+// RUN: %t | FileCheck %s
+
+extern "C" {
+    fn print_f32(val: f32) -> i32;
+}
+
+struct Config {
+    dim: i32,
+    hidden_dim: i32,
+    n_layers: i32,
+    n_heads: i32,
+    vocab_size: i32,
+    seq_len: i32,
+    norm_eps: f32,
+}
+
+fn main() -> i32 {
+    let conf = Config {
+        dim: 288,
+        hidden_dim: 768,
+        n_layers: 6,
+        n_heads: 6,
+        vocab_size: 32000,
+        seq_len: 256,
+        norm_eps: 0.00001,
+    };
+    
+    unsafe {
+        print_f32(conf.norm_eps);
+    }
+    return 0;
+}
+
+// CHECK: 0.000010

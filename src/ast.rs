@@ -41,6 +41,7 @@ pub enum Type {
     Ref(Box<Type>, MemorySpace),
     Borrow(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
+    Scalar(ElementType),
     Struct(String),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),

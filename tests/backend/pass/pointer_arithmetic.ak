@@ -1,0 +1,18 @@
+// RUN: akarc %s | mlir-opt --convert-scf-to-cf --expand-strided-metadata --lower-affine --finalize-memref-to-llvm --convert-func-to-llvm --convert-cf-to-llvm --convert-arith-to-llvm --reconcile-unrealized-casts | mlir-translate --mlir-to-llvmir | lli --load=./libakar_rt.dylib
+// RUN: %t | FileCheck %s
+
+extern "C" {
+    fn malloc(size: i32) -> *mut f32;
+    fn print_f32(val: f32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let ptr: *mut f32 = malloc(1024);
+        let val: f32 = ptr[0];
+        print_f32(val);
+    }
+    return 0;
+}
+
+// CHECK: 0.000000
