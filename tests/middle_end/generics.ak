@@ -8,11 +8,11 @@ fn process<T>(val: T) -> T {
 fn main() -> Tensor<i32> {
     let t1: Tensor<f32> = 1;
     let t2: Tensor<i32> = 2;
-    
+
     // Instantiate process twice, once with f32, once with i32
     let res1 = process(t1);
     let res2 = process(t2);
-    
+
     return res2;
 }
 
