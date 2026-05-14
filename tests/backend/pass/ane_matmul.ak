@@ -1,0 +1,43 @@
+// RUN: akarc %s | mlir-opt -convert-scf-to-cf -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true" -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
+// RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
+// RUN: %t | FileCheck %s
+
+fn main() -> Verified<Tensor> {
+  // Initialize inputs
+  let mut a = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
+  let mut b = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
+  let mut result = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
+
+  for i in 0..4 {
+    for j in 0..4 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
+      result[i][j] = 0.0;
+    }
+  }
+
+  // This block will be intercepted by codegen and dispatched to our Mac hardware dispatcher
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      for j in 0..4 {
+        for k in 0..4 {
+          result[i][j] += a[i][k] * b[k][j];
+        }
+      }
+    }
+  }
+
+  // Print to verify!
+  // It should be 2.0 * 3.0 * 4 = 24.0 for all cells!
+  print(result);
+
+  return Verified(result);
+}
+
+// CHECK: [Akar Hardware Dispatcher] Offloading computation to Apple Silicon accelerators...
+// CHECK: [Akar Hardware Dispatcher] Accelerator SGEMM execution completed successfully.
+// CHECK: Unranked Memref
+// CHECK: [24,   24,   24,   24]
+// CHECK: [24,   24,   24,   24]
+// CHECK: [24,   24,   24,   24]
+// CHECK: [24,   24,   24,   24]

@@ -4,6 +4,7 @@ module {
   func.func private @printMemrefI32(memref<*xi32>)
   func.func private @printMemrefI64(memref<*xi64>)
   func.func private @printMemrefBF16(memref<*xbf16>)
+  func.func private @akar_dispatch_npu(memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>) -> i1 attributes { llvm.emit_c_interface }
   func.func @custom_matmul(%a: memref<?x?xf64>, %b: memref<?x?xf64>) -> memref<?x?xf64> {
     // --- BEGIN SPAWN ON NPU ---
     %v0 = arith.constant 4 : index

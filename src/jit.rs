@@ -25,6 +25,31 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err("Failed to compile C runtime".to_string());
     }
 
+    if cfg!(target_os = "macos") {
+        println!("[JIT] Compiling Objective-C++ NPU Dispatcher...");
+        let npu_status = Command::new("clang++")
+            .args([
+                "-shared",
+                "-fPIC",
+                "-fobjc-arc",
+                "-O3",
+                "-Wno-deprecated-declarations",
+                "runtime/npu_dispatch.mm",
+                "-framework",
+                "Accelerate",
+                "-framework",
+                "Foundation",
+                "-o",
+                "libnpu_dispatch.dylib",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if !npu_status.success() {
+            return Err("Failed to compile Objective-C++ NPU Dispatcher".to_string());
+        }
+    }
+
     println!("[JIT] Lowering to LLVM Dialect...");
     let mlir_opt_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
         .args([
@@ -71,6 +96,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
         .args([
             "--load=./libakar_rt.dylib",
+            "--load=./libnpu_dispatch.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
             "temp.ll",

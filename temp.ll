@@ -13,6 +13,40 @@ declare void @printMemrefI64(i64, ptr)
 
 declare void @printMemrefBF16(i64, ptr)
 
+define private i1 @akar_dispatch_npu(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6, ptr %7, ptr %8, i64 %9, i64 %10, i64 %11, i64 %12, i64 %13, ptr %14, ptr %15, i64 %16, i64 %17, i64 %18, i64 %19, i64 %20) {
+  %22 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+  %23 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %22, ptr %1, 1
+  %24 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %23, i64 %2, 2
+  %25 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, i64 %3, 3, 0
+  %26 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %25, i64 %5, 4, 0
+  %27 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %26, i64 %4, 3, 1
+  %28 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %27, i64 %6, 4, 1
+  %29 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+  store { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, ptr %29, align 8
+  %30 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %7, 0
+  %31 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %30, ptr %8, 1
+  %32 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %31, i64 %9, 2
+  %33 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, i64 %10, 3, 0
+  %34 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %33, i64 %12, 4, 0
+  %35 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, i64 %11, 3, 1
+  %36 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %35, i64 %13, 4, 1
+  %37 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+  store { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, ptr %37, align 8
+  %38 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %14, 0
+  %39 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %38, ptr %15, 1
+  %40 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %39, i64 %16, 2
+  %41 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, i64 %17, 3, 0
+  %42 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %41, i64 %19, 4, 0
+  %43 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %42, i64 %18, 3, 1
+  %44 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %43, i64 %20, 4, 1
+  %45 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+  store { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, ptr %45, align 8
+  %46 = call i1 @_mlir_ciface_akar_dispatch_npu(ptr %29, ptr %37, ptr %45)
+  ret i1 %46
+}
+
+declare i1 @_mlir_ciface_akar_dispatch_npu(ptr, ptr, ptr)
+
 define { ptr, ptr, i64, [2 x i64], [2 x i64] } @custom_matmul(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6, ptr %7, ptr %8, i64 %9, i64 %10, i64 %11, i64 %12, i64 %13) {
   %15 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %7, 0
   %16 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %15, ptr %8, 1
