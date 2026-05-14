@@ -340,22 +340,64 @@ impl Parser {
                         }
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         Expr::FunctionCall(call_name, args)
-                    } else if self.match_token(&TokenType::LeftBrace) {
-                        let mut fields = Vec::new();
-                        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                            let f_name = match self.advance().kind.clone() {
-                                TokenType::Identifier(f) => f,
-                                _ => return Err("Expected field name in struct init".to_string()),
-                            };
-                            self.consume(&TokenType::Colon, "Expected ':'")?;
-                            let f_expr = self.parse_expr()?;
-                            fields.push((f_name, f_expr));
-                            if !self.match_token(&TokenType::Comma) {
-                                break;
+                    } else if self.check(&TokenType::LeftBrace) {
+                        let is_struct_init = {
+                            let mut lookahead = self.pos;
+                            if let Some(t1) = self.tokens.get(lookahead) {
+                                if t1.kind == TokenType::LeftBrace {
+                                    lookahead += 1;
+                                    if let Some(t2) = self.tokens.get(lookahead) {
+                                        if t2.kind == TokenType::RightBrace {
+                                            true
+                                        } else if let TokenType::Identifier(_) = t2.kind {
+                                            lookahead += 1;
+                                            if let Some(t3) = self.tokens.get(lookahead) {
+                                                t3.kind == TokenType::Colon
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
                             }
+                        };
+
+                        if is_struct_init {
+                            self.advance(); // consume '{'
+                            let mut fields = Vec::new();
+                            while !self.check(&TokenType::RightBrace)
+                                && !self.check(&TokenType::Eof)
+                            {
+                                let token_kind = self.advance().kind.clone();
+                                let f_name = match token_kind {
+                                    TokenType::Identifier(f) => f,
+                                    _ => {
+                                        return Err(format!(
+                                            "Expected field name in struct init, found {:?}",
+                                            token_kind
+                                        ))
+                                    }
+                                };
+                                self.consume(&TokenType::Colon, "Expected ':'")?;
+                                let f_expr = self.parse_expr()?;
+                                fields.push((f_name, f_expr));
+                                if !self.match_token(&TokenType::Comma) {
+                                    break;
+                                }
+                            }
+                            self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                            Expr::StructInit(call_name, fields)
+                        } else {
+                            Expr::Identifier(call_name)
                         }
-                        self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::StructInit(call_name, fields)
                     } else {
                         Expr::Identifier(call_name)
                     }
@@ -364,6 +406,7 @@ impl Parser {
                     let n = s.parse::<f64>().map_err(|_| "Invalid number".to_string())?;
                     Expr::Number(n)
                 }
+                TokenType::StringLiteral(s) => Expr::StringLiteral(s),
                 _ => return Err(format!("Expected expression, found {:?}", token.kind)),
             }
         };
@@ -443,6 +486,33 @@ impl Parser {
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::SpawnOn(top, stmts))
+            }
+            TokenType::If => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                let mut then_block = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    then_block.push(self.parse_statement()?);
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+                let mut else_block = None;
+                if self.match_token(&TokenType::Else) {
+                    if self.check(&TokenType::If) {
+                        // `else if`
+                        else_block = Some(vec![self.parse_statement()?]);
+                    } else {
+                        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                        let mut block = Vec::new();
+                        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            block.push(self.parse_statement()?);
+                        }
+                        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                        else_block = Some(block);
+                    }
+                }
+                Ok(Statement::If(Box::new(cond), then_block, else_block))
             }
             TokenType::For => {
                 self.advance();

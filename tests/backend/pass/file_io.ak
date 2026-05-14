@@ -1,0 +1,26 @@
+extern {
+    fn fopen(filename: *const i8, mode: *const i8) -> *mut i8;
+    fn fputs(s: *const i8, stream: *mut i8) -> i32;
+    fn fclose(stream: *mut i8) -> i32;
+    fn printf(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let f: *mut i8 = fopen("test_output.txt", "w");
+        fputs("Hello, File I/O from Akar!\n", f);
+        fclose(f);
+        printf("Done: %d\n", 0);
+    }
+    return 0;
+}
+
+// CHECK: func.func private @fopen(!llvm.ptr<0>, !llvm.ptr<0>) -> !llvm.ptr<0>
+// CHECK: func.func private @fputs(!llvm.ptr<0>, !llvm.ptr<0>) -> i32
+// CHECK: func.func @main() -> i32 {
+// CHECK: = llvm.mlir.addressof @str_0 : !llvm.ptr<0>
+// CHECK: = llvm.mlir.addressof @str_1 : !llvm.ptr<0>
+// CHECK: = func.call @fopen(%
+// CHECK: = llvm.mlir.addressof @str_2 : !llvm.ptr<0>
+// CHECK: = func.call @fputs(%
+// CHECK: = func.call @fclose(%

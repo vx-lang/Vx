@@ -107,6 +107,7 @@ pub enum UnaryOp {
 pub enum Expr {
     Identifier(String),
     Number(f64),
+    StringLiteral(String),
     Transfer(Box<Expr>, MemorySpace),
     FunctionCall(String, Vec<Expr>),
     Array(Vec<Expr>),
@@ -181,6 +182,7 @@ pub enum Statement {
     SpawnOn(Topology, Vec<Statement>),
     ExprStmt(Expr),
     ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // (iterator, start, end, body)
+    If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>), // (condition, then_block, else_block)
     Assign(Expr, Expr),                                    // lhs = rhs
     CompoundAssign(Expr, BinaryOp, Expr),                  // lhs += rhs
 }
@@ -205,6 +207,13 @@ impl Statement {
                 Box::new(start.substitute(mapping)),
                 Box::new(end.substitute(mapping)),
                 body.iter().map(|s| s.substitute(mapping)).collect(),
+            ),
+            Statement::If(cond, then_block, else_block) => Statement::If(
+                Box::new(cond.substitute(mapping)),
+                then_block.iter().map(|s| s.substitute(mapping)).collect(),
+                else_block
+                    .as_ref()
+                    .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
             ),
             Statement::Assign(lhs, rhs) => {
                 Statement::Assign(lhs.substitute(mapping), rhs.substitute(mapping))

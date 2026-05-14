@@ -9,6 +9,7 @@ pub struct MlirGenerator {
     current_el_ty: String,
     functions: HashMap<String, String>,
     structs: HashMap<String, StructDecl>,
+    globals: String,
 }
 
 impl Default for MlirGenerator {
@@ -27,6 +28,7 @@ impl MlirGenerator {
             current_el_ty: "f32".to_string(),
             functions: HashMap::new(),
             structs: HashMap::new(),
+            globals: String::new(),
         }
     }
 
@@ -108,6 +110,8 @@ impl MlirGenerator {
             self.generate_function(func);
         }
 
+        self.output.push_str(&self.globals);
+
         self.pop_indent();
         self.write_line("}");
         self.output.clone()
@@ -133,6 +137,7 @@ impl MlirGenerator {
                     ElementType::BF16 => "bf16",
                     ElementType::I32 => "i32",
                     ElementType::I64 => "i64",
+                    ElementType::I8 | ElementType::U8 => "i8",
                     ElementType::Bool => "i1",
                     _ => unimplemented!("Element type currently unsupported as scalar"),
                 };
@@ -289,7 +294,18 @@ impl MlirGenerator {
                 } else {
                     "any".to_string()
                 };
-                let (val, val_ty) = self.generate_expr(expr, &expected_mlir_ty);
+                let (mut val, mut val_ty) = self.generate_expr(expr, &expected_mlir_ty);
+                if *_is_mut && !val_ty.starts_with("memref") && !val_ty.starts_with("!llvm.ptr") {
+                    let mem_ty = format!("memref<{}>", val_ty);
+                    let alloc_val = self.next_var();
+                    self.write_line(&format!("{} = memref.alloca() : {}", alloc_val, mem_ty));
+                    self.write_line(&format!(
+                        "memref.store {}, {}[] : {}",
+                        val, alloc_val, mem_ty
+                    ));
+                    val = alloc_val;
+                    val_ty = mem_ty;
+                }
                 self.env.insert(name.clone(), (val, val_ty));
             }
             Statement::ForLoop(iter, start, end, body) => {
@@ -313,12 +329,36 @@ impl MlirGenerator {
                 self.pop_indent();
                 self.write_line("}");
             }
+            Statement::If(cond, then_block, else_block) => {
+                let (cond_val, _) = self.generate_expr(cond, "i1");
+
+                self.write_line(&format!("scf.if {} {{", cond_val));
+
+                self.push_indent();
+                for s in then_block {
+                    self.generate_statement(s, _current_ret_ty);
+                }
+                self.pop_indent();
+
+                if let Some(else_b) = else_block {
+                    self.write_line("} else {");
+                    self.push_indent();
+                    for s in else_b {
+                        self.generate_statement(s, _current_ret_ty);
+                    }
+                    self.pop_indent();
+                }
+                self.write_line("}");
+            }
             Statement::Assign(lhs, rhs) => {
                 if let Some((base, base_ty, indices)) = self.flatten_indices(lhs) {
                     let mut rhs_expected = "any".to_string();
                     if base_ty.starts_with("memref<") {
                         if let Some(idx) = base_ty.rfind("x") {
                             rhs_expected = base_ty[idx + 1..base_ty.len() - 1].to_string();
+                        } else {
+                            // 0-rank memref
+                            rhs_expected = base_ty[7..base_ty.len() - 1].to_string();
                         }
                     } else if base_ty.starts_with("!llvm.ptr") {
                         // For pointers, we try to guess from rhs or just default to current_el_ty
@@ -348,11 +388,11 @@ impl MlirGenerator {
                         ));
                     } else {
                         self.write_line(&format!(
-                            "memref.store {}, {}[{}] : memref<?x?x{}>",
+                            "memref.store {}, {}[{}] : {}",
                             rhs_val,
                             base,
                             indices.join(", "),
-                            rhs_ty
+                            base_ty
                         ));
                     }
                 }
@@ -465,8 +505,29 @@ impl MlirGenerator {
     fn generate_expr(&mut self, expr: &Expr, expected_ty: &str) -> (String, String) {
         match expr {
             Expr::Identifier(name) => {
-                if let Some((ssa, ty)) = self.env.get(name) {
-                    (ssa.clone(), ty.clone())
+                let env_val = self.env.get(name).cloned();
+                if let Some((ssa, ty)) = env_val {
+                    let mut ssa_res = ssa.clone();
+                    let mut ty_res = ty.clone();
+                    if ty.starts_with("memref<") && !ty.contains("x") {
+                        // It's a 0-rank memref (mutable scalar). We must load it implicitly!
+                        let res = self.next_var();
+                        let inner_ty = ty[7..ty.len() - 1].to_string(); // strip "memref<" and ">"
+                        self.write_line(&format!("{} = memref.load {}[] : {}", res, ssa, ty));
+                        ssa_res = res;
+                        ty_res = inner_ty;
+                    }
+
+                    if expected_ty == "index" && ty_res != "index" && ty_res.starts_with("i") {
+                        let cast_res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : {} to index",
+                            cast_res, ssa_res, ty_res
+                        ));
+                        return (cast_res, "index".to_string());
+                    }
+
+                    (ssa_res, ty_res)
                 } else {
                     (format!("%{}", name), expected_ty.to_string())
                 }
@@ -505,6 +566,33 @@ impl MlirGenerator {
                     self.write_line(&format!("{} = arith.constant {} : i64", res, *n as i64));
                     (res, "i64".to_string())
                 }
+            }
+            Expr::StringLiteral(s) => {
+                let global_name = format!("str_{}", self.var_counter);
+                self.var_counter += 1;
+                let mut content = s.clone();
+                content.push('\0');
+
+                let mlir_str = content
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\0A")
+                    .replace("\r", "\\0D")
+                    .replace("\t", "\\09")
+                    .replace("\0", "\\00");
+                let len = content.len();
+
+                self.globals.push_str(&format!(
+                    "  llvm.mlir.global internal constant @{}(\"{}\") {{addr_space = 0 : i32}} : !llvm.array<{} x i8>\n",
+                    global_name, mlir_str, len
+                ));
+
+                let res = self.next_var();
+                self.write_line(&format!(
+                    "{} = llvm.mlir.addressof @{} : !llvm.ptr<0>",
+                    res, global_name
+                ));
+                (res, "!llvm.ptr<0>".to_string())
             }
             Expr::Transfer(inner, mem_space) => {
                 let (inner_val, inner_ty) = self.generate_expr(inner, expected_ty);

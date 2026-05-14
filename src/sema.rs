@@ -239,6 +239,26 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
+            Statement::If(cond, then_block, else_block) => {
+                let cond_ty = self.check_expr(cond);
+                if cond_ty != Type::Scalar(ElementType::Bool) {
+                    self.errors
+                        .push("Condition in if statement must be of type bool (i1)".to_string());
+                }
+                self.push_scope();
+                for s in then_block {
+                    self.check_statement(s, return_type);
+                }
+                self.pop_scope();
+
+                if let Some(else_b) = else_block {
+                    self.push_scope();
+                    for s in else_b {
+                        self.check_statement(s, return_type);
+                    }
+                    self.pop_scope();
+                }
+            }
             Statement::Assign(lhs, rhs) | Statement::CompoundAssign(lhs, _, rhs) => {
                 let lhs_ty = self.check_expr(lhs);
                 let rhs_ty = self.check_expr(rhs);
@@ -336,6 +356,11 @@ impl TypeChecker {
                 }
             }
             Expr::Number(_) => Type::Scalar(ElementType::F32),
+            Expr::StringLiteral(_) => Type::Pointer(
+                Box::new(Type::Scalar(ElementType::I8)),
+                None,
+                false, // const
+            ),
             Expr::Transfer(inner_expr, target_mem) => {
                 let inner_ty = self.check_expr(inner_expr);
                 match inner_ty {
@@ -641,7 +666,7 @@ impl TypeChecker {
                     | BinaryOp::Le
                     | BinaryOp::Ge
                     | BinaryOp::And
-                    | BinaryOp::Or => Type::Tensor(ElementType::Bool),
+                    | BinaryOp::Or => Type::Scalar(ElementType::Bool),
                     _ => lhs_ty,
                 }
             }
@@ -649,7 +674,7 @@ impl TypeChecker {
             Expr::UnaryOp(op, inner) => {
                 self.check_expr(inner);
                 match op {
-                    UnaryOp::Not => Type::Tensor(ElementType::Bool),
+                    UnaryOp::Not => Type::Scalar(ElementType::Bool),
                 }
             }
             Expr::Borrow(inner, is_mut) => {

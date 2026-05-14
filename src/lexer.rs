@@ -6,6 +6,8 @@ pub enum TokenType {
     Mut,
     For,
     In,
+    If,
+    Else,
     Return,
     Spawn,
     On,
@@ -80,6 +82,8 @@ impl std::fmt::Display for TokenType {
             TokenType::Mut => write!(f, "mut"),
             TokenType::For => write!(f, "for"),
             TokenType::In => write!(f, "in"),
+            TokenType::If => write!(f, "if"),
+            TokenType::Else => write!(f, "else"),
             TokenType::Return => write!(f, "return"),
             TokenType::Spawn => write!(f, "spawn"),
             TokenType::On => write!(f, "on"),
@@ -233,6 +237,8 @@ impl<'a> Lexer<'a> {
             "mut" => TokenType::Mut,
             "for" => TokenType::For,
             "in" => TokenType::In,
+            "if" => TokenType::If,
+            "else" => TokenType::Else,
             "return" => TokenType::Return,
             "spawn" => TokenType::Spawn,
             "on" => TokenType::On,
@@ -360,7 +366,35 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     break;
                 }
-                text.push(self.advance().unwrap());
+                let mut char_to_push = self.advance().unwrap();
+                if char_to_push == '\\' {
+                    if let Some(&esc_c) = self.peek() {
+                        match esc_c {
+                            'n' => {
+                                self.advance();
+                                char_to_push = '\n';
+                            }
+                            't' => {
+                                self.advance();
+                                char_to_push = '\t';
+                            }
+                            'r' => {
+                                self.advance();
+                                char_to_push = '\r';
+                            }
+                            '"' => {
+                                self.advance();
+                                char_to_push = '"';
+                            }
+                            '\\' => {
+                                self.advance();
+                                char_to_push = '\\';
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                text.push(char_to_push);
             }
             return Token {
                 kind: TokenType::StringLiteral(text),
