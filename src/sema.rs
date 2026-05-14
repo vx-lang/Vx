@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, Type>>,
+    functions: HashMap<String, Type>, // Maps function name to return type
     pub errors: Vec<String>,
 }
 
@@ -16,6 +17,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            functions: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -44,6 +46,12 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> bool {
+        // First pass: collect function signatures
+        for func in &program.functions {
+            self.functions.insert(func.name.clone(), func.return_type.clone());
+        }
+
+        // Second pass: check function bodies
         for func in &program.functions {
             self.check_function(func);
         }
@@ -159,6 +167,8 @@ impl TypeChecker {
                     Type::Ref(Box::new(Type::Tensor), MemorySpace::NPUHBM)
                 } else if name == "Tensor" {
                     Type::Tensor
+                } else if let Some(ret_ty) = self.functions.get(name) {
+                    ret_ty.clone()
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
                     Type::Tensor

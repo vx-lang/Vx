@@ -37,3 +37,85 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     
     assert!(is_valid, "Semantic analysis failed on integration test");
 }
+
+fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
+    let mut lexer = Lexer::new(input);
+    let tokens = lexer.tokenize();
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse().map_err(|e| vec![e])?;
+    let mut checker = TypeChecker::new();
+    if checker.check_program(&ast) {
+        Ok(ast)
+    } else {
+        for err in &checker.errors {
+            println!("run_pipeline semantic error: {}", err);
+        }
+        Err(checker.errors)
+    }
+}
+
+#[test]
+fn test_integration_operators() {
+    let input = r#"
+    fn math_ops() -> Tensor {
+        let mut x = 10;
+        let y = x * 5;
+        x += y + 2;
+        return x;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
+
+#[test]
+fn test_integration_loops() {
+    let input = r#"
+    fn loop_test() -> Tensor {
+        let mut sum = 0;
+        for i in 0..10 {
+            sum += i;
+        }
+        return sum;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
+
+#[test]
+fn test_integration_arrays_and_indexing() {
+    let input = r#"
+    fn array_test(a: Tensor, b: Tensor) -> Tensor {
+        let mut arr = Tensor([a.shape[0], b.shape[1]]);
+        arr[0][0] = a[0][1] * b[1][0];
+        return arr;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
+
+#[test]
+fn test_integration_method_chaining() {
+    let input = r#"
+    fn memory_test() -> Ref<Tensor, Memory::NPU_HBM> {
+        let mut mem = Tensor([10]).with_memory(Memory::NPU_HBM);
+        return mem;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
+
+#[test]
+fn test_integration_function_calls() {
+    let input = r#"
+    fn helper(x: Tensor) -> Tensor {
+        return x + 1;
+    }
+    
+    fn main() -> Tensor {
+        let y = 10;
+        let z = helper(y);
+        return z;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
