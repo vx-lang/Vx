@@ -630,6 +630,11 @@ impl MlirGenerator {
                     (res, "i64".to_string())
                 }
             }
+            Expr::EnumVariant(_, _) => {
+                let res = self.next_var();
+                self.write_line(&format!("{} = arith.constant 0 : i32", res)); // Dummy enum value
+                (res, "i32".to_string())
+            }
             Expr::StringLiteral(s) => {
                 let global_name = format!("str_{}", self.var_counter);
                 self.var_counter += 1;
@@ -894,6 +899,115 @@ impl MlirGenerator {
                     self.write_line(&format!("// get len of {} -> {}", base_val, res));
                     self.write_line(&format!("{} = arith.constant 0 : i64", res));
                     (res, "i64".to_string())
+                } else if _method == "reshape" {
+                    let (base_val, base_ty) = self.generate_expr(base, "any");
+                    let res = self.next_var();
+
+                    let mut shape_str = String::new();
+                    if let crate::ast::Expr::Array(d_args) = &_args[0] {
+                        for (i, d) in d_args.iter().enumerate() {
+                            if let crate::ast::Expr::Number(n) = d {
+                                shape_str.push_str(&format!("{}", *n as i64));
+                            } else {
+                                shape_str.push('?');
+                            }
+                            if i < d_args.len() - 1 {
+                                shape_str.push('x');
+                            }
+                        }
+                    }
+                    if !shape_str.is_empty() && !shape_str.ends_with('x') {
+                        shape_str.push('x');
+                    }
+
+                    let out_ty = if !shape_str.is_empty() {
+                        format!("memref<{}{}>", shape_str, self.current_el_ty)
+                    } else if expected_ty != "any" {
+                        expected_ty.to_string()
+                    } else {
+                        format!("memref<?x?x{}>", self.current_el_ty)
+                    };
+
+                    let mut is_exact = true;
+                    if _args.len() >= 2 {
+                        if let crate::ast::Expr::EnumVariant(enum_name, variant) = &_args[1] {
+                            if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim") {
+                                is_exact = false;
+                            }
+                        }
+                    }
+
+                    if is_exact {
+                        self.write_line(&format!("// reshape {} -> {}", base_val, res));
+                        let unranked_var = self.next_var();
+                        self.write_line(&format!(
+                            "{} = memref.cast {} : {} to memref<*x{}>",
+                            unranked_var, base_val, base_ty, self.current_el_ty
+                        ));
+                        self.write_line(&format!(
+                            "{} = memref.cast {} : memref<*x{}> to {}",
+                            res, unranked_var, self.current_el_ty, out_ty
+                        ));
+                    } else {
+                        self.write_line(&format!(
+                            "// reshape (allocating) {} -> {}",
+                            base_val, res
+                        ));
+                        self.write_line(&format!("{} = memref.alloc() : {}", res, out_ty));
+                        // Note: actual iteration space loops would be generated here
+                        // to copy the data from `base_val` to `res`. For the MLIR prototype,
+                        // allocating the correctly typed buffer is sufficient.
+                    }
+
+                    (res, out_ty)
+                } else if _method == "transpose" {
+                    let (base_val, base_ty) = self.generate_expr(base, "any");
+                    let res = self.next_var();
+
+                    let mut out_ty = if expected_ty != "any" {
+                        expected_ty.to_string()
+                    } else {
+                        format!("memref<?x?x{}>", self.current_el_ty)
+                    };
+
+                    if out_ty.contains("?x?") && base_ty.starts_with("memref<") {
+                        if let Some(_idx) = base_ty.find('x') {
+                            let end_idx = base_ty.rfind("xf").unwrap_or(base_ty.len() - 1);
+                            let shape_part = &base_ty[7..end_idx];
+                            if !shape_part.contains('?') {
+                                let dims: Vec<&str> = shape_part.split('x').collect();
+                                if let crate::ast::Expr::Array(p_args) = &_args[0] {
+                                    if p_args.len() == dims.len() {
+                                        let mut new_shape = String::new();
+                                        for (i, p) in p_args.iter().enumerate() {
+                                            if let crate::ast::Expr::Number(n) = p {
+                                                new_shape.push_str(dims[*n as usize]);
+                                            } else {
+                                                new_shape.push('?');
+                                            }
+                                            if i < p_args.len() - 1 {
+                                                new_shape.push('x');
+                                            }
+                                        }
+                                        out_ty =
+                                            format!("memref<{}x{}>", new_shape, self.current_el_ty);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    self.write_line(&format!("// transpose {} -> {}", base_val, res));
+                    let unranked_var = self.next_var();
+                    self.write_line(&format!(
+                        "{} = memref.cast {} : {} to memref<*x{}>",
+                        unranked_var, base_val, base_ty, self.current_el_ty
+                    ));
+                    self.write_line(&format!(
+                        "{} = memref.cast {} : memref<*x{}> to {}",
+                        res, unranked_var, self.current_el_ty, out_ty
+                    ));
+                    (res, out_ty)
                 } else {
                     // e.g. .with_memory()
                     self.generate_expr(base, expected_ty)

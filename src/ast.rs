@@ -112,6 +112,7 @@ pub enum UnaryOp {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(String),
+    EnumVariant(String, String),
     Number(f64),
     StringLiteral(String),
     Transfer(Box<Expr>, MemorySpace),
@@ -176,7 +177,12 @@ impl Expr {
                     .map(|(n, e)| (n.clone(), e.substitute(mapping)))
                     .collect(),
             ),
-            _ => self.clone(),
+            Expr::Identifier(_)
+            | Expr::EnumVariant(_, _)
+            | Expr::Number(_)
+            | Expr::StringLiteral(_)
+            | Expr::MemorySpace(_)
+            | Expr::Topology(_) => self.clone(),
         }
     }
 }

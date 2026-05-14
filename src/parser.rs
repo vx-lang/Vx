@@ -437,9 +437,21 @@ impl Parser {
                             }
                             self.consume(&TokenType::RightBrace, "Expected '}'")?;
                             Expr::StructInit(call_name, fields)
+                        } else if self.match_token(&TokenType::DoubleColon) {
+                            let variant = match self.advance().kind.clone() {
+                                TokenType::Identifier(v) => v,
+                                _ => return Err("Expected enum variant after ::".to_string()),
+                            };
+                            Expr::EnumVariant(call_name, variant)
                         } else {
                             Expr::Identifier(call_name)
                         }
+                    } else if self.match_token(&TokenType::DoubleColon) {
+                        let variant = match self.advance().kind.clone() {
+                            TokenType::Identifier(v) => v,
+                            _ => return Err("Expected enum variant after ::".to_string()),
+                        };
+                        Expr::EnumVariant(call_name, variant)
                     } else {
                         Expr::Identifier(call_name)
                     }

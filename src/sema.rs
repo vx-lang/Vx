@@ -483,6 +483,7 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::EnumVariant(_, _) => Type::Scalar(ElementType::I32), // Mock Enum Type
             Expr::Number(_) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(_) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
@@ -668,6 +669,128 @@ impl TypeChecker {
                 for arg in args.iter_mut() {
                     self.check_expr(arg);
                 }
+
+                // --- COMPILER INTRINSICS ---
+                if let Type::Tensor(el_ty, dims, top) = &base_ty {
+                    if _method == "reshape" {
+                        if args.is_empty() || args.len() > 3 {
+                            self.errors
+                                .push("reshape requires 1 to 3 arguments".to_string());
+                            return base_ty;
+                        }
+
+                        let mut is_exact = true;
+                        if args.len() >= 2 {
+                            if let Expr::EnumVariant(enum_name, variant) = &args[1] {
+                                if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim")
+                                {
+                                    is_exact = false;
+                                } else {
+                                    self.errors.push(
+                                        "reshape mode must be PadMode::Pad or PadMode::Trim"
+                                            .to_string(),
+                                    );
+                                }
+                            } else {
+                                self.errors.push(
+                                    "reshape mode must be an enum variant (e.g. PadMode::Pad)"
+                                        .to_string(),
+                                );
+                            }
+                        }
+
+                        if let Expr::Array(new_dims) = &args[0] {
+                            let empty_env = HashMap::new();
+                            let mut src_elements = 1.0;
+                            for d in dims {
+                                if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                                    src_elements *= v;
+                                } else {
+                                    self.errors.push(
+                                        "Cannot statically evaluate source dimension for reshape"
+                                            .to_string(),
+                                    );
+                                    return base_ty;
+                                }
+                            }
+
+                            let mut target_elements = 1.0;
+                            for d in new_dims {
+                                if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                                    target_elements *= v;
+                                } else {
+                                    self.errors.push(
+                                        "Cannot statically evaluate target dimension for reshape"
+                                            .to_string(),
+                                    );
+                                    return base_ty;
+                                }
+                            }
+
+                            if is_exact && (src_elements - target_elements).abs() > 1e-6 {
+                                self.errors.push(format!("reshape arithmetic mismatch: source has {} elements, target has {}", src_elements, target_elements));
+                                return base_ty;
+                            }
+
+                            return Type::Tensor(*el_ty, new_dims.clone(), top.clone());
+                        } else {
+                            self.errors.push(
+                                "reshape requires an array of dimensions as the first argument"
+                                    .to_string(),
+                            );
+                            return base_ty;
+                        }
+                    } else if _method == "transpose" {
+                        if args.len() != 1 {
+                            self.errors.push("transpose requires exactly 1 argument (an array of permutation indices)".to_string());
+                            return base_ty;
+                        }
+                        if let Expr::Array(perm) = &args[0] {
+                            let empty_env = HashMap::new();
+                            let mut new_dims = vec![Expr::Number(0.0); dims.len()];
+                            if perm.len() != dims.len() {
+                                self.errors.push(
+                                    "transpose permutation map length must match tensor rank"
+                                        .to_string(),
+                                );
+                                return base_ty;
+                            }
+                            let mut seen = vec![false; dims.len()];
+                            for (i, p) in perm.iter().enumerate() {
+                                if let Some(Value::Number(v)) = self.eval_expr(p, &empty_env) {
+                                    let v = v as usize;
+                                    if v >= dims.len() {
+                                        self.errors
+                                            .push("transpose index out of bounds".to_string());
+                                        return base_ty;
+                                    }
+                                    if seen[v] {
+                                        self.errors.push(
+                                            "transpose permutation map must not contain duplicates"
+                                                .to_string(),
+                                        );
+                                        return base_ty;
+                                    }
+                                    seen[v] = true;
+                                    new_dims[i] = dims[v].clone();
+                                } else {
+                                    self.errors.push(
+                                        "Cannot statically evaluate transpose permutation index"
+                                            .to_string(),
+                                    );
+                                    return base_ty;
+                                }
+                            }
+                            return Type::Tensor(*el_ty, new_dims, top.clone());
+                        } else {
+                            self.errors.push(
+                                "transpose requires an array of permutation indices".to_string(),
+                            );
+                            return base_ty;
+                        }
+                    }
+                }
+                // --- END INTRINSICS ---
 
                 // Dynamic Method Resolution
                 let mut found_method = None;

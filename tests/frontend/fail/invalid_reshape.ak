@@ -1,0 +1,8 @@
+// RUN: ! akarc %s
+
+fn main() {
+    let a: Tensor<f32, [128, 128]> = 1.0;
+    
+    // Fails because 128 * 128 != 256
+    let b = a.reshape([256]);
+}

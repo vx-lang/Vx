@@ -1,0 +1,8 @@
+// RUN: ! akarc %s
+
+fn main() {
+    let a: Tensor<f32, [128, 128]> = 1.0;
+    
+    // Fails because permutation has duplicates
+    let b = a.transpose([0, 0]);
+}
