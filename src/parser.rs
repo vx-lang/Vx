@@ -1067,8 +1067,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
 
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
-        if let Statement::SpawnOn(top, stmts) = &func.body[0] {
-            assert_eq!(*top, Topology::NPU(Box::new(Expr::Number(0.0))));
+        if let Statement::SpawnOn(top, stmts, _) = &func.body[0] {
+            assert_eq!(
+                *top,
+                Topology::NPU(Box::new(Expr::Number(0.0, Span::default())))
+            );
             assert_eq!(stmts.len(), 4);
         } else {
             panic!("Expected SpawnOn statement");
@@ -1081,14 +1084,14 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         let func = &program.functions[0];
-        if let Statement::LetDecl(name, is_mut, ty, expr) = &func.body[0] {
+        if let Statement::LetDecl(name, is_mut, ty, expr, _) = &func.body[0] {
             assert_eq!(name, "x");
             assert!(is_mut);
             assert_eq!(ty, &Some(Type::Tensor(ElementType::F32, vec![], None)));
-            if let Expr::FunctionCall(func_name, args) = expr {
+            if let Expr::FunctionCall(func_name, args, _) = expr {
                 assert_eq!(func_name, "Tensor");
                 assert_eq!(args.len(), 1);
-                if let Expr::Array(elements) = &args[0] {
+                if let Expr::Array(elements, _) = &args[0] {
                     assert_eq!(elements.len(), 2);
                 } else {
                     panic!("Expected array");
@@ -1106,14 +1109,14 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let input = "fn main() -> Tensor { for i in 0..10 { x = 5; } }";
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
-        if let Statement::ForLoop(iter, start, end, body) = &program.functions[0].body[0] {
+        if let Statement::ForLoop(iter, start, end, body, _) = &program.functions[0].body[0] {
             assert_eq!(iter, "i");
-            assert_eq!(**start, Expr::Number(0.0));
-            assert_eq!(**end, Expr::Number(10.0));
+            assert_eq!(**start, Expr::Number(0.0, Span::default()));
+            assert_eq!(**end, Expr::Number(10.0, Span::default()));
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(lhs, rhs) = &body[0] {
+            if let Statement::Assign(lhs, rhs, _) = &body[0] {
                 assert_eq!(*lhs, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(*rhs, Expr::Number(5.0));
+                assert_eq!(*rhs, Expr::Number(5.0, Span::default()));
             } else {
                 panic!("Expected Assign");
             }
@@ -1127,19 +1130,19 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let input = "fn main() -> Tensor { x[0] += y * z; }";
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
-        if let Statement::CompoundAssign(lhs, op, rhs) = &program.functions[0].body[0] {
+        if let Statement::CompoundAssign(lhs, op, rhs, _) = &program.functions[0].body[0] {
             assert_eq!(*op, BinaryOp::Add);
-            if let Expr::IndexAccess(arr, idx) = lhs {
+            if let Expr::IndexAccess(arr, idx, _) = lhs {
                 assert_eq!(**arr, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(**idx, Expr::Number(0.0));
+                assert_eq!(**idx, Expr::Number(0.0, Span::default()));
             } else {
                 panic!("Expected IndexAccess");
             }
 
-            if let Expr::BinaryOp(left, binop, right) = rhs {
+            if let Expr::BinaryOp(left, binop, right, _) = rhs {
                 assert_eq!(*binop, BinaryOp::Mul);
-                assert_eq!(**left, Expr::Identifier("y".to_string()));
-                assert_eq!(**right, Expr::Identifier("z".to_string()));
+                assert_eq!(**left, Expr::Identifier("y".to_string(), Span::default()));
+                assert_eq!(**right, Expr::Identifier("z".to_string(), Span::default()));
             } else {
                 panic!("Expected BinaryOp");
             }
@@ -1153,11 +1156,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
-        if let Statement::ExprStmt(expr) = &program.functions[0].body[0] {
-            if let Expr::MethodCall(obj, method, args) = expr {
+        if let Statement::ExprStmt(expr, _) = &program.functions[0].body[0] {
+            if let Expr::MethodCall(obj, method, args, _) = expr {
                 assert_eq!(method, "with_memory");
                 assert_eq!(args.len(), 1);
-                if let Expr::MemberAccess(inner_obj, member) = &**obj {
+                if let Expr::MemberAccess(inner_obj, member, _) = &**obj {
                     assert_eq!(member, "shape");
                     assert_eq!(
                         **inner_obj,

@@ -14,7 +14,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize();
 
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, &source);
     let mut program = match parser.parse() {
         Ok(p) => p,
         Err(_) => {
@@ -55,7 +55,7 @@ fn run_middle_end_test(path: &Path) {
         .collect();
 
     let mut lexer = Lexer::new(&source);
-    let mut parser = Parser::new(lexer.tokenize());
+    let mut parser = Parser::new(lexer.tokenize(), &source);
     let mut program = parser.parse().expect("Failed to parse");
 
     let mut checker = TypeChecker::new();
@@ -90,7 +90,7 @@ fn run_backend_test(path: &Path) {
         .collect();
 
     let mut lexer = Lexer::new(&source);
-    let mut parser = Parser::new(lexer.tokenize());
+    let mut parser = Parser::new(lexer.tokenize(), &source);
     let mut program = match parser.parse() {
         Ok(p) => p,
         Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),

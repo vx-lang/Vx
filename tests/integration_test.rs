@@ -25,7 +25,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
     assert!(!tokens.is_empty());
 
     // 2. Parsing
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, input);
     let mut ast = parser.parse().expect("Failed to parse AST");
     assert_eq!(ast.functions.len(), 2);
 
@@ -45,7 +45,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
 fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, input);
     let mut ast = parser.parse().map_err(|e| vec![e])?;
     let mut checker = TypeChecker::new();
     match checker.check_program(&mut ast) {
