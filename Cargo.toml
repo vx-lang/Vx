@@ -1,6 +1,6 @@
 [package]
-name = "vxc"
-version = "0.1.0"
+name = "Vx"
+version = "2.0.0"
 edition = "2021"
 description = "A high-performance systems programming language built from the ground up for heterogeneous computing."
 authors = ["Aditya"]
@@ -8,6 +8,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/hiraditya/Vx"
 keywords = ["compiler", "heterogeneous", "mlir", "gpu", "npu"]
 categories = ["compilers", "development-tools"]
+
+[[bin]]
+name = "vxc"
+path = "src/main.rs"
+
+[lib]
+name = "vxc"
+path = "src/lib.rs"
 
 [[bin]]
 name = "cargo-vx-bench"

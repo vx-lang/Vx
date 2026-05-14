@@ -1,17 +1,17 @@
 # Concept Draft: Native Programming Language for Heterogeneous Systems
 
-**Author:** aditya@  
-**Date:** May 11, 2026  
+**Author:** aditya@
+**Date:** May 11, 2026
 
 ## 1. Abstract & Core Philosophy
-Current programming languages model an abstract machine designed for a single address space. To execute programs on modern heterogeneous systems (multi-NPU datacenter topologies, specialized AI accelerators), compilers and runtimes rely on intrinsics and specific dialects to orchestrate compute across different machines. 
+Current programming languages model an abstract machine designed for a single address space. To execute programs on modern heterogeneous systems (multi-NPU datacenter topologies, specialized AI accelerators), compilers and runtimes rely on intrinsics and specific dialects to orchestrate compute across different machines.
 
 This concept outlines a new programming language paradigm where **address spaces and heterogeneous compute are modeled as first-class citizens**. Instead of bolting on data movement and remote execution as afterthoughts or library calls (e.g., MPI, `cudaMemcpy`), the language natively understands physical hardware boundaries, spatial execution, and temporal availability.
 
 ## 2. Key Architectural Pillars
 
 ### 2.1 Topology-Aware Type Systems
-Pointers and variables intrinsically encode their physical or logical address space. 
+Pointers and variables intrinsically encode their physical or logical address space.
 * **Example:** `Ref<Matrix, NPU_HBM>` vs. `Ref<Matrix, Host_DRAM>`.
 * **Benefit:** The type checker validates that compute operations are localized to the correct memory space, effectively turning data-movement bugs and misaligned execution targets into compile-time errors.
 
@@ -50,7 +50,7 @@ To manage the unpredictability of hardware availability, the language encodes th
 Standard operations yield a `Verified` type. The compiler guarantees execution correctness but retains the freedom to route the computation across the heterogeneous mesh based on real-time availability.
 
 ```rust
-let async_result: Verified<Tensor> = matmul(A, B); 
+let async_result: Verified<Tensor> = matmul(A, B);
 
 ```
 
@@ -72,7 +72,7 @@ let target_compute = async_result.try_pin(Topology::Acc1Core);
 
 match target_compute {
     HardwareState::Available(pinned_tensor) => {
-        pinned_tensor.execute(); 
+        pinned_tensor.execute();
     },
     HardwareState::Saturated(fallback_tensor) => {
         fallback_tensor.execute_anywhere(); // Reverts to Verified<T> behavior
