@@ -115,7 +115,15 @@ pub struct StructDecl {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct ExternDecl {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Program {
+    pub externs: Vec<ExternDecl>,
     pub structs: Vec<StructDecl>,
     pub functions: Vec<Function>,
 }

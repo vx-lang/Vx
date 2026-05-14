@@ -15,6 +15,7 @@ pub enum TokenType {
     Match,
     Struct,
     Unsafe,
+    Extern,
 
     // Types & Topology
     Topology,
@@ -27,6 +28,7 @@ pub enum TokenType {
     // Identifiers & Literals
     Identifier(String),
     Number(String),
+    StringLiteral(String),
 
     // Symbols
     LeftParen,
@@ -160,6 +162,7 @@ impl<'a> Lexer<'a> {
             "HardwareState" => TokenType::HardwareState,
             "struct" => TokenType::Struct,
             "unsafe" => TokenType::Unsafe,
+            "extern" => TokenType::Extern,
             _ => TokenType::Identifier(text),
         };
 
@@ -217,6 +220,22 @@ impl<'a> Lexer<'a> {
 
         if c.is_ascii_digit() {
             return self.number(c, start_col);
+        }
+
+        if c == '"' {
+            let mut text = String::new();
+            while let Some(&next_c) = self.peek() {
+                if next_c == '"' {
+                    self.advance();
+                    break;
+                }
+                text.push(self.advance().unwrap());
+            }
+            return Token {
+                kind: TokenType::StringLiteral(text),
+                line: self.line,
+                column: start_col,
+            };
         }
 
         let kind = match c {

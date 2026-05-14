@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, Type>>,
-    functions: HashMap<String, Type>, // Maps function name to return type
+    functions: HashMap<String, (Type, bool)>, // Maps function name to (return type, is_unsafe)
     structs: HashMap<String, StructDecl>,
     pub errors: Vec<String>,
     in_unsafe_block: bool,
@@ -55,10 +55,16 @@ impl TypeChecker {
             self.structs.insert(s.name.clone(), s.clone());
         }
 
+        // Collect externs (unsafe by default)
+        for ext in &program.externs {
+            self.functions
+                .insert(ext.name.clone(), (ext.return_type.clone(), true));
+        }
+
         // First pass: collect function signatures
         for func in &program.functions {
             self.functions
-                .insert(func.name.clone(), func.return_type.clone());
+                .insert(func.name.clone(), (func.return_type.clone(), false));
         }
 
         // Second pass: check function bodies
@@ -209,7 +215,10 @@ impl TypeChecker {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32)
-                } else if let Some(ret_ty) = self.functions.get(name) {
+                } else if let Some((ret_ty, is_unsafe)) = self.functions.get(name) {
+                    if *is_unsafe && !self.in_unsafe_block {
+                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", name));
+                    }
                     ret_ty.clone()
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
@@ -472,5 +481,35 @@ fn bad_matmul() -> Tensor {
             "Semantic checking failed: {:?}",
             checker.errors
         );
+    }
+
+    #[test]
+    fn test_sema_extern_unsafe() {
+        let input = r#"
+        extern "C" {
+            fn malloc(size: Tensor<f32>) -> *mut Tensor<f32>;
+        }
+
+        fn safe_wrapper() -> *mut Tensor<f32> {
+            return malloc(1024); // ERROR: unsafe function call
+        }
+
+        fn safe_wrapper_fixed() -> *mut Tensor<f32> {
+            unsafe {
+                return malloc(1024);
+            }
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer.tokenize());
+        let program = parser.parse().unwrap();
+        let mut checker = TypeChecker::new();
+
+        let success = checker.check_program(&program);
+        assert!(!success);
+        assert!(checker
+            .errors
+            .iter()
+            .any(|e| e.contains("Call to unsafe function 'malloc' is unsafe")));
     }
 }

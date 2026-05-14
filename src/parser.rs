@@ -519,11 +519,68 @@ impl Parser {
         Ok(StructDecl { name, fields })
     }
 
+    fn parse_extern_block(&mut self) -> Result<Vec<ExternDecl>, String> {
+        self.consume(&TokenType::Extern, "Expected 'extern'")?;
+
+        // Optional "C" ABI string literal (we ignore it for now but parse it if it exists)
+        if let TokenType::StringLiteral(s) = &self.peek().kind {
+            if s == "C" {
+                self.advance();
+            }
+        }
+
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut externs = Vec::new();
+
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.consume(&TokenType::Fn, "Expected 'fn'")?;
+            let name = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected function name".to_string()),
+            };
+
+            self.consume(&TokenType::LeftParen, "Expected '('")?;
+            let mut params = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    let p_name = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err("Expected parameter name".to_string()),
+                    };
+                    self.consume(&TokenType::Colon, "Expected ':'")?;
+                    let p_type = self.parse_type()?;
+                    params.push((p_name, p_type));
+
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+
+            self.consume(&TokenType::Arrow, "Expected '->'")?;
+            let return_type = self.parse_type()?;
+            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+
+            externs.push(ExternDecl {
+                name,
+                params,
+                return_type,
+            });
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+        Ok(externs)
+    }
+
     pub fn parse(&mut self) -> Result<Program, String> {
+        let mut externs = Vec::new();
         let mut structs = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenType::Eof) {
-            if self.check(&TokenType::Struct) {
+            if self.check(&TokenType::Extern) {
+                externs.extend(self.parse_extern_block()?);
+            } else if self.check(&TokenType::Struct) {
                 structs.push(self.parse_struct_decl()?);
             } else if self.check(&TokenType::Fn) {
                 functions.push(self.parse_function()?);
@@ -534,7 +591,11 @@ impl Parser {
                 ));
             }
         }
-        Ok(Program { structs, functions })
+        Ok(Program {
+            externs,
+            structs,
+            functions,
+        })
     }
 }
 
@@ -765,6 +826,26 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(stmts.len(), 2);
         } else {
             panic!("Expected UnsafeBlock");
+        }
+    }
+
+    #[test]
+    fn test_parse_extern() {
+        let input = r#"
+        extern "C" {
+            fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
+        }
+        "#;
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+
+        assert_eq!(program.externs.len(), 1);
+        assert_eq!(program.externs[0].name, "malloc");
+        assert_eq!(program.externs[0].params.len(), 1);
+        if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
+            assert_eq!(**inner, Type::Tensor(ElementType::F32));
+        } else {
+            panic!("Expected pointer return type");
         }
     }
 }

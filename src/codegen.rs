@@ -58,6 +58,21 @@ impl MlirGenerator {
         self.write_line("func.func private @printMemrefI64(memref<*xi64>)");
         self.write_line("func.func private @printMemrefBF16(memref<*xbf16>)");
 
+        // Emit external FFI function declarations
+        for ext in &program.externs {
+            let mut arg_types = Vec::new();
+            for (_, ty) in &ext.params {
+                arg_types.push(self.lower_type(ty));
+            }
+            let ret_type = self.lower_type(&ext.return_type);
+            self.write_line(&format!(
+                "func.func private @{}({}) -> {}",
+                ext.name,
+                arg_types.join(", "),
+                ret_type
+            ));
+        }
+
         // Define MLIR Structs
         for struct_decl in &program.structs {
             let mut field_types = Vec::new();
