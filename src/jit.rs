@@ -3,8 +3,14 @@ use std::io::Write;
 use std::process::Command;
 
 pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
+    // Ensure target/jit directory exists
+    let jit_dir = std::path::Path::new("target/jit");
+    if !jit_dir.exists() {
+        std::fs::create_dir_all(jit_dir).map_err(|e| e.to_string())?;
+    }
+
     // 1. Write MLIR to temp file
-    let mut mlir_file = File::create("temp.mlir").map_err(|e| e.to_string())?;
+    let mut mlir_file = File::create("target/jit/temp.mlir").map_err(|e| e.to_string())?;
     mlir_file
         .write_all(mlir_src.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -16,7 +22,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "-fPIC",
             "src/runtime/akar_rt.c",
             "-o",
-            "libakar_rt.dylib",
+            "target/jit/libakar_rt.dylib",
         ])
         .status()
         .map_err(|e| e.to_string())?;
@@ -40,7 +46,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
                 "-framework",
                 "Foundation",
                 "-o",
-                "libnpu_dispatch.dylib",
+                "target/jit/libnpu_dispatch.dylib",
             ])
             .status()
             .map_err(|e| e.to_string())?;
@@ -61,7 +67,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "--convert-cf-to-llvm",
             "--convert-arith-to-llvm",
             "--reconcile-unrealized-casts",
-            "temp.mlir",
+            "target/jit/temp.mlir",
         ])
         .output()
         .map_err(|e| e.to_string())?;
@@ -71,14 +77,15 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err(format!("mlir-opt failed:\n{}", err_str));
     }
 
-    let mut lowered_mlir_file = File::create("temp_llvm.mlir").map_err(|e| e.to_string())?;
+    let mut lowered_mlir_file =
+        File::create("target/jit/temp_llvm.mlir").map_err(|e| e.to_string())?;
     lowered_mlir_file
         .write_all(&mlir_opt_out.stdout)
         .map_err(|e| e.to_string())?;
 
     println!("[JIT] Translating to LLVM IR...");
     let mlir_translate_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate")
-        .args(["--mlir-to-llvmir", "temp_llvm.mlir"])
+        .args(["--mlir-to-llvmir", "target/jit/temp_llvm.mlir"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -87,7 +94,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err(format!("mlir-translate failed:\n{}", err_str));
     }
 
-    let mut llvmir_file = File::create("temp.ll").map_err(|e| e.to_string())?;
+    let mut llvmir_file = File::create("target/jit/temp.ll").map_err(|e| e.to_string())?;
     llvmir_file
         .write_all(&mlir_translate_out.stdout)
         .map_err(|e| e.to_string())?;
@@ -95,11 +102,11 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     println!("[JIT] Executing via LLI...");
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
         .args([
-            "--load=./libakar_rt.dylib",
-            "--load=./libnpu_dispatch.dylib",
+            "--load=target/jit/libakar_rt.dylib",
+            "--load=target/jit/libnpu_dispatch.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
-            "temp.ll",
+            "target/jit/temp.ll",
         ])
         .output()
         .map_err(|e| e.to_string())?;
