@@ -1,4 +1,6 @@
-mod lexer;
+pub mod ast;
+pub mod lexer;
+pub mod parser;
 use lexer::Lexer;
 use std::env;
 use std::fs;
