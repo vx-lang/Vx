@@ -1,75 +1,74 @@
-pub fn format_file(content: &str) -> String {
+use crate::lexer::{Lexer, TokenType};
+
+pub fn format_file(content: &str, indent_spaces: usize) -> String {
+    let mut lexer = Lexer::new_with_comments(content);
     let mut formatted = String::new();
     let mut indent_level: isize = 0;
-    let indent_str = "    "; // 4 spaces
+    let indent_str = " ".repeat(indent_spaces);
     
-    for line in content.lines() {
-        let trimmed = line.trim();
-        
-        if trimmed.is_empty() {
-            formatted.push('\n');
-            continue;
+    let mut is_new_line = true;
+    
+    loop {
+        let token = lexer.next_token();
+        if token.kind == TokenType::Eof {
+            break;
         }
         
-        // Count closing braces at the start of the line
-        let mut start_close_braces = 0;
-        for c in trimmed.chars() {
-            if c == '}' {
-                start_close_braces += 1;
-            } else {
-                break;
-            }
-        }
-        
-        // Decrease indent for starting braces
-        indent_level -= start_close_braces;
-        if indent_level < 0 {
-            indent_level = 0;
-        }
-        
-        // Apply indent
-        let current_indent = indent_str.repeat(indent_level as usize);
-        formatted.push_str(&current_indent);
-        formatted.push_str(trimmed);
-        formatted.push('\n');
-        
-        // Calculate indent change for the rest of the line
-        let mut open_braces = 0;
-        let mut close_braces = 0;
-        
-        let mut in_string = false;
-        let mut chars = trimmed.chars().peekable();
-        
-        while let Some(c) = chars.next() {
-            if in_string {
-                if c == '"' {
-                    in_string = false;
-                } else if c == '\\' {
-                    chars.next(); // skip escaped char
+        match token.kind {
+            TokenType::Whitespace(ws) => {
+                if ws.contains('\n') {
+                    // Output the newlines and reset the start-of-line flag
+                    let newlines = ws.chars().filter(|&c| c == '\n').count();
+                    for _ in 0..newlines {
+                        formatted.push('\n');
+                    }
+                    is_new_line = true;
+                } else {
+                    // Only output inline spaces if we aren't at the very start of a line
+                    if !is_new_line {
+                        formatted.push_str(&ws);
+                    }
                 }
-                continue;
             }
-            
-            if c == '/' && chars.peek() == Some(&'/') {
-                break; // line comment, ignore rest
+            TokenType::RightBrace => {
+                indent_level -= 1;
+                if indent_level < 0 { indent_level = 0; }
+                
+                if is_new_line {
+                    let current_indent = indent_str.repeat(indent_level as usize);
+                    formatted.push_str(&current_indent);
+                    is_new_line = false;
+                }
+                
+                formatted.push('}');
             }
-            
-            if c == '"' {
-                in_string = true;
-            } else if c == '{' {
-                open_braces += 1;
-            } else if c == '}' {
-                close_braces += 1;
+            TokenType::LeftBrace => {
+                if is_new_line {
+                    let current_indent = indent_str.repeat(indent_level as usize);
+                    formatted.push_str(&current_indent);
+                    is_new_line = false;
+                }
+                
+                formatted.push('{');
+                indent_level += 1;
             }
-        }
-        
-        let remaining_close_braces = close_braces - start_close_braces;
-        
-        indent_level += open_braces;
-        indent_level -= remaining_close_braces;
-        
-        if indent_level < 0 {
-            indent_level = 0;
+            TokenType::Comment(c) => {
+                if is_new_line {
+                    let current_indent = indent_str.repeat(indent_level as usize);
+                    formatted.push_str(&current_indent);
+                    is_new_line = false;
+                }
+                formatted.push_str(&c);
+            }
+            other => {
+                if is_new_line {
+                    let current_indent = indent_str.repeat(indent_level as usize);
+                    formatted.push_str(&current_indent);
+                    is_new_line = false;
+                }
+                
+                formatted.push_str(&other.to_string());
+            }
         }
     }
     

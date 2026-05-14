@@ -68,6 +68,79 @@ pub enum TokenType {
     // Special
     Eof,
     Unknown(char),
+    Comment(String),
+    Whitespace(String),
+}
+
+impl std::fmt::Display for TokenType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenType::Fn => write!(f, "fn"),
+            TokenType::Let => write!(f, "let"),
+            TokenType::Mut => write!(f, "mut"),
+            TokenType::For => write!(f, "for"),
+            TokenType::In => write!(f, "in"),
+            TokenType::Return => write!(f, "return"),
+            TokenType::Spawn => write!(f, "spawn"),
+            TokenType::On => write!(f, "on"),
+            TokenType::Transfer => write!(f, "transfer"),
+            TokenType::Unroll => write!(f, "unroll"),
+            TokenType::Across => write!(f, "across"),
+            TokenType::Match => write!(f, "match"),
+            TokenType::Struct => write!(f, "struct"),
+            TokenType::Unsafe => write!(f, "unsafe"),
+            TokenType::Extern => write!(f, "extern"),
+            TokenType::Trait => write!(f, "trait"),
+            TokenType::Impl => write!(f, "impl"),
+
+            TokenType::Topology => write!(f, "Topology"),
+            TokenType::Memory => write!(f, "Memory"),
+            TokenType::Ref => write!(f, "Ref"),
+            TokenType::Verified => write!(f, "Verified"),
+            TokenType::Pinned => write!(f, "Pinned"),
+            TokenType::HardwareState => write!(f, "HardwareState"),
+
+            TokenType::Identifier(s) => write!(f, "{}", s),
+            TokenType::Number(s) => write!(f, "{}", s),
+            TokenType::StringLiteral(s) => write!(f, "\"{}\"", s),
+
+            TokenType::LeftParen => write!(f, "("),
+            TokenType::RightParen => write!(f, ")"),
+            TokenType::LeftBrace => write!(f, "{{"),
+            TokenType::RightBrace => write!(f, "}}"),
+            TokenType::LeftBracket => write!(f, "["),
+            TokenType::RightBracket => write!(f, "]"),
+            TokenType::LeftAngle => write!(f, "<"),
+            TokenType::RightAngle => write!(f, ">"),
+            TokenType::Colon => write!(f, ":"),
+            TokenType::DoubleColon => write!(f, "::"),
+            TokenType::Semicolon => write!(f, ";"),
+            TokenType::Comma => write!(f, ","),
+            TokenType::Equals => write!(f, "="),
+            TokenType::PlusEquals => write!(f, "+="),
+            TokenType::Arrow => write!(f, "->"),
+            TokenType::Plus => write!(f, "+"),
+            TokenType::Minus => write!(f, "-"),
+            TokenType::Star => write!(f, "*"),
+            TokenType::Slash => write!(f, "/"),
+            TokenType::Dot => write!(f, "."),
+            TokenType::DoubleDot => write!(f, ".."),
+            TokenType::Ampersand => write!(f, "&"),
+
+            TokenType::EqEq => write!(f, "=="),
+            TokenType::NotEq => write!(f, "!="),
+            TokenType::LessEq => write!(f, "<="),
+            TokenType::GreaterEq => write!(f, ">="),
+            TokenType::AndAnd => write!(f, "&&"),
+            TokenType::OrOr => write!(f, "||"),
+            TokenType::Bang => write!(f, "!"),
+
+            TokenType::Comment(s) => write!(f, "{}", s),
+            TokenType::Whitespace(s) => write!(f, "{}", s),
+            TokenType::Unknown(c) => write!(f, "{}", c),
+            TokenType::Eof => write!(f, ""),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +154,7 @@ pub struct Lexer<'a> {
     source: std::iter::Peekable<std::str::Chars<'a>>,
     line: usize,
     column: usize,
+    pub preserve_comments: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -89,6 +163,16 @@ impl<'a> Lexer<'a> {
             source: source.chars().peekable(),
             line: 1,
             column: 1,
+            preserve_comments: false,
+        }
+    }
+
+    pub fn new_with_comments(source: &'a str) -> Self {
+        Self {
+            source: source.chars().peekable(),
+            line: 1,
+            column: 1,
+            preserve_comments: true,
         }
     }
 
@@ -204,11 +288,13 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Token {
-        self.skip_whitespace();
+        if !self.preserve_comments {
+            self.skip_whitespace();
+        }
 
         let start_col = self.column;
-        let c = match self.advance() {
-            Some(c) => c,
+        let c = match self.peek() {
+            Some(&c) => c,
             None => {
                 return Token {
                     kind: TokenType::Eof,
@@ -217,6 +303,47 @@ impl<'a> Lexer<'a> {
                 }
             }
         };
+
+        if self.preserve_comments {
+            if c.is_whitespace() {
+                let mut ws = String::new();
+                while let Some(&c) = self.peek() {
+                    if c.is_whitespace() {
+                        ws.push(self.advance().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                return Token {
+                    kind: TokenType::Whitespace(ws),
+                    line: self.line,
+                    column: start_col,
+                };
+            }
+            
+            if c == '/' {
+                let mut temp = self.source.clone();
+                temp.next();
+                if temp.peek() == Some(&'/') {
+                    let mut comment = String::new();
+                    comment.push(self.advance().unwrap()); // '/'
+                    comment.push(self.advance().unwrap()); // '/'
+                    while let Some(&next_c) = self.peek() {
+                        if next_c == '\n' {
+                            break;
+                        }
+                        comment.push(self.advance().unwrap());
+                    }
+                    return Token {
+                        kind: TokenType::Comment(comment),
+                        line: self.line,
+                        column: start_col,
+                    };
+                }
+            }
+        }
+
+        let c = self.advance().unwrap();
 
         if c.is_alphabetic() || c == '_' {
             return self.identifier_or_keyword(c, start_col);

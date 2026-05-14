@@ -1,14 +1,14 @@
 // RUN: akarc %s | FileCheck %s
 
 extern "C" {
-    fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
+  fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
 }
 
 fn main() -> Tensor<i32> {
-    unsafe {
-        let ptr = malloc(1024);
-    }
-    return 0;
+  unsafe {
+    let ptr = malloc(1024);
+  }
+  return 0;
 }
 
 // CHECK: func.func private @malloc(memref<?x?xi32>) -> !llvm.ptr<0>
