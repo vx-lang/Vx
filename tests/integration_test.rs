@@ -45,6 +45,8 @@ fn run_pipeline(input: &str) -> Result<akarc::ast::Program, Vec<String>> {
     let ast = parser.parse().map_err(|e| vec![e])?;
     let mut checker = TypeChecker::new();
     if checker.check_program(&ast) {
+        let mut codegen = akarc::codegen::MlirGenerator::new();
+        let _mlir_str = codegen.generate(&ast);
         Ok(ast)
     } else {
         for err in &checker.errors {
