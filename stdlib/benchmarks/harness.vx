@@ -1,0 +1,33 @@
+extern {
+    fn vx_get_time() -> f32;
+    fn vx_print_float(val: f32) -> i32;
+}
+
+// A tiny benchmark harness written natively in Vx!
+fn run_heavy_workload() -> i32 {
+    let mut sum: i32 = 0;
+    for i in 0..10000 {
+        for j in 0..10000 {
+            // Some heavy iterative math
+            sum += 1;
+        }
+    }
+    return sum;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let start_time = vx_get_time();
+        
+        // Call the function we want to benchmark
+        let status = run_heavy_workload();
+        
+        let end_time = vx_get_time();
+        let elapsed = end_time - start_time;
+        
+        // Print the elapsed time natively from Vx
+        let _ = vx_print_float(elapsed);
+    }
+    
+    return 0;
+}
