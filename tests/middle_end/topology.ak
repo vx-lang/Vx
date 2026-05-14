@@ -1,17 +1,17 @@
 // RUN: akarc %s | FileCheck %s
 
 fn main() -> Tensor<f32> {
-    return 0.0;
+  return 0.0;
 }
 
 fn process(t_host: Tensor<f32>) -> Tensor<f32> {
-    let t_device = t_host.to_device();
+  let t_device = t_host.to_device();
 
-    spawn on (Topology::NPU[0]) {
-        let x = t_device;
-    }
+  spawn on (Topology::NPU[0]) {
+    let x = t_device;
+  }
 
-    return t_host;
+  return t_host;
 }
 
 // CHECK: func.func @process(%t_host: memref<?x?xf32>) -> memref<?x?xf32> {

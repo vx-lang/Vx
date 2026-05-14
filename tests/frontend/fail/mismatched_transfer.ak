@@ -1,20 +1,20 @@
 // RUN: akarc %s
 
 fn expects_host(t: Tensor<f32>) -> Tensor<f32> {
-    return t;
+  return t;
 }
 
 fn main() -> i32 {
-    let host_tensor: Tensor<f32> = 1.0;
+  let host_tensor: Tensor<f32> = 1.0;
 
-    // Transfer to device
-    let device_tensor = host_tensor.to_device();
+  // Transfer to device
+  let device_tensor = host_tensor.to_device();
 
-    // Trying to transfer an NPU tensor to NPU again (redundant transfer, may need explicit error)
-    let redundant_tensor = device_tensor.to_device();
+  // Trying to transfer an NPU tensor to NPU again (redundant transfer, may need explicit error)
+  let redundant_tensor = device_tensor.to_device();
 
-    // Pass device tensor to host function (should strip pin or fail)
-    let result = expects_host(device_tensor);
+  // Pass device tensor to host function (should strip pin or fail)
+  let result = expects_host(device_tensor);
 
-    return 0;
+  return 0;
 }

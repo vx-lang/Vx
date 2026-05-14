@@ -1,21 +1,21 @@
 // RUN: akarc %s | lli | FileCheck %s
 
 fn main(d: Tensor<i32>) -> Tensor<i32> {
-    let a: Tensor<i32> = 10;
-    let b: Tensor<i32> = 20;
-    let c: Tensor<i32> = 10;
+  let a: Tensor<i32> = 10;
+  let b: Tensor<i32> = 20;
+  let c: Tensor<i32> = 10;
 
-    // Relational
-    let is_less = a < b;
-    let is_eq = a == c;
-    let is_neq = b != c;
+  // Relational
+  let is_less = a < b;
+  let is_eq = a == c;
+  let is_neq = b != c;
 
-    // Logical
-    let compound = is_less && is_eq;
-    let inverted = !compound;
-    let result = compound || inverted;
+  // Logical
+  let compound = is_less && is_eq;
+  let inverted = !compound;
+  let result = compound || inverted;
 
-    return d;
+  return d;
 }
 
 // Check that MLIR code generates cmpi and logical ops correctly

@@ -12,7 +12,7 @@ fn main() {
         std::process::exit(1);
     }
     
-    let mut indent_spaces = 4;
+    let mut indent_spaces = 2;
     let mut file_paths = Vec::new();
     
     let mut i = 1;
