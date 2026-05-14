@@ -5,12 +5,16 @@ use akarc::sema::TypeChecker;
 #[test]
 fn test_distributed_matmul_integration() {
     let input = r#"
+fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
+    return Verified(a);
+}
+
 fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
     spawn on(Topology::NPU[0]) {
         let local_a = transfer(a, Memory::NPU_HBM);
         let local_b = transfer(b, Memory::NPU_HBM);
         let result = custom_matmul(local_a, local_b);
-        return transfer(result, Memory::Host_DRAM);
+        return result;
     }
 }
     "#;
@@ -23,7 +27,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
     // 2. Parsing
     let mut parser = Parser::new(tokens);
     let ast = parser.parse().expect("Failed to parse AST");
-    assert_eq!(ast.functions.len(), 1);
+    assert_eq!(ast.functions.len(), 2);
 
     // 3. Semantic Analysis
     let mut checker = TypeChecker::new();

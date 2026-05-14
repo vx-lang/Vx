@@ -1,7 +1,7 @@
 // CHECK: memref.alloc
 // CHECK: scf.for %i =
 // CHECK: memref.store
-// CHECK: return %result
+// CHECK: return %v
 
 fn test_loop(a: Tensor, b: Tensor) -> Tensor {
     let mut result = Tensor([10, 10]);

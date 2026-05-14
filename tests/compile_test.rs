@@ -93,8 +93,9 @@ fn run_backend_test(path: &Path) {
     let mut checker = TypeChecker::new();
     assert!(
         checker.check_program(&ast),
-        "Semantic analysis failed on {:?}",
-        path
+        "Semantic analysis failed on {:?}: {:?}",
+        path,
+        checker.errors
     );
 
     let mut codegen = MlirGenerator::new();

@@ -28,8 +28,14 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     println!("[JIT] Lowering to LLVM Dialect...");
     let mlir_opt_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
         .args([
+            "--convert-scf-to-cf",
+            "--expand-strided-metadata",
+            "--lower-affine",
+            "--finalize-memref-to-llvm",
             "--convert-func-to-llvm",
+            "--convert-cf-to-llvm",
             "--convert-arith-to-llvm",
+            "--reconcile-unrealized-casts",
             "temp.mlir",
         ])
         .output()
@@ -63,7 +69,12 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
 
     println!("[JIT] Executing via LLI...");
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
-        .args(["--load=./libakar_rt.dylib", "temp.ll"])
+        .args([
+            "--load=./libakar_rt.dylib",
+            "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
+            "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
+            "temp.ll",
+        ])
         .output()
         .map_err(|e| e.to_string())?;
 

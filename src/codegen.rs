@@ -1,9 +1,11 @@
 use crate::ast::*;
+use std::collections::HashMap;
 
 pub struct MlirGenerator {
     output: String,
     indent_level: usize,
     var_counter: usize,
+    env: HashMap<String, String>,
 }
 
 impl Default for MlirGenerator {
@@ -18,6 +20,7 @@ impl MlirGenerator {
             output: String::new(),
             indent_level: 0,
             var_counter: 0,
+            env: HashMap::new(),
         }
     }
 
@@ -47,9 +50,7 @@ impl MlirGenerator {
         self.push_indent();
 
         // Hardcode external function declarations
-        self.write_line("func.func private @akar_transfer(i64) -> i64");
-        self.write_line("func.func private @custom_matmul(i64, i64) -> i64");
-        self.write_line("func.func private @akar_print(i64)");
+        self.write_line("func.func private @printMemrefF32(memref<*xf32>)");
 
         for func in &program.functions {
             self.generate_function(func);
@@ -73,7 +74,13 @@ impl MlirGenerator {
                 indices.push(idx_val);
                 Some((base_name, indices))
             }
-            Expr::Identifier(name) => Some((format!("%{}", name), Vec::new())),
+            Expr::Identifier(name) => {
+                if let Some(ssa) = self.env.get(name) {
+                    Some((ssa.clone(), Vec::new()))
+                } else {
+                    Some((format!("%{}", name), Vec::new()))
+                }
+            }
             _ => None,
         }
     }
@@ -84,7 +91,12 @@ impl MlirGenerator {
             params_str.push(format!("%{}: {}", name, self.lower_type(ty)));
         }
 
-        let ret_str = self.lower_type(&func.return_type);
+        let is_main = func.name == "main";
+        let ret_str = if is_main {
+            "i32".to_string()
+        } else {
+            self.lower_type(&func.return_type)
+        };
 
         self.write_line(&format!(
             "func.func @{}({}) -> {} {{",
@@ -95,7 +107,19 @@ impl MlirGenerator {
         self.push_indent();
 
         for stmt in &func.body {
+            if let Statement::Return(_) = stmt {
+                if is_main {
+                    // Ignore explicit returns in main for simplicity
+                    continue;
+                }
+            }
             self.generate_statement(stmt, &ret_str);
+        }
+
+        if is_main {
+            let z = self.next_var();
+            self.write_line(&format!("{} = arith.constant 0 : i32", z));
+            self.write_line(&format!("return {} : i32", z));
         }
 
         self.pop_indent();
@@ -104,25 +128,22 @@ impl MlirGenerator {
 
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
-            Statement::LetDecl(_name, _is_mut, _ty_ann, expr) => {
-                let (_val, _ty) = self.generate_expr(expr, "any");
-                // For simplistic generation, we just map the returned SSA val to the var name
-                // By declaring it with the same name if possible, or aliasing
-                if _val.starts_with('%') {
-                    // It's already an SSA value, we can create an alias or just assume
-                    // the expression codegen handled it. For simplicity in our demo:
-                    // If we need a new var name, we'd rename, but let's assume `generate_expr`
-                    // leaves it in `_val`. If it's a Tensor alloc, we just let it be.
-                }
+            Statement::LetDecl(name, _is_mut, _ty_ann, expr) => {
+                let (val, _) = self.generate_expr(expr, "any");
+                self.env.insert(name.clone(), val);
             }
             Statement::ForLoop(iter, start, end, body) => {
                 let (start_val, _) = self.generate_expr(start, "index");
                 let (end_val, _) = self.generate_expr(end, "index");
                 let step_val = self.next_var();
                 self.write_line(&format!("{} = arith.constant 1 : index", step_val));
+
+                let iter_ssa = format!("%{}", iter);
+                self.env.insert(iter.clone(), iter_ssa.clone());
+
                 self.write_line(&format!(
-                    "scf.for %{} = {} to {} step {} {{",
-                    iter, start_val, end_val, step_val
+                    "scf.for {} = {} to {} step {} {{",
+                    iter_ssa, start_val, end_val, step_val
                 ));
                 self.push_indent();
                 for s in body {
@@ -167,7 +188,7 @@ impl MlirGenerator {
             }
             Statement::CompoundAssign(_, BinaryOp::Mul, _) => {} // Unused in custom_matmul
             Statement::Return(expr) => {
-                let (val, ty) = self.generate_expr(expr, "any");
+                let (val, ty) = self.generate_expr(expr, _current_ret_ty);
                 self.write_line(&format!("return {} : {}", val, ty));
             }
             Statement::SpawnOn(top, stmts) => {
@@ -191,14 +212,25 @@ impl MlirGenerator {
     // Returns (SSA variable name, MLIR type string)
     fn generate_expr(&mut self, expr: &Expr, expected_ty: &str) -> (String, String) {
         match expr {
-            Expr::Identifier(name) => (format!("%{}", name), expected_ty.to_string()),
+            Expr::Identifier(name) => {
+                if let Some(ssa) = self.env.get(name) {
+                    (ssa.clone(), expected_ty.to_string())
+                } else {
+                    (format!("%{}", name), expected_ty.to_string())
+                }
+            }
             Expr::Number(n) => {
                 let res = self.next_var();
                 if expected_ty == "index" {
                     self.write_line(&format!("{} = arith.constant {} : index", res, *n as i64));
                     (res, "index".to_string())
                 } else if expected_ty == "f32" {
-                    self.write_line(&format!("{} = arith.constant {} : f32", res, *n));
+                    let float_str = if n.fract() == 0.0 {
+                        format!("{}.0", n)
+                    } else {
+                        n.to_string()
+                    };
+                    self.write_line(&format!("{} = arith.constant {} : f32", res, float_str));
                     (res, "f32".to_string())
                 } else {
                     self.write_line(&format!("{} = arith.constant {} : i64", res, *n as i64));
@@ -210,7 +242,19 @@ impl MlirGenerator {
                 self.generate_expr(inner, expected_ty)
             }
             Expr::FunctionCall(name, args) => {
-                if name == "Tensor" && args.len() == 1 {
+                if name == "print" {
+                    let (arg_val, _) = self.generate_expr(&args[0], "memref<?x?xf32>");
+                    let cast_val = self.next_var();
+                    self.write_line(&format!(
+                        "{} = memref.cast {} : memref<?x?xf32> to memref<*xf32>",
+                        cast_val, arg_val
+                    ));
+                    self.write_line(&format!(
+                        "func.call @printMemrefF32({}) : (memref<*xf32>) -> ()",
+                        cast_val
+                    ));
+                    return ("".to_string(), "()".to_string());
+                } else if name == "Tensor" && args.len() == 1 {
                     if let Expr::Array(dims) = &args[0] {
                         let mut dim_vals = Vec::new();
                         for dim in dims {
@@ -232,7 +276,7 @@ impl MlirGenerator {
                 let mut arg_vals = Vec::new();
                 let mut arg_tys = Vec::new();
                 for arg in args {
-                    let (val, ty) = self.generate_expr(arg, "any");
+                    let (val, ty) = self.generate_expr(arg, "memref<?x?xf32>");
                     arg_vals.push(val);
                     arg_tys.push(ty);
                 }
