@@ -1,0 +1,1 @@
+Whenever you have an implementation plan, write it down in `docs/implementation_plans/<implementation_plan_description>.md`.
