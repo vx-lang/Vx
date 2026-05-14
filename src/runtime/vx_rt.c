@@ -40,6 +40,12 @@ void end_benchmark() {
     printf("%f\n", end - benchmark_start_time);
 }
 
+float vx_get_time() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (float)ts.tv_sec + (float)ts.tv_nsec / 1e9f;
+}
+
 void trace_start() {
     printf("[TRACE START] Event ID: 100\n");
 }
