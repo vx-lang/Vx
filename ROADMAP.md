@@ -21,6 +21,7 @@ Allowing programmers to safely and mathematically verify computation boundaries.
 Bypassing runtime overhead and relying entirely on heavy ahead-of-time (AOT) optimizations.
 - `[x]` Direct lowering to MLIR and LLVM IR for execution
 - `[x]` High-performance heterogeneous JIT compilation via `lli` integration
+- `[ ]` Introduce custom `akar` MLIR dialect for specialized hardware topology modeling
 - `[ ]` Core MLIR optimization passes (Loop Unrolling, LICM)
 - `[ ]` Auto-Vectorization passes
 - `[ ]` Dead Code Elimination (DCE)

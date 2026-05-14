@@ -5,14 +5,14 @@ use akarc::sema::TypeChecker;
 #[test]
 fn test_distributed_matmul_integration() {
     let input = r#"
-fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
-    return Verified(a);
+fn custom_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a;
 }
 
-fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
+fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    let local_a = a.to_device();
+    let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
-        let local_a = transfer(a, Memory::NPU_HBM);
-        let local_b = transfer(b, Memory::NPU_HBM);
         let result = custom_matmul(local_a, local_b);
         return result;
     }

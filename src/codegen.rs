@@ -5,7 +5,7 @@ pub struct MlirGenerator {
     output: String,
     indent_level: usize,
     var_counter: usize,
-    env: HashMap<String, String>,
+    env: HashMap<String, (String, String)>,
     current_el_ty: String,
 }
 
@@ -112,7 +112,23 @@ impl MlirGenerator {
             Type::Matrix => "tensor<?x?xf32>".to_string(),
             Type::Ref(inner, _) => self.lower_type(inner),
             Type::Verified(inner) => self.lower_type(inner),
-            Type::Pinned(inner, _) => self.lower_type(inner),
+            Type::Pinned(inner, top) => {
+                let addr_space = match top {
+                    Topology::NPU(_) | Topology::Slice(_, _, _) => 1,
+                    Topology::AccCore(_) => 2,
+                    Topology::Host => 0,
+                };
+                let inner_ty_str = self.lower_type(inner);
+                if inner_ty_str.starts_with("memref<")
+                    && inner_ty_str.ends_with(">")
+                    && addr_space != 0
+                {
+                    let inner_str = &inner_ty_str[7..inner_ty_str.len() - 1];
+                    format!("memref<{}, {}>", inner_str, addr_space)
+                } else {
+                    inner_ty_str
+                }
+            }
             Type::Borrow(_, mem, _) | Type::Pointer(_, mem, _) => {
                 let addr_space = match mem {
                     Some(MemorySpace::NPUHBM) => 1,
@@ -137,7 +153,7 @@ impl MlirGenerator {
                 Some((base_name, indices))
             }
             Expr::Identifier(name) => {
-                if let Some(ssa) = self.env.get(name) {
+                if let Some((ssa, _)) = self.env.get(name) {
                     Some((ssa.clone(), Vec::new()))
                 } else {
                     Some((format!("%{}", name), Vec::new()))
@@ -151,6 +167,8 @@ impl MlirGenerator {
         let mut params_str = Vec::new();
         for (name, ty) in &func.params {
             params_str.push(format!("%{}: {}", name, self.lower_type(ty)));
+            self.env
+                .insert(name.clone(), (format!("%{}", name), self.lower_type(ty)));
         }
 
         let is_main = func.name == "main";
@@ -204,7 +222,6 @@ impl MlirGenerator {
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
             Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
-                let mut expr_expected = "any".to_string();
                 if let Some(Type::Tensor(el_ty)) = ty_ann {
                     let ty_str = match el_ty {
                         ElementType::F32 => "f32",
@@ -216,10 +233,14 @@ impl MlirGenerator {
                         _ => "f32",
                     };
                     self.current_el_ty = ty_str.to_string();
-                    expr_expected = ty_str.to_string();
                 }
-                let (val, _) = self.generate_expr(expr, &expr_expected);
-                self.env.insert(name.clone(), val);
+                let expected_mlir_ty = if let Some(ty) = ty_ann {
+                    self.lower_type(ty)
+                } else {
+                    "any".to_string()
+                };
+                let (val, val_ty) = self.generate_expr(expr, &expected_mlir_ty);
+                self.env.insert(name.clone(), (val, val_ty));
             }
             Statement::ForLoop(iter, start, end, body) => {
                 let (start_val, _) = self.generate_expr(start, "index");
@@ -228,7 +249,8 @@ impl MlirGenerator {
                 self.write_line(&format!("{} = arith.constant 1 : index", step_val));
 
                 let iter_ssa = format!("%{}", iter);
-                self.env.insert(iter.clone(), iter_ssa.clone());
+                self.env
+                    .insert(iter.clone(), (iter_ssa.clone(), "index".to_string()));
 
                 self.write_line(&format!(
                     "scf.for {} = {} to {} step {} {{",
@@ -276,7 +298,7 @@ impl MlirGenerator {
                     }
                     if let Expr::IndexAccess(arr, _) = lhs {
                         if let Expr::Identifier(name) = &**arr {
-                            if let Some(mem_val) = self.env.get(name) {
+                            if let Some((mem_val, _)) = self.env.get(name) {
                                 self.write_line(&format!(
                                     "memref.store {}, {}[] : memref<{}>",
                                     sum, mem_val, self.current_el_ty
@@ -306,7 +328,7 @@ impl MlirGenerator {
                     }
                     if let Expr::IndexAccess(arr, _) = lhs {
                         if let Expr::Identifier(name) = &**arr {
-                            if let Some(mem_val) = self.env.get(name) {
+                            if let Some((mem_val, _)) = self.env.get(name) {
                                 self.write_line(&format!(
                                     "memref.store {}, {}[] : memref<{}>",
                                     prod, mem_val, self.current_el_ty
@@ -344,8 +366,8 @@ impl MlirGenerator {
     fn generate_expr(&mut self, expr: &Expr, expected_ty: &str) -> (String, String) {
         match expr {
             Expr::Identifier(name) => {
-                if let Some(ssa) = self.env.get(name) {
-                    (ssa.clone(), expected_ty.to_string())
+                if let Some((ssa, ty)) = self.env.get(name) {
+                    (ssa.clone(), ty.clone())
                 } else {
                     (format!("%{}", name), expected_ty.to_string())
                 }
@@ -373,9 +395,32 @@ impl MlirGenerator {
                     (res, "i64".to_string())
                 }
             }
-            Expr::Transfer(inner, _mem_space) => {
-                // Return inner transparently as no-op for now!
-                self.generate_expr(inner, expected_ty)
+            Expr::Transfer(inner, mem_space) => {
+                let (inner_val, inner_ty) = self.generate_expr(inner, expected_ty);
+                let addr_space = match mem_space {
+                    MemorySpace::NPUHBM => 1,
+                    MemorySpace::LocalSRAM => 2,
+                    MemorySpace::HostDRAM => 0,
+                };
+                if inner_ty.starts_with("memref<") {
+                    let inner_str = &inner_ty[7..inner_ty.len() - 1];
+                    // strip off any existing address space if present
+                    let stripped = inner_str.split(", ").next().unwrap_or(inner_str);
+                    let new_ty = if addr_space == 0 {
+                        format!("memref<{}>", stripped)
+                    } else {
+                        format!("memref<{}, {}>", stripped, addr_space)
+                    };
+                    let alloc_val = self.next_var();
+                    self.write_line(&format!("{} = memref.alloc() : {}", alloc_val, new_ty));
+                    self.write_line(&format!(
+                        "memref.copy {}, {} : {} to {}",
+                        inner_val, alloc_val, inner_ty, new_ty
+                    ));
+                    (alloc_val, new_ty)
+                } else {
+                    (inner_val, inner_ty)
+                }
             }
             Expr::FunctionCall(name, args) => {
                 if name == "print" {

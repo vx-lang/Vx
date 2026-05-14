@@ -2,7 +2,7 @@ use crate::ast::*;
 use std::collections::HashMap;
 
 pub struct TypeChecker {
-    scopes: Vec<HashMap<String, Type>>,
+    scopes: Vec<HashMap<String, (Type, Topology)>>,
     functions: HashMap<String, (Type, bool)>, // Maps function name to (return type, is_unsafe)
     generic_functions: HashMap<String, Function>,
     pub monomorphized_functions: Vec<Function>,
@@ -11,6 +11,8 @@ pub struct TypeChecker {
     impls: HashMap<String, Vec<ImplBlock>>, // Maps trait name to list of implementations
     pub errors: Vec<String>,
     in_unsafe_block: bool,
+    active_topology: Topology,
+    active_memory: MemorySpace,
 }
 
 impl Default for TypeChecker {
@@ -31,6 +33,8 @@ impl TypeChecker {
             impls: HashMap::new(),
             errors: Vec::new(),
             in_unsafe_block: false,
+            active_topology: Topology::Host,
+            active_memory: MemorySpace::HostDRAM,
         }
     }
 
@@ -43,15 +47,16 @@ impl TypeChecker {
     }
 
     fn insert(&mut self, name: String, ty: Type) {
+        let top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name, (ty, top));
         }
     }
 
-    fn lookup(&self, name: &str) -> Option<Type> {
+    fn lookup(&self, name: &str) -> Option<(Type, Topology)> {
         for scope in self.scopes.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return Some(ty.clone());
+            if let Some((ty, top)) = scope.get(name) {
+                return Some((ty.clone(), top.clone()));
             }
         }
         None
@@ -250,14 +255,22 @@ impl TypeChecker {
                 }
             }
             Statement::SpawnOn(top, stmts) => {
+                let prev_top = self.active_topology.clone();
+                let prev_mem = self.active_memory.clone();
+                self.active_topology = top.clone();
+                self.active_memory = match top {
+                    Topology::NPU(_) => MemorySpace::NPUHBM,
+                    Topology::AccCore(_) => MemorySpace::LocalSRAM,
+                    Topology::Host => MemorySpace::HostDRAM,
+                    Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
+                };
+
                 self.push_scope();
 
                 // Validate topology expression if it contains one
                 match top {
                     Topology::NPU(expr) | Topology::AccCore(expr) => {
                         let _ty = self.check_expr(expr);
-                        // Ensure it evaluates to a number for indexing
-                        // Note: For now we just evaluate it, full type check can ensure it's scalar
                     }
                     Topology::Slice(_, start, end) => {
                         let _t1 = self.check_expr(start);
@@ -271,6 +284,9 @@ impl TypeChecker {
                 }
 
                 self.pop_scope();
+
+                self.active_topology = prev_top;
+                self.active_memory = prev_mem;
             }
             Statement::ExprStmt(expr) => {
                 self.check_expr(expr);
@@ -282,7 +298,36 @@ impl TypeChecker {
         match expr {
             Expr::Identifier(name) => {
                 match self.lookup(name) {
-                    Some(ty) => ty,
+                    Some((ty, top)) => {
+                        // Enforce Topology Boundaries!
+                        let mut is_valid = top == self.active_topology;
+                        if let Type::Pinned(_, pinned_top) = &ty {
+                            if *pinned_top == self.active_topology {
+                                is_valid = true;
+                            }
+                        }
+                        if let Type::Ref(_, MemorySpace::NPUHBM) = &ty {
+                            if matches!(
+                                self.active_topology,
+                                Topology::NPU(_) | Topology::Slice(_, _, _)
+                            ) {
+                                is_valid = true;
+                            }
+                        }
+                        if let Type::Ref(_, MemorySpace::HostDRAM) = &ty {
+                            if matches!(self.active_topology, Topology::Host) {
+                                is_valid = true;
+                            }
+                        }
+
+                        if !is_valid {
+                            self.errors.push(format!(
+                                "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                name, top, ty, self.active_topology
+                            ));
+                        }
+                        ty
+                    }
                     None => {
                         self.errors.push(format!("Undefined variable '{}'", name));
                         Type::Tensor(ElementType::F32) // Default placeholder on error
@@ -525,6 +570,17 @@ impl TypeChecker {
                 // Fallback for hardcoded mock methods
                 if _method == "with_memory" {
                     base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
+                } else if _method == "to_device" {
+                    let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
+                    base_ty = Type::Pinned(
+                        Box::new(base_ty),
+                        Topology::NPU(Box::new(Expr::Number(0.0))),
+                    ); // Default to NPU[0]
+                    *expr = Expr::Transfer(obj.clone(), target_mem);
+                } else if _method == "to_host" {
+                    let target_mem = MemorySpace::HostDRAM;
+                    base_ty = Type::Pinned(Box::new(base_ty), Topology::Host);
+                    *expr = Expr::Transfer(obj.clone(), target_mem);
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let is_mut = _method == "as_mut_ptr";
                     match &base_ty {
@@ -642,7 +698,14 @@ impl TypeChecker {
 
         // Allow assigning Ref<T> to T (implicit unwrap of ref wrapper if target wants base type)
         if let Type::Ref(inner_source, _) = source {
-            if target == &**inner_source {
+            if self.is_assignable(target, inner_source) {
+                return true;
+            }
+        }
+
+        // Allow assigning Pinned<T> to T
+        if let Type::Pinned(inner_source, _) = source {
+            if self.is_assignable(target, inner_source) {
                 return true;
             }
         }
@@ -700,14 +763,14 @@ mod tests {
     #[test]
     fn test_sema_distributed_matmul() {
         let input = r#"
-fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
-    return Verified(a);
+fn custom_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a;
 }
 
-fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
+fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    let local_a = a.to_device();
+    let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
-        let local_a = transfer(a, Memory::NPU_HBM);
-        let local_b = transfer(b, Memory::NPU_HBM);
         let result = custom_matmul(local_a, local_b);
         return result;
     }
