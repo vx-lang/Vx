@@ -57,6 +57,8 @@ extern {
     fn akar_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
     fn akar_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
     fn akar_safe_printf(piece: *mut i8) -> i32;
+    fn akar_print_int(val: i32) -> i32;
+    fn akar_print_float(val: f32) -> i32;
     fn akar_read_prompt_file(filepath: *const i8) -> *mut i8;
     fn akar_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
 }
@@ -427,13 +429,13 @@ fn main() -> i32 {
         let seq_len_f: f32 = config_ptr[6];
 
         let config = Config {
-            dim: 256,
-            hidden_dim: 512,
-            n_layers: 4,
-            n_heads: 8,
-            n_kv_heads: 8,
+            dim: 288,
+            hidden_dim: 768,
+            n_layers: 6,
+            n_heads: 6,
+            n_kv_heads: 6,
             vocab_size: 32000,
-            seq_len: 1024
+            seq_len: 256
         };
 
         let weights_ptr: *mut f32 = akar_load_weights("stories15M.bin");
@@ -451,8 +453,8 @@ fn main() -> i32 {
         let mut token: i32 = prompt_tokens[1]; // Usually BOS
         let mut pos: i32 = 0;
         
-        // We'll generate 20 tokens
-        for step in 0..20 {
+        // We'll generate 100 tokens
+        for step in 0..100 {
             let logits: *mut f32 = transformer(token, pos, config, state, weights);
             
             let mut next: i32 = 0;

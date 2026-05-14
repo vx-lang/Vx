@@ -471,6 +471,15 @@ impl MlirGenerator {
                                 ));
                             }
                         }
+                    } else if let Expr::Identifier(name) = lhs {
+                        if let Some((mem_val, stored_ty)) = self.env.get(name).cloned() {
+                            if stored_ty.starts_with("memref<") {
+                                self.write_line(&format!(
+                                    "memref.store {}, {}[] : {}",
+                                    sum, mem_val, stored_ty
+                                ));
+                            }
+                        }
                     }
                 } else if *op == BinaryOp::Mul {
                     let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
@@ -498,6 +507,15 @@ impl MlirGenerator {
                                 self.write_line(&format!(
                                     "memref.store {}, {}[] : memref<{}>",
                                     prod, mem_val, self.current_el_ty
+                                ));
+                            }
+                        }
+                    } else if let Expr::Identifier(name) = lhs {
+                        if let Some((mem_val, stored_ty)) = self.env.get(name).cloned() {
+                            if stored_ty.starts_with("memref<") {
+                                self.write_line(&format!(
+                                    "memref.store {}, {}[] : {}",
+                                    prod, mem_val, stored_ty
                                 ));
                             }
                         }
@@ -778,11 +796,27 @@ impl MlirGenerator {
 
                 let mut arg_vals = Vec::new();
                 let mut arg_tys = Vec::new();
-                for arg in args {
-                    // For arguments, ideally we'd look up the exact param types.
-                    // But for now, if ret_ty is a scalar, we assume arguments are scalars too,
-                    // otherwise we default to memref.
-                    let arg_expected_ty = if ret_ty.starts_with("memref") {
+                let mut expected_arg_tys: Vec<String> = Vec::new();
+                if let Some((_, func_ty)) = self.env.get(name) {
+                    if let Some(start) = func_ty.find('(') {
+                        if let Some(end) = func_ty.find(')') {
+                            let args_str = &func_ty[start + 1..end];
+                            if !args_str.is_empty() {
+                                expected_arg_tys =
+                                    args_str.split(", ").map(|s| s.to_string()).collect();
+                            }
+                        }
+                    }
+                }
+
+                for (i, arg) in args.iter().enumerate() {
+                    let arg_expected_ty = if i < expected_arg_tys.len() {
+                        expected_arg_tys[i].clone()
+                    } else if name == "akar_print_float" {
+                        "f32".to_string()
+                    } else if name == "akar_print_int" {
+                        "i32".to_string()
+                    } else if ret_ty.starts_with("memref") {
                         format!("memref<?x?x{}>", self.current_el_ty)
                     } else {
                         self.current_el_ty.clone()
@@ -838,17 +872,27 @@ impl MlirGenerator {
                         ));
 
                         let gep_val = self.next_var();
+                        let res_ty = if expected_ty != "any" {
+                            expected_ty.to_string()
+                        } else if self.current_el_ty == "!llvm.ptr<0>"
+                            || self.current_el_ty.starts_with("!llvm.ptr")
+                        {
+                            "i32".to_string()
+                        } else {
+                            self.current_el_ty.clone()
+                        };
                         self.write_line(&format!(
                             "{} = llvm.getelementptr {}[{}] : ({}, i64) -> {}, {}",
-                            gep_val, base_name, idx_i64, base_ty, base_ty, self.current_el_ty
+                            gep_val, base_name, idx_i64, base_ty, base_ty, res_ty
                         ));
 
                         let res = self.next_var();
                         self.write_line(&format!(
                             "{} = llvm.load {} : {} -> {}",
-                            res, gep_val, base_ty, self.current_el_ty
+                            res, gep_val, base_ty, res_ty
                         ));
-                        (res, self.current_el_ty.clone())
+                        self.current_el_ty = res_ty.clone();
+                        (res, res_ty)
                     } else {
                         let res = self.next_var();
                         self.write_line(&format!(
@@ -879,11 +923,21 @@ impl MlirGenerator {
                         ));
 
                         let res = self.next_var();
+                        let res_ty = if expected_ty != "any" {
+                            expected_ty.to_string()
+                        } else if self.current_el_ty == "!llvm.ptr<0>"
+                            || self.current_el_ty.starts_with("!llvm.ptr")
+                        {
+                            "i32".to_string()
+                        } else {
+                            self.current_el_ty.clone()
+                        };
                         self.write_line(&format!(
                             "{} = llvm.load {} : {} -> {}",
-                            res, gep_val, base_ty, self.current_el_ty
+                            res, gep_val, base_ty, res_ty
                         ));
-                        (res, self.current_el_ty.clone())
+                        self.current_el_ty = res_ty.clone();
+                        (res, res_ty)
                     } else {
                         ("".to_string(), "".to_string())
                     }
