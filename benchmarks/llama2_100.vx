@@ -1,0 +1,479 @@
+struct Config {
+    dim: i32,
+    hidden_dim: i32,
+    n_layers: i32,
+    n_heads: i32,
+    n_kv_heads: i32,
+    vocab_size: i32,
+    seq_len: i32
+}
+
+struct TransformerWeights {
+    token_embedding_table: *mut f32,
+    rms_att_weight: *mut f32,
+    rms_ffn_weight: *mut f32,
+    wq: *mut f32,
+    wk: *mut f32,
+    wv: *mut f32,
+    wo: *mut f32,
+    w1: *mut f32,
+    w2: *mut f32,
+    w3: *mut f32,
+    rms_final_weight: *mut f32,
+    wcls: *mut f32
+}
+
+struct RunState {
+    x: *mut f32,
+    xb: *mut f32,
+    xb2: *mut f32,
+    hb: *mut f32,
+    hb2: *mut f32,
+    q: *mut f32,
+    k: *mut f32,
+    v: *mut f32,
+    att: *mut f32,
+    logits: *mut f32,
+    key_cache: *mut f32,
+    value_cache: *mut f32
+}
+
+extern {
+    fn vx_malloc_f32(num_elements: i32) -> *mut f32;
+    fn free(ptr: *mut f32) -> i32;
+    fn printf(format: *const i8, val: f32) -> i32;
+    fn putchar(char: i32) -> i32;
+
+    fn vx_sqrtf(x: f32) -> f32;
+    fn vx_expf(x: f32) -> f32;
+    fn vx_cosf(x: f32) -> f32;
+    fn vx_sinf(x: f32) -> f32;
+    fn vx_powf(x: f32, y: f32) -> f32;
+    fn vx_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32;
+    
+    fn vx_load_config(filepath: *const i8) -> *mut i32;
+    fn vx_load_weights(filepath: *const i8) -> *mut f32;
+    fn vx_advance_ptr(ptr: *mut f32, offset: i32) -> *mut f32;
+    fn vx_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
+    fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
+    fn vx_safe_printf(piece: *mut i8) -> i32;
+    fn vx_print_int(val: i32) -> i32;
+    fn vx_print_float(val: f32) -> i32;
+    fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
+    fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
+}
+
+fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
+    let div_kv: i32 = dim * n_kv_heads;
+    let kv_dim: i32 = div_kv / n_heads;
+    
+    let state = unsafe {
+        let s_x: *mut f32 = vx_malloc_f32(dim);
+        let s_xb: *mut f32 = vx_malloc_f32(dim);
+        let s_xb2: *mut f32 = vx_malloc_f32(dim);
+        let s_hb: *mut f32 = vx_malloc_f32(hidden_dim);
+        let s_hb2: *mut f32 = vx_malloc_f32(hidden_dim);
+        let s_q: *mut f32 = vx_malloc_f32(dim);
+        let s_k: *mut f32 = vx_malloc_f32(dim);
+        let s_v: *mut f32 = vx_malloc_f32(dim);
+        let s_att: *mut f32 = vx_malloc_f32(n_heads * seq_len);
+        let s_logits: *mut f32 = vx_malloc_f32(vocab_size);
+        let s_key_cache: *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
+        let s_value_cache: *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
+        
+        RunState {
+            x: s_x,
+            xb: s_xb,
+            xb2: s_xb2,
+            hb: s_hb,
+            hb2: s_hb2,
+            q: s_q,
+            k: s_k,
+            v: s_v,
+            att: s_att,
+            logits: s_logits,
+            key_cache: s_key_cache,
+            value_cache: s_value_cache
+        };
+    };
+    return state;
+}
+
+fn memory_map_weights(ptr: *mut f32, dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> TransformerWeights {
+    let head_size: i32 = dim / n_heads;
+    
+    let w = unsafe {
+        let p0: *mut f32 = ptr;
+        let p1: *mut f32 = vx_advance_ptr(p0, vocab_size * dim);
+        let p2: *mut f32 = vx_advance_ptr(p1, n_layers * dim);
+        let p3_offset: i32 = n_layers * dim * n_heads * head_size;
+        let p3: *mut f32 = vx_advance_ptr(p2, p3_offset);
+        let p4_offset: i32 = n_layers * dim * n_kv_heads * head_size;
+        let p4: *mut f32 = vx_advance_ptr(p3, p4_offset);
+        let p5_offset: i32 = n_layers * dim * n_kv_heads * head_size;
+        let p5: *mut f32 = vx_advance_ptr(p4, p5_offset);
+        let p6_offset: i32 = n_layers * n_heads * head_size * dim;
+        let p6: *mut f32 = vx_advance_ptr(p5, p6_offset);
+        let p7: *mut f32 = vx_advance_ptr(p6, n_layers * dim);
+        let p8: *mut f32 = vx_advance_ptr(p7, n_layers * dim * hidden_dim);
+        let p9: *mut f32 = vx_advance_ptr(p8, n_layers * hidden_dim * dim);
+        let p10: *mut f32 = vx_advance_ptr(p9, n_layers * dim * hidden_dim);
+        let p11: *mut f32 = vx_advance_ptr(p10, dim);
+        let p12: *mut f32 = vx_advance_ptr(p11, seq_len * head_size);
+        let wcls_ptr: *mut f32 = p0; // assuming shared weights
+        
+        TransformerWeights {
+            token_embedding_table: p0,
+            rms_att_weight: p1,
+            wq: p2,
+            wk: p3,
+            wv: p4,
+            wo: p5,
+            rms_ffn_weight: p6,
+            w1: p7,
+            w2: p8,
+            w3: p9,
+            rms_final_weight: p10,
+            wcls: wcls_ptr
+        };
+    };
+    return w;
+}
+
+fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeights) -> *mut f32 {
+    unsafe {
+        let x: *mut f32 = s.x;
+        let dim: i32 = p.dim;
+        let kv_mul_div: i32 = p.dim * p.n_kv_heads;
+        let kv_dim: i32 = kv_mul_div / p.n_heads;
+        let kv_mul: i32 = p.n_heads / p.n_kv_heads;
+        let hidden_dim: i32 = p.hidden_dim;
+        let head_size: i32 = dim / p.n_heads;
+
+        let content_row: *mut f32 = vx_advance_ptr(w.token_embedding_table, token * dim);
+        for i in 0..dim {
+            x[i] = content_row[i];
+        }
+
+        let n_layers: i32 = p.n_layers;
+        let seq_len: i32 = p.seq_len;
+        
+        for l in 0..n_layers {
+            let rms_w_off: i32 = l * dim;
+            let rms_w: *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
+            
+            // Wait, how to cast integers? Akar doesn't have 'as f32' yet natively.
+            // We assume dim=256 for Stories15M.
+            let dim_f: f32 = 256.0;
+            let hidden_dim_f: f32 = 512.0; 
+            
+            let status1: i32 = rmsnorm(s.xb, x, rms_w, dim, dim_f);
+
+            let loff: i32 = l * seq_len * kv_dim;
+            let cache_off: i32 = loff + pos * kv_dim;
+            let s_k: *mut f32 = vx_advance_ptr(s.key_cache, cache_off);
+            let s_v: *mut f32 = vx_advance_ptr(s.value_cache, cache_off);
+
+            let wq_off: i32 = l * dim * dim;
+            let wq_l: *mut f32 = vx_advance_ptr(w.wq, wq_off);
+            let status2: i32 = matmul(s.q, s.xb, wq_l, dim, dim);
+            
+            let wk_off: i32 = l * dim * kv_dim;
+            let wk_l: *mut f32 = vx_advance_ptr(w.wk, wk_off);
+            let status3: i32 = matmul(s_k, s.xb, wk_l, dim, kv_dim);
+            
+            let wv_off: i32 = l * dim * kv_dim;
+            let wv_l: *mut f32 = vx_advance_ptr(w.wv, wv_off);
+            let status4: i32 = matmul(s_v, s.xb, wv_l, dim, kv_dim);
+
+            // RoPE relative positional encoding
+            for i in 0..kv_dim {
+                let div: i32 = i / 2;
+                let mul: i32 = div * 2;
+                let rem: i32 = i - mul;
+                if rem == 0 {
+                    let fcr: f32 = vx_get_rope_freq(pos, i, head_size);
+                    let fci: f32 = vx_cosf(fcr);
+                    let fsi: f32 = vx_sinf(fcr);
+                    
+                    let roff: i32 = i;
+                    let roff_1: i32 = i + 1;
+                    
+                    let q0: f32 = s.q[roff];
+                    let q1: f32 = s.q[roff_1];
+                    s.q[roff]   = q0 * fci - q1 * fsi;
+                    s.q[roff_1] = q0 * fsi + q1 * fci;
+                    
+                    let k0: f32 = s_k[roff];
+                    let k1: f32 = s_k[roff_1];
+                    s_k[roff]   = k0 * fci - k1 * fsi;
+                    s_k[roff_1] = k0 * fsi + k1 * fci;
+                }
+            }
+
+            // Multi-head self-attention
+            let pos_1: i32 = pos + 1;
+            for h in 0..p.n_heads {
+                let q_off: i32 = h * head_size;
+                let att_off: i32 = h * seq_len;
+                let att_h: *mut f32 = vx_advance_ptr(s.att, att_off);
+                
+                for t in 0..pos_1 {
+                    let h_kv_mul: i32 = h / kv_mul;
+                    let k_cache_off: i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
+                    let k_t: *mut f32 = vx_advance_ptr(s.key_cache, k_cache_off);
+                    let mut score: f32 = 0.0;
+                    for i in 0..head_size {
+                        let qv: f32 = s.q[q_off + i];
+                        let kv: f32 = k_t[i];
+                        score += qv * kv;
+                    }
+                    
+                    let head_size_f: f32 = 32.0; // Wait, 256/8 = 32
+                    let factor: f32 = 1.0 / vx_sqrtf(head_size_f);
+                    score = score * factor;
+                    att_h[t] = score;
+                }
+                
+                let mut max_val: f32 = att_h[0];
+                for t in 1..pos_1 {
+                    let val: f32 = att_h[t];
+                    if val > max_val { max_val = val; }
+                }
+                
+                let mut sum: f32 = 0.0;
+                for t in 0..pos_1 {
+                    let val: f32 = att_h[t];
+                    let exp_val: f32 = vx_expf(val - max_val);
+                    att_h[t] = exp_val;
+                    sum += exp_val;
+                }
+                
+                for t in 0..pos_1 {
+                    let val: f32 = att_h[t];
+                    att_h[t] = val / sum;
+                }
+                
+                let xb_off: i32 = h * head_size;
+                for i in 0..head_size {
+                    let mut val: f32 = 0.0;
+                    for t in 0..pos_1 {
+                        let h_kv_mul: i32 = h / kv_mul;
+                        let v_cache_off: i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
+                        let v_t: *mut f32 = vx_advance_ptr(s.value_cache, v_cache_off);
+                        let a: f32 = att_h[t];
+                        let v: f32 = v_t[i];
+                        val += a * v;
+                    }
+                    s.xb[xb_off + i] = val;
+                }
+            }
+
+            // final matmul
+            let wo_off: i32 = l * dim * dim;
+            let wo_l: *mut f32 = vx_advance_ptr(w.wo, wo_off);
+            let status5: i32 = matmul(s.xb2, s.xb, wo_l, dim, dim);
+
+            for i in 0..dim {
+                let x_val: f32 = x[i];
+                let xb2_val: f32 = s.xb2[i];
+                x[i] = x_val + xb2_val;
+            }
+
+            let rms_ffn_off: i32 = l * dim;
+            let rms_ffn_w: *mut f32 = vx_advance_ptr(w.rms_ffn_weight, rms_ffn_off);
+            let status6: i32 = rmsnorm(s.xb, x, rms_ffn_w, dim, dim_f);
+
+            let w1_off: i32 = l * dim * hidden_dim;
+            let w1_l: *mut f32 = vx_advance_ptr(w.w1, w1_off);
+            let w3_off: i32 = l * dim * hidden_dim;
+            let w3_l: *mut f32 = vx_advance_ptr(w.w3, w3_off);
+            let status7: i32 = matmul_ane(s.hb, s.xb, w1_l, dim, hidden_dim);
+            let status8: i32 = matmul_ane(s.hb2, s.xb, w3_l, dim, hidden_dim);
+
+            // SwiGLU
+            for i in 0..hidden_dim {
+                let mut val: f32 = s.hb[i];
+                let neg_val: f32 = 0.0 - val;
+                let exp_val: f32 = vx_expf(neg_val);
+                let denom: f32 = 1.0 + exp_val;
+                let factor: f32 = 1.0 / denom;
+                val = val * factor;
+                let hb2_val: f32 = s.hb2[i];
+                s.hb[i] = val * hb2_val;
+            }
+
+            let w2_off: i32 = l * dim * hidden_dim;
+            let w2_l: *mut f32 = vx_advance_ptr(w.w2, w2_off);
+            let status9: i32 = matmul_ane(s.xb, s.hb, w2_l, hidden_dim, dim);
+
+            for i in 0..dim {
+                let x_val: f32 = x[i];
+                let xb_val: f32 = s.xb[i];
+                x[i] = x_val + xb_val;
+            }
+        }
+
+        let dim_f: f32 = 256.0;
+        let status10: i32 = rmsnorm(x, x, w.rms_final_weight, dim, dim_f);
+        let status11: i32 = matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
+    };
+
+    return s.logits;
+}
+
+fn sample_argmax(probabilities: *mut f32, n: i32) -> i32 {
+    let mut max_i: i32 = 0;
+    let mut max_p: f32 = probabilities[0];
+    for i in 1..n {
+        let prob: f32 = probabilities[i];
+        if prob > max_p {
+            max_i = i;
+            max_p = prob;
+        }
+    }
+    return max_i;
+}
+
+fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32, size_f: f32) -> i32 {
+    let mut ss: f32 = 0.0;
+    for j in 0..size {
+        let val: f32 = x[j];
+        ss += val * val;
+    }
+    
+    ss = ss / size_f + 0.00001;
+    unsafe {
+        ss = 1.0 / vx_sqrtf(ss);
+    }
+    
+    for j in 0..size {
+        let val: f32 = x[j];
+        let w: f32 = weight[j];
+        let temp: f32 = ss * val;
+        o[j] = w * temp;
+    }
+    
+    return 0;
+}
+
+fn softmax(x: *mut f32, size: i32) -> i32 {
+    let mut max_val: f32 = x[0];
+    for i in 1..size {
+        let val: f32 = x[i];
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    
+    let mut sum: f32 = 0.0;
+    for i in 0..size {
+        let val: f32 = x[i];
+        let diff: f32 = val - max_val;
+        unsafe {
+            x[i] = vx_expf(diff);
+        }
+        let exp_val: f32 = x[i];
+        sum += exp_val;
+    }
+    
+    for i in 0..size {
+        let val: f32 = x[i];
+        x[i] = val / sum;
+    }
+    return 0;
+}
+
+fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
+    spawn on(Topology::GPU) {
+        for i in 0..d {
+            let mut val: f32 = 0.0;
+            for j in 0..n {
+                let idx: i32 = i * n + j;
+                let w_val: f32 = w[idx];
+                let x_val: f32 = x[j];
+                val += w_val * x_val;
+            }
+            xout[i] = val;
+        }
+    }
+    return 0;
+}
+
+fn matmul_ane(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
+    spawn on(Topology::ANE) {
+        for i in 0..d {
+            let mut val: f32 = 0.0;
+            for j in 0..n {
+                let idx: i32 = i * n + j;
+                let w_val: f32 = w[idx];
+                let x_val: f32 = x[j];
+                val += w_val * x_val;
+            }
+            xout[i] = val;
+        }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let config_ptr: *mut i32 = vx_load_config("stories15M.bin");
+        
+        let dim_f: f32 = config_ptr[0];
+        let hidden_dim_f: f32 = config_ptr[1];
+        let n_layers_f: f32 = config_ptr[2];
+        let n_heads_f: f32 = config_ptr[3];
+        let n_kv_heads_f: f32 = config_ptr[4];
+        let vocab_size_f: f32 = config_ptr[5];
+        let seq_len_f: f32 = config_ptr[6];
+
+        let config = Config {
+            dim: 288,
+            hidden_dim: 768,
+            n_layers: 6,
+            n_heads: 6,
+            n_kv_heads: 6,
+            vocab_size: 32000,
+            seq_len: 256
+        };
+
+        let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
+        let weights = memory_map_weights(weights_ptr, config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
+
+        let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
+
+        let tokenizer_ptr: *mut i8 = vx_build_tokenizer("tokenizer.bin", config.vocab_size);
+
+        let prompt_str: *mut i8 = vx_read_prompt_file("prompt.txt");
+        let prompt_tokens: *mut i32 = vx_encode_prompt(tokenizer_ptr, prompt_str);
+        let num_prompt_tokens: i32 = prompt_tokens[0];
+
+        // Generation Loop! (Token 1 is BOS)
+        let mut token: i32 = prompt_tokens[1]; // Usually BOS
+        let mut pos: i32 = 0;
+        
+        // We'll generate 100 tokens
+        for step in 0..100 {
+            let logits: *mut f32 = transformer(token, pos, config, state, weights);
+            
+            let mut next: i32 = 0;
+            if pos < num_prompt_tokens - 1 {
+                // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
+                let next_idx: i32 = pos + 2;
+                next = prompt_tokens[next_idx];
+            } else {
+                // GENERATE: Sample from logits
+                next = sample_argmax(logits, config.vocab_size);
+            }
+            
+            let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
+            let print_status: i32 = vx_safe_printf(piece);
+            
+            token = next;
+            pos += 1;
+        }
+    };
+
+    return 0;
+}
