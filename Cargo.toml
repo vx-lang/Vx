@@ -3,7 +3,12 @@ name = "vxc"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "cargo-vx-bench"
+path = "src/bin/cargo-vx-bench.rs"
+
 [dependencies]
+regex = "1.10"
 
 [dev-dependencies]
 proptest = "1.4"
