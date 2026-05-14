@@ -1254,7 +1254,7 @@ impl MlirGenerator {
                         return (res, "i1".to_string());
                     }
                 }
-                (res, self.current_el_ty.clone())
+                (res, lhs_ty)
             }
             Expr::UnaryOp(op, inner, _) => {
                 let (inner_val, _inner_ty) = self.generate_expr(inner, expected_ty);
