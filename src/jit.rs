@@ -54,6 +54,11 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         if !npu_status.success() {
             return Err("Failed to compile Objective-C++ NPU Dispatcher".to_string());
         }
+    } else {
+        return Err(
+            "Akar JIT execution currently requires macOS Apple Silicon for hardware dispatch."
+                .to_string(),
+        );
     }
 
     println!("[JIT] Lowering to LLVM Dialect...");

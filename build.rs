@@ -64,5 +64,7 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=c++");
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Accelerate");
+    } else {
+        panic!("Akar v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Other operating systems are not currently supported.");
     }
 }
