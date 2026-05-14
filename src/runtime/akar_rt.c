@@ -1,5 +1,30 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <time.h>
+
+float benchmark_start_time = 0.0f;
+
+float start_benchmark() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    benchmark_start_time = (float)ts.tv_sec + (float)ts.tv_nsec / 1e9f;
+    return benchmark_start_time;
+}
+
+void end_benchmark() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    float end = (float)ts.tv_sec + (float)ts.tv_nsec / 1e9f;
+    printf("%f\n", end - benchmark_start_time);
+}
+
+void trace_start() {
+    printf("[TRACE START] Event ID: 100\n");
+}
+
+void trace_end() {
+    printf("[TRACE END] Event ID: 100\n");
+}
 
 
 void akar_print(int64_t tensor_id) {

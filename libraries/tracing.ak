@@ -1,0 +1,4 @@
+extern "C" {
+    fn trace_start() -> Tensor<i32>;
+    fn trace_end() -> Tensor<i32>;
+}

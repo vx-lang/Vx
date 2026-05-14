@@ -1,0 +1,4 @@
+extern "C" {
+    fn start_benchmark() -> Tensor<f32>;
+    fn end_benchmark() -> Tensor<i32>;
+}

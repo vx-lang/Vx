@@ -593,6 +593,20 @@ impl MlirGenerator {
                             res, op_str, lhs_val, rhs_val, self.current_el_ty
                         ));
                     }
+                    BinaryOp::Sub => {
+                        let op_str = if is_int { "arith.subi" } else { "arith.subf" };
+                        self.write_line(&format!(
+                            "{} = {} {}, {} : {}",
+                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
+                    BinaryOp::Div => {
+                        let op_str = if is_int { "arith.divsi" } else { "arith.divf" };
+                        self.write_line(&format!(
+                            "{} = {} {}, {} : {}",
+                            res, op_str, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
                     BinaryOp::Eq
                     | BinaryOp::NotEq
                     | BinaryOp::Lt
@@ -638,7 +652,6 @@ impl MlirGenerator {
                         ));
                         return (res, "i1".to_string());
                     }
-                    _ => unimplemented!("BinaryOp not yet supported: {:?}", op),
                 }
                 (res, self.current_el_ty.clone())
             }
