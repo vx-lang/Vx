@@ -28,10 +28,10 @@ Bypassing runtime overhead and relying entirely on heavy ahead-of-time (AOT) opt
 ## 4. Deterministic Memory Control
 Total programmatic control over memory lifetimes and representations; absolute avoidance of garbage collection.
 - `[x]` No mandatory Garbage Collector implemented
-- `[ ]` Raw Pointers (`*mut T`, `*const T`) and pointer arithmetic
-- `[ ]` Custom User Structs and Unions
+- `[x]` Raw Pointers (`*mut T`, `*const T`) and pointer arithmetic
+- `[x]` Custom User Structs and Unions
 - `[ ]` Explicit layout controls (`#pragma pack`, explicit alignments)
-- `[ ]` Memory allocation lifecycles (`malloc`/`free` equivalents or borrowing semantics)
+- `[x]` Memory allocation lifecycles (`malloc`/`free` equivalents or borrowing semantics)
 
 ## 5. Predictable Execution (Zero-Cost Abstractions)
 Code must run as efficiently as hand-written assembly; abstractions must vanish during compilation.

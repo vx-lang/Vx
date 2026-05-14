@@ -4,7 +4,9 @@ use std::collections::HashMap;
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, Type>>,
     functions: HashMap<String, Type>, // Maps function name to return type
+    structs: HashMap<String, StructDecl>,
     pub errors: Vec<String>,
+    in_unsafe_block: bool,
 }
 
 impl Default for TypeChecker {
@@ -18,7 +20,9 @@ impl TypeChecker {
         Self {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
+            structs: HashMap::new(),
             errors: Vec::new(),
+            in_unsafe_block: false,
         }
     }
 
@@ -46,6 +50,11 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> bool {
+        // Collect structs
+        for s in &program.structs {
+            self.structs.insert(s.name.clone(), s.clone());
+        }
+
         // First pass: collect function signatures
         for func in &program.functions {
             self.functions
@@ -77,6 +86,10 @@ impl TypeChecker {
             Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
                 let ty = self.check_expr(expr);
                 if let Some(ann) = ty_ann {
+                    if !self.is_assignable(ann, &ty) {
+                        self.errors
+                            .push(format!("Type mismatch in variable declaration '{}'", name));
+                    }
                     self.insert(name.clone(), ann.clone());
                 } else {
                     self.insert(name.clone(), ty);
@@ -93,8 +106,11 @@ impl TypeChecker {
                 self.pop_scope();
             }
             Statement::Assign(lhs, rhs) | Statement::CompoundAssign(lhs, _, rhs) => {
-                self.check_expr(lhs);
-                self.check_expr(rhs);
+                let lhs_ty = self.check_expr(lhs);
+                let rhs_ty = self.check_expr(rhs);
+                if !self.is_assignable(&lhs_ty, &rhs_ty) {
+                    self.errors.push("Type mismatch in assignment".to_string());
+                }
             }
             Statement::Return(expr) => {
                 let ty = self.check_expr(expr);
@@ -206,8 +222,33 @@ impl TypeChecker {
                 }
                 Type::Tensor(ElementType::F32)
             }
-            Expr::MemberAccess(obj, _member) => {
-                self.check_expr(obj);
+            Expr::MemberAccess(obj, member) => {
+                let obj_ty = self.check_expr(obj);
+                let mut base_ty = obj_ty.clone();
+                if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
+                    base_ty = *t;
+                }
+
+                if let Type::Struct(struct_name) = &base_ty {
+                    if let Some(decl) = self.structs.get(struct_name) {
+                        for (f_name, f_type) in &decl.fields {
+                            if f_name == member {
+                                return f_type.clone();
+                            }
+                        }
+                        self.errors.push(format!(
+                            "Struct '{}' has no field '{}'",
+                            struct_name, member
+                        ));
+                    } else {
+                        self.errors
+                            .push(format!("Unknown struct '{}'", struct_name));
+                    }
+                } else if member != "shape" {
+                    // default behavior for Tensor.shape
+                    self.errors
+                        .push("Member access on non-struct type".to_string());
+                }
                 Type::Tensor(ElementType::F32)
             }
             Expr::IndexAccess(obj, idx) => {
@@ -252,12 +293,75 @@ impl TypeChecker {
                     UnaryOp::Not => Type::Tensor(ElementType::Bool),
                 }
             }
+            Expr::Borrow(inner, is_mut) => {
+                let inner_ty = self.check_expr(inner);
+                Type::Borrow(Box::new(inner_ty), None, *is_mut)
+            }
+            Expr::Dereference(inner) => {
+                if !self.in_unsafe_block {
+                    self.errors
+                        .push("Dereference of raw pointer outside of unsafe block!".to_string());
+                }
+                let inner_ty = self.check_expr(inner);
+                match inner_ty {
+                    Type::Pointer(t, _, _) | Type::Borrow(t, _, _) => *t,
+                    _ => {
+                        self.errors
+                            .push("Cannot dereference non-pointer type".to_string());
+                        inner_ty
+                    }
+                }
+            }
+            Expr::UnsafeBlock(stmts, _ret_expr) => {
+                let prev_unsafe = self.in_unsafe_block;
+                self.in_unsafe_block = true;
+                self.push_scope();
+                for s in stmts {
+                    // For a true expression block, we'd need to pass a valid return type instead of a dummy one
+                    // But for now, we just check the statements.
+                    self.check_statement(s, &Type::Tensor(ElementType::F32));
+                }
+                self.pop_scope();
+                self.in_unsafe_block = prev_unsafe;
+                Type::Tensor(ElementType::F32) // Unsafe block returns unit/tensor for now
+            }
+            Expr::StructInit(name, fields) => {
+                if !self.structs.contains_key(name) {
+                    self.errors.push(format!("Unknown struct {}", name));
+                }
+                for (_, f_expr) in fields {
+                    self.check_expr(f_expr);
+                }
+                Type::Struct(name.clone())
+            }
         }
     }
 
     fn is_assignable(&self, target: &Type, source: &Type) -> bool {
         if target == source {
             return true;
+        }
+
+        // Allow assigning Ref<T> to T (implicit unwrap of ref wrapper if target wants base type)
+        if let Type::Ref(inner_source, _) = source {
+            if target == &**inner_source {
+                return true;
+            }
+        }
+
+        // Allow numeric coercions for scalar literals (mock behavior for now)
+        if let Type::Tensor(t_target) = target {
+            if let Type::Tensor(t_source) = source {
+                if t_target == t_source {
+                    return true;
+                }
+                // Literals currently parse as f32, so we allow f32 to coerce to any tensor element type
+                // except Bool, to catch logical bugs
+                if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
+                    return true;
+                }
+                return false;
+            }
         }
 
         // Semantic coercion rule: Ref<T, HostDRAM> can be assigned to Verified<T>
@@ -270,6 +374,18 @@ impl TypeChecker {
             }
             if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {
                 return inner_target == inner_source;
+            }
+        }
+
+        // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
+        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
+            if let Type::Borrow(source_inner, source_mem, source_mut) = source {
+                if target_inner == source_inner
+                    && target_mem == source_mem
+                    && (!target_mut || *source_mut)
+                {
+                    return true;
+                }
             }
         }
 
@@ -330,5 +446,31 @@ fn bad_matmul() -> Tensor {
         let success = checker.check_program(&program);
         assert!(!success);
         assert!(!checker.errors.is_empty());
+    }
+
+    #[test]
+    fn test_sema_struct_and_pointers() {
+        let input = r#"
+        struct Config {
+            value: Tensor<f32>
+        }
+
+        fn test_pointers(c: &mut Config) -> Tensor<Bool> {
+            unsafe {
+                let ptr: *mut Config = c;
+                let val = *ptr;
+            }
+            return c.value < 20.0;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer.tokenize());
+        let program = parser.parse().unwrap();
+        let mut checker = TypeChecker::new();
+        assert!(
+            checker.check_program(&program),
+            "Semantic checking failed: {:?}",
+            checker.errors
+        );
     }
 }

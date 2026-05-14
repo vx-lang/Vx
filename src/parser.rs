@@ -98,7 +98,23 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
-        if self.match_token(&TokenType::Ref) {
+        if self.match_token(&TokenType::Ampersand) {
+            let is_mut = self.match_token(&TokenType::Mut);
+            let inner = self.parse_type()?;
+            Ok(Type::Borrow(Box::new(inner), None, is_mut))
+        } else if self.match_token(&TokenType::Star) {
+            let is_mut = if self.check(&TokenType::Mut) {
+                self.advance();
+                true
+            } else if self.check(&TokenType::Identifier("const".to_string())) {
+                self.advance();
+                false
+            } else {
+                return Err("Expected 'mut' or 'const' after '*'".to_string());
+            };
+            let inner = self.parse_type()?;
+            Ok(Type::Pointer(Box::new(inner), None, is_mut))
+        } else if self.match_token(&TokenType::Ref) {
             self.consume(&TokenType::LeftAngle, "Expected '<'")?;
             let inner = self.parse_type()?;
             self.consume(&TokenType::Comma, "Expected ','")?;
@@ -148,7 +164,7 @@ impl Parser {
                     Ok(Type::Tensor(el_ty))
                 }
                 "Matrix" => Ok(Type::Matrix),
-                _ => Err(format!("Unknown type {}", ident)),
+                _ => Ok(Type::Struct(ident)), // Custom user struct
             }
         }
     }
@@ -206,7 +222,23 @@ impl Parser {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner)));
+        } else if self.match_token(&TokenType::Ampersand) {
+            let is_mut = self.match_token(&TokenType::Mut);
+            let inner = self.parse_primary_expr()?;
+            return Ok(Expr::Borrow(Box::new(inner), is_mut));
+        } else if self.match_token(&TokenType::Star) {
+            let inner = self.parse_primary_expr()?;
+            return Ok(Expr::Dereference(Box::new(inner)));
+        } else if self.match_token(&TokenType::Unsafe) {
+            self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
+            let mut stmts = Vec::new();
+            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                stmts.push(self.parse_statement()?);
+            }
+            self.consume(&TokenType::RightBrace, "Expected '}'")?;
+            return Ok(Expr::UnsafeBlock(stmts, None));
         }
+
         let mut expr = if self.match_token(&TokenType::Transfer) {
             self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
             let inner = self.parse_expr()?;
@@ -267,6 +299,22 @@ impl Parser {
                         }
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         Expr::FunctionCall(call_name, args)
+                    } else if self.match_token(&TokenType::LeftBrace) {
+                        let mut fields = Vec::new();
+                        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                            let f_name = match self.advance().kind.clone() {
+                                TokenType::Identifier(f) => f,
+                                _ => return Err("Expected field name in struct init".to_string()),
+                            };
+                            self.consume(&TokenType::Colon, "Expected ':'")?;
+                            let f_expr = self.parse_expr()?;
+                            fields.push((f_name, f_expr));
+                            if !self.match_token(&TokenType::Comma) {
+                                break;
+                            }
+                        }
+                        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                        Expr::StructInit(call_name, fields)
                     } else {
                         Expr::Identifier(call_name)
                     }
@@ -389,7 +437,11 @@ impl Parser {
                     self.consume(&TokenType::Semicolon, "Expected ';'")?;
                     Ok(Statement::CompoundAssign(expr, BinaryOp::Add, rhs))
                 } else {
-                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    if let Expr::UnsafeBlock(_, _) = &expr {
+                        self.match_token(&TokenType::Semicolon); // Optional
+                    } else {
+                        self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    }
                     Ok(Statement::ExprStmt(expr))
                 }
             }
@@ -440,12 +492,49 @@ impl Parser {
         })
     }
 
+    fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
+        self.consume(&TokenType::Struct, "Expected 'struct'")?;
+        let name = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s,
+            _ => return Err("Expected struct name".to_string()),
+        };
+
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut fields = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let f_name = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected field name".to_string()),
+            };
+            self.consume(&TokenType::Colon, "Expected ':'")?;
+            let f_type = self.parse_type()?;
+            fields.push((f_name, f_type));
+
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+        Ok(StructDecl { name, fields })
+    }
+
     pub fn parse(&mut self) -> Result<Program, String> {
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenType::Eof) {
-            functions.push(self.parse_function()?);
+            if self.check(&TokenType::Struct) {
+                structs.push(self.parse_struct_decl()?);
+            } else if self.check(&TokenType::Fn) {
+                functions.push(self.parse_function()?);
+            } else {
+                return Err(format!(
+                    "Unexpected token at program root: {:?}",
+                    self.peek()
+                ));
+            }
         }
-        Ok(Program { functions })
+        Ok(Program { structs, functions })
     }
 }
 
@@ -628,6 +717,54 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(stmts.len(), 3); // Let, For, Return
         } else {
             panic!("Expected SpawnOn");
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_and_pointers() {
+        let input = r#"
+        struct Config {
+            value: Tensor<i32>,
+            threshold: Tensor<f32>
+        }
+
+        fn update_config(c: &mut Config) -> Tensor<Bool> {
+            unsafe {
+                let ptr: *mut Config = &mut c;
+                *ptr = Config { value: 10, threshold: 0.5 };
+            }
+            return c.value < 20;
+        }
+        "#;
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+
+        assert_eq!(program.structs.len(), 1);
+        assert_eq!(program.structs[0].name, "Config");
+        assert_eq!(program.structs[0].fields.len(), 2);
+        assert_eq!(program.structs[0].fields[0].0, "value");
+
+        assert_eq!(program.functions.len(), 1);
+        let func = &program.functions[0];
+        assert_eq!(func.name, "update_config");
+
+        // Param should be &mut Config
+        let param_ty = &func.params[0].1;
+        if let Type::Borrow(inner, None, true) = param_ty {
+            if let Type::Struct(s) = &**inner {
+                assert_eq!(s, "Config");
+            } else {
+                panic!("Expected Struct");
+            }
+        } else {
+            panic!("Expected Borrow");
+        }
+
+        // Body should have unsafe block
+        if let Statement::ExprStmt(Expr::UnsafeBlock(stmts, None)) = &func.body[0] {
+            assert_eq!(stmts.len(), 2);
+        } else {
+            panic!("Expected UnsafeBlock");
         }
     }
 }

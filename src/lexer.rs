@@ -13,6 +13,8 @@ pub enum TokenType {
     Unroll,
     Across,
     Match,
+    Struct,
+    Unsafe,
 
     // Types & Topology
     Topology,
@@ -48,6 +50,7 @@ pub enum TokenType {
     Slash,
     Dot,
     DoubleDot,
+    Ampersand,
 
     // Logical & Relational
     EqEq,
@@ -155,6 +158,8 @@ impl<'a> Lexer<'a> {
             "Verified" => TokenType::Verified,
             "Pinned" => TokenType::Pinned,
             "HardwareState" => TokenType::HardwareState,
+            "struct" => TokenType::Struct,
+            "unsafe" => TokenType::Unsafe,
             _ => TokenType::Identifier(text),
         };
 
@@ -267,11 +272,11 @@ impl<'a> Lexer<'a> {
                 }
             }
             '&' => {
-                if self.peek() == Some(&'&') {
+                if let Some(&'&') = self.peek() {
                     self.advance();
                     TokenType::AndAnd
                 } else {
-                    TokenType::Unknown('&')
+                    TokenType::Ampersand
                 }
             }
             '|' => {

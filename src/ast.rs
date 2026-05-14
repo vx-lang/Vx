@@ -39,6 +39,9 @@ pub enum Type {
     Tensor(ElementType),
     Matrix,
     Ref(Box<Type>, MemorySpace),
+    Borrow(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
+    Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
+    Struct(String),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),
 }
@@ -78,6 +81,10 @@ pub enum Expr {
     MethodCall(Box<Expr>, String, Vec<Expr>),
     BinaryOp(Box<Expr>, BinaryOp, Box<Expr>),
     UnaryOp(UnaryOp, Box<Expr>),
+    Borrow(Box<Expr>, bool), // &expr or &mut expr
+    Dereference(Box<Expr>),  // *expr
+    UnsafeBlock(Vec<Statement>, Option<Box<Expr>>),
+    StructInit(String, Vec<(String, Expr)>),
     MemorySpace(MemorySpace),
     Topology(Topology),
 }
@@ -102,6 +109,13 @@ pub struct Function {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Program {
+    pub structs: Vec<StructDecl>,
     pub functions: Vec<Function>,
 }

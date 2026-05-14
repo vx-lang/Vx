@@ -58,6 +58,19 @@ impl MlirGenerator {
         self.write_line("func.func private @printMemrefI64(memref<*xi64>)");
         self.write_line("func.func private @printMemrefBF16(memref<*xbf16>)");
 
+        // Define MLIR Structs
+        for struct_decl in &program.structs {
+            let mut field_types = Vec::new();
+            for (_, ty) in &struct_decl.fields {
+                field_types.push(self.lower_type(ty));
+            }
+            self.write_line(&format!(
+                "// Struct {}: {{{}}}",
+                struct_decl.name,
+                field_types.join(", ")
+            ));
+        }
+
         for func in &program.functions {
             self.generate_function(func);
         }
@@ -81,10 +94,19 @@ impl MlirGenerator {
                 };
                 format!("memref<?x?x{}>", ty_str)
             }
-            Type::Matrix => "memref<?x?xf32>".to_string(),
+            Type::Matrix => "tensor<?x?xf32>".to_string(),
             Type::Ref(inner, _) => self.lower_type(inner),
             Type::Verified(inner) => self.lower_type(inner),
             Type::Pinned(inner, _) => self.lower_type(inner),
+            Type::Borrow(_, mem, _) | Type::Pointer(_, mem, _) => {
+                let addr_space = match mem {
+                    Some(MemorySpace::NPUHBM) => 1,
+                    Some(MemorySpace::LocalSRAM) => 2,
+                    Some(MemorySpace::HostDRAM) | None => 0,
+                };
+                format!("!llvm.ptr<{}>", addr_space)
+            }
+            Type::Struct(name) => format!("!llvm.struct<\"{}\">", name),
         }
     }
 
@@ -511,15 +533,52 @@ impl MlirGenerator {
                 match op {
                     UnaryOp::Not => {
                         let true_val = self.next_var();
-                        self.write_line(&format!("{} = arith.constant true", true_val));
                         let res = self.next_var();
+                        self.write_line(&format!("{} = arith.constant true", true_val));
                         self.write_line(&format!(
-                            "{} = arith.xori {}, {} : i1",
+                            "{} = arith.xori {}, {}",
                             res, inner_val, true_val
                         ));
-                        (res, "i1".to_string())
+                        self.current_el_ty = "i1".to_string();
+                        (res, self.current_el_ty.clone())
                     }
                 }
+            }
+            Expr::Borrow(inner, _) => {
+                let (val, _) = self.generate_expr(inner, expected_ty);
+                let res = self.next_var();
+                self.write_line(&format!("// borrow {} -> {}", val, res));
+                self.write_line(&format!("{} = llvm.mlir.undef : !llvm.ptr<0>", res));
+                (res, "!llvm.ptr<0>".to_string())
+            }
+            Expr::Dereference(inner) => {
+                let (val, _) = self.generate_expr(inner, expected_ty);
+                let res = self.next_var();
+                self.write_line(&format!("// deref {} -> {}", val, res));
+                self.write_line(&format!(
+                    "{} = llvm.load {} : !llvm.ptr<0> -> f32",
+                    res, val
+                ));
+                (res, "f32".to_string())
+            }
+            Expr::UnsafeBlock(stmts, _) => {
+                for stmt in stmts {
+                    self.generate_statement(stmt, expected_ty);
+                }
+                let res = self.next_var();
+                self.write_line(&format!("{} = arith.constant 0 : i64", res));
+                (res, "i64".to_string())
+            }
+            Expr::StructInit(name, fields) => {
+                for (_, f_expr) in fields {
+                    self.generate_expr(f_expr, expected_ty);
+                }
+                let res = self.next_var();
+                self.write_line(&format!(
+                    "{} = llvm.mlir.undef : !llvm.struct<\"{}\">",
+                    res, name
+                ));
+                (res, format!("!llvm.struct<\"{}\">", name))
             }
             Expr::Array(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 let res = self.next_var();
