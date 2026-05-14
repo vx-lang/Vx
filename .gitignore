@@ -7,3 +7,4 @@ target/
 *.log
 test_tok
 test_tok.c
+test_output.txt

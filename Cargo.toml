@@ -25,6 +25,7 @@ path = "src/bin/cargo-vx-bench.rs"
 regex = "1.10"
 
 [dev-dependencies]
+rayon = "1.10"
 proptest = "1.4"
 rstest = "0.19"
 

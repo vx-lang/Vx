@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use rayon::prelude::*;
 use vxc::codegen::MlirGenerator;
 use vxc::jit::execute_mlir;
 use vxc::lexer::Lexer;
@@ -124,12 +125,13 @@ fn run_backend_test(path: &Path) {
 fn test_frontend_pass() {
     let dir = Path::new("tests/frontend/pass");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_frontend_test(&path, true);
             }
-        }
+        });
     }
 }
 
@@ -137,12 +139,13 @@ fn test_frontend_pass() {
 fn test_frontend_fail() {
     let dir = Path::new("tests/frontend/fail");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_frontend_test(&path, false);
             }
-        }
+        });
     }
 }
 
@@ -150,12 +153,13 @@ fn test_frontend_fail() {
 fn test_middle_end() {
     let dir = Path::new("tests/middle_end/pass");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_middle_end_test(&path);
             }
-        }
+        });
     }
 }
 
@@ -163,8 +167,9 @@ fn test_middle_end() {
 fn test_middle_end_fail() {
     let dir = Path::new("tests/middle_end/fail");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let result = std::panic::catch_unwind(|| {
                     run_middle_end_test(&path);
@@ -175,7 +180,7 @@ fn test_middle_end_fail() {
                     path.display()
                 );
             }
-        }
+        });
     }
 }
 
@@ -183,12 +188,13 @@ fn test_middle_end_fail() {
 fn test_backend() {
     let dir = Path::new("tests/backend/pass");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 run_backend_test(&path);
             }
-        }
+        });
     }
 }
 
@@ -196,8 +202,9 @@ fn test_backend() {
 fn test_backend_fail() {
     let dir = Path::new("tests/backend/fail");
     if dir.exists() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let result = std::panic::catch_unwind(|| {
                     run_backend_test(&path);
@@ -208,6 +215,6 @@ fn test_backend_fail() {
                     path.display()
                 );
             }
-        }
+        });
     }
 }
