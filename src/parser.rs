@@ -126,13 +126,67 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        if self.match_token(&TokenType::Transfer) {
+        self.parse_binary_expr(0)
+    }
+
+    fn parse_binary_expr(&mut self, precedence: u8) -> Result<Expr, String> {
+        let mut left = self.parse_primary_expr()?;
+
+        while let Some(op_prec) = self.get_operator_precedence(&self.peek().kind) {
+            if op_prec < precedence {
+                break;
+            }
+            let token = self.advance().clone();
+            let op = match token.kind {
+                TokenType::Plus => BinaryOp::Add,
+                TokenType::Star => BinaryOp::Mul,
+                _ => return Err("Unknown binary operator".to_string()),
+            };
+            let right = self.parse_binary_expr(op_prec + 1)?;
+            left = Expr::BinaryOp(Box::new(left), op, Box::new(right));
+        }
+
+        Ok(left)
+    }
+
+    fn get_operator_precedence(&self, kind: &TokenType) -> Option<u8> {
+        match kind {
+            TokenType::Plus => Some(10),
+            TokenType::Star => Some(20),
+            _ => None,
+        }
+    }
+
+    fn parse_primary_expr(&mut self) -> Result<Expr, String> {
+        let mut expr = if self.match_token(&TokenType::Transfer) {
             self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
             let inner = self.parse_expr()?;
             self.consume(&TokenType::Comma, "Expected ','")?;
             let mem = self.parse_memory_space()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
-            Ok(Expr::Transfer(Box::new(inner), mem))
+            Expr::Transfer(Box::new(inner), mem)
+        } else if self.match_token(&TokenType::LeftBracket) {
+            let mut elements = Vec::new();
+            if !self.check(&TokenType::RightBracket) {
+                loop {
+                    elements.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightBracket, "Expected ']'")?;
+            Expr::Array(elements)
+        } else if self.check(&TokenType::Memory) {
+            Expr::MemorySpace(self.parse_memory_space()?)
+        } else if self.check(&TokenType::Topology) {
+            Expr::Topology(self.parse_topology()?)
+        } else if self.check(&TokenType::Verified) {
+            self.advance();
+            self.consume(&TokenType::LeftParen, "Expected '(' after Verified")?;
+            let inner = self.parse_expr()?;
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            Expr::FunctionCall("Verified".to_string(), vec![inner])
         } else {
             let token = self.advance().clone();
             match token.kind {
@@ -148,50 +202,128 @@ impl Parser {
                             }
                         }
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
-                        Ok(Expr::FunctionCall(s, args))
+                        Expr::FunctionCall(s, args)
                     } else {
-                        Ok(Expr::Identifier(s))
+                        Expr::Identifier(s)
                     }
                 }
                 TokenType::Number(s) => {
                     let n = s.parse::<f64>().map_err(|_| "Invalid number".to_string())?;
-                    Ok(Expr::Number(n))
+                    Expr::Number(n)
                 }
-                _ => Err(format!("Expected expression, found {:?}", token.kind)),
+                _ => return Err(format!("Expected expression, found {:?}", token.kind)),
+            }
+        };
+
+        // Postfix operators: .member, .method(), [index]
+        loop {
+            if self.match_token(&TokenType::Dot) {
+                let ident = match self.advance().kind.clone() {
+                    TokenType::Identifier(s) => s,
+                    _ => return Err("Expected identifier after '.'".to_string()),
+                };
+                if self.match_token(&TokenType::LeftParen) {
+                    let mut args = Vec::new();
+                    if !self.check(&TokenType::RightParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if !self.match_token(&TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.consume(&TokenType::RightParen, "Expected ')'")?;
+                    expr = Expr::MethodCall(Box::new(expr), ident, args);
+                } else {
+                    expr = Expr::MemberAccess(Box::new(expr), ident);
+                }
+            } else if self.match_token(&TokenType::LeftBracket) {
+                let index = self.parse_expr()?;
+                self.consume(&TokenType::RightBracket, "Expected ']'")?;
+                expr = Expr::IndexAccess(Box::new(expr), Box::new(index));
+            } else {
+                break;
             }
         }
+
+        Ok(expr)
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
-        if self.match_token(&TokenType::Let) {
-            let name = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s,
-                _ => return Err("Expected identifier after let".to_string()),
-            };
-            self.consume(&TokenType::Equals, "Expected '='")?;
-            let expr = self.parse_expr()?;
-            self.consume(&TokenType::Semicolon, "Expected ';'")?;
-            Ok(Statement::LetDecl(name, expr))
-        } else if self.match_token(&TokenType::Return) {
-            let expr = self.parse_expr()?;
-            self.consume(&TokenType::Semicolon, "Expected ';'")?;
-            Ok(Statement::Return(expr))
-        } else if self.match_token(&TokenType::Spawn) {
-            self.consume(&TokenType::On, "Expected 'on' after 'spawn'")?;
-            self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let top = self.parse_topology()?;
-            self.consume(&TokenType::RightParen, "Expected ')'")?;
-            self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-            let mut stmts = Vec::new();
-            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                stmts.push(self.parse_statement()?);
+        let token = self.peek().clone();
+        match token.kind {
+            TokenType::Let => {
+                self.advance();
+                let mut is_mut = false;
+                if self.match_token(&TokenType::Mut) {
+                    is_mut = true;
+                }
+                let name = match self.advance().kind.clone() {
+                    TokenType::Identifier(s) => s,
+                    _ => return Err("Expected identifier after let".to_string()),
+                };
+                let mut type_annotation = None;
+                if self.match_token(&TokenType::Colon) {
+                    type_annotation = Some(self.parse_type()?);
+                }
+                self.consume(&TokenType::Equals, "Expected '='")?;
+                let expr = self.parse_expr()?;
+                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                Ok(Statement::LetDecl(name, is_mut, type_annotation, expr))
             }
-            self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            Ok(Statement::SpawnOn(top, stmts))
-        } else {
-            let expr = self.parse_expr()?;
-            self.consume(&TokenType::Semicolon, "Expected ';'")?;
-            Ok(Statement::ExprStmt(expr))
+            TokenType::Return => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                Ok(Statement::Return(expr))
+            }
+            TokenType::Spawn => {
+                self.advance();
+                self.consume(&TokenType::On, "Expected 'on' after 'spawn'")?;
+                self.consume(&TokenType::LeftParen, "Expected '('")?;
+                let top = self.parse_topology()?;
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                let mut stmts = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    stmts.push(self.parse_statement()?);
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                Ok(Statement::SpawnOn(top, stmts))
+            }
+            TokenType::For => {
+                self.advance();
+                let iter = match self.advance().kind.clone() {
+                    TokenType::Identifier(s) => s,
+                    _ => return Err("Expected identifier after 'for'".to_string()),
+                };
+                self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
+                let start = self.parse_expr()?;
+                self.consume(&TokenType::DoubleDot, "Expected '..' in range")?;
+                let end = self.parse_expr()?;
+                self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                let mut stmts = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    stmts.push(self.parse_statement()?);
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                Ok(Statement::ForLoop(iter, Box::new(start), Box::new(end), stmts))
+            }
+            _ => {
+                let expr = self.parse_expr()?;
+                if self.match_token(&TokenType::Equals) {
+                    let rhs = self.parse_expr()?;
+                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    Ok(Statement::Assign(expr, rhs))
+                } else if self.match_token(&TokenType::PlusEquals) {
+                    let rhs = self.parse_expr()?;
+                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    Ok(Statement::CompoundAssign(expr, BinaryOp::Add, rhs))
+                } else {
+                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    Ok(Statement::ExprStmt(expr))
+                }
+            }
         }
     }
 
@@ -294,5 +426,107 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         } else {
             panic!("Expected SpawnOn statement");
         }
+    }
+
+    #[test]
+    fn test_parse_let_mut_with_type() {
+        let input = "fn main() -> Tensor { let mut x: Tensor = Tensor([1, 2]); }";
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+        let func = &program.functions[0];
+        if let Statement::LetDecl(name, is_mut, ty, expr) = &func.body[0] {
+            assert_eq!(name, "x");
+            assert!(is_mut);
+            assert_eq!(ty, &Some(Type::Tensor));
+            if let Expr::FunctionCall(func_name, args) = expr {
+                assert_eq!(func_name, "Tensor");
+                assert_eq!(args.len(), 1);
+                if let Expr::Array(elements) = &args[0] {
+                    assert_eq!(elements.len(), 2);
+                } else { panic!("Expected array"); }
+            } else { panic!("Expected function call"); }
+        } else { panic!("Expected LetDecl"); }
+    }
+
+    #[test]
+    fn test_parse_for_loop() {
+        let input = "fn main() -> Tensor { for i in 0..10 { x = 5; } }";
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+        if let Statement::ForLoop(iter, start, end, body) = &program.functions[0].body[0] {
+            assert_eq!(iter, "i");
+            assert_eq!(**start, Expr::Number(0.0));
+            assert_eq!(**end, Expr::Number(10.0));
+            assert_eq!(body.len(), 1);
+            if let Statement::Assign(lhs, rhs) = &body[0] {
+                assert_eq!(*lhs, Expr::Identifier("x".to_string()));
+                assert_eq!(*rhs, Expr::Number(5.0));
+            } else { panic!("Expected Assign"); }
+        } else { panic!("Expected ForLoop"); }
+    }
+
+    #[test]
+    fn test_parse_compound_assign() {
+        let input = "fn main() -> Tensor { x[0] += y * z; }";
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+        if let Statement::CompoundAssign(lhs, op, rhs) = &program.functions[0].body[0] {
+            assert_eq!(*op, BinaryOp::Add);
+            if let Expr::IndexAccess(arr, idx) = lhs {
+                assert_eq!(**arr, Expr::Identifier("x".to_string()));
+                assert_eq!(**idx, Expr::Number(0.0));
+            } else { panic!("Expected IndexAccess"); }
+            
+            if let Expr::BinaryOp(left, binop, right) = rhs {
+                assert_eq!(*binop, BinaryOp::Mul);
+                assert_eq!(**left, Expr::Identifier("y".to_string()));
+                assert_eq!(**right, Expr::Identifier("z".to_string()));
+            } else { panic!("Expected BinaryOp"); }
+        } else { panic!("Expected CompoundAssign"); }
+    }
+
+    #[test]
+    fn test_parse_member_and_method() {
+        let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+        if let Statement::ExprStmt(expr) = &program.functions[0].body[0] {
+            if let Expr::MethodCall(obj, method, args) = expr {
+                assert_eq!(method, "with_memory");
+                assert_eq!(args.len(), 1);
+                if let Expr::MemberAccess(inner_obj, member) = &**obj {
+                    assert_eq!(member, "shape");
+                    assert_eq!(**inner_obj, Expr::Identifier("x".to_string()));
+                } else { panic!("Expected MemberAccess"); }
+            } else { panic!("Expected MethodCall"); }
+        } else { panic!("Expected ExprStmt"); }
+    }
+
+    #[test]
+    fn test_parse_full_custom_matmul() {
+        let input = r#"
+        fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
+            spawn on(Topology::NPU[0]) {
+                let mut result: Tensor = Tensor([a.shape[0], b.shape[1]]).with_memory(Memory::NPU_HBM);
+                for i in 0..a.shape[0] {
+                    for j in 0..b.shape[1] {
+                        result[i][j] = 0;
+                        for k in 0..a.shape[1] {
+                            result[i][j] += a[i][k] * b[k][j];
+                        }
+                    }
+                }
+                return Verified(result);
+            }
+        }
+        "#;
+        let mut parser = Parser::new(Lexer::new(input).tokenize());
+        let program = parser.parse().unwrap();
+        assert_eq!(program.functions.len(), 1);
+        let func = &program.functions[0];
+        assert_eq!(func.name, "custom_matmul");
+        if let Statement::SpawnOn(_, stmts) = &func.body[0] {
+            assert_eq!(stmts.len(), 3); // Let, For, Return
+        } else { panic!("Expected SpawnOn"); }
     }
 }

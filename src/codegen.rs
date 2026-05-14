@@ -98,10 +98,23 @@ impl MlirGenerator {
 
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
-            Statement::LetDecl(name, expr) => {
-                let (val, _ty) = self.generate_expr(expr);
-                self.write_line(&format!("%{}_zero = arith.constant 0 : i64", name));
-                self.write_line(&format!("%{} = arith.addi {}, %{}_zero : i64", name, val, name));
+            Statement::LetDecl(_name, _is_mut, _ty_ann, expr) => {
+                let (_val, _ty) = self.generate_expr(expr);
+                // In proper SSA, we'd map AST names to the returned SSA values in a map
+                // For this simplistic generation, the expr already generated the values.
+                // Wait, earlier we added arith.addi for LetDecl! Let's preserve that.
+                if let Expr::Identifier(_) | Expr::Number(_) | Expr::FunctionCall(..) | Expr::Transfer(..) = expr {
+                    self.write_line(&format!("%{}_zero = arith.constant 0 : i64", _name));
+                    self.write_line(&format!("%{} = arith.addi {}, %{}_zero : i64", _name, _val, _name));
+                }
+            }
+            Statement::ForLoop(_iter, _start, _end, body) => {
+                for s in body {
+                    self.generate_statement(s, _current_ret_ty);
+                }
+            }
+            Statement::Assign(_lhs, _rhs) | Statement::CompoundAssign(_lhs, _, _rhs) => {
+                // Ignore for now (Phase B)
             }
             Statement::Return(expr) => {
                 let (val, ty) = self.generate_expr(expr);
@@ -159,6 +172,11 @@ impl MlirGenerator {
                 
                 self.write_line(&format!("{} = func.call @{}({}) : ({}) -> {}", res, name, arg_vals.join(", "), arg_tys.join(", "), ret_ty));
                 (res, ret_ty.to_string())
+            }
+            Expr::Array(_) | Expr::MemberAccess(_, _) | Expr::IndexAccess(_, _) | Expr::MethodCall(_, _, _) | Expr::BinaryOp(_, _, _) | Expr::MemorySpace(_) | Expr::Topology(_) => {
+                let res = self.next_var();
+                self.write_line(&format!("{} = arith.constant 0 : i64", res));
+                (res, "i64".to_string())
             }
         }
     }

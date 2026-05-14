@@ -1,7 +1,7 @@
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
     // Keywords
-    Fn, Let, Return, Spawn, On, Transfer, Unroll, Across, Match,
+    Fn, Let, Mut, For, In, Return, Spawn, On, Transfer, Unroll, Across, Match,
     
     // Types & Topology
     Topology, Memory, Ref, Verified, Pinned, HardwareState,
@@ -16,7 +16,8 @@ pub enum TokenType {
     LeftBracket, RightBracket,
     LeftAngle, RightAngle,
     Colon, DoubleColon, Semicolon, Comma,
-    Equals, Arrow, Plus, Minus, Star, Slash,
+    Equals, PlusEquals, Arrow, Plus, Minus, Star, Slash,
+    Dot, DoubleDot,
     
     // Special
     Eof, Unknown(char),
@@ -98,6 +99,9 @@ impl<'a> Lexer<'a> {
         let kind = match text.as_str() {
             "fn" => TokenType::Fn,
             "let" => TokenType::Let,
+            "mut" => TokenType::Mut,
+            "for" => TokenType::For,
+            "in" => TokenType::In,
             "return" => TokenType::Return,
             "spawn" => TokenType::Spawn,
             "on" => TokenType::On,
@@ -122,7 +126,14 @@ impl<'a> Lexer<'a> {
         text.push(start_char);
         
         while let Some(&c) = self.peek() {
-            if c.is_ascii_digit() || c == '.' {
+            if c.is_ascii_digit() {
+                text.push(self.advance().unwrap());
+            } else if c == '.' {
+                let mut temp = self.source.clone();
+                temp.next();
+                if temp.peek() == Some(&'.') {
+                    break;
+                }
                 text.push(self.advance().unwrap());
             } else {
                 break;
@@ -160,10 +171,25 @@ impl<'a> Lexer<'a> {
             '>' => TokenType::RightAngle,
             ';' => TokenType::Semicolon,
             ',' => TokenType::Comma,
-            '+' => TokenType::Plus,
+            '+' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    TokenType::PlusEquals
+                } else {
+                    TokenType::Plus
+                }
+            }
             '*' => TokenType::Star,
             '/' => TokenType::Slash,
             '=' => TokenType::Equals,
+            '.' => {
+                if self.peek() == Some(&'.') {
+                    self.advance();
+                    TokenType::DoubleDot
+                } else {
+                    TokenType::Dot
+                }
+            }
             '-' => {
                 if self.peek() == Some(&'>') {
                     self.advance();

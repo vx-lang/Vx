@@ -23,19 +23,35 @@ pub enum Type {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum BinaryOp {
+    Add,
+    Mul,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(String),
     Number(f64),
     Transfer(Box<Expr>, MemorySpace),
     FunctionCall(String, Vec<Expr>),
+    Array(Vec<Expr>),
+    MemberAccess(Box<Expr>, String),
+    IndexAccess(Box<Expr>, Box<Expr>),
+    MethodCall(Box<Expr>, String, Vec<Expr>),
+    BinaryOp(Box<Expr>, BinaryOp, Box<Expr>),
+    MemorySpace(MemorySpace),
+    Topology(Topology),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
-    LetDecl(String, Expr),
+    LetDecl(String, bool, Option<Type>, Expr), // (name, is_mut, type_annotation, expr)
     Return(Expr),
     SpawnOn(Topology, Vec<Statement>),
     ExprStmt(Expr),
+    ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>), // (iterator, start, end, body)
+    Assign(Expr, Expr), // lhs = rhs
+    CompoundAssign(Expr, BinaryOp, Expr), // lhs += rhs
 }
 
 #[derive(Debug, PartialEq, Clone)]
