@@ -10,11 +10,14 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     let mut parse_only = false;
+    let mut emit_mlir = false;
     let mut filename = "";
 
     for arg in args.iter().skip(1) {
         if arg == "-p" {
             parse_only = true;
+        } else if arg == "--emit-mlir" {
+            emit_mlir = true;
         } else {
             filename = arg;
         }
@@ -44,7 +47,13 @@ fn main() {
                 Ok(ast) => {
                     let mut checker = sema::TypeChecker::new();
                     if checker.check_program(&ast) {
-                        println!("Semantic analysis passed!");
+                        if emit_mlir {
+                            let mut codegen = akarc::codegen::MlirGenerator::new();
+                            let mlir_str = codegen.generate(&ast);
+                            println!("{}", mlir_str);
+                        } else {
+                            println!("Semantic analysis passed!");
+                        }
                     } else {
                         eprintln!("Semantic Errors:");
                         for err in checker.errors {
@@ -56,6 +65,6 @@ fn main() {
             }
         }
     } else {
-        println!("Usage: akarc [-p] <source_file.ak>");
+        println!("Usage: akarc [-p] [--emit-mlir] <source_file.ak>");
     }
 }
