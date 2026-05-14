@@ -45,6 +45,7 @@ pub enum Type {
     Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Scalar(ElementType),
     Struct(String),
+    Enum(String),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),
     Generic(String),                       // e.g. T
@@ -264,6 +265,12 @@ pub struct StructDecl {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct ExternDecl {
     pub name: String,
     pub params: Vec<(String, Type)>,
@@ -289,6 +296,7 @@ pub struct ImplBlock {
 pub struct Program {
     pub externs: Vec<ExternDecl>,
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,

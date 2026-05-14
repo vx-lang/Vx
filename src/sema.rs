@@ -14,6 +14,7 @@ pub struct TypeChecker {
     generic_functions: HashMap<String, Function>,
     pub monomorphized_functions: Vec<Function>,
     structs: HashMap<String, StructDecl>,
+    enums: HashMap<String, Vec<String>>,
     traits: HashMap<String, TraitDecl>,
     impls: HashMap<String, Vec<ImplBlock>>, // Maps trait name to list of implementations
     pub errors: Vec<String>,
@@ -37,6 +38,7 @@ impl TypeChecker {
             generic_functions: HashMap::new(),
             monomorphized_functions: Vec::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
             traits: HashMap::new(),
             impls: HashMap::new(),
             errors: Vec::new(),
@@ -74,6 +76,10 @@ impl TypeChecker {
         // Collect structs
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
+        }
+
+        for e in &program.enums {
+            self.enums.insert(e.name.clone(), e.variants.clone());
         }
 
         // Collect traits
@@ -483,7 +489,19 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::EnumVariant(_, _) => Type::Scalar(ElementType::I32), // Mock Enum Type
+            Expr::EnumVariant(enum_name, variant) => {
+                if let Some(variants) = self.enums.get(enum_name) {
+                    if !variants.contains(variant) {
+                        self.errors.push(format!(
+                            "Enum {} does not have variant {}",
+                            enum_name, variant
+                        ));
+                    }
+                } else {
+                    self.errors.push(format!("Unknown enum {}", enum_name));
+                }
+                Type::Enum(enum_name.clone())
+            }
             Expr::Number(_) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(_) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),

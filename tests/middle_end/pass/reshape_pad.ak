@@ -1,6 +1,11 @@
 // RUN: akarc %s -o %t.mlir
 // RUN: FileCheck %s < %t.mlir
 
+enum PadMode {
+    Pad,
+    Trim
+}
+
 fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
     // Fails exactly without PadMode::Pad, but succeeds with it!
     let padded = val.reshape([256], PadMode::Pad);

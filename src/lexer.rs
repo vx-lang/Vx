@@ -22,6 +22,7 @@ pub enum TokenType {
     Impl,
     Comptime,
     Assert,
+    Enum,
 
     // Types & Topology
     Topology,
@@ -147,6 +148,7 @@ impl std::fmt::Display for TokenType {
             TokenType::Whitespace(s) => write!(f, "{}", s),
             TokenType::Unknown(c) => write!(f, "{}", c),
             TokenType::Eof => write!(f, ""),
+            TokenType::Enum => write!(f, "enum"),
         }
     }
 }
@@ -263,6 +265,7 @@ impl<'a> Lexer<'a> {
             "impl" => TokenType::Impl,
             "comptime" => TokenType::Comptime,
             "assert" => TokenType::Assert,
+            "enum" => TokenType::Enum,
             _ => TokenType::Identifier(text),
         };
 

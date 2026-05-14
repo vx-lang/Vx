@@ -9,6 +9,7 @@ pub struct MlirGenerator {
     current_el_ty: String,
     functions: HashMap<String, String>,
     structs: HashMap<String, StructDecl>,
+    enums: HashMap<String, Vec<String>>,
     globals: String,
 }
 
@@ -28,6 +29,7 @@ impl MlirGenerator {
             current_el_ty: "f32".to_string(),
             functions: HashMap::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
             globals: String::new(),
         }
     }
@@ -56,6 +58,9 @@ impl MlirGenerator {
     pub fn generate(&mut self, program: &Program) -> String {
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
+        }
+        for e in &program.enums {
+            self.enums.insert(e.name.clone(), e.variants.clone());
         }
         for ext in &program.externs {
             let ret_ty = self.lower_type(&ext.return_type);
@@ -207,6 +212,7 @@ impl MlirGenerator {
             Type::Generic(_) | Type::GenericInstance(_, _) => {
                 panic!("Generic types should have been monomorphized before codegen!");
             }
+            Type::Enum(_) => "i32".to_string(),
         }
     }
 
@@ -630,9 +636,15 @@ impl MlirGenerator {
                     (res, "i64".to_string())
                 }
             }
-            Expr::EnumVariant(_, _) => {
+            Expr::EnumVariant(enum_name, variant) => {
                 let res = self.next_var();
-                self.write_line(&format!("{} = arith.constant 0 : i32", res)); // Dummy enum value
+                let mut index = 0;
+                if let Some(variants) = self.enums.get(enum_name) {
+                    if let Some(idx) = variants.iter().position(|v| v == variant) {
+                        index = idx;
+                    }
+                }
+                self.write_line(&format!("{} = arith.constant {} : i32", res, index));
                 (res, "i32".to_string())
             }
             Expr::StringLiteral(s) => {

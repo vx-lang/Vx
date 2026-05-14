@@ -768,6 +768,32 @@ impl Parser {
         })
     }
 
+    fn parse_enum_decl(&mut self) -> Result<EnumDecl, String> {
+        self.consume(&TokenType::Enum, "Expected 'enum'")?;
+
+        let name = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s,
+            _ => return Err("Expected enum name".to_string()),
+        };
+
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut variants = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let v_name = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected enum variant name".to_string()),
+            };
+            variants.push(v_name);
+
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+        Ok(EnumDecl { name, variants })
+    }
+
     fn parse_extern_block(&mut self) -> Result<Vec<ExternDecl>, String> {
         self.consume(&TokenType::Extern, "Expected 'extern'")?;
 
@@ -904,6 +930,7 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Program, String> {
         let mut externs = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut traits = Vec::new();
         let mut impls = Vec::new();
         let mut functions = Vec::new();
@@ -916,6 +943,8 @@ impl Parser {
                 impls.push(self.parse_impl_block()?);
             } else if self.check(&TokenType::Struct) {
                 structs.push(self.parse_struct_decl()?);
+            } else if self.check(&TokenType::Enum) {
+                enums.push(self.parse_enum_decl()?);
             } else if self.check(&TokenType::Fn) {
                 functions.push(self.parse_function()?);
             } else {
@@ -928,6 +957,7 @@ impl Parser {
         Ok(Program {
             externs,
             structs,
+            enums,
             traits,
             impls,
             functions,
