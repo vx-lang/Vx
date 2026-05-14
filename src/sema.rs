@@ -270,9 +270,42 @@ impl TypeChecker {
                 for arg in args {
                     self.check_expr(arg);
                 }
-                // Hardcoded mock for `.with_memory(Memory::NPU_HBM)` to allow type checking `test.ak`
+
                 if _method == "with_memory" {
+                    // Hardcoded mock for `.with_memory(Memory::NPU_HBM)` to allow type checking
                     base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
+                } else if _method == "as_ptr" || _method == "as_mut_ptr" {
+                    let is_mut = _method == "as_mut_ptr";
+                    match &base_ty {
+                        Type::Tensor(el_ty) => {
+                            base_ty = Type::Pointer(Box::new(Type::Tensor(*el_ty)), None, is_mut);
+                        }
+                        Type::Borrow(inner, mem, mutability) => {
+                            if is_mut && !mutability {
+                                self.errors.push(
+                                    "Cannot get mutable pointer from immutable borrow".to_string(),
+                                );
+                            }
+                            base_ty = Type::Pointer(inner.clone(), mem.clone(), is_mut);
+                        }
+                        Type::Pointer(_, _, _) => {
+                            self.errors.push("Already a pointer".to_string());
+                        }
+                        _ => {
+                            self.errors
+                                .push(format!("Cannot call {} on {:?}", _method, base_ty));
+                        }
+                    }
+                } else if _method == "len" {
+                    match &base_ty {
+                        Type::Tensor(_) | Type::Borrow(_, _, _) | Type::Pointer(_, _, _) => {
+                            base_ty = Type::Tensor(ElementType::I64);
+                        }
+                        _ => {
+                            self.errors
+                                .push(format!("Cannot call len on {:?}", base_ty));
+                        }
+                    }
                 }
                 base_ty
             }
@@ -511,5 +544,27 @@ fn bad_matmul() -> Tensor {
             .errors
             .iter()
             .any(|e| e.contains("Call to unsafe function 'malloc' is unsafe")));
+    }
+
+    #[test]
+    fn test_sema_as_ptr_and_len() {
+        let input = r#"
+        fn test_methods(t: Tensor<f32>) -> Tensor<i64> {
+            let ptr: *const Tensor<f32> = t.as_ptr();
+            let mut_ptr: *mut Tensor<f32> = t.as_mut_ptr();
+            let length: Tensor<i64> = t.len();
+            return length;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer.tokenize());
+        let program = parser.parse().unwrap();
+        let mut checker = TypeChecker::new();
+
+        assert!(
+            checker.check_program(&program),
+            "Semantic checking failed for methods: {:?}",
+            checker.errors
+        );
     }
 }
