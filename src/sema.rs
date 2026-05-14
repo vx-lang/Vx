@@ -7,6 +7,8 @@ pub struct TypeChecker {
     generic_functions: HashMap<String, Function>,
     pub monomorphized_functions: Vec<Function>,
     structs: HashMap<String, StructDecl>,
+    traits: HashMap<String, TraitDecl>,
+    impls: HashMap<String, Vec<ImplBlock>>, // Maps trait name to list of implementations
     pub errors: Vec<String>,
     in_unsafe_block: bool,
 }
@@ -25,6 +27,8 @@ impl TypeChecker {
             generic_functions: HashMap::new(),
             monomorphized_functions: Vec::new(),
             structs: HashMap::new(),
+            traits: HashMap::new(),
+            impls: HashMap::new(),
             errors: Vec::new(),
             in_unsafe_block: false,
         }
@@ -57,6 +61,20 @@ impl TypeChecker {
         // Collect structs
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
+        }
+
+        // Collect traits
+        for t in &program.traits {
+            self.traits.insert(t.name.clone(), t.clone());
+        }
+
+        // Collect impls
+        for i in &program.impls {
+            let trait_name = match &i.trait_name {
+                Some(name) => name.clone(),
+                None => "_inherent".to_string(), // For `impl Type { ... }` blocks
+            };
+            self.impls.entry(trait_name).or_default().push(i.clone());
         }
 
         // Collect externs (unsafe by default)
@@ -348,6 +366,36 @@ impl TypeChecker {
                     }
 
                     if success {
+                        // Trait Bounds Checking
+                        for (g_name, bound_opt) in &generic_func.generics {
+                            if let Some(bound_name) = bound_opt {
+                                if let Some(concrete_ty) = mapping.get(g_name) {
+                                    let mut implements_trait = false;
+                                    if let Some(impl_blocks) = self.impls.get(bound_name) {
+                                        for ib in impl_blocks {
+                                            if self.unify_types(
+                                                &ib.target_type,
+                                                concrete_ty,
+                                                &mut HashMap::new(),
+                                            ) {
+                                                implements_trait = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if !implements_trait {
+                                        self.errors.push(format!(
+                                            "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                            concrete_ty, bound_name, g_name
+                                        ));
+                                        success = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if success {
                         // Instantiate
                         let mut inst_func = self.instantiate_function(&generic_func, &mapping);
                         let inst_ret = inst_func.return_type.clone();
@@ -418,8 +466,64 @@ impl TypeChecker {
                     self.check_expr(arg);
                 }
 
+                // Dynamic Method Resolution
+                let mut found_method = None;
+                for impl_blocks in self.impls.values() {
+                    for ib in impl_blocks {
+                        if self.unify_types(&ib.target_type, &base_ty, &mut HashMap::new()) {
+                            for m in &ib.methods {
+                                if m.name == *_method {
+                                    found_method = Some((m.clone(), ib.clone()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some((mut method_func, ib)) = found_method {
+                    // Create a unique mangled name for the method based on the target type
+                    let mangled_name = format!("{:?}_{}", ib.target_type, _method)
+                        .replace(" ", "")
+                        .replace("(", "")
+                        .replace(")", "")
+                        .replace("\"", "")
+                        .replace("Tensor", "Tensor_")
+                        .replace("Generic", "Gen_");
+
+                    method_func.name = mangled_name.clone();
+
+                    // Register the method if it doesn't exist
+                    if !method_func.generics.is_empty() {
+                        self.generic_functions
+                            .insert(mangled_name.clone(), method_func.clone());
+                    } else if !self.functions.contains_key(&mangled_name) {
+                        self.functions.insert(
+                            mangled_name.clone(),
+                            (method_func.return_type.clone(), false),
+                        );
+                        // Since it's not generic, we must type check it once!
+                        let mut func_to_check = method_func.clone();
+                        self.check_function(&mut func_to_check);
+                        self.monomorphized_functions.push(func_to_check);
+                    }
+
+                    // Rewrite AST from MethodCall to FunctionCall
+                    let mut call_args = vec![(**obj).clone()];
+                    for a in args.iter() {
+                        call_args.push(a.clone());
+                    }
+
+                    let mut func_call = Expr::FunctionCall(mangled_name, call_args);
+                    let ret_ty = self.check_expr(&mut func_call);
+
+                    // Replace the AST node in-place!
+                    *expr = func_call;
+                    return ret_ty;
+                }
+
+                // Fallback for hardcoded mock methods
                 if _method == "with_memory" {
-                    // Hardcoded mock for `.with_memory(Memory::NPU_HBM)` to allow type checking
                     base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let is_mut = _method == "as_mut_ptr";
@@ -453,6 +557,11 @@ impl TypeChecker {
                                 .push(format!("Cannot call len on {:?}", base_ty));
                         }
                     }
+                } else {
+                    self.errors.push(format!(
+                        "Method '{}' not found on type {:?}",
+                        _method, base_ty
+                    ));
                 }
                 base_ty
             }

@@ -35,10 +35,10 @@ When calling a generic function, you **do not** need to explicitly specify the t
 fn main() {
     let t1: Tensor<f32> = 1.0;
     let t2: Tensor<i32> = 2;
-    
+
     // The compiler automatically infers T = Tensor<f32>
     let res1 = process(t1);
-    
+
     // The compiler automatically infers T = Tensor<i32>
     let res2 = process(t2);
 }

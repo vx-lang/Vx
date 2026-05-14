@@ -712,18 +712,14 @@ impl Parser {
         // Wait, parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
         let parsed_type = self.parse_type()?;
-        if let TokenType::Identifier(s) = &self.peek().kind {
-            if s == "for" {
-                self.advance(); // consume 'for'
-                if let Type::Struct(name) = parsed_type {
-                    trait_name = Some(name);
-                } else {
-                    return Err("Expected trait name before 'for'".to_string());
-                }
-                target_type = self.parse_type()?;
+        if self.check(&TokenType::For) {
+            self.advance(); // consume 'for'
+            if let Type::Struct(name) = parsed_type {
+                trait_name = Some(name);
             } else {
-                target_type = parsed_type;
+                return Err("Expected trait name before 'for'".to_string());
             }
+            target_type = self.parse_type()?;
         } else {
             target_type = parsed_type;
         }

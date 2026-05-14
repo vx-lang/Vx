@@ -27,13 +27,13 @@ Monomorphization behaves as a rewriting step ($\Rightarrow_M$) on the program $P
 
 Let $E = f(a_1, ..., a_k)$ be a function call expression, where $f$ is generic.
 
-$$ \frac{ 
+$$ \frac{
   f \in P_{gen} \quad
   \text{Unify}(\text{params}(f), \text{types}(\bar{a})) \Rightarrow \Delta \quad
   f' = f[\Delta] \quad
-  \text{name}(f') = \text{mangle}(\text{name}(f), \Delta) 
-}{ 
-  \langle P \cup \{E\} \rangle \Rightarrow_M \langle P \cup \{f'\} \cup \{ \text{name}(f')(\bar{a}) \} \rangle 
+  \text{name}(f') = \text{mangle}(\text{name}(f), \Delta)
+}{
+  \langle P \cup \{E\} \rangle \Rightarrow_M \langle P \cup \{f'\} \cup \{ \text{name}(f')(\bar{a}) \} \rangle
 } $$
 
 1. **Deduction:** The compiler extracts $\Delta$.
@@ -42,6 +42,6 @@ $$ \frac{
 
 ## 4. Interaction with Operational Semantics
 
-Because monomorphization $\Rightarrow_M$ is a total function evaluated completely during Semantic Analysis (compile-time), the runtime Structural Operational Semantics (SOS) described in `operational.md` requires **no modifications**. 
+Because monomorphization $\Rightarrow_M$ is a total function evaluated completely during Semantic Analysis (compile-time), the runtime Structural Operational Semantics (SOS) described in `operational.md` requires **no modifications**.
 
 The execution engine evaluates $\langle S, \sigma, \tau \rangle_\Omega$ strictly over the concretized program $P'$ where $P_{gen} = \emptyset$. All generic types have been successfully lowered to explicit topological memory allocations or standard host variables.

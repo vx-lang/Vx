@@ -1,16 +1,24 @@
 // RUN: akarc %s | FileCheck %s
 
-fn method_test(t: Tensor<f32>) -> Tensor<i64> {
-    let ptr = t.as_ptr();
-    let mut_ptr = t.as_mut_ptr();
-    let len = t.len();
-    return len;
+struct Point {
+    x: Tensor<f32>,
+    y: Tensor<f32>
 }
 
-// CHECK: func.func @method_test(%t: memref<?x?xf32>) -> memref<?x?xi64> {
-// CHECK: // extract pointer from %t -> %v0
-// CHECK: %v0 = llvm.mlir.undef : !llvm.ptr<0>
-// CHECK: // extract pointer from %t -> %v1
-// CHECK: %v1 = llvm.mlir.undef : !llvm.ptr<0>
-// CHECK: // get len of %t -> %v2
-// CHECK: %v2 = arith.constant 0 : i64
+impl Point {
+    fn distance(self: Point) -> Tensor<f32> {
+        return self.x + self.y;
+    }
+}
+
+fn main() -> Tensor<f32> {
+    let p = Point { x: 3.0, y: 4.0 };
+    let d = p.distance();
+    return d;
+}
+
+// CHECK: func.func @StructPoint_distance(%self: !llvm.struct<"Point">) -> memref<?x?xf32> {
+// CHECK:   %v0 = arith.addf %self, %self : f32
+// CHECK:   return %v0 : f32
+// CHECK: }
+// CHECK: func.func @main() -> i32 {
