@@ -76,6 +76,8 @@ impl MlirGenerator {
                     ElementType::BF16 => "bf16",
                     ElementType::I32 => "i32",
                     ElementType::I64 => "i64",
+                    ElementType::Bool => "i1",
+                    _ => unimplemented!("Element type currently unsupported in MLIR backend"),
                 };
                 format!("memref<?x?x{}>", ty_str)
             }
@@ -161,8 +163,22 @@ impl MlirGenerator {
 
     fn generate_statement(&mut self, stmt: &Statement, _current_ret_ty: &str) {
         match stmt {
-            Statement::LetDecl(name, _is_mut, _ty_ann, expr) => {
-                let (val, _) = self.generate_expr(expr, "any");
+            Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
+                let mut expr_expected = "any".to_string();
+                if let Some(Type::Tensor(el_ty)) = ty_ann {
+                    let ty_str = match el_ty {
+                        ElementType::F32 => "f32",
+                        ElementType::F64 => "f64",
+                        ElementType::BF16 => "bf16",
+                        ElementType::I32 => "i32",
+                        ElementType::I64 => "i64",
+                        ElementType::Bool => "i1",
+                        _ => "f32",
+                    };
+                    self.current_el_ty = ty_str.to_string();
+                    expr_expected = ty_str.to_string();
+                }
+                let (val, _) = self.generate_expr(expr, &expr_expected);
                 self.env.insert(name.clone(), val);
             }
             Statement::ForLoop(iter, start, end, body) => {
@@ -197,37 +213,71 @@ impl MlirGenerator {
                     ));
                 }
             }
-            Statement::CompoundAssign(lhs, BinaryOp::Add, rhs) => {
-                if let Some((base, indices)) = self.flatten_indices(lhs) {
-                    let load_val = self.next_var();
-                    self.write_line(&format!(
-                        "{} = memref.load {}[{}] : memref<?x?x{}>",
-                        load_val,
-                        base,
-                        indices.join(", "),
-                        self.current_el_ty
-                    ));
+            Statement::CompoundAssign(lhs, op, rhs) => {
+                if *op == BinaryOp::Add {
                     let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
-                    let add_val = self.next_var();
-                    let op_prefix = if self.current_el_ty.starts_with("i") {
-                        "arith.addi"
+                    let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
+                    let sum = self.next_var();
+                    if self.current_el_ty.starts_with('i')
+                        || self.current_el_ty == "u8"
+                        || self.current_el_ty == "u16"
+                        || self.current_el_ty == "u32"
+                        || self.current_el_ty == "u64"
+                    {
+                        self.write_line(&format!(
+                            "{} = arith.addi {}, {} : {}",
+                            sum, lhs_val, rhs_val, self.current_el_ty
+                        ));
                     } else {
-                        "arith.addf"
-                    };
-                    self.write_line(&format!(
-                        "{} = {} {}, {} : {}",
-                        add_val, op_prefix, load_val, rhs_val, self.current_el_ty
-                    ));
-                    self.write_line(&format!(
-                        "memref.store {}, {}[{}] : memref<?x?x{}>",
-                        add_val,
-                        base,
-                        indices.join(", "),
-                        self.current_el_ty
-                    ));
+                        self.write_line(&format!(
+                            "{} = arith.addf {}, {} : {}",
+                            sum, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
+                    if let Expr::IndexAccess(arr, _) = lhs {
+                        if let Expr::Identifier(name) = &**arr {
+                            if let Some(mem_val) = self.env.get(name) {
+                                self.write_line(&format!(
+                                    "memref.store {}, {}[] : memref<{}>",
+                                    sum, mem_val, self.current_el_ty
+                                ));
+                            }
+                        }
+                    }
+                } else if *op == BinaryOp::Mul {
+                    let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
+                    let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
+                    let prod = self.next_var();
+                    if self.current_el_ty.starts_with('i')
+                        || self.current_el_ty == "u8"
+                        || self.current_el_ty == "u16"
+                        || self.current_el_ty == "u32"
+                        || self.current_el_ty == "u64"
+                    {
+                        self.write_line(&format!(
+                            "{} = arith.muli {}, {} : {}",
+                            prod, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    } else {
+                        self.write_line(&format!(
+                            "{} = arith.mulf {}, {} : {}",
+                            prod, lhs_val, rhs_val, self.current_el_ty
+                        ));
+                    }
+                    if let Expr::IndexAccess(arr, _) = lhs {
+                        if let Expr::Identifier(name) = &**arr {
+                            if let Some(mem_val) = self.env.get(name) {
+                                self.write_line(&format!(
+                                    "memref.store {}, {}[] : memref<{}>",
+                                    prod, mem_val, self.current_el_ty
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    unimplemented!("Compound assignment operator not yet supported");
                 }
             }
-            Statement::CompoundAssign(_, BinaryOp::Mul, _) => {} // Unused in custom_matmul
             Statement::Return(expr) => {
                 let (val, ty) = self.generate_expr(expr, _current_ret_ty);
                 self.write_line(&format!("return {} : {}", val, ty));
@@ -407,8 +457,69 @@ impl MlirGenerator {
                             res, op_str, lhs_val, rhs_val, self.current_el_ty
                         ));
                     }
+                    BinaryOp::Eq
+                    | BinaryOp::NotEq
+                    | BinaryOp::Lt
+                    | BinaryOp::Gt
+                    | BinaryOp::Le
+                    | BinaryOp::Ge => {
+                        let res = self.next_var();
+                        let (pred_i, pred_f) = match op {
+                            BinaryOp::Eq => ("eq", "oeq"),
+                            BinaryOp::NotEq => ("ne", "one"),
+                            BinaryOp::Lt => ("slt", "olt"),
+                            BinaryOp::Gt => ("sgt", "ogt"),
+                            BinaryOp::Le => ("sle", "ole"),
+                            BinaryOp::Ge => ("sge", "oge"),
+                            _ => unreachable!(),
+                        };
+                        if is_int {
+                            self.write_line(&format!(
+                                "{} = arith.cmpi \"{}\", {}, {} : {}",
+                                res, pred_i, lhs_val, rhs_val, self.current_el_ty
+                            ));
+                        } else {
+                            self.write_line(&format!(
+                                "{} = arith.cmpf \"{}\", {}, {} : {}",
+                                res, pred_f, lhs_val, rhs_val, self.current_el_ty
+                            ));
+                        }
+                        return (res, "i1".to_string());
+                    }
+                    BinaryOp::And => {
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.andi {}, {} : i1",
+                            res, lhs_val, rhs_val
+                        ));
+                        return (res, "i1".to_string());
+                    }
+                    BinaryOp::Or => {
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.ori {}, {} : i1",
+                            res, lhs_val, rhs_val
+                        ));
+                        return (res, "i1".to_string());
+                    }
+                    _ => unimplemented!("BinaryOp not yet supported: {:?}", op),
                 }
                 (res, self.current_el_ty.clone())
+            }
+            Expr::UnaryOp(op, inner) => {
+                let (inner_val, _inner_ty) = self.generate_expr(inner, expected_ty);
+                match op {
+                    UnaryOp::Not => {
+                        let true_val = self.next_var();
+                        self.write_line(&format!("{} = arith.constant true", true_val));
+                        let res = self.next_var();
+                        self.write_line(&format!(
+                            "{} = arith.xori {}, {} : i1",
+                            res, inner_val, true_val
+                        ));
+                        (res, "i1".to_string())
+                    }
+                }
             }
             Expr::Array(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 let res = self.next_var();

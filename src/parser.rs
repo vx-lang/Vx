@@ -137,6 +137,7 @@ impl Parser {
                             "bf16" => ElementType::BF16,
                             "i32" => ElementType::I32,
                             "i64" => ElementType::I64,
+                            "Bool" => ElementType::Bool,
                             _ => return Err(format!("Unknown element type {}", ty_ident)),
                         };
                         match self.advance().kind {
@@ -165,8 +166,18 @@ impl Parser {
             }
             let token = self.advance().clone();
             let op = match token.kind {
+                TokenType::OrOr => BinaryOp::Or,
+                TokenType::AndAnd => BinaryOp::And,
+                TokenType::EqEq => BinaryOp::Eq,
+                TokenType::NotEq => BinaryOp::NotEq,
+                TokenType::LessEq => BinaryOp::Le,
+                TokenType::GreaterEq => BinaryOp::Ge,
+                TokenType::LeftAngle => BinaryOp::Lt,
+                TokenType::RightAngle => BinaryOp::Gt,
                 TokenType::Plus => BinaryOp::Add,
+                TokenType::Minus => BinaryOp::Sub,
                 TokenType::Star => BinaryOp::Mul,
+                TokenType::Slash => BinaryOp::Div,
                 _ => return Err("Unknown binary operator".to_string()),
             };
             let right = self.parse_binary_expr(op_prec + 1)?;
@@ -178,13 +189,24 @@ impl Parser {
 
     fn get_operator_precedence(&self, kind: &TokenType) -> Option<u8> {
         match kind {
-            TokenType::Plus => Some(10),
-            TokenType::Star => Some(20),
+            TokenType::OrOr => Some(10),
+            TokenType::AndAnd => Some(20),
+            TokenType::EqEq | TokenType::NotEq => Some(30),
+            TokenType::LessEq
+            | TokenType::GreaterEq
+            | TokenType::LeftAngle
+            | TokenType::RightAngle => Some(40),
+            TokenType::Plus | TokenType::Minus => Some(50),
+            TokenType::Star | TokenType::Slash => Some(60),
             _ => None,
         }
     }
 
     fn parse_primary_expr(&mut self) -> Result<Expr, String> {
+        if self.match_token(&TokenType::Bang) {
+            let inner = self.parse_primary_expr()?;
+            return Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner)));
+        }
         let mut expr = if self.match_token(&TokenType::Transfer) {
             self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
             let inner = self.parse_expr()?;

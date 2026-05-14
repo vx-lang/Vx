@@ -15,11 +15,23 @@ pub enum MemorySpace {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ElementType {
+    Bool,
+    BF16,
+    F16,
     F32,
     F64,
-    BF16,
+    I4,
+    I8,
+    I16,
     I32,
     I64,
+    I128,
+    U4,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -34,7 +46,24 @@ pub enum Type {
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOp {
     Add,
+    Sub,
     Mul,
+    Div,
+    // Relational
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    // Logical
+    And,
+    Or,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum UnaryOp {
+    Not,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -48,6 +77,7 @@ pub enum Expr {
     IndexAccess(Box<Expr>, Box<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
     BinaryOp(Box<Expr>, BinaryOp, Box<Expr>),
+    UnaryOp(UnaryOp, Box<Expr>),
     MemorySpace(MemorySpace),
     Topology(Topology),
 }

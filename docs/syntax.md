@@ -53,7 +53,13 @@ fn distributed_matmul(a: Tensor, b: Tensor) {
 }
 ```
 
-## 4. Semantics of Data Movement: `transfer`
+## 4. Logical and Relational Operators
+
+- Compound assignment: `+=`, `*=`
+- Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
+- Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
+
+## 5. Semantics of Data Movement: `transfer`
 
 Data cannot be implicitly moved across address spaces. Moving data requires the `transfer` primitive, which explicitly tracks ownership and liveness across boundaries.
 

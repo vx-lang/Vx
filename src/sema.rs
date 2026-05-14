@@ -74,9 +74,13 @@ impl TypeChecker {
 
     fn check_statement(&mut self, stmt: &Statement, return_type: &Type) {
         match stmt {
-            Statement::LetDecl(name, _is_mut, _ty_ann, expr) => {
+            Statement::LetDecl(name, _is_mut, ty_ann, expr) => {
                 let ty = self.check_expr(expr);
-                self.insert(name.clone(), ty);
+                if let Some(ann) = ty_ann {
+                    self.insert(name.clone(), ann.clone());
+                } else {
+                    self.insert(name.clone(), ty);
+                }
             }
             Statement::ForLoop(iter, start, end, body) => {
                 self.check_expr(start);
@@ -222,12 +226,32 @@ impl TypeChecker {
                 }
                 base_ty
             }
-            Expr::BinaryOp(lhs, _op, rhs) => {
-                self.check_expr(lhs);
-                self.check_expr(rhs);
-                Type::Tensor(ElementType::F32)
+            Expr::BinaryOp(lhs, op, rhs) => {
+                let lhs_ty = self.check_expr(lhs);
+                let rhs_ty = self.check_expr(rhs);
+                if lhs_ty != rhs_ty {
+                    self.errors
+                        .push("Type mismatch in binary operation".to_string());
+                }
+                match op {
+                    BinaryOp::Eq
+                    | BinaryOp::NotEq
+                    | BinaryOp::Lt
+                    | BinaryOp::Gt
+                    | BinaryOp::Le
+                    | BinaryOp::Ge
+                    | BinaryOp::And
+                    | BinaryOp::Or => Type::Tensor(ElementType::Bool),
+                    _ => lhs_ty,
+                }
             }
             Expr::MemorySpace(_) | Expr::Topology(_) => Type::Tensor(ElementType::F32),
+            Expr::UnaryOp(op, inner) => {
+                self.check_expr(inner);
+                match op {
+                    UnaryOp::Not => Type::Tensor(ElementType::Bool),
+                }
+            }
         }
     }
 

@@ -49,6 +49,15 @@ pub enum TokenType {
     Dot,
     DoubleDot,
 
+    // Logical & Relational
+    EqEq,
+    NotEq,
+    LessEq,
+    GreaterEq,
+    AndAnd,
+    OrOr,
+    Bang,
+
     // Special
     Eof,
     Unknown(char),
@@ -212,8 +221,7 @@ impl<'a> Lexer<'a> {
             '}' => TokenType::RightBrace,
             '[' => TokenType::LeftBracket,
             ']' => TokenType::RightBracket,
-            '<' => TokenType::LeftAngle,
-            '>' => TokenType::RightAngle,
+
             ';' => TokenType::Semicolon,
             ',' => TokenType::Comma,
             '+' => {
@@ -226,7 +234,54 @@ impl<'a> Lexer<'a> {
             }
             '*' => TokenType::Star,
             '/' => TokenType::Slash,
-            '=' => TokenType::Equals,
+            '=' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    TokenType::EqEq
+                } else {
+                    TokenType::Equals
+                }
+            }
+            '!' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    TokenType::NotEq
+                } else {
+                    TokenType::Bang
+                }
+            }
+            '<' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    TokenType::LessEq
+                } else {
+                    TokenType::LeftAngle
+                }
+            }
+            '>' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    TokenType::GreaterEq
+                } else {
+                    TokenType::RightAngle
+                }
+            }
+            '&' => {
+                if self.peek() == Some(&'&') {
+                    self.advance();
+                    TokenType::AndAnd
+                } else {
+                    TokenType::Unknown('&')
+                }
+            }
+            '|' => {
+                if self.peek() == Some(&'|') {
+                    self.advance();
+                    TokenType::OrOr
+                } else {
+                    TokenType::Unknown('|')
+                }
+            }
             '.' => {
                 if self.peek() == Some(&'.') {
                     self.advance();

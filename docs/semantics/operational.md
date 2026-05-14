@@ -103,7 +103,21 @@ $$
 }
 $$
 
-### 2.6 Vectorized Assignment
+### 2.6 Logical and Relational Operators
+Akar supports boolean computation evaluating down to the $\mathbb{V}_{Tensor}^{\text{Bool}}$ domain (or scalar boolean equivalence).
+
+For a relational binary operator $\oplus \in \{ <, >, \leq, \geq, ==, \neq \}$:
+$$
+\frac{
+  \langle E_1, \sigma, \tau \rangle_\Omega \to^* \langle v_1, \sigma, \tau \rangle_\Omega \quad
+  \langle E_2, \sigma, \tau \rangle_\Omega \to^* \langle v_2, \sigma, \tau \rangle_\Omega \quad
+  v = v_1 \oplus v_2
+}{
+  \langle E_1 \oplus E_2, \sigma, \tau \rangle_\Omega \to \langle v, \sigma, \tau \rangle_\Omega
+}
+$$
+
+### 2.7 Vectorized Assignment
 Assignment natively checks the element type $\mathcal{T}$ of the Tensor to ensure soundness.
 
 $$
