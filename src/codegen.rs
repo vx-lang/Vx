@@ -48,7 +48,7 @@ impl MlirGenerator {
 
         // Hardcode external function declarations
         self.write_line("func.func private @akar_transfer(i64) -> i64");
-        self.write_line("func.func private @custom_matmul(i64) -> i64");
+        self.write_line("func.func private @custom_matmul(i64, i64) -> i64");
         self.write_line("func.func private @akar_print(i64)");
         
         for func in &program.functions {
@@ -58,8 +58,9 @@ impl MlirGenerator {
         // Generate a main function for execution
         self.write_line("func.func @main() -> i32 {");
         self.push_indent();
-        self.write_line("%dummy_tensor = arith.constant 42 : i64");
-        self.write_line("%res = func.call @distributed_matmul(%dummy_tensor) : (i64) -> i64");
+        self.write_line("%dummy_tensor_a = arith.constant 42 : i64");
+        self.write_line("%dummy_tensor_b = arith.constant 43 : i64");
+        self.write_line("%res = func.call @distributed_matmul(%dummy_tensor_a, %dummy_tensor_b) : (i64, i64) -> i64");
         self.write_line("func.call @akar_print(%res) : (i64) -> ()");
         self.write_line("%zero = arith.constant 0 : i32");
         self.write_line("return %zero : i32");

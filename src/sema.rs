@@ -139,7 +139,9 @@ impl TypeChecker {
                 }
 
                 if name == "custom_matmul" {
-                    // For the test, custom_matmul takes Ref<Tensor, NPUHBM> and returns Ref<Tensor, NPUHBM>
+                    if args.len() != 2 {
+                        self.errors.push(format!("Function 'custom_matmul' expects 2 arguments, got {}", args.len()));
+                    }
                     Type::Ref(Box::new(Type::Tensor), MemorySpace::NPUHBM)
                 } else {
                     self.errors.push(format!("Undefined function '{}'", name));
@@ -174,10 +176,11 @@ mod tests {
     #[test]
     fn test_sema_distributed_matmul() {
         let input = r#"
-fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
+fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
     spawn on(Topology::NPU[0]) {
-        let local_data = transfer(a, Memory::NPU_HBM);
-        let result = custom_matmul(local_data);
+        let local_a = transfer(a, Memory::NPU_HBM);
+        let local_b = transfer(b, Memory::NPU_HBM);
+        let result = custom_matmul(local_a, local_b);
         return transfer(result, Memory::Host_DRAM);
     }
 }
@@ -200,9 +203,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
     #[test]
     fn test_sema_type_mismatch() {
         let input = r#"
-fn bad_matmul(a: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
+fn bad_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::Host_DRAM>) -> Verified<Tensor> {
     spawn on(Topology::NPU[0]) {
-        let result = custom_matmul(a); // ERROR: passing Host_DRAM to custom_matmul expected NPUHBM. Actually custom_matmul is mocked to return NPUHBM, but passing args is not fully checked.
+        let result = custom_matmul(a, b); // ERROR: passing Host_DRAM to custom_matmul expected NPUHBM. Actually custom_matmul is mocked to return NPUHBM, but passing args is not fully checked.
         return result; // ERROR: returning NPU_HBM when Verified<Tensor> requires Host_DRAM coercion
     }
 }
