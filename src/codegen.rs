@@ -55,18 +55,6 @@ impl MlirGenerator {
             self.generate_function(func);
         }
 
-        // Generate a main function for execution
-        self.write_line("func.func @main() -> i32 {");
-        self.push_indent();
-        self.write_line("%dummy_tensor_a = arith.constant 42 : i64");
-        self.write_line("%dummy_tensor_b = arith.constant 43 : i64");
-        self.write_line("%res = func.call @distributed_matmul(%dummy_tensor_a, %dummy_tensor_b) : (i64, i64) -> i64");
-        self.write_line("func.call @akar_print(%res) : (i64) -> ()");
-        self.write_line("%zero = arith.constant 0 : i32");
-        self.write_line("return %zero : i32");
-        self.pop_indent();
-        self.write_line("}");
-
         self.pop_indent();
         self.write_line("}");
         self.output.clone()

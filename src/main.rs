@@ -57,8 +57,13 @@ fn main() {
                         } else if run_jit {
                             let mut codegen = akarc::codegen::MlirGenerator::new();
                             let mlir_str = codegen.generate(&ast);
-                            if let Err(e) = akarc::jit::execute_mlir(&mlir_str) {
-                                eprintln!("JIT Execution Failed:\n{}", e);
+                            match akarc::jit::execute_mlir(&mlir_str) {
+                                Ok(out) => {
+                                    println!("\n=== EXECUTION OUTPUT ===");
+                                    println!("{}", out);
+                                    println!("========================");
+                                }
+                                Err(e) => eprintln!("JIT Execution Failed:\n{}", e),
                             }
                         } else {
                             println!("Semantic analysis passed!");

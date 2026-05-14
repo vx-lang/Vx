@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
-pub fn execute_mlir(mlir_src: &str) -> Result<(), String> {
+pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create("temp.mlir").map_err(|e| e.to_string())?;
     mlir_file.write_all(mlir_src.as_bytes()).map_err(|e| e.to_string())?;
@@ -57,9 +57,6 @@ pub fn execute_mlir(mlir_src: &str) -> Result<(), String> {
     }
 
     let output_str = String::from_utf8_lossy(&lli_out.stdout);
-    println!("\n=== EXECUTION OUTPUT ===");
-    println!("{}", output_str);
-    println!("========================");
 
-    Ok(())
+    Ok(output_str.to_string())
 }
