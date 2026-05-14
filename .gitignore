@@ -1,4 +1,9 @@
 target/
 .rustup/
 *.bin
-test_output.txt
+*.dylib
+*.so
+*.o
+*.log
+test_tok
+test_tok.c
