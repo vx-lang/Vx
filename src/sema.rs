@@ -167,6 +167,12 @@ impl TypeChecker {
                     Type::Ref(Box::new(Type::Tensor), MemorySpace::NPUHBM)
                 } else if name == "Tensor" {
                     Type::Tensor
+                } else if name == "Verified" {
+                    if args.len() != 1 {
+                        self.errors.push(format!("Function 'Verified' expects 1 argument, got {}", args.len()));
+                    }
+                    let inner_ty = self.check_expr(&args[0]);
+                    Type::Verified(Box::new(inner_ty))
                 } else if let Some(ret_ty) = self.functions.get(name) {
                     ret_ty.clone()
                 } else {
@@ -217,7 +223,13 @@ impl TypeChecker {
         }
 
         // Semantic coercion rule: Ref<T, HostDRAM> can be assigned to Verified<T>
+        // Also allow returning Verified(Ref(T, Memory)) as Verified(T)
         if let Type::Verified(inner_target) = target {
+            if let Type::Verified(inner_source) = source {
+                if let Type::Ref(base_source, _) = &**inner_source {
+                    return inner_target == base_source;
+                }
+            }
             if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {
                 return inner_target == inner_source;
             }

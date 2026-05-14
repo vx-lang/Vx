@@ -102,3 +102,18 @@ fn pipeline() -> Verified<()>
     // ...
 }
 ```
+
+## 5. Topology-Aware Allocation
+
+When defining arrays, you can use Topology literals to specify the physical location of the memory as well as minimum alignment requirements (if applicable). If no alignment is specified, the compiler will use the default alignment for the type. For example:
+
+```rust
+// Allocate memory on the NPU
+let x: Ref<Tensor, Topology::NPU_Core> = Tensor::new([8, 8]) with Topology::NPU_Core;
+
+// Allocate memory on the Host
+let y: Ref<Tensor, Topology::Host_Core> = Tensor::new([8, 8]) with Topology::Host_Core;
+
+// Align to 128 bytes (A16)
+let z: Ref<Tensor, Topology::NPU_Core(128)> = Tensor::new([8, 8]) with Topology::NPU_Core(128);
+```
