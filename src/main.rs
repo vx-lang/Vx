@@ -11,6 +11,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut parse_only = false;
     let mut emit_mlir = false;
+    let mut run_jit = false;
     let mut filename = "";
 
     for arg in args.iter().skip(1) {
@@ -18,6 +19,8 @@ fn main() {
             parse_only = true;
         } else if arg == "--emit-mlir" {
             emit_mlir = true;
+        } else if arg == "--run" {
+            run_jit = true;
         } else {
             filename = arg;
         }
@@ -51,6 +54,12 @@ fn main() {
                             let mut codegen = akarc::codegen::MlirGenerator::new();
                             let mlir_str = codegen.generate(&ast);
                             println!("{}", mlir_str);
+                        } else if run_jit {
+                            let mut codegen = akarc::codegen::MlirGenerator::new();
+                            let mlir_str = codegen.generate(&ast);
+                            if let Err(e) = akarc::jit::execute_mlir(&mlir_str) {
+                                eprintln!("JIT Execution Failed:\n{}", e);
+                            }
                         } else {
                             println!("Semantic analysis passed!");
                         }
@@ -65,6 +74,6 @@ fn main() {
             }
         }
     } else {
-        println!("Usage: akarc [-p] [--emit-mlir] <source_file.ak>");
+        println!("Usage: akarc [-p] [--emit-mlir] [--run] <source_file.ak>");
     }
 }
