@@ -3,6 +3,6 @@ fn main() -> i32 {
         import("tests/frontend/pass/modules_nested/ops.ak");
     };
     
-    let result = ops.do_ops(5.0, 3.0);
+    let result = ops.do_ops(5.5, 3.5);
     return 0;
 }

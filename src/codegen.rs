@@ -7,7 +7,7 @@ pub struct MlirGenerator {
     var_counter: usize,
     env: HashMap<String, (String, String)>,
     current_el_ty: String,
-    functions: HashMap<String, String>,
+    functions: HashMap<String, (String, Vec<String>)>,
     structs: HashMap<String, StructDecl>,
     enums: HashMap<String, Vec<String>>,
     globals: String,
@@ -55,7 +55,7 @@ impl MlirGenerator {
         var
     }
 
-    pub fn generate(&mut self, program: &Program) -> String {
+    pub fn generate(&mut self, program: &Program, modules: &HashMap<String, Program>) -> String {
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
         }
@@ -64,11 +64,34 @@ impl MlirGenerator {
         }
         for ext in &program.externs {
             let ret_ty = self.lower_type(&ext.return_type);
-            self.functions.insert(ext.name.clone(), ret_ty);
+            let mut arg_tys = Vec::new();
+            for (_, ty) in &ext.params {
+                arg_tys.push(self.lower_type(ty));
+            }
+            self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
         }
         for func in &program.functions {
             let ret_ty = self.lower_type(&func.return_type);
-            self.functions.insert(func.name.clone(), ret_ty);
+            let mut arg_tys = Vec::new();
+            for (_, ty) in &func.params {
+                arg_tys.push(self.lower_type(ty));
+            }
+            self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
+        }
+
+        // Register module functions
+        for module_prog in modules.values() {
+            for func in &module_prog.functions {
+                let ret_ty = self.lower_type(&func.return_type);
+                let mut arg_tys = Vec::new();
+                for (_, ty) in &func.params {
+                    arg_tys.push(self.lower_type(ty));
+                }
+                self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
+            }
+            for s in &module_prog.structs {
+                self.structs.insert(s.name.clone(), s.clone());
+            }
         }
 
         self.write_line("module {");
@@ -111,6 +134,13 @@ impl MlirGenerator {
                 struct_decl.name,
                 field_types.join(", ")
             ));
+        }
+
+        // Emit module functions
+        for module_prog in modules.values() {
+            for func in &module_prog.functions {
+                self.generate_function(func);
+            }
         }
 
         for func in &program.functions {
@@ -795,10 +825,17 @@ impl MlirGenerator {
                     return self.generate_expr(&args[0], expected_ty);
                 }
 
-                let ret_ty = if let Some(stored_ty) = self.functions.get(name) {
-                    stored_ty.clone()
-                } else {
+                let ret_ty = if name == "akar_print_float"
+                    || name == "akar_print_int"
+                    || name == "akar_print_tensor_f32"
+                {
+                    "i32".to_string()
+                } else if name.starts_with("Tensor") {
                     format!("memref<?x?x{}>", self.current_el_ty)
+                } else if let Some((r_ty, _)) = self.functions.get(name) {
+                    r_ty.clone()
+                } else {
+                    "any".to_string()
                 };
 
                 let mut arg_vals = Vec::new();
@@ -825,6 +862,12 @@ impl MlirGenerator {
                         "i32".to_string()
                     } else if ret_ty.starts_with("memref") {
                         format!("memref<?x?x{}>", self.current_el_ty)
+                    } else if let Some((_, arg_tys)) = self.functions.get(name) {
+                        if i < arg_tys.len() {
+                            arg_tys[i].clone()
+                        } else {
+                            "any".to_string()
+                        }
                     } else {
                         self.current_el_ty.clone()
                     };

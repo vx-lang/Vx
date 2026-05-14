@@ -21,6 +21,9 @@ pub struct TypeChecker {
     in_unsafe_block: bool,
     active_topology: Topology,
     active_memory: MemorySpace,
+    pub module_asts: HashMap<String, Program>,
+    pub module_prefix: Option<String>,
+    mangled_names: HashMap<String, String>,
 }
 
 impl Default for TypeChecker {
@@ -45,6 +48,9 @@ impl TypeChecker {
             in_unsafe_block: false,
             active_topology: Topology::Host,
             active_memory: MemorySpace::HostDRAM,
+            module_asts: HashMap::new(),
+            module_prefix: None,
+            mangled_names: HashMap::new(),
         }
     }
 
@@ -72,13 +78,35 @@ impl TypeChecker {
         None
     }
 
-    pub fn check_program(&mut self, program: &mut Program) -> Result<Program, Vec<String>> {
+    fn mangle_name(&mut self, original: &str) -> String {
+        if let Some(prefix) = &self.module_prefix {
+            let mangled = format!("{}_{}", prefix, original);
+            self.mangled_names
+                .insert(original.to_string(), mangled.clone());
+            mangled
+        } else {
+            original.to_string()
+        }
+    }
+
+    pub fn mangle_path(path: &str) -> String {
+        path.replace("/", "_").replace(".", "_")
+    }
+
+    pub fn check_program(
+        &mut self,
+        program: &mut Program,
+    ) -> Result<(Program, HashMap<String, Program>), Vec<String>> {
         // Collect structs
-        for s in &program.structs {
+        // Mangle Structs
+        for s in &mut program.structs {
+            s.name = self.mangle_name(&s.name);
             self.structs.insert(s.name.clone(), s.clone());
         }
 
-        for e in &program.enums {
+        // Mangle Enums
+        for e in &mut program.enums {
+            e.name = self.mangle_name(&e.name);
             self.enums.insert(e.name.clone(), e.variants.clone());
         }
 
@@ -96,8 +124,9 @@ impl TypeChecker {
             self.impls.entry(trait_name).or_default().push(i.clone());
         }
 
-        // Collect externs (unsafe by default)
-        for ext in &program.externs {
+        // Mangle Externs
+        for ext in &mut program.externs {
+            ext.name = self.mangle_name(&ext.name);
             self.functions
                 .insert(ext.name.clone(), (ext.return_type.clone(), true));
         }
@@ -105,7 +134,8 @@ impl TypeChecker {
         let mut functions_to_check = Vec::new();
 
         // First pass: collect function signatures
-        for func in &program.functions {
+        for func in &mut program.functions {
+            func.name = self.mangle_name(&func.name);
             if !func.generics.is_empty() {
                 self.generic_functions
                     .insert(func.name.clone(), func.clone());
@@ -127,7 +157,7 @@ impl TypeChecker {
         if self.errors.is_empty() {
             let mut new_program = program.clone();
             new_program.functions = self.monomorphized_functions.clone();
-            Ok(new_program)
+            Ok((new_program, self.module_asts.clone()))
         } else {
             Err(self.errors.clone())
         }
@@ -531,6 +561,14 @@ impl TypeChecker {
                 }
             }
             Expr::Import(path, _) => {
+                if let Some(_cached_ast) = self.module_asts.get(path) {
+                    // Already loaded, just recreate the exports if needed (or we could cache exports too)
+                    // For now, we actually need to extract exports again, which is inefficient.
+                    // Instead, let's just let it be re-parsed for now, OR we can cache the Type::Module.
+                    // Wait, Type::Module just needs the exports. If we parsed it once, we can just return the cached exports.
+                    // But to keep it simple, we'll cache the program here:
+                }
+
                 // Read file and parse it
                 let source = match std::fs::read_to_string(&*path) {
                     Ok(s) => s,
@@ -545,15 +583,37 @@ impl TypeChecker {
                 match parser.parse() {
                     Ok(mut ast) => {
                         let mut sub_checker = TypeChecker::new();
-                        let _ = sub_checker.check_program(&mut ast);
+                        let prefix = TypeChecker::mangle_path(path);
+                        sub_checker.module_prefix = Some(prefix.clone());
+
+                        let (mangled_ast, sub_modules) = match sub_checker.check_program(&mut ast) {
+                            Ok((p, m)) => (p, m),
+                            Err(e) => {
+                                self.errors.extend(e);
+                                (ast, std::collections::HashMap::new())
+                            }
+                        };
+
                         // Merge exported signatures
                         let mut exported = std::collections::HashMap::new();
-                        for (name, (ty, _)) in sub_checker.functions {
-                            exported.insert(name, ty);
+
+                        // To export with the ORIGINAL name, we have to look through the AST or strip the prefix!
+                        // Since `sub_checker.functions` has the mangled names:
+                        for (mangled_name, (ty, _)) in sub_checker.functions {
+                            if mangled_name.starts_with(&format!("{}_", prefix)) {
+                                let original = &mangled_name[prefix.len() + 1..];
+                                exported.insert(original.to_string(), ty);
+                            }
                         }
-                        for (name, _) in sub_checker.structs {
-                            exported.insert(name.clone(), Type::Struct(name));
+                        for (mangled_name, _) in sub_checker.structs {
+                            if mangled_name.starts_with(&format!("{}_", prefix)) {
+                                let original = &mangled_name[prefix.len() + 1..];
+                                exported.insert(original.to_string(), Type::Struct(mangled_name));
+                            }
                         }
+
+                        self.module_asts.extend(sub_modules);
+                        self.module_asts.insert(path.clone(), mangled_ast);
                         Type::Module(path.clone(), exported)
                     }
                     Err(e) => {
@@ -580,13 +640,19 @@ impl TypeChecker {
                 ret_ty
             }
             Expr::FunctionCall(name, args, _) => {
+                // If this is a local call to a function that was mangled, update the name.
+                if let Some(mangled) = self.mangled_names.get(name) {
+                    *name = mangled.clone();
+                }
+                let resolved_name = name.clone();
+
                 // Mocking built-ins
                 for arg in args.iter_mut() {
                     self.check_expr(arg);
                 }
 
-                if name.starts_with("Tensor") {
-                    let el_ty = match name.as_str() {
+                if resolved_name.starts_with("Tensor") {
+                    let el_ty = match resolved_name.as_str() {
                         "Tensor_f64" => ElementType::F64,
                         "Tensor_bf16" => ElementType::BF16,
                         "Tensor_i32" => ElementType::I32,
@@ -594,7 +660,7 @@ impl TypeChecker {
                         _ => ElementType::F32,
                     };
                     Type::Tensor(el_ty, vec![], None)
-                } else if name == "Verified" {
+                } else if resolved_name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
                             "Function 'Verified' expects 1 argument, got {}",
@@ -603,25 +669,27 @@ impl TypeChecker {
                     }
                     let inner_ty = self.check_expr(&mut args[0]);
                     Type::Verified(Box::new(inner_ty))
-                } else if name == "print" {
+                } else if resolved_name == "print" {
                     if args.len() != 1 {
                         self.errors
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
-                } else if let Some((ret_ty, is_unsafe)) = self.functions.get(name) {
+                } else if let Some((ret_ty, is_unsafe)) = self.functions.get(&resolved_name) {
                     if *is_unsafe && !self.in_unsafe_block {
-                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", name));
+                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
                     }
                     ret_ty.clone()
-                } else if let Some(generic_func) = self.generic_functions.get(name).cloned() {
+                } else if let Some(generic_func) =
+                    self.generic_functions.get(&resolved_name).cloned()
+                {
                     // Type deduction
                     let mut mapping = HashMap::new();
                     let mut success = true;
                     if args.len() != generic_func.params.len() {
                         self.errors.push(format!(
                             "Generic function '{}' expects {} arguments, got {}",
-                            name,
+                            resolved_name,
                             generic_func.params.len(),
                             args.len()
                         ));
@@ -688,7 +756,8 @@ impl TypeChecker {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else {
-                    self.errors.push(format!("Undefined function '{}'", name));
+                    self.errors
+                        .push(format!("Undefined function '{}'", resolved_name));
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
@@ -755,8 +824,10 @@ impl TypeChecker {
 
                 if let Type::Module(ref path, ref exports) = base_ty {
                     if let Some(exported_ty) = exports.get(_method) {
+                        let prefix = TypeChecker::mangle_path(path);
+                        let mangled_name = format!("{}_{}", prefix, _method);
                         let func_call =
-                            Expr::FunctionCall(_method.clone(), args.clone(), Span::default());
+                            Expr::FunctionCall(mangled_name, args.clone(), Span::default());
                         *expr = func_call;
                         return exported_ty.clone();
                     } else {
@@ -1081,13 +1152,20 @@ impl TypeChecker {
                 last_type
             }
             Expr::StructInit(name, fields, _) => {
-                if !self.structs.contains_key(name) {
-                    self.errors.push(format!("Unknown struct {}", name));
+                let mut resolved_name = name.clone();
+                if let Some(mangled) = self.mangled_names.get(name) {
+                    resolved_name = mangled.clone();
+                    *name = resolved_name.clone();
+                }
+
+                if !self.structs.contains_key(&resolved_name) {
+                    self.errors
+                        .push(format!("Unknown struct {}", resolved_name));
                 }
                 for (_, f_expr) in fields {
                     self.check_expr(f_expr);
                 }
-                Type::Struct(name.clone())
+                Type::Struct(resolved_name)
             }
         }
     }

@@ -63,14 +63,14 @@ fn main() {
                     }
                     let mut checker = sema::TypeChecker::new();
                     match checker.check_program(&mut ast) {
-                        Ok(monomorphized_ast) => {
+                        Ok((monomorphized_ast, module_asts)) => {
                             if emit_mlir {
                                 let mut codegen = akarc::codegen::MlirGenerator::new();
-                                let mlir_str = codegen.generate(&monomorphized_ast);
+                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
                                 println!("{}", mlir_str);
                             } else if run_jit {
                                 let mut codegen = akarc::codegen::MlirGenerator::new();
-                                let mlir_str = codegen.generate(&monomorphized_ast);
+                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
                                 match akarc::jit::execute_mlir(&mlir_str) {
                                     Ok(output) => println!("{}", output),
                                     Err(e) => eprintln!("Execution Error: {}", e),

@@ -59,13 +59,11 @@ fn run_middle_end_test(path: &Path) {
     let mut program = parser.parse().expect("Failed to parse");
 
     let mut checker = TypeChecker::new();
-    let monomorphized_program = match checker.check_program(&mut program) {
-        Ok(p) => p,
-        Err(errors) => panic!("Semantic check failed: {:?}", errors),
-    };
+    let (monomorphized_program, module_asts) =
+        checker.check_program(&mut program).expect("Sema failed");
 
     let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&monomorphized_program);
+    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
     // Verify // CHECK: lines in order
     let mut current_idx = 0;
@@ -97,8 +95,8 @@ fn run_backend_test(path: &Path) {
     };
 
     let mut checker = TypeChecker::new();
-    let monomorphized_program = match checker.check_program(&mut program) {
-        Ok(p) => p,
+    let (monomorphized_program, module_asts) = match checker.check_program(&mut program) {
+        Ok((p, m)) => (p, m),
         Err(errors) => panic!(
             "Semantic check failed on '{}':\n{:?}",
             path.display(),
@@ -107,7 +105,7 @@ fn run_backend_test(path: &Path) {
     };
 
     let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&monomorphized_program);
+    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
     let out = execute_mlir(&mlir_str).expect("JIT execution failed");
 
