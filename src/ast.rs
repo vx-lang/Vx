@@ -352,11 +352,11 @@ pub struct Program {
     pub functions: Vec<Function>,
 }
 
-pub type AkModule = Program;
-pub type AkFunction = Function;
+pub type VxModule = Program;
+pub type VxFunction = Function;
 
 impl Program {
-    pub fn add(&mut self, func: AkFunction) {
+    pub fn add(&mut self, func: VxFunction) {
         self.functions.push(func);
     }
 }

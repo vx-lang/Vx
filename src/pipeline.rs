@@ -1,18 +1,18 @@
 use rayon::prelude::*;
-use crate::ast::AkModule;
+use crate::ast::VxModule;
 
 /// The central orchestrator for the parallel compiler frontend.
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // Phase 1: Parallel Parsing & Local Symbol Generation
     // Each thread parses a file and populates its Thread-Local Arena with structs, enums, etc.
-    let modules: Result<Vec<AkModule>, String> = file_paths
+    let modules: Result<Vec<VxModule>, String> = file_paths
         .par_iter()
         .map(|path| {
             // For now, return empty modules as a skeleton.
             // In the future: let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
             // return crate::parse_module(&source);
             println!("Parsing file: {}", path);
-            Ok(AkModule {
+            Ok(VxModule {
                 externs: vec![],
                 structs: vec![],
                 enums: vec![],

@@ -14,11 +14,11 @@ fn test_parse_module_api() {
     assert_eq!(module.functions[0].name, "hello_world");
 }
 
-use vxc::ast::{AkModule, AkFunction};
+use vxc::ast::{VxModule, VxFunction};
 
 #[test]
 fn test_ak_module_add_function() {
-    let mut module = AkModule {
+    let mut module = VxModule {
         externs: vec![],
         structs: vec![],
         enums: vec![],
@@ -28,7 +28,7 @@ fn test_ak_module_add_function() {
     };
 
     // The 'pub' keyword is automatically stripped by our From<&str> implementation
-    module.add(AkFunction::from("pub fn foo() -> i64 { return 10; }"));
+    module.add(VxFunction::from("pub fn foo() -> i64 { return 10; }"));
 
     assert_eq!(module.functions.len(), 1);
     assert_eq!(module.functions[0].name, "foo");
