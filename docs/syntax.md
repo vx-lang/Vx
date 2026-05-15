@@ -141,7 +141,7 @@ However, many C functions (like simple math functions, standard library I/O, or 
 extern {
     // Unsafe by default. Requires `unsafe { ... }` at call sites.
     fn vx_malloc_f32(num_elements: i32) -> *mut f32;
-    
+
     // Explicitly marked as safe. Can be called freely in pure Vx code!
     safe fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
 }

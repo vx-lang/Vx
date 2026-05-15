@@ -817,7 +817,8 @@ impl MlirGenerator {
                     };
                     self.write_line(&format!("{} = {} {} : f32", res, op_name, arg_val));
                     return (res, "f32".to_string());
-                } else if name.starts_with("Tensor") && name.ends_with("::from") && args.len() == 2 {
+                } else if name.starts_with("Tensor") && name.ends_with("::from") && args.len() == 2
+                {
                     let (ptr_val, _) = self.generate_expr(&args[0], "!llvm.ptr<f32>");
                     if let Expr::Array(dims, _) = &args[1] {
                         let mut dim_vals = Vec::new();
@@ -825,42 +826,74 @@ impl MlirGenerator {
                             let (d_val, _) = self.generate_expr(dim, "index");
                             dim_vals.push(d_val);
                         }
-                        
+
                         let mut dim_str = String::new();
-                        for _ in 0..dims.len() { dim_str.push_str("?x"); }
+                        for _ in 0..dims.len() {
+                            dim_str.push_str("?x");
+                        }
                         let mem_ty = format!("memref<{}{}>", dim_str, self.current_el_ty);
                         let mem_val = self.next_var();
-                        
+
                         let shape_args = dim_vals.join(", ");
-                        self.write_line(&format!("{} = memref.alloc({}) : {}", mem_val, shape_args, mem_ty));
-                        
+                        self.write_line(&format!(
+                            "{} = memref.alloc({}) : {}",
+                            mem_val, shape_args, mem_ty
+                        ));
+
                         let mut size_val = dim_vals[0].clone();
-                        for i in 1..dim_vals.len() {
+                        for dim_val in dim_vals.iter().skip(1) {
                             let new_sz = self.next_var();
-                            self.write_line(&format!("{} = arith.muli {}, {} : index", new_sz, size_val, dim_vals[i]));
+                            self.write_line(&format!(
+                                "{} = arith.muli {}, {} : index",
+                                new_sz, size_val, dim_val
+                            ));
                             size_val = new_sz;
                         }
-                        
-                        let el_size = if self.current_el_ty == "f64" || self.current_el_ty == "i64" { 8 } else { 4 };
+
+                        let el_size = if self.current_el_ty == "f64" || self.current_el_ty == "i64"
+                        {
+                            8
+                        } else {
+                            4
+                        };
                         let c_el_size = self.next_var();
-                        self.write_line(&format!("{} = arith.constant {} : index", c_el_size, el_size));
-                        
+                        self.write_line(&format!(
+                            "{} = arith.constant {} : index",
+                            c_el_size, el_size
+                        ));
+
                         let total_bytes = self.next_var();
-                        self.write_line(&format!("{} = arith.muli {}, {} : index", total_bytes, size_val, c_el_size));
+                        self.write_line(&format!(
+                            "{} = arith.muli {}, {} : index",
+                            total_bytes, size_val, c_el_size
+                        ));
                         let bytes_i32 = self.next_var();
-                        self.write_line(&format!("{} = arith.index_cast {} : index to i32", bytes_i32, total_bytes));
-                        
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i32",
+                            bytes_i32, total_bytes
+                        ));
+
                         let tensor_idx = self.next_var();
-                        self.write_line(&format!("{} = memref.extract_aligned_pointer_as_index {} : {}", tensor_idx, mem_val, mem_ty));
-                        
+                        self.write_line(&format!(
+                            "{} = memref.extract_aligned_pointer_as_index {} : {}",
+                            tensor_idx, mem_val, mem_ty
+                        ));
+
                         let tensor_i64 = self.next_var();
-                        self.write_line(&format!("{} = arith.index_cast {} : index to i64", tensor_i64, tensor_idx));
-                        
+                        self.write_line(&format!(
+                            "{} = arith.index_cast {} : index to i64",
+                            tensor_i64, tensor_idx
+                        ));
+
                         let tensor_ptr = self.next_var();
-                        self.write_line(&format!("{} = llvm.inttoptr {} : i64 to !llvm.ptr<f32>", tensor_ptr, tensor_i64));
-                        
-                        self.write_line(&format!("{} = func.call @vx_memcpy({}, {}, {}) : (!llvm.ptr<f32>, !llvm.ptr<f32>, i32) -> i32", self.next_var(), tensor_ptr, ptr_val, bytes_i32));
-                        
+                        self.write_line(&format!(
+                            "{} = llvm.inttoptr {} : i64 to !llvm.ptr<f32>",
+                            tensor_ptr, tensor_i64
+                        ));
+
+                        let ret_var = self.next_var();
+                        self.write_line(&format!("{} = func.call @vx_memcpy({}, {}, {}) : (!llvm.ptr<f32>, !llvm.ptr<f32>, i32) -> i32", ret_var, tensor_ptr, ptr_val, bytes_i32));
+
                         return (mem_val, mem_ty);
                     } else {
                         panic!("Tensor::from requires an array of dimensions");
@@ -1091,14 +1124,23 @@ impl MlirGenerator {
                     let (base_val, _) = self.generate_expr(base, expected_ty);
                     let tensor_idx = self.next_var();
                     let mem_ty = format!("memref<?x?x{}>", self.current_el_ty); // Approx type, works for opaque ops
-                    self.write_line(&format!("{} = memref.extract_aligned_pointer_as_index {} : {}", tensor_idx, base_val, mem_ty));
-                    
+                    self.write_line(&format!(
+                        "{} = memref.extract_aligned_pointer_as_index {} : {}",
+                        tensor_idx, base_val, mem_ty
+                    ));
+
                     let tensor_i64 = self.next_var();
-                    self.write_line(&format!("{} = arith.index_cast {} : index to i64", tensor_i64, tensor_idx));
-                    
+                    self.write_line(&format!(
+                        "{} = arith.index_cast {} : index to i64",
+                        tensor_i64, tensor_idx
+                    ));
+
                     let tensor_ptr = self.next_var();
-                    self.write_line(&format!("{} = llvm.inttoptr {} : i64 to !llvm.ptr<f32>", tensor_ptr, tensor_i64)); // Defaulting to f32
-                    
+                    self.write_line(&format!(
+                        "{} = llvm.inttoptr {} : i64 to !llvm.ptr<f32>",
+                        tensor_ptr, tensor_i64
+                    )); // Defaulting to f32
+
                     (tensor_ptr, "!llvm.ptr<f32>".to_string())
                 } else if _method == "len" {
                     let (base_val, _) = self.generate_expr(base, expected_ty);

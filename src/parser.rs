@@ -381,12 +381,29 @@ impl<'a> Parser<'a> {
                             call_name = format!("Tensor_{}", ty_ident);
                         }
                     }
-                    if self.match_token(&TokenType::DoubleColon) {
-                        if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
-                            self.advance();
-                            call_name = format!("{}::{}", call_name, method_name);
-                        } else {
-                            return Err("Expected identifier after '::'".to_string());
+                    if self.check(&TokenType::DoubleColon) {
+                        let has_paren = {
+                            if let Some(t1) = self.tokens.get(self.pos + 1) {
+                                if let TokenType::Identifier(_) = t1.kind {
+                                    if let Some(t2) = self.tokens.get(self.pos + 2) {
+                                        t2.kind == TokenType::LeftParen
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if has_paren {
+                            self.advance(); // consume '::'
+                            if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
+                                self.advance(); // consume method name
+                                call_name = format!("{}::{}", call_name, method_name);
+                            }
                         }
                     }
                     if self.match_token(&TokenType::LeftParen) {
@@ -870,11 +887,7 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let is_safe = if self.match_token(&TokenType::Safe) {
-                true
-            } else {
-                false
-            };
+            let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,

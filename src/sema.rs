@@ -664,7 +664,8 @@ impl TypeChecker {
                     if args.len() != 2 {
                         self.errors.push(format!(
                             "Function '{}' expects 2 arguments (pointer, shape), got {}",
-                            resolved_name, args.len()
+                            resolved_name,
+                            args.len()
                         ));
                     }
                     if !self.in_unsafe_block {
@@ -672,12 +673,16 @@ impl TypeChecker {
                     }
                     self.check_expr(&mut args[0]);
                     self.check_expr(&mut args[1]);
-                    
+
                     let mut el_ty = ElementType::F32;
-                    if resolved_name.contains("_i32") { el_ty = ElementType::I32; }
-                    else if resolved_name.contains("_i64") { el_ty = ElementType::I64; }
-                    else if resolved_name.contains("_f64") { el_ty = ElementType::F64; }
-                    
+                    if resolved_name.contains("_i32") {
+                        el_ty = ElementType::I32;
+                    } else if resolved_name.contains("_i64") {
+                        el_ty = ElementType::I64;
+                    } else if resolved_name.contains("_f64") {
+                        el_ty = ElementType::F64;
+                    }
+
                     Type::Tensor(el_ty, vec![], None)
                 } else if resolved_name.starts_with("Tensor") {
                     let el_ty = match resolved_name.as_str() {
@@ -692,12 +697,16 @@ impl TypeChecker {
                     if args.len() != 1 {
                         self.errors.push(format!(
                             "Function '{}' expects 1 argument, got {}",
-                            resolved_name, args.len()
+                            resolved_name,
+                            args.len()
                         ));
                     }
                     let inner_ty = self.check_expr(&mut args[0]);
                     if inner_ty != Type::Scalar(ElementType::F32) {
-                        self.errors.push(format!("Function '{}' expects f32 argument, got {:?}", resolved_name, inner_ty));
+                        self.errors.push(format!(
+                            "Function '{}' expects f32 argument, got {:?}",
+                            resolved_name, inner_ty
+                        ));
                     }
                     Type::Scalar(ElementType::F32)
                 } else if resolved_name == "print" {
