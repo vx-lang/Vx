@@ -20,7 +20,7 @@ pub mod hir;
 /// Useful for unit testing and interactive REPLs.
 pub fn parse_module(source: &str) -> Result<ast::VxModule, String> {
     let mut lexer = lexer::Lexer::new(source);
-    let tokens = lexer.tokenize()?;
-    let mut parser = parser::Parser::new(tokens);
+    let tokens = lexer.tokenize();
+    let mut parser = parser::Parser::new(tokens, source);
     parser.parse()
 }
