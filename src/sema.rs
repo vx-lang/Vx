@@ -170,7 +170,7 @@ impl TypeChecker {
         mapping: &mut HashMap<String, Type>,
     ) -> bool {
         match (generic_ty, concrete_ty) {
-            (Type::Generic(name), _) => {
+            (Type::Generic(name, _), _) => {
                 if let Some(existing) = mapping.get(name) {
                     existing == concrete_ty
                 } else {
@@ -202,7 +202,7 @@ impl TypeChecker {
                 }
                 true
             }
-            (Type::Struct(n1), Type::Struct(n2)) => n1 == n2,
+            (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
             // Fallback for simple equality (e.g. Matrix)
             (t1, t2) => t1 == t2,
         }
@@ -539,7 +539,7 @@ impl TypeChecker {
                 } else {
                     self.errors.push(format!("Unknown enum {}", enum_name));
                 }
-                Type::Enum(enum_name.clone())
+                Type::Enum(enum_name.clone(), None)
             }
             Expr::Number(..) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(..) => Type::Pointer(
@@ -608,7 +608,7 @@ impl TypeChecker {
                         for (mangled_name, _) in sub_checker.structs {
                             if mangled_name.starts_with(&format!("{}_", prefix)) {
                                 let original = &mangled_name[prefix.len() + 1..];
-                                exported.insert(original.to_string(), Type::Struct(mangled_name));
+                                exported.insert(original.to_string(), Type::Struct(mangled_name, None));
                             }
                         }
 
@@ -814,7 +814,7 @@ impl TypeChecker {
                     base_ty = *t;
                 }
 
-                if let Type::Struct(struct_name) = &base_ty {
+                if let Type::Struct(struct_name, _) = &base_ty {
                     if let Some(decl) = self.structs.get(struct_name).cloned() {
                         for (f_name, f_type) in &decl.fields {
                             if f_name == member {
@@ -1205,7 +1205,7 @@ impl TypeChecker {
                 for (_, f_expr) in fields {
                     self.check_expr(f_expr);
                 }
-                Type::Struct(resolved_name)
+                Type::Struct(resolved_name, None)
             }
         }
     }

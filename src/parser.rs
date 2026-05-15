@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
             if let TokenType::Identifier(ref s) = token.kind {
                 if self.generic_params.contains(s) {
                     self.advance();
-                    return Ok(Type::Generic(s.clone()));
+                    return Ok(Type::Generic(s.clone(), None));
                 }
             }
 
@@ -261,11 +261,11 @@ impl<'a> Parser<'a> {
                             "Expected '>' after generic type arguments",
                         )?;
                         Ok(Type::GenericInstance(
-                            Box::new(Type::Struct(ident)),
+                            Box::new(Type::Struct(ident, None)),
                             type_args,
                         ))
                     } else {
-                        Ok(Type::Struct(ident))
+                        Ok(Type::Struct(ident, None))
                     }
                 }
             }
@@ -975,7 +975,7 @@ impl<'a> Parser<'a> {
         let parsed_type = self.parse_type()?;
         if self.check(&TokenType::For) {
             self.advance(); // consume 'for'
-            if let Type::Struct(name) = parsed_type {
+            if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
             } else {
                 return Err("Expected trait name before 'for'".to_string());
@@ -1255,7 +1255,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         // Param should be &mut Config
         let param_ty = &func.params[0].1;
         if let Type::Borrow(inner, None, true) = param_ty {
-            if let Type::Struct(s) = &**inner {
+            if let Type::Struct(s, _) = &**inner {
                 assert_eq!(s, "Config");
             } else {
                 panic!("Expected Struct");

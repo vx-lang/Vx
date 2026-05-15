@@ -229,7 +229,7 @@ impl MlirGenerator {
                 };
                 format!("!llvm.ptr<{}>", addr_space)
             }
-            Type::Struct(name) => {
+            Type::Struct(name, _) => {
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
@@ -240,10 +240,10 @@ impl MlirGenerator {
                     format!("!llvm.struct<\"{}\">", name)
                 }
             }
-            Type::Generic(_) | Type::GenericInstance(_, _) => {
+            Type::Generic(_, _) | Type::GenericInstance(_, _) => {
                 panic!("Generic types should have been monomorphized before codegen!");
             }
-            Type::Enum(_) => "i32".to_string(),
+            Type::Enum(_, _) => "i32".to_string(),
             Type::Module(..) => "none".to_string(),
         }
     }
@@ -1419,7 +1419,7 @@ impl MlirGenerator {
             }
             Expr::StructInit(name, fields, _) => {
                 let struct_decl = self.structs.get(name).unwrap().clone();
-                let struct_ty = self.lower_type(&Type::Struct(name.clone()));
+                let struct_ty = self.lower_type(&Type::Struct(name.clone(), None));
 
                 let mut current_struct = self.next_var();
                 self.write_line(&format!(

@@ -1,3 +1,4 @@
+// TODO: see if ResolvedType enum make sense
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Span {
     pub line: usize,
@@ -52,11 +53,11 @@ pub enum Type {
     Borrow(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Scalar(ElementType),
-    Struct(String),
-    Enum(String),
+    Struct(String, Option<crate::gid::TypeId>),
+    Enum(String, Option<crate::gid::TypeId>),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),
-    Generic(String),                                         // e.g. T
+    Generic(String, Option<crate::gid::TypeId>),                                         // e.g. T
     GenericInstance(Box<Type>, Vec<Type>),                   // e.g. Config<f32>
     Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
 }
@@ -64,7 +65,7 @@ pub enum Type {
 impl Type {
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Type {
         match self {
-            Type::Generic(name) => {
+            Type::Generic(name, _) => {
                 if let Some(concrete) = mapping.get(name) {
                     concrete.clone()
                 } else {

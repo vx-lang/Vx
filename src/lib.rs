@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod ast_printer;
+pub mod borrow;
 pub mod codegen;
 pub mod error;
 pub mod formatter;
@@ -8,6 +9,7 @@ pub mod hash;
 pub mod jit;
 pub mod lexer;
 pub mod parser;
+pub mod pipeline;
 pub mod registry;
 pub mod sema;
 
