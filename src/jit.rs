@@ -1,6 +1,9 @@
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     // Ensure target/jit directory exists
@@ -9,8 +12,18 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         std::fs::create_dir_all(jit_dir).map_err(|e| e.to_string())?;
     }
 
+    let pid = std::process::id();
+    let counter = JIT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let uid = format!("{}_{}", pid, counter);
+
+    let temp_mlir = format!("target/jit/temp_{}.mlir", uid);
+    let temp_llvm = format!("target/jit/temp_llvm_{}.mlir", uid);
+    let temp_ll = format!("target/jit/temp_{}.ll", uid);
+    let lib_rt = format!("target/jit/libvx_rt_{}.dylib", uid);
+    let lib_npu = format!("target/jit/libnpu_{}.dylib", uid);
+
     // 1. Write MLIR to temp file
-    let mut mlir_file = File::create("target/jit/temp.mlir").map_err(|e| e.to_string())?;
+    let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
     mlir_file
         .write_all(mlir_src.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -22,7 +35,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
 
     let mut clang_cmd = Command::new(&cc);
     clang_cmd.args(&cflags);
-    clang_cmd.args(["src/runtime/vx_rt.c", "-o", "target/jit/libvx_rt.dylib"]);
+    clang_cmd.args(["src/runtime/vx_rt.c", "-o", &lib_rt]);
 
     let clang_status = clang_cmd.status().map_err(|e| e.to_string())?;
 
@@ -53,7 +66,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "-framework",
             "CoreML",
             "-o",
-            "target/jit/libnpu_dispatch.dylib",
+            &lib_npu,
         ]);
 
         let npu_status = cxx_cmd.status().map_err(|e| e.to_string())?;
@@ -79,7 +92,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "--convert-cf-to-llvm",
             "--convert-arith-to-llvm",
             "--reconcile-unrealized-casts",
-            "target/jit/temp.mlir",
+            &temp_mlir,
         ])
         .output()
         .map_err(|e| e.to_string())?;
@@ -90,14 +103,14 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     }
 
     let mut lowered_mlir_file =
-        File::create("target/jit/temp_llvm.mlir").map_err(|e| e.to_string())?;
+        File::create(&temp_llvm).map_err(|e| e.to_string())?;
     lowered_mlir_file
         .write_all(&mlir_opt_out.stdout)
         .map_err(|e| e.to_string())?;
 
     println!("[JIT] Translating to LLVM IR...");
     let mlir_translate_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate")
-        .args(["--mlir-to-llvmir", "target/jit/temp_llvm.mlir"])
+        .args(["--mlir-to-llvmir", &temp_llvm])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -106,7 +119,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err(format!("mlir-translate failed:\n{}", err_str));
     }
 
-    let mut llvmir_file = File::create("target/jit/temp.ll").map_err(|e| e.to_string())?;
+    let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
     llvmir_file
         .write_all(&mlir_translate_out.stdout)
         .map_err(|e| e.to_string())?;
@@ -114,11 +127,11 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     println!("[JIT] Executing via LLI...");
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
         .args([
-            "--load=target/jit/libvx_rt.dylib",
-            "--load=target/jit/libnpu_dispatch.dylib",
+            &format!("--load={}", lib_rt),
+            &format!("--load={}", lib_npu),
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
-            "target/jit/temp.ll",
+            &temp_ll,
         ])
         .output()
         .map_err(|e| e.to_string())?;
