@@ -11,6 +11,7 @@ pub mod lexer;
 pub mod parser;
 pub mod pipeline;
 pub mod registry;
+pub mod resolver;
 pub mod sema;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).

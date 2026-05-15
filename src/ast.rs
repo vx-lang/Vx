@@ -344,6 +344,7 @@ pub struct ImplBlock {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
+    pub module_path: String,
     pub externs: Vec<ExternDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
@@ -358,5 +359,185 @@ pub type VxFunction = Function;
 impl Program {
     pub fn add(&mut self, func: VxFunction) {
         self.functions.push(func);
+    }
+}
+
+impl Type {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        match self {
+            Type::Struct(name, id) | Type::Enum(name, id) | Type::Generic(name, id) => {
+                if let Some(mod_syms) = symbol_map.get(current_module) {
+                    if let Some(tid) = mod_syms.get(name) {
+                        *id = Some(*tid);
+                    }
+                }
+            }
+            Type::Tensor(_, dims, top) => {
+                for dim in dims {
+                    dim.resolve_names(current_module, symbol_map);
+                }
+                if let Some(t) = top { t.resolve_names(current_module, symbol_map); }
+            }
+            Type::Ref(inner, _) | Type::Borrow(inner, _, _) | Type::Pointer(inner, _, _) 
+            | Type::Verified(inner) | Type::Pinned(inner, _) => {
+                inner.resolve_names(current_module, symbol_map);
+            }
+            Type::GenericInstance(base, args) => {
+                base.resolve_names(current_module, symbol_map);
+                for arg in args {
+                    arg.resolve_names(current_module, symbol_map);
+                }
+            }
+            Type::Module(_, exported) => {
+                for ty in exported.values_mut() {
+                    ty.resolve_names(current_module, symbol_map);
+                }
+            }
+            Type::Matrix | Type::Scalar(_) => {}
+        }
+    }
+}
+
+impl Topology {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        match self {
+            Topology::NPU(e) | Topology::AccCore(e) => e.resolve_names(current_module, symbol_map),
+            Topology::Slice(t, e1, e2) => {
+                t.resolve_names(current_module, symbol_map);
+                e1.resolve_names(current_module, symbol_map);
+                e2.resolve_names(current_module, symbol_map);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Expr {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        match self {
+            Expr::Transfer(e, _, _) | Expr::MemberAccess(e, _, _) 
+            | Expr::UnaryOp(_, e, _) | Expr::Borrow(e, _, _) | Expr::Dereference(e, _) => {
+                e.resolve_names(current_module, symbol_map);
+            }
+            Expr::FunctionCall(_, args, _) | Expr::MethodCall(_, _, args, _) | Expr::Array(args, _) => {
+                for a in args {
+                    a.resolve_names(current_module, symbol_map);
+                }
+            }
+            Expr::IndexAccess(e1, e2, _) | Expr::BinaryOp(e1, _, e2, _) => {
+                e1.resolve_names(current_module, symbol_map);
+                e2.resolve_names(current_module, symbol_map);
+            }
+            Expr::StructInit(_, fields, _) => {
+                for (_, e) in fields {
+                    e.resolve_names(current_module, symbol_map);
+                }
+            }
+            Expr::UnsafeBlock(stmts, ret, _) | Expr::ComptimeBlock(stmts, ret, _) => {
+                for s in stmts {
+                    s.resolve_names(current_module, symbol_map);
+                }
+                if let Some(r) = ret {
+                    r.resolve_names(current_module, symbol_map);
+                }
+            }
+            Expr::Topology(t, _) => t.resolve_names(current_module, symbol_map),
+            _ => {}
+        }
+    }
+}
+
+impl Statement {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        match self {
+            Statement::LetDecl(_, _, ty, e, _) => {
+                if let Some(t) = ty { t.resolve_names(current_module, symbol_map); }
+                e.resolve_names(current_module, symbol_map);
+            }
+            Statement::Return(e, _) | Statement::ExprStmt(e, _) | Statement::Assert(e, _, _) => e.resolve_names(current_module, symbol_map),
+            Statement::SpawnOn(t, stmts, _) => {
+                t.resolve_names(current_module, symbol_map);
+                for s in stmts { s.resolve_names(current_module, symbol_map); }
+            }
+            Statement::ForLoop(_, start, end, body, _) => {
+                start.resolve_names(current_module, symbol_map);
+                end.resolve_names(current_module, symbol_map);
+                for s in body { s.resolve_names(current_module, symbol_map); }
+            }
+            Statement::If(cond, then_block, else_block, _) => {
+                cond.resolve_names(current_module, symbol_map);
+                for s in then_block { s.resolve_names(current_module, symbol_map); }
+                if let Some(eb) = else_block {
+                    for s in eb { s.resolve_names(current_module, symbol_map); }
+                }
+            }
+            Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
+                lhs.resolve_names(current_module, symbol_map);
+                rhs.resolve_names(current_module, symbol_map);
+            }
+            Statement::Comptime(stmts, _) => {
+                for s in stmts { s.resolve_names(current_module, symbol_map); }
+            }
+        }
+    }
+}
+
+impl Function {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        for (_, ty) in &mut self.params {
+            ty.resolve_names(current_module, symbol_map);
+        }
+        if let Some(ty) = &mut self.ret_type {
+            ty.resolve_names(current_module, symbol_map);
+        }
+        for s in &mut self.body {
+            s.resolve_names(current_module, symbol_map);
+        }
+    }
+}
+
+impl StructDecl {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        for (_, ty) in &mut self.fields {
+            ty.resolve_names(current_module, symbol_map);
+        }
+    }
+}
+
+impl EnumDecl {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        for (_, fields) in &mut self.variants {
+            for (_, ty) in fields {
+                ty.resolve_names(current_module, symbol_map);
+            }
+        }
+    }
+}
+
+impl TraitDecl {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        for f in &mut self.methods {
+            f.resolve_names(current_module, symbol_map);
+        }
+    }
+}
+
+impl ImplBlock {
+    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
+        self.target_type.resolve_names(current_module, symbol_map);
+        for f in &mut self.methods {
+            f.resolve_names(current_module, symbol_map);
+        }
+    }
+}
+
+impl Program {
+    pub fn resolve_names(&mut self, symbol_map: &crate::resolver::SymbolMap) {
+        let current_module = self.module_path.clone();
+        for s in &mut self.structs { s.resolve_names(&current_module, symbol_map); }
+        for e in &mut self.enums { e.resolve_names(&current_module, symbol_map); }
+        for t in &mut self.traits { t.resolve_names(&current_module, symbol_map); }
+        for i in &mut self.impls { i.resolve_names(&current_module, symbol_map); }
+        for f in &mut self.functions { f.resolve_names(&current_module, symbol_map); }
     }
 }

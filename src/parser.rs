@@ -1026,6 +1026,7 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Program {
+            module_path: self.source.to_string(), // Default fallback, should be overridden by pipeline
             externs,
             structs,
             enums,

@@ -27,7 +27,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     // Phase 1.5: Parallel Name Resolution
     // Resolve String lookups into 256-bit TypeIds
-    // parsed_modules.par_iter_mut().for_each(|m| m.resolve_names());
+    
+    // Build the global SymbolMap sequentially (Phase 1.25)
+    let symbol_map = crate::resolver::build_symbol_map(&parsed_modules);
+    
+    // Resolve names across all ASTs in parallel
+    parsed_modules.par_iter_mut().for_each(|m| m.resolve_names(&symbol_map));
     println!("Resolved {} modules in parallel", parsed_modules.len());
 
     // Phase 2: Sequential Global Registry Build & Cycle Detection
