@@ -15,7 +15,7 @@ impl From<&str> for crate::ast::Function {
         let cleaned_source = source.trim().trim_start_matches("pub ");
         
         let mut lexer = crate::lexer::Lexer::new(cleaned_source);
-        let tokens = lexer.tokenize().expect("Failed to tokenize function source");
+        let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens, cleaned_source);
         parser.parse_function().expect("Failed to parse function source")
     }

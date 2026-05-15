@@ -53,7 +53,7 @@ impl<'a> GlobalAstEnv<'a> {
                 if !func.generics.is_empty() {
                     env.generic_functions.insert(func.name.clone(), func);
                 } else {
-                    env.functions.insert(func.name.clone(), (func.return_type.clone(), func.is_unsafe));
+                    env.functions.insert(func.name.clone(), (func.return_type.clone(), false /* func.is_unsafe */));
                     env.ast_functions.insert(func.name.clone(), func);
                 }
             }
@@ -137,12 +137,12 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    pub fn unify_types(&mut self, target: &Type, source: &Type, mapping: &mut std::collections::HashMap<String, Type>) -> bool {
+    pub fn unify_types(&mut self, _target: &Type, _source: &Type, _mapping: &mut std::collections::HashMap<String, Type>) -> bool {
         // Stub implementation
         true
     }
 
-    pub fn instantiate_function(&mut self, func: &Function, mapping: &std::collections::HashMap<String, Type>) -> Function {
+    pub fn instantiate_function(&mut self, func: &Function, _mapping: &std::collections::HashMap<String, Type>) -> Function {
         // Stub implementation
         func.clone()
     }
@@ -169,7 +169,7 @@ impl<'a> TypeChecker<'a> {
     fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
         // Intercept for HIR lowering
         match stmt {
-            Statement::Assign(lhs, rhs, _) => {
+            Statement::Assign(_lhs, rhs, _) => {
                 let (ty, rhs_reg) = self.check_expr(rhs);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
@@ -233,7 +233,7 @@ impl<'a> TypeChecker<'a> {
                     self.pop_scope();
                 }
             }
-            Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
+            Statement::Assign(_lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
                 let lhs_ty = self.check_expr_type(lhs);
                 let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
@@ -437,8 +437,8 @@ impl<'a> TypeChecker<'a> {
                 match self.lookup(name) {
                     Some((ty, top)) => {
                         // Enforce Topology Boundaries!
-                        let mut is_valid = top == self.active_topology
-                            || (top == Topology::Host
+                        let mut is_valid = *top == self.active_topology
+                            || (*top == Topology::Host
                                 && matches!(
                                     self.active_topology,
                                     Topology::AMX | Topology::ANE | Topology::GPU
@@ -471,7 +471,7 @@ impl<'a> TypeChecker<'a> {
                                 name, top, ty, self.active_topology
                             ));
                         }
-                        ty
+                        ty.clone()
                     }
                     None => {
                         self.errors.push(format!("Undefined variable '{}'", name));
@@ -592,9 +592,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(name, args, _) => {
                 // If this is a local call to a function that was mangled, update the name.
-                if false {
-                    *name = mangled.clone();
-                }
+                
                 let resolved_name = name.clone();
 
                 // Mocking built-ins
@@ -1160,7 +1158,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn is_assignable(&self, target: &Type, source: &Type) -> bool {
+    fn is_assignable(&self, target: &Type, _source: &Type) -> bool {
         if target == source {
             return true;
         }
@@ -1300,7 +1298,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         let mut program = parser.parse().unwrap();
 
         let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env);
+        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
 
         for err in &checker.errors {
@@ -1323,7 +1321,7 @@ fn bad_matmul() -> Tensor {
         let mut program = parser.parse().unwrap();
 
         let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env);
+        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
         assert!(!checker.errors.is_empty());
@@ -1348,7 +1346,7 @@ fn bad_matmul() -> Tensor {
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env);
+        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
         assert!(
             { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
             "Semantic checking failed: {:?}",
@@ -1377,7 +1375,7 @@ fn bad_matmul() -> Tensor {
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env);
+        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
 
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
@@ -1401,7 +1399,7 @@ fn bad_matmul() -> Tensor {
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
         let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env);
+        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
 
         assert!(
             { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },

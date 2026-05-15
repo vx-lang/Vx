@@ -12,7 +12,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             // In the future: let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
             // return crate::parse_module(&source);
             println!("Parsing file: {}", path);
-            Ok(VxModule {
+            Ok(ast::Program {
+                module_path: path.clone(),
                 externs: vec![],
                 structs: vec![],
                 enums: vec![],

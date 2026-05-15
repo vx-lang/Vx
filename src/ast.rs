@@ -487,9 +487,7 @@ impl Function {
         for (_, ty) in &mut self.params {
             ty.resolve_names(current_module, symbol_map);
         }
-        if let Some(ty) = &mut self.ret_type {
-            ty.resolve_names(current_module, symbol_map);
-        }
+        self.return_type.resolve_names(current_module, symbol_map);
         for s in &mut self.body {
             s.resolve_names(current_module, symbol_map);
         }
@@ -505,19 +503,17 @@ impl StructDecl {
 }
 
 impl EnumDecl {
-    pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
-        for (_, fields) in &mut self.variants {
-            for (_, ty) in fields {
-                ty.resolve_names(current_module, symbol_map);
-            }
-        }
+    pub fn resolve_names(&mut self, _current_module: &str, _symbol_map: &crate::resolver::SymbolMap) {
     }
 }
 
 impl TraitDecl {
     pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
-        for f in &mut self.methods {
-            f.resolve_names(current_module, symbol_map);
+        for (_, params, ret_ty) in &mut self.methods {
+            for (_, ty) in params {
+                ty.resolve_names(current_module, symbol_map);
+            }
+            ret_ty.resolve_names(current_module, symbol_map);
         }
     }
 }

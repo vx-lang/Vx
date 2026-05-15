@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 
 // Architectural Masks
-const ESCAPE_HATCH_MASK: u64 = 1 << 63;
-const INDEX_MASK: u64 = !ESCAPE_HATCH_MASK;
+pub const ESCAPE_HATCH_MASK: u64 = 1 << 63;
+pub const INDEX_MASK: u64 = !ESCAPE_HATCH_MASK;
 
 // Bitmask Constants for Word 3
 const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
