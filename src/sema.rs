@@ -669,6 +669,25 @@ impl TypeChecker {
                     }
                     let inner_ty = self.check_expr(&mut args[0]);
                     Type::Verified(Box::new(inner_ty))
+                } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
+                    if args.len() != 2 {
+                        self.errors.push(format!(
+                            "Function '{}' expects 2 arguments (pointer, shape), got {}",
+                            resolved_name, args.len()
+                        ));
+                    }
+                    if !self.in_unsafe_block {
+                        self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
+                    }
+                    self.check_expr(&mut args[0]);
+                    self.check_expr(&mut args[1]);
+                    
+                    let mut el_ty = ElementType::F32;
+                    if resolved_name.contains("_i32") { el_ty = ElementType::I32; }
+                    else if resolved_name.contains("_i64") { el_ty = ElementType::I64; }
+                    else if resolved_name.contains("_f64") { el_ty = ElementType::F64; }
+                    
+                    Type::Tensor(el_ty, vec![], None)
                 } else if resolved_name == "print" {
                     if args.len() != 1 {
                         self.errors

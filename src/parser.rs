@@ -380,6 +380,12 @@ impl<'a> Parser<'a> {
                             }
                             call_name = format!("Tensor_{}", ty_ident);
                         }
+                        if self.match_token(&TokenType::DoubleColon) {
+                            if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
+                                self.advance();
+                                call_name = format!("{}::{}", call_name, method_name);
+                            }
+                        }
                     }
                     if self.match_token(&TokenType::LeftParen) {
                         let mut args = Vec::new();

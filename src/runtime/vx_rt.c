@@ -1,7 +1,9 @@
-#include <stdio.h>
-#include <stdint.h>
-#include <time.h>
 #include <math.h>
+#include <memory.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 float vx_sqrtf(float x) {
     return sqrtf(x);
@@ -52,6 +54,13 @@ void trace_start() {
 
 void trace_end() {
     printf("[TRACE END] Event ID: 100\n");
+}
+
+void free_mem(float *ptr) { free(ptr); }
+
+int32_t vx_memcpy(float *dest, float *src, int32_t num_bytes) {
+  memcpy(dest, src, num_bytes);
+  return 0;
 }
 
 void print_f32(float val) {
@@ -239,4 +248,23 @@ char* vx_read_prompt_file(const char* filepath) {
     fclose(f);
     string[fsize] = 0;
     return string;
+}
+
+int vx_network_transfer(float *ptr, int size) {
+  // Mock network transfer for KV cache based on payload size
+  // Assuming a network bandwidth of ~10 GB/s for high-speed interconnects
+  // (e.g., NVLink)
+  long long bytes = (long long)size * sizeof(float);
+  long long bandwidth_bytes_per_sec = 10000000000LL; // 10 GB/s
+
+  int base_latency_us = 5000; // 5ms base routing latency
+  int transfer_us = (int)((bytes * 1000000LL) / bandwidth_bytes_per_sec);
+
+  int total_sleep_us = base_latency_us + transfer_us;
+
+  printf("[Network] Transferring KV cache (%d elements, %lld bytes). Estimated "
+         "latency: %d us\n",
+         size, bytes, total_sleep_us);
+  usleep(total_sleep_us);
+  return 0;
 }
