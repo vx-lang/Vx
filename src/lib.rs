@@ -3,6 +3,7 @@ pub mod ast_printer;
 pub mod codegen;
 pub mod error;
 pub mod formatter;
+pub mod gid;
 pub mod jit;
 pub mod lexer;
 pub mod parser;

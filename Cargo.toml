@@ -23,6 +23,8 @@ path = "src/bin/cargo-vx-bench.rs"
 
 [dependencies]
 regex = "1.10"
+bytemuck = { version = "1.15", features = ["derive"] }
+once_cell = "1.19"
 
 [dev-dependencies]
 rayon = "1.10"
