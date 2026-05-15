@@ -39,9 +39,31 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
-    // Phase 3: Parallel Body Type-Checking & Borrow Checking
-    // parsed_modules.par_iter().for_each(|m| m.type_check(&registry));
-    println!("Type checked bodies in parallel");
+    // Phase 2.5: Build Global AST Environment (Sequential)
+    let global_env = crate::sema::GlobalAstEnv::build(&parsed_modules);
+
+    // Phase 3: Parallel Body Type-Checking
+    let check_results: Vec<_> = parsed_modules.par_iter_mut().flat_map(|module| {
+        module.functions.par_iter_mut().map(|func| {
+            let mut checker = crate::sema::TypeChecker::new(&global_env);
+            checker.check_function(func);
+            (checker.errors, checker.monomorphized_functions)
+        }).collect::<Vec<_>>()
+    }).collect();
+    
+    let total_errors: usize = check_results.iter().map(|(errs, _)| errs.len()).sum();
+    let total_monomorphized: usize = check_results.iter().map(|(_, monos)| monos.len()).sum();
+
+    println!("Type checked bodies in parallel: {} errors, {} monomorphized variants generated", total_errors, total_monomorphized);
+
+    if total_errors > 0 {
+        for (errs, _) in &check_results {
+            for err in errs {
+                println!("Error: {}", err);
+            }
+        }
+        return Err(format!("Compilation failed with {} semantic errors", total_errors));
+    }
 
     // Phase 4: Parallel Module Deduplication & Codegen
     // Deduplicate monomorphized variants to prevent bloat

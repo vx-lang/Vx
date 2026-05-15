@@ -7,255 +7,85 @@ pub enum Value {
     Number(f64),
 }
 
-pub struct TypeChecker {
-    scopes: Vec<HashMap<String, (Type, Topology)>>,
-    functions: HashMap<String, (Type, bool)>, // Maps function name to (return type, is_unsafe)
-    ast_functions: HashMap<String, Function>, // For constexpr evaluation
-    generic_functions: HashMap<String, Function>,
-    pub monomorphized_functions: Vec<Function>,
-    structs: HashMap<String, StructDecl>,
-    enums: HashMap<String, Vec<String>>,
-    traits: HashMap<String, TraitDecl>,
-    impls: HashMap<String, Vec<ImplBlock>>, // Maps trait name to list of implementations
-    pub errors: Vec<String>,
-    in_unsafe_block: bool,
-    active_topology: Topology,
-    active_memory: MemorySpace,
-    pub module_asts: HashMap<String, Program>,
-    pub module_prefix: Option<String>,
-    mangled_names: HashMap<String, String>,
+pub struct GlobalAstEnv<'a> {
+    pub structs: HashMap<String, &'a StructDecl>,
+    pub enums: HashMap<String, &'a Vec<String>>,
+    pub traits: HashMap<String, &'a TraitDecl>,
+    pub impls: HashMap<String, Vec<&'a ImplBlock>>,
+    pub functions: HashMap<String, (Type, bool)>,
+    pub ast_functions: HashMap<String, &'a Function>,
+    pub generic_functions: HashMap<String, &'a Function>,
 }
 
-impl Default for TypeChecker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeChecker {
-    pub fn new() -> Self {
-        Self {
-            scopes: vec![HashMap::new()],
-            functions: HashMap::new(),
-            ast_functions: HashMap::new(),
-            generic_functions: HashMap::new(),
-            monomorphized_functions: Vec::new(),
+impl<'a> GlobalAstEnv<'a> {
+    pub fn build(modules: &'a [Program]) -> Self {
+        let mut env = Self {
             structs: HashMap::new(),
             enums: HashMap::new(),
             traits: HashMap::new(),
             impls: HashMap::new(),
+            functions: HashMap::new(),
+            ast_functions: HashMap::new(),
+            generic_functions: HashMap::new(),
+        };
+
+        for module in modules {
+            for s in &module.structs {
+                env.structs.insert(s.name.clone(), s);
+            }
+            for e in &module.enums {
+                env.enums.insert(e.name.clone(), &e.variants);
+            }
+            for t in &module.traits {
+                env.traits.insert(t.name.clone(), t);
+            }
+            for i in &module.impls {
+                let trait_name = match &i.trait_name {
+                    Some(name) => name.clone(),
+                    None => "_inherent".to_string(),
+                };
+                env.impls.entry(trait_name).or_default().push(i);
+            }
+            for ext in &module.externs {
+                env.functions.insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
+            }
+            for func in &module.functions {
+                if !func.generics.is_empty() {
+                    env.generic_functions.insert(func.name.clone(), func);
+                } else {
+                    env.functions.insert(func.name.clone(), (func.return_type.clone(), func.is_unsafe));
+                    env.ast_functions.insert(func.name.clone(), func);
+                }
+            }
+        }
+        env
+    }
+}
+
+pub struct TypeChecker<'a> {
+    pub env: &'a GlobalAstEnv<'a>,
+    scopes: Vec<HashMap<String, (Type, Topology)>>,
+    pub monomorphized_functions: Vec<Function>,
+    pub errors: Vec<String>,
+    in_unsafe_block: bool,
+    active_topology: Topology,
+    active_memory: MemorySpace,
+}
+
+impl<'a> TypeChecker<'a> {
+    pub fn new(env: &'a GlobalAstEnv<'a>) -> Self {
+        Self {
+            env,
+            scopes: vec![HashMap::new()],
+            monomorphized_functions: Vec::new(),
             errors: Vec::new(),
             in_unsafe_block: false,
             active_topology: Topology::Host,
             active_memory: MemorySpace::HostDRAM,
-            module_asts: HashMap::new(),
-            module_prefix: None,
-            mangled_names: HashMap::new(),
         }
     }
 
-    fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    fn pop_scope(&mut self) {
-        self.scopes.pop();
-    }
-
-    fn insert(&mut self, name: String, ty: Type) {
-        let top = self.active_topology.clone();
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, (ty, top));
-        }
-    }
-
-    fn lookup(&self, name: &str) -> Option<(Type, Topology)> {
-        for scope in self.scopes.iter().rev() {
-            if let Some((ty, top)) = scope.get(name) {
-                return Some((ty.clone(), top.clone()));
-            }
-        }
-        None
-    }
-
-    fn mangle_name(&mut self, original: &str) -> String {
-        if let Some(prefix) = &self.module_prefix {
-            let mangled = format!("{}_{}", prefix, original);
-            self.mangled_names
-                .insert(original.to_string(), mangled.clone());
-            mangled
-        } else {
-            original.to_string()
-        }
-    }
-
-    pub fn mangle_path(path: &str) -> String {
-        path.replace("/", "_").replace(".", "_")
-    }
-
-    pub fn check_program(
-        &mut self,
-        program: &mut Program,
-    ) -> Result<(Program, HashMap<String, Program>), Vec<String>> {
-        // Collect structs
-        // Mangle Structs
-        for s in &mut program.structs {
-            s.name = self.mangle_name(&s.name);
-            self.structs.insert(s.name.clone(), s.clone());
-        }
-
-        // Mangle Enums
-        for e in &mut program.enums {
-            e.name = self.mangle_name(&e.name);
-            self.enums.insert(e.name.clone(), e.variants.clone());
-        }
-
-        // Collect traits
-        for t in &program.traits {
-            self.traits.insert(t.name.clone(), t.clone());
-        }
-
-        // Collect impls
-        for i in &program.impls {
-            let trait_name = match &i.trait_name {
-                Some(name) => name.clone(),
-                None => "_inherent".to_string(), // For `impl Type { ... }` blocks
-            };
-            self.impls.entry(trait_name).or_default().push(i.clone());
-        }
-
-        // Mangle Externs
-        for ext in &mut program.externs {
-            ext.name = self.mangle_name(&ext.name);
-            self.functions
-                .insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
-        }
-
-        let mut functions_to_check = Vec::new();
-
-        // First pass: collect function signatures
-        for func in &mut program.functions {
-            func.name = self.mangle_name(&func.name);
-            if !func.generics.is_empty() {
-                self.generic_functions
-                    .insert(func.name.clone(), func.clone());
-            } else {
-                self.functions
-                    .insert(func.name.clone(), (func.return_type.clone(), false));
-                self.ast_functions.insert(func.name.clone(), func.clone());
-                functions_to_check.push(func.clone());
-            }
-        }
-
-        // Second pass: check non-generic function bodies
-        // (This will recursively trigger monomorphization if they call generic functions)
-        for mut func in functions_to_check {
-            self.check_function(&mut func);
-            self.monomorphized_functions.push(func);
-        }
-
-        if self.errors.is_empty() {
-            let mut new_program = program.clone();
-            new_program.functions = self.monomorphized_functions.clone();
-            Ok((new_program, self.module_asts.clone()))
-        } else {
-            Err(self.errors.clone())
-        }
-    }
-
-    fn unify_types(
-        &self,
-        generic_ty: &Type,
-        concrete_ty: &Type,
-        mapping: &mut HashMap<String, Type>,
-    ) -> bool {
-        match (generic_ty, concrete_ty) {
-            (Type::Generic(name, _), _) => {
-                if let Some(existing) = mapping.get(name) {
-                    existing == concrete_ty
-                } else {
-                    mapping.insert(name.clone(), concrete_ty.clone());
-                    true
-                }
-            }
-            (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                e1 == e2 && d1 == d2 && t1 == t2
-            }
-            (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
-            }
-            (Type::Borrow(t1, m1, mut1), Type::Borrow(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
-            }
-            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
-            (Type::GenericInstance(b1, args1), Type::GenericInstance(b2, args2)) => {
-                if args1.len() != args2.len() {
-                    return false;
-                }
-                if !self.unify_types(b1, b2, mapping) {
-                    return false;
-                }
-                for (a1, a2) in args1.iter().zip(args2.iter()) {
-                    if !self.unify_types(a1, a2, mapping) {
-                        return false;
-                    }
-                }
-                true
-            }
-            (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
-            // Fallback for simple equality (e.g. Matrix)
-            (t1, t2) => t1 == t2,
-        }
-    }
-
-    fn instantiate_function(
-        &mut self,
-        generic_func: &Function,
-        type_args: &HashMap<String, Type>,
-    ) -> Function {
-        // Create mangled name
-        let mut mangled_name = generic_func.name.clone();
-        for (g_name, _) in &generic_func.generics {
-            if let Some(ty) = type_args.get(g_name) {
-                // simple mangling
-                let mut type_str = format!("_{:?}", ty)
-                    .replace("(", "")
-                    .replace(")", "")
-                    .replace(" ", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace(",", "_")
-                    .replace("_None", "")
-                    .replace("\"", "");
-                while type_str.contains("__") {
-                    type_str = type_str.replace("__", "_");
-                }
-                mangled_name.push_str(&type_str);
-            }
-        }
-
-        let new_params = generic_func
-            .params
-            .iter()
-            .map(|(n, t)| (n.clone(), t.substitute(type_args)))
-            .collect();
-        let new_ret = generic_func.return_type.substitute(type_args);
-        let new_body = generic_func
-            .body
-            .iter()
-            .map(|s| s.substitute(type_args))
-            .collect();
-
-        Function {
-            name: mangled_name,
-            generics: Vec::new(),
-            params: new_params,
-            return_type: new_ret,
-            body: new_body,
-        }
-    }
-
-    fn check_function(&mut self, func: &mut Function) {
+    pub fn check_function(&mut self, func: &mut Function) {
         self.push_scope();
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());
@@ -441,7 +271,7 @@ impl TypeChecker {
                 }
             }
             Expr::FunctionCall(name, args, _) => {
-                let func = self.ast_functions.get(name)?;
+                let func = self.env.ast_functions.get(name)?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;
@@ -529,7 +359,7 @@ impl TypeChecker {
                 }
             }
             Expr::EnumVariant(enum_name, variant, _) => {
-                if let Some(variants) = self.enums.get(enum_name) {
+                if let Some(variants) = self.env.enums.get(enum_name) {
                     if !variants.contains(variant) {
                         self.errors.push(format!(
                             "Enum {} does not have variant {}",
@@ -715,13 +545,13 @@ impl TypeChecker {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
-                } else if let Some((ret_ty, is_unsafe)) = self.functions.get(&resolved_name) {
+                } else if let Some((ret_ty, is_unsafe)) = self.env.functions.get(&resolved_name) {
                     if *is_unsafe && !self.in_unsafe_block {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
                     }
                     ret_ty.clone()
                 } else if let Some(generic_func) =
-                    self.generic_functions.get(&resolved_name).cloned()
+                    self.env.generic_functions.get(&resolved_name).cloned()
                 {
                     // Type deduction
                     let mut mapping = HashMap::new();
@@ -751,7 +581,7 @@ impl TypeChecker {
                             if let Some(bound_name) = bound_opt {
                                 if let Some(concrete_ty) = mapping.get(g_name) {
                                     let mut implements_trait = false;
-                                    if let Some(impl_blocks) = self.impls.get(bound_name) {
+                                    if let Some(impl_blocks) = self.env.impls.get(bound_name) {
                                         for ib in impl_blocks {
                                             if self.unify_types(
                                                 &ib.target_type,
@@ -785,8 +615,8 @@ impl TypeChecker {
                         *name = inst_name.clone();
 
                         // Check if we already instantiated it
-                        if !self.functions.contains_key(&inst_name) {
-                            self.functions
+                        if !self.env.functions.contains_key(&inst_name) {
+                            self.env.functions
                                 .insert(inst_name.clone(), (inst_ret.clone(), false));
                             self.check_function(&mut inst_func);
                             self.monomorphized_functions.push(inst_func);
@@ -815,7 +645,7 @@ impl TypeChecker {
                 }
 
                 if let Type::Struct(struct_name, _) = &base_ty {
-                    if let Some(decl) = self.structs.get(struct_name).cloned() {
+                    if let Some(decl) = self.env.structs.get(struct_name).cloned() {
                         for (f_name, f_type) in &decl.fields {
                             if f_name == member {
                                 return f_type.clone();
@@ -1003,7 +833,7 @@ impl TypeChecker {
 
                 // Dynamic Method Resolution
                 let mut found_method = None;
-                for impl_blocks in self.impls.values() {
+                for impl_blocks in self.env.impls.values() {
                     for ib in impl_blocks {
                         if self.unify_types(&ib.target_type, &base_ty, &mut HashMap::new()) {
                             for m in &ib.methods {
@@ -1039,10 +869,10 @@ impl TypeChecker {
 
                     // Register the method if it doesn't exist
                     if !method_func.generics.is_empty() {
-                        self.generic_functions
+                        self.env.generic_functions
                             .insert(mangled_name.clone(), method_func.clone());
-                    } else if !self.functions.contains_key(&mangled_name) {
-                        self.functions.insert(
+                    } else if !self.env.functions.contains_key(&mangled_name) {
+                        self.env.functions.insert(
                             mangled_name.clone(),
                             (method_func.return_type.clone(), false),
                         );
@@ -1198,7 +1028,7 @@ impl TypeChecker {
                     *name = resolved_name.clone();
                 }
 
-                if !self.structs.contains_key(&resolved_name) {
+                if !self.env.structs.contains_key(&resolved_name) {
                     self.errors
                         .push(format!("Unknown struct {}", resolved_name));
                 }
@@ -1349,8 +1179,9 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
-        let mut checker = TypeChecker::new();
-        let success = checker.check_program(&mut program).is_ok();
+        let env = GlobalAstEnv::build(&[program.clone()]);
+        let mut checker = TypeChecker::new(&env);
+        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
 
         for err in &checker.errors {
             println!("Error: {}", err);
@@ -1371,8 +1202,9 @@ fn bad_matmul() -> Tensor {
         let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
-        let mut checker = TypeChecker::new();
-        let success = checker.check_program(&mut program).is_ok();
+        let env = GlobalAstEnv::build(&[program.clone()]);
+        let mut checker = TypeChecker::new(&env);
+        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
         assert!(!checker.errors.is_empty());
     }
@@ -1395,9 +1227,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let mut checker = TypeChecker::new();
+        let env = GlobalAstEnv::build(&[program.clone()]);
+        let mut checker = TypeChecker::new(&env);
         assert!(
-            checker.check_program(&mut program).is_ok(),
+            { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
             "Semantic checking failed: {:?}",
             checker.errors
         );
@@ -1423,9 +1256,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let mut checker = TypeChecker::new();
+        let env = GlobalAstEnv::build(&[program.clone()]);
+        let mut checker = TypeChecker::new(&env);
 
-        let success = checker.check_program(&mut program).is_ok();
+        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
         assert!(checker
             .errors
@@ -1446,10 +1280,11 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let mut checker = TypeChecker::new();
+        let env = GlobalAstEnv::build(&[program.clone()]);
+        let mut checker = TypeChecker::new(&env);
 
         assert!(
-            checker.check_program(&mut program).is_ok(),
+            { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
             "Semantic checking failed for methods: {:?}",
             checker.errors
         );
