@@ -158,6 +158,31 @@ impl TypeId {
     }
 }
 
+/// Serializes an entire dictionary of `TypeId` structures into a zero-copy byte stream.
+/// This enables lightning-fast saving of incremental compilation metadata.
+pub fn serialize_metadata_symbols(unique_types: &[TypeId], output: &mut Vec<u8>) {
+    let len = unique_types.len() as u64;
+    output.extend_from_slice(&len.to_le_bytes());
+
+    // Cast the entire slice to raw bytes instantly (Zero-allocation)
+    let bytes: &[u8] = bytemuck::cast_slice(unique_types);
+    output.extend_from_slice(bytes);
+}
+
+/// Instantly maps a byte array back into a slice of `TypeId`s without allocating
+/// new memory or chasing pointers.
+pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[TypeId], &[u8]) {
+    let (len_bytes, remaining) = bytes.split_at(8);
+    let len = u64::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+
+    let byte_len = len * std::mem::size_of::<TypeId>();
+    let (dict_bytes, rest) = remaining.split_at(byte_len);
+
+    // Cast raw file bytes straight into a Rust slice with zero overhead
+    let types: &[TypeId] = bytemuck::cast_slice(dict_bytes);
+    (types, rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +275,30 @@ mod tests {
         } else {
             panic!("Expected SlowPath");
         }
+    }
+
+    #[test]
+    fn test_zero_copy_serialization() {
+        let mut t1 = TypeId::new(1, 2, 3, 0);
+        t1.with_flags(TYPE_IS_POD);
+        let mut t2 = TypeId::new(4, 5, 6, 0);
+        t2.with_visibility(Visibility::FullyPublic);
+
+        let dict = vec![t1, t2];
+        let mut buffer = Vec::new();
+        serialize_metadata_symbols(&dict, &mut buffer);
+
+        // The length header is 8 bytes, plus 2 TypeIds (32 bytes each) = 72 bytes total.
+        assert_eq!(buffer.len(), 72);
+
+        let (deserialized, remaining) = deserialize_metadata_symbols(&buffer);
+        assert_eq!(remaining.len(), 0);
+        assert_eq!(deserialized.len(), 2);
+        
+        assert_eq!(deserialized[0], t1);
+        assert!(deserialized[0].is_trivially_copyable());
+        
+        assert_eq!(deserialized[1], t2);
+        assert_eq!(deserialized[1].visibility(), Visibility::FullyPublic);
     }
 }
