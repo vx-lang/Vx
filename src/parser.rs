@@ -8,6 +8,19 @@ pub struct Parser<'a> {
     source: &'a str,
 }
 
+impl From<&str> for crate::ast::Function {
+    fn from(source: &str) -> Self {
+        // Strip out 'pub' keyword if the user provided it as an example,
+        // since Vx currently expects functions to start with 'fn'.
+        let cleaned_source = source.trim().trim_start_matches("pub ");
+        
+        let mut lexer = crate::lexer::Lexer::new(cleaned_source);
+        let tokens = lexer.tokenize().expect("Failed to tokenize function source");
+        let mut parser = Parser::new(tokens, cleaned_source);
+        parser.parse_function().expect("Failed to parse function source")
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn new(tokens: Vec<Token>, source: &'a str) -> Self {
         Self {
@@ -732,7 +745,7 @@ impl<'a> Parser<'a> {
         Ok(generics)
     }
 
-    fn parse_function(&mut self) -> Result<Function, String> {
+    pub fn parse_function(&mut self) -> Result<Function, String> {
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
         let name = match self.advance().kind.clone() {

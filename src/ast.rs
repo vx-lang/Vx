@@ -352,3 +352,10 @@ pub struct Program {
 }
 
 pub type AkModule = Program;
+pub type AkFunction = Function;
+
+impl Program {
+    pub fn add(&mut self, func: AkFunction) {
+        self.functions.push(func);
+    }
+}
