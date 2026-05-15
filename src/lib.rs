@@ -10,3 +10,12 @@ pub mod lexer;
 pub mod parser;
 pub mod registry;
 pub mod sema;
+
+/// Convenience API for parsing a string representation of a module into an AkModule (AST).
+/// Useful for unit testing and interactive REPLs.
+pub fn parse_module(source: &str) -> Result<ast::AkModule, String> {
+    let mut lexer = lexer::Lexer::new(source);
+    let tokens = lexer.tokenize()?;
+    let mut parser = parser::Parser::new(tokens);
+    parser.parse()
+}

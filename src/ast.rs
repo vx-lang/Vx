@@ -350,3 +350,5 @@ pub struct Program {
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,
 }
+
+pub type AkModule = Program;
