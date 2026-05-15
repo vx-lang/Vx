@@ -61,20 +61,7 @@ pub enum LifetimeSignature<'a> {
 impl TypeId {
     /// Inspects the status of the escape hatch to determine parameter layout strategy
     #[inline(always)]
-    pub fn lifetime_context<'a>(&self, session: &'a CompilationSession) -> LifetimeSignature<'a> {
-        let word_2 = self.words[2];
 
-        if (word_2 & ESCAPE_HATCH_MASK) != 0 {
-            // SLOW PATH: Extract the clean 63-bit index
-            let index = (word_2 & INDEX_MASK) as usize;
-            
-            // Direct array bounds fetch from our read-only global arena
-            LifetimeSignature::SlowPath(&session.slow_path_arena[index])
-        } else {
-            // FAST PATH: Return the register contents for bitwise analysis
-            LifetimeSignature::FastPath(word_2)
-        }
-    }
 
     /// Helper to extract a specific parameter's 16-bit payload on the fast path
     #[inline(always)]

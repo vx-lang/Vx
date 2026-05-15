@@ -325,6 +325,49 @@ By flattening everything into arrays:
 3. Your memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
 
 ------------------------------
+## 2.6 The Epoch / Worker Split (Zero-Lock Data-Oriented Session)
+To achieve true parallel scaling during Phase 1 (TypeChecking) without `RwLock` contention, while also supporting LSP daemon memory recycling, the monolithic `CompilationSession` is split into two distinct data-oriented structures:
+
+### 1. `GlobalSession` (The Frozen Epoch)
+This struct represents the absolute, immutable truth of everything compiled *before* the current phase. It is wrapped in an `Arc` and shared freely across all threads. It contains no locks.
+```rust
+pub struct GlobalSession {
+    pub epoch: u64,
+    pub registry: Arc<ImmutableGlobalRegistry>,
+    pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
+    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
+}
+```
+
+### 2. `LocalWorkerState` (The Phase 1 Thread Context)
+When Phase 1 spins up, every thread is given a clone of the `Arc<GlobalSession>` and initializes its own private, completely mutable `LocalWorkerState`.
+```rust
+pub struct LocalWorkerState {
+    pub global: Arc<GlobalSession>, 
+    
+    // Completely lock-free, thread-local mutation
+    pub local_slow_path_arena: Vec<UnboundedFunctionMetadata>,
+    pub local_generics_arena: Vec<Vec<TypeId>>,
+    
+    // The flat arrays replacing the AST
+    pub local_type_stream: Vec<TypeId>,
+    pub local_hir_stream: Vec<HirInstruction>,
+}
+```
+
+### How `TypeId` Resolution Works in Phase 1
+Because there are *two* arenas (the frozen global one and the mutable local one), the `TypeId::lifetime_context()` logic leverages the `LOCAL_DEFERRED_BIT` (Bit 43 in Word 3) to branch instantly:
+1. **If `LOCAL_DEFERRED_BIT` is 0:** The type was resolved in a previous module/epoch. The thread reads safely from `worker_state.global.slow_path_arena`.
+2. **If `LOCAL_DEFERRED_BIT` is 1:** The type was created by the *current thread*. It reads safely from `worker_state.local_slow_path_arena`.
+
+### The Phase 2 Barrier Transition
+1. **Phase 1 Ends:** Parallel threads return their `LocalWorkerState` structs.
+2. **Phase 2 (Interning & Merge):** The main thread deduplicates the local arenas.
+3. **Phase 2.5 (SIMD Patch):** It patches the `local_type_stream` to clear the `LOCAL_DEFERRED_BIT` and update indices.
+4. **Phase 3 Setup (The Epoch Advance):** The patched local arenas are appended to the `GlobalSession`'s arenas, and a *new* `Arc<GlobalSession>` is constructed with an incremented epoch.
+5. **Phase 3 (Codegen):** Codegen threads are spun up with the *new* `Arc<GlobalSession>` and the patched `local_hir_stream`.
+
+------------------------------
 ## 3. The Linear Parallel Pipeline (Phase Separation)
 The compiler architecture rejects complex inter-stage pipelining in favor of a clean, phase-separated model bound by explicit synchronization barriers using Rayon's work-stealing thread pool.
 

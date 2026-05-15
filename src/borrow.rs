@@ -1,10 +1,10 @@
 use crate::gid::{LifetimeSignature, TypeId, UnboundedFunctionMetadata};
-use crate::session::CompilationSession;
+use crate::session::LocalWorkerState;
 
 /// High-performance verification check for variance and lifetime compatibility.
 /// Encodes borrow checker math directly into the 256-bit registers.
-pub fn verify_subtyping_bounds(type_a: &TypeId, type_b: &TypeId, session: &CompilationSession) -> bool {
-    match (type_a.lifetime_context(session), type_b.lifetime_context(session)) {
+pub fn verify_subtyping_bounds(type_a: &TypeId, type_b: &TypeId, worker: &LocalWorkerState) -> bool {
+    match (worker.resolve_lifetime(type_a), worker.resolve_lifetime(type_b)) {
         (LifetimeSignature::FastPath(bits_a), LifetimeSignature::FastPath(bits_b)) => {
             // FAST PATH: Check lifetime compatibility using register operations
             if bits_a == bits_b {
