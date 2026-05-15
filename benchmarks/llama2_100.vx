@@ -43,24 +43,19 @@ extern {
     fn free(ptr: *mut f32) -> i32;
     fn printf(format: *const i8, val: f32) -> i32;
     fn putchar(char: i32) -> i32;
-
-    fn vx_sqrtf(x: f32) -> f32;
-    fn vx_expf(x: f32) -> f32;
-    fn vx_cosf(x: f32) -> f32;
-    fn vx_sinf(x: f32) -> f32;
     fn vx_powf(x: f32, y: f32) -> f32;
     fn vx_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32;
     
-    fn vx_load_config(filepath: *const i8) -> *mut i32;
-    fn vx_load_weights(filepath: *const i8) -> *mut f32;
+    safe fn vx_load_config(filepath: *const i8) -> *mut i32;
+    safe fn vx_load_weights(filepath: *const i8) -> *mut f32;
     fn vx_advance_ptr(ptr: *mut f32, offset: i32) -> *mut f32;
-    fn vx_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
-    fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
-    fn vx_safe_printf(piece: *mut i8) -> i32;
+    safe fn vx_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
+    safe fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
+    safe fn vx_safe_printf(piece: *mut i8) -> i32;
     fn vx_print_int(val: i32) -> i32;
     fn vx_print_float(val: f32) -> i32;
-    fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
-    fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
+    safe fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
+    safe fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
     fn vx_get_time() -> f32;
     fn vx_network_transfer(ptr: *mut f32, size: i32) -> i32;
     fn vx_memcpy(dest: *mut f32, src: *mut f32, bytes: i32) -> i32;
@@ -171,8 +166,8 @@ fn transformer_decode(token: i32, pos: i32, p: Config, s: RunState, w: Transform
             let rem: i32 = i - mul;
             if rem == 0 {
                 let fcr: f32 = vx_get_rope_freq(pos, i, head_size);
-                let fci: f32 = unsafe { vx_cosf(fcr) };
-                let fsi: f32 = unsafe { vx_sinf(fcr) };
+                let fci: f32 = Math::cos(fcr);
+                let fsi: f32 = Math::sin(fcr);
                 
                 let roff: i32 = i;
                 let roff_1: i32 = i + 1;
@@ -206,7 +201,7 @@ fn transformer_decode(token: i32, pos: i32, p: Config, s: RunState, w: Transform
                 }
                 
                 let head_size_f: f32 = 32.0; 
-                let factor: f32 = 1.0 / unsafe { vx_sqrtf(head_size_f) };
+                let factor: f32 = 1.0 / Math::sqrt(head_size_f);
                 score = score * factor;
                 s.att[att_off + t] = score;
             }
@@ -220,7 +215,7 @@ fn transformer_decode(token: i32, pos: i32, p: Config, s: RunState, w: Transform
             let mut sum: f32 = 0.0;
             for t in 0..pos_1 {
                 let val: f32 = s.att[att_off + t];
-                let exp_val: f32 = unsafe { vx_expf(val - max_val) };
+                let exp_val: f32 = Math::exp(val - max_val);
                 s.att[att_off + t] = exp_val;
                 sum += exp_val;
             }
@@ -266,7 +261,7 @@ fn transformer_decode(token: i32, pos: i32, p: Config, s: RunState, w: Transform
         for i in 0..hidden_dim {
             let mut val: f32 = s.hb[i];
             let neg_val: f32 = 0.0 - val;
-            let exp_val: f32 = unsafe { vx_expf(neg_val) };
+            let exp_val: f32 = Math::exp(neg_val);
             let denom: f32 = 1.0 + exp_val;
             let factor: f32 = 1.0 / denom;
             val = val * factor;
@@ -334,8 +329,8 @@ fn transformer_prefill(token: i32, pos: i32, p: Config, s: RunState, w: Transfor
             let rem: i32 = i - mul;
             if rem == 0 {
                 let fcr: f32 = vx_get_rope_freq(pos, i, head_size);
-                let fci: f32 = unsafe { vx_cosf(fcr) };
-                let fsi: f32 = unsafe { vx_sinf(fcr) };
+                let fci: f32 = Math::cos(fcr);
+                let fsi: f32 = Math::sin(fcr);
                 
                 let roff: i32 = i;
                 let roff_1: i32 = i + 1;
@@ -369,7 +364,7 @@ fn transformer_prefill(token: i32, pos: i32, p: Config, s: RunState, w: Transfor
                 }
                 
                 let head_size_f: f32 = 32.0; 
-                let factor: f32 = 1.0 / unsafe { vx_sqrtf(head_size_f) };
+                let factor: f32 = 1.0 / Math::sqrt(head_size_f);
                 score = score * factor;
                 s.att[att_off + t] = score;
             }
@@ -383,7 +378,7 @@ fn transformer_prefill(token: i32, pos: i32, p: Config, s: RunState, w: Transfor
             let mut sum: f32 = 0.0;
             for t in 0..pos_1 {
                 let val: f32 = s.att[att_off + t];
-                let exp_val: f32 = unsafe { vx_expf(val - max_val) };
+                let exp_val: f32 = Math::exp(val - max_val);
                 s.att[att_off + t] = exp_val;
                 sum += exp_val;
             }
@@ -429,7 +424,7 @@ fn transformer_prefill(token: i32, pos: i32, p: Config, s: RunState, w: Transfor
         for i in 0..hidden_dim {
             let mut val: f32 = s.hb[i];
             let neg_val: f32 = 0.0 - val;
-            let exp_val: f32 = unsafe { vx_expf(neg_val) };
+            let exp_val: f32 = Math::exp(neg_val);
             let denom: f32 = 1.0 + exp_val;
             let factor: f32 = 1.0 / denom;
             val = val * factor;
@@ -475,9 +470,7 @@ fn rmsnorm(o: *mut f32, x: *mut f32, weight: *mut f32, size: i32, size_f: f32) -
     }
     
     ss = ss / size_f + 0.00001;
-    unsafe {
-        ss = 1.0 / vx_sqrtf(ss);
-    }
+    ss = 1.0 / Math::sqrt(ss);
     
     for j in 0..size {
         let val: f32 = x[x_off + j];
@@ -502,9 +495,7 @@ fn softmax(x: Tensor<f32>, x_off: i32, size: i32) -> i32 {
     for i in 0..size {
         let val: f32 = x[x_off + i];
         let diff: f32 = val - max_val;
-        unsafe {
-            x[x_off + i] = vx_expf(diff);
-        }
+        x[x_off + i] = Math::exp(diff);
         let exp_val: f32 = x[x_off + i];
         sum += exp_val;
     }
@@ -549,68 +540,58 @@ fn matmul_ane(xout: Tensor<f32>, xo_off: i32, x: Tensor<f32>, x_off: i32, w: Ten
 }
 
 fn main() -> i32 {
-    unsafe {
-        let config_ptr: *mut i32 = vx_load_config("stories15M.bin");
-        
-        let dim_f: f32 = config_ptr[0];
-        let hidden_dim_f: f32 = config_ptr[1];
-        let n_layers_f: f32 = config_ptr[2];
-        let n_heads_f: f32 = config_ptr[3];
-        let n_kv_heads_f: f32 = config_ptr[4];
-        let vocab_size_f: f32 = config_ptr[5];
-        let seq_len_f: f32 = config_ptr[6];
+    let config_ptr: *mut i32 = vx_load_config("stories15M.bin");
+    
+    let config = Config {
+        dim: 288,
+        hidden_dim: 768,
+        n_layers: 6,
+        n_heads: 6,
+        n_kv_heads: 6,
+        vocab_size: 32000,
+        seq_len: 256
+    };
 
-        let config = Config {
-            dim: 288,
-            hidden_dim: 768,
-            n_layers: 6,
-            n_heads: 6,
-            n_kv_heads: 6,
-            vocab_size: 32000,
-            seq_len: 256
-        };
+    let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
+    let weights = memory_map_weights(weights_ptr, config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
-        let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
-        let weights = memory_map_weights(weights_ptr, config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
+    let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
-        let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
+    let tokenizer_ptr: *mut i8 = vx_build_tokenizer("tokenizer.bin", config.vocab_size);
 
-        let tokenizer_ptr: *mut i8 = vx_build_tokenizer("tokenizer.bin", config.vocab_size);
+    let prompt_str: *mut i8 = vx_read_prompt_file("prompt.txt");
+    let prompt_tokens: *mut i32 = vx_encode_prompt(tokenizer_ptr, prompt_str);
+    let num_prompt_tokens: i32 = prompt_tokens[0];
 
-        let prompt_str: *mut i8 = vx_read_prompt_file("prompt.txt");
-        let prompt_tokens: *mut i32 = vx_encode_prompt(tokenizer_ptr, prompt_str);
-        let num_prompt_tokens: i32 = prompt_tokens[0];
-
-        // Generation Loop! (Token 1 is BOS)
-        let mut token: i32 = prompt_tokens[1]; // Usually BOS
-        let mut pos: i32 = 0;
-        
-        // We'll generate 100 tokens
-        for step in 0..100 {
-            let mut logits: *mut f32 = state.logits.as_mut_ptr();
+    // Generation Loop! (Token 1 is BOS)
+    let mut token: i32 = prompt_tokens[1]; // Usually BOS
+    let mut pos: i32 = 0;
+    
+    // We'll generate 100 tokens
+    for step in 0..100 {
+        let mut logits: *mut f32 = state.logits.as_mut_ptr();
         if pos == 0 {
             logits = transformer_prefill(token, pos, config, state, weights);
         } else {
             logits = transformer_decode(token, pos, config, state, weights);
         }
-            
-            let mut next: i32 = 0;
-            if pos < num_prompt_tokens - 1 {
-                // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
-                let next_idx: i32 = pos + 2;
-                next = prompt_tokens[next_idx];
-            } else {
-                // GENERATE: Sample from logits
-                next = sample_argmax(logits, config.vocab_size);
-            }
-            
-            let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
-            let print_status: i32 = vx_safe_printf(piece);
-            
-            token = next;
-            pos += 1;
+        
+        let mut next: i32 = 0;
+        if pos < num_prompt_tokens - 1 {
+            // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
+            let next_idx: i32 = pos + 2;
+            next = prompt_tokens[next_idx];
+        } else {
+            // GENERATE: Sample from logits
+            next = sample_argmax(logits, config.vocab_size);
         }
-    };
+        
+        let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
+        let print_status: i32 = vx_safe_printf(piece);
+        
+        token = next;
+        pos += 1;
+    }
 
     return 0;
 }

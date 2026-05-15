@@ -321,6 +321,7 @@ pub struct EnumDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExternDecl {
     pub name: String,
+    pub is_safe: bool,
     pub params: Vec<(String, Type)>,
     pub return_type: Type,
 }

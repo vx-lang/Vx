@@ -130,3 +130,21 @@ unroll across(Topology::NPU[0..4]) { |npu_id|
     }
 }
 ```
+
+## 7. Foreign Function Interface (FFI) & Safety
+
+Vx supports calling external C functions via the `extern` block. By default, all external functions are considered `unsafe` because the compiler cannot statically verify their memory safety across the language boundary. Calling an `unsafe` function requires an `unsafe { ... }` block.
+
+However, many C functions (like simple math functions, standard library I/O, or thoroughly tested user kernels) are inherently safe or have been manually verified by the programmer. Vx allows you to claim responsibility for this safety by annotating the FFI declaration with the `safe` keyword:
+
+```rust
+extern {
+    // Unsafe by default. Requires `unsafe { ... }` at call sites.
+    fn vx_malloc_f32(num_elements: i32) -> *mut f32;
+    
+    // Explicitly marked as safe. Can be called freely in pure Vx code!
+    safe fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
+}
+```
+
+**Motivation**: The `safe` keyword delegates the safety assertion to the interface boundary. This prevents the codebase from being littered with repetitive `unsafe` blocks for functions that are already trusted, keeping your application logic clean and robust while maintaining strict boundaries for actual unsafe operations (like pointer arithmetic or arbitrary memory mapping).

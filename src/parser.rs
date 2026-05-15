@@ -380,11 +380,13 @@ impl<'a> Parser<'a> {
                             }
                             call_name = format!("Tensor_{}", ty_ident);
                         }
-                        if self.match_token(&TokenType::DoubleColon) {
-                            if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
-                                self.advance();
-                                call_name = format!("{}::{}", call_name, method_name);
-                            }
+                    }
+                    if self.match_token(&TokenType::DoubleColon) {
+                        if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
+                            self.advance();
+                            call_name = format!("{}::{}", call_name, method_name);
+                        } else {
+                            return Err("Expected identifier after '::'".to_string());
                         }
                     }
                     if self.match_token(&TokenType::LeftParen) {
@@ -868,6 +870,11 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let is_safe = if self.match_token(&TokenType::Safe) {
+                true
+            } else {
+                false
+            };
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
@@ -899,6 +906,7 @@ impl<'a> Parser<'a> {
 
             externs.push(ExternDecl {
                 name,
+                is_safe,
                 params,
                 return_type,
             });

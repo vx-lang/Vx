@@ -128,7 +128,7 @@ impl TypeChecker {
         for ext in &mut program.externs {
             ext.name = self.mangle_name(&ext.name);
             self.functions
-                .insert(ext.name.clone(), (ext.return_type.clone(), true));
+                .insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
         }
 
         let mut functions_to_check = Vec::new();
@@ -651,16 +651,7 @@ impl TypeChecker {
                     self.check_expr(arg);
                 }
 
-                if resolved_name.starts_with("Tensor") {
-                    let el_ty = match resolved_name.as_str() {
-                        "Tensor_f64" => ElementType::F64,
-                        "Tensor_bf16" => ElementType::BF16,
-                        "Tensor_i32" => ElementType::I32,
-                        "Tensor_i64" => ElementType::I64,
-                        _ => ElementType::F32,
-                    };
-                    Type::Tensor(el_ty, vec![], None)
-                } else if resolved_name == "Verified" {
+                if resolved_name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
                             "Function 'Verified' expects 1 argument, got {}",
@@ -688,6 +679,27 @@ impl TypeChecker {
                     else if resolved_name.contains("_f64") { el_ty = ElementType::F64; }
                     
                     Type::Tensor(el_ty, vec![], None)
+                } else if resolved_name.starts_with("Tensor") {
+                    let el_ty = match resolved_name.as_str() {
+                        "Tensor_f64" => ElementType::F64,
+                        "Tensor_bf16" => ElementType::BF16,
+                        "Tensor_i32" => ElementType::I32,
+                        "Tensor_i64" => ElementType::I64,
+                        _ => ElementType::F32,
+                    };
+                    Type::Tensor(el_ty, vec![], None)
+                } else if resolved_name.starts_with("Math::") {
+                    if args.len() != 1 {
+                        self.errors.push(format!(
+                            "Function '{}' expects 1 argument, got {}",
+                            resolved_name, args.len()
+                        ));
+                    }
+                    let inner_ty = self.check_expr(&mut args[0]);
+                    if inner_ty != Type::Scalar(ElementType::F32) {
+                        self.errors.push(format!("Function '{}' expects f32 argument, got {:?}", resolved_name, inner_ty));
+                    }
+                    Type::Scalar(ElementType::F32)
                 } else if resolved_name == "print" {
                     if args.len() != 1 {
                         self.errors
