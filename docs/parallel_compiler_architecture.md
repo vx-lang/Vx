@@ -275,20 +275,21 @@ Integrating these flags into the final word of your identifier yields key optimi
 ## 3. The Linear Parallel Pipeline (Phase Separation)
 The compiler architecture rejects complex inter-stage pipelining in favor of a clean, phase-separated model bound by explicit synchronization barriers using Rayon's work-stealing thread pool.
 
-[Parallel Parse] ──> (Barrier) ──> [Parallel Type Check] ──> (Barrier) ──> [Parallel Routing & Codegen]
+[Parallel Parse] ──> (Barrier) ──> [Parallel Name Resolution] ──> (Barrier) ──> [Parallel Type Check] ──> (Barrier) ──> [Parallel Routing & Codegen]
 
 ### Phase 1: Parallel Parse & Layout Skeleton
 
 1. File-Isolated Parsing: Threads walk the source tree. Each thread independently reads a module file and parses it into an Abstract Syntax Tree (AST).
 2. Interface Extraction: The parser extracts only the names and shapes of nominal types and function signatures. Function bodies are entirely ignored.
-3. Alias Erasure: Imported paths (use mod::Type) and type aliases (type X = Y) are resolved immediately at this boundary to their underlying 256-bit GIDs, eliminating recursive lookup loops later.
-4. The Freeze Point: All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global Arc<HashMap<...>>.
+3. Alias Erasure & Name Resolution (**Architectural Fix**): Resolving an alias like `use a::b::C` cannot be done in strict file isolation because `C` might itself be an alias. Name resolution must exist as a distinct topological or query-driven phase *between* raw parsing and freezing.
+4. The Freeze Point: All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global `Arc<HashMap<...>>`.
 
 ### Phase 2: Parallel Body Type-Checking & Generic Queuing
 
-1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (&TypeDefinition).
-2. Abstract Generic Verification: Generic code (e.g., List<T>) is type-checked abstractly exactly once inside its host module to prove structural soundness.
-3. Thread-Local Instantiation Tracking: When Thread A type-checks a function body and encounters a concrete instantiation like List<i32>, it does not expand the type or generate IR. Instead, it performs instant mathematical calculation to construct the unique 256-bit GID (populating Word 2 with i32's hash) and pushes it into an isolated thread-local vector.
+1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (`&TypeDefinition`).
+2. Comptime Execution Local-Registry (**Architectural Fix**): The Vx language supports `comptime` blocks that can generate arbitrary types (e.g., for shape analysis). Since the global registry is frozen, any nominal types dynamically generated during `comptime` execution are injected into a thread-local, module-internal Hash Map. Because these generated layouts are never exported or visible outside their host function/module, they preserve the frozen cross-crate boundaries while allowing full semantic analysis and error reporting to function normally.
+3. Abstract Generic Verification: Generic code (e.g., `List<T>`) is type-checked abstractly exactly once inside its host module to prove structural soundness.
+4. Thread-Local Instantiation Tracking: When Thread A type-checks a function body and encounters a concrete instantiation like `List<i32>`, it does not expand the type or generate IR. Instead, it performs instant mathematical calculation to construct the unique 256-bit GID (populating Word 2 with i32's hash) and pushes it into an isolated thread-local vector.
 
 ------------------------------
 ## 4. Module-Based Parallel Deduplication
