@@ -151,8 +151,6 @@ impl<'a> TypeChecker<'a> {
         path.replace("/", "_").replace(".", "_")
     }
 
-        self.var_regs.pop();
-    }
 
 
     pub fn check_function(&mut self, func: &mut Function) {
