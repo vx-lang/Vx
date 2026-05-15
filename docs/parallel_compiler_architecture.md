@@ -87,14 +87,19 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]pub struct TypeId {
     pub words: [u64; 4],
 }
-// Architectural Masksconst ESCAPE_HATCH_MASK: u64 = 1 << 63;const INDEX_MASK: u64        = !ESCAPE_HATCH_MASK;
+// Architectural Masks
+const ESCAPE_HATCH_MASK: u64 = 1 << 63;
+const INDEX_MASK: u64        = !ESCAPE_HATCH_MASK;
+
 // Mock structure for complex, unbounded parameter layouts (Slow Path)
 #[derive(Debug, Clone)]pub struct UnboundedFunctionMetadata {
     pub type_arguments: Vec<TypeId>,
     pub lifetime_regions: Vec<u32>,
     pub trait_vtables: Vec<u64>, // Architectural Fix: Stores resolved trait implementation IDs
 }
-// A global, pre-allocated, thread-safe arena for slow-path storage// In production, this can be managed via a lock-free append-only vector or a frozen registrypub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<Vec<UnboundedFunctionMetadata>> =
+// A global, pre-allocated, thread-safe arena for slow-path storage
+// In production, this can be managed via a lock-free append-only vector or a frozen registry
+pub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<Vec<UnboundedFunctionMetadata>> =
     once_cell::sync::Lazy::new(Vec::new);
 
 #[derive(Debug)]pub enum LifetimeSignature<'a> {
@@ -219,9 +224,18 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]pub struct TypeId {
     pub words: [u64; 4],
 }
-// Bitmask Constants for Word 3const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;const ATTRIBUTE_MASK:  u64 = 0x0FF0_0000_0000_0000;
-// Specific High-Frequency Attribute Flagspub const ATTR_INLINE:        u64 = 1 << 52;pub const ATTR_INLINE_ALWAYS: u64 = 1 << 53;pub const ATTR_COLD:          u64 = 1 << 54;pub const ATTR_MUST_USE:      u64 = 1 << 55;
-pub const TYPE_IS_POD:        u64 = 1 << 44;pub const TYPE_NEEDS_DROP:    u64 = 1 << 45;
+// Bitmask Constants for Word 3
+const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
+const ATTRIBUTE_MASK:  u64 = 0x0FF0_0000_0000_0000;
+
+// Specific High-Frequency Attribute Flags
+pub const ATTR_INLINE:        u64 = 1 << 52;
+pub const ATTR_INLINE_ALWAYS: u64 = 1 << 53;
+pub const ATTR_COLD:          u64 = 1 << 54;
+pub const ATTR_MUST_USE:      u64 = 1 << 55;
+
+pub const TYPE_IS_POD:        u64 = 1 << 44;
+pub const TYPE_NEEDS_DROP:    u64 = 1 << 45;
 
 #[derive(Debug, PartialEq, Eq)]pub enum Visibility {
     Private,
@@ -369,13 +383,17 @@ To achieve maximum throughput, avoid text-based formats (like JSON) or heavy sch
 Here is how you handle the dictionary layout for instant saving and loading:
 
 ```rust
-use bytemuck::{Pod, Zeroable};use std::io::Write;
+use bytemuck::{Pod, Zeroable};
+use std::io::Write;
+
 // Ensure the layout matches perfectly across disk and memory
 #[derive(Clone, Copy, Parse, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]pub struct DiskTypeId {
     pub words: [u64; 4],
 }
-// Writing the dictionary to the metadata filepub fn serialize_metadata_symbols(unique_types: &[DiskTypeId], output: &mut Vec<u8>) {
+
+// Writing the dictionary to the metadata file
+pub fn serialize_metadata_symbols(unique_types: &[DiskTypeId], output: &mut Vec<u8>) {
     // 1. Write the number of types first so the loader can allocate memory ahead of time
     let len = unique_types.len() as u64;
     output.extend_from_slice(&len.to_le_bytes());
@@ -384,7 +402,9 @@ use bytemuck::{Pod, Zeroable};use std::io::Write;
     let bytes: &[u8] = bytemuck::cast_slice(unique_types);
     output.extend_from_slice(bytes);
 }
-// Reading it back into a downstream compiler instancepub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[DiskTypeId], &[u8]) {
+
+// Reading it back into a downstream compiler instance
+pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[DiskTypeId], &[u8]) {
     let (len_bytes, remaining) = bytes.split_at(8);
     let len = u64::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
 
@@ -438,7 +458,9 @@ impl TypeId {
     pub fn symbol_id(&self) -> u64 { self.words[1] }
     pub fn generic_hash(&self) -> u64 { self.words[2] }
 }
-// Writing the dictionary to the metadata file instantlypub fn serialize_metadata_symbols(unique_types: &[TypeId], output: &mut Vec<u8>) {
+
+// Writing the dictionary to the metadata file instantly
+pub fn serialize_metadata_symbols(unique_types: &[TypeId], output: &mut Vec<u8>) {
     let len = unique_types.len() as u64;
     output.extend_from_slice(&len.to_le_bytes());
 
@@ -446,7 +468,9 @@ impl TypeId {
     let bytes: &[u8] = bytemuck::cast_slice(unique_types);
     output.extend_from_slice(bytes);
 }
-// Reading it back into a downstream compiler instancepub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[TypeId], &[u8]) {
+
+// Reading it back into a downstream compiler instance
+pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[TypeId], &[u8]) {
     let (len_bytes, remaining) = bytes.split_at(8);
     let len = u64::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
 
@@ -464,13 +488,19 @@ impl TypeId {
 This snippet demonstrates the orchestration of the three primary frontend phases using explicit synchronization barriers, passing metadata downward via a thread-safe Arc.
 
 ```rust
-use rayon::prelude::*;use std::sync::Arc;
+use rayon::prelude::*;
+use std::sync::Arc;
+
 pub fn compile_pipeline(file_paths: &[String]) {
     // 1. Parallel Parsing & Outline
-    let modules: Vec<ParsedModule> = file_paths
+    let mut modules: Vec<ParsedModule> = file_paths
         .par_iter()
         .map(|path| parse_file_and_extract_signatures(path))
         .collect();
+
+    // 1.5 Parallel Name Resolution (Architectural Fix)
+    // Resolves cross-module aliases before freezing the registry
+    modules.par_iter_mut().for_each(|module| resolve_aliases(module));
 
     // 2. Sequential / Fast Sync Point (Build Global Read-Only Registry)
     // Runs infinite size cycle checks using `petgraph` here
@@ -507,7 +537,8 @@ Each worker thread takes an assigned file and processes it into an isolated, loc
 Once all files are parsed locally, the compiler must merge these independent local tables into a single global repository. This phase uses Rayon's parallel collection reduction to keep it fast.
 
 ```rust
-// A mock structure of the global symbol registrypub struct ImmutableGlobalRegistry {
+// A mock structure of the global symbol registry
+pub struct ImmutableGlobalRegistry {
     // Top level maps for absolute numeric lookups
     pub layouts: HashMap<TypeId, TypeDefinition>,
     // Module-specific string-to-ID indices
