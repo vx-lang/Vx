@@ -2,7 +2,17 @@
   "name": "vx-lang",
   "displayName": "Vx Language",
   "description": "Syntax highlighting and language support for Vx",
+  "publisher": "hiraditya",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hiraditya/Vx"
+  },
   "version": "0.1.0",
+  "files": [
+    "syntaxes",
+    "language-configuration.json",
+    "LICENSE"
+  ],
   "engines": {
     "vscode": "^1.60.0"
   },
