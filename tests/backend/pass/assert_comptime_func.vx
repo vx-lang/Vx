@@ -1,28 +1,28 @@
 fn foo() -> i64 {
-    let a = 10;
-    return a;
+  let a = 10;
+  return a;
 }
 
 fn bar() -> i64 {
-    return 10;
+  return 10;
 }
 
 fn baz() -> i64 {
-    return 20;
+  return 20;
 }
 
 fn main() -> i32 {
-    comptime {
-        assert(foo() == bar(), "not equal");
-        assert(foo() != baz(), "equal");
-        assert(foo() < baz(), "greater");
-        assert(foo() <= baz(), "greater or equal");
-        assert(baz() > foo(), "less");
-        assert(baz() >= foo(), "less or equal");
-        assert(true == true, "true is not true");
-        assert(true != false, "true is false");
-        assert(true && true == true, "true and true is not true");
-        assert(true || false == true, "true or false is not true");
-    }
-    return 0;
+  comptime {
+    assert(foo() == bar(), "not equal");
+    assert(foo() != baz(), "equal");
+    assert(foo() < baz(), "greater");
+    assert(foo() <= baz(), "greater or equal");
+    assert(baz() > foo(), "less");
+    assert(baz() >= foo(), "less or equal");
+    assert(true == true, "true is not true");
+    assert(true != false, "true is false");
+    assert(true && true == true, "true and true is not true");
+    assert(true || false == true, "true or false is not true");
+  }
+  return 0;
 }

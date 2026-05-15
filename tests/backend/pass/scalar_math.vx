@@ -2,26 +2,26 @@
 // RUN: %t | FileCheck %s
 
 extern "C" {
-    fn print_f32(val: f32) -> i32;
+  fn print_f32(val: f32) -> i32;
 }
 
 fn main() -> i32 {
-    let a: f32 = 10.5;
-    let b: f32 = 2.0;
+  let a: f32 = 10.5;
+  let b: f32 = 2.0;
 
-    let c: f32 = a + b;
-    let d: f32 = a - b;
-    let e: f32 = a * b;
-    let f: f32 = a / b;
+  let c: f32 = a + b;
+  let d: f32 = a - b;
+  let e: f32 = a * b;
+  let f: f32 = a / b;
 
-    unsafe {
-        print_f32(c);
-        print_f32(d);
-        print_f32(e);
-        print_f32(f);
-    }
+  unsafe {
+    print_f32(c);
+    print_f32(d);
+    print_f32(e);
+    print_f32(f);
+  }
 
-    return 0;
+  return 0;
 }
 
 // CHECK: 12.500000

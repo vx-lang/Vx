@@ -1,22 +1,22 @@
 fn foo() -> i32 {
-    return 10;
+  return 10;
 }
 
 fn bar() -> i32 {
-    return 20;
+  return 20;
 }
 
 fn main() -> i32 {
-    let x: i32 = 10;
-    assert(x == 10, "Math still works at runtime");
-    assert(foo() != bar(), "equal");
-    assert(foo() < bar(), "greater");
-    assert(foo() <= bar(), "greater or equal");
-    assert(bar() > foo(), "less");
-    assert(bar() >= foo(), "less or equal");
-    assert(true == true, "true is not true");
-    assert(true != false, "true is false");
-    assert(true && true == true, "true and true is not true");
-    assert(true || false == true, "true or false is not true");
-    return 0;
+  let x: i32 = 10;
+  assert(x == 10, "Math still works at runtime");
+  assert(foo() != bar(), "equal");
+  assert(foo() < bar(), "greater");
+  assert(foo() <= bar(), "greater or equal");
+  assert(bar() > foo(), "less");
+  assert(bar() >= foo(), "less or equal");
+  assert(true == true, "true is not true");
+  assert(true != false, "true is false");
+  assert(true && true == true, "true and true is not true");
+  assert(true || false == true, "true or false is not true");
+  return 0;
 }

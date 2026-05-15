@@ -1,7 +1,7 @@
 fn add(a: f32, b: f32) -> f32 {
-    return a + b;
+  return a + b;
 }
 
 struct Matrix {
-    data: f32
+  data: f32
 }

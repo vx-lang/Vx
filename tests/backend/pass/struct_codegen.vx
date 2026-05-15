@@ -2,34 +2,34 @@
 // RUN: %t | FileCheck %s
 
 extern "C" {
-    fn print_f32(val: f32) -> i32;
+  fn print_f32(val: f32) -> i32;
 }
 
 struct Config {
-    dim: i32,
-    hidden_dim: i32,
-    n_layers: i32,
-    n_heads: i32,
-    vocab_size: i32,
-    seq_len: i32,
-    norm_eps: f32,
+  dim: i32,
+  hidden_dim: i32,
+  n_layers: i32,
+  n_heads: i32,
+  vocab_size: i32,
+  seq_len: i32,
+  norm_eps: f32,
 }
 
 fn main() -> i32 {
-    let conf = Config {
-        dim: 288,
-        hidden_dim: 768,
-        n_layers: 6,
-        n_heads: 6,
-        vocab_size: 32000,
-        seq_len: 256,
-        norm_eps: 0.00001,
-    };
-    
-    unsafe {
-        print_f32(conf.norm_eps);
-    }
-    return 0;
+  let conf = Config {
+    dim: 288,
+    hidden_dim: 768,
+    n_layers: 6,
+    n_heads: 6,
+    vocab_size: 32000,
+    seq_len: 256,
+    norm_eps: 0.00001,
+  };
+
+  unsafe {
+    print_f32(conf.norm_eps);
+  }
+  return 0;
 }
 
 // CHECK: 0.000010

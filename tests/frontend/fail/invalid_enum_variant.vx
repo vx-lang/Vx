@@ -1,9 +1,9 @@
 enum PadMode {
-    Pad,
-    Trim
+  Pad,
+  Trim
 }
 
 fn main() -> i32 {
-    let mode = PadMode::Unknown;
-    return 0;
+  let mode = PadMode::Unknown;
+  return 0;
 }

@@ -1,8 +1,8 @@
 fn main() -> i32 {
-    let math = comptime {
-        import("tests/frontend/pass/modules_basic/math.ak");
-    };
-    
-    let result = math.add(1.0, 2.0);
-    return 0;
+  let math = comptime {
+    import("tests/frontend/pass/modules_basic/math.ak");
+  };
+
+  let result = math.add(1.0, 2.0);
+  return 0;
 }

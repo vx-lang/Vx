@@ -805,6 +805,18 @@ impl MlirGenerator {
                         self.current_el_ty
                     ));
                     return ("".to_string(), "()".to_string());
+                } else if name.starts_with("Math::") && args.len() == 1 {
+                    let (arg_val, _) = self.generate_expr(&args[0], "f32");
+                    let res = self.next_var();
+                    let op_name = match name.as_str() {
+                        "Math::sqrt" => "math.sqrt",
+                        "Math::exp" => "math.exp",
+                        "Math::cos" => "math.cos",
+                        "Math::sin" => "math.sin",
+                        _ => panic!("Unsupported Math function: {}", name),
+                    };
+                    self.write_line(&format!("{} = {} {} : f32", res, op_name, arg_val));
+                    return (res, "f32".to_string());
                 } else if name.starts_with("Tensor") && name.ends_with("::from") && args.len() == 2 {
                     let (ptr_val, _) = self.generate_expr(&args[0], "!llvm.ptr<f32>");
                     if let Expr::Array(dims, _) = &args[1] {

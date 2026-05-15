@@ -1,20 +1,20 @@
 // RUN: vxc %s | FileCheck %s
 
 struct Config {
-    dim: i32,
-    norm_eps: f32,
+  dim: i32,
+  norm_eps: f32,
 }
 
 fn main() -> i32 {
-    let conf = Config {
-        dim: 288,
-        norm_eps: 0.00001,
-    };
-    
-    let a = conf.dim;
-    let b = conf.norm_eps;
+  let conf = Config {
+    dim: 288,
+    norm_eps: 0.00001,
+  };
 
-    return 0;
+  let a = conf.dim;
+  let b = conf.norm_eps;
+
+  return 0;
 }
 
 // CHECK: func.func @main() -> i32 {

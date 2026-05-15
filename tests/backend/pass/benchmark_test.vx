@@ -2,21 +2,21 @@
 // RUN: %t | FileCheck %s
 
 extern "C" {
-    fn start_benchmark() -> Tensor<f32>;
-    fn end_benchmark() -> Tensor<i32>;
-    fn trace_start() -> Tensor<i32>;
-    fn trace_end() -> Tensor<i32>;
+  fn start_benchmark() -> Tensor<f32>;
+  fn end_benchmark() -> Tensor<i32>;
+  fn trace_start() -> Tensor<i32>;
+  fn trace_end() -> Tensor<i32>;
 }
 
 fn main() -> Tensor<i32> {
-    unsafe {
-        trace_start();
-        let _dummy1: Tensor<f32> = start_benchmark();
-        let _dummy2: Tensor<i32> = end_benchmark();
-        trace_end();
-    }
+  unsafe {
+    trace_start();
+    let _dummy1: Tensor<f32> = start_benchmark();
+    let _dummy2: Tensor<i32> = end_benchmark();
+    trace_end();
+  }
 
-    return 0;
+  return 0;
 }
 
 // CHECK: [TRACE START] Event ID: 100
