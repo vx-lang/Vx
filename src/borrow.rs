@@ -30,9 +30,9 @@ pub fn verify_subtyping_bounds(type_a: &TypeId, type_b: &TypeId, session: &Compi
             }
             false
         }
-        (LifetimeSignature::SlowPath(meta_a, idx_a), LifetimeSignature::SlowPath(meta_b, idx_b)) => {
+        (LifetimeSignature::SlowPath(meta_a), LifetimeSignature::SlowPath(meta_b)) => {
             // SLOW PATH: Iterate through deep vector elements sequentially
-            evaluate_slow_path_variance(&meta_a[idx_a], &meta_b[idx_b])
+            evaluate_slow_path_variance(meta_a, meta_b)
         }
         _ => false, // Incompatible layout paths
     }

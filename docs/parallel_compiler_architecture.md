@@ -75,8 +75,8 @@ To prevent infinite memory growth when the compiler runs as a long-lived Languag
 pub struct CompilationSession {
     pub epoch: u64,
     pub registry: Arc<ImmutableGlobalRegistry>,
-    pub slow_path_arena: RwLock<Vec<UnboundedFunctionMetadata>>,
-    pub generics_arena: RwLock<Vec<Vec<TypeId>>>,
+    pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
+    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
 ```
 When a file edit triggers a recompilation, the old session is dropped (freeing the memory), and a new session epoch is initialized. All 256-bit GIDs are intrinsically scoped to their compilation session.
@@ -112,11 +112,6 @@ const INDEX_MASK: u64        = !ESCAPE_HATCH_MASK;
     pub lifetime_regions: Vec<u32>,
     pub trait_vtables: Vec<u64>, // Architectural Fix: Stores resolved trait implementation IDs
 }
-// A global, pre-allocated, thread-safe arena for slow-path storage
-// In production, this can be managed via a lock-free append-only vector or a frozen registry
-pub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<Vec<UnboundedFunctionMetadata>> =
-    once_cell::sync::Lazy::new(Vec::new);
-
 #[derive(Debug)]pub enum LifetimeSignature<'a> {
     /// 99% Common Case: Raw bitmask payload contained entirely within CPU registers.
     FastPath(u64),
@@ -126,15 +121,13 @@ pub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<Vec<UnboundedFunctionMe
 impl TypeId {
     /// Inspects the status of the escape hatch to determine parameter layout strategy
     #[inline(always)]
-    pub fn lifetime_context(&self) -> LifetimeSignature {
+    pub fn lifetime_context<'sess>(&self, arena: &'sess [UnboundedFunctionMetadata]) -> LifetimeSignature<'sess> {
         let word_2 = self.words[2];
 
         if (word_2 & ESCAPE_HATCH_MASK) != 0 {
             // SLOW PATH: Extract the clean 63-bit index
             let index = (word_2 & INDEX_MASK) as usize;
-            // Direct array bounds fetch from our read-only global arena
-            let metadata = &GLOBAL_SLOW_PATH_ARENA[index];
-            LifetimeSignature::SlowPath(metadata)
+            LifetimeSignature::SlowPath(&arena[index])
         } else {
             // FAST PATH: Return the register contents for bitwise analysis
             LifetimeSignature::FastPath(word_2)
@@ -638,7 +631,12 @@ Now, Phase 2 (Parallel Body Type-Checking) begins. Let us trace exactly how a th
 This snippet implements Strategy #3, where monomorphization requests are grouped using their 64-bit Module Hash (Word 0). Threads process independent buckets simultaneously with absolute data isolation.
 
 ```rust
-pub fn parallel_module_deduplication(local_queues: Vec<Vec<(u64, TypeId)>>, num_modules: usize) {
+// Pass in a map that translates the 64-bit hash to a dense array index
+pub fn parallel_module_deduplication(
+    local_queues: Vec<Vec<(u64, TypeId)>>, 
+    module_hash_to_index: &std::collections::HashMap<u64, usize>,
+    num_modules: usize
+) {
     // Flatten all collected requests from the type-checking threads
     let all_collected_requests: Vec<(u64, TypeId)> = local_queues.into_iter().flatten().collect();
 
@@ -648,17 +646,19 @@ pub fn parallel_module_deduplication(local_queues: Vec<Vec<(u64, TypeId)>>, num_
     // 2. Group requests into their corresponding module buckets
     for (caller_module_id, mut type_id) in all_collected_requests {
         // Map the 64-bit Module Hash to a dense index space
-        let mut target_module = type_id.module_id();
+        let mut target_hash = type_id.module_id();
         
         // Origin-Preserving Routing Fix:
         // If the target module is an external, read-only crate, we intercept the request.
-        if is_external_module(target_module) {
-            target_module = caller_module_id;
+        if is_external_module(target_hash) {
+            target_hash = caller_module_id;
             // Flag Word 3 to indicate this is a Synthetic Monomorphization Bucket request
             type_id.words[3] |= SYNTHETIC_MONO_FLAG;
         }
         
-        module_buckets[target_module as usize].push(type_id);
+        // Safely map the 64-bit hash to a dense 0..N index
+        let dense_index = module_hash_to_index[&target_hash];
+        module_buckets[dense_index].push(type_id);
     }
 
     // 3. Parallel Deduplication Step (Zero Lock Contention)

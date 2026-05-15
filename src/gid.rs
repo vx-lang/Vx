@@ -55,7 +55,7 @@ pub enum LifetimeSignature<'a> {
     /// 99% Common Case: Raw bitmask payload contained entirely within CPU registers.
     FastPath(u64),
     /// < 1% Outlier Case: Immutable reference to un-sharded, deep heap metadata.
-    SlowPath(std::sync::RwLockReadGuard<'a, Vec<UnboundedFunctionMetadata>>, usize),
+    SlowPath(&'a UnboundedFunctionMetadata),
 }
 
 impl TypeId {
@@ -69,8 +69,7 @@ impl TypeId {
             let index = (word_2 & INDEX_MASK) as usize;
             
             // Direct array bounds fetch from our read-only global arena
-            let arena = session.slow_path_arena.read().unwrap();
-            LifetimeSignature::SlowPath(arena, index)
+            LifetimeSignature::SlowPath(&session.slow_path_arena[index])
         } else {
             // FAST PATH: Return the register contents for bitwise analysis
             LifetimeSignature::FastPath(word_2)

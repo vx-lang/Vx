@@ -1,4 +1,4 @@
-use std::sync::RwLock;
+use std::sync::Arc;
 use crate::gid::{TypeId, UnboundedFunctionMetadata};
 
 /// Represents a single compilation epoch. 
@@ -6,16 +6,16 @@ use crate::gid::{TypeId, UnboundedFunctionMetadata};
 /// to a short-lived session, rather than static singletons.
 pub struct CompilationSession {
     pub epoch: u64,
-    pub slow_path_arena: RwLock<Vec<UnboundedFunctionMetadata>>,
-    pub generics_arena: RwLock<Vec<Vec<TypeId>>>,
+    pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
+    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
 
 impl CompilationSession {
     pub fn new(epoch: u64) -> Self {
         Self {
             epoch,
-            slow_path_arena: RwLock::new(Vec::new()),
-            generics_arena: RwLock::new(Vec::new()),
+            slow_path_arena: Arc::new(Vec::new()),
+            generics_arena: Arc::new(Vec::new()),
         }
     }
 }
