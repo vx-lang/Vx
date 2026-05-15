@@ -289,6 +289,36 @@ Integrating these flags into the final word of your identifier yields key optimi
 
 
 ------------------------------
+
+## 2.5 The Architecture: Moving from AST to Flat Arrays
+The core principle of Vx's high-performance design is that the compiler abandons the AST as early as possible.
+
+### The Separation of Streams (Types vs. Instructions)
+During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinct flat arrays**:
+
+**1. `LOCAL_TYPE_STREAM`: `Vec<[u64; 4]>`**
+* **Purpose:** Stores *only* the 256-bit Global Identifiers for types, generic contexts, and signatures.
+* **Usage:** This is the array that gets processed by the Phase 2 interning barrier and the Phase 2.5 SIMD Patch Pass.
+
+**2. `LOCAL_HIR_STREAM`: `Vec<HirInstruction>`**
+* **Purpose:** A dense, linear array of bytecode-like instructions representing the actual logic (e.g., `Add`, `Call`, `Branch`, `Store`).
+* **The Connection:** Instead of holding nested pointers or type strings, an `HirInstruction` holds a lightweight 32-bit integer index (e.g., `type_idx: u32`) that points directly into the `LOCAL_TYPE_STREAM`.
+
+*Crucially: Once Phase 1 is complete, you drop the entire AST from memory. It is dead to the compiler.*
+
+### The Flat Array Pipeline
+**1. Phase 0: The Parser (Tree Generation)**: The parser generates your traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
+**2. Phase 1: Type Checking & Lowering (Tree Destruction)**: The TypeChecker acts as an ingestion funnel. As it resolves types, it constructs the 256-bit GID and pushes it into the `LOCAL_TYPE_STREAM`. Instructions are pushed to the `LOCAL_HIR_STREAM`.
+**3. Phase 2: The Barrier & Interning**: The thread hits the sync barrier. The structural hashes of deferred types are bucketed, deduplicated, and assigned absolute 63-bit global indices in the `GLOBAL_GENERICS_ARENA`.
+**4. Phase 2.5: The SIMD Patch Pass (Pure Data-Oriented)**: Because Phase 1 lowered everything into a flat `Vec<[u64; 4]>`, the compiler executes a SIMD patch loop (`chunks_exact_mut(8)`) over the type stream, patching local deferred indices into global absolute indices in microseconds.
+**5. Phase 4: Data-Oriented Codegen**: Code generation becomes a blisteringly fast `for` loop over the contiguous block of memory (`LOCAL_HIR_STREAM`), performing O(1) array lookups into the patched `LOCAL_TYPE_STREAM`.
+
+By flattening everything into arrays:
+1. You gain perfect cache locality.
+2. You unlock SIMD vectorization (Phase 2.5).
+3. Your memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
+
+------------------------------
 ## 3. The Linear Parallel Pipeline (Phase Separation)
 The compiler architecture rejects complex inter-stage pipelining in favor of a clean, phase-separated model bound by explicit synchronization barriers using Rayon's work-stealing thread pool.
 
