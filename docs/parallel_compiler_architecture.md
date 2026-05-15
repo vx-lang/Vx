@@ -213,6 +213,7 @@ We can partition the 64 bits of Word 3 into distinct functional segments that se
 * Bit 44 = Is Plain Old Data (POD) (Tells backend it can use memcpy instead of structured clone/drop logic)
    * Bit 45 = Contains pointers/heap resources (Requires structural drop validation)
 * Bits 0–43 (44 bits) - Reserved for Optimization Passes / Incremental Flags:
+   * Bit 43 = LOCAL_DEFERRED_BIT (Flags that Word 2 contains a local generic queue index, pending Phase 2 interning)
 * Left empty for your backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
 
 ------------------------------
@@ -301,6 +302,12 @@ The compiler architecture rejects complex inter-stage pipelining in favor of a c
 4. The Freeze Point: All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global `Arc<HashMap<...>>`.
 
 ### Phase 2: Parallel Body Type-Checking & Generic Queuing
+
+**The Deferred Interning Strategy (Architectural Fix)**:
+To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning. 
+1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
+2. **Phase 2.25 Bucketed Interning**: After the Phase 2 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
+3. **The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
 
 1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (`&TypeDefinition`).
 2. Comptime Execution Local-Registry (**Architectural Fix**): The Vx language supports `comptime` blocks that can generate arbitrary types (e.g., for shape analysis). Since the global registry is frozen, any nominal types dynamically generated during `comptime` execution are injected into a thread-local, module-internal Hash Map. Because these generated layouts are never exported or visible outside their host function/module, they preserve the frozen cross-crate boundaries while allowing full semantic analysis and error reporting to function normally.
@@ -588,18 +595,27 @@ Now, Phase 2 (Parallel Body Type-Checking) begins. Let us trace exactly how a th
 This snippet implements Strategy #3, where monomorphization requests are grouped using their 64-bit Module Hash (Word 0). Threads process independent buckets simultaneously with absolute data isolation.
 
 ```rust
-pub fn parallel_module_deduplication(local_queues: Vec<Vec<TypeId>>, num_modules: usize) {
+pub fn parallel_module_deduplication(local_queues: Vec<Vec<(u64, TypeId)>>, num_modules: usize) {
     // Flatten all collected requests from the type-checking threads
-    let all_collected_requests: Vec<TypeId> = local_queues.into_iter().flatten().collect();
+    let all_collected_requests: Vec<(u64, TypeId)> = local_queues.into_iter().flatten().collect();
 
     // 1. Create a fixed array of buckets, one bucket for each Module ID
     let mut module_buckets: Vec<Vec<TypeId>> = vec![Vec::new(); num_modules];
 
     // 2. Group requests into their corresponding module buckets
-    for type_id in all_collected_requests {
+    for (caller_module_id, mut type_id) in all_collected_requests {
         // Map the 64-bit Module Hash to a dense index space
-        let target_module = type_id.module_id() as usize;
-        module_buckets[target_module].push(type_id);
+        let mut target_module = type_id.module_id();
+        
+        // Origin-Preserving Routing Fix:
+        // If the target module is an external, read-only crate, we intercept the request.
+        if is_external_module(target_module) {
+            target_module = caller_module_id;
+            // Flag Word 3 to indicate this is a Synthetic Monomorphization Bucket request
+            type_id.words[3] |= SYNTHETIC_MONO_FLAG;
+        }
+        
+        module_buckets[target_module as usize].push(type_id);
     }
 
     // 3. Parallel Deduplication Step (Zero Lock Contention)
