@@ -257,8 +257,10 @@ pub const ATTR_INLINE_ALWAYS: u64 = 1 << 53;
 pub const ATTR_COLD:          u64 = 1 << 54;
 pub const ATTR_MUST_USE:      u64 = 1 << 55;
 
-pub const TYPE_IS_POD:        u64 = 1 << 44;
-pub const TYPE_NEEDS_DROP:    u64 = 1 << 45;
+pub const TYPE_IS_POD:          u64 = 1 << 44;
+pub const TYPE_NEEDS_DROP:      u64 = 1 << 45;
+pub const LOCAL_DEFERRED_BIT:   u64 = 1 << 43; // Bit 43
+pub const SYNTHETIC_MONO_FLAG:  u64 = 1 << 42; // Bit 42 (Added for cross-crate routing)
 
 #[derive(Debug, PartialEq, Eq)]pub enum Visibility {
     Private,
