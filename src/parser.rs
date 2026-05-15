@@ -382,20 +382,12 @@ impl<'a> Parser<'a> {
                         }
                     }
                     if self.check(&TokenType::DoubleColon) {
-                        let has_paren = {
-                            if let Some(t1) = self.tokens.get(self.pos + 1) {
-                                if let TokenType::Identifier(_) = t1.kind {
-                                    if let Some(t2) = self.tokens.get(self.pos + 2) {
-                                        t2.kind == TokenType::LeftParen
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
+                        let has_paren = match (
+                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                            self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                        ) {
+                            (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen)) => true,
+                            _ => false,
                         };
 
                         if has_paren {
@@ -419,33 +411,14 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         Expr::FunctionCall(call_name, args, Span::default())
                     } else if self.check(&TokenType::LeftBrace) {
-                        let is_struct_init = {
-                            let mut lookahead = self.pos;
-                            if let Some(t1) = self.tokens.get(lookahead) {
-                                if t1.kind == TokenType::LeftBrace {
-                                    lookahead += 1;
-                                    if let Some(t2) = self.tokens.get(lookahead) {
-                                        if t2.kind == TokenType::RightBrace {
-                                            true
-                                        } else if let TokenType::Identifier(_) = t2.kind {
-                                            lookahead += 1;
-                                            if let Some(t3) = self.tokens.get(lookahead) {
-                                                t3.kind == TokenType::Colon
-                                            } else {
-                                                false
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
+                        let is_struct_init = match (
+                            self.tokens.get(self.pos).map(|t| &t.kind),
+                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                            self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                        ) {
+                            (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _) => true,
+                            (Some(TokenType::LeftBrace), Some(TokenType::Identifier(_)), Some(TokenType::Colon)) => true,
+                            _ => false,
                         };
 
                         if is_struct_init {
