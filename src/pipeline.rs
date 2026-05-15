@@ -39,26 +39,27 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
-    let session = crate::session::CompilationSession::new(1);
+    let global_session = std::sync::Arc::new(crate::session::GlobalSession::new(1));
     // Phase 2.5: Build Global AST Environment (Sequential)
     let global_env = crate::sema::GlobalAstEnv::build(&parsed_modules);
 
     // Phase 3: Parallel Body Type-Checking & Lowering to Flat Array
     let check_results: Vec<_> = parsed_modules.par_iter_mut().flat_map(|module| {
         module.functions.par_iter_mut().map(|func| {
-            let mut checker = crate::sema::TypeChecker::new(&global_env, &session);
+            let mut worker = crate::session::LocalWorkerState::new(global_session.clone());
+            let mut checker = crate::sema::TypeChecker::new(&global_env, &mut worker);
             checker.check_function(func);
-            (checker.errors, checker.monomorphized_functions, checker.local_type_stream)
+            (checker.errors, checker.monomorphized_functions, worker.local_type_stream, worker.local_hir_stream)
         }).collect::<Vec<_>>()
     }).collect();
     
-    let total_errors: usize = check_results.iter().map(|(errs, _, _)| errs.len()).sum();
-    let total_monomorphized: usize = check_results.iter().map(|(_, monos, _)| monos.len()).sum();
+    let total_errors: usize = check_results.iter().map(|(errs, _, _, _)| errs.len()).sum();
+    let total_monomorphized: usize = check_results.iter().map(|(_, monos, _, _)| monos.len()).sum();
 
     println!("Type checked bodies in parallel: {} errors, {} monomorphized variants generated", total_errors, total_monomorphized);
 
     if total_errors > 0 {
-        for (errs, _, _) in &check_results {
+        for (errs, _, _, _) in &check_results {
             for err in errs {
                 println!("Error: {}", err);
             }
@@ -69,7 +70,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // Phase 3.5: SIMD Patch Pass (Pure Data-Oriented)
     println!("Executing Phase 3.5: SIMD Patch Pass over Flat Type Streams");
     
-    let mut all_type_streams: Vec<Vec<crate::gid::TypeId>> = check_results.into_iter().map(|(_, _, stream)| stream).collect();
+    let mut all_type_streams: Vec<Vec<crate::gid::TypeId>> = check_results.into_iter().map(|(_, _, stream, _)| stream).collect();
     const LOCAL_DEFERRED_BIT: u64 = 1 << 43; // Word 3
 
     all_type_streams.par_iter_mut().for_each(|stream| {

@@ -25,3 +25,14 @@ impl HirInstruction {
         }
     }
 }
+
+pub const OP_NOP: u32 = 0;
+pub const OP_CONST: u32 = 1;
+pub const OP_LOAD: u32 = 2;
+pub const OP_STORE: u32 = 3;
+pub const OP_ADD: u32 = 4;
+pub const OP_SUB: u32 = 5;
+pub const OP_MUL: u32 = 6;
+pub const OP_DIV: u32 = 7;
+pub const OP_CALL: u32 = 8;
+pub const OP_RET: u32 = 9;

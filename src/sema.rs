@@ -63,7 +63,7 @@ impl<'a> GlobalAstEnv<'a> {
 }
 
 pub struct TypeChecker<'a> {
-    pub session: &'a crate::session::CompilationSession,
+    pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
     scopes: Vec<HashMap<String, (Type, Topology)>>,
     pub monomorphized_functions: Vec<Function>,
@@ -71,21 +71,52 @@ pub struct TypeChecker<'a> {
     in_unsafe_block: bool,
     active_topology: Topology,
     active_memory: MemorySpace,
+    next_reg: u32,
+    var_regs: Vec<HashMap<String, u32>>,
 }
 
 impl<'a> TypeChecker<'a> {
-    pub fn new(env: &'a GlobalAstEnv<'a>, session: &'a crate::session::CompilationSession) -> Self {
+    pub fn new(env: &'a GlobalAstEnv<'a>, worker: &'a mut crate::session::LocalWorkerState) -> Self {
         Self {
             env,
-            session,
+            worker,
             scopes: vec![HashMap::new()],
             monomorphized_functions: Vec::new(),
             errors: Vec::new(),
             in_unsafe_block: false,
             active_topology: Topology::Host,
             active_memory: MemorySpace::HostDRAM,
+            next_reg: 0,
+            var_regs: vec![HashMap::new()],
         }
     }
+
+    pub fn emit_type(&mut self, _ty: &Type) -> u32 {
+        // Dummy conversion for now: Create a synthetic TypeId and push it.
+        // In reality, this would hash the struct name, etc.
+        let mut tid = crate::gid::TypeId::new(0, 0, 0, 0);
+        tid.words[3] |= crate::gid::LOCAL_DEFERRED_BIT;
+        let idx = self.worker.local_type_stream.len() as u32;
+        self.worker.local_type_stream.push(tid);
+        idx
+    }
+
+    pub fn emit_inst(&mut self, opcode: u32, operand1: u32, operand2: u32, type_idx: u32) -> u32 {
+        let inst = crate::hir::HirInstruction::new(opcode, operand1, operand2, type_idx);
+        self.worker.local_hir_stream.push(inst);
+        let reg = self.next_reg;
+        self.next_reg += 1;
+        reg
+    }
+
+    pub fn push_reg_scope(&mut self) {
+        self.var_regs.push(HashMap::new());
+    }
+
+    pub fn pop_reg_scope(&mut self) {
+        self.var_regs.pop();
+    }
+
 
     pub fn check_function(&mut self, func: &mut Function) {
         self.push_scope();
@@ -101,9 +132,31 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
+        // Intercept for HIR lowering
+        match stmt {
+            Statement::Assign(lhs, rhs, _) => {
+                let (ty, rhs_reg) = self.check_expr(rhs);
+                let type_idx = self.emit_type(&ty);
+                self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
+                // Fallthrough to standard semantic checks
+            }
+            Statement::Return(expr, _) => {
+                let (ty, ret_reg) = self.check_expr(expr);
+                let type_idx = self.emit_type(&ty);
+                self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
+                // Fallthrough to standard semantic checks
+            }
+            Statement::LetDecl(_, _, _, expr, _) => {
+                let (ty, val_reg) = self.check_expr(expr);
+                let type_idx = self.emit_type(&ty);
+                self.emit_inst(crate::hir::OP_STORE, val_reg, 0, type_idx);
+            }
+            _ => {}
+        }
+
         match stmt {
             Statement::LetDecl(name, _is_mut, ty_ann, expr, _) => {
-                let ty = self.check_expr(expr);
+                let ty = self.check_expr_type(expr);
 
                 if let Some(ann) = ty_ann {
                     if !self.is_assignable(ann, &ty) {
@@ -116,8 +169,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::ForLoop(iter, start, end, body, _) => {
-                self.check_expr(start);
-                self.check_expr(end);
+                self.check_expr_type(start);
+                self.check_expr_type(end);
                 self.push_scope();
                 self.insert(iter.clone(), Type::Scalar(ElementType::I64));
                 for s in body {
@@ -126,7 +179,7 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
             }
             Statement::If(cond, then_block, else_block, _) => {
-                let cond_ty = self.check_expr(cond);
+                let cond_ty = self.check_expr_type(cond);
                 if cond_ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Condition in if statement must be of type bool (i1)".to_string());
@@ -146,14 +199,14 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
-                let lhs_ty = self.check_expr(lhs);
-                let rhs_ty = self.check_expr(rhs);
+                let lhs_ty = self.check_expr_type(lhs);
+                let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
             }
             Statement::Return(expr, _) => {
-                let ty = self.check_expr(expr);
+                let ty = self.check_expr_type(expr);
                 if !self.is_assignable(return_type, &ty) {
                     self.errors.push(format!(
                         "Type mismatch on return. Expected {:?}, got {:?}",
@@ -180,11 +233,11 @@ impl<'a> TypeChecker<'a> {
                 // Validate topology expression if it contains one
                 match top {
                     Topology::NPU(expr) | Topology::AccCore(expr) => {
-                        let _ty = self.check_expr(expr);
+                        let _ty = self.check_expr_type(expr);
                     }
                     Topology::Slice(_, start, end) => {
-                        let _t1 = self.check_expr(start);
-                        let _t2 = self.check_expr(end);
+                        let _t1 = self.check_expr_type(start);
+                        let _t2 = self.check_expr_type(end);
                     }
                     Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
                 }
@@ -199,10 +252,10 @@ impl<'a> TypeChecker<'a> {
                 self.active_memory = prev_mem;
             }
             Statement::ExprStmt(expr, _) => {
-                self.check_expr(expr);
+                self.check_expr_type(expr);
             }
             Statement::Assert(expr, _msg, _) => {
-                let ty = self.check_expr(expr);
+                let ty = self.check_expr_type(expr);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());
@@ -211,7 +264,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Comptime(stmts, _) => {
                 for s in stmts {
                     if let Statement::Assert(expr, msg, _) = s {
-                        let ty = self.check_expr(expr);
+                        let ty = self.check_expr_type(expr);
                         if ty != Type::Scalar(ElementType::Bool) {
                             self.errors
                                 .push("Assertion condition must be boolean".to_string());
@@ -309,7 +362,38 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_expr(&mut self, expr: &mut Expr) -> Type {
+        fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
+        // First perform semantic validation
+        let ty = self.check_expr_type(expr);
+        
+        // Then perform AST to HIR lowering
+        let type_idx = self.emit_type(&ty);
+        
+        // Determine opcode based on the AST expression
+        let opcode = match expr {
+            Expr::Number(_, _) => crate::hir::OP_CONST,
+            Expr::Identifier(_, _) => crate::hir::OP_LOAD,
+            Expr::BinaryOp(_, op, _, _) => {
+                match op {
+                    BinaryOp::Add => crate::hir::OP_ADD,
+                    BinaryOp::Sub => crate::hir::OP_SUB,
+                    BinaryOp::Mul => crate::hir::OP_MUL,
+                    BinaryOp::Div => crate::hir::OP_DIV,
+                    _ => crate::hir::OP_NOP,
+                }
+            },
+            Expr::FunctionCall(_, _, _) => crate::hir::OP_CALL,
+            _ => crate::hir::OP_NOP,
+        };
+        
+        // In a full implementation, we would recursively call check_expr here 
+        // to get operand registers. For this bridge proof-of-concept, we emit 
+        // dummy operands and assign the result register.
+        let reg = self.emit_inst(opcode, 0, 0, type_idx);
+        (ty, reg)
+    }
+
+    fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Identifier(name, _) => {
                 if name == "true" || name == "false" {
@@ -380,7 +464,7 @@ impl<'a> TypeChecker<'a> {
                 false, // const
             ),
             Expr::Transfer(inner_expr, target_mem, _) => {
-                let inner_ty = self.check_expr(inner_expr);
+                let inner_ty = self.check_expr_type(inner_expr);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     _ => {
@@ -459,14 +543,14 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 for stmt in stmts {
                     if let Statement::ExprStmt(ref mut expr, _) = stmt {
-                        self.check_expr(expr);
+                        self.check_expr_type(expr);
                     } else {
                         self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
                     }
                 }
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
                 if let Some(r) = ret {
-                    ret_ty = self.check_expr(r);
+                    ret_ty = self.check_expr_type(r);
                 }
                 self.pop_scope();
                 ret_ty
@@ -480,7 +564,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Mocking built-ins
                 for arg in args.iter_mut() {
-                    self.check_expr(arg);
+                    self.check_expr_type(arg);
                 }
 
                 if resolved_name == "Verified" {
@@ -490,7 +574,7 @@ impl<'a> TypeChecker<'a> {
                             args.len()
                         ));
                     }
-                    let inner_ty = self.check_expr(&mut args[0]);
+                    let inner_ty = self.check_expr_type(&mut args[0]);
                     Type::Verified(Box::new(inner_ty))
                 } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
                     if args.len() != 2 {
@@ -503,8 +587,8 @@ impl<'a> TypeChecker<'a> {
                     if !self.in_unsafe_block {
                         self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
                     }
-                    self.check_expr(&mut args[0]);
-                    self.check_expr(&mut args[1]);
+                    self.check_expr_type(&mut args[0]);
+                    self.check_expr_type(&mut args[1]);
 
                     let mut el_ty = ElementType::F32;
                     if resolved_name.contains("_i32") {
@@ -533,7 +617,7 @@ impl<'a> TypeChecker<'a> {
                             args.len()
                         ));
                     }
-                    let inner_ty = self.check_expr(&mut args[0]);
+                    let inner_ty = self.check_expr_type(&mut args[0]);
                     if inner_ty != Type::Scalar(ElementType::F32) {
                         self.errors.push(format!(
                             "Function '{}' expects f32 argument, got {:?}",
@@ -568,7 +652,7 @@ impl<'a> TypeChecker<'a> {
                         success = false;
                     } else {
                         for (i, arg) in args.iter_mut().enumerate() {
-                            let arg_ty = self.check_expr(arg);
+                            let arg_ty = self.check_expr_type(arg);
                             let param_ty = &generic_func.params[i].1;
                             if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
                                 self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
@@ -635,12 +719,12 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Array(elements, _) => {
                 for el in elements {
-                    self.check_expr(el);
+                    self.check_expr_type(el);
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::MemberAccess(obj, member, _) => {
-                let obj_ty = self.check_expr(obj);
+                let obj_ty = self.check_expr_type(obj);
                 let mut base_ty = obj_ty.clone();
                 if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
@@ -676,8 +760,8 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::IndexAccess(obj, idx, _) => {
-                let obj_ty = self.check_expr(obj);
-                self.check_expr(idx);
+                let obj_ty = self.check_expr_type(obj);
+                self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
                     *inner
                 } else if let Type::Borrow(inner, _, _) = obj_ty {
@@ -689,9 +773,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::MethodCall(obj, _method, args, _) => {
-                let mut base_ty = self.check_expr(obj);
+                let mut base_ty = self.check_expr_type(obj);
                 for arg in args.iter_mut() {
-                    self.check_expr(arg);
+                    self.check_expr_type(arg);
                 }
 
                 if let Type::Module(ref path, ref exports) = base_ty {
@@ -892,7 +976,7 @@ impl<'a> TypeChecker<'a> {
 
                     let mut func_call =
                         Expr::FunctionCall(mangled_name, call_args, Span::default());
-                    let ret_ty = self.check_expr(&mut func_call);
+                    let ret_ty = self.check_expr_type(&mut func_call);
 
                     // Replace the AST node in-place!
                     *expr = func_call;
@@ -958,8 +1042,8 @@ impl<'a> TypeChecker<'a> {
                 base_ty
             }
             Expr::BinaryOp(lhs, op, rhs, _) => {
-                let lhs_ty = self.check_expr(lhs);
-                let rhs_ty = self.check_expr(rhs);
+                let lhs_ty = self.check_expr_type(lhs);
+                let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors
                         .push("Type mismatch in binary operation".to_string());
@@ -980,13 +1064,13 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::UnaryOp(op, inner, _) => {
-                self.check_expr(inner);
+                self.check_expr_type(inner);
                 match op {
                     UnaryOp::Not => Type::Scalar(ElementType::Bool),
                 }
             }
             Expr::Borrow(inner, is_mut, _) => {
-                let inner_ty = self.check_expr(inner);
+                let inner_ty = self.check_expr_type(inner);
                 Type::Borrow(Box::new(inner_ty), None, *is_mut)
             }
             Expr::Dereference(inner, _) => {
@@ -994,7 +1078,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors
                         .push("Dereference of raw pointer outside of unsafe block!".to_string());
                 }
-                let inner_ty = self.check_expr(inner);
+                let inner_ty = self.check_expr_type(inner);
                 match inner_ty {
                     Type::Pointer(t, _, _) | Type::Borrow(t, _, _) => *t,
                     _ => {
@@ -1011,7 +1095,7 @@ impl<'a> TypeChecker<'a> {
                 let mut last_type = Type::Tensor(ElementType::F32, vec![], None);
                 for s in stmts.iter_mut() {
                     if let Statement::ExprStmt(ref mut expr, _) = s {
-                        last_type = self.check_expr(expr);
+                        last_type = self.check_expr_type(expr);
                     } else {
                         self.check_statement(
                             &mut *s,
@@ -1035,7 +1119,7 @@ impl<'a> TypeChecker<'a> {
                         .push(format!("Unknown struct {}", resolved_name));
                 }
                 for (_, f_expr) in fields {
-                    self.check_expr(f_expr);
+                    self.check_expr_type(f_expr);
                 }
                 Type::Struct(resolved_name, None)
             }
