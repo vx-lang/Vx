@@ -68,6 +68,19 @@ Inside each 16-bit parameter window, the bit layout encodes both variance rules 
 #### The Slow-Path Structure (Bit 63 = 1)
 For statistical outliers—such as functions with 5 or more type/lifetime arguments, or those requiring dynamic Trait/Protocol resolution vtables—the escape-hatch bit is flipped to 1. The remaining 63 bits immediately cease to function as a bitmask and are treated as a guaranteed unique, sequential index into an unbounded, global, read-only memory arena.
 
+**LSP / Daemon Mode Memory Leak Fix**:
+To prevent infinite memory growth when the compiler runs as a long-lived Language Server (LSP) daemon, these global arenas are *not* static `Lazy` singletons. Instead, they are tied to a short-lived `CompilationSession` epoch.
+
+```rust
+pub struct CompilationSession {
+    pub epoch: u64,
+    pub registry: Arc<ImmutableGlobalRegistry>,
+    pub slow_path_arena: RwLock<Vec<UnboundedFunctionMetadata>>,
+    pub generics_arena: RwLock<Vec<Vec<TypeId>>>,
+}
+```
+When a file edit triggers a recompilation, the old session is dropped (freeing the memory), and a new session epoch is initialized. All 256-bit GIDs are intrinsically scoped to their compilation session.
+
 **Architectural Fix:** Trait solving (e.g., resolving `<T as Iterator>::Item`) is non-local and cannot easily be squashed into register math. The SLOW-PATH arena explicitly accommodates Trait Implementation Dictionaries and vtable pointers generated during the parallel type-checking phase.
 
 ```
