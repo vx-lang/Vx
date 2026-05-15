@@ -71,6 +71,7 @@ pub struct TypeChecker<'a> {
     in_unsafe_block: bool,
     active_topology: Topology,
     active_memory: MemorySpace,
+    pub local_type_stream: Vec<crate::gid::TypeId>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -84,6 +85,7 @@ impl<'a> TypeChecker<'a> {
             in_unsafe_block: false,
             active_topology: Topology::Host,
             active_memory: MemorySpace::HostDRAM,
+            local_type_stream: Vec::new(),
         }
     }
 
