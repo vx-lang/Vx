@@ -16,6 +16,8 @@ pub const ATTR_MUST_USE: u64 = 1 << 55;
 
 pub const TYPE_IS_POD: u64 = 1 << 44;
 pub const TYPE_NEEDS_DROP: u64 = 1 << 45;
+pub const LOCAL_DEFERRED_BIT: u64 = 1 << 43;
+pub const SYNTHETIC_MONO_FLAG: u64 = 1 << 42;
 
 /// The 256-bit Global Identifier
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable, Debug)]
@@ -39,6 +41,11 @@ impl TypeId {
     }
     pub fn generic_hash(&self) -> u64 {
         self.words[2]
+    }
+
+    #[inline(always)]
+    pub fn is_local_deferred(&self) -> bool {
+        (self.words[3] & LOCAL_DEFERRED_BIT) != 0
     }
 }
 
@@ -204,12 +211,14 @@ mod tests {
 
     #[test]
     fn test_fast_path_extraction() {
-        let session = CompilationSession::new(1);
+        use crate::session::{GlobalSession, LocalWorkerState};
+        let global = std::sync::Arc::new(GlobalSession::new(1));
+        let worker = LocalWorkerState::new(global);
         // Setup Word 2: Param 0 = 0xAAAA, Param 1 = 0xBBBB, Param 2 = 0xCCCC, Param 3 = 0xDDDD
         let word_2 = 0xDDDD_CCCC_BBBB_AAAA;
         let tid = TypeId::new(0, 0, word_2, 0);
 
-        if let LifetimeSignature::FastPath(val) = tid.lifetime_context(&session) {
+        if let LifetimeSignature::FastPath(val) = worker.resolve_lifetime(&tid) {
             assert_eq!(val, word_2);
         } else {
             panic!("Expected FastPath");
@@ -234,12 +243,13 @@ mod tests {
 
     #[test]
     fn test_slow_path_arena() {
-        let session = CompilationSession::new(1);
-        // Insert a dummy item into the global arena
+        use crate::session::{GlobalSession, LocalWorkerState};
+        let global = std::sync::Arc::new(GlobalSession::new(1));
+        let mut worker = LocalWorkerState::new(global);
+        // Insert a dummy item into the local arena
         let index = {
-            let mut arena = session.slow_path_arena.write().unwrap();
-            let idx = arena.len();
-            arena.push(UnboundedFunctionMetadata {
+            let idx = worker.local_slow_path_arena.len();
+            worker.local_slow_path_arena.push(UnboundedFunctionMetadata {
                 type_arguments: vec![],
                 lifetime_regions: vec![42],
                 trait_vtables: vec![100],
@@ -247,13 +257,12 @@ mod tests {
             idx as u64
         };
 
-        // Construct a TypeId with the escape hatch bit set
+        // Construct a TypeId with the escape hatch bit and local deferred bit set
         let word_2 = ESCAPE_HATCH_MASK | index;
-        let tid = TypeId::new(0, 0, word_2, 0);
+        let mut tid = TypeId::new(0, 0, word_2, 0);
+        tid.words[3] |= LOCAL_DEFERRED_BIT;
 
-        if let LifetimeSignature::SlowPath(guard, idx) = tid.lifetime_context(&session) {
-            assert_eq!(idx, index as usize);
-            let meta = &guard[idx];
+        if let LifetimeSignature::SlowPath(meta) = worker.resolve_lifetime(&tid) {
             assert_eq!(meta.lifetime_regions[0], 42);
             assert_eq!(meta.trait_vtables[0], 100);
         } else {
