@@ -382,13 +382,13 @@ impl<'a> Parser<'a> {
                         }
                     }
                     if self.check(&TokenType::DoubleColon) {
-                        let has_paren = match (
-                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                            self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                        ) {
-                            (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen)) => true,
-                            _ => false,
-                        };
+                        let has_paren = matches!(
+                            (
+                                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                                self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                            ),
+                            (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen))
+                        );
 
                         if has_paren {
                             self.advance(); // consume '::'
@@ -411,15 +411,19 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         Expr::FunctionCall(call_name, args, Span::default())
                     } else if self.check(&TokenType::LeftBrace) {
-                        let is_struct_init = match (
-                            self.tokens.get(self.pos).map(|t| &t.kind),
-                            self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                            self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                        ) {
-                            (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _) => true,
-                            (Some(TokenType::LeftBrace), Some(TokenType::Identifier(_)), Some(TokenType::Colon)) => true,
-                            _ => false,
-                        };
+                        let is_struct_init = matches!(
+                            (
+                                self.tokens.get(self.pos).map(|t| &t.kind),
+                                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                                self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                            ),
+                            (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
+                                | (
+                                    Some(TokenType::LeftBrace),
+                                    Some(TokenType::Identifier(_)),
+                                    Some(TokenType::Colon),
+                                )
+                        );
 
                         if is_struct_init {
                             self.advance(); // consume '{'

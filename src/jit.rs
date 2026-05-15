@@ -102,8 +102,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err(format!("mlir-opt failed:\n{}", err_str));
     }
 
-    let mut lowered_mlir_file =
-        File::create(&temp_llvm).map_err(|e| e.to_string())?;
+    let mut lowered_mlir_file = File::create(&temp_llvm).map_err(|e| e.to_string())?;
     lowered_mlir_file
         .write_all(&mlir_opt_out.stdout)
         .map_err(|e| e.to_string())?;
