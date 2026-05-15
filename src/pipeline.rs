@@ -39,13 +39,14 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
+    let session = crate::session::CompilationSession::new(1);
     // Phase 2.5: Build Global AST Environment (Sequential)
     let global_env = crate::sema::GlobalAstEnv::build(&parsed_modules);
 
     // Phase 3: Parallel Body Type-Checking
     let check_results: Vec<_> = parsed_modules.par_iter_mut().flat_map(|module| {
         module.functions.par_iter_mut().map(|func| {
-            let mut checker = crate::sema::TypeChecker::new(&global_env);
+            let mut checker = crate::sema::TypeChecker::new(&global_env, &session);
             checker.check_function(func);
             (checker.errors, checker.monomorphized_functions)
         }).collect::<Vec<_>>()

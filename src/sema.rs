@@ -63,6 +63,7 @@ impl<'a> GlobalAstEnv<'a> {
 }
 
 pub struct TypeChecker<'a> {
+    pub session: &'a crate::session::CompilationSession,
     pub env: &'a GlobalAstEnv<'a>,
     scopes: Vec<HashMap<String, (Type, Topology)>>,
     pub monomorphized_functions: Vec<Function>,
@@ -73,9 +74,10 @@ pub struct TypeChecker<'a> {
 }
 
 impl<'a> TypeChecker<'a> {
-    pub fn new(env: &'a GlobalAstEnv<'a>) -> Self {
+    pub fn new(env: &'a GlobalAstEnv<'a>, session: &'a crate::session::CompilationSession) -> Self {
         Self {
             env,
+            session,
             scopes: vec![HashMap::new()],
             monomorphized_functions: Vec::new(),
             errors: Vec::new(),

@@ -13,6 +13,7 @@ pub mod pipeline;
 pub mod registry;
 pub mod resolver;
 pub mod sema;
+pub mod session;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
 /// Useful for unit testing and interactive REPLs.

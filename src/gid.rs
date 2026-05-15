@@ -50,10 +50,6 @@ pub struct UnboundedFunctionMetadata {
     pub trait_vtables: Vec<u64>, // Architectural Fix: Stores resolved trait implementation IDs
 }
 
-// A global, pre-allocated, thread-safe arena for slow-path storage
-pub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<std::sync::RwLock<Vec<UnboundedFunctionMetadata>>> =
-    once_cell::sync::Lazy::new(|| std::sync::RwLock::new(Vec::new()));
-
 #[derive(Debug)]
 pub enum LifetimeSignature<'a> {
     /// 99% Common Case: Raw bitmask payload contained entirely within CPU registers.
@@ -65,7 +61,7 @@ pub enum LifetimeSignature<'a> {
 impl TypeId {
     /// Inspects the status of the escape hatch to determine parameter layout strategy
     #[inline(always)]
-    pub fn lifetime_context(&self) -> LifetimeSignature {
+    pub fn lifetime_context<'a>(&self, session: &'a CompilationSession) -> LifetimeSignature<'a> {
         let word_2 = self.words[2];
 
         if (word_2 & ESCAPE_HATCH_MASK) != 0 {
@@ -73,7 +69,7 @@ impl TypeId {
             let index = (word_2 & INDEX_MASK) as usize;
             
             // Direct array bounds fetch from our read-only global arena
-            let arena = GLOBAL_SLOW_PATH_ARENA.read().unwrap();
+            let arena = session.slow_path_arena.read().unwrap();
             LifetimeSignature::SlowPath(arena, index)
         } else {
             // FAST PATH: Return the register contents for bitwise analysis
@@ -222,11 +218,12 @@ mod tests {
 
     #[test]
     fn test_fast_path_extraction() {
+        let session = CompilationSession::new(1);
         // Setup Word 2: Param 0 = 0xAAAA, Param 1 = 0xBBBB, Param 2 = 0xCCCC, Param 3 = 0xDDDD
         let word_2 = 0xDDDD_CCCC_BBBB_AAAA;
         let tid = TypeId::new(0, 0, word_2, 0);
 
-        if let LifetimeSignature::FastPath(val) = tid.lifetime_context() {
+        if let LifetimeSignature::FastPath(val) = tid.lifetime_context(&session) {
             assert_eq!(val, word_2);
         } else {
             panic!("Expected FastPath");
@@ -251,9 +248,10 @@ mod tests {
 
     #[test]
     fn test_slow_path_arena() {
+        let session = CompilationSession::new(1);
         // Insert a dummy item into the global arena
         let index = {
-            let mut arena = GLOBAL_SLOW_PATH_ARENA.write().unwrap();
+            let mut arena = session.slow_path_arena.write().unwrap();
             let idx = arena.len();
             arena.push(UnboundedFunctionMetadata {
                 type_arguments: vec![],
@@ -267,7 +265,7 @@ mod tests {
         let word_2 = ESCAPE_HATCH_MASK | index;
         let tid = TypeId::new(0, 0, word_2, 0);
 
-        if let LifetimeSignature::SlowPath(guard, idx) = tid.lifetime_context() {
+        if let LifetimeSignature::SlowPath(guard, idx) = tid.lifetime_context(&session) {
             assert_eq!(idx, index as usize);
             let meta = &guard[idx];
             assert_eq!(meta.lifetime_regions[0], 42);
