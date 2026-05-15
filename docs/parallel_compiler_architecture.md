@@ -26,8 +26,8 @@ To eliminate pointer-chasing, string lookups, and memory synchronization overhea
 ### Word Layout Specifications:
 
 * Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix. **Architectural Fix**: To prevent catastrophic 64-bit Birthday Paradox collisions in large global ecosystems, the compiler treats `Word 0` and `Word 1` as a composite 128-bit namespace-and-symbol cryptographic hash, rendering collisions mathematically impossible.
-* Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits.
-* Word 2 (Generic Context Hash): For unmonomorphized generic blueprints, this is strictly 0x0000.... When a generic type is instantiated with concrete arguments downstream, this slot is populated with the combined hash of the argument types.
+* Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits. **Structural Hash Fix**: For anonymous types, closures, or `comptime`-generated layouts without explicit names, the compiler uses a topological "DefPath" or a structural hash of the closure body to guarantee incremental stability regardless of file position.
+* Word 2 (Generic Context Hash): For unmonomorphized generic blueprints, this is strictly 0x0000.... When a generic type is instantiated with concrete arguments downstream, this slot is populated with the combined hash of the argument types. **Architectural Fix**: Because 64-bit hashes are susceptible to Birthday Paradox collisions in large codebases, the module deduplication phase (Phase 4) *must* perform a full structural equality check on the generic arguments when a `Word 2` collision occurs to avoid silently dropping distinct monomorphized variants.
 * Word 3 (Reserved Space): Allocated for future compiler extensions, layout tracking, or alignment metadata flags.
 
 
@@ -61,7 +61,7 @@ When a function or struct contains 4 or fewer parameters/arguments, it executes 
 Inside each 16-bit parameter window, the bit layout encodes both variance rules and lifetime region constraints:
 
 * Bits 12–15 (4 bits): Variance and Mutability Flags (e.g., 0001 = Immutable Value, 0012 = Shared Reference &T, 0013 = Mutable Reference &mut T).
-* Bits 0–11 (12 bits): Local Lifetime Region ID (supports tracking up to 4,096 unique lifetime boundaries per function scope).
+* Bits 0–11 (12 bits): Local Lifetime Region ID (supports tracking up to 4,096 unique lifetime boundaries per function scope). **Architectural Fix**: If a complex function scope overflows the 4,095 lifetime boundary limit, the compiler forces the type onto the Slow Path (flipping Bit 63), preventing silent, catastrophic memory safety violations due to ID wrapping.
 
 #### The Slow-Path Structure (Bit 63 = 1)
 For statistical outliers—such as functions with 5 or more type/lifetime arguments, or those requiring dynamic Trait/Protocol resolution vtables—the escape-hatch bit is flipped to 1. The remaining 63 bits immediately cease to function as a bitmask and are treated as a guaranteed unique, sequential index into an unbounded, global, read-only memory arena.
@@ -528,9 +528,10 @@ Each worker thread takes an assigned file and processes it into an isolated, loc
 1. Parse to AST: The thread parses the file syntax tree.
 2. Scan Top-Level Declarations: It loops through items like struct, enum, and fn signatures, ignoring the bodies.
 3. Generate a Thread-Local Map: When a thread encounters a definition (e.g., struct User), it:
-    * Generates a 256-bit GID (Word 0 = current module hash, Word 1 = a local counter starting at 0, Word 2 = 0).
-    * Maps the local string name to this GID inside a thread-isolated HashMap<String, TypeId>.
-    * Maps the GID to the actual type definition data structure (fields, sizes) inside a thread-isolated HashMap<TypeId, TypeDefinition>.
+    * Generates a 256-bit GID (Word 0 = current module hash, Word 1 = symbol content hash, Word 2 = 0).
+    * Maps the local string name to this GID inside a thread-isolated `HashMap<String, TypeId>`.
+    * Maps the GID to the actual type definition data structure (fields, sizes) inside a thread-isolated `HashMap<TypeId, TypeDefinition>`.
+    * **Architectural Fix**: If a thread hits a slow-path constraint (e.g. >4095 lifetimes), it pushes the un-bounded metadata into a thread-local `LOCAL_SLOW_PATH_ARENA` to avoid global lock contention during parsing.
 
 ------------------------------
 ### Step 2: The Parallel Merge & Freeze Point
@@ -546,9 +547,10 @@ pub struct ImmutableGlobalRegistry {
 }
 ```
 
-1. Parallel Reduce: The thread pool merges the collection of local thread maps pairwise (using rayon's .reduce()). Because different modules have distinct Word 0 (Module Hash) prefixes, there are zero key collisions during the merge.
-2. Run Global Layout Validations: The single merged graph is quickly checked sequentially for cycle size errors (using the petgraph layout pass discussed earlier).
-3. Freeze and Wrap: The completed registry is wrapped inside an Arc (Atomic Reference Count). This transitions the data structure from Mutable/Exclusive to Immutable/Globally Shared.
+1. Parallel Reduce: The thread pool merges the collection of local thread maps pairwise (using rayon's `.reduce()`). Because different modules have distinct Word 0 (Module Hash) prefixes, there are zero key collisions during the merge.
+2. Global Arena Patching (**Architectural Fix**): During this merge, the master loop computes absolute global offsets for each thread's `LOCAL_SLOW_PATH_ARENA` and concatenates them into the final `GLOBAL_SLOW_PATH_ARENA`. Any temporary slow-path indices encoded in the local 256-bit GIDs are patched with their new global offsets.
+3. Run Global Layout Validations: The single merged graph is quickly checked sequentially for cycle size errors (using the petgraph layout pass discussed earlier).
+4. Freeze and Wrap: The completed registry is wrapped inside an Arc (Atomic Reference Count). This transitions the data structure from Mutable/Exclusive to Immutable/Globally Shared.
 
 ------------------------------
 ### Step 3: How Another Thread Queries the Shared Registry

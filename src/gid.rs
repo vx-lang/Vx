@@ -88,6 +88,21 @@ impl TypeId {
         let word_2 = self.words[2];
         ((word_2 >> (param_index * 16)) & 0xFFFF) as u16
     }
+
+    /// Sets a 12-bit lifetime region and 4-bit variance into a specific parameter index.
+    /// If the region exceeds 4095, it returns an error to indicate the caller MUST flip the escape hatch and use the Slow Path.
+    #[inline(always)]
+    pub fn try_set_fast_param(&mut self, param_index: usize, region_id: u16, variance_flags: u8) -> Result<(), &'static str> {
+        debug_assert!(param_index < 4, "Fast path only supports up to 4 parameters");
+        if region_id > 4095 {
+            return Err("Lifetime region overflowed 12 bits. Must use Slow Path.");
+        }
+        let payload = ((variance_flags as u16 & 0x0F) << 12) | (region_id & 0x0FFF);
+        let shift = param_index * 16;
+        let mask = !(0xFFFF_u64 << shift);
+        self.words[2] = (self.words[2] & mask) | ((payload as u64) << shift);
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -196,6 +211,17 @@ mod tests {
         assert_eq!(tid.extract_fast_param(1), 0xBBBB);
         assert_eq!(tid.extract_fast_param(2), 0xCCCC);
         assert_eq!(tid.extract_fast_param(3), 0xDDDD);
+    }
+
+    #[test]
+    fn test_fast_path_lifetime_overflow() {
+        let mut tid = TypeId::new(0, 0, 0, 0);
+        
+        // Setting a valid lifetime (4095 is the max 12-bit value)
+        assert!(tid.try_set_fast_param(0, 4095, 0).is_ok());
+        
+        // Setting an invalid lifetime (4096) should return an Err
+        assert!(tid.try_set_fast_param(1, 4096, 0).is_err());
     }
 
     #[test]
