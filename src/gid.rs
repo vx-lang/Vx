@@ -207,6 +207,19 @@ mod tests {
 
         tid.with_flags(ATTR_INLINE);
         assert!(tid.should_inline());
+
+        // Reset and test other flags
+        let mut tid2 = TypeId::new(0, 0, 0, 0);
+        tid2.with_flags(ATTR_INLINE_ALWAYS);
+        assert!(tid2.should_inline());
+
+        let mut tid3 = TypeId::new(0, 0, 0, 0);
+        tid3.with_flags(ATTR_COLD | ATTR_MUST_USE | TYPE_NEEDS_DROP | SYNTHETIC_MONO_FLAG | LOCAL_DEFERRED_BIT);
+        assert_eq!((tid3.words[3] & ATTR_COLD), ATTR_COLD);
+        assert_eq!((tid3.words[3] & ATTR_MUST_USE), ATTR_MUST_USE);
+        assert_eq!((tid3.words[3] & TYPE_NEEDS_DROP), TYPE_NEEDS_DROP);
+        assert_eq!((tid3.words[3] & SYNTHETIC_MONO_FLAG), SYNTHETIC_MONO_FLAG);
+        assert!(tid3.is_local_deferred());
     }
 
     #[test]
