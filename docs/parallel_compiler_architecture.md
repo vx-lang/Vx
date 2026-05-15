@@ -19,14 +19,14 @@ To eliminate pointer-chasing, string lookups, and memory synchronization overhea
 |  Word 0 (64-bit)  |  Word 1 (64-bit)  |  Word 2 (64-bit)  |  Word 3 (64-bit)  |
 +-------------------+-------------------+-------------------+-------------------+
 
-|    Module Hash    |  Local Symbol ID  | Generic Context   | Reserved / Custom |
+|    Module Hash    | Local Symbol Hash | Generic Context   | Reserved / Custom |
 +-------------------+-------------------+-------------------+-------------------+
 ```
 
 ### Word Layout Specifications:
 
-* Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix.
-* Word 1 (Local Symbol ID): A sequentially generated (monotonically increasing) numeric ID assigned by the local module parsing thread as it encounters declarations (structs, functions, enums).
+* Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix. **Architectural Fix**: To prevent catastrophic 64-bit Birthday Paradox collisions in large global ecosystems, the compiler treats `Word 0` and `Word 1` as a composite 128-bit namespace-and-symbol cryptographic hash, rendering collisions mathematically impossible.
+* Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits.
 * Word 2 (Generic Context Hash): For unmonomorphized generic blueprints, this is strictly 0x0000.... When a generic type is instantiated with concrete arguments downstream, this slot is populated with the combined hash of the argument types.
 * Word 3 (Reserved Space): Allocated for future compiler extensions, layout tracking, or alignment metadata flags.
 
@@ -64,7 +64,9 @@ Inside each 16-bit parameter window, the bit layout encodes both variance rules 
 * Bits 0–11 (12 bits): Local Lifetime Region ID (supports tracking up to 4,096 unique lifetime boundaries per function scope).
 
 #### The Slow-Path Structure (Bit 63 = 1)
-For statistical outliers—such as functions with 5 or more type/lifetime arguments—the escape-hatch bit is flipped to 1. The remaining 63 bits immediately cease to function as a bitmask and are treated as a guaranteed unique, sequential index into an unbounded, global, read-only memory arena.
+For statistical outliers—such as functions with 5 or more type/lifetime arguments, or those requiring dynamic Trait/Protocol resolution vtables—the escape-hatch bit is flipped to 1. The remaining 63 bits immediately cease to function as a bitmask and are treated as a guaranteed unique, sequential index into an unbounded, global, read-only memory arena.
+
+**Architectural Fix:** Trait solving (e.g., resolving `<T as Iterator>::Item`) is non-local and cannot easily be squashed into register math. The SLOW-PATH arena explicitly accommodates Trait Implementation Dictionaries and vtable pointers generated during the parallel type-checking phase.
 
 ```
 +---+-------------------------------------------------------------------------------+
@@ -90,6 +92,7 @@ use bytemuck::{Pod, Zeroable};
 #[derive(Debug, Clone)]pub struct UnboundedFunctionMetadata {
     pub type_arguments: Vec<TypeId>,
     pub lifetime_regions: Vec<u32>,
+    pub trait_vtables: Vec<u64>, // Architectural Fix: Stores resolved trait implementation IDs
 }
 // A global, pre-allocated, thread-safe arena for slow-path storage// In production, this can be managed via a lock-free append-only vector or a frozen registrypub static GLOBAL_SLOW_PATH_ARENA: once_cell::sync::Lazy<Vec<UnboundedFunctionMetadata>> =
     once_cell::sync::Lazy::new(Vec::new);
@@ -308,6 +311,7 @@ To prevent the backend from wasting cycles compiling duplicate generic variants 
 2. Isolated Merge Pass: Using Rayon's par_iter_mut(), a dedicated thread takes exclusive ownership of a module's bucket.
 3. Cache-Friendly Compaction: The thread executes an unstable sort (sort_unstable()) followed by a linear duplication purge (dedup()) on the flat 256-bit integers. Because threads work on entirely separate buckets, there is zero lock contention.
 4. Localized Monomorphic Generation: The unique keys remaining in the bucket represent the exact concrete variations that the specific module must expose. The thread fetches the module's generic blueprint layout and emits the concrete Intermediate Representation (IR) chunks sequentially.
+5. Cross-Crate Boundary Fallback (Architectural Fix): If `Word 0` belongs to an external, pre-compiled crate (which is not participating in the current parallel backend session), the bucketing algorithm intercepts the request. The responsibility to monomorphize the upstream blueprint (e.g., `ExternalList<MyType>`) falls back to the downstream crate that instantiated it, ensuring IR is emitted locally without attempting to route to a frozen upstream bucket.
 
 ------------------------------
 ## 5. Metadata Serialization Architecture
