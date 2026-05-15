@@ -148,8 +148,21 @@ impl TypeId {
 By encapsulating variance rules and lifetime scopes directly into the type identifier, the borrow checker can process constraints via fast path register comparisons.
 
 ```rust
-/// High-performance verification check for variance and lifetime compatibilitypub fn verify_subtyping_bounds(type_a: TypeId, type_b: TypeId) -> bool {
-    match (type_a.lifetime_context(), type_b.lifetime_context()) {
+/// High-performance verification check for variance and lifetime compatibilitypub fn verify_subtyping_bounds(
+    type_a: TypeId, 
+    type_b: TypeId, 
+    worker_state: &LocalWorkerState
+) -> bool {
+    // Helper closure to route to the correct arena based on the deferred bit
+    let get_context = |t: TypeId| {
+        if t.is_local_deferred() {
+            t.lifetime_context(&worker_state.local_slow_path_arena)
+        } else {
+            t.lifetime_context(&worker_state.global.slow_path_arena)
+        }
+    };
+
+    match (get_context(type_a), get_context(type_b)) {
         (LifetimeSignature::FastPath(bits_a), LifetimeSignature::FastPath(bits_b)) => {
             // FAST PATH: Check lifetime compatibility using register operations
             if bits_a == bits_b {
@@ -220,6 +233,7 @@ We can partition the 64 bits of Word 3 into distinct functional segments that se
    * Bit 45 = Contains pointers/heap resources (Requires structural drop validation)
 * Bits 0–43 (44 bits) - Reserved for Optimization Passes / Incremental Flags:
    * Bit 43 = LOCAL_DEFERRED_BIT (Flags that Word 2 contains a local generic queue index, pending Phase 2 interning)
+   * Bit 42 = SYNTHETIC_MONO_FLAG (Added for cross-crate routing to intercept external instantiations)
 * Left empty for your backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
 
 ------------------------------
@@ -692,8 +706,9 @@ pub fn parallel_module_deduplication(
         let mut target_hash = type_id.module_id();
         
         // Origin-Preserving Routing Fix:
-        // If the target module is an external, read-only crate, we intercept the request.
-        if is_external_module(target_hash) {
+        // If the target module hash is NOT in our local module_hash_to_index map, 
+        // it belongs to an upstream, frozen crate.
+        if !module_hash_to_index.contains_key(&target_hash) {
             target_hash = caller_module_id;
             // Flag Word 3 to indicate this is a Synthetic Monomorphization Bucket request
             type_id.words[3] |= SYNTHETIC_MONO_FLAG;
