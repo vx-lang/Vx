@@ -23,7 +23,10 @@ fn test_pipeline_architecture_hooks() {
 
         fn run_module_a() -> Config {
             let c = Config { id: 1, active: true };
-            return process_config(10, &c, 100u32, 5000u64, 1.5f32);
+            let count: u32 = 100;
+            let limit: u64 = 5000;
+            let ratio: f32 = 1.5;
+            return process_config(10, &c, count, limit, ratio);
         }
         "#,
     )
@@ -31,7 +34,7 @@ fn test_pipeline_architecture_hooks() {
 
     // File 2: Function with 10+ parameters to trigger Slow Path (UnboundedFunctionMetadata)
     // Also tests ownership references (&mut)
-    let file2_path = dir.path().join("module_b.vx");
+    let file2_path = dir.as_path().join("module_b.vx");
     fs::write(
         &file2_path,
         r#"
