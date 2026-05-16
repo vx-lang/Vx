@@ -3,7 +3,7 @@ use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
-    // Phase 1: Parallel Parsing & Local Symbol Generation
+    // Phase 1.1: Parallel Parsing & Local Symbol Generation
     // Each thread parses a file and populates its Thread-Local Arena with structs, enums, etc.
     let modules: Result<Vec<VxModule>, String> = file_paths
         .par_iter()
@@ -38,7 +38,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .for_each(|m| m.resolve_names(&symbol_map));
     println!("Resolved {} modules in parallel", parsed_modules.len());
 
-    // Phase 2: Sequential Global Registry Build & Cycle Detection
+    // Phase 1.2: Sequential Global Registry Build & Cycle Detection
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
@@ -47,7 +47,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let global_env_modules = parsed_modules.clone();
     let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
 
-    // Phase 3: Parallel Body Type-Checking & Lowering to Flat Array
+    // Phase 1.3: Parallel Body Type-Checking (Lock-Free Frontend Threading)
     let mut check_results: Vec<_> = parsed_modules
         .par_iter_mut()
         .enumerate()
@@ -96,7 +96,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         ));
     }
 
-    // Phase 2: Sequential Global Deduplication & Epoch Advance
+    // Phase 2 & 3: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
     let mut merged_generics_arena = (*global_session.generics_arena).clone();
 
