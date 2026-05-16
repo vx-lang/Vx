@@ -744,3 +744,175 @@ pub fn parallel_module_deduplication(
     });
 }
 ```
+
+## The Verification Engine
+This is the blueprint for the Verification Engine, mapped precisely to the phase boundaries of the pipeline. By injecting these hooks at the exact sync points, you create a mathematical proof of your compiler's data-oriented invariants.
+
+Because we want this to be a zero-cost abstraction in production, the entire engine should be gated behind `#[cfg(debug_assertions)]` or a dedicated `#[cfg(feature = "verify-arch")]`.
+
+Here is the exact API design and the mathematical invariants they enforce at each boundary.
+
+### The Verification Trait
+
+First, define the core trait that the main compiler loop will call between phases.
+
+```rust
+#[cfg(feature = "verify-arch")]
+pub trait ArchitectureVerifier {
+    fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSession>);
+    fn verify_phase_3_5_simd_patch(patched_type_stream: &[[u64; 4]], session: &Arc<GlobalSession>);
+    fn verify_phase_4_routing(buckets: &[Vec<TypeId>], module_index_map: &HashMap<u64, usize>);
+    fn verify_lsp_memory_reclamation(old_epoch: Weak<GlobalSession>);
+}
+
+```
+
+---
+
+### Hook 1: The Epoch Freeze (Phase 1 → Phase 2)
+
+**Injection Point:** Fires immediately after all type-checking threads join, but *before* the local arenas are merged into the global session.
+
+```rust
+fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSession>) {
+    for worker in workers {
+        // INVARIANT 1: Zero Shared Mutability (The Aliasing Proof)
+        // Prove that every thread read from the exact same frozen memory location,
+        // and no thread secretly cloned the global session to mutate it.
+        assert_eq!(
+            Arc::as_ptr(&worker.global), 
+            Arc::as_ptr(global),
+            "FATAL: Worker thread diverged from the frozen GlobalSession."
+        );
+
+        // INVARIANT 2: Arena Bounding
+        // Prove that no TypeId generated during Phase 1 points to unallocated memory.
+        for gid in &worker.local_type_stream {
+            if (gid[3] & LOCAL_DEFERRED_BIT) != 0 {
+                // It's a local pointer. Assert it fits in the local worker arena.
+                let index = (gid[2] & INDEX_MASK) as usize;
+                let arena_len = if (gid[3] & IS_GENERIC_INST_FLAG) != 0 {
+                    worker.local_generics_arena.len()
+                } else {
+                    worker.local_slow_path_arena.len()
+                };
+                assert!(index < arena_len, "FATAL: Local deferred index out of bounds.");
+            }
+        }
+    }
+}
+
+```
+
+---
+
+### Hook 2: The Absolute Identity Proof (Phase 3.5)
+
+**Injection Point:** Fires immediately after the SIMD Patch Pass finishes sweeping the `local_type_stream`.
+
+```rust
+fn verify_phase_3_5_simd_patch(patched_type_stream: &[[u64; 4]], session: &Arc<GlobalSession>) {
+    // We can use rayon here to verify the patch pass in parallel
+    patched_type_stream.par_iter().for_each(|gid| {
+        // INVARIANT 1: The Eradication of Local State
+        // Mathematically prove that the SIMD unit cleared every single deferred bit.
+        assert_eq!(
+            gid[3] & LOCAL_DEFERRED_BIT, 0,
+            "FATAL: SIMD Patch Pass missed a deferred bit. Absolute identity failed."
+        );
+
+        // INVARIANT 2: Global Coordinate Integrity
+        // Prove that the patched Word 2 indices safely map to the newly merged global arenas.
+        if (gid[2] & ESCAPE_HATCH_MASK) != 0 {
+            let index = (gid[2] & INDEX_MASK) as usize;
+            if (gid[3] & IS_GENERIC_INST_FLAG) != 0 {
+                assert!(index < session.generics_arena.len(), "FATAL: Patched generics index OOB.");
+            } else {
+                assert!(index < session.slow_path_arena.len(), "FATAL: Patched function index OOB.");
+            }
+        }
+    });
+}
+
+```
+
+---
+
+### Hook 3: The Monomorphization Router (Phase 4)
+
+**Injection Point:** Fires after the `all_collected_requests` have been binned into `module_buckets`, right before the parallel `.dedup()` and code-generation threads are spawned.
+
+```rust
+fn verify_phase_4_routing(buckets: &[Vec<TypeId>], module_index_map: &HashMap<u64, usize>) {
+    // Build a reverse lookup mapping dense indices back to their Module Hashes
+    let index_to_hash: Vec<u64> = // ... compute reverse map ...
+
+    for (bucket_index, bucket) in buckets.iter().enumerate() {
+        let expected_bucket_hash = index_to_hash[bucket_index];
+
+        for type_id in bucket {
+            let type_module_hash = type_id.module_id(); // Word 0
+
+            if (type_id.words[3] & SYNTHETIC_MONO_FLAG) != 0 {
+                // INVARIANT 1: The Synthetic Routing Proof
+                // If it's an external crate monomorphization, prove that Word 0 
+                // matches the caller's bucket, not the external crate's hash.
+                assert_eq!(
+                    type_module_hash, expected_bucket_hash,
+                    "FATAL: Synthetic monomorphization leaked into an upstream/wrong bucket."
+                );
+            } else {
+                // INVARIANT 2: Pure Routing
+                // Prove normal types were binned correctly.
+                assert_eq!(
+                    type_module_hash, expected_bucket_hash,
+                    "FATAL: Standard type binned into incorrect module bucket."
+                );
+            }
+        }
+    }
+}
+
+```
+
+---
+
+### Hook 4: The LSP Memory Proof (Phase 5 / Epoch Advance)
+
+**Injection Point:** Fires when the compiler runs in daemon mode, right after the new `GlobalSession` is initialized and the old one is dropped from the main thread.
+
+```rust
+fn verify_lsp_memory_reclamation(old_epoch: Weak<GlobalSession>) {
+    // INVARIANT: Zero Leakage
+    // Prove that the Rust borrow checker successfully destroyed the previous epoch.
+    // If this upgrade succeeds, it means a thread or a rogue data structure 
+    // is secretly holding an Arc<GlobalSession> hostage, causing a memory leak.
+    assert!(
+        old_epoch.upgrade().is_none(),
+        "FATAL: Memory Leak detected. The previous Epoch was not fully dropped."
+    );
+}
+
+```
+
+### Hooking it into the Pipeline
+
+Your main compilation loop then looks incredibly clean. It serves as self-documenting code that proves your architectural constraints to anyone reading it:
+
+```rust
+// Phase 1: Type Checking
+let workers = run_parallel_type_check(ast, &global_session);
+#[cfg(feature = "verify-arch")]
+Verifier::verify_phase_1_isolation(&workers, &global_session);
+
+// Phase 2 & 3: Merge and Freeze
+let new_global_session = advance_epoch(workers, global_session);
+
+// Phase 3.5: SIMD Patch
+patch_deferred_indices(&mut flat_type_stream, &new_global_session);
+#[cfg(feature = "verify-arch")]
+Verifier::verify_phase_3_5_simd_patch(&flat_type_stream, &new_global_session);
+
+// ... and so on.
+
+```
