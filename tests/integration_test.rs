@@ -61,18 +61,14 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     if checker.errors.is_empty() {
         let monomorphized_ast = program;
         let module_asts = std::collections::HashMap::new();
-        match Ok((monomorphized_ast, module_asts)) {
-        Ok((monomorphized_ast, module_asts)) => {
-            let mut codegen = vxc::codegen::MlirGenerator::new();
-            let _mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-            Ok(monomorphized_ast)
+        let mut codegen = vxc::codegen::MlirGenerator::new();
+        let _mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+        Ok(monomorphized_ast)
+    } else {
+        for err in &checker.errors {
+            println!("run_pipeline semantic error: {}", err);
         }
-        Err(errs) => {
-            for err in &errs {
-                println!("run_pipeline semantic error: {}", err);
-            }
-            Err(errs)
-        }
+        Err(checker.errors)
     }
 }
 

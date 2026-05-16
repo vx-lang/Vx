@@ -64,10 +64,15 @@ fn run_middle_end_test(path: &Path) {
     let mut parser = Parser::new(lexer.tokenize(), &source);
     let mut program = parser.parse().expect("Failed to parse");
 
-    let mut checker = TypeChecker::new();
-    let (monomorphized_program, module_asts) =
-        checker.check_program(&mut program).expect("Sema failed");
-
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [program.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions { checker.check_function(f); }
+    assert!(checker.errors.is_empty(), "Sema failed");
+    let monomorphized_program = program;
+    let module_asts = std::collections::HashMap::new();
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
@@ -100,15 +105,17 @@ fn run_backend_test(path: &Path) {
         Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
     };
 
-    let mut checker = TypeChecker::new();
-    let (monomorphized_program, module_asts) = match checker.check_program(&mut program) {
-        Ok((p, m)) => (p, m),
-        Err(errors) => panic!(
-            "Semantic check failed on '{}':\n{:?}",
-            path.display(),
-            errors
-        ),
-    };
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [program.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions { checker.check_function(f); }
+    if !checker.errors.is_empty() {
+        panic!("Semantic check failed on '{}':\n{:?}", path.display(), checker.errors);
+    }
+    let monomorphized_program = program;
+    let module_asts = std::collections::HashMap::new();
 
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);

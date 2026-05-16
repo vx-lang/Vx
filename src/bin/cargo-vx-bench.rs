@@ -105,35 +105,31 @@ fn main() -> i32 {
                     if checker.errors.is_empty() {
                         let monomorphized_ast = ast;
                         let module_asts = std::collections::HashMap::new();
-                        match Ok((monomorphized_ast, module_asts)) {
-                        Ok((monomorphized_ast, module_asts)) => {
-                            let mut codegen = vxc::codegen::MlirGenerator::new();
-                            let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                            match vxc::jit::execute_mlir(&mlir_str) {
-                                Ok(output) => {
-                                    // Parse the output to find the float time like [0.125]
-                                    if let Some(caps) = re_time.captures(&output) {
-                                        let time_f = caps[1].parse::<f32>().unwrap();
-                                        println!("{:.4}s", time_f);
-                                        results.push((file_name.to_string(), time_f));
-                                    } else {
-                                        println!("(no timing output)");
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("FAILED");
-                                    eprintln!("Execution Error: {}", e);
+                        let mut codegen = vxc::codegen::MlirGenerator::new();
+                        let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                        match vxc::jit::execute_mlir(&mlir_str) {
+                            Ok(output) => {
+                                // Parse the output to find the float time like [0.125]
+                                if let Some(caps) = re_time.captures(&output) {
+                                    let time_f = caps[1].parse::<f32>().unwrap();
+                                    println!("{:.4}s", time_f);
+                                    results.push((file_name.to_string(), time_f));
+                                } else {
+                                    println!("(no timing output)");
                                 }
                             }
-                        }
-                        Err(errs) => {
-                            println!("FAILED");
-                            eprintln!("Semantic Errors:");
-                            for err in errs {
-                                eprintln!(" - {}", err);
+                            Err(e) => {
+                                println!("FAILED");
+                                eprintln!("Execution Error: {}", e);
                             }
-                            eprintln!("Final Source:\n{}", final_source);
                         }
+                    } else {
+                        println!("FAILED");
+                        eprintln!("Semantic Errors:");
+                        for err in checker.errors {
+                            eprintln!(" - {}", err);
+                        }
+                        eprintln!("Final Source:\n{}", final_source);
                     }
                 }
                 Err(e) => {

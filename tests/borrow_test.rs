@@ -3,7 +3,7 @@ use vxc::borrow::verify_subtyping_bounds;
 
 #[test]
 fn test_fast_path_variance_checks() {
-    let session = CompilationSession::new(1);
+    let session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     // Type A: Variance = 0, Region = 0 ('static)
     let mut type_a = TypeId::new(0, 0, 0, 0);
     type_a.try_set_fast_param(0, 0, 0).unwrap();
