@@ -11,7 +11,6 @@ pub struct GlobalSession {
     pub epoch: u64,
     pub registry: Arc<ImmutableGlobalRegistry>,
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
-    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
 
 impl GlobalSession {
@@ -20,7 +19,6 @@ impl GlobalSession {
             epoch,
             registry: Arc::new(ImmutableGlobalRegistry {}),
             slow_path_arena: Arc::new(Vec::new()),
-            generics_arena: Arc::new(Vec::new()),
         }
     }
 }
@@ -31,7 +29,6 @@ pub struct LocalWorkerState {
     
     // Completely lock-free, thread-local mutation
     pub local_slow_path_arena: Vec<UnboundedFunctionMetadata>,
-    pub local_generics_arena: Vec<Vec<TypeId>>,
     
     // The flat arrays replacing the AST
     pub local_type_stream: Vec<TypeId>, // array of 256-bit GIDs
@@ -45,7 +42,6 @@ impl LocalWorkerState {
         Self {
             global,
             local_slow_path_arena: Vec::new(),
-            local_generics_arena: Vec::new(),
             local_type_stream: Vec::new(),
             local_hir_stream: Vec::new(),
         }

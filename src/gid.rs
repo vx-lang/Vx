@@ -49,7 +49,7 @@ impl TypeId {
 }
 
 // Mock structure for complex, unbounded parameter layouts (Slow Path)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnboundedFunctionMetadata {
     pub type_arguments: Vec<TypeId>,
     pub lifetime_regions: Vec<u32>,

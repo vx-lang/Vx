@@ -46,22 +46,22 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
 
     // Phase 3: Parallel Body Type-Checking & Lowering to Flat Array
-    let check_results: Vec<_> = parsed_modules.par_iter_mut().flat_map(|module| {
-        module.functions.par_iter_mut().map(|func| {
+    let check_results: Vec<_> = parsed_modules.par_iter_mut().enumerate().flat_map(|(module_idx, module)| {
+        module.functions.par_iter_mut().map(move |func| {
             let mut worker = crate::session::LocalWorkerState::new(global_session.clone());
             let mut checker = crate::sema::TypeChecker::new(&global_env, &mut worker);
             checker.check_function(func);
-            (checker.errors, checker.monomorphized_functions, worker)
+            (checker.errors, checker.monomorphized_functions, worker, module_idx)
         }).collect::<Vec<_>>()
     }).collect();
     
-    let total_errors: usize = check_results.iter().map(|(errs, _, _)| errs.len()).sum();
-    let total_monomorphized: usize = check_results.iter().map(|(_, monos, _)| monos.len()).sum();
+    let total_errors: usize = check_results.iter().map(|(errs, _, _, _)| errs.len()).sum();
+    let total_monomorphized: usize = check_results.iter().map(|(_, monos, _, _)| monos.len()).sum();
 
     println!("Type checked bodies in parallel: {} errors, {} monomorphized variants generated", total_errors, total_monomorphized);
 
     if total_errors > 0 {
-        for (errs, _, _) in &check_results {
+        for (errs, _, _, _) in &check_results {
             for err in errs {
                 println!("Error: {}", err);
             }
@@ -73,12 +73,23 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
     let mut thread_mappings: Vec<Vec<u64>> = Vec::new();
     
-    for (_, _, worker) in &check_results {
+    // We use a HashMap to structurally deduplicate the UnboundedFunctionMetadata (Phase 2.25)
+    let mut dedup_map: std::collections::HashMap<crate::gid::UnboundedFunctionMetadata, u64> = std::collections::HashMap::new();
+    for (i, meta) in merged_slow_path_arena.iter().enumerate() {
+        dedup_map.insert(meta.clone(), i as u64);
+    }
+    
+    for (_, _, worker, _) in &check_results {
         let mut local_mapping = Vec::new();
         for meta in &worker.local_slow_path_arena {
-            let global_idx = merged_slow_path_arena.len() as u64;
-            merged_slow_path_arena.push(meta.clone());
-            local_mapping.push(global_idx);
+            if let Some(&global_idx) = dedup_map.get(meta) {
+                local_mapping.push(global_idx);
+            } else {
+                let global_idx = merged_slow_path_arena.len() as u64;
+                merged_slow_path_arena.push(meta.clone());
+                dedup_map.insert(meta.clone(), global_idx);
+                local_mapping.push(global_idx);
+            }
         }
         thread_mappings.push(local_mapping);
     }
@@ -87,7 +98,6 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         epoch: 2,
         registry: global_session.registry.clone(),
         slow_path_arena: std::sync::Arc::new(merged_slow_path_arena),
-        generics_arena: global_session.generics_arena.clone(),
     });
     
     println!("Phase 2: Merged {} local arenas into global. Advancing to Epoch 2.", thread_mappings.len());
@@ -98,7 +108,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)> = check_results
         .into_iter()
         .enumerate()
-        .map(|(thread_idx, (_, _, worker))| (thread_idx, worker.local_type_stream))
+        .map(|(thread_idx, (_, _, worker, _))| (thread_idx, worker.local_type_stream))
         .collect();
         
     const LOCAL_DEFERRED_BIT: u64 = 1 << 43; // Word 3
@@ -128,8 +138,31 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     println!("SIMD Patch Pass completed. AST is officially lowered to Flat Array.");
 
     // Phase 4: Parallel Module Deduplication & Codegen
-    // Deduplicate monomorphized variants to prevent bloat
-    println!("Monomorphized generics deduplicated");
+    let num_modules = parsed_modules.len();
+    let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
+
+    // Collect all monomorphized functions into their caller's module bucket
+    for (_, monos, _, caller_module_idx) in check_results {
+        for func in monos {
+            module_buckets[caller_module_idx].push(func);
+        }
+    }
+
+    // Parallel Deduplication Step (Zero Lock Contention)
+    parsed_modules.par_iter_mut().enumerate().for_each(|(i, module)| {
+        let mut bucket = std::mem::take(&mut module_buckets[i]);
+        
+        // Dedup based on function name (mangled signature is unique)
+        bucket.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        bucket.dedup_by(|a, b| a.name == b.name);
+        
+        // Prepend to the module's AST to ensure correct register allocation ordering
+        let mut new_functions = bucket;
+        new_functions.extend(std::mem::take(&mut module.functions));
+        module.functions = new_functions;
+    });
+
+    println!("Monomorphized generics deduplicated and appended to modules in parallel");
 
     Ok(())
 }
