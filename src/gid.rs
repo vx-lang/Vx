@@ -17,6 +17,7 @@ pub const TYPE_IS_POD: u64 = 1 << 44;
 pub const TYPE_NEEDS_DROP: u64 = 1 << 45;
 pub const LOCAL_DEFERRED_BIT: u64 = 1 << 43;
 pub const SYNTHETIC_MONO_FLAG: u64 = 1 << 42;
+pub const IS_GENERIC_INST_FLAG: u64 = 1 << 41;
 
 /// The 256-bit Global Identifier
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable, Debug)]

@@ -7,10 +7,30 @@ pub struct ImmutableGlobalRegistry {}
 
 /// Represents the frozen past of the compilation process.
 /// It contains everything compiled before the current phase.
+///
+/// # Data-Oriented Design (DOD) Constraints
+/// This session deliberately separates dynamic compiler metadata into strictly 
+/// typed, homogeneous arenas rather than using a single polymorphic `Enum` array 
+/// (e.g., `enum SlowPathData { Function(...), Generics(...) }`).
+///
+/// 1. **Cache-Line Density**: `UnboundedFunctionMetadata` is a dense structure of `u64`
+///    bitfields. Iterating over it is highly predictable. `Vec<TypeId>`, however, 
+///    is a heap-allocated fat pointer with variable lengths. Mixing them would introduce
+///    unpredictable struct padding and pointer-chasing overhead.
+/// 2. **Hardware Prefetching**: By keeping `generics_arena` separate, the CPU's spatial 
+///    prefetcher can stream through the dense `slow_path_arena` at maximum bandwidth 
+///    during the critical lifetime subtyping pass, without stalling on scattered `Vec` pointers.
 pub struct GlobalSession {
     pub epoch: u64,
     pub registry: Arc<ImmutableGlobalRegistry>,
+    
+    /// The dense, homogeneous arena for complex parameter and lifetime evaluation.
+    /// Accessed heavily during Phase 1 type-checking and borrow checking.
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
+    
+    /// The heterogeneous arena for structural generic instantiations.
+    /// Separated to prevent cache fragmentation in the `slow_path_arena`.
+    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
 
 impl GlobalSession {
@@ -19,6 +39,7 @@ impl GlobalSession {
             epoch,
             registry: Arc::new(ImmutableGlobalRegistry {}),
             slow_path_arena: Arc::new(Vec::new()),
+            generics_arena: Arc::new(Vec::new()),
         }
     }
 }
@@ -29,6 +50,7 @@ pub struct LocalWorkerState {
     
     // Completely lock-free, thread-local mutation
     pub local_slow_path_arena: Vec<UnboundedFunctionMetadata>,
+    pub local_generics_arena: Vec<Vec<TypeId>>,
     
     // The flat arrays replacing the AST
     pub local_type_stream: Vec<TypeId>, // array of 256-bit GIDs
@@ -42,6 +64,7 @@ impl LocalWorkerState {
         Self {
             global,
             local_slow_path_arena: Vec::new(),
+            local_generics_arena: Vec::new(),
             local_type_stream: Vec::new(),
             local_hir_stream: Vec::new(),
         }

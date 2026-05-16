@@ -71,36 +71,60 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     // Phase 2: Sequential Global Deduplication & Epoch Advance
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
-    let mut thread_mappings: Vec<Vec<u64>> = Vec::new();
+    let mut merged_generics_arena = (*global_session.generics_arena).clone();
+    
+    let mut slow_path_thread_mappings: Vec<Vec<u64>> = Vec::new();
+    let mut generics_thread_mappings: Vec<Vec<u64>> = Vec::new();
     
     // We use a HashMap to structurally deduplicate the UnboundedFunctionMetadata (Phase 2.25)
-    let mut dedup_map: std::collections::HashMap<crate::gid::UnboundedFunctionMetadata, u64> = std::collections::HashMap::new();
+    let mut dedup_map_slow: std::collections::HashMap<crate::gid::UnboundedFunctionMetadata, u64> = std::collections::HashMap::new();
     for (i, meta) in merged_slow_path_arena.iter().enumerate() {
-        dedup_map.insert(meta.clone(), i as u64);
+        dedup_map_slow.insert(meta.clone(), i as u64);
+    }
+    
+    let mut dedup_map_generics: std::collections::HashMap<Vec<crate::gid::TypeId>, u64> = std::collections::HashMap::new();
+    for (i, gen) in merged_generics_arena.iter().enumerate() {
+        dedup_map_generics.insert(gen.clone(), i as u64);
     }
     
     for (_, _, worker, _) in &check_results {
-        let mut local_mapping = Vec::new();
+        // Slow Path Deduplication
+        let mut local_mapping_slow = Vec::new();
         for meta in &worker.local_slow_path_arena {
-            if let Some(&global_idx) = dedup_map.get(meta) {
-                local_mapping.push(global_idx);
+            if let Some(&global_idx) = dedup_map_slow.get(meta) {
+                local_mapping_slow.push(global_idx);
             } else {
                 let global_idx = merged_slow_path_arena.len() as u64;
                 merged_slow_path_arena.push(meta.clone());
-                dedup_map.insert(meta.clone(), global_idx);
-                local_mapping.push(global_idx);
+                dedup_map_slow.insert(meta.clone(), global_idx);
+                local_mapping_slow.push(global_idx);
             }
         }
-        thread_mappings.push(local_mapping);
+        slow_path_thread_mappings.push(local_mapping_slow);
+        
+        // Generics Arena Deduplication
+        let mut local_mapping_generics = Vec::new();
+        for gen in &worker.local_generics_arena {
+            if let Some(&global_idx) = dedup_map_generics.get(gen) {
+                local_mapping_generics.push(global_idx);
+            } else {
+                let global_idx = merged_generics_arena.len() as u64;
+                merged_generics_arena.push(gen.clone());
+                dedup_map_generics.insert(gen.clone(), global_idx);
+                local_mapping_generics.push(global_idx);
+            }
+        }
+        generics_thread_mappings.push(local_mapping_generics);
     }
     
     let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
         registry: global_session.registry.clone(),
         slow_path_arena: std::sync::Arc::new(merged_slow_path_arena),
+        generics_arena: std::sync::Arc::new(merged_generics_arena),
     });
     
-    println!("Phase 2: Merged {} local arenas into global. Advancing to Epoch 2.", thread_mappings.len());
+    println!("Phase 2: Merged {} local arenas into global. Advancing to Epoch 2.", slow_path_thread_mappings.len());
 
     // Phase 3.5: SIMD Patch Pass (Pure Data-Oriented)
     println!("Executing Phase 3.5: SIMD Patch Pass over Flat Type Streams");
@@ -111,10 +135,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .map(|(thread_idx, (_, _, worker, _))| (thread_idx, worker.local_type_stream))
         .collect();
         
-    const LOCAL_DEFERRED_BIT: u64 = 1 << 43; // Word 3
+    const LOCAL_DEFERRED_BIT: u64 = crate::gid::LOCAL_DEFERRED_BIT; // Word 3
+    const IS_GENERIC_INST_FLAG: u64 = crate::gid::IS_GENERIC_INST_FLAG; // Word 3
 
     all_type_streams.par_iter_mut().for_each(|(thread_idx, stream)| {
-        let mapping = &thread_mappings[*thread_idx];
+        let mapping_slow = &slow_path_thread_mappings[*thread_idx];
+        let mapping_generics = &generics_thread_mappings[*thread_idx];
         
         // SIMD loop operating entirely on the flat stream. The AST is long gone.
         for chunk in stream.chunks_mut(8) { // 8 GIDs per AVX-512 register
@@ -123,8 +149,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                     // Extract local index from Word 2
                     let local_index = gid.words[2] as usize;
                     
-                    // Parallel gather from the local-to-global mapping table.
-                    let global_index = mapping[local_index]; 
+                    // Parallel gather from the proper local-to-global mapping table.
+                    let global_index = if (gid.words[3] & IS_GENERIC_INST_FLAG) != 0 {
+                        mapping_generics[local_index]
+                    } else {
+                        mapping_slow[local_index]
+                    };
                     
                     // Overwrite Word 2 with the absolute global index.
                     gid.words[2] = global_index;

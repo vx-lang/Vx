@@ -75,6 +75,11 @@ To prevent infinite memory growth when the compiler runs as a long-lived Languag
 pub struct CompilationSession {
     pub epoch: u64,
     pub registry: Arc<ImmutableGlobalRegistry>,
+
+    // DOD Constraint: Strictly separated arenas to preserve CPU prefetcher behavior.
+    // We explicitly avoid merging these into a polymorphic `enum SlowPathData { ... }`
+    // because `Vec<TypeId>` (a dynamic fat pointer) would introduce unpredictable
+    // struct padding and destroy the cache-line density of `UnboundedFunctionMetadata`.
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
     pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
@@ -351,6 +356,11 @@ This struct represents the absolute, immutable truth of everything compiled *bef
 pub struct GlobalSession {
     pub epoch: u64,
     pub registry: Arc<ImmutableGlobalRegistry>,
+
+    // DOD Constraint: Strictly separated arenas to preserve CPU prefetcher behavior.
+    // We explicitly avoid merging these into a polymorphic `enum SlowPathData { ... }`
+    // because `Vec<TypeId>` (a dynamic fat pointer) would introduce unpredictable
+    // struct padding and destroy the cache-line density of `UnboundedFunctionMetadata`.
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
     pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
