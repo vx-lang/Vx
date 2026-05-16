@@ -70,8 +70,21 @@ pub mod verify_arch {
         }
 
         // Assert no duplicates exist in slow path arena
-        // Wait, UnboundedFunctionMetadata does not implement Eq and Hash by default in the mock.
-        // We can just rely on the count or just check lengths for a fast validation in our mock.
+        let mut slow_path_set = std::collections::HashSet::new();
+        for meta in global_slow_path_arena.iter() {
+            assert!(
+                slow_path_set.insert(meta),
+                "FATAL: Phase 4 Deduplication failed. Duplicate slow path metadata found."
+            );
+        }
+    }
+
+    pub fn verify_phase_5_epoch_advance(old_epoch: Weak<GlobalSession>) {
+        // INVARIANT: Zero Leakage
+        assert!(
+            old_epoch.upgrade().is_none(),
+            "FATAL: Memory Leak detected. The previous Epoch was not fully dropped."
+        );
     }
 
     pub fn verify_phase_6_simd_patch(
@@ -125,14 +138,6 @@ pub mod verify_arch {
                 // But this hook signature is available if we attach `TypeId` directly to AST nodes in the future.
             }
         }
-    }
-
-    pub fn verify_phase_5_epoch_advance(old_epoch: Weak<GlobalSession>) {
-        // INVARIANT: Zero Leakage
-        assert!(
-            old_epoch.upgrade().is_none(),
-            "FATAL: Memory Leak detected. The previous Epoch was not fully dropped."
-        );
     }
 
     pub fn verify_phase_8_serialization(bytes: &[u8], dictionary_len: usize) {
