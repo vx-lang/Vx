@@ -13,20 +13,21 @@ fn test_pipeline_architecture_hooks() {
         &file1_path,
         r#"
         struct Config {
-            id: i32,
+            id: f32,
             active: bool,
         }
 
-        fn process_config<T>(val: T, cfg: &Config, count: u32, limit: u64, ratio: f32) -> Config {
+        fn process_config<T>(val: T, cfg: &Config, count: f32, limit: f32, ratio: f32) -> &Config {
             return cfg;
         }
 
         fn run_module_a() -> Config {
             let c = Config { id: 1, active: true };
-            let count: u32 = 100;
-            let limit: u64 = 5000;
+            let count: f32 = 100;
+            let limit: f32 = 5000;
             let ratio: f32 = 1.5;
-            return process_config(10, &c, count, limit, ratio);
+            let _ref = process_config(10, &c, count, limit, ratio);
+            return c;
         }
         "#,
     )
