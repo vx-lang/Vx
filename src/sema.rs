@@ -423,7 +423,7 @@ impl<'a> TypeChecker<'a> {
 
     fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
         match expr {
-            Expr::Number(n, _) => Some(Value::Number(*n)),
+            Expr::Number(n, _, _) => Some(Value::Number(*n)),
             Expr::Identifier(n, _) if n == "true" => Some(Value::Bool(true)),
             Expr::Identifier(n, _) if n == "false" => Some(Value::Bool(false)),
             Expr::Identifier(n, _) => env.get(n).cloned(),
@@ -499,7 +499,7 @@ impl<'a> TypeChecker<'a> {
 
         // Determine opcode based on the AST expression
         let opcode = match expr {
-            Expr::Number(_, _) => crate::hir::OP_CONST,
+            Expr::Number(..) => crate::hir::OP_CONST,
             Expr::Identifier(_, _) => crate::hir::OP_LOAD,
             Expr::BinaryOp(_, op, _, _) => match op {
                 BinaryOp::Add => crate::hir::OP_ADD,
@@ -584,7 +584,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Enum(enum_name.clone(), None)
             }
-            Expr::Number(..) => Type::Scalar(ElementType::F32),
+            Expr::Number(_, Some(el_ty), _) => Type::Scalar(el_ty.clone()),
+            Expr::Number(_, None, _) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(..) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
                 None,
@@ -596,7 +597,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => Type::Pinned(
                         Box::new(inner_ty.clone()),
-                        Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
+                        Topology::NPU(Box::new(Expr::Number(0.0, None, Span::default()))),
                     ),
                     Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
@@ -954,7 +955,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         if let Expr::Array(perm, _) = &args[0] {
                             let empty_env = HashMap::new();
-                            let mut new_dims = vec![Expr::Number(0.0, Span::default()); dims.len()];
+                            let mut new_dims = vec![Expr::Number(0.0, None, Span::default()); dims.len()];
                             if perm.len() != dims.len() {
                                 self.errors.push(
                                     "transpose permutation map length must match tensor rank"
@@ -1067,7 +1068,7 @@ impl<'a> TypeChecker<'a> {
                     let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
-                        Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
+                        Topology::NPU(Box::new(Expr::Number(0.0, None, Span::default()))),
                     ); // Default to NPU[0]
                     *expr = Expr::Transfer(obj.clone(), target_mem, Span::default());
                 } else if _method == "to_host" {

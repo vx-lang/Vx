@@ -92,7 +92,7 @@ impl AstPrinter {
         let prefix = if is_last { "└─ " } else { "├─ " };
         match expr {
             Expr::Identifier(name, _) => println!("{}{}Identifier({})", indent, prefix, name),
-            Expr::Number(val, _) => println!("{}{}Number({})", indent, prefix, val),
+            Expr::Number(val, el_ty, _) => println!("{}{}Number({}{:?})", indent, prefix, val, el_ty),
             Expr::StringLiteral(s, _) => println!("{}{}String(\"{}\")", indent, prefix, s),
             Expr::BinaryOp(lhs, op, rhs, _) => {
                 println!("{}{}BinaryOp({:?})", indent, prefix, op);

@@ -485,8 +485,38 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenType::Number(s) => {
-                    let n = s.parse::<f64>().map_err(|_| "Invalid number".to_string())?;
-                    Expr::Number(n, Span::default())
+                    let mut num_str = s.clone();
+                    let mut suffix_str = String::new();
+                    
+                    if let Some(idx) = s.find(|c: char| c.is_alphabetic() || c == '_') {
+                        num_str = s[..idx].to_string();
+                        suffix_str = s[idx..].to_string();
+                    }
+
+                    let n = num_str.parse::<f64>().map_err(|_| format!("Invalid number: {}", num_str))?;
+                    
+                    let mut el_ty = None;
+                    if !suffix_str.is_empty() {
+                        el_ty = match suffix_str.as_str() {
+                            "f16" => Some(crate::ast::ElementType::F16),
+                            "f32" => Some(crate::ast::ElementType::F32),
+                            "f64" => Some(crate::ast::ElementType::F64),
+                            "bf16" => Some(crate::ast::ElementType::BF16),
+                            "i8" => Some(crate::ast::ElementType::I8),
+                            "i16" => Some(crate::ast::ElementType::I16),
+                            "i32" => Some(crate::ast::ElementType::I32),
+                            "i64" => Some(crate::ast::ElementType::I64),
+                            "i128" => Some(crate::ast::ElementType::I128),
+                            "u8" => Some(crate::ast::ElementType::U8),
+                            "u16" => Some(crate::ast::ElementType::U16),
+                            "u32" => Some(crate::ast::ElementType::U32),
+                            "u64" => Some(crate::ast::ElementType::U64),
+                            "u128" => Some(crate::ast::ElementType::U128),
+                            _ => return Err(format!("Unknown number suffix '{}'", suffix_str)),
+                        };
+                    }
+
+                    Expr::Number(n, el_ty, Span::default())
                 }
                 TokenType::StringLiteral(s) => Expr::StringLiteral(s, Span::default()),
                 TokenType::Import => {
@@ -1090,7 +1120,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         if let Statement::SpawnOn(top, stmts, _) = &func.body[0] {
             assert_eq!(
                 *top,
-                Topology::NPU(Box::new(Expr::Number(0.0, Span::default())))
+                Topology::NPU(Box::new(Expr::Number(0.0, None, Span::default())))
             );
             assert_eq!(stmts.len(), 4);
         } else {
@@ -1131,12 +1161,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(iter, start, end, body, _) = &program.functions[0].body[0] {
             assert_eq!(iter, "i");
-            assert_eq!(**start, Expr::Number(0.0, Span::default()));
-            assert_eq!(**end, Expr::Number(10.0, Span::default()));
+            assert_eq!(**start, Expr::Number(0.0, None, Span::default()));
+            assert_eq!(**end, Expr::Number(10.0, None, Span::default()));
             assert_eq!(body.len(), 1);
             if let Statement::Assign(lhs, rhs, _) = &body[0] {
                 assert_eq!(*lhs, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(*rhs, Expr::Number(5.0, Span::default()));
+                assert_eq!(*rhs, Expr::Number(5.0, None, Span::default()));
             } else {
                 panic!("Expected Assign");
             }
@@ -1154,7 +1184,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(*op, BinaryOp::Add);
             if let Expr::IndexAccess(arr, idx, _) = lhs {
                 assert_eq!(**arr, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(**idx, Expr::Number(0.0, Span::default()));
+                assert_eq!(**idx, Expr::Number(0.0, None, Span::default()));
             } else {
                 panic!("Expected IndexAccess");
             }

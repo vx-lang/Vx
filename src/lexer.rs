@@ -289,7 +289,7 @@ impl<'a> Lexer<'a> {
         text.push(start_char);
 
         while let Some(&c) = self.peek() {
-            if c.is_ascii_digit() {
+            if c.is_ascii_digit() || c.is_alphabetic() || c == '_' {
                 text.push(self.advance().unwrap());
             } else if c == '.' {
                 let mut temp = self.source.clone();

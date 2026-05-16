@@ -171,7 +171,7 @@ impl MlirGenerator {
                     shape_str = "?x?".to_string();
                 } else {
                     for (i, dim) in dims.iter().enumerate() {
-                        if let crate::ast::Expr::Number(n, _) = dim {
+                        if let crate::ast::Expr::Number(n, _, _) = dim {
                             shape_str.push_str(&format!("{}", *n as i64));
                         } else {
                             shape_str.push('?');
@@ -672,7 +672,7 @@ impl MlirGenerator {
                     (format!("%{}", name), expected_ty.to_string())
                 }
             }
-            Expr::Number(n, _) => {
+            Expr::Number(n, _, _) => {
                 let res = self.next_var();
                 let mut scalar_expected = expected_ty.to_string();
                 if scalar_expected.starts_with("memref<") {
@@ -1155,7 +1155,7 @@ impl MlirGenerator {
                     let mut shape_str = String::new();
                     if let crate::ast::Expr::Array(d_args, _) = &_args[0] {
                         for (i, d) in d_args.iter().enumerate() {
-                            if let crate::ast::Expr::Number(n, _) = d {
+                            if let crate::ast::Expr::Number(n, _, _) = d {
                                 shape_str.push_str(&format!("{}", *n as i64));
                             } else {
                                 shape_str.push('?');
@@ -1229,7 +1229,7 @@ impl MlirGenerator {
                                     if p_args.len() == dims.len() {
                                         let mut new_shape = String::new();
                                         for (i, p) in p_args.iter().enumerate() {
-                                            if let crate::ast::Expr::Number(n, _) = p {
+                                            if let crate::ast::Expr::Number(n, _, _) = p {
                                                 new_shape.push_str(dims[*n as usize]);
                                             } else {
                                                 new_shape.push('?');
