@@ -411,20 +411,37 @@ The compiler architecture rejects complex inter-stage pipelining in favor of a c
 1. File-Isolated Parsing: Threads walk the source tree. Each thread independently reads a module file and parses it into an Abstract Syntax Tree (AST).
 2. Interface Extraction: The parser extracts only the names and shapes of nominal types and function signatures. Function bodies are entirely ignored.
 3. Alias Erasure & Name Resolution (**Architectural Fix**): Resolving an alias like `use a::b::C` cannot be done in strict file isolation because `C` might itself be an alias. Name resolution must exist as a distinct topological or query-driven phase *between* raw parsing and freezing.
-4. The Freeze Point (Phase 2): All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global `Arc<HashMap<...>>`.
+### Phase 2: Global Registry Build (The Freeze Point)
 * **Pre-conditions:** All AST files are parsed.
 * **Post-conditions:** The global nominal layout table is entirely frozen and read-only. Cycle checks guarantee no infinitely recursive types.
 
+4. The Freeze Point: All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global `Arc<HashMap<...>>`.
 
-### Phase 2: Parallel Body Type-Checking & Generic Queuing
+
+### Phase 3: Parallel Body Type-Checking & Generic Queuing
+* **Pre-conditions:** `GlobalSession` is available and frozen.
+* **Post-conditions (Verification Hook: Isolation):** Mathematically proves zero shared mutability (aliasing) and asserts that local deferred indices fit precisely within the thread's local arena length.
 
 **The Deferred Interning Strategy (Architectural Fix)**:
 To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning.
 1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
-2. **Phase 5 Bucketed Interning**: After the Phase 2 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
-4. **Phase 6 The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
-   * **Pre-conditions:** `LOCAL_TYPE_STREAM` contains `LOCAL_DEFERRED_BIT` set on types.
-   * **Post-conditions (Verification Hook: Absolute Identity Proof):** Mathematically proves that the SIMD unit cleared every single deferred bit, and that the new global indices correctly fit within the bounds of the newly advanced `GlobalSession` arenas.
+### Phase 4: Parallel Local Deduplication (Bucketed Interning)
+* **Pre-conditions:** All worker threads have returned their `LocalWorkerState`.
+* **Post-conditions:** Duplicate types within the same compilation epoch are collapsed.
+
+2. **Bucketed Interning**: After the Phase 3 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
+
+### Phase 5: Cross-Thread Merging (Epoch Advance)
+* **Pre-conditions:** Deduplication is finished.
+* **Post-conditions (Verification Hook: LSP Memory Proof):** Uses a `Weak<GlobalSession>` pointer to prove the Rust borrow checker successfully destroyed the previous epoch, mathematically verifying zero memory leaks.
+
+3. **Epoch Advance**: The deduplicated global arenas are wrapped in a new `Arc<GlobalSession>` with an incremented epoch. The old session is dropped.
+
+### Phase 6: SIMD Patch Pass
+* **Pre-conditions:** `LOCAL_TYPE_STREAM` contains `LOCAL_DEFERRED_BIT` set on types.
+* **Post-conditions (Verification Hook: Absolute Identity Proof):** Mathematically proves that the SIMD unit cleared every single deferred bit, and that the new global indices correctly fit within the bounds of the newly advanced `GlobalSession` arenas.
+
+4. **The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
 
 
 1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (`&TypeDefinition`).
@@ -433,7 +450,7 @@ To prevent identity failures when multiple threads concurrently instantiate iden
 4. Thread-Local Instantiation Tracking: When Thread A type-checks a function body and encounters a concrete instantiation like `List<i32>`, it does not expand the type or generate IR. Instead, it performs instant mathematical calculation to construct the unique 256-bit GID (populating Word 2 with i32's hash) and pushes it into an isolated thread-local vector.
 
 ------------------------------
-## 4. Phase 7: Parallel Module Deduplication & Codegen
+### Phase 7: Parallel Module Deduplication & Codegen
 * **Pre-conditions:** All types are globally resolved and patched.
 * **Post-conditions (Verification Hook: Monomorphization Router):** Proves that synthetic monomorphizations (external upstream generics) are successfully intercepted and mapped to the local caller's bucket, preventing writes into frozen upstream modules.
 
@@ -459,7 +476,7 @@ To prevent the backend from wasting cycles compiling duplicate generic variants 
 5. Cross-Crate Boundary Fallback (Architectural Fix): If `Word 0` belongs to an external, pre-compiled crate (which is not participating in the current parallel backend session), the bucketing algorithm intercepts the request. The responsibility to monomorphize the upstream blueprint (e.g., `ExternalList<MyType>`) falls back to the downstream crate that instantiated it, ensuring IR is emitted locally without attempting to route to a frozen upstream bucket.
 
 ------------------------------
-## 5. Phase 8: Zero-Copy Metadata Serialization Architecture
+### Phase 8: Zero-Copy Metadata Serialization Architecture
 * **Pre-conditions:** All streams are fully lowered and deduplicated.
 * **Post-conditions:** The output artifact matches the exact bitwise layout of `TypeId` for downstream compilation.
 
