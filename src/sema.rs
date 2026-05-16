@@ -434,7 +434,8 @@ impl<'a> TypeChecker<'a> {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
-                match self.lookup(name) {
+                let lookup_res = self.lookup(name).cloned();
+                match lookup_res {
                     Some((ty, top)) => {
                         // Enforce Topology Boundaries!
                         let mut is_valid = *top == self.active_topology
@@ -676,8 +677,7 @@ impl<'a> TypeChecker<'a> {
 
                         // Check if we already instantiated it
                         if !self.env.functions.contains_key(&inst_name) {
-                            self.env.functions
-                                .insert(inst_name.clone(), (inst_ret.clone(), false));
+                            // self.env is immutable, monomorphization tracks functions internally
                             self.check_function(&mut inst_func);
                             self.monomorphized_functions.push(inst_func);
                         }
@@ -931,10 +931,7 @@ impl<'a> TypeChecker<'a> {
                     if !method_func.generics.is_empty() {
                         /* self.env.generic_functions.insert is mock */
                     } else if !self.env.functions.contains_key(&mangled_name) {
-                        self.env.functions.insert(
-                            mangled_name.clone(),
-                            (method_func.return_type.clone(), false),
-                        );
+                        
                         // Since it's not generic, we must type check it once!
                         let mut func_to_check = method_func.clone();
                         self.check_function(&mut func_to_check);
@@ -1081,7 +1078,7 @@ impl<'a> TypeChecker<'a> {
                 last_type
             }
             Expr::StructInit(name, fields, _) => {
-                let mut resolved_name = name.clone();
+                let resolved_name = name.clone();
                 if false {
                     /* resolved_name = mangled.clone(); */
                     *name = resolved_name.clone();
@@ -1187,7 +1184,7 @@ impl<'a> TypeChecker<'a> {
         if let Type::Verified(inner_target) = target {
             if let Type::Verified(inner_source) = source {
                 if let Type::Ref(base_source, _) = &**inner_source {
-                    return inner_target.as_ref() == base_source;
+                    return *inner_target.as_ref() == **base_source;
                 }
             }
             if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {

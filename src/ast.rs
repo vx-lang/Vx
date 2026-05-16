@@ -454,7 +454,8 @@ impl Statement {
                 if let Some(t) = ty { t.resolve_names(current_module, symbol_map); }
                 e.resolve_names(current_module, symbol_map);
             }
-            Statement::Return(e, _) | Statement::ExprStmt(e, _) | Statement::Assert(e, _, _) => e.resolve_names(current_module, symbol_map),
+            Statement::Return(e, _) | Statement::ExprStmt(e, _) => e.resolve_names(current_module, symbol_map),
+            Statement::Assert(e, _, _) => e.resolve_names(current_module, symbol_map),
             Statement::SpawnOn(t, stmts, _) => {
                 t.resolve_names(current_module, symbol_map);
                 for s in stmts { s.resolve_names(current_module, symbol_map); }
