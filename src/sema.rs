@@ -137,14 +137,84 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    pub fn unify_types(&mut self, _target: &Type, _source: &Type, _mapping: &mut std::collections::HashMap<String, Type>) -> bool {
-        // Stub implementation
-        true
+    pub fn unify_types(&mut self, generic_ty: &Type, concrete_ty: &Type, mapping: &mut std::collections::HashMap<String, Type>) -> bool {
+        match (generic_ty, concrete_ty) {
+            (Type::Generic(name, _), _) => {
+                if let Some(existing) = mapping.get(name) {
+                    existing == concrete_ty
+                } else {
+                    mapping.insert(name.clone(), concrete_ty.clone());
+                    true
+                }
+            }
+            (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
+                e1 == e2 && d1 == d2 && t1 == t2
+            }
+            (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
+                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+            }
+            (Type::Borrow(t1, m1, mut1), Type::Borrow(t2, m2, mut2)) => {
+                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+            }
+            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
+            (Type::GenericInstance(b1, args1), Type::GenericInstance(b2, args2)) => {
+                if args1.len() != args2.len() {
+                    return false;
+                }
+                if !self.unify_types(b1, b2, mapping) {
+                    return false;
+                }
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    if !self.unify_types(a1, a2, mapping) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
+            (t1, t2) => t1 == t2,
+        }
     }
 
-    pub fn instantiate_function(&mut self, func: &Function, _mapping: &std::collections::HashMap<String, Type>) -> Function {
-        // Stub implementation
-        func.clone()
+    pub fn instantiate_function(&mut self, generic_func: &Function, mapping: &std::collections::HashMap<String, Type>) -> Function {
+        let mut mangled_name = generic_func.name.clone();
+        for (g_name, _) in &generic_func.generics {
+            if let Some(ty) = mapping.get(g_name) {
+                let mut type_str = format!("_{:?}", ty)
+                    .replace("(", "")
+                    .replace(")", "")
+                    .replace(" ", "")
+                    .replace("[", "")
+                    .replace("]", "")
+                    .replace(",", "_")
+                    .replace("_None", "")
+                    .replace("\"", "");
+                while type_str.contains("__") {
+                    type_str = type_str.replace("__", "_");
+                }
+                mangled_name.push_str(&type_str);
+            }
+        }
+
+        let new_params = generic_func
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), t.substitute(mapping)))
+            .collect();
+        let new_ret = generic_func.return_type.substitute(mapping);
+        let new_body = generic_func
+            .body
+            .iter()
+            .map(|s| s.substitute(mapping))
+            .collect();
+
+        Function {
+            name: mangled_name,
+            generics: Vec::new(),
+            params: new_params,
+            return_type: new_ret,
+            body: new_body,
+        }
     }
 
     pub fn mangle_path(path: &str) -> String {
@@ -154,6 +224,10 @@ impl<'a> TypeChecker<'a> {
 
 
     pub fn check_function(&mut self, func: &mut Function) {
+        if !func.generics.is_empty() {
+            return;
+        }
+
         self.push_scope();
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());
@@ -618,6 +692,8 @@ impl<'a> TypeChecker<'a> {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
                     }
                     ret_ty.clone()
+                } else if let Some(func) = self.monomorphized_functions.iter().find(|f| f.name == resolved_name) {
+                    func.return_type.clone()
                 } else if let Some(generic_func) =
                     self.env.generic_functions.get(&resolved_name).cloned()
                 {
@@ -693,8 +769,9 @@ impl<'a> TypeChecker<'a> {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else {
+                    let mono_names: Vec<String> = self.monomorphized_functions.iter().map(|f| f.name.clone()).collect();
                     self.errors
-                        .push(format!("Undefined function '{}'", resolved_name));
+                        .push(format!("Undefined function '{}'. Available monos: {:?}", resolved_name, mono_names));
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }

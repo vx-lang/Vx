@@ -70,8 +70,12 @@ fn run_middle_end_test(path: &Path) {
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions { checker.check_function(f); }
-    assert!(checker.errors.is_empty(), "Sema failed");
-    let monomorphized_program = program;
+    assert!(checker.errors.is_empty(), "Sema failed: {:#?}", checker.errors);
+    
+    let mut monomorphized_program = program;
+    monomorphized_program.functions.retain(|f| f.generics.is_empty());
+    monomorphized_program.functions.extend(checker.monomorphized_functions);
+    
     let module_asts = std::collections::HashMap::new();
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
