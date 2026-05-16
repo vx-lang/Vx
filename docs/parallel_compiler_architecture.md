@@ -36,8 +36,8 @@ To eliminate pointer-chasing, string lookups, and memory synchronization overhea
 * Word 3 (Reserved Space / Cross-Crate Flags): Allocated for future compiler extensions, layout tracking, or alignment metadata flags. **Architectural Fix**: Used during cross-crate monomorphization to flag a request as a "Synthetic Monomorphization Bucket" entry, keeping external instantiations localized to the caller's thread bucket.
 
 
-We have successfully leveraged Word 0 and Word 1 for global structural uniqueness, and Word 2 for the generic context/lifetime fast-path. This leaves Word 3 to act as a highly dense, 64-bit metadata and compiler flag bitfield.
-As a performance engineer, your goal with Word 3 is to pack critical compiler directive flags directly into the TypeId. This allows threads during type checking, optimization passes, and code generation to make instant layout decisions without chasing pointers into external attribute arrays.
+The design successfully leverages Word 0 and Word 1 for global structural uniqueness, and Word 2 for the generic context/lifetime fast-path. This leaves Word 3 to act as a highly dense, 64-bit metadata and compiler flag bitfield.
+As a performance engineer, the goal with Word 3 is to pack critical compiler directive flags directly into the TypeId. This allows threads during type checking, optimization passes, and code generation to make instant layout decisions without chasing pointers into external attribute arrays.
 
 
 #### Word 2 Specification
@@ -80,7 +80,7 @@ pub struct CompilationSession {
     pub registry: Arc<ImmutableGlobalRegistry>,
 
     // DOD Constraint: Strictly separated arenas to preserve CPU prefetcher behavior.
-    // We explicitly avoid merging these into a polymorphic `enum SlowPathData { ... }`
+    // This explicitly avoids merging these into a polymorphic `enum SlowPathData { ... }`
     // because `Vec<TypeId>` (a dynamic fat pointer) would introduce unpredictable
     // struct padding and destroy the cache-line density of `UnboundedFunctionMetadata`.
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
@@ -214,7 +214,7 @@ fn evaluate_slow_path_variance(_a: &UnboundedFunctionMetadata, _b: &UnboundedFun
 3. Deterministic Fallback Safety: The inclusion of the 63-bit index guarantees that large auto-generated files or niche architectural patterns never drop out of alignment or trigger hash collisions.
 
 ### Word 3 Bitfield Architecture
-We can partition the 64 bits of Word 3 into distinct functional segments that serve the entire compilation lifecycle:
+The 64 bits of Word 3 can be partitioned into distinct functional segments that serve the entire compilation lifecycle:
 
 +-----------+-----------+-----------+-----------+-----------------------------------+
 
@@ -243,15 +243,15 @@ We can partition the 64 bits of Word 3 into distinct functional segments that se
 * Bits 0–43 (44 bits) - Reserved for Optimization Passes / Incremental Flags:
    * Bit 43 = LOCAL_DEFERRED_BIT (Flags that Word 2 contains a local generic queue index, pending Phase 2 interning)
    * Bit 42 = SYNTHETIC_MONO_FLAG (Added for cross-crate routing to intercept external instantiations)
-* Left empty for your backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
+* Left empty for the backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
 
 ------------------------------
 #### Implementation in Rust
-By using explicit bit shifting, masks, and constants, you keep operations locked to CPU registers. The entire evaluation of these properties compiles down to single-cycle machine instructions (AND, OR, SHL).
+By using explicit bit shifting, masks, and constants, operations are kept locked to CPU registers. The entire evaluation of these properties compiles down to single-cycle machine instructions (AND, OR, SHL).
 
 ```rust
 use bytemuck::{Pod, Zeroable};
-// Re-declaring our globally unique 256-bit Identifier
+// Re-declaring the globally unique 256-bit Identifier
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable)]
 #[repr(C)]pub struct TypeId {
     pub words: [u64; 4],
@@ -312,11 +312,11 @@ impl TypeId {
 
 ------------------------------
 #### Pipeline Performance Wins with Word 3
-Integrating these flags into the final word of your identifier yields key optimizations during lower compiler phases:
+Integrating these flags into the final word of the identifier yields key optimizations during lower compiler phases:
 
-   1. Dead Code Elimination (DCE): During your optimization pass, a thread walking your call graph doesn't need to look up a function's AST or metadata array to see if it is public. It reads the visibility slice from Word 3. If it is Visibility::Private and has no external references inside the module, the function is dropped instantly.
-   2. Zero-Cost Codegen Branching: When your backend generation threads are emitting machine code for assignments (a = b), the compiler queries is_trivially_copyable(). If true, the thread emits an LLVM memcpy or straight register-to-register load instruction. It completely skips building complex, single-threaded pointer trees for calling custom type-destructor logic.
-   3. Cache Locality Enforcement: Because TypeId is passed along with every single AST expression node, this critical structural information stays resident in L1 cache alongside your parsing stream, eliminating the memory latency of looking up configuration properties elsewhere.
+   1. Dead Code Elimination (DCE): During the optimization pass, a thread walking the call graph doesn't need to look up a function's AST or metadata array to see if it is public. It reads the visibility slice from Word 3. If it is Visibility::Private and has no external references inside the module, the function is dropped instantly.
+   2. Zero-Cost Codegen Branching: When the backend generation threads are emitting machine code for assignments (a = b), the compiler queries is_trivially_copyable(). If true, the thread emits an LLVM memcpy or straight register-to-register load instruction. It completely skips building complex, single-threaded pointer trees for calling custom type-destructor logic.
+   3. Cache Locality Enforcement: Because TypeId is passed along with every single AST expression node, this critical structural information stays resident in L1 cache alongside the parsing stream, eliminating the memory latency of looking up configuration properties elsewhere.
 
 
 ------------------------------
@@ -335,19 +335,19 @@ During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinc
 * **Purpose:** A dense, linear array of bytecode-like instructions representing the actual logic (e.g., `Add`, `Call`, `Branch`, `Store`).
 * **The Connection:** Instead of holding nested pointers or type strings, an `HirInstruction` holds a lightweight 32-bit integer index (e.g., `type_idx: u32`) that points directly into the `LOCAL_TYPE_STREAM`.
 
-*Crucially: Once Phase 1 is complete, you drop the entire AST from memory. It is dead to the compiler.*
+*Crucially: Once Phase 1 is complete, the entire AST is dropped from memory. It is dead to the compiler.*
 
 ### The Flat Array Pipeline
-**1. Phase 1: Parallel Parsing**: The parser generates your traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
+**1. Phase 1: Parallel Parsing**: The parser generates the traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
 **2. Phase 3: Parallel Type Checking (Tree Destruction)**: The TypeChecker acts as an ingestion funnel. As it resolves types, it constructs the 256-bit GID and pushes it into the `LOCAL_TYPE_STREAM`. Instructions are pushed to the `LOCAL_HIR_STREAM`.
 **3. Phase 4: Epoch Barrier & Deduplication**: The thread hits the sync barrier. The structural hashes of deferred types are bucketed, deduplicated, and assigned absolute 63-bit global indices in the `GLOBAL_GENERICS_ARENA`.
 **4. Phase 6: SIMD Patch Pass (Pure Data-Oriented)**: Because Phase 1 lowered everything into a flat `Vec<[u64; 4]>`, the compiler executes a SIMD patch loop (`chunks_exact_mut(8)`) over the type stream, patching local deferred indices into global absolute indices in microseconds.
 **5. Phase 7: Parallel Module Deduplication & Codegen**: Code generation becomes a blisteringly fast `for` loop over the contiguous block of memory (`LOCAL_HIR_STREAM`), performing O(1) array lookups into the patched `LOCAL_TYPE_STREAM`.
 
 By flattening everything into arrays:
-1. You gain perfect cache locality.
-2. You unlock SIMD vectorization (Phase 6).
-3. Your memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
+1. Perfect cache locality is achieved.
+2. SIMD vectorization is unlocked (Phase 6).
+3. The memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
 
 ------------------------------
 ## 2.6 The Epoch / Worker Split (Zero-Lock Data-Oriented Session)
@@ -361,7 +361,7 @@ pub struct GlobalSession {
     pub registry: Arc<ImmutableGlobalRegistry>,
 
     // DOD Constraint: Strictly separated arenas to preserve CPU prefetcher behavior.
-    // We explicitly avoid merging these into a polymorphic `enum SlowPathData { ... }`
+    // This explicitly avoids merging these into a polymorphic `enum SlowPathData { ... }`
     // because `Vec<TypeId>` (a dynamic fat pointer) would introduce unpredictable
     // struct padding and destroy the cache-line density of `UnboundedFunctionMetadata`.
     pub slow_path_arena: Arc<Vec<UnboundedFunctionMetadata>>,
@@ -498,12 +498,12 @@ By building the first draft around this layout, the architecture guarantees:
 ## 7. Serializing 256-bit identifiers for cross-crate metadata files
 
 Serializing 256-bit identifiers for cross-crate metadata files requires a performance engineer's approach: minimize disk footprint, maximize sequential I/O speed, and avoid pointer translation (swizzling) on reload.
-If you write these IDs out as raw, redundant 32-byte arrays for every single type reference in a large library, your metadata files will balloon in size, destroying your I/O performance.
-Here is how to design a high-performance serialization format for your 256-bit IDs in Rust.
+If these IDs are written out as raw, redundant 32-byte arrays for every single type reference in a large library, the metadata files will balloon in size, destroying I/O performance.
+Here is how to design a high-performance serialization format for the 256-bit IDs in Rust.
 
 ------------------------------
 ### 1. The On-Disk Strategy: The "String/ID Dictionary" Pattern
-Instead of embedding the full 256-bit ([u64; 4]) array inline every time a type is referenced in an AST or signature, you should use an indexed table structure.
+Instead of embedding the full 256-bit ([u64; 4]) array inline every time a type is referenced in an AST or signature, an indexed table should be used structure.
 When exporting a crate's metadata, compile a localized, deduplicated master array of all unique TypeIds used in that crate.
 ```
 +-------------------------------------------------------------+
@@ -530,7 +530,7 @@ When exporting a crate's metadata, compile a localized, deduplicated master arra
 ------------------------------
 ### 2. Fast Serialization / Deserialization Code in Rust
 To achieve maximum throughput, avoid text-based formats (like JSON) or heavy schema-driven systems (like Protobuf). Use a raw, byte-aligned binary format. The zerocopy or bytemuck crates are perfect for this.
-Here is how you handle the dictionary layout for instant saving and loading:
+Here is how the dictionary layout is handled for instant saving and loading:
 
 ```rust
 use bytemuck::{Pod, Zeroable};
@@ -561,7 +561,7 @@ pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[DiskTypeId], &[u8]) {
     let byte_len = len * std::mem::size_of::<DiskTypeId>();
     let (dict_bytes, rest) = remaining.split_at(byte_len);
 
-    // Cast the raw file bytes straight into our Rust slice.
+    // Cast the raw file bytes straight into the Rust slice.
     // No parsing, no loops, no allocations.
     let type_dictionary: &[DiskTypeId] = bytemuck::cast_slice(dict_bytes);
 
@@ -571,15 +571,15 @@ pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[DiskTypeId], &[u8]) {
 
 ------------------------------
 ### 3. Resolving the "Cross-Crate Monomorphization" Metadata Link
-When a downstream crate loads an upstream metadata file, it reads the dictionary of 256-bit IDs. Because your layout is hash-bound and absolute, something incredible happens: The IDs require zero translation.
+When a downstream crate loads an upstream metadata file, it reads the dictionary of 256-bit IDs. Because the layout is hash-bound and absolute, something incredible happens: The IDs require zero translation.
 
 * In Traditional Compilers: When loading metadata, pointer addresses or local IDs have to be "swizzled" (remapped) to match the internal state of the current compilation process.
-* In Your System: Because Word 0 (Module Hash) and Word 1 (Symbol Hash) are cryptographic or content-based hashes, they mean the exact same thing to every crate.
+* In This System: Because Word 0 (Module Hash) and Word 1 (Symbol Hash) are cryptographic or content-based hashes, they mean the exact same thing to every crate.
 
 If Crate A exports a generic BoxedList<T>, its ID hash is globally deterministic. When Crate B imports it, it reads the 256-bit ID from the dictionary and can instantly use it to issue a monomorphization request (Word 2 filled with Crate B's type hash) without needing to query a centralized ID dispenser.
 ### 4. Compacting the Hash Values on Disk (Optional 80/20 Optimization)
-If you find that the metadata dictionary is still too large, you can optimize the fact that many types inside the same metadata file share the same Word 0 (Module Hash).
-Instead of repeating Word 0 for every symbol, group your dictionary by module on disk:
+If the metadata dictionary is still too large, it can be optimized by leveraging the fact that many types inside the same metadata file share the same Word 0 (Module Hash).
+Instead of repeating Word 0 for every symbol, the dictionary can be grouped by module on disk:
 
 ```
 [Module Hash A (8 bytes)]
@@ -589,10 +589,10 @@ Instead of repeating Word 0 for every symbol, group your dictionary by module on
   -> [Symbol Hash 3, Generic Hash 3, Reserved 3] (24 bytes)
 ```
 
-This strips 8 bytes off almost every entry on disk, shaving another 25% off your dictionary file size while keeping decoding to a simple, sequential pass.
+This strips 8 bytes off almost every entry on disk, shaving another 25% off the dictionary file size while keeping decoding to a simple, sequential pass.
 
 ## 8. Code snippets for optimization
-Here are the relevant code snippets we developed during our discussion, organized by the compiler phase they optimize. All snippets utilize safe, high-performance Rust idiomatic patterns.
+Here are the relevant code snippets developed previously, organized by the compiler phase they optimize. All snippets utilize safe, high-performance Rust idiomatic patterns.
 ### 1. Zero-Copy Serialization & Memory Layout (bytemuck)
 This snippet establishes the flat 256-bit layout as a Pod (Plain Old Data) type. It enables the compiler to flash the type dictionary from memory to disk (and vice-versa) in a single CPU cycle without parsing loops or memory allocations.
 
@@ -754,7 +754,7 @@ pub fn parallel_module_deduplication(
         let mut target_hash = type_id.module_id();
 
         // Origin-Preserving Routing Fix:
-        // If the target module hash is NOT in our local module_hash_to_index map,
+        // If the target module hash is NOT in the local module_hash_to_index map,
         // it belongs to an upstream, frozen crate.
         if !module_hash_to_index.contains_key(&target_hash) {
             target_hash = caller_module_id;
@@ -781,9 +781,9 @@ pub fn parallel_module_deduplication(
 ```
 
 ## The Verification Engine
-This is the blueprint for the Verification Engine, mapped precisely to the phase boundaries of the pipeline. By injecting these hooks at the exact sync points, you create a mathematical proof of your compiler's data-oriented invariants.
+This is the blueprint for the Verification Engine, mapped precisely to the phase boundaries of the pipeline. By injecting these hooks at the exact sync points, a mathematical proof is created of the compiler's data-oriented invariants.
 
-Because we want this to be a zero-cost abstraction in production, the entire engine should be gated behind `#[cfg(debug_assertions)]` or a dedicated `#[cfg(feature = "verify-arch")]`.
+Because this is intended to be a zero-cost abstraction in production, the entire engine should be gated behind `#[cfg(debug_assertions)]` or a dedicated `#[cfg(feature = "verify-arch")]`.
 
 Here is the exact API design and the mathematical invariants they enforce at each boundary.
 
@@ -847,7 +847,7 @@ fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSes
 
 ```rust
 fn verify_phase_3_5_simd_patch(patched_type_stream: &[[u64; 4]], session: &Arc<GlobalSession>) {
-    // We can use rayon here to verify the patch pass in parallel
+    // Rayon can be used here to verify the patch pass in parallel
     patched_type_stream.par_iter().for_each(|gid| {
         // INVARIANT 1: The Eradication of Local State
         // Mathematically prove that the SIMD unit cleared every single deferred bit.
@@ -932,7 +932,7 @@ fn verify_lsp_memory_reclamation(old_epoch: Weak<GlobalSession>) {
 
 ### Hooking it into the Pipeline
 
-Your main compilation loop then looks incredibly clean. It serves as self-documenting code that proves your architectural constraints to anyone reading it:
+The main compilation loop then looks incredibly clean. It serves as self-documenting code that proves the architectural constraints to anyone reading it:
 
 ```rust
 // Phase 1: Type Checking
