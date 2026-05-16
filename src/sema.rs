@@ -503,6 +503,13 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr_type(inner_expr);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
+                    Type::Tensor(_, _, _) => {
+                        Type::Pinned(
+                            Box::new(inner_ty.clone()),
+                            Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
+                        )
+                    }
+                    Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
                         self.errors.push(format!(
                             "Cannot transfer non-reference type: {:?}",

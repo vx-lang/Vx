@@ -238,8 +238,8 @@ mod tests {
         use crate::session::{GlobalSession, LocalWorkerState};
         let global = std::sync::Arc::new(GlobalSession::new(1));
         let worker = LocalWorkerState::new(global);
-        // Setup Word 2: Param 0 = 0xAAAA, Param 1 = 0xBBBB, Param 2 = 0xCCCC, Param 3 = 0xDDDD
-        let word_2 = 0xDDDD_CCCC_BBBB_AAAA;
+        // Setup Word 2: Param 0 = 0xAAAA, Param 1 = 0xBBBB, Param 2 = 0xCCCC, Param 3 = 0x5DDD (to keep bit 63 unset)
+        let word_2 = 0x5DDD_CCCC_BBBB_AAAA;
         let tid = TypeId::new(0, 0, word_2, 0);
 
         if let LifetimeSignature::FastPath(val) = worker.resolve_lifetime(&tid) {
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(tid.extract_fast_param(0), 0xAAAA);
         assert_eq!(tid.extract_fast_param(1), 0xBBBB);
         assert_eq!(tid.extract_fast_param(2), 0xCCCC);
-        assert_eq!(tid.extract_fast_param(3), 0xDDDD);
+        assert_eq!(tid.extract_fast_param(3), 0x5DDD);
     }
 
     #[test]

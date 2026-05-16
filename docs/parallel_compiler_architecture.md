@@ -27,7 +27,7 @@ To eliminate pointer-chasing, string lookups, and memory synchronization overhea
 
 * Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix. **Architectural Fix**: To prevent catastrophic 64-bit Birthday Paradox collisions in large global ecosystems, the compiler treats `Word 0` and `Word 1` as a composite 128-bit namespace-and-symbol cryptographic hash, rendering collisions mathematically impossible.
 * Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits. **Structural Hash Fix**: For anonymous types, closures, or `comptime`-generated layouts without explicit names, the compiler uses a topological "DefPath" or a structural hash of the closure body to guarantee incremental stability regardless of file position.
-* Word 2 (Generic Context Hash / Lifetime Bitfield): This word serves a dual purpose based on the entity type. 
+* Word 2 (Generic Context Hash / Lifetime Bitfield): This word serves a dual purpose based on the entity type.
   - **For Borrow Checking/Lifetimes**: It operates as a fast-path 16-bit window bitfield for variance and region tracking.
   - **For Generic Instantiations (e.g., `List<i32>`)**: **Architectural Fix**: A 256-bit GID cannot structurally contain the GIDs of its generic arguments without data loss (hash collisions). Therefore, all concrete generic instantiations MUST trigger the Slow Path (Escape-Hatch Bit = 1). In this mode, Word 2 acts as a 63-bit index pointing into a `GLOBAL_GENERICS_ARENA` that stores the full `Vec<TypeId>`. This guarantees the deduplication phase can perform true structural equality checks, immune to the Birthday Paradox.
 * Word 3 (Reserved Space / Cross-Crate Flags): Allocated for future compiler extensions, layout tracking, or alignment metadata flags. **Architectural Fix**: Used during cross-crate monomorphization to flag a request as a "Synthetic Monomorphization Bucket" entry, keeping external instantiations localized to the caller's thread bucket.
@@ -150,8 +150,8 @@ By encapsulating variance rules and lifetime scopes directly into the type ident
 ```rust
 /// High-performance verification check for variance and lifetime compatibility
 pub fn verify_subtyping_bounds(
-    type_a: TypeId, 
-    type_b: TypeId, 
+    type_a: TypeId,
+    type_b: TypeId,
     worker_state: &LocalWorkerState
 ) -> bool {
     // Helper closure to route to the correct arena based on the deferred bit
@@ -360,12 +360,12 @@ pub struct GlobalSession {
 When Phase 1 spins up, every thread is given a clone of the `Arc<GlobalSession>` and initializes its own private, completely mutable `LocalWorkerState`.
 ```rust
 pub struct LocalWorkerState {
-    pub global: Arc<GlobalSession>, 
-    
+    pub global: Arc<GlobalSession>,
+
     // Completely lock-free, thread-local mutation
     pub local_slow_path_arena: Vec<UnboundedFunctionMetadata>,
     pub local_generics_arena: Vec<Vec<TypeId>>,
-    
+
     // The flat arrays replacing the AST
     pub local_type_stream: Vec<TypeId>,
     pub local_hir_stream: Vec<HirInstruction>,
@@ -400,7 +400,7 @@ The compiler architecture rejects complex inter-stage pipelining in favor of a c
 ### Phase 2: Parallel Body Type-Checking & Generic Queuing
 
 **The Deferred Interning Strategy (Architectural Fix)**:
-To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning. 
+To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning.
 1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
 2. **Phase 2.25 Bucketed Interning**: After the Phase 2 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
 3. **The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
@@ -693,7 +693,7 @@ This snippet implements Strategy #3, where monomorphization requests are grouped
 ```rust
 // Pass in a map that translates the 64-bit hash to a dense array index
 pub fn parallel_module_deduplication(
-    local_queues: Vec<Vec<(u64, TypeId)>>, 
+    local_queues: Vec<Vec<(u64, TypeId)>>,
     module_hash_to_index: &std::collections::HashMap<u64, usize>,
     num_modules: usize
 ) {
@@ -707,16 +707,16 @@ pub fn parallel_module_deduplication(
     for (caller_module_id, mut type_id) in all_collected_requests {
         // Map the 64-bit Module Hash to a dense index space
         let mut target_hash = type_id.module_id();
-        
+
         // Origin-Preserving Routing Fix:
-        // If the target module hash is NOT in our local module_hash_to_index map, 
+        // If the target module hash is NOT in our local module_hash_to_index map,
         // it belongs to an upstream, frozen crate.
         if !module_hash_to_index.contains_key(&target_hash) {
             target_hash = caller_module_id;
             // Flag Word 3 to indicate this is a Synthetic Monomorphization Bucket request
             type_id.words[3] |= SYNTHETIC_MONO_FLAG;
         }
-        
+
         // Safely map the 64-bit hash to a dense 0..N index
         let dense_index = module_hash_to_index[&target_hash];
         module_buckets[dense_index].push(type_id);
