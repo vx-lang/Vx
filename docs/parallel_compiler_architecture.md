@@ -148,7 +148,8 @@ impl TypeId {
 By encapsulating variance rules and lifetime scopes directly into the type identifier, the borrow checker can process constraints via fast path register comparisons.
 
 ```rust
-/// High-performance verification check for variance and lifetime compatibilitypub fn verify_subtyping_bounds(
+/// High-performance verification check for variance and lifetime compatibility
+pub fn verify_subtyping_bounds(
     type_a: TypeId, 
     type_b: TypeId, 
     worker_state: &LocalWorkerState

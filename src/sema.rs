@@ -233,7 +233,7 @@ impl<'a> TypeChecker<'a> {
                     self.pop_scope();
                 }
             }
-            Statement::Assign(_lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
+            Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
                 let lhs_ty = self.check_expr_type(lhs);
                 let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
@@ -512,67 +512,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::Import(path, _) => {
-                if let Some(_cached_ast) = self.module_asts.get(path) {
-                    // Already loaded, just recreate the exports if needed (or we could cache exports too)
-                    // For now, we actually need to extract exports again, which is inefficient.
-                    // Instead, let's just let it be re-parsed for now, OR we can cache the Type::Module.
-                    // Wait, Type::Module just needs the exports. If we parsed it once, we can just return the cached exports.
-                    // But to keep it simple, we'll cache the program here:
-                }
-
-                // Read file and parse it
-                let source = match std::fs::read_to_string(&*path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        self.errors
-                            .push(format!("Failed to load module '{}': {}", path, e));
-                        return Type::Module(path.clone(), std::collections::HashMap::new());
-                    }
-                };
-                let mut lexer = crate::lexer::Lexer::new(&source);
-                let mut parser = crate::parser::Parser::new(lexer.tokenize(), &source);
-                match parser.parse() {
-                    Ok(mut ast) => {
-                        let mut sub_checker = TypeChecker::new();
-                        let prefix = TypeChecker::mangle_path(path);
-                        sub_checker.module_prefix = Some(prefix.clone());
-
-                        let (mangled_ast, sub_modules) = match sub_checker.check_program(&mut ast) {
-                            Ok((p, m)) => (p, m),
-                            Err(e) => {
-                                self.errors.extend(e);
-                                (ast, std::collections::HashMap::new())
-                            }
-                        };
-
-                        // Merge exported signatures
-                        let mut exported = std::collections::HashMap::new();
-
-                        // To export with the ORIGINAL name, we have to look through the AST or strip the prefix!
-                        // Since `sub_checker.functions` has the mangled names:
-                        for (mangled_name, (ty, _)) in sub_checker.functions {
-                            if mangled_name.starts_with(&format!("{}_", prefix)) {
-                                let original = &mangled_name[prefix.len() + 1..];
-                                exported.insert(original.to_string(), ty);
-                            }
-                        }
-                        for (mangled_name, _) in sub_checker.structs {
-                            if mangled_name.starts_with(&format!("{}_", prefix)) {
-                                let original = &mangled_name[prefix.len() + 1..];
-                                exported.insert(original.to_string(), Type::Struct(mangled_name, None));
-                            }
-                        }
-
-                        self.module_asts.extend(sub_modules);
-                        self.module_asts.insert(path.clone(), mangled_ast);
-                        Type::Module(path.clone(), exported)
-                    }
-                    Err(e) => {
-                        self.errors
-                            .push(format!("Failed to parse module '{}': {}", path, e));
-                        Type::Module(path.clone(), std::collections::HashMap::new())
-                    }
-                }
+                // Imports are resolved in Phase 1
+                Type::Module(path.clone(), std::collections::HashMap::new())
             }
             Expr::ComptimeBlock(stmts, ret, _) => {
                 self.push_scope();
@@ -1142,7 +1083,7 @@ impl<'a> TypeChecker<'a> {
             Expr::StructInit(name, fields, _) => {
                 let mut resolved_name = name.clone();
                 if false {
-                    resolved_name = mangled.clone();
+                    /* resolved_name = mangled.clone(); */
                     *name = resolved_name.clone();
                 }
 
@@ -1158,13 +1099,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn is_assignable(&self, target: &Type, _source: &Type) -> bool {
+    fn is_assignable(&self, target: &Type, source: &Type) -> bool {
         if target == source {
             return true;
         }
 
         // Allow assigning Ref<T> to T (implicit unwrap of ref wrapper if target wants base type)
-        if let Type::Ref(inner_source, _) = source {
+        if let Type::Ref(inner_source, _) = &source {
             if self.is_assignable(target, inner_source) {
                 return true;
             }
@@ -1179,11 +1120,11 @@ impl<'a> TypeChecker<'a> {
 
         // Allow numeric coercions for scalar literals (mock behavior for now)
         if let Type::Tensor(t_target, dims_target, top_target) = target {
-            if let Type::Tensor(t_source, dims_source, top_source) = source {
+            if let Type::Tensor(t_source, dims_source, top_source) = &source {
                 let mut el_match = false;
-                if t_target == t_source {
+                if *t_target == *t_source {
                     el_match = true;
-                } else if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
+                } else if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
                     // Literals currently parse as f32, so we allow f32 to coerce
                     el_match = true;
                 }
@@ -1218,12 +1159,12 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Type::Scalar(t_target) = target {
-            if let Type::Scalar(t_source) = source {
-                if t_target == t_source {
+            if let Type::Scalar(t_source) = &source {
+                if *t_target == *t_source {
                     return true;
                 }
                 // Allow numeric coercions
-                if t_target != &ElementType::Bool && t_source != &ElementType::Bool {
+                if *t_target != ElementType::Bool && t_source != &ElementType::Bool {
                     return true;
                 }
             }
@@ -1231,11 +1172,11 @@ impl<'a> TypeChecker<'a> {
 
         // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
         if let Type::Tensor(t_target, _, _) = target {
-            if let Type::Scalar(t_source) = source {
-                if t_target == t_source {
+            if let Type::Scalar(t_source) = &source {
+                if *t_target == *t_source {
                     return true;
                 }
-                if t_source == &ElementType::F32 && t_target != &ElementType::Bool {
+                if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
                     return true;
                 }
             }
@@ -1246,20 +1187,20 @@ impl<'a> TypeChecker<'a> {
         if let Type::Verified(inner_target) = target {
             if let Type::Verified(inner_source) = source {
                 if let Type::Ref(base_source, _) = &**inner_source {
-                    return inner_target == base_source;
+                    return inner_target.as_ref() == base_source;
                 }
             }
             if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {
-                return inner_target == inner_source;
+                return inner_target.as_ref() == inner_source.as_ref();
             }
         }
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Borrow(source_inner, source_mem, source_mut) = source {
-                if target_inner == source_inner
+                if target_inner.as_ref() == source_inner.as_ref()
                     && target_mem == source_mem
-                    && (!target_mut || *source_mut)
+                    && (!*target_mut || *source_mut)
                 {
                     return true;
                 }
