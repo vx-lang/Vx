@@ -8,7 +8,7 @@ pub mod verify_arch {
     use std::collections::HashMap;
     use std::sync::{Arc, Weak};
 
-    pub fn verify_phase_1_isolation(workers: &[&LocalWorkerState], global: &Arc<GlobalSession>) {
+    pub fn verify_phase_3_isolation(workers: &[&LocalWorkerState], global: &Arc<GlobalSession>) {
         for worker in workers {
             // INVARIANT 1: Zero Shared Mutability (The Aliasing Proof)
             assert_eq!(
@@ -35,7 +35,7 @@ pub mod verify_arch {
         }
     }
 
-    pub fn verify_phase_3_5_simd_patch(
+    pub fn verify_phase_6_simd_patch(
         patched_type_stream: &[TypeId],
         session: &Arc<GlobalSession>,
     ) {
@@ -66,7 +66,7 @@ pub mod verify_arch {
         });
     }
 
-    pub fn verify_phase_4_routing(
+    pub fn verify_phase_7_routing(
         buckets: &[Vec<crate::ast::Function>],
         module_index_map: &HashMap<u64, usize>,
     ) {

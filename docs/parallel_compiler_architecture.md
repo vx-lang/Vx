@@ -326,7 +326,7 @@ During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinc
 
 **1. `LOCAL_TYPE_STREAM`: `Vec<[u64; 4]>`**
 * **Purpose:** Stores *only* the 256-bit Global Identifiers for types, generic contexts, and signatures.
-* **Usage:** This is the array that gets processed by the Phase 2 interning barrier and the Phase 2.5 SIMD Patch Pass.
+* **Usage:** This is the array that gets processed by the Phase 2 interning barrier and the Phase 6 SIMD Patch Pass.
 
 **2. `LOCAL_HIR_STREAM`: `Vec<HirInstruction>`**
 * **Purpose:** A dense, linear array of bytecode-like instructions representing the actual logic (e.g., `Add`, `Call`, `Branch`, `Store`).
@@ -335,15 +335,15 @@ During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinc
 *Crucially: Once Phase 1 is complete, you drop the entire AST from memory. It is dead to the compiler.*
 
 ### The Flat Array Pipeline
-**1. Phase 0: The Parser (Tree Generation)**: The parser generates your traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
-**2. Phase 1: Type Checking & Lowering (Tree Destruction)**: The TypeChecker acts as an ingestion funnel. As it resolves types, it constructs the 256-bit GID and pushes it into the `LOCAL_TYPE_STREAM`. Instructions are pushed to the `LOCAL_HIR_STREAM`.
-**3. Phase 2: The Barrier & Interning**: The thread hits the sync barrier. The structural hashes of deferred types are bucketed, deduplicated, and assigned absolute 63-bit global indices in the `GLOBAL_GENERICS_ARENA`.
-**4. Phase 2.5: The SIMD Patch Pass (Pure Data-Oriented)**: Because Phase 1 lowered everything into a flat `Vec<[u64; 4]>`, the compiler executes a SIMD patch loop (`chunks_exact_mut(8)`) over the type stream, patching local deferred indices into global absolute indices in microseconds.
-**5. Phase 4: Data-Oriented Codegen**: Code generation becomes a blisteringly fast `for` loop over the contiguous block of memory (`LOCAL_HIR_STREAM`), performing O(1) array lookups into the patched `LOCAL_TYPE_STREAM`.
+**1. Phase 1: Parallel Parsing**: The parser generates your traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
+**2. Phase 3: Parallel Type Checking (Tree Destruction)**: The TypeChecker acts as an ingestion funnel. As it resolves types, it constructs the 256-bit GID and pushes it into the `LOCAL_TYPE_STREAM`. Instructions are pushed to the `LOCAL_HIR_STREAM`.
+**3. Phase 4: Epoch Barrier & Deduplication**: The thread hits the sync barrier. The structural hashes of deferred types are bucketed, deduplicated, and assigned absolute 63-bit global indices in the `GLOBAL_GENERICS_ARENA`.
+**4. Phase 6: SIMD Patch Pass (Pure Data-Oriented)**: Because Phase 1 lowered everything into a flat `Vec<[u64; 4]>`, the compiler executes a SIMD patch loop (`chunks_exact_mut(8)`) over the type stream, patching local deferred indices into global absolute indices in microseconds.
+**5. Phase 7: Parallel Module Deduplication & Codegen**: Code generation becomes a blisteringly fast `for` loop over the contiguous block of memory (`LOCAL_HIR_STREAM`), performing O(1) array lookups into the patched `LOCAL_TYPE_STREAM`.
 
 By flattening everything into arrays:
 1. You gain perfect cache locality.
-2. You unlock SIMD vectorization (Phase 2.5).
+2. You unlock SIMD vectorization (Phase 6).
 3. Your memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
 
 ------------------------------
@@ -390,7 +390,7 @@ Because there are *two* arenas (the frozen global one and the mutable local one)
 ### The Phase 2 Barrier Transition
 1. **Phase 1 Ends:** Parallel threads return their `LocalWorkerState` structs.
 2. **Phase 2 (Interning & Merge):** The main thread deduplicates the local arenas.
-3. **Phase 2.5 (SIMD Patch):** It patches the `local_type_stream` to clear the `LOCAL_DEFERRED_BIT` and update indices.
+3. **Phase 6 (SIMD Patch):** It patches the `local_type_stream` to clear the `LOCAL_DEFERRED_BIT` and update indices.
 4. **Phase 3 Setup (The Epoch Advance):** The patched local arenas are appended to the `GlobalSession`'s arenas, and a *new* `Arc<GlobalSession>` is constructed with an incremented epoch.
 5. **Phase 3 (Codegen):** Codegen threads are spun up with the *new* `Arc<GlobalSession>` and the patched `local_hir_stream`.
 
@@ -412,7 +412,7 @@ The compiler architecture rejects complex inter-stage pipelining in favor of a c
 **The Deferred Interning Strategy (Architectural Fix)**:
 To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning.
 1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
-2. **Phase 2.25 Bucketed Interning**: After the Phase 2 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
+2. **Phase 5 Bucketed Interning**: After the Phase 2 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
 3. **The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
 
 1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (`&TypeDefinition`).
@@ -806,7 +806,7 @@ fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSes
 
 ---
 
-### Hook 2: The Absolute Identity Proof (Phase 3.5)
+### Hook 2: The Absolute Identity Proof (Phase 6)
 
 **Injection Point:** Fires immediately after the SIMD Patch Pass finishes sweeping the `local_type_stream`.
 
@@ -908,7 +908,7 @@ Verifier::verify_phase_1_isolation(&workers, &global_session);
 // Phase 2 & 3: Merge and Freeze
 let new_global_session = advance_epoch(workers, global_session);
 
-// Phase 3.5: SIMD Patch
+// Phase 6: SIMD Patch
 patch_deferred_indices(&mut flat_type_stream, &new_global_session);
 #[cfg(feature = "verify-arch")]
 Verifier::verify_phase_3_5_simd_patch(&flat_type_stream, &new_global_session);

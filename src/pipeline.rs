@@ -3,7 +3,7 @@ use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
-    // Phase 1.1: Parallel Parsing & Local Symbol Generation
+    // Phase 1: Parallel Parsing & Local Symbol Generation
     // Each thread parses a file and populates its Thread-Local Arena with structs, enums, etc.
     let modules: Result<Vec<VxModule>, String> = file_paths
         .par_iter()
@@ -38,7 +38,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .for_each(|m| m.resolve_names(&symbol_map));
     println!("Resolved {} modules in parallel", parsed_modules.len());
 
-    // Phase 1.2: Sequential Global Registry Build & Cycle Detection
+    // Phase 2: Sequential Global Registry Build & Cycle Detection
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
@@ -47,7 +47,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let global_env_modules = parsed_modules.clone();
     let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
 
-    // Phase 1.3: Parallel Body Type-Checking (Lock-Free Frontend Threading)
+    // Phase 3: Parallel Body Type-Checking (Lock-Free Frontend Threading)
     let mut check_results: Vec<_> = parsed_modules
         .par_iter_mut()
         .enumerate()
@@ -98,17 +98,11 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     #[cfg(debug_assertions)]
     {
-        let workers: Vec<&crate::session::LocalWorkerState> = check_results
-            .iter()
-            .map(|(_, _, worker, _)| worker)
-            .collect();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_1_isolation(
-            &workers,
-            &global_session,
-        );
+        let workers: Vec<&crate::session::LocalWorkerState> = check_results.iter().map(|(_, _, worker, _)| worker).collect();
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_isolation(&workers, &global_session);
     }
 
-    // Phase 2 & 3: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
+    // Phase 4: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
     let mut merged_generics_arena = (*global_session.generics_arena).clone();
 
@@ -166,12 +160,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     });
 
     println!(
-        "Phase 2: Merged {} local arenas into global. Advancing to Epoch 2.",
+        "Phase 5: Merged {} local arenas into global. Advancing to Epoch 2.",
         slow_path_thread_mappings.len()
     );
 
-    // Phase 3.5: SIMD Patch Pass (Pure Data-Oriented)
-    println!("Executing Phase 3.5: SIMD Patch Pass over Flat Type Streams");
+    // Phase 6: SIMD Patch Pass (Parallel Metadata Translation)
+    println!("Executing Phase 6: SIMD Patch Pass over Flat Type Streams");
 
     let mut all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)> = check_results
         .iter_mut()
@@ -222,13 +216,13 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             .iter()
             .flat_map(|(_, stream)| stream.clone())
             .collect();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_5_simd_patch(
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_6_simd_patch(
             &patched_stream,
             &global_session,
         );
     }
 
-    // Phase 4: Parallel Module Deduplication & Codegen
+    // Phase 7: Parallel Module Deduplication & Codegen
     let num_modules = parsed_modules.len();
     let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
 
@@ -256,7 +250,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     }
 
     #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_phase_4_routing(
+    crate::parallel_architecture_verifier::verify_arch::verify_phase_7_routing(
         &module_buckets,
         &module_hash_to_index,
     );
@@ -278,7 +272,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     println!("Monomorphized generics deduplicated and appended to modules in parallel");
 
-    // Phase 5: Zero-Copy Metadata Serialization
+    // Phase 7: Zero-Copy Metadata Serialization
     // Collect all fully-resolved global TypeIds from all threads
     let mut master_type_dictionary: Vec<crate::gid::TypeId> = all_type_streams
         .into_iter()
