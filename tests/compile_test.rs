@@ -73,8 +73,12 @@ fn run_middle_end_test(path: &Path) {
     assert!(checker.errors.is_empty(), "Sema failed: {:#?}", checker.errors);
     
     let mut monomorphized_program = program;
-    monomorphized_program.functions.retain(|f| f.generics.is_empty());
-    monomorphized_program.functions.extend(checker.monomorphized_functions);
+    let mut orig_functions = monomorphized_program.functions;
+    orig_functions.retain(|f| f.generics.is_empty());
+    
+    let mut new_functions = checker.monomorphized_functions;
+    new_functions.extend(orig_functions);
+    monomorphized_program.functions = new_functions;
     
     let module_asts = std::collections::HashMap::new();
     let mut codegen = MlirGenerator::new();
