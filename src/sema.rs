@@ -438,8 +438,8 @@ impl<'a> TypeChecker<'a> {
                 match lookup_res {
                     Some((ty, top)) => {
                         // Enforce Topology Boundaries!
-                        let mut is_valid = *top == self.active_topology
-                            || (*top == Topology::Host
+                        let mut is_valid = top == self.active_topology
+                            || (top == Topology::Host
                                 && matches!(
                                     self.active_topology,
                                     Topology::AMX | Topology::ANE | Topology::GPU

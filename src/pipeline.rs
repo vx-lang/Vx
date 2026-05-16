@@ -42,7 +42,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     let global_session = std::sync::Arc::new(crate::session::GlobalSession::new(1));
     // Phase 2.5: Build Global AST Environment (Sequential)
-    let global_env = crate::sema::GlobalAstEnv::build(&parsed_modules);
+    let global_env_modules = parsed_modules.clone();
+    let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
 
     // Phase 3: Parallel Body Type-Checking & Lowering to Flat Array
     let check_results: Vec<_> = parsed_modules.par_iter_mut().flat_map(|module| {
@@ -82,7 +83,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         thread_mappings.push(local_mapping);
     }
     
-    let epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
+    let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
         registry: global_session.registry.clone(),
         slow_path_arena: std::sync::Arc::new(merged_slow_path_arena),
