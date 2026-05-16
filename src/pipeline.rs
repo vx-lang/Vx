@@ -26,6 +26,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     let mut parsed_modules = modules?;
 
+    #[cfg(debug_assertions)]
+    crate::parallel_architecture_verifier::verify_arch::verify_phase_1_parse(
+        file_paths,
+        &parsed_modules,
+    );
+
     // Phase 1.5: Parallel Name Resolution
     // Resolve String lookups into 256-bit TypeIds
 
@@ -43,6 +49,11 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     println!("Built Global Immutable Registry");
 
     let global_session = std::sync::Arc::new(crate::session::GlobalSession::new(1));
+    #[cfg(debug_assertions)]
+    crate::parallel_architecture_verifier::verify_arch::verify_phase_2_registry(
+        &global_session.registry,
+    );
+
     // Phase 2.5: Build Global AST Environment (Sequential)
     let global_env_modules = parsed_modules.clone();
     let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
@@ -158,6 +169,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         slow_path_arena: std::sync::Arc::new(merged_slow_path_arena),
         generics_arena: std::sync::Arc::new(merged_generics_arena),
     });
+
+    #[cfg(debug_assertions)]
+    crate::parallel_architecture_verifier::verify_arch::verify_phase_4_deduplication(
+        &_epoch_2_session.generics_arena,
+        &_epoch_2_session.slow_path_arena,
+    );
 
     println!(
         "Phase 5: Merged {} local arenas into global. Advancing to Epoch 2.",
@@ -295,10 +312,19 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     );
 
     #[cfg(debug_assertions)]
-    let weak_session = std::sync::Arc::downgrade(&global_session);
-    drop(global_session);
-    #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_lsp_memory_reclamation(weak_session);
+    {
+        let weak_session = std::sync::Arc::downgrade(&global_session);
+        drop(global_session);
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_5_epoch_advance(
+            weak_session,
+        );
+        
+        let bytes = std::fs::read(metadata_path).unwrap();
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_8_serialization(
+            &bytes,
+            master_type_dictionary.len(),
+        );
+    }
 
     Ok(())
 }
