@@ -8,20 +8,18 @@ fn test_local_name_resolution() {
         externs: vec![],
         structs: vec![StructDecl {
             name: "Vector".to_string(),
-            type_params: vec![],
+            generics: vec![],
             fields: vec![],
-            span: Span::default(),
         }],
         enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![Function {
             name: "get_vector".to_string(),
+            generics: vec![],
             params: vec![],
-            ret_type: Some(Type::Struct("Vector".to_string(), None)),
+            return_type: Type::Struct("Vector".to_string(), None),
             body: vec![],
-            is_unsafe: false,
-            span: Span::default(),
         }],
     };
 
@@ -32,7 +30,7 @@ fn test_local_name_resolution() {
     module.resolve_names(&symbol_map);
 
     // Verify that `Vector` was mapped to a deterministic `TypeId`
-    if let Some(Type::Struct(name, id)) = &module.functions[0].ret_type {
+    if let Type::Struct(name, id) = &module.functions[0].return_type {
         assert_eq!(name, "Vector");
         assert!(id.is_some()); // Successfully resolved to a TypeId!
         
@@ -58,18 +56,17 @@ fn test_unresolved_symbol_remains_none() {
         impls: vec![],
         functions: vec![Function {
             name: "get_vector".to_string(),
+            generics: vec![],
             params: vec![],
-            ret_type: Some(Type::Struct("Vector".to_string(), None)),
+            return_type: Type::Struct("Vector".to_string(), None),
             body: vec![],
-            is_unsafe: false,
-            span: Span::default(),
         }],
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
     module.resolve_names(&symbol_map);
 
-    if let Some(Type::Struct(name, id)) = &module.functions[0].ret_type {
+    if let Type::Struct(name, id) = &module.functions[0].return_type {
         assert_eq!(name, "Vector");
         assert!(id.is_none()); // Should remain unresolved!
     } else {
@@ -84,15 +81,15 @@ fn test_nested_type_resolution() {
         externs: vec![],
         structs: vec![StructDecl {
             name: "Matrix".to_string(),
-            type_params: vec![],
+            generics: vec![],
             fields: vec![],
-            span: Span::default(),
         }],
         enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![Function {
             name: "compute".to_string(),
+            generics: vec![],
             params: vec![(
                 "m".to_string(),
                 // &mut Matrix
@@ -102,10 +99,8 @@ fn test_nested_type_resolution() {
                     true
                 )
             )],
-            ret_type: None,
+            return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             body: vec![],
-            is_unsafe: false,
-            span: Span::default(),
         }],
     };
 
@@ -131,17 +126,17 @@ fn test_expr_and_stmt_resolution() {
         externs: vec![],
         structs: vec![StructDecl {
             name: "Config".to_string(),
-            type_params: vec![],
+            generics: vec![],
             fields: vec![],
-            span: Span::default(),
         }],
         enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![Function {
             name: "setup".to_string(),
+            generics: vec![],
             params: vec![],
-            ret_type: None,
+            return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             // let c: Config = ...;
             body: vec![Statement::LetDecl(
                 "c".to_string(),
@@ -150,8 +145,6 @@ fn test_expr_and_stmt_resolution() {
                 Expr::Number(0.0, Span::default()),
                 Span::default()
             )],
-            is_unsafe: false,
-            span: Span::default(),
         }],
     };
 

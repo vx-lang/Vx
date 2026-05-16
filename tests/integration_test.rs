@@ -30,8 +30,13 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
     assert_eq!(ast.functions.len(), 2);
 
     // 3. Semantic Analysis
-    let mut checker = TypeChecker::new();
-    let is_valid = checker.check_program(&mut ast).is_ok();
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [ast.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut ast.functions { checker.check_function(f); }
+    let is_valid = checker.errors.is_empty();
 
     if !checker.errors.is_empty() {
         for err in &checker.errors {
@@ -47,8 +52,16 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(tokens, input);
     let mut program = parser.parse().map_err(|e| vec![e])?;
-    let mut checker = TypeChecker::new();
-    match checker.check_program(&mut program) {
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [program.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions { checker.check_function(f); }
+    if checker.errors.is_empty() {
+        let monomorphized_ast = program;
+        let module_asts = std::collections::HashMap::new();
+        match Ok((monomorphized_ast, module_asts)) {
         Ok((monomorphized_ast, module_asts)) => {
             let mut codegen = vxc::codegen::MlirGenerator::new();
             let _mlir_str = codegen.generate(&monomorphized_ast, &module_asts);

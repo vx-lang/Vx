@@ -26,8 +26,13 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
         }
     };
 
-    let mut checker = TypeChecker::new();
-    let is_valid = checker.check_program(&mut program).is_ok();
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [program.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions { checker.check_function(f); }
+    let is_valid = checker.errors.is_empty();
 
     if expect_pass {
         assert!(

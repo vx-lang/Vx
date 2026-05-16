@@ -64,6 +64,6 @@ fn test_invalid_cyclic_registry() {
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = match result { Err(e) => e, _ => panic!() };
     assert!(err.contains("Infinite-sized recursive layout detected"));
 }

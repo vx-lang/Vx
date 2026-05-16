@@ -96,8 +96,16 @@ fn main() -> i32 {
 
             match parser.parse() {
                 Ok(mut ast) => {
-                    let mut checker = sema::TypeChecker::new();
-                    match checker.check_program(&mut ast) {
+                    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+                    let program_arr = [ast.clone()];
+                    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+                    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+                    let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
+                    for f in &mut ast.functions { checker.check_function(f); }
+                    if checker.errors.is_empty() {
+                        let monomorphized_ast = ast;
+                        let module_asts = std::collections::HashMap::new();
+                        match Ok((monomorphized_ast, module_asts)) {
                         Ok((monomorphized_ast, module_asts)) => {
                             let mut codegen = vxc::codegen::MlirGenerator::new();
                             let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);

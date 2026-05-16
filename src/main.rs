@@ -61,27 +61,33 @@ fn main() {
                     if print_ast {
                         vxc::ast_printer::AstPrinter::print_program(&ast);
                     }
-                    let mut checker = sema::TypeChecker::new();
-                    match checker.check_program(&mut ast) {
-                        Ok((monomorphized_ast, module_asts)) => {
-                            if emit_mlir {
-                                let mut codegen = vxc::codegen::MlirGenerator::new();
-                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                                println!("{}", mlir_str);
-                            } else if run_jit {
-                                let mut codegen = vxc::codegen::MlirGenerator::new();
-                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                                match vxc::jit::execute_mlir(&mlir_str) {
-                                    Ok(output) => println!("{}", output),
-                                    Err(e) => eprintln!("Execution Error: {}", e),
-                                }
+                    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+                    let program_arr = [ast.clone()];
+                    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+                    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+                    let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
+                    for f in &mut ast.functions { checker.check_function(f); }
+                    
+                    if checker.errors.is_empty() {
+                        let monomorphized_ast = ast;
+                        let module_asts = std::collections::HashMap::new();
+                        
+                        if emit_mlir {
+                            let mut codegen = vxc::codegen::MlirGenerator::new();
+                            let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                            println!("{}", mlir_str);
+                        } else if run_jit {
+                            let mut codegen = vxc::codegen::MlirGenerator::new();
+                            let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                            match vxc::jit::execute_mlir(&mlir_str) {
+                                Ok(output) => println!("{}", output),
+                                Err(e) => eprintln!("Execution Error: {}", e),
                             }
                         }
-                        Err(errs) => {
-                            eprintln!("Semantic Errors:");
-                            for err in errs {
-                                eprintln!(" - {}", err);
-                            }
+                    } else {
+                        eprintln!("Semantic Errors:");
+                        for err in checker.errors {
+                            eprintln!(" - {}", err);
                         }
                     }
                 }
