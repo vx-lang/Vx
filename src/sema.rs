@@ -1297,8 +1297,10 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
-        let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut checker = TypeChecker::new(&env, &mut worker);
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
 
         for err in &checker.errors {
@@ -1320,8 +1322,10 @@ fn bad_matmul() -> Tensor {
         let mut parser = Parser::new(tokens, input);
         let mut program = parser.parse().unwrap();
 
-        let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut checker = TypeChecker::new(&env, &mut worker);
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
         assert!(!checker.errors.is_empty());
@@ -1345,8 +1349,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut checker = TypeChecker::new(&env, &mut worker);
         assert!(
             { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
             "Semantic checking failed: {:?}",
@@ -1374,8 +1380,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut checker = TypeChecker::new(&env, &mut worker);
 
         let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
         assert!(!success);
@@ -1398,8 +1406,10 @@ fn bad_matmul() -> Tensor {
         let mut lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer.tokenize(), input);
         let mut program = parser.parse().unwrap();
-        let env = GlobalAstEnv::build(&[program.clone()]);
-        let mut checker = TypeChecker::new(&env, &mut crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1))));
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut checker = TypeChecker::new(&env, &mut worker);
 
         assert!(
             { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
