@@ -982,7 +982,7 @@ impl<'a> TypeChecker<'a> {
                         if self.unify_types(&ib.target_type, &base_ty, &mut HashMap::new()) {
                             for m in &ib.methods {
                                 if m.name == *_method {
-                                    found_method = Some((m.clone(), ib.clone()));
+                                    found_method = Some((m.clone(), (*ib).clone()));
                                     break;
                                 }
                             }

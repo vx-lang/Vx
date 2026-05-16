@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use vxc::lexer::Lexer;
 use vxc::parser;
-use vxc::sema;
+
 
 fn main() {
     println!("=====================================");

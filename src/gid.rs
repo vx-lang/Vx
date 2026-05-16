@@ -6,7 +6,6 @@ pub const INDEX_MASK: u64 = !ESCAPE_HATCH_MASK;
 
 // Bitmask Constants for Word 3
 const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
-const ATTRIBUTE_MASK: u64 = 0x0FF0_0000_0000_0000;
 
 // Specific High-Frequency Attribute Flags
 pub const ATTR_INLINE: u64 = 1 << 52;
