@@ -58,7 +58,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                 .functions
                 .par_iter_mut()
                 .map(move |func| {
-                    let mut worker = crate::session::LocalWorkerState::new(global_session_ref.clone());
+                    let mut worker =
+                        crate::session::LocalWorkerState::new(global_session_ref.clone());
                     let mut checker = crate::sema::TypeChecker::new(global_env_ref, &mut worker);
                     checker.check_function(func);
                     (
@@ -163,7 +164,9 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)> = check_results
         .iter_mut()
         .enumerate()
-        .map(|(thread_idx, (_, _, worker, _))| (thread_idx, std::mem::take(&mut worker.local_type_stream)))
+        .map(|(thread_idx, (_, _, worker, _))| {
+            (thread_idx, std::mem::take(&mut worker.local_type_stream))
+        })
         .collect();
 
     const LOCAL_DEFERRED_BIT: u64 = crate::gid::LOCAL_DEFERRED_BIT; // Word 3
@@ -205,10 +208,26 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let num_modules = parsed_modules.len();
     let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
 
-    // Collect all monomorphized functions into their caller's module bucket
+    // Build the Module Hash to Index map for origin-preserving routing
+    let mut module_hash_to_index: std::collections::HashMap<u64, usize> =
+        std::collections::HashMap::new();
+    for (i, module) in parsed_modules.iter().enumerate() {
+        let hash = crate::hash::compute_module_hash(&module.module_path);
+        module_hash_to_index.insert(hash, i);
+    }
+
+    // Collect all monomorphized functions into their correct origin module bucket
     for (_, monos, _, caller_module_idx) in check_results {
-        for func in monos {
-            module_buckets[caller_module_idx].push(func);
+        for (func, origin_hash) in monos {
+            // Origin-Preserving Routing Fix:
+            // If the target module hash is NOT in our local module_hash_to_index map,
+            // it belongs to an upstream, frozen crate (or is a local non-generic like an inherent method).
+            if !module_hash_to_index.contains_key(&origin_hash) {
+                module_buckets[caller_module_idx].push(func);
+            } else {
+                let dense_index = module_hash_to_index[&origin_hash];
+                module_buckets[dense_index].push(func);
+            }
         }
     }
 

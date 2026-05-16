@@ -14,7 +14,7 @@ pub struct GlobalAstEnv<'a> {
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
     pub functions: HashMap<String, (Type, bool)>,
     pub ast_functions: HashMap<String, &'a Function>,
-    pub generic_functions: HashMap<String, &'a Function>,
+    pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -52,7 +52,9 @@ impl<'a> GlobalAstEnv<'a> {
             }
             for func in &module.functions {
                 if !func.generics.is_empty() {
-                    env.generic_functions.insert(func.name.clone(), func);
+                    let module_hash = crate::hash::compute_module_hash(&module.module_path);
+                    env.generic_functions
+                        .insert(func.name.clone(), (func, module_hash));
                 } else {
                     env.functions.insert(
                         func.name.clone(),
@@ -70,7 +72,7 @@ pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
     scopes: Vec<HashMap<String, (Type, Topology)>>,
-    pub monomorphized_functions: Vec<Function>,
+    pub monomorphized_functions: Vec<(Function, u64)>,
     pub errors: Vec<String>,
     in_unsafe_block: bool,
     active_topology: Topology,
@@ -708,10 +710,10 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some(func) = self
                     .monomorphized_functions
                     .iter()
-                    .find(|f| f.name == resolved_name)
+                    .find(|f| f.0.name == resolved_name)
                 {
-                    func.return_type.clone()
-                } else if let Some(generic_func) =
+                    func.0.return_type.clone()
+                } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(&resolved_name).cloned()
                 {
                     // Type deduction
@@ -768,18 +770,17 @@ impl<'a> TypeChecker<'a> {
 
                     if success {
                         // Instantiate
-                        let mut inst_func = self.instantiate_function(&generic_func, &mapping);
+                        let mut inst_func = self.instantiate_function(generic_func, &mapping);
                         let inst_ret = inst_func.return_type.clone();
                         let inst_name = inst_func.name.clone();
 
                         // Rewrite AST name
                         *name = inst_name.clone();
 
-                        // Check if we already instantiated it
                         if !self.env.functions.contains_key(&inst_name) {
                             // self.env is immutable, monomorphization tracks functions internally
                             self.check_function(&mut inst_func);
-                            self.monomorphized_functions.push(inst_func);
+                            self.monomorphized_functions.push((inst_func, origin_hash));
                         }
                         inst_ret
                     } else {
@@ -789,7 +790,7 @@ impl<'a> TypeChecker<'a> {
                     let mono_names: Vec<String> = self
                         .monomorphized_functions
                         .iter()
-                        .map(|f| f.name.clone())
+                        .map(|(f, _)| f.name.clone())
                         .collect();
                     self.errors.push(format!(
                         "Undefined function '{}'. Available monos: {:?}",
@@ -1041,7 +1042,7 @@ impl<'a> TypeChecker<'a> {
                         // Since it's not generic, we must type check it once!
                         let mut func_to_check = method_func.clone();
                         self.check_function(&mut func_to_check);
-                        self.monomorphized_functions.push(func_to_check);
+                        self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
                     }
 
                     // Rewrite AST from MethodCall to FunctionCall

@@ -84,7 +84,11 @@ fn run_middle_end_test(path: &Path) {
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
 
-    let mut new_functions = checker.monomorphized_functions;
+    let mut new_functions: Vec<_> = checker
+        .monomorphized_functions
+        .into_iter()
+        .map(|(f, _)| f)
+        .collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
 
