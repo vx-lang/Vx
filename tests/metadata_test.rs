@@ -29,9 +29,7 @@ fn test_zero_copy_metadata_serialization() {
 
     // 5. Verify integrity
     assert_eq!(loaded_metadata.type_dictionary.len(), original_dict.len());
-    for i in 0..10000 {
-        assert_eq!(loaded_metadata.type_dictionary[i], original_dict[i]);
-    }
+    assert_eq!(loaded_metadata.type_dictionary, original_dict.as_slice());
 
     // Verify AST bytes are empty since we didn't add any
     assert_eq!(loaded_metadata.ast_data.len(), 0);

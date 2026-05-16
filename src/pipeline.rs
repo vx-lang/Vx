@@ -248,5 +248,27 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     println!("Monomorphized generics deduplicated and appended to modules in parallel");
 
+    // Phase 5: Zero-Copy Metadata Serialization
+    // Collect all fully-resolved global TypeIds from all threads
+    let mut master_type_dictionary: Vec<crate::gid::TypeId> = all_type_streams
+        .into_iter()
+        .flat_map(|(_, stream)| stream)
+        .collect();
+
+    // Deduplicate the global dictionary
+    master_type_dictionary.sort_unstable_by_key(|a| a.words);
+    master_type_dictionary.dedup_by(|a, b| a.words == b.words);
+
+    // Save the zero-copy metadata file to disk
+    let metadata_path = std::path::Path::new("output.vxm");
+    crate::metadata::VxMetadata::save_to_file(&master_type_dictionary, metadata_path)
+        .map_err(|e| format!("Failed to save metadata: {}", e))?;
+
+    println!(
+        "Saved {} unique TypeIds to {:?}",
+        master_type_dictionary.len(),
+        metadata_path
+    );
+
     Ok(())
 }
