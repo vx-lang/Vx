@@ -17,13 +17,13 @@ fn test_pipeline_architecture_hooks() {
             active: bool,
         }
 
-        fn process_config<T>(val: T, cfg: Config) -> Config {
+        fn process_config<T>(val: T, cfg: &Config, count: u32, limit: u64, ratio: f32) -> Config {
             return cfg;
         }
 
         fn run_module_a() -> Config {
             let c = Config { id: 1, active: true };
-            return process_config(10, c);
+            return process_config(10, &c, 100u32, 5000u64, 1.5f32);
         }
         "#,
     )
