@@ -8,19 +8,14 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let modules: Result<Vec<VxModule>, String> = file_paths
         .par_iter()
         .map(|path| {
-            // For now, return empty modules as a skeleton.
-            // In the future: let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            // return crate::parse_module(&source);
             println!("Parsing file: {}", path);
-            Ok(crate::ast::Program {
-                module_path: path.clone(),
-                externs: vec![],
-                structs: vec![],
-                enums: vec![],
-                traits: vec![],
-                impls: vec![],
-                functions: vec![],
-            })
+            let source = std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
+            let mut lexer = crate::lexer::Lexer::new(&source);
+            let tokens = lexer.tokenize();
+            let mut parser = crate::parser::Parser::new(tokens, &source);
+            let mut program = parser.parse().map_err(|e| format!("Failed to parse {}: {}", path, e))?;
+            program.module_path = path.clone();
+            Ok(program)
         })
         .collect();
 
