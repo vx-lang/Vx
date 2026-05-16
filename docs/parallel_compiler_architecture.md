@@ -780,7 +780,7 @@ fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSes
         // Prove that every thread read from the exact same frozen memory location,
         // and no thread secretly cloned the global session to mutate it.
         assert_eq!(
-            Arc::as_ptr(&worker.global), 
+            Arc::as_ptr(&worker.global),
             Arc::as_ptr(global),
             "FATAL: Worker thread diverged from the frozen GlobalSession."
         );
@@ -855,7 +855,7 @@ fn verify_phase_4_routing(buckets: &[Vec<TypeId>], module_index_map: &HashMap<u6
 
             if (type_id.words[3] & SYNTHETIC_MONO_FLAG) != 0 {
                 // INVARIANT 1: The Synthetic Routing Proof
-                // If it's an external crate monomorphization, prove that Word 0 
+                // If it's an external crate monomorphization, prove that Word 0
                 // matches the caller's bucket, not the external crate's hash.
                 assert_eq!(
                     type_module_hash, expected_bucket_hash,
@@ -885,7 +885,7 @@ fn verify_phase_4_routing(buckets: &[Vec<TypeId>], module_index_map: &HashMap<u6
 fn verify_lsp_memory_reclamation(old_epoch: Weak<GlobalSession>) {
     // INVARIANT: Zero Leakage
     // Prove that the Rust borrow checker successfully destroyed the previous epoch.
-    // If this upgrade succeeds, it means a thread or a rogue data structure 
+    // If this upgrade succeeds, it means a thread or a rogue data structure
     // is secretly holding an Arc<GlobalSession> hostage, causing a memory leak.
     assert!(
         old_epoch.upgrade().is_none(),

@@ -96,6 +96,18 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         ));
     }
 
+    #[cfg(debug_assertions)]
+    {
+        let workers: Vec<&crate::session::LocalWorkerState> = check_results
+            .iter()
+            .map(|(_, _, worker, _)| worker)
+            .collect();
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_1_isolation(
+            &workers,
+            &global_session,
+        );
+    }
+
     // Phase 2 & 3: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
     let mut merged_generics_arena = (*global_session.generics_arena).clone();
@@ -204,6 +216,18 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     println!("SIMD Patch Pass completed. AST is officially lowered to Flat Array.");
 
+    #[cfg(debug_assertions)]
+    {
+        let patched_stream: Vec<crate::gid::TypeId> = all_type_streams
+            .iter()
+            .flat_map(|(_, stream)| stream.clone())
+            .collect();
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_5_simd_patch(
+            &patched_stream,
+            &global_session,
+        );
+    }
+
     // Phase 4: Parallel Module Deduplication & Codegen
     let num_modules = parsed_modules.len();
     let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
@@ -230,6 +254,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             }
         }
     }
+
+    #[cfg(debug_assertions)]
+    crate::parallel_architecture_verifier::verify_arch::verify_phase_4_routing(
+        &module_buckets,
+        &module_hash_to_index,
+    );
 
     // Parallel Deduplication Step (Zero Lock Contention)
     parsed_modules
@@ -269,6 +299,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         master_type_dictionary.len(),
         metadata_path
     );
+
+    #[cfg(debug_assertions)]
+    let weak_session = std::sync::Arc::downgrade(&global_session);
+    drop(global_session);
+    #[cfg(debug_assertions)]
+    crate::parallel_architecture_verifier::verify_arch::verify_lsp_memory_reclamation(weak_session);
 
     Ok(())
 }
