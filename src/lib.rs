@@ -9,6 +9,7 @@ pub mod hash;
 pub mod hir;
 pub mod jit;
 pub mod lexer;
+pub mod metadata;
 pub mod parser;
 pub mod pipeline;
 pub mod registry;
