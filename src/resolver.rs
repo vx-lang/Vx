@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use crate::ast::VxModule;
 use crate::gid::TypeId;
 use crate::hash::{compute_module_hash, DefPath};
+use std::collections::HashMap;
 
 /// A global read-only map generated during Phase 1.25.
 /// Maps module_path -> (symbol_name -> TypeId)
@@ -28,7 +28,7 @@ pub fn build_symbol_map(modules: &[VxModule]) -> SymbolMap {
             let tid = TypeId::new(module_hash, sym_hash, 0, 0);
             module_symbols.insert(enum_decl.name.clone(), tid);
         }
-        
+
         for trait_decl in &module.traits {
             let sym_hash = DefPath::Named(trait_decl.name.clone()).compute_symbol_hash();
             let tid = TypeId::new(module_hash, sym_hash, 0, 0);

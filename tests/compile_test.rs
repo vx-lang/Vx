@@ -31,7 +31,9 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut program.functions { checker.check_function(f); }
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
     let is_valid = checker.errors.is_empty();
 
     if expect_pass {
@@ -69,17 +71,23 @@ fn run_middle_end_test(path: &Path) {
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut program.functions { checker.check_function(f); }
-    assert!(checker.errors.is_empty(), "Sema failed: {:#?}", checker.errors);
-    
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
+    assert!(
+        checker.errors.is_empty(),
+        "Sema failed: {:#?}",
+        checker.errors
+    );
+
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
-    
+
     let mut new_functions = checker.monomorphized_functions;
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
-    
+
     let module_asts = std::collections::HashMap::new();
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
@@ -118,9 +126,15 @@ fn run_backend_test(path: &Path) {
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut program.functions { checker.check_function(f); }
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
     if !checker.errors.is_empty() {
-        panic!("Semantic check failed on '{}':\n{:?}", path.display(), checker.errors);
+        panic!(
+            "Semantic check failed on '{}':\n{:?}",
+            path.display(),
+            checker.errors
+        );
     }
     let monomorphized_program = program;
     let module_asts = std::collections::HashMap::new();

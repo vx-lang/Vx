@@ -1,4 +1,4 @@
-use vxc::ast::{VxModule, StructDecl, Type, Function, Span};
+use vxc::ast::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
 
 #[test]
@@ -33,7 +33,7 @@ fn test_local_name_resolution() {
     if let Type::Struct(name, id) = &module.functions[0].return_type {
         assert_eq!(name, "Vector");
         assert!(id.is_some()); // Successfully resolved to a TypeId!
-        
+
         let tid = id.unwrap();
         // The Module Hash and Symbol Hash should be populated
         assert_ne!(tid.module_id(), 0);
@@ -43,7 +43,7 @@ fn test_local_name_resolution() {
     }
 }
 
-use vxc::ast::{Statement, Expr, MemorySpace};
+use vxc::ast::{Expr, MemorySpace, Statement};
 
 #[test]
 fn test_unresolved_symbol_remains_none() {
@@ -96,8 +96,8 @@ fn test_nested_type_resolution() {
                 Type::Borrow(
                     Box::new(Type::Struct("Matrix".to_string(), None)),
                     Some(MemorySpace::HostDRAM),
-                    true
-                )
+                    true,
+                ),
             )],
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             body: vec![],
@@ -143,7 +143,7 @@ fn test_expr_and_stmt_resolution() {
                 false,
                 Some(Type::Struct("Config".to_string(), None)),
                 Expr::Number(0.0, Span::default()),
-                Span::default()
+                Span::default(),
             )],
         }],
     };
@@ -151,7 +151,9 @@ fn test_expr_and_stmt_resolution() {
     let symbol_map = build_symbol_map(&[module.clone()]);
     module.resolve_names(&symbol_map);
 
-    if let Statement::LetDecl(_, _, Some(Type::Struct(name, id)), _, _) = &module.functions[0].body[0] {
+    if let Statement::LetDecl(_, _, Some(Type::Struct(name, id)), _, _) =
+        &module.functions[0].body[0]
+    {
         assert_eq!(name, "Config");
         assert!(id.is_some()); // The Type annotation deep within the LetDecl Statement was resolved!
     } else {

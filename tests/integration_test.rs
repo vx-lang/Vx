@@ -35,7 +35,9 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut ast.functions { checker.check_function(f); }
+    for f in &mut ast.functions {
+        checker.check_function(f);
+    }
     let is_valid = checker.errors.is_empty();
 
     if !checker.errors.is_empty() {
@@ -57,7 +59,9 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut program.functions { checker.check_function(f); }
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
     if checker.errors.is_empty() {
         let monomorphized_ast = program;
         let module_asts = std::collections::HashMap::new();

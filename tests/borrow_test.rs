@@ -1,5 +1,5 @@
-use vxc::gid::TypeId;
 use vxc::borrow::verify_subtyping_bounds;
+use vxc::gid::TypeId;
 
 #[test]
 fn test_fast_path_variance_checks() {

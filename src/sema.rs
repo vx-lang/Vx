@@ -47,13 +47,17 @@ impl<'a> GlobalAstEnv<'a> {
                 env.impls.entry(trait_name).or_default().push(i);
             }
             for ext in &module.externs {
-                env.functions.insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
+                env.functions
+                    .insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
             }
             for func in &module.functions {
                 if !func.generics.is_empty() {
                     env.generic_functions.insert(func.name.clone(), func);
                 } else {
-                    env.functions.insert(func.name.clone(), (func.return_type.clone(), false /* func.is_unsafe */));
+                    env.functions.insert(
+                        func.name.clone(),
+                        (func.return_type.clone(), false /* func.is_unsafe */),
+                    );
                     env.ast_functions.insert(func.name.clone(), func);
                 }
             }
@@ -76,7 +80,10 @@ pub struct TypeChecker<'a> {
 }
 
 impl<'a> TypeChecker<'a> {
-    pub fn new(env: &'a GlobalAstEnv<'a>, worker: &'a mut crate::session::LocalWorkerState) -> Self {
+    pub fn new(
+        env: &'a GlobalAstEnv<'a>,
+        worker: &'a mut crate::session::LocalWorkerState,
+    ) -> Self {
         Self {
             env,
             worker,
@@ -125,7 +132,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        self.scopes.last_mut().unwrap().insert(name, (ty, self.active_topology.clone()));
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .insert(name, (ty, self.active_topology.clone()));
     }
 
     pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {
@@ -137,7 +147,12 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    pub fn unify_types(&mut self, generic_ty: &Type, concrete_ty: &Type, mapping: &mut std::collections::HashMap<String, Type>) -> bool {
+    pub fn unify_types(
+        &mut self,
+        generic_ty: &Type,
+        concrete_ty: &Type,
+        mapping: &mut std::collections::HashMap<String, Type>,
+    ) -> bool {
         match (generic_ty, concrete_ty) {
             (Type::Generic(name, _), _) => {
                 if let Some(existing) = mapping.get(name) {
@@ -176,7 +191,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub fn instantiate_function(&mut self, generic_func: &Function, mapping: &std::collections::HashMap<String, Type>) -> Function {
+    pub fn instantiate_function(
+        &mut self,
+        generic_func: &Function,
+        mapping: &std::collections::HashMap<String, Type>,
+    ) -> Function {
         let mut mangled_name = generic_func.name.clone();
         for (g_name, _) in &generic_func.generics {
             if let Some(ty) = mapping.get(g_name) {
@@ -220,8 +239,6 @@ impl<'a> TypeChecker<'a> {
     pub fn mangle_path(path: &str) -> String {
         path.replace("/", "_").replace(".", "_")
     }
-
-
 
     pub fn check_function(&mut self, func: &mut Function) {
         if !func.generics.is_empty() {
@@ -471,32 +488,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-        fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
+    fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
         // First perform semantic validation
         let ty = self.check_expr_type(expr);
-        
+
         // Then perform AST to HIR lowering
         let type_idx = self.emit_type(&ty);
-        
+
         // Determine opcode based on the AST expression
         let opcode = match expr {
             Expr::Number(_, _) => crate::hir::OP_CONST,
             Expr::Identifier(_, _) => crate::hir::OP_LOAD,
-            Expr::BinaryOp(_, op, _, _) => {
-                match op {
-                    BinaryOp::Add => crate::hir::OP_ADD,
-                    BinaryOp::Sub => crate::hir::OP_SUB,
-                    BinaryOp::Mul => crate::hir::OP_MUL,
-                    BinaryOp::Div => crate::hir::OP_DIV,
-                    _ => crate::hir::OP_NOP,
-                }
+            Expr::BinaryOp(_, op, _, _) => match op {
+                BinaryOp::Add => crate::hir::OP_ADD,
+                BinaryOp::Sub => crate::hir::OP_SUB,
+                BinaryOp::Mul => crate::hir::OP_MUL,
+                BinaryOp::Div => crate::hir::OP_DIV,
+                _ => crate::hir::OP_NOP,
             },
             Expr::FunctionCall(_, _, _) => crate::hir::OP_CALL,
             _ => crate::hir::OP_NOP,
         };
-        
-        // In a full implementation, we would recursively call check_expr here 
-        // to get operand registers. For this bridge proof-of-concept, we emit 
+
+        // In a full implementation, we would recursively call check_expr here
+        // to get operand registers. For this bridge proof-of-concept, we emit
         // dummy operands and assign the result register.
         let reg = self.emit_inst(opcode, 0, 0, type_idx);
         (ty, reg)
@@ -577,12 +592,10 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr_type(inner_expr);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
-                    Type::Tensor(_, _, _) => {
-                        Type::Pinned(
-                            Box::new(inner_ty.clone()),
-                            Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
-                        )
-                    }
+                    Type::Tensor(_, _, _) => Type::Pinned(
+                        Box::new(inner_ty.clone()),
+                        Topology::NPU(Box::new(Expr::Number(0.0, Span::default()))),
+                    ),
                     Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
                         self.errors.push(format!(
@@ -615,7 +628,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(name, args, _) => {
                 // If this is a local call to a function that was mangled, update the name.
-                
+
                 let resolved_name = name.clone();
 
                 // Mocking built-ins
@@ -692,7 +705,11 @@ impl<'a> TypeChecker<'a> {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
                     }
                     ret_ty.clone()
-                } else if let Some(func) = self.monomorphized_functions.iter().find(|f| f.name == resolved_name) {
+                } else if let Some(func) = self
+                    .monomorphized_functions
+                    .iter()
+                    .find(|f| f.name == resolved_name)
+                {
                     func.return_type.clone()
                 } else if let Some(generic_func) =
                     self.env.generic_functions.get(&resolved_name).cloned()
@@ -769,9 +786,15 @@ impl<'a> TypeChecker<'a> {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else {
-                    let mono_names: Vec<String> = self.monomorphized_functions.iter().map(|f| f.name.clone()).collect();
-                    self.errors
-                        .push(format!("Undefined function '{}'. Available monos: {:?}", resolved_name, mono_names));
+                    let mono_names: Vec<String> = self
+                        .monomorphized_functions
+                        .iter()
+                        .map(|f| f.name.clone())
+                        .collect();
+                    self.errors.push(format!(
+                        "Undefined function '{}'. Available monos: {:?}",
+                        resolved_name, mono_names
+                    ));
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
@@ -1015,7 +1038,6 @@ impl<'a> TypeChecker<'a> {
                     if !method_func.generics.is_empty() {
                         /* self.env.generic_functions.insert is mock */
                     } else if !self.env.functions.contains_key(&mangled_name) {
-                        
                         // Since it's not generic, we must type check it once!
                         let mut func_to_check = method_func.clone();
                         self.check_function(&mut func_to_check);
@@ -1321,9 +1343,16 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
 
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
         let mut checker = TypeChecker::new(&env, &mut worker);
-        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
+        let success = {
+            for f in &mut program.functions {
+                checker.check_function(f);
+            }
+            checker.errors.is_empty()
+        };
 
         for err in &checker.errors {
             println!("Error: {}", err);
@@ -1346,9 +1375,16 @@ fn bad_matmul() -> Tensor {
 
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
         let mut checker = TypeChecker::new(&env, &mut worker);
-        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
+        let success = {
+            for f in &mut program.functions {
+                checker.check_function(f);
+            }
+            checker.errors.is_empty()
+        };
         assert!(!success);
         assert!(!checker.errors.is_empty());
     }
@@ -1373,10 +1409,17 @@ fn bad_matmul() -> Tensor {
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
         let mut checker = TypeChecker::new(&env, &mut worker);
         assert!(
-            { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
+            {
+                for f in &mut program.functions {
+                    checker.check_function(f);
+                }
+                checker.errors.is_empty()
+            },
             "Semantic checking failed: {:?}",
             checker.errors
         );
@@ -1404,10 +1447,17 @@ fn bad_matmul() -> Tensor {
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
         let mut checker = TypeChecker::new(&env, &mut worker);
 
-        let success = { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() };
+        let success = {
+            for f in &mut program.functions {
+                checker.check_function(f);
+            }
+            checker.errors.is_empty()
+        };
         assert!(!success);
         assert!(checker
             .errors
@@ -1430,11 +1480,18 @@ fn bad_matmul() -> Tensor {
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(crate::session::GlobalSession::new(1)));
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
         let mut checker = TypeChecker::new(&env, &mut worker);
 
         assert!(
-            { for f in &mut program.functions { checker.check_function(f); } checker.errors.is_empty() },
+            {
+                for f in &mut program.functions {
+                    checker.check_function(f);
+                }
+                checker.errors.is_empty()
+            },
             "Semantic checking failed for methods: {:?}",
             checker.errors
         );

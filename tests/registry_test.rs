@@ -31,7 +31,7 @@ fn test_valid_acyclic_registry() {
     assert!(result.is_ok());
     let registry = result.unwrap();
     assert_eq!(registry.layouts.len(), 2);
-    
+
     // Check that module index works
     let mod_index = registry.module_indices.get(&mod_hash).unwrap();
     assert_eq!(mod_index.get("A"), Some(&id_a));
@@ -64,6 +64,9 @@ fn test_invalid_cyclic_registry() {
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
     assert!(result.is_err());
-    let err = match result { Err(e) => e, _ => panic!() };
+    let err = match result {
+        Err(e) => e,
+        _ => panic!(),
+    };
     assert!(err.contains("Infinite-sized recursive layout detected"));
 }

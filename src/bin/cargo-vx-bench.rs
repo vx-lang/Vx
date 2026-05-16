@@ -3,7 +3,6 @@ use std::fs;
 use vxc::lexer::Lexer;
 use vxc::parser;
 
-
 fn main() {
     println!("=====================================");
     println!("       Vx Benchmark Runner           ");
@@ -101,7 +100,9 @@ fn main() -> i32 {
                     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
                     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
                     let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
-                    for f in &mut ast.functions { checker.check_function(f); }
+                    for f in &mut ast.functions {
+                        checker.check_function(f);
+                    }
                     if checker.errors.is_empty() {
                         let monomorphized_ast = ast;
                         let module_asts = std::collections::HashMap::new();

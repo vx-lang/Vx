@@ -1,5 +1,5 @@
-use std::hash::{Hash, Hasher};
 use rustc_hash::FxHasher;
+use std::hash::{Hash, Hasher};
 
 /// Computes a fast 64-bit cryptographic-like hash for a given module path.
 /// In a production environment, this might use `SipHash` or `xxHash`, but `FxHasher`
@@ -34,7 +34,10 @@ impl DefPath {
                 0u8.hash(&mut hasher);
                 name.hash(&mut hasher);
             }
-            DefPath::Anonymous { parent_hash, structural_hash } => {
+            DefPath::Anonymous {
+                parent_hash,
+                structural_hash,
+            } => {
                 // 1 is the discriminator for Anonymous
                 1u8.hash(&mut hasher);
                 parent_hash.hash(&mut hasher);
@@ -54,7 +57,7 @@ mod tests {
         let path1 = DefPath::Named("MyStruct".to_string());
         let path2 = DefPath::Named("MyStruct".to_string());
         assert_eq!(path1.compute_symbol_hash(), path2.compute_symbol_hash());
-        
+
         let path3 = DefPath::Named("OtherStruct".to_string());
         assert_ne!(path1.compute_symbol_hash(), path3.compute_symbol_hash());
     }
@@ -62,24 +65,27 @@ mod tests {
     #[test]
     fn test_anonymous_defpath_stability() {
         let parent = DefPath::Named("ParentFn".to_string()).compute_symbol_hash();
-        
+
         let anon1 = DefPath::Anonymous {
             parent_hash: parent,
             structural_hash: 0x12345678,
         };
-        
+
         let anon2 = DefPath::Anonymous {
             parent_hash: parent,
             structural_hash: 0x12345678,
         };
-        
+
         assert_eq!(anon1.compute_symbol_hash(), anon2.compute_symbol_hash());
-        
+
         let anon_different_structure = DefPath::Anonymous {
             parent_hash: parent,
             structural_hash: 0x87654321,
         };
-        
-        assert_ne!(anon1.compute_symbol_hash(), anon_different_structure.compute_symbol_hash());
+
+        assert_ne!(
+            anon1.compute_symbol_hash(),
+            anon_different_structure.compute_symbol_hash()
+        );
     }
 }

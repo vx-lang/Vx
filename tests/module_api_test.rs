@@ -14,7 +14,7 @@ fn test_parse_module_api() {
     assert_eq!(module.functions[0].name, "hello_world");
 }
 
-use vxc::ast::{VxModule, VxFunction};
+use vxc::ast::{VxFunction, VxModule};
 
 #[test]
 fn test_ak_module_add_function() {

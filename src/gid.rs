@@ -68,7 +68,10 @@ pub enum LifetimeSignature<'a> {
 impl TypeId {
     /// Inspects the status of the escape hatch to determine parameter layout strategy
     #[inline(always)]
-    pub fn lifetime_context<'sess>(&self, arena: &'sess [UnboundedFunctionMetadata]) -> LifetimeSignature<'sess> {
+    pub fn lifetime_context<'sess>(
+        &self,
+        arena: &'sess [UnboundedFunctionMetadata],
+    ) -> LifetimeSignature<'sess> {
         let word_2 = self.words[2];
 
         if (word_2 & ESCAPE_HATCH_MASK) != 0 {
@@ -84,7 +87,10 @@ impl TypeId {
     /// Helper to extract a specific parameter's 16-bit payload on the fast path
     #[inline(always)]
     pub fn extract_fast_param(&self, param_index: usize) -> u16 {
-        debug_assert!(param_index < 4, "Fast path only supports up to 4 parameters");
+        debug_assert!(
+            param_index < 4,
+            "Fast path only supports up to 4 parameters"
+        );
         let word_2 = self.words[2];
         ((word_2 >> (param_index * 16)) & 0xFFFF) as u16
     }
@@ -92,8 +98,16 @@ impl TypeId {
     /// Sets a 12-bit lifetime region and 4-bit variance into a specific parameter index.
     /// If the region exceeds 4095, it returns an error to indicate the caller MUST flip the escape hatch and use the Slow Path.
     #[inline(always)]
-    pub fn try_set_fast_param(&mut self, param_index: usize, region_id: u16, variance_flags: u8) -> Result<(), &'static str> {
-        debug_assert!(param_index < 4, "Fast path only supports up to 4 parameters");
+    pub fn try_set_fast_param(
+        &mut self,
+        param_index: usize,
+        region_id: u16,
+        variance_flags: u8,
+    ) -> Result<(), &'static str> {
+        debug_assert!(
+            param_index < 4,
+            "Fast path only supports up to 4 parameters"
+        );
         if region_id > 4095 {
             return Err("Lifetime region overflowed 12 bits. Must use Slow Path.");
         }
@@ -143,7 +157,7 @@ impl TypeId {
     pub fn with_flags(&mut self, flags_mask: u64) {
         self.words[3] |= flags_mask;
     }
-    
+
     /// Mutation helper used to set visibility
     #[inline(always)]
     pub fn with_visibility(&mut self, vis: Visibility) {
@@ -225,7 +239,9 @@ mod tests {
         assert!(tid2.should_inline());
 
         let mut tid3 = TypeId::new(0, 0, 0, 0);
-        tid3.with_flags(ATTR_COLD | ATTR_MUST_USE | TYPE_NEEDS_DROP | SYNTHETIC_MONO_FLAG | LOCAL_DEFERRED_BIT);
+        tid3.with_flags(
+            ATTR_COLD | ATTR_MUST_USE | TYPE_NEEDS_DROP | SYNTHETIC_MONO_FLAG | LOCAL_DEFERRED_BIT,
+        );
         assert_eq!((tid3.words[3] & ATTR_COLD), ATTR_COLD);
         assert_eq!((tid3.words[3] & ATTR_MUST_USE), ATTR_MUST_USE);
         assert_eq!((tid3.words[3] & TYPE_NEEDS_DROP), TYPE_NEEDS_DROP);
@@ -257,10 +273,10 @@ mod tests {
     #[test]
     fn test_fast_path_lifetime_overflow() {
         let mut tid = TypeId::new(0, 0, 0, 0);
-        
+
         // Setting a valid lifetime (4095 is the max 12-bit value)
         assert!(tid.try_set_fast_param(0, 4095, 0).is_ok());
-        
+
         // Setting an invalid lifetime (4096) should return an Err
         assert!(tid.try_set_fast_param(1, 4096, 0).is_err());
     }
@@ -273,11 +289,13 @@ mod tests {
         // Insert a dummy item into the local arena
         let index = {
             let idx = worker.local_slow_path_arena.len();
-            worker.local_slow_path_arena.push(UnboundedFunctionMetadata {
-                type_arguments: vec![],
-                lifetime_regions: vec![42],
-                trait_vtables: vec![100],
-            });
+            worker
+                .local_slow_path_arena
+                .push(UnboundedFunctionMetadata {
+                    type_arguments: vec![],
+                    lifetime_regions: vec![42],
+                    trait_vtables: vec![100],
+                });
             idx as u64
         };
 
@@ -311,10 +329,10 @@ mod tests {
         let (deserialized, remaining) = deserialize_metadata_symbols(&buffer);
         assert_eq!(remaining.len(), 0);
         assert_eq!(deserialized.len(), 2);
-        
+
         assert_eq!(deserialized[0], t1);
         assert!(deserialized[0].is_trivially_copyable());
-        
+
         assert_eq!(deserialized[1], t2);
         assert_eq!(deserialized[1].visibility(), Visibility::FullyPublic);
     }
