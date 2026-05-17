@@ -597,7 +597,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => Type::Pinned(
                         Box::new(inner_ty.clone()),
-                        Topology::NPU(Box::new(Expr::Number(0.0, Some(crate::ast::ElementType::F64), Span::default()))),
+                        Topology::NPU(Box::new(Expr::Number(0.0, Some(crate::ast::ElementType::I32), Span::default()))),
                     ),
                     Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
@@ -955,7 +955,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         if let Expr::Array(perm, _) = &args[0] {
                             let empty_env = HashMap::new();
-                            let mut new_dims = vec![Expr::Number(0.0, Some(crate::ast::ElementType::F64), Span::default()); dims.len()];
+                            let mut new_dims = vec![Expr::Number(0.0, Some(crate::ast::ElementType::I32), Span::default()); dims.len()];
                             if perm.len() != dims.len() {
                                 self.errors.push(
                                     "transpose permutation map length must match tensor rank"
@@ -1068,7 +1068,7 @@ impl<'a> TypeChecker<'a> {
                     let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
-                        Topology::NPU(Box::new(Expr::Number(0.0, Some(crate::ast::ElementType::F64), Span::default()))),
+                        Topology::NPU(Box::new(Expr::Number(0.0, Some(crate::ast::ElementType::I32), Span::default()))),
                     ); // Default to NPU[0]
                     *expr = Expr::Transfer(obj.clone(), target_mem, Span::default());
                 } else if _method == "to_host" {
@@ -1403,7 +1403,7 @@ fn bad_matmul() -> Tensor {
                 let ptr: *mut Config = c;
                 let val = *ptr;
             }
-            return c.value < 20.0;
+            return c.value < 20.0f32;
         }
         "#;
         let mut lexer = Lexer::new(input);
