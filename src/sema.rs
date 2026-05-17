@@ -1210,6 +1210,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn is_assignable(&self, target: &Type, source: &Type) -> bool {
+        // println!("is_assignable({:?}, {:?})", target, source);
         if target == source {
             return true;
         }
@@ -1308,7 +1309,7 @@ impl<'a> TypeChecker<'a> {
                 if *t_target == *t_source {
                     return true;
                 }
-                if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
+                if *t_source != ElementType::Bool && t_target != &ElementType::Bool {
                     return true;
                 }
             }
