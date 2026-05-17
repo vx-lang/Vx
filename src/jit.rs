@@ -2,8 +2,11 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Once;
 
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static COMPILE_RT_ONCE: Once = Once::new();
+static COMPILE_NPU_ONCE: Once = Once::new();
 
 pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     // Ensure target/jit directory exists
@@ -19,8 +22,10 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     let temp_mlir = format!("target/jit/temp_{}.mlir", uid);
     let temp_llvm = format!("target/jit/temp_llvm_{}.mlir", uid);
     let temp_ll = format!("target/jit/temp_{}.ll", uid);
-    let lib_rt = format!("target/jit/libvx_rt_{}.dylib", uid);
-    let lib_npu = format!("target/jit/libnpu_{}.dylib", uid);
+
+    // Use shared libraries for runtime to avoid recompiling for every test
+    let lib_rt = "target/jit/libvx_rt_shared.dylib".to_string();
+    let lib_npu = "target/jit/libnpu_shared.dylib".to_string();
 
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
@@ -28,52 +33,54 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         .write_all(mlir_src.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    println!("[JIT] Compiling C Runtime...");
-    let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
-    let cflags_env = std::env::var("CFLAGS").unwrap_or_else(|_| "-shared -fPIC".to_string());
-    let cflags: Vec<&str> = cflags_env.split_whitespace().collect();
+    COMPILE_RT_ONCE.call_once(|| {
+        println!("[JIT] Compiling C Runtime (Shared)...");
+        let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
+        let cflags_env = std::env::var("CFLAGS").unwrap_or_else(|_| "-shared -fPIC".to_string());
+        let cflags: Vec<&str> = cflags_env.split_whitespace().collect();
 
-    let mut clang_cmd = Command::new(&cc);
-    clang_cmd.args(&cflags);
-    clang_cmd.args(["src/runtime/vx_rt.c", "-o", &lib_rt]);
+        let mut clang_cmd = Command::new(&cc);
+        clang_cmd.args(&cflags);
+        clang_cmd.args(["src/runtime/vx_rt.c", "-o", &lib_rt]);
 
-    let clang_status = clang_cmd.status().map_err(|e| e.to_string())?;
-
-    if !clang_status.success() {
-        return Err("Failed to compile C runtime".to_string());
-    }
+        let clang_status = clang_cmd.status().expect("Failed to execute clang");
+        if !clang_status.success() {
+            panic!("Failed to compile C runtime");
+        }
+    });
 
     if cfg!(target_os = "macos") {
-        println!("[JIT] Compiling Objective-C++ NPU Dispatcher...");
-        let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
-        let cxxflags_env = std::env::var("CXXFLAGS").unwrap_or_else(|_| {
-            "-shared -fPIC -fobjc-arc -O3 -Wno-deprecated-declarations".to_string()
+        COMPILE_NPU_ONCE.call_once(|| {
+            println!("[JIT] Compiling Objective-C++ NPU Dispatcher (Shared)...");
+            let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+            let cxxflags_env = std::env::var("CXXFLAGS").unwrap_or_else(|_| {
+                "-shared -fPIC -fobjc-arc -O3 -Wno-deprecated-declarations".to_string()
+            });
+            let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
+
+            let mut cxx_cmd = Command::new(&cxx);
+            cxx_cmd.args(&cxxflags);
+            cxx_cmd.args([
+                "runtime/npu_dispatch.mm",
+                "-framework",
+                "Accelerate",
+                "-framework",
+                "Foundation",
+                "-framework",
+                "Metal",
+                "-framework",
+                "MetalPerformanceShaders",
+                "-framework",
+                "CoreML",
+                "-o",
+                &lib_npu,
+            ]);
+
+            let npu_status = cxx_cmd.status().expect("Failed to execute clang++");
+            if !npu_status.success() {
+                panic!("Failed to compile Objective-C++ NPU Dispatcher");
+            }
         });
-        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
-
-        let mut cxx_cmd = Command::new(&cxx);
-        cxx_cmd.args(&cxxflags);
-        cxx_cmd.args([
-            "runtime/npu_dispatch.mm",
-            "-framework",
-            "Accelerate",
-            "-framework",
-            "Foundation",
-            "-framework",
-            "Metal",
-            "-framework",
-            "MetalPerformanceShaders",
-            "-framework",
-            "CoreML",
-            "-o",
-            &lib_npu,
-        ]);
-
-        let npu_status = cxx_cmd.status().map_err(|e| e.to_string())?;
-
-        if !npu_status.success() {
-            return Err("Failed to compile Objective-C++ NPU Dispatcher".to_string());
-        }
     } else {
         return Err(
             "Vx JIT execution currently requires macOS Apple Silicon for hardware dispatch."
