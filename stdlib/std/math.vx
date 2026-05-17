@@ -19,6 +19,11 @@ extern {
     fn vx_math_sqrt_f64(x: f64) -> f64;
     fn vx_math_exp_f64(x: f64) -> f64;
     fn vx_math_log_f64(x: f64) -> f64;
+    fn vx_math_asin_f64(x: f64) -> f64;
+    fn vx_math_acos_f64(x: f64) -> f64;
+    fn vx_math_atan_f64(x: f64) -> f64;
+    fn vx_math_log2_f64(x: f64) -> f64;
+    fn vx_math_log10_f64(x: f64) -> f64;
 }
 
 trait Math {
@@ -29,6 +34,11 @@ trait Math {
     fn sqrt() -> Self;
     fn exp() -> Self;
     fn ln() -> Self;
+    fn asin() -> Self;
+    fn acos() -> Self;
+    fn atan() -> Self;
+    fn log2() -> Self;
+    fn log10() -> Self;
 }
 
 // In Vx, to define implementations for primitive types, we can use functions mapping directly to the extern blocks.
@@ -41,6 +51,11 @@ fn abs_f32(x: f32) -> f32 { return vx_math_abs_f32(x); }
 fn sqrt_f32(x: f32) -> f32 { return vx_math_sqrt_f32(x); }
 fn exp_f32(x: f32) -> f32 { return vx_math_exp_f32(x); }
 fn ln_f32(x: f32) -> f32 { return vx_math_log_f32(x); }
+fn asin_f32(x: f32) -> f32 { return vx_math_asin_f32(x); }
+fn acos_f32(x: f32) -> f32 { return vx_math_acos_f32(x); }
+fn atan_f32(x: f32) -> f32 { return vx_math_atan_f32(x); }
+fn log2_f32(x: f32) -> f32 { return vx_math_log2_f32(x); }
+fn log10_f32(x: f32) -> f32 { return vx_math_log10_f32(x); }
 
 fn sin_f64(x: f64) -> f64 { return vx_math_sin_f64(x); }
 fn cos_f64(x: f64) -> f64 { return vx_math_cos_f64(x); }
@@ -49,3 +64,8 @@ fn abs_f64(x: f64) -> f64 { return vx_math_abs_f64(x); }
 fn sqrt_f64(x: f64) -> f64 { return vx_math_sqrt_f64(x); }
 fn exp_f64(x: f64) -> f64 { return vx_math_exp_f64(x); }
 fn ln_f64(x: f64) -> f64 { return vx_math_log_f64(x); }
+fn asin_f64(x: f64) -> f64 { return vx_math_asin_f64(x); }
+fn acos_f64(x: f64) -> f64 { return vx_math_acos_f64(x); }
+fn atan_f64(x: f64) -> f64 { return vx_math_atan_f64(x); }
+fn log2_f64(x: f64) -> f64 { return vx_math_log2_f64(x); }
+fn log10_f64(x: f64) -> f64 { return vx_math_log10_f64(x); }

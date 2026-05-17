@@ -92,3 +92,28 @@ pub extern "C" fn vx_math_exp_f64(x: f64) -> f64 {
 pub extern "C" fn vx_math_log_f64(x: f64) -> f64 {
     x.ln()
 }
+
+#[no_mangle]
+pub extern "C" fn vx_math_asin_f64(x: f64) -> f64 {
+    x.asin()
+}
+
+#[no_mangle]
+pub extern "C" fn vx_math_acos_f64(x: f64) -> f64 {
+    x.acos()
+}
+
+#[no_mangle]
+pub extern "C" fn vx_math_atan_f64(x: f64) -> f64 {
+    x.atan()
+}
+
+#[no_mangle]
+pub extern "C" fn vx_math_log2_f64(x: f64) -> f64 {
+    x.log2()
+}
+
+#[no_mangle]
+pub extern "C" fn vx_math_log10_f64(x: f64) -> f64 {
+    x.log10()
+}

@@ -2,6 +2,7 @@ extern {
     fn vx_simd_add_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32;
     fn vx_simd_sub_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32;
     fn vx_simd_mul_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32;
+    fn vx_simd_div_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32;
     fn vx_simd_fma_f32x4(a: *const f32, b: *const f32, c: *const f32, out: *mut f32) -> i32;
 }
 
@@ -15,6 +16,10 @@ fn simd_sub_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32 {
 
 fn simd_mul_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32 {
     return vx_simd_mul_f32x4(a, b, out);
+}
+
+fn simd_div_f32x4(a: *const f32, b: *const f32, out: *mut f32) -> i32 {
+    return vx_simd_div_f32x4(a, b, out);
 }
 
 fn simd_fma_f32x4(a: *const f32, b: *const f32, c: *const f32, out: *mut f32) -> i32 {
