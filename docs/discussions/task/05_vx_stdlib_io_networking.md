@@ -1,0 +1,8 @@
+- [x] Implement `TcpListener` FFI in `stdlib/rust_core/src/ffi/macros.rs`
+- [x] Expose `TcpListener` in `stdlib/rust_core/src/net.rs`
+- [x] Create `TcpListener` Vx bindings in `stdlib/std/net.vx`
+- [x] Implement Standard IO streams (stdin, stdout, stderr) FFI in `stdlib/rust_core/src/ffi/macros.rs`
+- [x] Expose IO stream wrappers in `stdlib/std/io.vx`
+- [x] Create testing programs for TCP server and STDIO in `tests/backend/pass/`
+- [x] Update JIT runner in `src/jit.rs` to allow capturing `stderr` along with `stdout`
+- [x] Run `cargo test` and verify everything builds and passes.

@@ -15,6 +15,9 @@ fn compute_metrics(data: Ref<Tensor<f32, [128, 256]>, Host_DRAM>) -> Verified<Te
 }
 ```
 
+> [!IMPORTANT]
+> **Explicit Returns and Semicolons**: Unlike Rust, Vx does not support implicit returns using expressions without semicolons at the end of a block. All function returns must use the explicit `return` keyword followed by a semicolon. Furthermore, all statements (including FFI calls) must be properly terminated with a semicolon. Omission of semicolons can cause parsing errors to cascade into unrelated files.
+
 ## 2. Topologies & Memory Spaces
 
 Vx introduces hardware-aware keywords: `Topology` and `Memory`.
