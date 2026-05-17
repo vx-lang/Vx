@@ -728,13 +728,19 @@ impl MlirGenerator {
                     let n_val = num_str.parse::<f64>().unwrap_or(0.0) as i64;
                     self.write_line(&format!("{} = arith.constant {} : index", res, n_val));
                     (res, "index".to_string())
-                } else if ["f32", "f64", "bf16", "i32", "i64"].contains(&scalar_expected.as_str()) {
-                    let is_int = scalar_expected.starts_with("i");
+                } else if [
+                    "f16", "f32", "f64", "bf16", "i8", "u8", "i16", "u16", "i32", "u32", "i64",
+                    "u64", "i128", "u128",
+                ]
+                .contains(&scalar_expected.as_str())
+                {
+                    let is_int =
+                        scalar_expected.starts_with("i") || scalar_expected.starts_with("u");
                     let float_str = if is_int {
-                        if let Ok(i_val) = num_str.parse::<i64>() {
+                        if let Ok(i_val) = num_str.parse::<i128>() {
                             format!("{}", i_val)
                         } else {
-                            format!("{}", num_str.parse::<f64>().unwrap_or(0.0) as i64)
+                            format!("{}", num_str.parse::<f64>().unwrap_or(0.0) as i128)
                         }
                     } else {
                         let mut f_str = num_str.parse::<f64>().unwrap_or(0.0).to_string();
@@ -743,11 +749,28 @@ impl MlirGenerator {
                         }
                         f_str
                     };
+                    let mlir_ty = if is_int {
+                        if scalar_expected.ends_with("128") {
+                            "i128"
+                        } else if scalar_expected.ends_with("64") {
+                            "i64"
+                        } else if scalar_expected.ends_with("32") {
+                            "i32"
+                        } else if scalar_expected.ends_with("16") {
+                            "i16"
+                        } else if scalar_expected.ends_with("8") {
+                            "i8"
+                        } else {
+                            "i64"
+                        }
+                    } else {
+                        scalar_expected.as_str()
+                    };
                     self.write_line(&format!(
                         "{} = arith.constant {} : {}",
-                        res, float_str, scalar_expected
+                        res, float_str, mlir_ty
                     ));
-                    (res, scalar_expected.to_string())
+                    (res, mlir_ty.to_string())
                 } else if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
                     self.write_line(&format!(
                         "{} = arith.constant {} : f32",

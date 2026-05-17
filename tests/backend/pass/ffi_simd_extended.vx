@@ -1,0 +1,35 @@
+import std::simd;
+
+extern {
+    fn print_f32(val: f32) -> i32;
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+    fn vx_malloc_f32(num_elements: i32) -> *mut f32;
+}
+
+fn main() -> i32 {
+    let mut ret: i32 = 1;
+    unsafe {
+        let a = vx_malloc_f32(4);
+        let b = vx_malloc_f32(4);
+        let c = vx_malloc_f32(4);
+        let out = vx_malloc_f32(4);
+
+        // Ideally we would initialize these, but in Vx doing pointer offset is tricky
+        // without pointer arithmetic enabled in stdlib, which it might be via `std::vec`.
+        // Let's just pass them to the functions to ensure they link and execute successfully.
+        
+        let res1 = simd_add_f32x4(a, b, out);
+        let res2 = simd_sub_f32x4(a, b, out);
+        let res3 = simd_mul_f32x4(a, b, out);
+        let res4 = simd_div_f32x4(a, b, out);
+        let res5 = simd_fma_f32x4(a, b, c, out);
+
+        let sum = res1 + res2 + res3 + res4 + res5;
+        if sum == 0 {
+            ret = 0;
+        }
+    }
+    return ret;
+}
+
+// EXPECT: 

@@ -1,0 +1,35 @@
+fn test_primitives() -> i32 {
+    let a: u8 = 10;
+    let b: i8 = 20;
+    let c: u16 = 30;
+    let d: i16 = 40;
+    let e: u32 = 50;
+    let f: i32 = 60;
+    let g: u64 = 70;
+    let h: i64 = 80;
+    let i: u128 = 90;
+    let j: i128 = 100;
+    
+    let x: f16 = 1.0;
+    let y: bf16 = 2.0;
+    let z: f32 = 3.0;
+    let w: f64 = 4.0;
+    
+    return 0;
+}
+
+// CHECK: func.func @test_primitives() -> i32 {
+// CHECK: arith.constant 10 : i8
+// CHECK: arith.constant 20 : i8
+// CHECK: arith.constant 30 : i16
+// CHECK: arith.constant 40 : i16
+// CHECK: arith.constant 50 : i32
+// CHECK: arith.constant 60 : i32
+// CHECK: arith.constant 70 : i64
+// CHECK: arith.constant 80 : i64
+// CHECK: arith.constant 90 : i128
+// CHECK: arith.constant 100 : i128
+// CHECK: arith.constant 1.0 : f16
+// CHECK: arith.constant 2.0 : bf16
+// CHECK: arith.constant 3.0 : f32
+// CHECK: arith.constant 4.0 : f64
