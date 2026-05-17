@@ -18,6 +18,26 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check for locking primitives
+        run: |
+          if grep -rE '(Mutex|RwLock)' src/; then
+            echo "Error: Locking primitives (Mutex/RwLock) are not allowed in the Vx compiler!"
+            exit 1
+          fi
+
+      - name: Check Rust Formatting (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      - name: Check Vx Formatting (vx-format)
+        run: |
+          cargo build --bin vx-format
+          find tests stdlib -name "*.vx" -exec ./target/debug/vx-format {} +
+          git diff --exit-code || (echo "Vx files are not formatted properly. Run vx-format locally." && exit 1)
+
+      - name: Check Markdown Formatting (mdformat)
+        run: |
+          pipx install mdformat
+          mdformat --check docs/ README.md
 
       - name: Build
         run: cargo build --verbose
