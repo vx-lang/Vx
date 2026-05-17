@@ -26,7 +26,7 @@
       "patterns": [
         {
           "name": "keyword.control.vx",
-          "match": "\\b(fn|let|mut|for|in|if|else|return|spawn|on|transfer|unroll|across|match|unsafe|comptime|assert)\\b"
+          "match": "\\b(import|fn|let|mut|for|in|if|else|return|spawn|on|transfer|unroll|across|match|unsafe|comptime|assert)\\b"
         },
         {
           "name": "storage.type.vx",
