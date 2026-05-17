@@ -1215,6 +1215,28 @@ impl<'a> TypeChecker<'a> {
             return true;
         }
 
+        if let Type::Struct(n_target, id_target) = target {
+            if let Type::Struct(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Enum(n_target, id_target) = target {
+            if let Type::Enum(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
         // Allow assigning Ref<T> to T (implicit unwrap of ref wrapper if target wants base type)
         if let Type::Ref(inner_source, _) = &source {
             if self.is_assignable(target, inner_source) {
