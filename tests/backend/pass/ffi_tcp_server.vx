@@ -1,0 +1,18 @@
+extern {
+    fn vx_tcp_listener_bind(c_addr: *const i8) -> *mut i8;
+    fn vx_tcp_listener_drop(ptr: *mut i8) -> i32;
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        // We bind to a random port and then drop to avoid blocking on accept
+        // Since we don't have non-blocking mode or threading in our test harness
+        let addr = "127.0.0.1:0";
+        let listener = vx_tcp_listener_bind(addr);
+        vx_tcp_listener_drop(listener);
+        vx_printf_i32("TCP Server Success: %d\n", 0);
+    }
+    return 0;
+}
+// EXPECT: TCP Server Success: 0

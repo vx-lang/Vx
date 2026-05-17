@@ -515,3 +515,90 @@ macro_rules! instantiate_udp_socket_ffi {
         }
     };
 }
+
+/// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpListener`.
+#[macro_export]
+macro_rules! instantiate_tcp_listener_ffi {
+    () => {
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_listener_bind(
+            c_addr: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void {
+            if c_addr.is_null() {
+                return std::ptr::null_mut();
+            }
+            let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
+            if let Ok(listener) = std::net::TcpListener::bind(addr_str.as_ref()) {
+                let boxed: Box<std::net::TcpListener> = Box::new(listener);
+                Box::into_raw(boxed) as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_listener_accept(
+            ptr: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void {
+            if ptr.is_null() {
+                return std::ptr::null_mut();
+            }
+            let listener = unsafe { &mut *(ptr as *mut std::net::TcpListener) };
+            if let Ok((stream, _)) = listener.accept() {
+                let boxed: Box<std::net::TcpStream> = Box::new(stream);
+                Box::into_raw(boxed) as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_listener_drop(ptr: *mut std::ffi::c_void) {
+            if !ptr.is_null() {
+                let _ = unsafe { Box::from_raw(ptr as *mut std::net::TcpListener) };
+            }
+        }
+    };
+}
+
+/// Macro to instantiate C-ABI compatible FFI wrappers for Standard I/O Streams.
+#[macro_export]
+macro_rules! instantiate_stdio_ffi {
+    () => {
+        #[no_mangle]
+        pub extern "C" fn vx_stdout_write(
+            buffer: *const u8,
+            len: usize,
+        ) -> usize {
+            if buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            std::io::Write::write(&mut std::io::stdout(), buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_stderr_write(
+            buffer: *const u8,
+            len: usize,
+        ) -> usize {
+            if buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            std::io::Write::write(&mut std::io::stderr(), buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_stdin_read(
+            buffer: *mut u8,
+            len: usize,
+        ) -> usize {
+            if buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
+            std::io::Read::read(&mut std::io::stdin(), buf_slice).unwrap_or(0)
+        }
+    };
+}

@@ -1,3 +1,18 @@
 extern {
     fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+    fn vx_stdout_write(buffer: *const u8, len: i64) -> i64;
+    fn vx_stderr_write(buffer: *const u8, len: i64) -> i64;
+    fn vx_stdin_read(buffer: *mut u8, len: i64) -> i64;
+}
+
+fn stdout_write(buffer: *const u8, len: i64) -> i64 {
+    return vx_stdout_write(buffer, len);
+}
+
+fn stderr_write(buffer: *const u8, len: i64) -> i64 {
+    return vx_stderr_write(buffer, len);
+}
+
+fn stdin_read(buffer: *mut u8, len: i64) -> i64 {
+    return vx_stdin_read(buffer, len);
 }
