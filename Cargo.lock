@@ -14,6 +14,7 @@ dependencies = [
  "regex",
  "rstest",
  "rustc-hash",
+ "vx_std_core",
 ]
 
 [[package]]

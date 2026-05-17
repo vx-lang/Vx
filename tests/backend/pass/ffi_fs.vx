@@ -1,0 +1,38 @@
+extern {
+    fn vx_file_open(c_path: *const i8, mode: i32) -> *mut i8;
+    fn vx_file_read(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
+    fn vx_file_write(ptr: *mut i8, buffer: *const i8, len: i64) -> i64;
+    fn vx_file_seek(ptr: *mut i8, offset: i64, whence: i32) -> i64;
+    fn vx_file_drop(ptr: *mut i8) -> i32;
+    fn malloc(size: i64) -> *mut u8;
+    fn free(ptr: *mut u8) -> i32;
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let path = "test_output.txt";
+        
+        let file_w = vx_file_open(path, 1);
+        let msg = "Hello";
+        let bytes_written = vx_file_write(file_w, msg, 5);
+        vx_file_drop(file_w);
+        
+        let file_r = vx_file_open(path, 0);
+        let buffer = malloc(5);
+        let bytes_read = vx_file_read(file_r, buffer, 5);
+        vx_file_drop(file_r);
+        free(buffer);
+        
+        let mut success: i32 = 0;
+        if bytes_written != 5 {
+            success = 1;
+        }
+        if bytes_read != 5 {
+            success = 2;
+        }
+        vx_printf_i32("Success: %d\n", success);
+    }
+    return 0;
+}
+// EXPECT: Success: 0

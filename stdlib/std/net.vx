@@ -1,0 +1,57 @@
+extern {
+    fn vx_tcp_stream_connect(c_addr: *const i8) -> *mut i8;
+    fn vx_tcp_stream_read(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
+    fn vx_tcp_stream_write(ptr: *mut i8, buffer: *const u8, len: i64) -> i64;
+    fn vx_tcp_stream_drop(ptr: *mut i8) -> i32;
+
+    fn vx_udp_socket_bind(c_addr: *const i8) -> *mut i8;
+    fn vx_udp_socket_recv(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
+    fn vx_udp_socket_send_to(ptr: *mut i8, buffer: *const u8, len: i64, c_addr: *const i8) -> i64;
+    fn vx_udp_socket_drop(ptr: *mut i8) -> i32;
+}
+
+struct TcpStream {
+    ptr: *mut i8;
+}
+
+impl TcpStream {
+    fn connect(addr: *const i8) -> TcpStream {
+        let ptr = vx_tcp_stream_connect(addr);
+        TcpStream { ptr }
+    }
+
+    fn read(self: *mut TcpStream, buffer: *mut u8, len: i64) -> i64 {
+        vx_tcp_stream_read(self.ptr, buffer, len)
+    }
+
+    fn write(self: *mut TcpStream, buffer: *const u8, len: i64) -> i64 {
+        vx_tcp_stream_write(self.ptr, buffer, len)
+    }
+}
+
+fn tcp_stream_drop(stream: *mut TcpStream) {
+    vx_tcp_stream_drop(stream.ptr);
+}
+
+struct UdpSocket {
+    ptr: *mut i8;
+}
+
+impl UdpSocket {
+    fn bind(addr: *const i8) -> UdpSocket {
+        let ptr = vx_udp_socket_bind(addr);
+        UdpSocket { ptr }
+    }
+
+    fn recv(self: *mut UdpSocket, buffer: *mut u8, len: i64) -> i64 {
+        vx_udp_socket_recv(self.ptr, buffer, len)
+    }
+
+    fn send_to(self: *mut UdpSocket, buffer: *const u8, len: i64, addr: *const i8) -> i64 {
+        vx_udp_socket_send_to(self.ptr, buffer, len, addr)
+    }
+}
+
+fn udp_socket_drop(socket: *mut UdpSocket) {
+    vx_udp_socket_drop(socket.ptr);
+}

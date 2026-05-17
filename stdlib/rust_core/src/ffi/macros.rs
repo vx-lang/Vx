@@ -306,3 +306,212 @@ macro_rules! instantiate_string_ffi {
         }
     };
 }
+
+/// Macro to instantiate C-ABI compatible FFI wrappers for `std::fs::File`.
+#[macro_export]
+macro_rules! instantiate_file_ffi {
+    () => {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        #[no_mangle]
+        pub extern "C" fn vx_file_open(
+            c_path: *const std::ffi::c_char,
+            mode: i32,
+        ) -> *mut std::ffi::c_void {
+            if c_path.is_null() {
+                return std::ptr::null_mut();
+            }
+            let path_str = unsafe { std::ffi::CStr::from_ptr(c_path) }.to_string_lossy();
+
+            // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
+            let mut opts = std::fs::OpenOptions::new();
+            if mode == 0 {
+                opts.read(true);
+            } else if mode == 1 {
+                opts.write(true).create(true).truncate(true);
+            } else {
+                opts.read(true).write(true).create(true);
+            }
+
+            if let Ok(file) = opts.open(path_str.as_ref()) {
+                let boxed: Box<std::fs::File> = Box::new(file);
+                Box::into_raw(boxed) as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_file_read(
+            ptr: *mut std::ffi::c_void,
+            buffer: *mut u8,
+            len: usize,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
+            file.read(buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_file_write(
+            ptr: *mut std::ffi::c_void,
+            buffer: *const u8,
+            len: usize,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            file.write(buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_file_seek(
+            ptr: *mut std::ffi::c_void,
+            offset: i64,
+            whence: i32,
+        ) -> i64 {
+            if ptr.is_null() {
+                return -1;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            let seek_from = match whence {
+                0 => SeekFrom::Start(offset as u64),
+                1 => SeekFrom::Current(offset),
+                2 => SeekFrom::End(offset),
+                _ => return -1,
+            };
+            file.seek(seek_from).map(|pos| pos as i64).unwrap_or(-1)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_file_drop(ptr: *mut std::ffi::c_void) {
+            if !ptr.is_null() {
+                let _ = unsafe { Box::from_raw(ptr as *mut std::fs::File) };
+            }
+        }
+    };
+}
+
+/// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpStream`.
+#[macro_export]
+macro_rules! instantiate_tcp_stream_ffi {
+    () => {
+        use std::io::{Read, Write};
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_stream_connect(
+            c_addr: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void {
+            if c_addr.is_null() {
+                return std::ptr::null_mut();
+            }
+            let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
+            if let Ok(stream) = std::net::TcpStream::connect(addr_str.as_ref()) {
+                let boxed: Box<std::net::TcpStream> = Box::new(stream);
+                Box::into_raw(boxed) as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_stream_read(
+            ptr: *mut std::ffi::c_void,
+            buffer: *mut u8,
+            len: usize,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
+            stream.read(buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_stream_write(
+            ptr: *mut std::ffi::c_void,
+            buffer: *const u8,
+            len: usize,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            stream.write(buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_tcp_stream_drop(ptr: *mut std::ffi::c_void) {
+            if !ptr.is_null() {
+                let _ = unsafe { Box::from_raw(ptr as *mut std::net::TcpStream) };
+            }
+        }
+    };
+}
+
+/// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::UdpSocket`.
+#[macro_export]
+macro_rules! instantiate_udp_socket_ffi {
+    () => {
+        #[no_mangle]
+        pub extern "C" fn vx_udp_socket_bind(
+            c_addr: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void {
+            if c_addr.is_null() {
+                return std::ptr::null_mut();
+            }
+            let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
+            if let Ok(socket) = std::net::UdpSocket::bind(addr_str.as_ref()) {
+                let boxed: Box<std::net::UdpSocket> = Box::new(socket);
+                Box::into_raw(boxed) as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_udp_socket_recv(
+            ptr: *mut std::ffi::c_void,
+            buffer: *mut u8,
+            len: usize,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 {
+                return 0;
+            }
+            let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
+            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len) };
+            // Note: We ignore the peer address for simplicity in the FFI.
+            socket.recv(buf_slice).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_udp_socket_send_to(
+            ptr: *mut std::ffi::c_void,
+            buffer: *const u8,
+            len: usize,
+            c_addr: *const std::ffi::c_char,
+        ) -> usize {
+            if ptr.is_null() || buffer.is_null() || len == 0 || c_addr.is_null() {
+                return 0;
+            }
+            let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
+            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len) };
+            let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
+            socket.send_to(buf_slice, addr_str.as_ref()).unwrap_or(0)
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_udp_socket_drop(ptr: *mut std::ffi::c_void) {
+            if !ptr.is_null() {
+                let _ = unsafe { Box::from_raw(ptr as *mut std::net::UdpSocket) };
+            }
+        }
+    };
+}
