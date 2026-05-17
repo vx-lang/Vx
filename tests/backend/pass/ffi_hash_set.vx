@@ -1,0 +1,24 @@
+import std::hash_set;
+import std::io;
+
+fn main() -> i32 {
+    unsafe {
+        let set = vx_hash_set_new_i32();
+        vx_hash_set_insert_i32(set, 42);
+        vx_hash_set_insert_i32(set, 42);
+        
+        let len = vx_hash_set_len_i32(set);
+        vx_printf_i32("Len: %d\n", len);
+
+        let has_42 = vx_hash_set_contains_i32(set, 42);
+        if has_42 {
+            vx_printf_i32("Has 42: %d\n", 1);
+        }
+
+        vx_hash_set_drop_i32(set);
+    }
+    return 0;
+}
+
+// EXPECT: Len: 1
+// EXPECT: Has 42: 1

@@ -1,0 +1,15 @@
+extern {
+    fn vx_hash_map_new_i32_i32() -> *mut i8;
+    fn vx_hash_map_insert_i32_i32(ptr: *mut i8, key: i32, val: i32) -> i32;
+    fn vx_hash_map_get_i32_i32(ptr: *mut i8, key: i32) -> *mut i8;
+    fn vx_hash_map_contains_key_i32_i32(ptr: *mut i8, key: i32) -> Bool;
+    fn vx_hash_map_len_i32_i32(ptr: *mut i8) -> i32;
+    fn vx_hash_map_drop_i32_i32(ptr: *mut i8) -> i32;
+
+    fn vx_hash_map_new_i32_f32() -> *mut i8;
+    fn vx_hash_map_insert_i32_f32(ptr: *mut i8, key: i32, val: f32) -> i32;
+    fn vx_hash_map_get_i32_f32(ptr: *mut i8, key: i32) -> *mut i8;
+    fn vx_hash_map_contains_key_i32_f32(ptr: *mut i8, key: i32) -> Bool;
+    fn vx_hash_map_len_i32_f32(ptr: *mut i8) -> i32;
+    fn vx_hash_map_drop_i32_f32(ptr: *mut i8) -> i32;
+}

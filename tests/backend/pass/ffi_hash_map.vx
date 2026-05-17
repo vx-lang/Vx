@@ -1,0 +1,33 @@
+import std::hash_map;
+import std::option;
+import std::io;
+
+fn main() -> i32 {
+    unsafe {
+        let map = vx_hash_map_new_i32_i32();
+        vx_hash_map_insert_i32_i32(map, 10, 100);
+        vx_hash_map_insert_i32_i32(map, 20, 200);
+        
+        let len = vx_hash_map_len_i32_i32(map);
+        vx_printf_i32("Len: %d\n", len);
+        
+        let has_10 = vx_hash_map_contains_key_i32_i32(map, 10);
+        if has_10 {
+            vx_printf_i32("Has 10: %d\n", 1);
+        }
+
+        let opt = vx_hash_map_get_i32_i32(map, 20);
+        if vx_option_is_some_i32(opt) {
+            let val = vx_option_unwrap_i32(opt);
+            vx_printf_i32("Val 20: %d\n", val);
+        }
+        vx_option_drop_i32(opt);
+
+        vx_hash_map_drop_i32_i32(map);
+    }
+    return 0;
+}
+
+// EXPECT: Len: 2
+// EXPECT: Has 10: 1
+// EXPECT: Val 20: 200
