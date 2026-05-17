@@ -63,6 +63,19 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn is_linear(&self) -> bool {
+        matches!(
+            self,
+            Type::Ref(_, _)
+                | Type::Tensor(_, _, _)
+                | Type::Matrix
+                | Type::Verified(_)
+                | Type::Pinned(_, _)
+                | Type::Struct(_, _)
+                | Type::Enum(_, _)
+        )
+    }
+
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Type {
         match self {
             Type::Generic(name, _) => {

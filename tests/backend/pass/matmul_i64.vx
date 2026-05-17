@@ -29,6 +29,6 @@ fn main() -> Verified<Tensor<i64>> {
   }
 
   let result = custom_matmul(a, b);
-  print(result);
+  print(&result);
   return result;
 }

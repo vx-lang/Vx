@@ -140,7 +140,7 @@ fn memory_map_weights(ptr: *mut f32, dim: i32, hidden_dim: i32, n_layers: i32, n
   return w;
 }
 
-fn transformer(token: i32, pos: i32, p: Config, s: RunState, w: TransformerWeights) -> *mut f32 {
+fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWeights) -> *mut f32 {
   unsafe {
     let x: *mut f32 = s.x;
     let dim: i32 = p.dim;
@@ -455,7 +455,7 @@ fn main() -> i32 {
 
     // We'll generate 2 tokens for testing to avoid slowing down cargo test
     for step in 0..2 {
-      let logits: *mut f32 = transformer(token, pos, config, state, weights);
+      let logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
 
       let mut next: i32 = 0;
       if pos < num_prompt_tokens - 1 {

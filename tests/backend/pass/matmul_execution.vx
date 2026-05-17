@@ -32,6 +32,6 @@ fn main() -> Verified<Tensor> {
   }
 
   let result = custom_matmul(a, b);
-  print(result);
+  print(&result);
   return result;
 }

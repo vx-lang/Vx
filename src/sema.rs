@@ -79,6 +79,7 @@ pub struct TypeChecker<'a> {
     active_memory: MemorySpace,
     next_reg: u32,
     var_regs: Vec<HashMap<String, u32>>,
+    moved_vars: Vec<std::collections::HashSet<String>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -95,8 +96,9 @@ impl<'a> TypeChecker<'a> {
             in_unsafe_block: false,
             active_topology: Topology::Host,
             active_memory: MemorySpace::HostDRAM,
-            next_reg: 0,
+            next_reg: 1,
             var_regs: vec![HashMap::new()],
+            moved_vars: vec![std::collections::HashSet::new()],
         }
     }
 
@@ -126,10 +128,12 @@ impl<'a> TypeChecker<'a> {
     }
     pub fn push_scope(&mut self) {
         self.scopes.push(std::collections::HashMap::new());
+        self.moved_vars.push(std::collections::HashSet::new());
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.moved_vars.pop();
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
@@ -137,6 +141,26 @@ impl<'a> TypeChecker<'a> {
             .last_mut()
             .unwrap()
             .insert(name, (ty, self.active_topology.clone()));
+    }
+
+    pub fn consume(&mut self, name: &str) {
+        // Find the most recent block where it's defined
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.remove(name);
+                self.moved_vars.last_mut().unwrap().insert(name.to_string());
+                return;
+            }
+        }
+    }
+
+    pub fn is_moved(&self, name: &str) -> bool {
+        for moved in self.moved_vars.iter().rev() {
+            if moved.contains(name) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {
@@ -273,7 +297,7 @@ impl<'a> TypeChecker<'a> {
                 self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
                 // Fallthrough to standard semantic checks
             }
-            Statement::LetDecl(_, _, _, expr, _) => {
+            Statement::LetDecl(_name, _, _, expr, _) => {
                 let (ty, val_reg) = self.check_expr(expr);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_STORE, val_reg, 0, type_idx);
@@ -326,7 +350,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
-                let lhs_ty = self.check_expr_type(lhs);
+                let lhs_ty = self.check_expr_type_flag(lhs, false, false);
                 let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
@@ -496,8 +520,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
-        // First perform semantic validation
-        let ty = self.check_expr_type(expr);
+        // First perform semantic validation silently for HIR lowering
+        let ty = self.check_expr_type_flag(expr, false, true);
 
         // Then perform AST to HIR lowering
         let type_idx = self.emit_type(&ty);
@@ -524,15 +548,39 @@ impl<'a> TypeChecker<'a> {
         (ty, reg)
     }
 
-    fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
+    pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
+        self.check_expr_type_flag(expr, true, false)
+    }
+
+    pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
             Expr::Identifier(name, _) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
                 let lookup_res = self.lookup(name).cloned();
+
+                if lookup_res.is_none() && self.is_moved(name) {
+                    if !silent {
+                        self.errors.push(format!(
+                            "Use of moved or consumed linear variable: {}",
+                            name
+                        ));
+                    }
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                } else if lookup_res.is_none() {
+                    if !silent {
+                        self.errors.push(format!("Undefined variable '{}'", name));
+                    }
+                    return Type::Scalar(ElementType::F32); // Fallback to prevent panic
+                }
+
                 match lookup_res {
                     Some((ty, top)) => {
+                        if consume && ty.is_linear() {
+                            self.consume(name);
+                        }
+
                         // Enforce Topology Boundaries!
                         let mut is_valid = top == self.active_topology
                             || (top == Topology::Host
@@ -563,15 +611,17 @@ impl<'a> TypeChecker<'a> {
                         }
 
                         if !is_valid {
-                            self.errors.push(format!(
+                            let msg = format!(
                                 "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
                                 name, top, ty, self.active_topology
-                            ));
+                            );
+                            self.errors.push(msg);
                         }
                         ty.clone()
                     }
                     None => {
-                        self.errors.push(format!("Undefined variable '{}'", name));
+                        let msg = format!("Undefined variable '{}'", name);
+                        self.errors.push(msg);
                         Type::Tensor(ElementType::F32, vec![], None) // Default placeholder on error
                     }
                 }
@@ -597,7 +647,7 @@ impl<'a> TypeChecker<'a> {
                 false, // const
             ),
             Expr::Transfer(inner_expr, target_mem, _) => {
-                let inner_ty = self.check_expr_type(inner_expr);
+                let inner_ty = self.check_expr_type_flag(inner_expr, false, silent);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => Type::Pinned(
@@ -636,13 +686,14 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             }
             Expr::FunctionCall(name, args, _) => {
-                // If this is a local call to a function that was mangled, update the name.
-
                 let resolved_name = name.clone();
 
                 // Mocking built-ins
+                let mut arg_types = Vec::new();
+                let is_builtin_ref = resolved_name == "print" || resolved_name == "Verified";
+                let arg_consume = if is_builtin_ref { false } else { consume };
                 for arg in args.iter_mut() {
-                    self.check_expr_type(arg);
+                    arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
                 if resolved_name == "Verified" {
@@ -652,7 +703,7 @@ impl<'a> TypeChecker<'a> {
                             args.len()
                         ));
                     }
-                    let inner_ty = self.check_expr_type(&mut args[0]);
+                    let inner_ty = arg_types[0].clone();
                     Type::Verified(Box::new(inner_ty))
                 } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
                     if args.len() != 2 {
@@ -665,9 +716,7 @@ impl<'a> TypeChecker<'a> {
                     if !self.in_unsafe_block {
                         self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
                     }
-                    self.check_expr_type(&mut args[0]);
-                    self.check_expr_type(&mut args[1]);
-
+                    // Types already checked
                     let mut el_ty = ElementType::F32;
                     if resolved_name.contains("_i32") {
                         el_ty = ElementType::I32;
@@ -695,7 +744,7 @@ impl<'a> TypeChecker<'a> {
                             args.len()
                         ));
                     }
-                    let inner_ty = self.check_expr_type(&mut args[0]);
+                    let inner_ty = arg_types[0].clone();
                     if inner_ty != Type::Scalar(ElementType::F32) {
                         self.errors.push(format!(
                             "Function '{}' expects f32 argument, got {:?}",
@@ -735,8 +784,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                         success = false;
                     } else {
-                        for (i, arg) in args.iter_mut().enumerate() {
-                            let arg_ty = self.check_expr_type(arg);
+                        for (i, _arg) in args.iter_mut().enumerate() {
+                            let arg_ty = arg_types[i].clone();
                             let param_ty = &generic_func.params[i].1;
                             if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
                                 self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
@@ -813,7 +862,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::MemberAccess(obj, member, _) => {
-                let obj_ty = self.check_expr_type(obj);
+                let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 let mut base_ty = obj_ty.clone();
                 if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
@@ -849,7 +898,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::IndexAccess(obj, idx, _) => {
-                let obj_ty = self.check_expr_type(obj);
+                let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
                     *inner
@@ -862,7 +911,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::MethodCall(obj, _method, args, _) => {
-                let mut base_ty = self.check_expr_type(obj);
+                let mut base_ty = self.check_expr_type_flag(obj, false, silent);
                 for arg in args.iter_mut() {
                     self.check_expr_type(arg);
                 }
@@ -1060,14 +1109,31 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     // Rewrite AST from MethodCall to FunctionCall
-                    let mut call_args = vec![(**obj).clone()];
+                    let mut call_args = vec![];
+                    if let Some(first_param) = method_func.params.first() {
+                        if matches!(
+                            first_param.1,
+                            Type::Borrow(_, _, _) | Type::Pointer(_, _, _)
+                        ) {
+                            call_args.push(Expr::Borrow(
+                                Box::new((**obj).clone()),
+                                false,
+                                Span::default(),
+                            ));
+                        } else {
+                            call_args.push((**obj).clone());
+                        }
+                    } else {
+                        call_args.push((**obj).clone());
+                    }
+
                     for a in args.iter() {
                         call_args.push(a.clone());
                     }
 
                     let mut func_call =
                         Expr::FunctionCall(mangled_name, call_args, Span::default());
-                    let ret_ty = self.check_expr_type(&mut func_call);
+                    let ret_ty = self.check_expr_type_flag(&mut func_call, consume, silent);
 
                     // Replace the AST node in-place!
                     *expr = func_call;
@@ -1137,8 +1203,19 @@ impl<'a> TypeChecker<'a> {
                 base_ty
             }
             Expr::BinaryOp(lhs, op, rhs, _) => {
-                let lhs_ty = self.check_expr_type(lhs);
-                let rhs_ty = self.check_expr_type(rhs);
+                let op_consume = match op {
+                    BinaryOp::Eq
+                    | BinaryOp::NotEq
+                    | BinaryOp::Lt
+                    | BinaryOp::Gt
+                    | BinaryOp::Le
+                    | BinaryOp::Ge
+                    | BinaryOp::And
+                    | BinaryOp::Or => false,
+                    _ => consume,
+                };
+                let lhs_ty = self.check_expr_type_flag(lhs, op_consume, silent);
+                let rhs_ty = self.check_expr_type_flag(rhs, op_consume, silent);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors
                         .push("Type mismatch in binary operation".to_string());
@@ -1165,7 +1242,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::Borrow(inner, is_mut, _) => {
-                let inner_ty = self.check_expr_type(inner);
+                let inner_ty = self.check_expr_type_flag(inner, false, silent);
                 Type::Borrow(Box::new(inner_ty), None, *is_mut)
             }
             Expr::Dereference(inner, _) => {

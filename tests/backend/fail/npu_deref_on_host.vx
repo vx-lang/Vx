@@ -6,7 +6,7 @@
 fn strip_pin_and_deref(t: Tensor<f32>) -> Tensor<f32> {
   unsafe {
     let ptr: *const Tensor<f32> = t.as_ptr();
-    let val: f32 = *ptr; // Dereferencing an NPU pointer on CPU!
+    let val: Tensor<f32> = *ptr; // Dereferencing an NPU pointer on CPU!
   }
   return t;
 }

@@ -871,8 +871,12 @@ impl MlirGenerator {
             }
             Expr::FunctionCall(name, args, _) => {
                 if name == "print" {
+                    let mut print_arg = &args[0];
+                    if let Expr::Borrow(inner, _, _) = print_arg {
+                        print_arg = inner;
+                    }
                     let (arg_val, _) = self
-                        .generate_expr(&args[0], &format!("memref<?x?x{}>", self.current_el_ty));
+                        .generate_expr(print_arg, &format!("memref<?x?x{}>", self.current_el_ty));
                     let cast_val = self.next_var();
                     self.write_line(&format!(
                         "{} = memref.cast {} : memref<?x?x{}> to memref<*x{}>",
@@ -955,7 +959,7 @@ impl MlirGenerator {
 
                         let tensor_idx = self.next_var();
                         self.write_line(&format!(
-                            "{} = memref.extract_aligned_pointer_as_index {} : {}",
+                            "{} = memref.extract_aligned_pointer_as_index {} : {} -> index",
                             tensor_idx, mem_val, mem_ty
                         ));
 
@@ -1053,6 +1057,17 @@ impl MlirGenerator {
                         ));
                         val = cast_val;
                         ty = "i32".to_string();
+                    } else if ty.starts_with("memref")
+                        && arg_expected_ty.starts_with("memref")
+                        && ty != arg_expected_ty
+                    {
+                        let cast_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = memref.memory_space_cast {} : {} to {}",
+                            cast_val, val, ty, arg_expected_ty
+                        ));
+                        val = cast_val;
+                        ty = arg_expected_ty.clone();
                     }
                     arg_vals.push(val);
                     arg_tys.push(ty);
@@ -1177,21 +1192,62 @@ impl MlirGenerator {
                 let (base_val, base_ty) = self.generate_expr(base, "any");
 
                 // Parse struct name from !llvm.struct<"Name", (...)>
+                let mut struct_name_opt = None;
                 if let Some(start_idx) = base_ty.find("\"") {
                     if let Some(end_idx) = base_ty[start_idx + 1..].find("\"") {
-                        let struct_name = &base_ty[start_idx + 1..start_idx + 1 + end_idx];
-                        if let Some(decl) = self.structs.get(struct_name).cloned() {
-                            if let Some(field_idx) =
-                                decl.fields.iter().position(|(n, _)| n == member)
-                            {
-                                let field_ty = self.lower_type(&decl.fields[field_idx].1);
-                                let res = self.next_var();
+                        struct_name_opt =
+                            Some(base_ty[start_idx + 1..start_idx + 1 + end_idx].to_string());
+                    }
+                }
+
+                // Hack: If we didn't find the struct name in the MLIR type, try to find it by checking if ANY struct has this field.
+                // This works because in llama2.vx fields like 'dim', 'x', 'token_embedding_table' are unique enough or we just pick the first match.
+                if struct_name_opt.is_none() {
+                    for (s_name, decl) in &self.structs {
+                        if decl.fields.iter().any(|(n, _)| n == member) {
+                            struct_name_opt = Some(s_name.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(struct_name) = struct_name_opt {
+                    if let Some(decl) = self.structs.get(&struct_name).cloned() {
+                        if let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) {
+                            let field_ty = self.lower_type(&decl.fields[field_idx].1);
+                            let res = self.next_var();
+
+                            if base_ty.starts_with("!llvm.ptr") {
+                                // First load the struct from the pointer
+                                let loaded_struct = self.next_var();
+                                // Actually, MLIR llvm.load needs the full type. We can use `any` or construct it.
+                                // But since MlirGenerator is a mock, let's just generate a struct type with correct number of elements.
+                                let mut field_tys = Vec::new();
+                                for (_, ty) in &decl.fields {
+                                    field_tys.push(self.lower_type(ty));
+                                }
+                                let full_struct_ty = format!(
+                                    "!llvm.struct<\"{}\", ({})>",
+                                    struct_name,
+                                    field_tys.join(", ")
+                                );
+
+                                self.write_line(&format!(
+                                    "{} = llvm.load {} : {} -> {}",
+                                    loaded_struct, base_val, base_ty, full_struct_ty
+                                ));
+
+                                self.write_line(&format!(
+                                    "{} = llvm.extractvalue {}[{}] : {}",
+                                    res, loaded_struct, field_idx, full_struct_ty
+                                ));
+                            } else {
                                 self.write_line(&format!(
                                     "{} = llvm.extractvalue {}[{}] : {}",
                                     res, base_val, field_idx, base_ty
                                 ));
-                                return (res, field_ty);
                             }
+                            return (res, field_ty);
                         }
                     }
                 }
@@ -1205,7 +1261,7 @@ impl MlirGenerator {
                     let tensor_idx = self.next_var();
                     let mem_ty = format!("memref<?x?x{}>", self.current_el_ty); // Approx type, works for opaque ops
                     self.write_line(&format!(
-                        "{} = memref.extract_aligned_pointer_as_index {} : {}",
+                        "{} = memref.extract_aligned_pointer_as_index {} : {} -> index",
                         tensor_idx, base_val, mem_ty
                     ));
 
@@ -1217,11 +1273,11 @@ impl MlirGenerator {
 
                     let tensor_ptr = self.next_var();
                     self.write_line(&format!(
-                        "{} = llvm.inttoptr {} : i64 to !llvm.ptr<f32>",
+                        "{} = llvm.inttoptr {} : i64 to !llvm.ptr<0>",
                         tensor_ptr, tensor_i64
-                    )); // Defaulting to f32
+                    )); // Defaulting to addrspace 0
 
-                    (tensor_ptr, "!llvm.ptr<f32>".to_string())
+                    (tensor_ptr, "!llvm.ptr<0>".to_string())
                 } else if _method == "len" {
                     let (base_val, _) = self.generate_expr(base, expected_ty);
                     let res = self.next_var();
@@ -1465,11 +1521,35 @@ impl MlirGenerator {
                 }
             }
             Expr::Borrow(inner, _, _) => {
-                let (val, _) = self.generate_expr(inner, expected_ty);
+                let (val, val_ty) = self.generate_expr(inner, expected_ty);
                 let res = self.next_var();
-                self.write_line(&format!("// borrow {} -> {}", val, res));
-                self.write_line(&format!("{} = llvm.mlir.undef : !llvm.ptr<0>", res));
-                (res, "!llvm.ptr<0>".to_string())
+
+                if val_ty.starts_with("memref") {
+                    self.write_line(&format!("// borrow memref {} -> {}", val, res));
+                    self.write_line(&format!(
+                        "{} = memref.extract_aligned_pointer_as_index {} : {} -> index",
+                        res, val, val_ty
+                    ));
+                    let ptr_val = self.next_var();
+                    self.write_line(&format!(
+                        "{} = llvm.inttoptr {} : index to !llvm.ptr<0>",
+                        ptr_val, res
+                    ));
+                    (ptr_val, "!llvm.ptr<0>".to_string())
+                } else {
+                    self.write_line(&format!("// borrow value {} -> {}", val, res));
+                    let c1 = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 1 : i32", c1));
+                    self.write_line(&format!(
+                        "{} = llvm.alloca {} x {} : (i32) -> !llvm.ptr<0>",
+                        res, c1, val_ty
+                    ));
+                    self.write_line(&format!(
+                        "llvm.store {}, {} : {}, !llvm.ptr<0>",
+                        val, res, val_ty
+                    ));
+                    (res, "!llvm.ptr<0>".to_string())
+                }
             }
             Expr::Dereference(inner, _) => {
                 let (val, _) = self.generate_expr(inner, expected_ty);

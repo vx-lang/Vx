@@ -7,13 +7,21 @@ fn main(d: Tensor<i32>) -> Tensor<i32> {
 
   // Relational
   let is_less = a < b;
-  let is_eq = a == c;
-  let is_neq = b != c;
+  let a2: Tensor<i32> = 10;
+  let is_eq = a2 == c;
+  let b2: Tensor<i32> = 20;
+  let c2: Tensor<i32> = 10;
+  let is_neq = b2 != c2;
 
-  // Logical
   let compound = is_less && is_eq;
+  let a3: Tensor<i32> = 10;
+  let b3: Tensor<i32> = 20;
+  let c3: Tensor<i32> = 10;
+  let is_less2 = a3 < b3;
+  let is_eq2 = a3 == c3;
+  let compound2 = is_less2 && is_eq2;
   let inverted = !compound;
-  let result = compound || inverted;
+  let result = compound2 || inverted;
 
   return d;
 }
