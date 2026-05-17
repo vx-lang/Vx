@@ -495,9 +495,8 @@ impl<'a> Parser<'a> {
 
                     let n = num_str.parse::<f64>().map_err(|_| format!("Invalid number: {}", num_str))?;
                     
-                    let mut el_ty = None;
-                    if !suffix_str.is_empty() {
-                        el_ty = match suffix_str.as_str() {
+                    let el_ty = if !suffix_str.is_empty() {
+                        match suffix_str.as_str() {
                             "f16" => Some(crate::ast::ElementType::F16),
                             "f32" => Some(crate::ast::ElementType::F32),
                             "f64" => Some(crate::ast::ElementType::F64),
@@ -513,15 +512,15 @@ impl<'a> Parser<'a> {
                             "u64" => Some(crate::ast::ElementType::U64),
                             "u128" => Some(crate::ast::ElementType::U128),
                             _ => return Err(format!("Unknown number suffix '{}'", suffix_str)),
-                        };
+                        }
                     } else {
                         // Rust-like defaults: i32 for integers, f64 for floats
                         if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-                            el_ty = Some(crate::ast::ElementType::F64);
+                            Some(crate::ast::ElementType::F64)
                         } else {
-                            el_ty = Some(crate::ast::ElementType::I32);
+                            Some(crate::ast::ElementType::I32)
                         }
-                    }
+                    };
 
                     Expr::Number(n, el_ty, Span::default())
                 }
