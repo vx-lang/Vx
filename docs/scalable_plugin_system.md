@@ -15,13 +15,13 @@ use mlir::{Operation, PassManager, Module};
 use std::collections::HashMap;
 
 /// Unique identifier for a hardware topology (e.g., Topology::NPU[0])
-pub type TopologyID = u32; 
+pub type TopologyID = u32;
 
 pub trait VxHardwarePlugin: Send + Sync {
     /// 1. Identity
     /// The vendor's identifier, e.g., "MemWise_v1"
     fn plugin_name(&self) -> &str;
-    
+
     /// The topology this plugin claims responsibility for
     fn target_topology(&self) -> TopologyID;
 
@@ -31,13 +31,13 @@ pub trait VxHardwarePlugin: Send + Sync {
     fn is_op_supported(&self, op: &Operation) -> bool;
 
     /// 3. Compile-Time Escape Hatch (Metadata Annotation)
-    /// Allows the vendor to attach proprietary MLIR Attributes to operations 
+    /// Allows the vendor to attach proprietary MLIR Attributes to operations
     /// before standard passes run (e.g., pinning a tensor to SRAM).
     /// Default is a no-op.
     fn annotate_operation(&self, op: &mut Operation) {}
 
     /// 4. The Pass Pipeline
-    /// The vendor injects their specific MLIR passes (e.g., lowering `linalg` 
+    /// The vendor injects their specific MLIR passes (e.g., lowering `linalg`
     /// to their custom hardware dialect, fusion, and register allocation).
     fn register_passes(&self, pass_manager: &mut PassManager);
 
@@ -59,14 +59,14 @@ for (topology, plugin) in &self.plugin_registry {
     if let Some(mut block) = extract_topology_block(&mlir_module, *topology) {
         // 1. Let vendor annotate
         block.walk_mut(|op| plugin.annotate_operation(op));
-        
+
         // 2. Setup passes
         let mut pm = PassManager::new();
         plugin.register_passes(&mut pm);
-        
+
         // 3. Run optimization
         pm.run(&mut block).expect("Vendor pass failed");
-        
+
         // 4. Extract binary payload
         let binary_payload = plugin.lower_to_binary(block)?;
         self.embed_payload_in_executable(*topology, binary_payload);
@@ -135,7 +135,7 @@ With the compiler and runtime contracts defined, you can expose this safely in t
 let npu = Topology::NPU[0];
 
 // 2. Runtime Configuration Escape Hatch
-// The string payload is serialized and sent to `vx_plugin_control` 
+// The string payload is serialized and sent to `vx_plugin_control`
 // with a vendor-specific opcode before compute begins.
 npu.configure("clock_freq=max; power_profile=compute");
 
@@ -149,7 +149,7 @@ let pinned_A: Pinned<Tensor, npu> = A.to_device(npu);
 let pinned_B: Pinned<Tensor, npu> = B.to_device(npu);
 
 // 5. Execution Block
-// Compiler groups this into an MLIR region, passes it to the vendor plugin, 
+// Compiler groups this into an MLIR region, passes it to the vendor plugin,
 // gets the binary, and emits a call to `vx_plugin_dispatch_async`.
 let result_future = spawn on(npu) {
     // Standard library emits `linalg.matmul` with memory space mappings

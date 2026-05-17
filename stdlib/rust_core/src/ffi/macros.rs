@@ -566,10 +566,7 @@ macro_rules! instantiate_tcp_listener_ffi {
 macro_rules! instantiate_stdio_ffi {
     () => {
         #[no_mangle]
-        pub extern "C" fn vx_stdout_write(
-            buffer: *const u8,
-            len: usize,
-        ) -> usize {
+        pub extern "C" fn vx_stdout_write(buffer: *const u8, len: usize) -> usize {
             if buffer.is_null() || len == 0 {
                 return 0;
             }
@@ -578,10 +575,7 @@ macro_rules! instantiate_stdio_ffi {
         }
 
         #[no_mangle]
-        pub extern "C" fn vx_stderr_write(
-            buffer: *const u8,
-            len: usize,
-        ) -> usize {
+        pub extern "C" fn vx_stderr_write(buffer: *const u8, len: usize) -> usize {
             if buffer.is_null() || len == 0 {
                 return 0;
             }
@@ -590,10 +584,7 @@ macro_rules! instantiate_stdio_ffi {
         }
 
         #[no_mangle]
-        pub extern "C" fn vx_stdin_read(
-            buffer: *mut u8,
-            len: usize,
-        ) -> usize {
+        pub extern "C" fn vx_stdin_read(buffer: *mut u8, len: usize) -> usize {
             if buffer.is_null() || len == 0 {
                 return 0;
             }

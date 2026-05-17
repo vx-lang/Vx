@@ -14,11 +14,11 @@ fn main() -> i32 {
     let msg = "Hello from Vx StdLib!\n";
     stdout_write(msg, 22);
     stderr_write("Error message\n", 14);
-    
+
     // Reading is also supported using a pre-allocated buffer
     // let mut buffer: [u8; 1024];
     // stdin_read(buffer, 1024);
-    
+
     return 0;
 }
 ```
@@ -33,11 +33,11 @@ import std::io;
 fn start_server() {
     let listener = TcpListener::bind("127.0.0.1:8080");
     let stream = listener.accept(); // Blocks until connection
-    
+
     // Handle the stream
     // let mut buffer: [u8; 1024];
     // stream.read(buffer, 1024);
-    
+
     tcp_stream_drop(stream);
     tcp_listener_drop(listener);
 }

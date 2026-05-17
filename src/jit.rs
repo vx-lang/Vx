@@ -148,7 +148,11 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         return Err(format!("lli execution failed:\n{}", err_str));
     }
 
-    let output_str = String::from_utf8_lossy(&lli_out.stdout);
+    let output_str = format!(
+        "{}{}",
+        String::from_utf8_lossy(&lli_out.stdout),
+        String::from_utf8_lossy(&lli_out.stderr)
+    );
 
-    Ok(output_str.to_string())
+    Ok(output_str)
 }

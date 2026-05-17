@@ -4,8 +4,9 @@ Write code in Rust by default.
 ## Version control
 - Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.
-- Always run `cargo clippy` and fix all the warnings before commiting.
+- Always run formatters: 'cargo clippy', 'vx-format', 'cargo fmt' and fix all the warnings/errors before commiting.
 - Make sure there is a github issue ID attached to each commit unless the commit is cleanup (formatting, minor fixes)
+- If you have finished a walkthrough then save the Walkthrough, Task.md, and Implementation Plan in the docs/discussions/ directory.
 
 ## Testing
 Write unit tests and integration tests for all the code that you write. For testing, prefer using crates like `proptest` for property based testing and `rstest` for test fixtures.
