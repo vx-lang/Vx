@@ -589,7 +589,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Enum(enum_name.clone(), None)
             }
-            Expr::Number(_, Some(el_ty), _) => Type::Scalar(el_ty.clone()),
+            Expr::Number(_, Some(el_ty), _) => Type::Scalar(*el_ty),
             Expr::Number(_, None, _) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(..) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
