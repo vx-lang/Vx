@@ -19,6 +19,7 @@ use vxc::ast::{VxFunction, VxModule};
 #[test]
 fn test_ak_module_add_function() {
     let mut module = VxModule {
+        imports: Vec::new(),
         module_path: "core::test".to_string(),
         externs: vec![],
         structs: vec![],

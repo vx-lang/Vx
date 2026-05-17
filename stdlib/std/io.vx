@@ -1,0 +1,3 @@
+extern {
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}

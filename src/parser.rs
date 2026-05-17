@@ -531,15 +531,7 @@ impl<'a> Parser<'a> {
                     Expr::Number(num_str, el_ty, Span::default())
                 }
                 TokenType::StringLiteral(s) => Expr::StringLiteral(s, Span::default()),
-                TokenType::Import => {
-                    self.consume(&TokenType::LeftParen, "Expected '(' after import")?;
-                    let path = match self.advance().kind.clone() {
-                        TokenType::StringLiteral(s) => s,
-                        _ => return Err("Expected string literal in import".to_string()),
-                    };
-                    self.consume(&TokenType::RightParen, "Expected ')' after import path")?;
-                    Expr::Import(path, Span::default())
-                }
+
                 TokenType::Comptime => {
                     self.consume(&TokenType::LeftBrace, "Expected '{' for comptime block")?;
                     let mut stmts = Vec::new();
@@ -1042,7 +1034,27 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, String> {
+        self.consume(&TokenType::Import, "Expected 'import'")?;
+        let mut path = Vec::new();
+        loop {
+            let ident = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected identifier in import path".to_string()),
+            };
+            path.push(ident);
+            if self.match_token(&TokenType::DoubleColon) {
+                continue;
+            } else {
+                break;
+            }
+        }
+        self.consume(&TokenType::Semicolon, "Expected ';' after import path")?;
+        Ok(ImportDecl { path })
+    }
+
     pub fn parse(&mut self) -> Result<Program, String> {
+        let mut imports = Vec::new();
         let mut externs = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
@@ -1050,7 +1062,9 @@ impl<'a> Parser<'a> {
         let mut impls = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenType::Eof) {
-            if self.check(&TokenType::Extern) {
+            if self.check(&TokenType::Import) {
+                imports.push(self.parse_import_decl()?);
+            } else if self.check(&TokenType::Extern) {
                 externs.extend(self.parse_extern_block()?);
             } else if self.check(&TokenType::Trait) {
                 traits.push(self.parse_trait_decl()?);
@@ -1071,6 +1085,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Program {
             module_path: self.source.to_string(), // Default fallback, should be overridden by pipeline
+            imports,
             externs,
             structs,
             enums,

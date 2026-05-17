@@ -141,7 +141,6 @@ pub enum Expr {
     StructInit(String, Vec<(String, Expr)>, Span),
     MemorySpace(MemorySpace, Span),
     Topology(Topology, Span),
-    Import(String, Span),
 }
 
 impl Expr {
@@ -152,7 +151,6 @@ impl Expr {
                 mem.clone(),
                 Span::default(),
             ),
-            Expr::Import(path, span) => Expr::Import(path.clone(), span.clone()),
             Expr::ComptimeBlock(stmts, ret, span) => Expr::ComptimeBlock(
                 stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
@@ -343,8 +341,14 @@ pub struct ImplBlock {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct ImportDecl {
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Program {
     pub module_path: String,
+    pub imports: Vec<ImportDecl>,
     pub externs: Vec<ExternDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,

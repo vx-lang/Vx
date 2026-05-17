@@ -10,6 +10,7 @@ pub mod hir;
 pub mod jit;
 pub mod lexer;
 pub mod metadata;
+pub mod module_loader;
 pub mod parallel_architecture_verifier;
 pub mod parser;
 pub mod pipeline;

@@ -618,10 +618,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            Expr::Import(path, _) => {
-                // Imports are resolved in Phase 1
-                Type::Module(path.clone(), std::collections::HashMap::new())
-            }
+
             Expr::ComptimeBlock(stmts, ret, _) => {
                 self.push_scope();
                 for stmt in stmts {

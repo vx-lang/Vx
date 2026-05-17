@@ -6,6 +6,15 @@ impl AstPrinter {
     pub fn print_program(program: &Program) {
         println!("Program");
 
+        for (i, imp) in program.imports.iter().enumerate() {
+            let is_last = i == program.imports.len() - 1
+                && program.structs.is_empty()
+                && program.functions.is_empty()
+                && program.externs.is_empty();
+            let prefix = if is_last { "└─ " } else { "├─ " };
+            println!("{}Import: {}", prefix, imp.path.join("::"));
+        }
+
         for (i, struc) in program.structs.iter().enumerate() {
             let is_last = i == program.structs.len() - 1
                 && program.functions.is_empty()
@@ -127,9 +136,7 @@ impl AstPrinter {
             Expr::EnumVariant(enum_name, variant, _) => {
                 println!("{}{}Enum({}::{})", indent, prefix, enum_name, variant);
             }
-            Expr::Import(path, _) => {
-                println!("{}{}Import(\"{}\")", indent, prefix, path);
-            }
+
             Expr::ComptimeBlock(stmts, ret, _) => {
                 println!("{}{}ComptimeBlock", indent, prefix);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });

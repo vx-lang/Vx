@@ -1,0 +1,7 @@
+extern {
+    fn vx_option_new_some_i32(val: i32) -> *mut i8;
+    fn vx_option_new_none_i32() -> *mut i8;
+    fn vx_option_is_some_i32(ptr: *mut i8) -> Bool;
+    fn vx_option_unwrap_i32(ptr: *mut i8) -> i32;
+    fn vx_option_drop_i32(ptr: *mut i8) -> i32;
+}

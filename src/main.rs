@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use vxc::lexer::Lexer;
-use vxc::parser;
 
 fn main() {
     println!("Vx Compiler (vxc) - Bootstrap Phase (Rust)");
@@ -39,14 +38,15 @@ fn main() {
         };
 
         let mut lexer = Lexer::new(&source);
-        let tokens = lexer.tokenize();
+        let _tokens = lexer.tokenize();
 
         if parse_only {
-            let mut parser = parser::Parser::new(tokens, &source);
-            match parser.parse() {
-                Ok(ast) => {
+            let mut loader = vxc::module_loader::ModuleLoader::new();
+            match loader.load_main(filename) {
+                Ok(programs) => {
+                    let ast = programs.iter().find(|p| p.module_path == filename).unwrap();
                     if print_ast {
-                        vxc::ast_printer::AstPrinter::print_program(&ast);
+                        vxc::ast_printer::AstPrinter::print_program(ast);
                     } else {
                         println!("{:#?}", ast);
                     }
@@ -54,15 +54,25 @@ fn main() {
                 Err(e) => eprintln!("Parse Error: {}", e),
             }
         } else {
-            let mut parser = parser::Parser::new(tokens, &source);
-            match parser.parse() {
-                Ok(mut ast) => {
+            let mut loader = vxc::module_loader::ModuleLoader::new();
+            match loader.load_main(filename) {
+                Ok(mut program_arr) => {
+                    let ast_idx = program_arr
+                        .iter()
+                        .position(|p| p.module_path == filename)
+                        .unwrap();
+                    let mut ast = program_arr.remove(ast_idx);
+
                     if print_ast {
                         vxc::ast_printer::AstPrinter::print_program(&ast);
                     }
                     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-                    let program_arr = [ast.clone()];
-                    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+
+                    // We need all programs for the global env
+                    let mut all_programs = program_arr.clone();
+                    all_programs.push(ast.clone());
+
+                    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
                     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
                     let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
                     for f in &mut ast.functions {
@@ -71,7 +81,10 @@ fn main() {
 
                     if checker.errors.is_empty() {
                         let monomorphized_ast = ast;
-                        let module_asts = std::collections::HashMap::new();
+                        let mut module_asts = std::collections::HashMap::new();
+                        for p in program_arr {
+                            module_asts.insert(p.module_path.clone(), p);
+                        }
 
                         if emit_mlir {
                             let mut codegen = vxc::codegen::MlirGenerator::new();

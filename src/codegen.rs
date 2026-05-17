@@ -89,6 +89,14 @@ impl MlirGenerator {
                 }
                 self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
             }
+            for ext in &module_prog.externs {
+                let ret_ty = self.lower_type(&ext.return_type);
+                let mut arg_tys = Vec::new();
+                for (_, ty) in &ext.params {
+                    arg_tys.push(self.lower_type(ty));
+                }
+                self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
+            }
             for s in &module_prog.structs {
                 self.structs.insert(s.name.clone(), s.clone());
             }
@@ -109,7 +117,14 @@ impl MlirGenerator {
         self.write_line("func.func private @vx_dispatch_ane(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
         self.write_line("func.func private @vx_dispatch_gpu(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32");
 
-        for ext in &program.externs {
+        let mut emitted_externs = std::collections::HashSet::new();
+
+        let mut emit_extern = |ext: &crate::ast::ExternDecl| {
+            if emitted_externs.contains(&ext.name) {
+                return;
+            }
+            emitted_externs.insert(ext.name.clone());
+
             let mut arg_types = Vec::new();
             for (_, ty) in &ext.params {
                 arg_types.push(self.lower_type(ty));
@@ -121,6 +136,15 @@ impl MlirGenerator {
                 arg_types.join(", "),
                 ret_type
             ));
+        };
+
+        for ext in &program.externs {
+            emit_extern(ext);
+        }
+        for module_prog in modules.values() {
+            for ext in &module_prog.externs {
+                emit_extern(ext);
+            }
         }
 
         // Define MLIR Structs
@@ -1466,7 +1490,7 @@ impl MlirGenerator {
                 }
                 (current_struct, struct_ty)
             }
-            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) | Expr::Import(..) => {
+            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) => {
                 let res = self.next_var();
                 self.write_line(&format!("{} = arith.constant 0 : i64", res));
                 (res, "i64".to_string())

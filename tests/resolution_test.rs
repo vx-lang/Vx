@@ -4,6 +4,7 @@ use vxc::resolver::build_symbol_map;
 #[test]
 fn test_local_name_resolution() {
     let mut module = VxModule {
+        imports: Vec::new(),
         module_path: "core::math".to_string(),
         externs: vec![],
         structs: vec![StructDecl {
@@ -48,6 +49,7 @@ use vxc::ast::{Expr, MemorySpace, Statement};
 #[test]
 fn test_unresolved_symbol_remains_none() {
     let mut module = VxModule {
+        imports: Vec::new(),
         module_path: "core::bad".to_string(),
         externs: vec![],
         structs: vec![], // Empty structs, "Vector" does not exist!
@@ -77,6 +79,7 @@ fn test_unresolved_symbol_remains_none() {
 #[test]
 fn test_nested_type_resolution() {
     let mut module = VxModule {
+        imports: Vec::new(),
         module_path: "core::math".to_string(),
         externs: vec![],
         structs: vec![StructDecl {
@@ -122,6 +125,7 @@ fn test_nested_type_resolution() {
 #[test]
 fn test_expr_and_stmt_resolution() {
     let mut module = VxModule {
+        imports: Vec::new(),
         module_path: "core::app".to_string(),
         externs: vec![],
         structs: vec![StructDecl {

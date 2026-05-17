@@ -4,19 +4,14 @@ use std::path::Path;
 use rayon::prelude::*;
 use vxc::codegen::MlirGenerator;
 use vxc::jit::execute_mlir;
-use vxc::lexer::Lexer;
-use vxc::parser::Parser;
 use vxc::sema::TypeChecker;
 
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) {
-    let source = fs::read_to_string(path).expect("Failed to read test file");
+    let _source = fs::read_to_string(path).expect("Failed to read test file");
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = lexer.tokenize();
-
-    let mut parser = Parser::new(tokens, &source);
-    let mut program = match parser.parse() {
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
         Err(_) => {
             if !expect_pass {
@@ -26,9 +21,16 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
         }
     };
 
+    let ast_idx = program_arr
+        .iter()
+        .position(|p| p.module_path == path.to_str().unwrap())
+        .unwrap();
+    let mut program = program_arr.remove(ast_idx);
+
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-    let program_arr = [program.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -62,13 +64,21 @@ fn run_middle_end_test(path: &Path) {
         .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut lexer = Lexer::new(&source);
-    let mut parser = Parser::new(lexer.tokenize(), &source);
-    let mut program = parser.parse().expect("Failed to parse");
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut program_arr = loader
+        .load_main(path.to_str().unwrap())
+        .expect("Failed to parse");
+
+    let ast_idx = program_arr
+        .iter()
+        .position(|p| p.module_path == path.to_str().unwrap())
+        .unwrap();
+    let mut program = program_arr.remove(ast_idx);
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-    let program_arr = [program.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -119,16 +129,22 @@ fn run_backend_test(path: &Path) {
         .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut lexer = Lexer::new(&source);
-    let mut parser = Parser::new(lexer.tokenize(), &source);
-    let mut program = match parser.parse() {
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
         Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
     };
 
+    let ast_idx = program_arr
+        .iter()
+        .position(|p| p.module_path == path.to_str().unwrap())
+        .unwrap();
+    let mut program = program_arr.remove(ast_idx);
+
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-    let program_arr = [program.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -142,7 +158,10 @@ fn run_backend_test(path: &Path) {
         );
     }
     let monomorphized_program = program;
-    let module_asts = std::collections::HashMap::new();
+    let mut module_asts = std::collections::HashMap::new();
+    for p in program_arr {
+        module_asts.insert(p.module_path.clone(), p);
+    }
 
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
