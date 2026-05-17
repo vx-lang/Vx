@@ -226,7 +226,7 @@ pub enum Statement {
     LetDecl(String, bool, Option<Type>, Expr, Span), // (name, is_mut, type_annotation, expr)
     Return(Expr, Span),
     SpawnOn(Topology, Vec<Statement>, Span),
-    ExprStmt(Expr, Span),
+    ExprStmt(Expr, bool, Span), // has_semicolon
     ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>, Span), // (iterator, start, end, body)
     If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>, Span), // (condition, then_block, else_block)
     Assign(Expr, Expr, Span),                                    // lhs = rhs
@@ -253,8 +253,8 @@ impl Statement {
                 stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 span.clone(),
             ),
-            Statement::ExprStmt(expr, _) => {
-                Statement::ExprStmt(expr.substitute(mapping), Span::default())
+            Statement::ExprStmt(expr, has_semi, _) => {
+                Statement::ExprStmt(expr.substitute(mapping), *has_semi, Span::default())
             }
             Statement::ForLoop(iter, start, end, body, span) => Statement::ForLoop(
                 iter.clone(),
@@ -470,7 +470,7 @@ impl Statement {
                 }
                 e.resolve_names(current_module, symbol_map);
             }
-            Statement::Return(e, _) | Statement::ExprStmt(e, _) => {
+            Statement::Return(e, _) | Statement::ExprStmt(e, _, _) => {
                 e.resolve_names(current_module, symbol_map)
             }
             Statement::Assert(e, _, _) => e.resolve_names(current_module, symbol_map),

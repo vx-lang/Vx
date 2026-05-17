@@ -540,8 +540,10 @@ impl<'a> Parser<'a> {
                     while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                         let stmt = self.parse_statement()?;
                         if self.check(&TokenType::RightBrace) {
-                            if let Statement::ExprStmt(e, _) = stmt {
-                                ret_expr = Some(Box::new(e));
+                            if let Statement::ExprStmt(e, has_semi, _) = stmt {
+                                if !has_semi {
+                                    ret_expr = Some(Box::new(e));
+                                }
                                 break;
                             }
                         }
@@ -742,12 +744,16 @@ impl<'a> Parser<'a> {
                         Span::default(),
                     ))
                 } else {
+                    let mut has_semicolon = true;
                     if let Expr::UnsafeBlock(..) = &expr {
-                        self.match_token(&TokenType::Semicolon); // Optional
+                        has_semicolon = self.match_token(&TokenType::Semicolon);
+                    // Optional
+                    } else if self.check(&TokenType::RightBrace) {
+                        has_semicolon = false; // Optional at end of block
                     } else {
                         self.consume(&TokenType::Semicolon, "Expected ';'")?;
                     }
-                    Ok(Statement::ExprStmt(expr, Span::default()))
+                    Ok(Statement::ExprStmt(expr, has_semicolon, Span::default()))
                 }
             }
         }
@@ -819,6 +825,15 @@ impl<'a> Parser<'a> {
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             body.push(self.parse_statement()?);
         }
+
+        // Transform implicit return
+        if let Some(Statement::ExprStmt(expr, has_semi, span)) = body.last().cloned() {
+            if !has_semi {
+                let last_idx = body.len() - 1;
+                body[last_idx] = Statement::Return(expr, span);
+            }
+        }
+
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
         // Remove generic params from scope
@@ -1266,7 +1281,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
-        if let Statement::ExprStmt(expr, _) = &program.functions[0].body[0] {
+        if let Statement::ExprStmt(expr, _, _) = &program.functions[0].body[0] {
             if let Expr::MethodCall(obj, method, args, _) = expr {
                 assert_eq!(method, "with_memory");
                 assert_eq!(args.len(), 1);
@@ -1358,7 +1373,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         }
 
         // Body should have unsafe block
-        if let Statement::ExprStmt(Expr::UnsafeBlock(stmts, None, _), _) = &func.body[0] {
+        if let Statement::ExprStmt(Expr::UnsafeBlock(stmts, None, _), _, _) = &func.body[0] {
             assert_eq!(stmts.len(), 2);
         } else {
             panic!("Expected UnsafeBlock");
@@ -1382,6 +1397,50 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(**inner, Type::Tensor(ElementType::F32, vec![], None));
         } else {
             panic!("Expected pointer return type");
+        }
+    }
+
+    #[test]
+    fn test_parse_implicit_return() {
+        let input = r#"
+fn stdout_write(buffer: *const u8, len: i64) -> i64 {
+    vx_stdout_write(buffer, len)
+}
+
+fn stderr_write(buffer: *const u8, len: i64) -> i64 {
+    vx_stderr_write(buffer, len);
+}
+        "#;
+        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let program = parser.parse().unwrap();
+
+        assert_eq!(program.functions.len(), 2);
+
+        // stdout_write should have a Return statement (implicit return converted)
+        let func1 = &program.functions[0];
+        if let Statement::Return(expr, _) = &func1.body[0] {
+            if let Expr::FunctionCall(name, args, _) = expr {
+                assert_eq!(name, "vx_stdout_write");
+                assert_eq!(args.len(), 2);
+            } else {
+                panic!("Expected FunctionCall in implicit return");
+            }
+        } else {
+            panic!("Expected Return statement from implicit return");
+        }
+
+        // stderr_write should have an ExprStmt with has_semicolon = true
+        let func2 = &program.functions[1];
+        if let Statement::ExprStmt(expr, has_semicolon, _) = &func2.body[0] {
+            assert!(*has_semicolon);
+            if let Expr::FunctionCall(name, args, _) = expr {
+                assert_eq!(name, "vx_stderr_write");
+                assert_eq!(args.len(), 2);
+            } else {
+                panic!("Expected FunctionCall in ExprStmt");
+            }
+        } else {
+            panic!("Expected ExprStmt with semicolon");
         }
     }
 }

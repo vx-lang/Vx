@@ -648,7 +648,7 @@ impl MlirGenerator {
 
                 self.write_line("// --- END SPAWN ---");
             }
-            Statement::ExprStmt(expr, _) => {
+            Statement::ExprStmt(expr, _, _) => {
                 self.generate_expr(expr, "any");
             }
             Statement::Assert(expr, msg, _) => {
@@ -1485,7 +1485,7 @@ impl MlirGenerator {
                 let mut last_val = "".to_string();
                 let mut last_ty = "i64".to_string();
                 for stmt in stmts {
-                    if let Statement::ExprStmt(expr, _) = stmt {
+                    if let Statement::ExprStmt(expr, _, _) = stmt {
                         let (val, ty) = self.generate_expr(expr, expected_ty);
                         last_val = val;
                         last_ty = ty;
@@ -1538,7 +1538,7 @@ impl MlirGenerator {
                 let mut last_val = "".to_string();
                 let mut last_ty = "i64".to_string();
                 for stmt in stmts {
-                    if let Statement::ExprStmt(expr, _) = stmt {
+                    if let Statement::ExprStmt(expr, _, _) = stmt {
                         let (val, ty) = self.generate_expr(expr, expected_ty);
                         last_val = val;
                         last_ty = ty;

@@ -82,7 +82,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::ExprStmt(expr, _) => {
+                Statement::ExprStmt(expr, _, _) => {
                     println!("{}{}ExprStmt", indent, prefix);
                     Self::print_expr(
                         expr,

@@ -378,7 +378,7 @@ impl<'a> TypeChecker<'a> {
                 self.active_topology = prev_top;
                 self.active_memory = prev_mem;
             }
-            Statement::ExprStmt(expr, _) => {
+            Statement::ExprStmt(expr, _, _) => {
                 self.check_expr_type(expr);
             }
             Statement::Assert(expr, _msg, _) => {
@@ -622,7 +622,7 @@ impl<'a> TypeChecker<'a> {
             Expr::ComptimeBlock(stmts, ret, _) => {
                 self.push_scope();
                 for stmt in stmts {
-                    if let Statement::ExprStmt(ref mut expr, _) = stmt {
+                    if let Statement::ExprStmt(ref mut expr, _, _) = stmt {
                         self.check_expr_type(expr);
                     } else {
                         self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
@@ -1189,7 +1189,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 let mut last_type = Type::Tensor(ElementType::F32, vec![], None);
                 for s in stmts.iter_mut() {
-                    if let Statement::ExprStmt(ref mut expr, _) = s {
+                    if let Statement::ExprStmt(ref mut expr, _, _) = s {
                         last_type = self.check_expr_type(expr);
                     } else {
                         self.check_statement(
