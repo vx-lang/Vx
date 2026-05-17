@@ -18,13 +18,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install LLVM & MLIR
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm mlir
-          # Verify mlir-opt and lli are installed
-          mlir-opt --version
-          lli --version
 
       - name: Build
         run: cargo build --verbose
