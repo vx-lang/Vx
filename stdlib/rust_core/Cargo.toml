@@ -1,0 +1,10 @@
+[package]
+name = "vx_std_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+paste = "1.0"

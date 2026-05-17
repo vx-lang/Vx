@@ -709,10 +709,18 @@ impl MlirGenerator {
                     ));
                     (res, scalar_expected.to_string())
                 } else if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-                    self.write_line(&format!("{} = arith.constant {} : f32", res, num_str.parse::<f64>().unwrap_or(0.0)));
+                    self.write_line(&format!(
+                        "{} = arith.constant {} : f32",
+                        res,
+                        num_str.parse::<f64>().unwrap_or(0.0)
+                    ));
                     (res, "f32".to_string())
                 } else {
-                    self.write_line(&format!("{} = arith.constant {} : i64", res, num_str.parse::<i64>().unwrap_or(0)));
+                    self.write_line(&format!(
+                        "{} = arith.constant {} : i64",
+                        res,
+                        num_str.parse::<i64>().unwrap_or(0)
+                    ));
                     (res, "i64".to_string())
                 }
             }

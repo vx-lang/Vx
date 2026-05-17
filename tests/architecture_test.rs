@@ -65,6 +65,6 @@ fn test_pipeline_architecture_hooks() {
     // We expect it to succeed, which means all invariants (Phase 1-8) held true.
     let result = vxc::pipeline::compile_pipeline(&paths);
     assert!(result.is_ok(), "Pipeline failed: {:?}", result.err());
-    
+
     let _ = fs::remove_dir_all(&dir);
 }

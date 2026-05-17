@@ -142,7 +142,11 @@ fn test_expr_and_stmt_resolution() {
                 "c".to_string(),
                 false,
                 Some(Type::Struct("Config".to_string(), None)),
-                Expr::Number("0.0".to_string(), Some(vxc::ast::ElementType::F64), Span::default()),
+                Expr::Number(
+                    "0.0".to_string(),
+                    Some(vxc::ast::ElementType::F64),
+                    Span::default(),
+                ),
                 Span::default(),
             )],
         }],

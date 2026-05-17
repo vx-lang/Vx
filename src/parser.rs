@@ -495,14 +495,12 @@ impl<'a> Parser<'a> {
                 TokenType::Number(s) => {
                     let mut num_str = s.clone();
                     let mut suffix_str = String::new();
-                    
+
                     if let Some(idx) = s.find(|c: char| c.is_alphabetic() || c == '_') {
                         num_str = s[..idx].to_string();
                         suffix_str = s[idx..].to_string();
                     }
 
-
-                    
                     let el_ty = if !suffix_str.is_empty() {
                         match suffix_str.as_str() {
                             "f16" => Some(crate::ast::ElementType::F16),
@@ -1134,7 +1132,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         if let Statement::SpawnOn(top, stmts, _) = &func.body[0] {
             assert_eq!(
                 *top,
-                Topology::NPU(Box::new(Expr::Number("0".to_string(), Some(crate::ast::ElementType::I32), Span::default())))
+                Topology::NPU(Box::new(Expr::Number(
+                    "0".to_string(),
+                    Some(crate::ast::ElementType::I32),
+                    Span::default()
+                )))
             );
             assert_eq!(stmts.len(), 4);
         } else {
@@ -1175,12 +1177,33 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(iter, start, end, body, _) = &program.functions[0].body[0] {
             assert_eq!(iter, "i");
-            assert_eq!(**start, Expr::Number("0".to_string(), Some(crate::ast::ElementType::I32), Span::default()));
-            assert_eq!(**end, Expr::Number("10".to_string(), Some(crate::ast::ElementType::I32), Span::default()));
+            assert_eq!(
+                **start,
+                Expr::Number(
+                    "0".to_string(),
+                    Some(crate::ast::ElementType::I32),
+                    Span::default()
+                )
+            );
+            assert_eq!(
+                **end,
+                Expr::Number(
+                    "10".to_string(),
+                    Some(crate::ast::ElementType::I32),
+                    Span::default()
+                )
+            );
             assert_eq!(body.len(), 1);
             if let Statement::Assign(lhs, rhs, _) = &body[0] {
                 assert_eq!(*lhs, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(*rhs, Expr::Number("5".to_string(), Some(crate::ast::ElementType::I32), Span::default()));
+                assert_eq!(
+                    *rhs,
+                    Expr::Number(
+                        "5".to_string(),
+                        Some(crate::ast::ElementType::I32),
+                        Span::default()
+                    )
+                );
             } else {
                 panic!("Expected Assign");
             }
@@ -1198,7 +1221,14 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(*op, BinaryOp::Add);
             if let Expr::IndexAccess(arr, idx, _) = lhs {
                 assert_eq!(**arr, Expr::Identifier("x".to_string(), Span::default()));
-                assert_eq!(**idx, Expr::Number("0".to_string(), Some(crate::ast::ElementType::I32), Span::default()));
+                assert_eq!(
+                    **idx,
+                    Expr::Number(
+                        "0".to_string(),
+                        Some(crate::ast::ElementType::I32),
+                        Span::default()
+                    )
+                );
             } else {
                 panic!("Expected IndexAccess");
             }

@@ -87,10 +87,7 @@ pub mod verify_arch {
         );
     }
 
-    pub fn verify_phase_6_simd_patch(
-        patched_type_stream: &[TypeId],
-        session: &Arc<GlobalSession>,
-    ) {
+    pub fn verify_phase_6_simd_patch(patched_type_stream: &[TypeId], session: &Arc<GlobalSession>) {
         // We can use rayon here to verify the patch pass in parallel
         patched_type_stream.par_iter().for_each(|gid| {
             // INVARIANT 1: The Eradication of Local State

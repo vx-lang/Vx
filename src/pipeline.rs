@@ -9,11 +9,14 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .par_iter()
         .map(|path| {
             println!("Parsing file: {}", path);
-            let source = std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
+            let source = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read {}: {}", path, e))?;
             let mut lexer = crate::lexer::Lexer::new(&source);
             let tokens = lexer.tokenize();
             let mut parser = crate::parser::Parser::new(tokens, &source);
-            let mut program = parser.parse().map_err(|e| format!("Failed to parse {}: {}", path, e))?;
+            let mut program = parser
+                .parse()
+                .map_err(|e| format!("Failed to parse {}: {}", path, e))?;
             program.module_path = path.clone();
             Ok(program)
         })
@@ -104,8 +107,14 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     #[cfg(debug_assertions)]
     {
-        let workers: Vec<&crate::session::LocalWorkerState> = check_results.iter().map(|(_, _, worker, _)| worker).collect();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_isolation(&workers, &global_session);
+        let workers: Vec<&crate::session::LocalWorkerState> = check_results
+            .iter()
+            .map(|(_, _, worker, _)| worker)
+            .collect();
+        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_isolation(
+            &workers,
+            &global_session,
+        );
     }
 
     // Phase 4: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
@@ -313,7 +322,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         crate::parallel_architecture_verifier::verify_arch::verify_phase_5_epoch_advance(
             weak_session,
         );
-        
+
         let bytes = std::fs::read(metadata_path).unwrap();
         crate::parallel_architecture_verifier::verify_arch::verify_phase_8_serialization(
             &bytes,
