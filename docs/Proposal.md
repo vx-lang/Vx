@@ -25,7 +25,7 @@ Execution across isolated, heterogeneous memories introduces non-determinism. Th
 
 ### 2.4 Ecosystem Delegation (The Scale-Out Strategy)
 A language without a rich standard library struggles to gain adoption. Rather than rebuilding the world, Vx acts as a pure **topology-aware frontend routing layer**. 
-* **Host Topologies:** Standard operations (like networking, file I/O, and data structures like `Option<T>` or `Vec<T>`) are delegated seamlessly to a robust host ecosystem (e.g., transpiling or FFI linking to Rust's `std` for `Topology::Host`).
+* **Host Topologies:** Standard operations (like networking, file I/O, and data structures like `Option<T>` or `Vec<T>`) are delegated seamlessly to a robust host ecosystem. Instead of transpiling, Vx natively lowers to MLIR and links against pre-compiled standard libraries (e.g., C/C++ or a pre-compiled Rust core exposing a C ABI) via zero-overhead FFI.
 * **Accelerator Topologies:** Accelerator execution is delegated to heavily optimized, vendor-specific libraries (e.g., Apple's MLX/NPE, Nvidia's cuDNN, AMD's ROCm) depending on the active `Topology`.
 * **Benefit:** By delegating the implementation details to specialized ecosystems, attaching a new hardware topology to Vx becomes trivial. The language focuses entirely on the mathematical correctness of data movement and routing between these ecosystems, which is one of Vx's biggest innovations.
 
