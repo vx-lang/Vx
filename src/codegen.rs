@@ -182,12 +182,17 @@ impl MlirGenerator {
         match ty {
             Type::Tensor(el_ty, dims, _) => {
                 let ty_str = match el_ty {
+                    ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
                     ElementType::F64 => "f64",
                     ElementType::BF16 => "bf16",
-                    ElementType::I32 => "i32",
-                    ElementType::I64 => "i64",
-                    _ => unimplemented!("Element type currently unsupported in MLIR backend"),
+                    ElementType::I4 | ElementType::U4 => "i4",
+                    ElementType::I8 | ElementType::U8 => "i8",
+                    ElementType::I16 | ElementType::U16 => "i16",
+                    ElementType::I32 | ElementType::U32 => "i32",
+                    ElementType::I64 | ElementType::U64 => "i64",
+                    ElementType::I128 | ElementType::U128 => "i128",
+                    ElementType::Bool => "i1",
                 };
 
                 let mut shape_str = String::new();
@@ -216,14 +221,17 @@ impl MlirGenerator {
             }
             Type::Scalar(el_ty) => {
                 let ty_str = match el_ty {
+                    ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
                     ElementType::F64 => "f64",
                     ElementType::BF16 => "bf16",
-                    ElementType::I32 => "i32",
-                    ElementType::I64 => "i64",
+                    ElementType::I4 | ElementType::U4 => "i4",
                     ElementType::I8 | ElementType::U8 => "i8",
+                    ElementType::I16 | ElementType::U16 => "i16",
+                    ElementType::I32 | ElementType::U32 => "i32",
+                    ElementType::I64 | ElementType::U64 => "i64",
+                    ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
-                    _ => unimplemented!("Element type currently unsupported as scalar"),
                 };
                 ty_str.to_string()
             }
@@ -354,24 +362,32 @@ impl MlirGenerator {
             Statement::LetDecl(name, _is_mut, ty_ann, expr, _) => {
                 if let Some(Type::Tensor(el_ty, _, _)) = ty_ann {
                     let ty_str = match el_ty {
+                        ElementType::F16 => "f16",
                         ElementType::F32 => "f32",
                         ElementType::F64 => "f64",
                         ElementType::BF16 => "bf16",
-                        ElementType::I32 => "i32",
-                        ElementType::I64 => "i64",
+                        ElementType::I4 | ElementType::U4 => "i4",
+                        ElementType::I8 | ElementType::U8 => "i8",
+                        ElementType::I16 | ElementType::U16 => "i16",
+                        ElementType::I32 | ElementType::U32 => "i32",
+                        ElementType::I64 | ElementType::U64 => "i64",
+                        ElementType::I128 | ElementType::U128 => "i128",
                         ElementType::Bool => "i1",
-                        _ => "f32",
                     };
                     self.current_el_ty = ty_str.to_string();
                 } else if let Some(Type::Scalar(el_ty)) = ty_ann {
                     let ty_str = match el_ty {
+                        ElementType::F16 => "f16",
                         ElementType::F32 => "f32",
                         ElementType::F64 => "f64",
                         ElementType::BF16 => "bf16",
-                        ElementType::I32 => "i32",
-                        ElementType::I64 => "i64",
+                        ElementType::I4 | ElementType::U4 => "i4",
+                        ElementType::I8 | ElementType::U8 => "i8",
+                        ElementType::I16 | ElementType::U16 => "i16",
+                        ElementType::I32 | ElementType::U32 => "i32",
+                        ElementType::I64 | ElementType::U64 => "i64",
+                        ElementType::I128 | ElementType::U128 => "i128",
                         ElementType::Bool => "i1",
-                        _ => "f32",
                     };
                     self.current_el_ty = ty_str.to_string();
                 }

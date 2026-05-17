@@ -243,6 +243,7 @@ impl<'a> Parser<'a> {
                 "Matrix" => Ok(Type::Matrix),
                 "f32" => Ok(Type::Scalar(ElementType::F32)),
                 "f64" => Ok(Type::Scalar(ElementType::F64)),
+                "f16" => Ok(Type::Scalar(ElementType::F16)),
                 "bf16" => Ok(Type::Scalar(ElementType::BF16)),
                 "i8" => Ok(Type::Scalar(ElementType::I8)),
                 "i16" => Ok(Type::Scalar(ElementType::I16)),

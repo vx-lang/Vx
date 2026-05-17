@@ -1,0 +1,11 @@
+import std::simd;
+import std::vec;
+
+fn main() -> i32 {
+    unsafe {
+        let a = vx_vec_new_i32();
+        let b = vx_vec_new_i32();
+        let out = vx_vec_new_i32();
+    }
+    return 0;
+}

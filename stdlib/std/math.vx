@@ -1,0 +1,51 @@
+extern {
+    fn vx_math_sin_f32(x: f32) -> f32;
+    fn vx_math_cos_f32(x: f32) -> f32;
+    fn vx_math_tan_f32(x: f32) -> f32;
+    fn vx_math_asin_f32(x: f32) -> f32;
+    fn vx_math_acos_f32(x: f32) -> f32;
+    fn vx_math_atan_f32(x: f32) -> f32;
+    fn vx_math_abs_f32(x: f32) -> f32;
+    fn vx_math_sqrt_f32(x: f32) -> f32;
+    fn vx_math_exp_f32(x: f32) -> f32;
+    fn vx_math_log_f32(x: f32) -> f32;
+    fn vx_math_log2_f32(x: f32) -> f32;
+    fn vx_math_log10_f32(x: f32) -> f32;
+
+    fn vx_math_sin_f64(x: f64) -> f64;
+    fn vx_math_cos_f64(x: f64) -> f64;
+    fn vx_math_tan_f64(x: f64) -> f64;
+    fn vx_math_abs_f64(x: f64) -> f64;
+    fn vx_math_sqrt_f64(x: f64) -> f64;
+    fn vx_math_exp_f64(x: f64) -> f64;
+    fn vx_math_log_f64(x: f64) -> f64;
+}
+
+trait Math {
+    fn sin() -> Self;
+    fn cos() -> Self;
+    fn tan() -> Self;
+    fn abs() -> Self;
+    fn sqrt() -> Self;
+    fn exp() -> Self;
+    fn ln() -> Self;
+}
+
+// In Vx, to define implementations for primitive types, we can use functions mapping directly to the extern blocks.
+// Below are standard free functions that wrap the FFI calls for users.
+
+fn sin_f32(x: f32) -> f32 { return vx_math_sin_f32(x); }
+fn cos_f32(x: f32) -> f32 { return vx_math_cos_f32(x); }
+fn tan_f32(x: f32) -> f32 { return vx_math_tan_f32(x); }
+fn abs_f32(x: f32) -> f32 { return vx_math_abs_f32(x); }
+fn sqrt_f32(x: f32) -> f32 { return vx_math_sqrt_f32(x); }
+fn exp_f32(x: f32) -> f32 { return vx_math_exp_f32(x); }
+fn ln_f32(x: f32) -> f32 { return vx_math_log_f32(x); }
+
+fn sin_f64(x: f64) -> f64 { return vx_math_sin_f64(x); }
+fn cos_f64(x: f64) -> f64 { return vx_math_cos_f64(x); }
+fn tan_f64(x: f64) -> f64 { return vx_math_tan_f64(x); }
+fn abs_f64(x: f64) -> f64 { return vx_math_abs_f64(x); }
+fn sqrt_f64(x: f64) -> f64 { return vx_math_sqrt_f64(x); }
+fn exp_f64(x: f64) -> f64 { return vx_math_exp_f64(x); }
+fn ln_f64(x: f64) -> f64 { return vx_math_log_f64(x); }

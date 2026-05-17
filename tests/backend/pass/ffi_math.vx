@@ -1,0 +1,17 @@
+import std::math;
+
+fn main() -> i32 {
+    let pi: f32 = 3.141592;
+    let half_pi: f32 = 1.570796;
+    
+    // sin(pi/2) approx 1.0
+    let s: f32 = sin_f32(half_pi);
+    let s_abs: f32 = abs_f32(s);
+    
+    let mut ret: i32 = 1;
+    // Test that FFI correctly returned scalar 1.0
+    if s_abs > 0.99 {
+        ret = 0;
+    }
+    return ret;
+}
