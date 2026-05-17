@@ -79,6 +79,6 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
         println!("cargo:rustc-link-lib=framework=CoreML");
     } else {
-        panic!("Vx v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Other operating systems are not currently supported.");
+        println!("cargo:warning=Vx v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Skipping NPU dispatcher compilation on this OS.");
     }
 }

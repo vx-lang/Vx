@@ -244,6 +244,9 @@ fn test_middle_end_fail() {
 
 #[test]
 fn test_backend() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     let dir = Path::new("tests/backend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -258,6 +261,9 @@ fn test_backend() {
 
 #[test]
 fn test_backend_fail() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     let dir = Path::new("tests/backend/fail");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();

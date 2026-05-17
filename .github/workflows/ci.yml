@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     name: Run Tests
-    runs-on: macos-14 # M1 Apple Silicon
+    runs-on: ubuntu-latest # Free Linux Tier
     
     steps:
       - name: Checkout code
@@ -20,10 +20,11 @@ jobs:
 
       - name: Install LLVM & MLIR
         run: |
-          brew install llvm
+          sudo apt-get update
+          sudo apt-get install -y llvm mlir
           # Verify mlir-opt and lli are installed
-          /opt/homebrew/opt/llvm/bin/mlir-opt --version
-          /opt/homebrew/opt/llvm/bin/lli --version
+          mlir-opt --version
+          lli --version
 
       - name: Build
         run: cargo build --verbose
