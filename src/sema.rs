@@ -103,8 +103,7 @@ impl<'a> TypeChecker<'a> {
     pub fn emit_type(&mut self, _ty: &Type) -> u32 {
         // Dummy conversion for now: Create a synthetic TypeId and push it.
         // In reality, this would hash the struct name, etc.
-        let mut tid = crate::gid::TypeId::new(0, 0, 0, 0);
-        tid.words[3] |= crate::gid::LOCAL_DEFERRED_BIT;
+        let tid = crate::gid::TypeId::new(0, 0, 0, 0);
         let idx = self.worker.local_type_stream.len() as u32;
         self.worker.local_type_stream.push(tid);
         idx
