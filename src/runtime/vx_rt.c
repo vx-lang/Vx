@@ -189,6 +189,13 @@ int vx_print_float(float val) {
     return 0;
 }
 
+int vx_printf_i32(const char *format, int val) {
+    printf(format, val);
+    fflush(stdout);
+    return 0;
+}
+
+
 int str_lookup(char *str, Tokenizer* t) {
     // Naive linear search since sorted_vocab is not populated
     for (int i = 0; i < t->vocab_size; i++) {

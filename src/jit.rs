@@ -130,6 +130,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             &format!("--load={}", lib_npu),
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
+            "--load=target/debug/libvx_std_core.dylib",
             &temp_ll,
         ])
         .output()

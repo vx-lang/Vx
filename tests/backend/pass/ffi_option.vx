@@ -1,0 +1,22 @@
+extern {
+    fn vx_option_new_some_i32(val: i32) -> *mut i8;
+    fn vx_option_new_none_i32() -> *mut i8;
+    fn vx_option_is_some_i32(ptr: *mut i8) -> Bool;
+    fn vx_option_unwrap_i32(ptr: *mut i8) -> i32;
+    fn vx_option_drop_i32(ptr: *mut i8) -> i32;
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let opt1 = vx_option_new_some_i32(42);
+        if vx_option_is_some_i32(opt1) {
+            let val = vx_option_unwrap_i32(opt1);
+            vx_printf_i32("Some: %d\n", val);
+        }
+        vx_option_drop_i32(opt1);
+    }
+    return 0;
+}
+
+// EXPECT: Some: 42

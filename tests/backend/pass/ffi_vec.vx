@@ -1,0 +1,21 @@
+extern {
+    fn vx_vec_new_i32() -> *mut i8;
+    fn vx_vec_push_i32(vec: *mut i8, val: i32) -> i32;
+    fn vx_vec_len_i32(vec: *mut i8) -> i32;
+    fn vx_vec_drop_i32(vec: *mut i8) -> i32;
+    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+    unsafe {
+        let vec = vx_vec_new_i32();
+        vx_vec_push_i32(vec, 42);
+        vx_vec_push_i32(vec, 100);
+        let len = vx_vec_len_i32(vec);
+        vx_printf_i32("Length: %d\n", len);
+        vx_vec_drop_i32(vec);
+    }
+    return 0;
+}
+
+// EXPECT: Length: 2
