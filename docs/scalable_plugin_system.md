@@ -25,6 +25,12 @@ pub trait VxHardwarePlugin: Send + Sync {
     /// The topology this plugin claims responsibility for
     fn target_topology(&self) -> TopologyID;
 
+    /// 1.5. Buffer Layout Constraints
+    /// Different hardware accelerators have strict alignment and layout requirements.
+    /// The Vx compiler queries these to pre-format data before lowering.
+    fn preferred_tensor_layout(&self) -> TensorLayout; // e.g., NHWC, NCHW
+    fn required_alignment(&self) -> usize; // e.g., 64 bytes
+
     /// 2. Verification Contract
     /// Vx asks the plugin if it natively supports this MLIR operation.
     /// If false, Vx's frontend will attempt to decompose it (e.g., GeLU -> Erf/Add/Mul).
@@ -99,6 +105,8 @@ void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topolo
 
 /// 2. Asynchronous Execution
 /// Takes the compiled binary payload embedded by the compiler and dispatches it.
+/// Note: The `device_args` unpacks MLIR MemRefs (typically a struct of base pointer, 
+/// aligned pointer, offset, sizes, and strides) mapping directly to the MLIR ABI.
 /// Returns a Future/Event ID immediately (Non-blocking).
 uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args);
 
@@ -107,13 +115,24 @@ uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_siz
 /// Called when a `Verified<T>` or `Pinned<T>` is explicitly read by the host.
 void vx_plugin_await_future(uint64_t future_id);
 
-/// 4. The Configuration & Lifecycle Escape Hatch (ioctl-style)
+/// 4. Memory Lifecycle & Teardown
+/// Device to Host read-back (fulfills `.to_host()`).
+int32_t vx_plugin_transfer_device_to_host(void* device_ptr, void* host_ptr, size_t bytes);
+
+/// Frees memory allocated on the device.
+void vx_plugin_free(void* device_ptr, uint32_t topology_id);
+
+/// Frees the future/event ID after await completes.
+void vx_plugin_release_future(uint64_t future_id);
+
+/// 5. The Configuration & Lifecycle Escape Hatch (ioctl-style)
 /// Allows the host to initialize drivers, teardown, or send custom configurations.
 int32_t vx_plugin_control(uint32_t opcode, void* payload);
 
 // Standard Opcodes
 #define VX_CTRL_INIT_DEVICE  0x01
 #define VX_CTRL_SHUTDOWN     0x02
+#define VX_CTRL_GET_DEVICE_COUNT 0x03 // Returns number of valid Topology::NPU[i] indices
 #define VX_CTRL_VENDOR_BASE  0x1000 // Vendors start their custom opcodes here
 
 #ifdef __cplusplus
@@ -161,9 +180,15 @@ let host_result = result_future.await.to_host();
 
 ```
 
-## 5. Recommended Implementation Steps
+## 5. Disaggregated Runtimes and Multi-Device Support
 
-To start coding this into `vxc` today, follow this sequence to avoid getting blocked:
+For disaggregated runtimes (like VLLM) utilizing multiple kinds of devices simultaneously, users can invoke the compiler separately for each device architecture. The minimal C-ABI (`VX_CTRL_GET_DEVICE_COUNT`) allows the runtime to discover how many distinct `Topology::NPU[i]` instances of a single architecture are available.
+
+If complex multi-device pooling across distinct vendors is needed within a single process, the application acts as the orchestrator by instantiating the runtime plugins independently.
+
+## 6. Recommended Implementation Steps
+
+To start coding this into `vxc` today, follow this sequence to avoid getting blocked. Use Apples NPE for your reference implementation.
 
 1. **Implement the Trait (`hardware_trait.rs`):** Define the `VxHardwarePlugin` Rust trait in your compiler tree.
 2. **Build a "Dummy" Plugin:** Create a mock CPU backend plugin (`DummyCPUPlugin`) that implements the trait but just lowers MLIR `linalg` to standard LLVM IR. This acts as your test harness to ensure the plugin registry and pass manager injection works.
