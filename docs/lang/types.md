@@ -31,8 +31,6 @@ let npu_matrix_b = transfer(host_matrix, Memory::NPU_HBM);
 let c = npu_matrix_b + npu_matrix;
 ```
 
-```
-
 ## 2. Compile-Time Layouts & Shapes
 
 Vx brings tensor dimensions and bounds checking entirely into the type system via `comptime` const-generics. Instead of relying on runtime panics for dimension mismatches, the `Sema` pass executes layout verification ahead-of-time.
@@ -56,7 +54,7 @@ If dimensions are statically evaluated to mismatch, the compiler will refuse to 
 
 Vx models the non-deterministic nature of distributed, heterogeneous execution using typestates. Computations and tasks are typed based on their topological binding and availability.
 
-### 2.1 `Verified<T>`: The Agile Compute Type
+### 3.1 `Verified<T>`: The Agile Compute Type
 
 When you define a computation without specifying an exact physical target, the compiler returns a `Verified<T>`.
 
@@ -67,7 +65,7 @@ let task: Verified<Tensor> = matmul(A, B);
 - **Semantics:** The compiler has statically verified that the computation is spatially correct and memory-safe.
 - **Routing:** The compiler retains the right to dynamically route this computation to any available hardware that satisfies the cost model (e.g., an available NPU, GPU, or falling back to CPU).
 
-### 2.2 `Pinned<T, Topology>`: The Strict Compute Type
+### 3.2 `Pinned<T, Topology>`: The Strict Compute Type
 
 When you require deterministic latency or specific hardware features, you bind a computation to a strict topology.
 
@@ -78,7 +76,7 @@ let strict_task: Pinned<Tensor, Topology::NPU[0]> = matmul(A, B);
 - **Semantics:** The computation *must* execute on the specified topology.
 - **Routing:** If the target topology is unavailable or saturated, the program cannot proceed unless explicitly handled.
 
-## 3. The Hardware State Monad
+## 4. The Hardware State Monad
 
 Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Vx represents this via the `HardwareState` enum, which acts like a monad.
 
@@ -110,7 +108,7 @@ match target {
 }
 ```
 
-## 4. Effect Tracking for Synchronization
+## 5. Effect Tracking for Synchronization
 
 Vx tracks synchronization and side-effects across address spaces as part of the function signature.
 
@@ -124,7 +122,7 @@ fn pipeline() -> Verified<()>
 }
 ```
 
-## 5. Topology-Aware Allocation
+## 6. Topology-Aware Allocation
 
 When defining arrays, you can use Topology literals to specify the physical location of the memory as well as minimum alignment requirements (if applicable). If no alignment is specified, the compiler will use the default alignment for the type. For example:
 
@@ -139,7 +137,7 @@ let y: Ref<Tensor, Topology::Host_Core> = Tensor::new([8, 8]) with Topology::Hos
 let z: Ref<Tensor, Topology::NPU_Core(128)> = Tensor::new([8, 8]) with Topology::NPU_Core(128);
 ```
 
-## 6. Type Coercion and Assignability
+## 7. Type Coercion and Assignability
 
 Vx evaluates type compatibility through a formal `is_assignable` constraint check during the Semantic Analysis phase. It is important to distinguish this from the ownership, move, or copy semantics found in languages like Rust.
 
