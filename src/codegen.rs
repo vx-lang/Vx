@@ -171,8 +171,10 @@ impl MlirGenerator {
                     shape_str = "?x?".to_string();
                 } else {
                     for (i, dim) in dims.iter().enumerate() {
-                        if let crate::ast::Expr::Number(n, _, _) = dim {
-                            shape_str.push_str(&format!("{}", *n as i64));
+                        if let crate::ast::Expr::Number(n_str, _, _) = dim {
+                            if let Ok(n) = n_str.parse::<f64>() {
+                                shape_str.push_str(&format!("{}", n as i64));
+                            }
                         } else {
                             shape_str.push('?');
                         }
@@ -672,7 +674,7 @@ impl MlirGenerator {
                     (format!("%{}", name), expected_ty.to_string())
                 }
             }
-            Expr::Number(n, _, _) => {
+            Expr::Number(num_str, _, _) => {
                 let res = self.next_var();
                 let mut scalar_expected = expected_ty.to_string();
                 if scalar_expected.starts_with("memref<") {
@@ -683,27 +685,34 @@ impl MlirGenerator {
                 }
 
                 if scalar_expected == "index" {
-                    self.write_line(&format!("{} = arith.constant {} : index", res, *n as i64));
+                    let n_val = num_str.parse::<f64>().unwrap_or(0.0) as i64;
+                    self.write_line(&format!("{} = arith.constant {} : index", res, n_val));
                     (res, "index".to_string())
                 } else if ["f32", "f64", "bf16", "i32", "i64"].contains(&scalar_expected.as_str()) {
                     let is_int = scalar_expected.starts_with("i");
-                    let float_str = if n.fract() == 0.0 && !is_int {
-                        format!("{}.0", n)
-                    } else if is_int {
-                        format!("{}", *n as i64)
+                    let float_str = if is_int {
+                        if let Ok(i_val) = num_str.parse::<i64>() {
+                            format!("{}", i_val)
+                        } else {
+                            format!("{}", num_str.parse::<f64>().unwrap_or(0.0) as i64)
+                        }
                     } else {
-                        n.to_string()
+                        let mut f_str = num_str.parse::<f64>().unwrap_or(0.0).to_string();
+                        if !f_str.contains('.') && !f_str.contains('e') {
+                            f_str.push_str(".0");
+                        }
+                        f_str
                     };
                     self.write_line(&format!(
                         "{} = arith.constant {} : {}",
                         res, float_str, scalar_expected
                     ));
                     (res, scalar_expected.to_string())
-                } else if n.fract() != 0.0 {
-                    self.write_line(&format!("{} = arith.constant {} : f32", res, n));
+                } else if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
+                    self.write_line(&format!("{} = arith.constant {} : f32", res, num_str.parse::<f64>().unwrap_or(0.0)));
                     (res, "f32".to_string())
                 } else {
-                    self.write_line(&format!("{} = arith.constant {} : i64", res, *n as i64));
+                    self.write_line(&format!("{} = arith.constant {} : i64", res, num_str.parse::<i64>().unwrap_or(0)));
                     (res, "i64".to_string())
                 }
             }
@@ -1155,8 +1164,10 @@ impl MlirGenerator {
                     let mut shape_str = String::new();
                     if let crate::ast::Expr::Array(d_args, _) = &_args[0] {
                         for (i, d) in d_args.iter().enumerate() {
-                            if let crate::ast::Expr::Number(n, _, _) = d {
-                                shape_str.push_str(&format!("{}", *n as i64));
+                            if let crate::ast::Expr::Number(n_str, _, _) = d {
+                                if let Ok(n) = n_str.parse::<f64>() {
+                                    shape_str.push_str(&format!("{}", n as i64));
+                                }
                             } else {
                                 shape_str.push('?');
                             }
@@ -1229,8 +1240,10 @@ impl MlirGenerator {
                                     if p_args.len() == dims.len() {
                                         let mut new_shape = String::new();
                                         for (i, p) in p_args.iter().enumerate() {
-                                            if let crate::ast::Expr::Number(n, _, _) = p {
-                                                new_shape.push_str(dims[*n as usize]);
+                                            if let crate::ast::Expr::Number(n_str, _, _) = p {
+                                                if let Ok(n) = n_str.parse::<f64>() {
+                                                    new_shape.push_str(dims[n as usize]);
+                                                }
                                             } else {
                                                 new_shape.push('?');
                                             }

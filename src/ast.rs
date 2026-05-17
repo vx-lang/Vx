@@ -124,7 +124,7 @@ pub enum UnaryOp {
 pub enum Expr {
     Identifier(String, Span),
     EnumVariant(String, String, Span),
-    Number(f64, Option<ElementType>, Span),
+    Number(String, Option<ElementType>, Span),
     StringLiteral(String, Span),
     Transfer(Box<Expr>, MemorySpace, Span),
     FunctionCall(String, Vec<Expr>, Span),
