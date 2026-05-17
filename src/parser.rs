@@ -243,9 +243,17 @@ impl<'a> Parser<'a> {
                 "Matrix" => Ok(Type::Matrix),
                 "f32" => Ok(Type::Scalar(ElementType::F32)),
                 "f64" => Ok(Type::Scalar(ElementType::F64)),
+                "bf16" => Ok(Type::Scalar(ElementType::BF16)),
+                "i8" => Ok(Type::Scalar(ElementType::I8)),
+                "i16" => Ok(Type::Scalar(ElementType::I16)),
                 "i32" => Ok(Type::Scalar(ElementType::I32)),
                 "i64" => Ok(Type::Scalar(ElementType::I64)),
-                "bf16" => Ok(Type::Scalar(ElementType::BF16)),
+                "i128" => Ok(Type::Scalar(ElementType::I128)),
+                "u8" => Ok(Type::Scalar(ElementType::U8)),
+                "u16" => Ok(Type::Scalar(ElementType::U16)),
+                "u32" => Ok(Type::Scalar(ElementType::U32)),
+                "u64" => Ok(Type::Scalar(ElementType::U64)),
+                "u128" => Ok(Type::Scalar(ElementType::U128)),
                 "Bool" => Ok(Type::Scalar(ElementType::Bool)),
                 _ => {
                     // Check for GenericInstance like Config<f32>
