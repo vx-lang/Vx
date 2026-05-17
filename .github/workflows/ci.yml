@@ -20,8 +20,8 @@ jobs:
 
       - name: Check for locking primitives
         run: |
-          if grep -rE '(Mutex|RwLock)' src/; then
-            echo "Error: Locking primitives (Mutex/RwLock) are not allowed in the Vx compiler!"
+          if grep -rE '(Mutex|RwLock|Condvar|OnceLock|OnceCell|Semaphore|ShardedLock|DashMap|parking_lot|spin::|std::thread::park)' src/; then
+            echo "Error: Locking primitives or thread-parking mechanisms are not allowed in the Vx compiler!"
             exit 1
           fi
 
