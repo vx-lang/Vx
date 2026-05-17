@@ -138,3 +138,22 @@ let y: Ref<Tensor, Topology::Host_Core> = Tensor::new([8, 8]) with Topology::Hos
 // Align to 128 bytes (A16)
 let z: Ref<Tensor, Topology::NPU_Core(128)> = Tensor::new([8, 8]) with Topology::NPU_Core(128);
 ```
+
+## 6. Type Coercion and Assignability
+
+Vx evaluates type compatibility through a formal `is_assignable` constraint check during the Semantic Analysis phase. It is important to distinguish this from the ownership, move, or copy semantics found in languages like Rust.
+
+In Vx, `is_assignable` is purely a **Type Compatibility Checker**. It determines if a value of a `Source` type can be legally bound to a slot expecting a `Target` type. It does not enforce linear typing or borrow checking (e.g., whether a value is bitwise copied or ownership is moved).
+
+### Assignability Rules
+
+When verifying `let target: TargetType = source_expression;`, the compiler permits the following structural coercions:
+
+1. **Strict Equality:** If the resolved `Target` and `Source` types are identical, the assignment is valid.
+2. **Implicit Unwrapping:** A hardware-specific wrapper type can implicitly decay to its base type. For example, `Ref<T>` or `Pinned<T>` can be safely assigned to a variable explicitly requesting a raw `T`.
+3. **Literal Broadcasting (Scalar to Tensor):** Scalar numerical literals (e.g., `1.0` or `42`) can be implicitly coerced and broadcasted into `Tensor<T>` configurations, provided they are not boolean mismatches.
+4. **Numeric Scalar Coercions:** Standard numeric types are permitted to automatically coerce across differing precisions (e.g., `f64` to `f32`) to accommodate literals during compilation, ensuring mathematical continuity without verbose casting.
+5. **Pointer Decay:** Safe borrows (`&mut T`) implicitly decay into raw unsafe pointers (`*mut T`) when crossing FFI or unsafe boundaries.
+6. **Safety Coercions:** A `Ref<T, HostDRAM>` can be coerced into a `Verified<T>` boundary type, signaling that host memory access requires no further spatial validation.
+
+If the types pass the `is_assignable` constraint matrix, the Semantic Analyzer accepts the program. Advanced lifecycle validation (like borrow constraints) operates entirely independently of this type-compatibility pass.
