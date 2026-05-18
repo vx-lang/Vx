@@ -34,6 +34,33 @@ fn test_nested_if(x: i32) -> i32 {
   return val;
 }
 
+fn my_identity(x: i32) -> i32 {
+  x
+}
+
+fn test_implicit_return(x: i32) -> i32 {
+  if x > 10 {
+    my_identity(100) + 1000
+  } else {
+    my_identity(200) + 1000
+  }
+}
+
+fn test_standalone_statement(x: i32) -> i32 {
+  let mut y: i32 = 0;
+  if x > 10 {
+    y = my_identity(100);
+  }
+
+  let val: i32 = my_identity(if x > 10 {
+    y
+  } else {
+    my_identity(200)
+  });
+
+  val
+}
+
 fn main() -> i32 {
   let a: i32 = test_if(15);
   let b: i32 = test_if(5);
@@ -84,13 +111,30 @@ fn main() -> i32 {
         54
       }
     } else if g == 0 {
-      test_comptime()
+      test_comptime() / 10
     } else {
       101
     }
   } else {
     102
   };
+
+  let h: i32 = test_implicit_return(15);
+  let i: i32 = test_implicit_return(5);
+  let j: i32 = test_standalone_statement(15);
+  let k: i32 = test_standalone_statement(5);
+
+  if h == 100 {
+    if i == 200 {
+      if j == 100 {
+        if k == 200 {
+          if ret == 100 {
+            ret = 10 + test_implicit_return(15);
+          }
+        }
+      }
+    }
+  }
 
   return ret;
 }
