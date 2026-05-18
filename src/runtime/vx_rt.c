@@ -42,10 +42,19 @@ void end_benchmark() {
     printf("%f\n", end - benchmark_start_time);
 }
 
+static struct timespec vx_base_ts = {0, 0};
+static int vx_base_initialized = 0;
+
 float vx_get_time() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (float)ts.tv_sec + (float)ts.tv_nsec / 1e9f;
+    if (!vx_base_initialized) {
+        vx_base_ts = ts;
+        vx_base_initialized = 1;
+    }
+    double sec_diff = (double)(ts.tv_sec - vx_base_ts.tv_sec);
+    double nsec_diff = (double)(ts.tv_nsec) - (double)(vx_base_ts.tv_nsec);
+    return (float)(sec_diff + nsec_diff / 1e9);
 }
 
 void trace_start() {
