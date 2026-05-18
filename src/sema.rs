@@ -329,26 +329,6 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.pop_scope();
             }
-            Statement::If(cond, then_block, else_block, _) => {
-                let cond_ty = self.check_expr_type(cond);
-                if cond_ty != Type::Scalar(ElementType::Bool) {
-                    self.errors
-                        .push("Condition in if statement must be of type bool (i1)".to_string());
-                }
-                self.push_scope();
-                for s in then_block {
-                    self.check_statement(s, return_type);
-                }
-                self.pop_scope();
-
-                if let Some(else_b) = else_block {
-                    self.push_scope();
-                    for s in else_b {
-                        self.check_statement(s, return_type);
-                    }
-                    self.pop_scope();
-                }
-            }
             Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, false);
                 let rhs_ty = self.check_expr_type(rhs);
@@ -410,35 +390,6 @@ impl<'a> TypeChecker<'a> {
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());
-                }
-            }
-            Statement::Comptime(stmts, _) => {
-                for s in stmts {
-                    if let Statement::Assert(expr, msg, _) = s {
-                        let ty = self.check_expr_type(expr);
-                        if ty != Type::Scalar(ElementType::Bool) {
-                            self.errors
-                                .push("Assertion condition must be boolean".to_string());
-                        }
-                        let empty_env = HashMap::new();
-                        if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
-                            if !b {
-                                let m = msg
-                                    .clone()
-                                    .unwrap_or_else(|| "Comptime assertion failed".to_string());
-                                self.errors.push(format!("Comptime assert failed: {}", m));
-                            }
-                        } else {
-                            self.errors.push(
-                                "Could not evaluate comptime assert condition statically"
-                                    .to_string(),
-                            );
-                        }
-                    } else {
-                        if !self.in_unsafe_block {
-                            self.check_statement(&mut *s, return_type);
-                        }
-                    }
                 }
             }
         }
@@ -677,6 +628,25 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
                     }
+                    if let Statement::Assert(expr, msg, _) = stmt {
+                        let ty = self.check_expr_type(expr);
+                        if ty != Type::Scalar(ElementType::Bool) {
+                            self.errors
+                                .push("Assertion condition must be boolean".to_string());
+                        }
+                        let empty_env = HashMap::new();
+                        if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
+                            if !b {
+                                let m = msg
+                                    .clone()
+                                    .unwrap_or_else(|| "Comptime assertion failed".to_string());
+                                self.errors.push(format!("Comptime assert failed: {}", m));
+                            }
+                        } else {
+                            self.errors
+                                .push("Could not evaluate comptime assertion".to_string());
+                        }
+                    }
                 }
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
                 if let Some(r) = ret {
@@ -684,6 +654,47 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.pop_scope();
                 ret_ty
+            }
+            Expr::If(cond, then_block, else_block, _) => {
+                let cond_ty = self.check_expr_type(cond);
+                if cond_ty != Type::Scalar(ElementType::Bool) {
+                    self.errors
+                        .push("Condition in if expression must be of type bool (i1)".to_string());
+                }
+                self.push_scope();
+                let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
+                for s in then_block.iter_mut() {
+                    if let Statement::ExprStmt(ref mut expr, _, _) = s {
+                        then_ty = self.check_expr_type(expr);
+                    } else {
+                        self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
+                    }
+                }
+                self.pop_scope();
+
+                let mut else_ty = Type::Tensor(ElementType::F32, vec![], None);
+                if let Some(else_b) = else_block.as_mut() {
+                    self.push_scope();
+                    for s in else_b.iter_mut() {
+                        if let Statement::ExprStmt(ref mut expr, _, _) = s {
+                            else_ty = self.check_expr_type(expr);
+                        } else {
+                            self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
+                        }
+                    }
+                    self.pop_scope();
+
+                    if then_ty != else_ty {
+                        self.errors.push(format!(
+                            "If expression branches have incompatible types: {:?} and {:?}",
+                            then_ty, else_ty
+                        ));
+                    }
+                } else {
+                    // Without else block, it evaluates to unit (represented as dummy Tensor)
+                    then_ty = Type::Tensor(ElementType::F32, vec![], None);
+                }
+                then_ty
             }
             Expr::FunctionCall(name, args, _) => {
                 let resolved_name = name.clone();
@@ -1260,14 +1271,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            Expr::UnsafeBlock(stmts, _ret_expr, _) => {
+            Expr::UnsafeBlock(stmts, ret_expr, _) => {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
-                let mut last_type = Type::Tensor(ElementType::F32, vec![], None);
                 for s in stmts.iter_mut() {
                     if let Statement::ExprStmt(ref mut expr, _, _) = s {
-                        last_type = self.check_expr_type(expr);
+                        self.check_expr_type(expr);
                     } else {
                         self.check_statement(
                             &mut *s,
@@ -1275,9 +1285,13 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                 }
+                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+                if let Some(r) = ret_expr {
+                    ret_ty = self.check_expr_type(r);
+                }
                 self.pop_scope();
                 self.in_unsafe_block = prev_unsafe;
-                last_type
+                ret_ty
             }
             Expr::StructInit(name, fields, _) => {
                 let resolved_name = name.clone();

@@ -94,7 +94,7 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
       logits: s_logits,
       key_cache: s_key_cache,
       value_cache: s_value_cache
-    };
+    }
   };
   return state;
 }
@@ -135,7 +135,7 @@ fn memory_map_weights(ptr: *mut f32, dim: i32, hidden_dim: i32, n_layers: i32, n
       w3: p9,
       rms_final_weight: p10,
       wcls: wcls_ptr
-    };
+    }
   };
   return w;
 }

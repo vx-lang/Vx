@@ -1,0 +1,96 @@
+fn test_if(x: i32) -> i32 {
+  let val: i32 = if x > 10 {
+    100
+  } else {
+    200
+  };
+  return val;
+}
+
+fn test_unsafe() -> i32 {
+  let val: i32 = unsafe {
+    300
+  };
+  return val;
+}
+
+fn test_comptime() -> i32 {
+  let val: i32 = comptime {
+    400
+  };
+  val
+}
+
+fn test_nested_if(x: i32) -> i32 {
+  let val: i32 = if x > 10 {
+    if x > 20 {
+      100
+    } else {
+      50
+    }
+  } else {
+    0
+  };
+  return val;
+}
+
+fn main() -> i32 {
+  let a: i32 = test_if(15);
+  let b: i32 = test_if(5);
+  let c: i32 = test_unsafe();
+  let d: i32 = test_comptime();
+  let e: i32 = test_nested_if(25);
+  let f: i32 = test_nested_if(15);
+  let g: i32 = test_nested_if(5);
+
+  let mut ret: i32 = 1;
+  if a == 100 {
+    if b == 200 {
+      if c == 300 {
+        if d == 400 {
+          if e == 100 {
+            if f == 50 {
+              if g == 0 {
+                ret = 0;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  ret += if a == 100 {
+    if b == 200 {
+      if c == 300 {
+        if d == 400 {
+          if e == 100 {
+            if f == 50 {
+              if g == 0 {
+                100
+              } else {
+                50
+              }
+            } else {
+              51
+            }
+          } else {
+            52
+          }
+        } else {
+          53
+        }
+      } else {
+        54
+      }
+    } else if g == 0 {
+      test_comptime()
+    } else {
+      101
+    }
+  } else {
+    102
+  };
+
+  return ret;
+}

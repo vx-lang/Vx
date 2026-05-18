@@ -447,27 +447,6 @@ impl MlirGenerator {
                 self.pop_indent();
                 self.write_line("}");
             }
-            Statement::If(cond, then_block, else_block, _) => {
-                let (cond_val, _) = self.generate_expr(cond, "i1");
-
-                self.write_line(&format!("scf.if {} {{", cond_val));
-
-                self.push_indent();
-                for s in then_block {
-                    self.generate_statement(s, _current_ret_ty);
-                }
-                self.pop_indent();
-
-                if let Some(else_b) = else_block {
-                    self.write_line("} else {");
-                    self.push_indent();
-                    for s in else_b {
-                        self.generate_statement(s, _current_ret_ty);
-                    }
-                    self.pop_indent();
-                }
-                self.write_line("}");
-            }
             Statement::Assign(lhs, rhs, _) => {
                 if let Some((base, base_ty, indices)) = self.flatten_indices(lhs) {
                     let mut rhs_expected = "any".to_string();
@@ -657,9 +636,6 @@ impl MlirGenerator {
                     .clone()
                     .unwrap_or_else(|| "Runtime assertion failed".to_string());
                 self.write_line(&format!("cf.assert {}, \"{}\"", val, abort_msg));
-            }
-            Statement::Comptime(..) => {
-                // Zero-cost abstraction. Stripped out during lowering!
             }
         }
     }
@@ -1561,7 +1537,7 @@ impl MlirGenerator {
                 ));
                 (res, "f32".to_string())
             }
-            Expr::UnsafeBlock(stmts, _, _) => {
+            Expr::UnsafeBlock(stmts, ret_expr, _) => {
                 let mut last_val = "".to_string();
                 let mut last_ty = "i64".to_string();
                 for stmt in stmts {
@@ -1573,7 +1549,9 @@ impl MlirGenerator {
                         self.generate_statement(stmt, expected_ty);
                     }
                 }
-                if last_val.is_empty() {
+                if let Some(r) = ret_expr {
+                    self.generate_expr(r, expected_ty)
+                } else if last_val.is_empty() {
                     let res = self.next_var();
                     self.write_line(&format!("{} = arith.constant 0 : i64", res));
                     (res, "i64".to_string())
@@ -1634,6 +1612,106 @@ impl MlirGenerator {
                     (res, "i64".to_string())
                 } else {
                     (last_val, last_ty)
+                }
+            }
+            Expr::If(cond, then_block, else_block, _) => {
+                let (cond_val, _) = self.generate_expr(cond, "i1");
+
+                let mut ret_ty = expected_ty.to_string();
+                if ret_ty == "any" {
+                    ret_ty = "f32".to_string();
+                }
+
+                let has_value = else_block.is_some()
+                    && ret_ty != "none"
+                    && ret_ty != "any"
+                    && !ret_ty.is_empty();
+
+                let res = if has_value {
+                    let r = self.next_var();
+                    self.write_line(&format!("{} = scf.if {} -> ({}) {{", r, cond_val, ret_ty));
+                    r
+                } else {
+                    self.write_line(&format!("scf.if {} {{", cond_val));
+                    "".to_string()
+                };
+
+                self.push_indent();
+                let mut then_val = "".to_string();
+                for s in then_block {
+                    if let Statement::ExprStmt(expr, has_semi, _) = s {
+                        let (v, _t) = self.generate_expr(expr, &ret_ty);
+                        if !has_semi {
+                            then_val = v;
+                        }
+                    } else {
+                        self.generate_statement(s, &ret_ty);
+                    }
+                }
+
+                let get_zero_const = |ty: &str| -> &str {
+                    match ty {
+                        "f32" | "f64" => "0.0",
+                        "i1" => "false",
+                        _ => "0",
+                    }
+                };
+
+                if has_value {
+                    if then_val.is_empty() {
+                        then_val = self.next_var();
+                        let zero = get_zero_const(&ret_ty);
+                        self.write_line(&format!(
+                            "{} = arith.constant {} : {}",
+                            then_val, zero, ret_ty
+                        ));
+                    }
+                    self.write_line(&format!("scf.yield {} : {}", then_val, ret_ty));
+                }
+                self.pop_indent();
+
+                if let Some(else_b) = else_block {
+                    self.write_line("} else {");
+                    self.push_indent();
+                    let mut else_val = "".to_string();
+                    for s in else_b {
+                        if let Statement::ExprStmt(expr, has_semi, _) = s {
+                            let (v, _) = self.generate_expr(expr, &ret_ty);
+                            if !has_semi {
+                                else_val = v;
+                            }
+                        } else {
+                            self.generate_statement(s, &ret_ty);
+                        }
+                    }
+                    if has_value {
+                        if else_val.is_empty() {
+                            else_val = self.next_var();
+                            let zero = get_zero_const(&ret_ty);
+                            self.write_line(&format!(
+                                "{} = arith.constant {} : {}",
+                                else_val, zero, ret_ty
+                            ));
+                        }
+                        self.write_line(&format!("scf.yield {} : {}", else_val, ret_ty));
+                    }
+                    self.pop_indent();
+                } else if has_value {
+                    self.write_line("} else {");
+                    self.push_indent();
+                    let zero = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : {}", zero, ret_ty));
+                    self.write_line(&format!("scf.yield {} : {}", zero, ret_ty));
+                    self.pop_indent();
+                }
+                self.write_line("}");
+
+                if has_value {
+                    (res, ret_ty)
+                } else {
+                    let r = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : i64", r));
+                    (r, "i64".to_string())
                 }
             }
         }

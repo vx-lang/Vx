@@ -154,6 +154,7 @@ pub enum Expr {
     StructInit(String, Vec<(String, Expr)>, Span),
     MemorySpace(MemorySpace, Span),
     Topology(Topology, Span),
+    If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>, Span), // (condition, then_block, else_block)
 }
 
 impl Expr {
@@ -230,6 +231,14 @@ impl Expr {
             | Expr::StringLiteral(..)
             | Expr::MemorySpace(..)
             | Expr::Topology(..) => self.clone(),
+            Expr::If(cond, then_block, else_block, span) => Expr::If(
+                Box::new(cond.substitute(mapping)),
+                then_block.iter().map(|s| s.substitute(mapping)).collect(),
+                else_block
+                    .as_ref()
+                    .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
+                span.clone(),
+            ),
         }
     }
 }
@@ -241,11 +250,9 @@ pub enum Statement {
     SpawnOn(Topology, Vec<Statement>, Span),
     ExprStmt(Expr, bool, Span), // has_semicolon
     ForLoop(String, Box<Expr>, Box<Expr>, Vec<Statement>, Span), // (iterator, start, end, body)
-    If(Box<Expr>, Vec<Statement>, Option<Vec<Statement>>, Span), // (condition, then_block, else_block)
-    Assign(Expr, Expr, Span),                                    // lhs = rhs
-    CompoundAssign(Expr, BinaryOp, Expr, Span),                  // lhs += rhs
-    Comptime(Vec<Statement>, Span),                              // comptime { ... }
-    Assert(Box<Expr>, Option<String>, Span),                     // assert(expr, "message")
+    Assign(Expr, Expr, Span),   // lhs = rhs
+    CompoundAssign(Expr, BinaryOp, Expr, Span), // lhs += rhs
+    Assert(Box<Expr>, Option<String>, Span), // assert(expr, "message")
 }
 
 impl Statement {
@@ -276,14 +283,6 @@ impl Statement {
                 body.iter().map(|s| s.substitute(mapping)).collect(),
                 span.clone(),
             ),
-            Statement::If(cond, then_block, else_block, span) => Statement::If(
-                Box::new(cond.substitute(mapping)),
-                then_block.iter().map(|s| s.substitute(mapping)).collect(),
-                else_block
-                    .as_ref()
-                    .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
-                span.clone(),
-            ),
             Statement::Assign(lhs, rhs, _) => Statement::Assign(
                 lhs.substitute(mapping),
                 rhs.substitute(mapping),
@@ -294,10 +293,6 @@ impl Statement {
                 op.clone(),
                 rhs.substitute(mapping),
                 span.clone(),
-            ),
-            Statement::Comptime(stmts, _) => Statement::Comptime(
-                stmts.iter().map(|s| s.substitute(mapping)).collect(),
-                Span::default(),
             ),
             Statement::Assert(expr, msg, _) => Statement::Assert(
                 Box::new(expr.substitute(mapping)),
@@ -468,6 +463,17 @@ impl Expr {
                     r.resolve_names(current_module, symbol_map);
                 }
             }
+            Expr::If(cond, then_block, else_block, _) => {
+                cond.resolve_names(current_module, symbol_map);
+                for s in then_block {
+                    s.resolve_names(current_module, symbol_map);
+                }
+                if let Some(eb) = else_block {
+                    for s in eb {
+                        s.resolve_names(current_module, symbol_map);
+                    }
+                }
+            }
             Expr::Topology(t, _) => t.resolve_names(current_module, symbol_map),
             _ => {}
         }
@@ -500,25 +506,9 @@ impl Statement {
                     s.resolve_names(current_module, symbol_map);
                 }
             }
-            Statement::If(cond, then_block, else_block, _) => {
-                cond.resolve_names(current_module, symbol_map);
-                for s in then_block {
-                    s.resolve_names(current_module, symbol_map);
-                }
-                if let Some(eb) = else_block {
-                    for s in eb {
-                        s.resolve_names(current_module, symbol_map);
-                    }
-                }
-            }
             Statement::Assign(lhs, rhs, _) | Statement::CompoundAssign(lhs, _, rhs, _) => {
                 lhs.resolve_names(current_module, symbol_map);
                 rhs.resolve_names(current_module, symbol_map);
-            }
-            Statement::Comptime(stmts, _) => {
-                for s in stmts {
-                    s.resolve_names(current_module, symbol_map);
-                }
             }
         }
     }

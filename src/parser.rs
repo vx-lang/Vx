@@ -353,8 +353,46 @@ impl<'a> Parser<'a> {
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                 stmts.push(self.parse_statement()?);
             }
+            let mut ret = None;
+            if let Some(Statement::ExprStmt(expr, has_semi, _)) = stmts.last().cloned() {
+                if !has_semi {
+                    stmts.pop();
+                    ret = Some(Box::new(expr));
+                }
+            }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            return Ok(Expr::UnsafeBlock(stmts, None, Span::default()));
+            return Ok(Expr::UnsafeBlock(stmts, ret, Span::default()));
+        } else if self.match_token(&TokenType::If) {
+            let cond = self.parse_expr()?;
+            self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+            let mut then_block = Vec::new();
+            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                then_block.push(self.parse_statement()?);
+            }
+            self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+            let mut else_block = None;
+            if self.match_token(&TokenType::Else) {
+                if self.check(&TokenType::If) {
+                    // `else if`
+                    let inner_if = self.parse_primary_expr()?;
+                    else_block = Some(vec![Statement::ExprStmt(inner_if, false, Span::default())]);
+                } else {
+                    self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+                    let mut block = Vec::new();
+                    while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                        block.push(self.parse_statement()?);
+                    }
+                    self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                    else_block = Some(block);
+                }
+            }
+            return Ok(Expr::If(
+                Box::new(cond),
+                then_block,
+                else_block,
+                Span::default(),
+            ));
         }
 
         let mut expr = if self.match_token(&TokenType::Transfer) {
@@ -627,8 +665,19 @@ impl<'a> Parser<'a> {
                 {
                     stmts.push(self.parse_statement()?);
                 }
+                let mut ret = None;
+                if let Some(Statement::ExprStmt(expr, has_semi, _)) = stmts.last().cloned() {
+                    if !has_semi {
+                        stmts.pop();
+                        ret = Some(Box::new(expr));
+                    }
+                }
                 self.consume(&TokenType::RightBrace, "Expected '}' after comptime block")?;
-                Ok(Statement::Comptime(stmts, Span::default()))
+                Ok(Statement::ExprStmt(
+                    Expr::ComptimeBlock(stmts, ret, Span::default()),
+                    true,
+                    Span::default(),
+                ))
             }
             TokenType::Assert => {
                 self.advance();
@@ -669,40 +718,14 @@ impl<'a> Parser<'a> {
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                     stmts.push(self.parse_statement()?);
                 }
-                self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                Ok(Statement::SpawnOn(top, stmts, Span::default()))
-            }
-            TokenType::If => {
-                self.advance();
-                let cond = self.parse_expr()?;
-                self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-                let mut then_block = Vec::new();
-                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                    then_block.push(self.parse_statement()?);
-                }
-                self.consume(&TokenType::RightBrace, "Expected '}'")?;
-
-                let mut else_block = None;
-                if self.match_token(&TokenType::Else) {
-                    if self.check(&TokenType::If) {
-                        // `else if`
-                        else_block = Some(vec![self.parse_statement()?]);
-                    } else {
-                        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-                        let mut block = Vec::new();
-                        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-                            block.push(self.parse_statement()?);
-                        }
-                        self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        else_block = Some(block);
+                if let Some(Statement::ExprStmt(expr, has_semi, span)) = stmts.last().cloned() {
+                    if !has_semi {
+                        let last_idx = stmts.len() - 1;
+                        stmts[last_idx] = Statement::Return(expr, span);
                     }
                 }
-                Ok(Statement::If(
-                    Box::new(cond),
-                    then_block,
-                    else_block,
-                    Span::default(),
-                ))
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                Ok(Statement::SpawnOn(top, stmts, Span::default()))
             }
             TokenType::For => {
                 self.advance();
@@ -745,13 +768,17 @@ impl<'a> Parser<'a> {
                     ))
                 } else {
                     let mut has_semicolon = true;
-                    if let Expr::UnsafeBlock(..) = &expr {
-                        has_semicolon = self.match_token(&TokenType::Semicolon);
-                    // Optional
-                    } else if self.check(&TokenType::RightBrace) {
-                        has_semicolon = false; // Optional at end of block
-                    } else {
-                        self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    match &expr {
+                        Expr::UnsafeBlock(..) | Expr::ComptimeBlock(..) | Expr::If(..) => {
+                            has_semicolon = self.match_token(&TokenType::Semicolon);
+                        }
+                        _ => {
+                            if self.check(&TokenType::RightBrace) {
+                                has_semicolon = false; // Optional at end of block
+                            } else {
+                                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                            }
+                        }
                     }
                     Ok(Statement::ExprStmt(expr, has_semicolon, Span::default()))
                 }
