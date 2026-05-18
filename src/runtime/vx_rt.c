@@ -124,6 +124,17 @@ int vx_get_env_int(const char* name, int default_val) {
     return default_val;
 }
 
+int* vx_get_llama_config() {
+    int* ret = (int*)malloc(sizeof(int) * 2);
+    ret[0] = 1000;
+    ret[1] = 1;
+    char* val = getenv("LLAMA_TOKENS_CONFIG");
+    if (val != NULL) {
+        sscanf(val, "%d;%d", &ret[0], &ret[1]);
+    }
+    return ret;
+}
+
 // ============================================================================
 // File I/O & Model Loading
 // ============================================================================

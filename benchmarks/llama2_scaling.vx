@@ -65,6 +65,7 @@ extern {
   fn vx_get_time() -> f32;
   fn vx_printf_i32(format: *const i8, val: i32) -> i32;
   fn vx_get_env_int(name: *const i8, default_val: i32) -> i32;
+  fn vx_get_llama_config() -> *mut i32;
 }
 
 fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
@@ -450,7 +451,9 @@ fn main() -> i32 {
     let vocab_size_f: f32 = config_ptr[5];
     let seq_len_f: f32 = config_ptr[6];
 
-    let max_tokens: i32 = vx_get_env_int("MAX_TOKENS", 10000);
+    let llama_config: *mut i32 = vx_get_llama_config();
+    let max_tokens: i32 = llama_config[0];
+    let steps: i32 = llama_config[1];
 
     let config = Config {
       dim: 288,
@@ -477,10 +480,11 @@ fn main() -> i32 {
   let mut token: i32 = prompt_tokens[1]; // Usually BOS
   let mut pos: i32 = 0;
 
-  // We'll generate 1000 tokens and print the time taken for every 100 tokens
+  // We'll generate max_tokens and print the time taken for every 1000 tokens
   let mut start_time: f32 = vx_get_time();
   
-  for step in 0..max_tokens {
+  let iterations: i32 = max_tokens / steps;
+  for step in 0..iterations {
     let mut logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
 
     let mut next: i32 = 0;
@@ -498,7 +502,7 @@ fn main() -> i32 {
     // let print_status: i32 = vx_safe_printf(piece);
 
     token = next;
-    pos += 1;
+    pos += steps;
 
     let div: i32 = pos / 1000;
     let mul: i32 = div * 1000;
