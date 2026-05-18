@@ -4,11 +4,11 @@ extern {
 
 fn main() -> i32 {
     unsafe {
-        let xout: *mut f32 = vx_malloc_f32(1);
-        let x: *mut f32 = vx_malloc_f32(1);
-        let w: *mut f32 = vx_malloc_f32(1);
         let n: i32 = 128;
         let d: i32 = 64;
+        let xout: *mut f32 = vx_malloc_f32(d);
+        let x: *mut f32 = vx_malloc_f32(n);
+        let w: *mut f32 = vx_malloc_f32(n * d);
 
         // Use ANE topology to trigger the hardware plugin dispatch via spawn on
         spawn on(Topology::ANE) {

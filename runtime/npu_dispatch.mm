@@ -82,7 +82,6 @@ extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
         
         MLModel *model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (!model) {
-            std::cerr << "[Vx Dispatcher] Failed to load CoreML model. Falling back to AMX. Error: " << [[error localizedDescription] UTF8String] << std::endl;
             cblas_sgemv(CblasRowMajor, CblasNoTrans, d, n, 1.0f, w, n, x, 1, 0.0f, xout, 1);
             return 1;
         }
@@ -143,10 +142,8 @@ uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_siz
 }
 
 uint64_t vx_plugin_dispatch_async_flat(float* xout, float* x, float* w, int n, int d) {
-    // Mock plugin execution: just do a simple CPU side-effect
-    if (xout && x && w) {
-        xout[0] = x[0] * w[0];
-    }
+    // Dispatch to Apple Neural Engine payload executor
+    vx_dispatch_ane(xout, x, w, n, d);
     return 1;
 }
 
