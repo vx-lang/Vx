@@ -14,6 +14,7 @@ pub mod module_loader;
 pub mod parallel_architecture_verifier;
 pub mod parser;
 pub mod pipeline;
+pub mod plugin;
 pub mod registry;
 pub mod resolver;
 pub mod sema;
