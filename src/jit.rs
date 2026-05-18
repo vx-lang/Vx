@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static COMPILE_RT_ONCE: Once = Once::new();
 static COMPILE_NPU_ONCE: Once = Once::new();
 
 pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
@@ -23,8 +22,6 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     let temp_llvm = format!("target/jit/temp_llvm_{}.mlir", uid);
     let temp_ll = format!("target/jit/temp_{}.ll", uid);
 
-    // Use shared libraries for runtime to avoid recompiling for every test
-    let lib_rt = "target/jit/libvx_rt_shared.dylib".to_string();
     let lib_npu = "target/jit/libnpu_shared.dylib".to_string();
 
     // 1. Write MLIR to temp file
@@ -33,21 +30,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         .write_all(mlir_src.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    COMPILE_RT_ONCE.call_once(|| {
-        println!("[JIT] Compiling C Runtime (Shared)...");
-        let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
-        let cflags_env = std::env::var("CFLAGS").unwrap_or_else(|_| "-shared -fPIC".to_string());
-        let cflags: Vec<&str> = cflags_env.split_whitespace().collect();
-
-        let mut clang_cmd = Command::new(&cc);
-        clang_cmd.args(&cflags);
-        clang_cmd.args(["src/runtime/vx_rt.c", "-o", &lib_rt]);
-
-        let clang_status = clang_cmd.status().expect("Failed to execute clang");
-        if !clang_status.success() {
-            panic!("Failed to compile C runtime");
-        }
-    });
+    // Runtime functions are now loaded via libvx_std_core.dylib
 
     if cfg!(target_os = "macos") {
         COMPILE_NPU_ONCE.call_once(|| {
@@ -132,13 +115,16 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     println!("[JIT] Executing via LLI...");
+    let current_dir = std::env::current_dir().unwrap();
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
         .args([
-            &format!("--load={}", lib_rt),
             &format!("--load={}", lib_npu),
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
             "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
-            "--load=target/debug/libvx_std_core.dylib",
+            &format!(
+                "--load={}/target/debug/libvx_std_core.dylib",
+                current_dir.display()
+            ),
             &temp_ll,
         ])
         .output()
