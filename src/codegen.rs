@@ -663,16 +663,15 @@ impl MlirGenerator {
 
                     let success_val = self.next_var();
 
-                    // We emit the external declaration for the plugin ABI if it hasn't been emitted yet.
-                    if !self.globals.contains("vx_plugin_dispatch_async_flat") {
-                        self.globals.push_str("func.func private @vx_plugin_dispatch_async_flat(!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i64\n");
-                    }
+                    let dispatch_func = match top {
+                        Topology::ANE => "@vx_dispatch_ane",
+                        Topology::GPU => "@vx_dispatch_gpu",
+                        Topology::AMX => "@vx_dispatch_amx",
+                        _ => unreachable!(),
+                    };
 
-                    // For the dummy implementation, we'll pass the flat args directly
-                    // in a slightly modified ABI since MLIR array allocation for C structs is complex.
-                    // Real implementation would use MemRef descriptors via void**.
-                    self.write_line(&format!("{} = func.call @vx_plugin_dispatch_async_flat({}, {}, {}, {}, {}) : (!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i64", 
-                        success_val, xout_val, x_val, w_val, n_val, d_val
+                    self.write_line(&format!("{} = func.call {}({}, {}, {}, {}, {}) : (!llvm.ptr<0>, !llvm.ptr<0>, !llvm.ptr<0>, i32, i32) -> i32", 
+                        success_val, dispatch_func, xout_val, x_val, w_val, n_val, d_val
                     ));
 
                     // Generate a pseudo-scf.execute_region to satisfy the architectural design
