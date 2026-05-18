@@ -267,7 +267,11 @@ impl MlirGenerator {
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
-                        field_types.push(self.lower_type(ty));
+                        let mut lowered = self.lower_type(ty);
+                        if lowered.starts_with("memref<") {
+                            lowered = "!llvm.ptr".to_string();
+                        }
+                        field_types.push(lowered);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(", "))
                 } else {
@@ -276,6 +280,22 @@ impl MlirGenerator {
             }
             Type::Generic(_, _) | Type::GenericInstance(_, _) => {
                 panic!("Generic types should have been monomorphized before codegen!");
+            }
+            Type::Simd(el_ty, n) => {
+                let ty_str = match el_ty {
+                    ElementType::F16 => "f16",
+                    ElementType::F32 => "f32",
+                    ElementType::F64 => "f64",
+                    ElementType::BF16 => "bf16",
+                    ElementType::I4 | ElementType::U4 => "i4",
+                    ElementType::I8 | ElementType::U8 => "i8",
+                    ElementType::I16 | ElementType::U16 => "i16",
+                    ElementType::I32 | ElementType::U32 => "i32",
+                    ElementType::I64 | ElementType::U64 => "i64",
+                    ElementType::I128 | ElementType::U128 => "i128",
+                    ElementType::Bool => "i1",
+                };
+                format!("vector<{}x{}>", n, ty_str)
             }
             Type::Enum(_, _) => "i32".to_string(),
             Type::Module(..) => "none".to_string(),
@@ -490,6 +510,39 @@ impl MlirGenerator {
                             base,
                             indices.join(", "),
                             base_ty
+                        ));
+                    }
+                } else if let Expr::Dereference(inner, _) = lhs {
+                    let (ptr_val, ptr_ty) = self.generate_expr(inner, "any");
+                    let (rhs_val, rhs_ty) = self.generate_expr(rhs, "any");
+
+                    let is_vector = rhs_ty.starts_with("vector<");
+
+                    if is_vector {
+                        if ptr_ty.starts_with("!llvm.ptr") {
+                            self.write_line(&format!(
+                                "llvm.store {}, {} : {}, {}",
+                                rhs_val, ptr_val, rhs_ty, ptr_ty
+                            ));
+                        } else {
+                            let zero_idx = self.next_var();
+                            self.write_line(&format!("{} = arith.constant 0 : index", zero_idx));
+                            self.write_line(&format!(
+                                "vector.store {}, {}[{}] : {}, {}",
+                                rhs_val, ptr_val, zero_idx, ptr_ty, rhs_ty
+                            ));
+                        }
+                    } else if ptr_ty.starts_with("memref<") {
+                        let zero_idx = self.next_var();
+                        self.write_line(&format!("{} = arith.constant 0 : index", zero_idx));
+                        self.write_line(&format!(
+                            "memref.store {}, {}[{}] : {}",
+                            rhs_val, ptr_val, zero_idx, ptr_ty
+                        ));
+                    } else {
+                        self.write_line(&format!(
+                            "llvm.store {}, {} : {}, {}",
+                            rhs_val, ptr_val, rhs_ty, ptr_ty
                         ));
                     }
                 }
@@ -882,6 +935,14 @@ impl MlirGenerator {
                     };
                     self.write_line(&format!("{} = {} {} : f32", res, op_name, arg_val));
                     return (res, "f32".to_string());
+                } else if name == "vx_simd_reduce_add" && args.len() == 1 {
+                    let (arg_val, arg_ty) = self.generate_expr(&args[0], "any");
+                    let res = self.next_var();
+                    self.write_line(&format!(
+                        "{} = vector.reduce <add>, {} : {} into f32",
+                        res, arg_val, arg_ty
+                    ));
+                    return (res, "f32".to_string());
                 } else if name.starts_with("Tensor") && name.ends_with("::from") && args.len() == 2
                 {
                     let (ptr_val, _) = self.generate_expr(&args[0], "!llvm.ptr<f32>");
@@ -1115,11 +1176,11 @@ impl MlirGenerator {
                     } else {
                         let res = self.next_var();
                         self.write_line(&format!(
-                            "{} = memref.load {}[{}] : memref<?x?x{}>",
+                            "{} = memref.load {}[{}] : {}",
                             res,
                             base_name,
                             indices.join(", "),
-                            self.current_el_ty
+                            base_ty
                         ));
                         (res, self.current_el_ty.clone())
                     }
@@ -1196,16 +1257,21 @@ impl MlirGenerator {
                     if let Some(decl) = self.structs.get(&struct_name).cloned() {
                         if let Some(field_idx) = decl.fields.iter().position(|(n, _)| n == member) {
                             let field_ty = self.lower_type(&decl.fields[field_idx].1);
-                            let res = self.next_var();
+                            let mut res = self.next_var();
+
+                            let mut base_val_actual = base_val.clone();
+                            let mut base_ty_actual = base_ty.clone();
 
                             if base_ty.starts_with("!llvm.ptr") {
                                 // First load the struct from the pointer
                                 let loaded_struct = self.next_var();
-                                // Actually, MLIR llvm.load needs the full type. We can use `any` or construct it.
-                                // But since MlirGenerator is a mock, let's just generate a struct type with correct number of elements.
                                 let mut field_tys = Vec::new();
                                 for (_, ty) in &decl.fields {
-                                    field_tys.push(self.lower_type(ty));
+                                    let mut lowered = self.lower_type(ty);
+                                    if lowered.starts_with("memref<") {
+                                        lowered = "!llvm.ptr".to_string();
+                                    }
+                                    field_tys.push(lowered);
                                 }
                                 let full_struct_ty = format!(
                                     "!llvm.struct<\"{}\", ({})>",
@@ -1217,16 +1283,24 @@ impl MlirGenerator {
                                     "{} = llvm.load {} : {} -> {}",
                                     loaded_struct, base_val, base_ty, full_struct_ty
                                 ));
+                                base_val_actual = loaded_struct;
+                                base_ty_actual = full_struct_ty;
+                            }
 
+                            // `extracted_ty` previously computed here is no longer needed since `llvm.extractvalue` does not need the result type.
+
+                            self.write_line(&format!(
+                                "{} = llvm.extractvalue {}[{}] : {}",
+                                res, base_val_actual, field_idx, base_ty_actual
+                            ));
+
+                            if field_ty.starts_with("memref<") {
+                                let memref_val = self.next_var();
                                 self.write_line(&format!(
-                                    "{} = llvm.extractvalue {}[{}] : {}",
-                                    res, loaded_struct, field_idx, full_struct_ty
+                                    "{} = builtin.unrealized_conversion_cast {} : !llvm.ptr to {}",
+                                    memref_val, res, field_ty
                                 ));
-                            } else {
-                                self.write_line(&format!(
-                                    "{} = llvm.extractvalue {}[{}] : {}",
-                                    res, base_val, field_idx, base_ty
-                                ));
+                                res = memref_val;
                             }
                             return (res, field_ty);
                         }
@@ -1533,14 +1607,38 @@ impl MlirGenerator {
                 }
             }
             Expr::Dereference(inner, _) => {
-                let (val, _) = self.generate_expr(inner, expected_ty);
+                let (val, val_ty) = self.generate_expr(inner, expected_ty);
                 let res = self.next_var();
-                self.write_line(&format!("// deref {} -> {}", val, res));
-                self.write_line(&format!(
-                    "{} = llvm.load {} : !llvm.ptr<0> -> f32",
-                    res, val
-                ));
-                (res, "f32".to_string())
+
+                let is_vector = expected_ty.starts_with("vector<");
+
+                if is_vector {
+                    if val_ty.starts_with("!llvm.ptr") {
+                        self.write_line(&format!(
+                            "{} = llvm.load {} : {} -> {}",
+                            res, val, val_ty, expected_ty
+                        ));
+                    } else {
+                        let zero_idx = self.next_var();
+                        self.write_line(&format!("{} = arith.constant 0 : index", zero_idx));
+                        self.write_line(&format!(
+                            "{} = vector.load {}[{}] : {}, {}",
+                            res, val, zero_idx, val_ty, expected_ty
+                        ));
+                    }
+                    (res, expected_ty.to_string())
+                } else if val_ty.starts_with("memref<") {
+                    let zero_idx = self.next_var();
+                    self.write_line(&format!("{} = arith.constant 0 : index", zero_idx));
+                    self.write_line(&format!(
+                        "{} = memref.load {}[{}] : {}",
+                        res, val, zero_idx, val_ty
+                    ));
+                    (res, self.current_el_ty.clone())
+                } else {
+                    self.write_line(&format!("{} = llvm.load {} : {} -> f32", res, val, val_ty));
+                    (res, "f32".to_string())
+                }
             }
             Expr::UnsafeBlock(stmts, ret_expr, _) => {
                 let mut last_val = "".to_string();
@@ -1581,7 +1679,16 @@ impl MlirGenerator {
                         .position(|(n, _)| n == field_name)
                         .unwrap();
                     let field_ty = self.lower_type(&struct_decl.fields[field_idx].1);
-                    let (f_val, _) = self.generate_expr(f_expr, &field_ty);
+                    let (mut f_val, _) = self.generate_expr(f_expr, &field_ty);
+
+                    if field_ty.starts_with("memref<") {
+                        let ptr_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = builtin.unrealized_conversion_cast {} : {} to !llvm.ptr",
+                            ptr_val, f_val, field_ty
+                        ));
+                        f_val = ptr_val;
+                    }
 
                     let next_struct = self.next_var();
                     self.write_line(&format!(

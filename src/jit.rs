@@ -95,6 +95,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
             "--expand-strided-metadata",
             "--lower-affine",
             "--finalize-memref-to-llvm",
+            "--convert-vector-to-llvm",
             "--convert-func-to-llvm",
             "--convert-cf-to-llvm",
             "--convert-arith-to-llvm",

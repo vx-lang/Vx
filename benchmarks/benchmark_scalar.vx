@@ -1,0 +1,35 @@
+extern "C" {
+  fn vx_advance_ptr_f32(base: *mut f32, offset: i32) -> *mut f32;
+  fn vx_malloc_f32(size: i32) -> *mut f32;
+  fn free(ptr: *mut f32) -> i32;
+  fn vx_get_time() -> f32;
+  fn vx_print_float(v: f32) -> i32;
+}
+
+fn main() -> i32 {
+  unsafe {
+    let N: i32 = 1000000;
+    let p1: *mut f32 = vx_malloc_f32(N);
+    let p2: *mut f32 = vx_malloc_f32(N);
+    let p3: *mut f32 = vx_malloc_f32(N);
+
+    let start: f32 = vx_get_time();
+    
+    let mut i: i32 = 0;
+    for j in 0..N {
+      let ptr1: *mut f32 = vx_advance_ptr_f32(p1, j);
+      let ptr2: *mut f32 = vx_advance_ptr_f32(p2, j);
+      let ptr3: *mut f32 = vx_advance_ptr_f32(p3, j);
+
+      let v1: f32 = *ptr1;
+      let v2: f32 = *ptr2;
+      let v3: f32 = v1 + v2;
+      *ptr3 = v3;
+    }
+
+    let end: f32 = vx_get_time();
+    let elapsed: f32 = end - start;
+    vx_print_float(elapsed);
+  }
+  return 0;
+}

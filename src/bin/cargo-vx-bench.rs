@@ -111,12 +111,13 @@ fn main() -> i32 {
                         match vxc::jit::execute_mlir(&mlir_str) {
                             Ok(output) => {
                                 // Parse the output to find the float time like [0.125]
-                                if let Some(caps) = re_time.captures(&output) {
-                                    let time_f = caps[1].parse::<f32>().unwrap();
+                                if let Some(last_match) = re_time.captures_iter(&output).last() {
+                                    let time_f = last_match[1].parse::<f32>().unwrap();
                                     println!("{:.4}s", time_f);
                                     results.push((file_name.to_string(), time_f));
+                                    println!("\nRaw output:\n{}", output);
                                 } else {
-                                    println!("(no timing output)");
+                                    println!("(no timing output)\nRaw output:\n{}", output);
                                 }
                             }
                             Err(e) => {

@@ -60,6 +60,7 @@ pub enum Type {
     Generic(String, Option<crate::gid::TypeId>), // e.g. T
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
     Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
+    Simd(ElementType, usize),                    // e.g. <4 x f32>
 }
 
 impl Type {
@@ -105,6 +106,7 @@ impl Type {
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(inner.substitute(mapping)), top.clone())
             }
+            Type::Simd(el_ty, n) => Type::Simd(*el_ty, *n),
             _ => self.clone(),
         }
     }
@@ -410,7 +412,7 @@ impl Type {
                     ty.resolve_names(current_module, symbol_map);
                 }
             }
-            Type::Matrix | Type::Scalar(_) => {}
+            Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
         }
     }
 }

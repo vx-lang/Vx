@@ -64,6 +64,7 @@ extern {
   fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
   fn vx_get_time() -> f32;
   fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+  fn vx_get_env_int(name: *const i8, default_val: i32) -> i32;
 }
 
 fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
@@ -449,6 +450,8 @@ fn main() -> i32 {
     let vocab_size_f: f32 = config_ptr[5];
     let seq_len_f: f32 = config_ptr[6];
 
+    let max_tokens: i32 = vx_get_env_int("MAX_TOKENS", 10000);
+
     let config = Config {
       dim: 288,
       hidden_dim: 768,
@@ -456,7 +459,7 @@ fn main() -> i32 {
       n_heads: 6,
       n_kv_heads: 6,
       vocab_size: 32000,
-      seq_len: 10000
+      seq_len: max_tokens
     };
 
     let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
@@ -476,7 +479,6 @@ fn main() -> i32 {
 
   // We'll generate 1000 tokens and print the time taken for every 100 tokens
   let mut start_time: f32 = vx_get_time();
-  let max_tokens: i32 = 1000;
   
   for step in 0..max_tokens {
     let mut logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
@@ -498,8 +500,8 @@ fn main() -> i32 {
     token = next;
     pos += 1;
 
-    let div: i32 = pos / 100;
-    let mul: i32 = div * 100;
+    let div: i32 = pos / 1000;
+    let mul: i32 = div * 1000;
     let remainder: i32 = pos - mul;
     if remainder == 0 {
        let curr_time: f32 = vx_get_time();

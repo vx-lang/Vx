@@ -112,7 +112,21 @@ float* vx_advance_ptr(float* ptr, int offset) {
     return ptr + offset;
 }
 
-// BPE Tokenizer State
+float* vx_advance_ptr_f32(float* ptr, int offset) {
+    return ptr + offset;
+}
+
+int vx_get_env_int(const char* name, int default_val) {
+    char* val = getenv(name);
+    if (val != NULL) {
+        return atoi(val);
+    }
+    return default_val;
+}
+
+// ============================================================================
+// File I/O & Model Loading
+// ============================================================================
 typedef struct {
     char *str;
     int id;

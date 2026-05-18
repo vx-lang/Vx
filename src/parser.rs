@@ -160,6 +160,43 @@ impl<'a> Parser<'a> {
             let top = self.parse_topology()?;
             self.consume(&TokenType::RightAngle, "Expected '>'")?;
             Ok(Type::Pinned(Box::new(inner), top))
+        } else if self.match_token(&TokenType::LeftAngle) {
+            let n_token = self.advance().clone();
+            let n = match n_token.kind {
+                TokenType::Number(s) => s
+                    .parse::<usize>()
+                    .map_err(|_| "Expected integer for SIMD size".to_string())?,
+                _ => return Err("Expected number after '<' in SIMD type".to_string()),
+            };
+            let x_token = self.advance().clone();
+            match x_token.kind {
+                TokenType::Identifier(ref s) if s == "x" => {}
+                _ => return Err("Expected 'x' after size in SIMD type".to_string()),
+            }
+            let el_ty_ident = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => return Err("Expected element type after 'x' in SIMD type".to_string()),
+            };
+            let el_ty = match el_ty_ident.as_str() {
+                "f32" => ElementType::F32,
+                "f64" => ElementType::F64,
+                "f16" => ElementType::F16,
+                "bf16" => ElementType::BF16,
+                "i8" => ElementType::I8,
+                "i16" => ElementType::I16,
+                "i32" => ElementType::I32,
+                "i64" => ElementType::I64,
+                "u8" => ElementType::U8,
+                "u16" => ElementType::U16,
+                "u32" => ElementType::U32,
+                "u64" => ElementType::U64,
+                _ => return Err(format!("Unknown SIMD element type {}", el_ty_ident)),
+            };
+            self.consume(
+                &TokenType::RightAngle,
+                "Expected '>' after SIMD element type",
+            )?;
+            Ok(Type::Simd(el_ty, n))
         } else {
             let token = self.peek().clone();
             if let TokenType::Identifier(ref s) = token.kind {

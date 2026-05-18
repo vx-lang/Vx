@@ -1,0 +1,13 @@
+extern "C" {
+    fn vx_advance_ptr_f32(base: *mut f32, offset: i32) -> *mut f32;
+}
+
+fn test_simd(p1: *mut f32, p2: *mut f32, p3: *mut f32) -> i32 {
+  unsafe {
+    let v1: <4 x f32> = *p1;
+    let v2: <4 x f32> = *p2;
+    let v3: <4 x f32> = v1 + v2;
+    *p3 = v3;
+  }
+  return 0;
+}
