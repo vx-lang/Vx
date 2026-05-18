@@ -1,5 +1,5 @@
 extern "C" {
-    fn vx_advance_ptr_f32(base: *mut f32, offset: i32) -> *mut f32;
+  fn vx_advance_ptr_f32(base: *mut f32, offset: i32) -> *mut f32;
 }
 
 fn test_simd(p1: *mut f32, p2: *mut f32, p3: *mut f32) -> i32 {

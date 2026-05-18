@@ -1,7 +1,7 @@
 ## Language
 Write code in Rust by default.
 
-## Version control
+## Coding guidelines
 - Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.
 - Always run formatters: 'cargo clippy', 'vx-format', 'cargo fmt' and fix all the warnings/errors before commiting.

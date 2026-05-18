@@ -15,7 +15,7 @@ fn main() -> i32 {
     let p3: *mut f32 = vx_malloc_f32(N);
 
     let start: f32 = vx_get_time();
-    
+
     let mut i: i32 = 0;
     let n_div_4: i32 = N / 4;
     for j in 0..n_div_4 {

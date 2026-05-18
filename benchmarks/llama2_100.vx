@@ -160,7 +160,7 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
         let i4: i32 = i * 4;
         let c_ptr: *mut f32 = vx_advance_ptr(content_row, i4);
         let x_ptr: *mut f32 = vx_advance_ptr(x, i4);
-        
+
         let c_vec: <4 x f32> = *c_ptr;
         *x_ptr = c_vec;
       }
@@ -404,13 +404,13 @@ fn matmul(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
         for j in 0..n_div_4 {
           let j4: i32 = j * 4;
           let idx: i32 = i * n + j4;
-          
+
           let w_ptr: *mut f32 = vx_advance_ptr(w, idx);
           let x_ptr: *mut f32 = vx_advance_ptr(x, j4);
-          
+
           let vw: <4 x f32> = *w_ptr;
           let vx: <4 x f32> = *x_ptr;
-          
+
           let vprod: <4 x f32> = vw * vx;
           val += vx_simd_reduce_add(vprod);
         }
@@ -471,44 +471,46 @@ fn main() -> i32 {
     let num_prompt_tokens: i32 = prompt_tokens[0];
 
     // Generation Loop! (Token 1 is BOS)
-  let mut token: i32 = prompt_tokens[1]; // Usually BOS
-  let mut pos: i32 = 0;
+    let mut token: i32 = prompt_tokens[1]; // Usually BOS
+    let mut pos: i32 = 0;
 
-  // We'll generate 1000 tokens and print the time taken for every 100 tokens
-  let mut start_time: f32 = vx_get_time();
-  let max_tokens: i32 = 1000;
-  
-  for step in 0..max_tokens {
-    let mut logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
+    // We'll generate 1000 tokens and print the time taken for every 100 tokens
+    let mut start_time: f32 = vx_get_time();
+    let max_tokens: i32 = 1000;
 
-    let mut next: i32 = 0;
-    if pos < num_prompt_tokens - 1 {
-      // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
-      let next_idx: i32 = pos + 2;
-      next = prompt_tokens[next_idx];
-    } else {
-      // GENERATE: Sample from logits
-      next = sample_argmax(logits, config.vocab_size);
+    for step in 0..max_tokens {
+      let mut logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
+
+      let mut next: i32 = 0;
+      if pos < num_prompt_tokens - 1 {
+        // PREFILL: Take the next token from the prompt (shifted by 1 due to length at index 0)
+        let next_idx: i32 = pos + 2;
+        next = prompt_tokens[next_idx];
+      } else {
+        // GENERATE: Sample from logits
+        next = sample_argmax(logits, config.vocab_size);
+      }
+
+      let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
+      // Suppress token printing for strict benchmarking
+      // let print_status: i32 = vx_safe_printf(piece);
+
+      token = next;
+      pos += 1;
+
+      let div: i32 = pos / 100;
+      let mul: i32 = div * 100;
+      let remainder: i32 = pos - mul;
+      if remainder == 0 {
+        let curr_time: f32 = vx_get_time();
+        let elapsed: f32 = curr_time - start_time;
+        let print_status2: i32 = vx_printf_i32("
+[%d tokens] Time elapsed: ", pos);
+        let print_status3: i32 = vx_print_float(elapsed);
+        let print_status4: i32 = vx_safe_printf(" seconds
+");
+      }
     }
-
-    let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
-    // Suppress token printing for strict benchmarking
-    // let print_status: i32 = vx_safe_printf(piece);
-
-    token = next;
-    pos += 1;
-
-    let div: i32 = pos / 100;
-    let mul: i32 = div * 100;
-    let remainder: i32 = pos - mul;
-    if remainder == 0 {
-       let curr_time: f32 = vx_get_time();
-       let elapsed: f32 = curr_time - start_time;
-       let print_status2: i32 = vx_printf_i32("\n[%d tokens] Time elapsed: ", pos);
-       let print_status3: i32 = vx_print_float(elapsed);
-       let print_status4: i32 = vx_safe_printf(" seconds\n");
-    }
-  }
 
   };
   return 0;

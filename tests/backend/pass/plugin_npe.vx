@@ -1,20 +1,20 @@
 extern {
-    fn vx_malloc_f32(num_elements: i32) -> *mut f32;
+  fn vx_malloc_f32(num_elements: i32) -> *mut f32;
 }
 
 fn main() -> i32 {
-    unsafe {
-        let n: i32 = 128;
-        let d: i32 = 64;
-        let xout: *mut f32 = vx_malloc_f32(d);
-        let x: *mut f32 = vx_malloc_f32(n);
-        let w: *mut f32 = vx_malloc_f32(n * d);
+  unsafe {
+    let n: i32 = 128;
+    let d: i32 = 64;
+    let xout: *mut f32 = vx_malloc_f32(d);
+    let x: *mut f32 = vx_malloc_f32(n);
+    let w: *mut f32 = vx_malloc_f32(n * d);
 
-        // Use ANE topology to trigger the hardware plugin dispatch via spawn on
-        spawn on(Topology::ANE) {
-            // Note: Since this is just a dummy dispatch test, 
-            // the generated call to vx_plugin_dispatch_async_flat is what matters.
-        }
+    // Use ANE topology to trigger the hardware plugin dispatch via spawn on
+    spawn on(Topology::ANE) {
+      // Note: Since this is just a dummy dispatch test, 
+      // the generated call to vx_plugin_dispatch_async_flat is what matters.
     }
-    return 0;
+  }
+  return 0;
 }
