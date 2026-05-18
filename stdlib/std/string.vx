@@ -1,9 +1,9 @@
 extern {
-    fn vx_string_new() -> *mut i8;
-    fn vx_string_from_c_str(ptr: *const i8) -> *mut i8;
-    fn vx_string_push_c_str(ptr: *mut i8, c_str: *const i8) -> i32;
-    fn vx_string_len(ptr: *mut i8) -> i32;
-    fn vx_string_as_c_str(ptr: *mut i8) -> *const i8;
-    fn vx_string_free_c_str(ptr: *const i8) -> i32;
-    fn vx_string_drop(ptr: *mut i8) -> i32;
+  fn vx_string_new() -> *mut i8;
+  fn vx_string_from_c_str(ptr: *const i8) -> *mut i8;
+  fn vx_string_push_c_str(ptr: *mut i8, c_str: *const i8) -> i32;
+  fn vx_string_len(ptr: *mut i8) -> i32;
+  fn vx_string_as_c_str(ptr: *mut i8) -> *const i8;
+  fn vx_string_free_c_str(ptr: *const i8) -> i32;
+  fn vx_string_drop(ptr: *mut i8) -> i32;
 }

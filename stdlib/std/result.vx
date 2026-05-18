@@ -1,8 +1,8 @@
 extern {
-    fn vx_result_new_ok_i32_i32(val: i32) -> *mut i8;
-    fn vx_result_new_err_i32_i32(err: i32) -> *mut i8;
-    fn vx_result_is_ok_i32_i32(ptr: *mut i8) -> Bool;
-    fn vx_result_is_err_i32_i32(ptr: *mut i8) -> Bool;
-    fn vx_result_unwrap_i32_i32(ptr: *mut i8) -> i32;
-    fn vx_result_drop_i32_i32(ptr: *mut i8) -> i32;
+  fn vx_result_new_ok_i32_i32(val: i32) -> *mut i8;
+  fn vx_result_new_err_i32_i32(err: i32) -> *mut i8;
+  fn vx_result_is_ok_i32_i32(ptr: *mut i8) -> Bool;
+  fn vx_result_is_err_i32_i32(ptr: *mut i8) -> Bool;
+  fn vx_result_unwrap_i32_i32(ptr: *mut i8) -> i32;
+  fn vx_result_drop_i32_i32(ptr: *mut i8) -> i32;
 }

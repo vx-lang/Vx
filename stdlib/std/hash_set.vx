@@ -1,7 +1,7 @@
 extern {
-    fn vx_hash_set_new_i32() -> *mut i8;
-    fn vx_hash_set_insert_i32(ptr: *mut i8, val: i32) -> i32;
-    fn vx_hash_set_contains_i32(ptr: *mut i8, val: i32) -> Bool;
-    fn vx_hash_set_len_i32(ptr: *mut i8) -> i32;
-    fn vx_hash_set_drop_i32(ptr: *mut i8) -> i32;
+  fn vx_hash_set_new_i32() -> *mut i8;
+  fn vx_hash_set_insert_i32(ptr: *mut i8, val: i32) -> i32;
+  fn vx_hash_set_contains_i32(ptr: *mut i8, val: i32) -> Bool;
+  fn vx_hash_set_len_i32(ptr: *mut i8) -> i32;
+  fn vx_hash_set_drop_i32(ptr: *mut i8) -> i32;
 }

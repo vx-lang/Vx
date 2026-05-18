@@ -2,15 +2,16 @@ import std::result;
 import std::io;
 
 fn main() -> i32 {
-    unsafe {
-        let res = vx_result_new_ok_i32_i32(99);
-        if vx_result_is_ok_i32_i32(res) {
-            let val = vx_result_unwrap_i32_i32(res);
-            vx_printf_i32("Ok: %d\n", val);
-        }
-        vx_result_drop_i32_i32(res);
+  unsafe {
+    let res = vx_result_new_ok_i32_i32(99);
+    if vx_result_is_ok_i32_i32(res) {
+      let val = vx_result_unwrap_i32_i32(res);
+      vx_printf_i32("Ok: %d
+", val);
     }
-    return 0;
+    vx_result_drop_i32_i32(res);
+  }
+  return 0;
 }
 
 // EXPECT: Ok: 99

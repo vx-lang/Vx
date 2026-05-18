@@ -2,15 +2,16 @@ import std::vec;
 import std::io;
 
 fn main() -> i32 {
-    unsafe {
-        let vec = vx_vec_new_i32();
-        vx_vec_push_i32(vec, 42);
-        vx_vec_push_i32(vec, 100);
-        let len = vx_vec_len_i32(vec);
-        vx_printf_i32("Length: %d\n", len);
-        vx_vec_drop_i32(vec);
-    }
-    return 0;
+  unsafe {
+    let vec = vx_vec_new_i32();
+    vx_vec_push_i32(vec, 42);
+    vx_vec_push_i32(vec, 100);
+    let len = vx_vec_len_i32(vec);
+    vx_printf_i32("Length: %d
+", len);
+    vx_vec_drop_i32(vec);
+  }
+  return 0;
 }
 
 // EXPECT: Length: 2

@@ -1,42 +1,42 @@
 import std::math;
 
 extern {
-    fn print_f32(val: f32) -> i32;
-    fn vx_printf_i32(format: *const i8, val: i32) -> i32;
-    // We can also define a helper to print f64 if we want, but for now we'll do simple return checks.
+  fn print_f32(val: f32) -> i32;
+  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+  // We can also define a helper to print f64 if we want, but for now we'll do simple return checks.
 }
 
 fn main() -> i32 {
-    let pi_f64: f64 = 3.1415926535;
-    let half_pi_f64: f64 = 1.5707963267;
-    
-    // sin(pi/2) approx 1.0
-    let s64: f64 = sin_f64(half_pi_f64);
-    let s64_abs: f64 = abs_f64(s64);
-    
-    // cos(pi) approx -1.0
-    let c64: f64 = cos_f64(pi_f64);
-    let c64_abs: f64 = abs_f64(c64);
-    
-    // Check asin(1.0) approx 1.57079
-    let asin_val: f64 = asin_f64(1.0);
-    
-    // Check log2(4.0) approx 2.0
-    let l2: f64 = log2_f64(4.0);
-    
-    // Check log10(100.0) approx 2.0
-    let l10: f64 = log10_f64(100.0);
-    
-    // Instead of nested ifs which might break codegen, we can just do sum checks
-    let sum: f64 = s64_abs + c64_abs + l2 + l10; // ~ 1.0 + 1.0 + 2.0 + 2.0 = 6.0
-    let mut ret: i32 = 1;
-    
-    if sum > 5.9 {
-        ret = 0;
-    }
-    
-    // Ensure all FFI math bindings we added work
-    return ret;
+  let pi_f64: f64 = 3.1415926535;
+  let half_pi_f64: f64 = 1.5707963267;
+
+  // sin(pi/2) approx 1.0
+  let s64: f64 = sin_f64(half_pi_f64);
+  let s64_abs: f64 = abs_f64(s64);
+
+  // cos(pi) approx -1.0
+  let c64: f64 = cos_f64(pi_f64);
+  let c64_abs: f64 = abs_f64(c64);
+
+  // Check asin(1.0) approx 1.57079
+  let asin_val: f64 = asin_f64(1.0);
+
+  // Check log2(4.0) approx 2.0
+  let l2: f64 = log2_f64(4.0);
+
+  // Check log10(100.0) approx 2.0
+  let l10: f64 = log10_f64(100.0);
+
+  // Instead of nested ifs which might break codegen, we can just do sum checks
+  let sum: f64 = s64_abs + c64_abs + l2 + l10; // ~ 1.0 + 1.0 + 2.0 + 2.0 = 6.0
+  let mut ret: i32 = 1;
+
+  if sum > 5.9 {
+    ret = 0;
+  }
+
+  // Ensure all FFI math bindings we added work
+  return ret;
 }
 
 // EXPECT: 
