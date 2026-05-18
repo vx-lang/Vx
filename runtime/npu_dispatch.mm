@@ -113,3 +113,57 @@ extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
         return 1;
     }
 }
+
+#include "../include/vx_hardware_runtime.h"
+#include <cstdlib>
+
+extern "C" {
+
+void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topology_id) {
+    void* ptr = malloc(bytes);
+    if (host_ptr) {
+        memcpy(ptr, host_ptr, bytes);
+    }
+    return ptr;
+}
+
+uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args) {
+    // For this reference implementation, we assume device_args is an array of pointers
+    // mapped to: [xout, x, w, n_ptr, d_ptr]
+    float* xout = (float*)device_args[0];
+    float* x = (float*)device_args[1];
+    float* w = (float*)device_args[2];
+    int n = (int)(intptr_t)device_args[3];
+    int d = (int)(intptr_t)device_args[4];
+    
+    // Dispatch to Apple Neural Engine by default
+    vx_dispatch_ane(xout, x, w, n, d);
+    
+    return 1; // Dummy future ID
+}
+
+void vx_plugin_await_future(uint64_t future_id) {
+    // Dummy synchronous implementation, so we don't need to block
+}
+
+int32_t vx_plugin_transfer_device_to_host(void* device_ptr, void* host_ptr, size_t bytes) {
+    memcpy(host_ptr, device_ptr, bytes);
+    return 1;
+}
+
+void vx_plugin_free(void* device_ptr, uint32_t topology_id) {
+    free(device_ptr);
+}
+
+void vx_plugin_release_future(uint64_t future_id) {
+    // No-op for dummy implementation
+}
+
+int32_t vx_plugin_control(uint32_t opcode, void* payload) {
+    if (opcode == VX_CTRL_GET_DEVICE_COUNT) {
+        return 1; // One Apple NPE device available
+    }
+    return 0;
+}
+
+}
