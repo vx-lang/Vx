@@ -20,6 +20,9 @@ void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topolo
 /// Returns a Future/Event ID immediately (Non-blocking).
 uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args);
 
+/// 2.5. Temporary Flat Execution (Pending Issue #31 MLIR Migration)
+uint64_t vx_plugin_dispatch_async_flat(float* xout, float* x, float* w, int n, int d);
+
 /// 3. Synchronization
 /// Blocks the host CPU until the specific execution completes.
 /// Called when a `Verified<T>` or `Pinned<T>` is explicitly read by the host.

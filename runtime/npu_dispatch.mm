@@ -142,6 +142,14 @@ uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_siz
     return 1; // Dummy future ID
 }
 
+uint64_t vx_plugin_dispatch_async_flat(float* xout, float* x, float* w, int n, int d) {
+    // Mock plugin execution: just do a simple CPU side-effect
+    if (xout && x && w) {
+        xout[0] = x[0] * w[0];
+    }
+    return 1;
+}
+
 void vx_plugin_await_future(uint64_t future_id) {
     // Dummy synchronous implementation, so we don't need to block
 }
