@@ -8,7 +8,7 @@
 
 ## ⚡ What is Vx?
 
-**Vx** (pronounced *"vee-ex"*) is a general-purpose systems programming language designed to unify CPU, GPU, NPU, and accelerator workloads. 
+**Vx** (pronounced *"vee-ex"*) is a general-purpose systems programming language designed to unify CPU, GPU, NPU, and accelerator workloads.
 
 Historically, leveraging heterogeneous hardware required disjointed toolchains, painful FFI boundaries, and complex vendor-specific frameworks (like CUDA, Metal, or OpenCL). **Vx treats hardware diversity not as a challenge, but as a first-class citizen.** It bridges execution topologies and memory domains under a single, verifiable syntax.
 
@@ -31,11 +31,11 @@ In Vx, you have explicit, type-safe control over where data lives and where code
 ```rust
 // Declare a verified matrix multiplication
 fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
-    
+
     // Explicitly dispatch computation to an AI Accelerator
     spawn on(Topology::NPU[0]) {
         let mut result = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
-        
+
         for i in 0..4 {
             for j in 0..4 {
                 result[i][j] = 0;
@@ -44,7 +44,7 @@ fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM
                 }
             }
         }
-        
+
         // Return a verified result
         return Verified(result);
     }
