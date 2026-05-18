@@ -61,6 +61,7 @@ extern {
   fn vx_print_float(val: f32) -> i32;
   fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
   fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
+  fn vx_get_env_int(name: *const i8, default_val: i32) -> i32;
 }
 
 fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
@@ -428,6 +429,8 @@ fn main() -> i32 {
     let vocab_size_f: f32 = config_ptr[5];
     let seq_len_f: f32 = config_ptr[6];
 
+    let max_tokens: i32 = vx_get_env_int("MAX_TOKENS", 2);
+
     let config = Config {
       dim: 288,
       hidden_dim: 768,
@@ -435,7 +438,7 @@ fn main() -> i32 {
       n_heads: 6,
       n_kv_heads: 6,
       vocab_size: 32000,
-      seq_len: 256
+      seq_len: max_tokens
     };
 
     let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
@@ -453,8 +456,8 @@ fn main() -> i32 {
     let mut token: i32 = prompt_tokens[1]; // Usually BOS
     let mut pos: i32 = 0;
 
-    // We'll generate 2 tokens for testing to avoid slowing down cargo test
-    for step in 0..2 {
+    // We'll generate max_tokens for testing to avoid slowing down cargo test
+    for step in 0..max_tokens {
       let logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
 
       let mut next: i32 = 0;
