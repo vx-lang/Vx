@@ -11,7 +11,7 @@ fn main() {
     let mut parse_only = false;
     let mut emit_mlir = false;
     let mut run_jit = false;
-    let mut use_melior = false;
+    let mut use_melior = true; // Default to the new Melior backend
     let mut filename = "";
 
     let mut print_ast = false;
@@ -27,6 +27,8 @@ fn main() {
             run_jit = true;
         } else if arg == "--use-melior" {
             use_melior = true;
+        } else if arg == "--use-legacy" {
+            use_melior = false;
         } else {
             filename = arg;
         }
