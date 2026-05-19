@@ -1,3 +1,10 @@
+//===- math.rs - Vx Compiler -----------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 #[no_mangle]
 pub extern "C" fn vx_math_sin_f32(x: f32) -> f32 {
     x.sin()

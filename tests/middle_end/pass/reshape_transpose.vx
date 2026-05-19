@@ -1,3 +1,10 @@
+//===- reshape_transpose.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 // RUN: vxc %s -o %t.mlir
 // RUN: FileCheck %s < %t.mlir
 

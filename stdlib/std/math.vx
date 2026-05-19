@@ -1,3 +1,10 @@
+//===- math.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 extern {
   fn vx_math_sin_f32(x: f32) -> f32;
   fn vx_math_cos_f32(x: f32) -> f32;

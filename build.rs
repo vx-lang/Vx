@@ -1,3 +1,10 @@
+//===- build.rs - Vx Compiler ----------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 //! Vx Build Script (`build.rs`)
 //!
 //! This script is automatically executed by Cargo before compiling the `vxc` compiler.

@@ -1,3 +1,10 @@
+//===- ffi_stdio.vx - Vx Compiler --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 extern {
   fn vx_stdout_write(buffer: *const u8, len: i64) -> i64;
   fn vx_stderr_write(buffer: *const u8, len: i64) -> i64;

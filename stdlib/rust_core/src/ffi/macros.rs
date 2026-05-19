@@ -1,3 +1,10 @@
+//===- macros.rs - Vx Compiler ---------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 /// Macro to instantiate C-ABI compatible FFI wrappers for `Vec<T>`.
 ///
 /// This generates `vx_vec_new_<name>`, `vx_vec_push_<name>`,

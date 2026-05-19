@@ -1,3 +1,10 @@
+//===- harness.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 extern {
   fn vx_get_time() -> f32;
   fn vx_print_float(val: f32) -> i32;

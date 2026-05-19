@@ -1,3 +1,10 @@
+//===- metadata.rs - Vx Compiler -------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
 use std::fs;
 use std::io;

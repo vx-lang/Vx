@@ -1,3 +1,10 @@
+#===- Cargo.toml - Vx Compiler ----------------------------------*- TOML -*-===#
+#
+# Part of the Vx Project, under the BSD 3-Clause License.
+# See LICENSE for license information.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+#===----------------------------------------------------------------------===#
 [package]
 name = "vx_std_core"
 version = "0.1.0"

@@ -1,3 +1,10 @@
+//===- type_mismatch.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 fn should_fail() -> Tensor {
   let mut a = Tensor([10]);
   return Verified(a);

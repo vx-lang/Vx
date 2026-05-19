@@ -1,3 +1,10 @@
+//===- hardware_trait.rs - Vx Compiler -------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 // Mock MLIR types since Vx currently uses string-based codegen instead of a Rust MLIR crate.
 pub mod mlir {
     pub struct Operation {

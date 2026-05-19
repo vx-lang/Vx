@@ -1,3 +1,10 @@
+//===- parallel_architecture_verifier.rs - Vx Compiler ---------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
     use crate::gid::{

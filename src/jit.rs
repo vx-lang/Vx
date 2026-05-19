@@ -1,3 +1,10 @@
+//===- jit.rs - Vx Compiler ------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;

@@ -1,3 +1,10 @@
+//===- integration_test.rs - Vx Compiler -----------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
 use vxc::sema::TypeChecker;

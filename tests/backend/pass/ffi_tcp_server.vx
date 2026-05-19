@@ -1,3 +1,10 @@
+//===- ffi_tcp_server.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 extern {
   fn vx_tcp_listener_bind(c_addr: *const i8) -> *mut i8;
   fn vx_tcp_listener_drop(ptr: *mut i8) -> i32;

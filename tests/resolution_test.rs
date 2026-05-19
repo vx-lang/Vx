@@ -1,3 +1,10 @@
+//===- resolution_test.rs - Vx Compiler ------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 use vxc::ast::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
 

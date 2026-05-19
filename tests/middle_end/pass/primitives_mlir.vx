@@ -1,3 +1,10 @@
+//===- primitives_mlir.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 fn test_primitives() -> i32 {
   let a: u8 = 10;
   let b: i8 = 20;

@@ -1,3 +1,10 @@
+//===- assert_comptime.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 fn main() -> i32 {
   comptime {
     assert(256 == 512, "Hardware dimensions are completely mismatched!");

@@ -1,3 +1,10 @@
+//===- file_io.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 extern {
   fn fopen(filename: *const i8, mode: *const i8) -> *mut i8;
   fn fputs(s: *const i8, stream: *mut i8) -> i32;

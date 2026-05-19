@@ -1,3 +1,10 @@
+//===- result.rs - Vx Compiler ---------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 use crate::instantiate_result_ffi;
 
 // Common primitive results. Error codes represented as i32.

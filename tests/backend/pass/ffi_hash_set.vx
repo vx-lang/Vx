@@ -1,3 +1,10 @@
+//===- ffi_hash_set.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
 import std::hash_set;
 import std::io;
 
