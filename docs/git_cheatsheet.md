@@ -3,7 +3,9 @@
 If you are unfamiliar with `git tag` and `git show`, here is a quick reference guide on how annotated tags work in Git.
 
 ## What is an Annotated Tag?
+
 In Git, a tag is a pointer to a specific commit. While lightweight tags just point to a commit (like a branch that doesn't change), **annotated tags** are stored as full objects in the Git database. They contain:
+
 - The tagger's name and email
 - The date the tag was created
 - A tagging message (like a release note)
@@ -12,10 +14,12 @@ In Git, a tag is a pointer to a specific commit. While lightweight tags just poi
 ## Command: `git show <tag-name>`
 
 When you run `git show v1.0` on an annotated tag, Git will output two things:
+
 1. **The Tag Object Metadata**: This includes who tagged it, when it was tagged, and the custom tag message (in our case, the full v1.0 release notes).
-2. **The Commit Details**: Immediately following the tag message, it will show the underlying commit hash, the commit author, the commit message, and the `diff` (the code changes) that were part of that specific commit.
+1. **The Commit Details**: Immediately following the tag message, it will show the underlying commit hash, the commit author, the commit message, and the `diff` (the code changes) that were part of that specific commit.
 
 ### Example Output
+
 ```bash
 $ git show v1.0
 tag v1.0

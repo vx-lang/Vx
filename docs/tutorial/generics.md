@@ -49,6 +49,7 @@ fn main() {
 When you compile the code above, Vx performs **Monomorphization**. It looks at the calls you made and automatically generates specialized, highly optimized versions of the `process` function behind the scenes.
 
 If you inspect the compiled MLIR output, you will see exactly two distinct functions generated:
+
 - `@process_TensorF32`
 - `@process_TensorI32`
 

@@ -100,10 +100,11 @@ print(result);
 ```
 
 Behind the scenes:
+
 1. When `result` is initialized, MLIR allocates standard host RAM via its `memref` type.
-2. During the `spawn on` block, our FFI wrapper passes the raw `float*` pointers of those memory references directly to the Apple Matrix Coprocessor.
-3. The AMX reads the inputs and writes the result *in-place* to the original `memref` pointer without any PCIe bus transfers.
-4. When `print(result)` is called, the Host CPU simply reads that exact same memory location, which now holds the hardware-computed matrix data!
+1. During the `spawn on` block, our FFI wrapper passes the raw `float*` pointers of those memory references directly to the Apple Matrix Coprocessor.
+1. The AMX reads the inputs and writes the result *in-place* to the original `memref` pointer without any PCIe bus transfers.
+1. When `print(result)` is called, the Host CPU simply reads that exact same memory location, which now holds the hardware-computed matrix data!
 
 ## Summary
 

@@ -24,21 +24,28 @@ We will extend the compiler frontend (Parser/Sema) and backend (MLIR) to strictl
 ## Proposed Changes
 
 ### 1. Lexer & Parser (`src/parser.rs`)
+
 #### [MODIFY] `src/parser.rs`
+
 - Add a dedicated `parse_spawn_on()` function to correctly parse the `spawn on Topology { Statement }` block.
 - Parse topologies fully: `NPU[0]`, `Host`.
 
 ### 2. Semantic Analysis (`src/sema.rs`)
+
 #### [MODIFY] `src/sema.rs`
+
 - **Context Tracking:** Add `active_topology: Topology` to the `TypeChecker`.
 - **Memory Affinity:** When defining a variable inside a `spawn on` block, its type will automatically map to the active topology's memory space.
 - **Access Safety:** When reading an `Identifier`, if its `MemorySpace` does not align with the `active_topology`, emit a strict semantic error: `Semantic Error: Cannot access Host memory from NPU context. Use .to_device()`.
 
 ### 3. MLIR Code Generation (`src/codegen.rs`)
+
 #### [MODIFY] `src/codegen.rs`
+
 - **Memory Spaces:** Update the MLIR type stringifier to output `<... x f32, 1>` when compiling `MemorySpace::NPUHBM`.
 - **Transfers:** Implement the intrinsic `.to_device()` by emitting an explicit memory copy instruction (e.g., `memref.alloc` on device + `memref.copy` from host) in MLIR.
 
 ## Verification Plan
+
 1. **Semantic Checks:** Write tests proving that Vx blocks illegal memory accesses between `Host` and `NPU`.
-2. **MLIR Output:** Verify `FileCheck` matches `memref<?x?xf32, 1>` and `memref.copy` instructions when `.to_device()` is used.
+1. **MLIR Output:** Verify `FileCheck` matches `memref<?x?xf32, 1>` and `memref.copy` instructions when `.to_device()` is used.

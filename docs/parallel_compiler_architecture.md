@@ -2,7 +2,8 @@
 
 Target Architecture: Rust-based Frontend with High-Throughput Concurrent Layout Pipeline
 
-------------------------------
+______________________________________________________________________
+
 ## 1. Executive Summary
 
 This proposal outlines the technical architecture for a high-performance, module-based programming language compiler written in Rust. The primary architectural objective is to eliminate the single-threaded bottlenecks common in early compiler frontends (such as rustc).
@@ -11,9 +12,10 @@ By enforcing a nominal type system, requiring explicit boxing for recursive data
 
 A core pillar of this architecture is the **Mathematical Verification Engine**—a zero-cost abstraction enabled by `#[cfg(debug_assertions)]`. Rather than hoping threads behave correctly, the compiler injects structural invariants (Hooks) between phases to mathematically prove zero aliasing, cache bounds, and memory safety during parallel execution.
 
+______________________________________________________________________
 
-------------------------------
 ## 2. Global Identifier (GID) Design
+
 To eliminate pointer-chasing, string lookups, and memory synchronization overhead across threads, every symbol, nominal type, and monomorphized variant in the program is represented by a unique, flat 256-bit integer array ([u64; 4]).
 
 ```
@@ -28,30 +30,31 @@ To eliminate pointer-chasing, string lookups, and memory synchronization overhea
 
 ### Word Layout Specifications:
 
-* Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix. **Architectural Fix**: To prevent catastrophic 64-bit Birthday Paradox collisions in large global ecosystems, the compiler treats `Word 0` and `Word 1` as a composite 128-bit namespace-and-symbol cryptographic hash, rendering collisions mathematically impossible.
-* Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits. **Structural Hash Fix**: For anonymous types, closures, or `comptime`-generated layouts without explicit names, the compiler uses a topological "DefPath" or a structural hash of the closure body to guarantee incremental stability regardless of file position.
-* Word 2 (Generic Context Hash / Lifetime Bitfield): This word serves a dual purpose based on the entity type.
+- Word 0 (Module Hash): A deterministic content hash of the module's fully qualified path (e.g., core::containers::vec). Every symbol declared within the same module shares this identical 64-bit prefix. **Architectural Fix**: To prevent catastrophic 64-bit Birthday Paradox collisions in large global ecosystems, the compiler treats `Word 0` and `Word 1` as a composite 128-bit namespace-and-symbol cryptographic hash, rendering collisions mathematically impossible.
+- Word 1 (Local Symbol Hash): A stable, deterministic content hash of the local symbol's name (e.g., `SipHash("MyStruct")`). **Architectural Fix**: Previously this was a monotonically increasing ID, which broke incremental compilation and zero-copy metadata because inserting a new symbol shifted all subsequent IDs. Hashing the symbol name guarantees stability across file edits. **Structural Hash Fix**: For anonymous types, closures, or `comptime`-generated layouts without explicit names, the compiler uses a topological "DefPath" or a structural hash of the closure body to guarantee incremental stability regardless of file position.
+- Word 2 (Generic Context Hash / Lifetime Bitfield): This word serves a dual purpose based on the entity type.
   - **For Borrow Checking/Lifetimes**: It operates as a fast-path 16-bit window bitfield for variance and region tracking.
   - **For Generic Instantiations (e.g., `List<i32>`)**: **Architectural Fix**: A 256-bit GID cannot structurally contain the GIDs of its generic arguments without data loss (hash collisions). Therefore, all concrete generic instantiations MUST trigger the Slow Path (Escape-Hatch Bit = 1). In this mode, Word 2 acts as a 63-bit index pointing into a `GLOBAL_GENERICS_ARENA` that stores the full `Vec<TypeId>`. This guarantees the deduplication phase can perform true structural equality checks, immune to the Birthday Paradox.
-* Word 3 (Reserved Space / Cross-Crate Flags): Allocated for future compiler extensions, layout tracking, or alignment metadata flags. **Architectural Fix**: Used during cross-crate monomorphization to flag a request as a "Synthetic Monomorphization Bucket" entry, keeping external instantiations localized to the caller's thread bucket.
-
+- Word 3 (Reserved Space / Cross-Crate Flags): Allocated for future compiler extensions, layout tracking, or alignment metadata flags. **Architectural Fix**: Used during cross-crate monomorphization to flag a request as a "Synthetic Monomorphization Bucket" entry, keeping external instantiations localized to the caller's thread bucket.
 
 The design successfully leverages Word 0 and Word 1 for global structural uniqueness, and Word 2 for the generic context/lifetime fast-path. This leaves Word 3 to act as a highly dense, 64-bit metadata and compiler flag bitfield.
 As a performance engineer, the goal with Word 3 is to pack critical compiler directive flags directly into the TypeId. This allows threads during type checking, optimization passes, and code generation to make instant layout decisions without chasing pointers into external attribute arrays.
-
 
 #### Word 2 Specification
 
 Target Subsystem: Type Checker, Borrow Checker, and Backend Codegen Pipeline
 
 #### Architectural Intent
+
 During compilation, generic definitions (e.g., struct List<T>) act as code blueprints. When a downstream module instantiates a concrete variation (e.g., List<i32>), the compiler must uniquely identify, type-check, and generate machine code for that variant.
 To maximize parallel throughput, Word 2 of the 256-bit Global Identifier (GID) is dedicated exclusively to the Monomorphization and Lifetime Context. This eliminates the typical compilation bottleneck where worker threads must lock a central table or recursively traverse heavy AST sub-trees to verify type parameters and lifetime regions. Instead, identity is resolved through register-level math on the fast path, or routed to an index-driven memory lookup on the slow path.
 
 #### Word 2 Fast-Path vs. Slow-Path Layout
+
 To support optimal execution speed, Word 2 utilizes an asymmetrical fast-path/slow-path architecture based on the Escape-Hatch Bit (the most significant bit, Bit 63).
 
 #### The Fast-Path Structure (Bit 63 = 0)
+
 When a function or struct contains 4 or fewer parameters/arguments, it executes entirely on the fast path. The 64-bit space is split into a structured bitfield representing up to four 16-bit parameter windows:
 
 ```
@@ -65,10 +68,11 @@ When a function or struct contains 4 or fewer parameters/arguments, it executes 
 
 Inside each 16-bit parameter window, the bit layout encodes both variance rules and lifetime region constraints:
 
-* Bits 12–15 (4 bits): Variance and Mutability Flags (e.g., 0001 = Immutable Value, 0012 = Shared Reference &T, 0013 = Mutable Reference &mut T).
-* Bits 0–11 (12 bits): Local Lifetime Region ID (supports tracking up to 4,096 unique lifetime boundaries per function scope). **Architectural Fix**: If a complex function scope overflows the 4,095 lifetime boundary limit, the compiler forces the type onto the Slow Path (flipping Bit 63), preventing silent, catastrophic memory safety violations due to ID wrapping.
+- Bits 12–15 (4 bits): Variance and Mutability Flags (e.g., 0001 = Immutable Value, 0012 = Shared Reference &T, 0013 = Mutable Reference &mut T).
+- Bits 0–11 (12 bits): Local Lifetime Region ID (supports tracking up to 4,096 unique lifetime boundaries per function scope). **Architectural Fix**: If a complex function scope overflows the 4,095 lifetime boundary limit, the compiler forces the type onto the Slow Path (flipping Bit 63), preventing silent, catastrophic memory safety violations due to ID wrapping.
 
 #### The Slow-Path Structure (Bit 63 = 1)
+
 For statistical outliers—such as functions with 5 or more type/lifetime arguments, or those requiring dynamic Trait/Protocol resolution vtables—the escape-hatch bit is flipped to 1. The remaining 63 bits immediately cease to function as a bitmask and are treated as a guaranteed unique, sequential index into an unbounded, global, read-only memory arena.
 
 **LSP / Daemon Mode Memory Leak Fix**:
@@ -87,6 +91,7 @@ pub struct CompilationSession {
     pub generics_arena: Arc<Vec<Vec<TypeId>>>,
 }
 ```
+
 When a file edit triggers a recompilation, the old session is dropped (freeing the memory), and a new session epoch is initialized. All 256-bit GIDs are intrinsically scoped to their compilation session.
 
 **Architectural Fix:** Trait solving (e.g., resolving `<T as Iterator>::Item`) is non-local and cannot easily be squashed into register math. The SLOW-PATH arena explicitly accommodates Trait Implementation Dictionaries and vtable pointers generated during the parallel type-checking phase.
@@ -101,6 +106,7 @@ When a file edit triggers a recompilation, the old session is dropped (freeing t
 ```
 
 #### Rust Implementation
+
 The code below implements the layout decoding logic. It uses bitwise operations to keep fast-path type validation down to single-cycle CPU instructions.
 
 ```rust
@@ -153,6 +159,7 @@ impl TypeId {
 ```
 
 #### Borrow Checker & Type Subtyping Optimization
+
 By encapsulating variance rules and lifetime scopes directly into the type identifier, the borrow checker can process constraints via fast path register comparisons.
 
 ```rust
@@ -206,47 +213,49 @@ fn evaluate_slow_path_variance(_a: &UnboundedFunctionMetadata, _b: &UnboundedFun
 }
 ```
 
-
 #### Summary of Pipeline Benefits
 
 1. Datalog Fact Parallel Extraction: Next-generation borrow checkers (like Polonius) can extract region relationships directly out of the TypeId stream without pointer indirection, dumping tuples straight into SIMD lanes for parallel resolution.
-2. No Allocation Overheads for Common Code: Code adhering to clean design (small function signatures) is rewarded with zero-allocation, register-native evaluation.
-3. Deterministic Fallback Safety: The inclusion of the 63-bit index guarantees that large auto-generated files or niche architectural patterns never drop out of alignment or trigger hash collisions.
+1. No Allocation Overheads for Common Code: Code adhering to clean design (small function signatures) is rewarded with zero-allocation, register-native evaluation.
+1. Deterministic Fallback Safety: The inclusion of the 63-bit index guarantees that large auto-generated files or niche architectural patterns never drop out of alignment or trigger hash collisions.
 
 ### Word 3 Bitfield Architecture
+
 The 64 bits of Word 3 can be partitioned into distinct functional segments that serve the entire compilation lifecycle:
 
 +-----------+-----------+-----------+-----------+-----------------------------------+
 
-| Vis (4b)  | Attr (8b) | Const(4b) | Spec (4b) |      Reserved for Pass Caches     |
-|           |           |           |           |              (44 bits)            |
+| Vis (4b) | Attr (8b) | Const(4b) | Spec (4b) | Reserved for Pass Caches |
+| | | | | (44 bits) |
 +-----------+-----------+-----------+-----------+-----------------------------------+
- 63       60 59       52 51       48 47       44 43                                0
+63 60 59 52 51 48 47 44 43 0
 
 #### Bit Allocations & Meanings:
 
-* Bits 60–63 (4 bits) - Visibility Modifiers: Tells the compiler how far this symbol can be seen.
-* 0000 = Private to module (pub(self))
-   * 0001 = Visible to crate (pub(crate))
-   * 0010 = Fully public (pub)
-* Bits 52–59 (8 bits) - Optimization & Evaluation Attributes: Holds high-frequency compiler hints.
-* Bit 52 = #[inline] (Hint backend to merge call sites)
-   * Bit 53 = #[inline(always)] (Force backend to inline)
-   * Bit 54 = #[cold] (Hint branch predictor that this path is rare)
-   * Bit 55 = #[must_use] (Emit warning if return value is discarded)
-* Bits 48–51 (4 bits) - Const and Evaluation Context:
-* Bit 48 = Is const function (Callable at compile time)
-   * Bit 49 = Contains compile-time evaluable constants
-* Bits 44–47 (4 bits) - Type Specialization Markers:
-* Bit 44 = Is Plain Old Data (POD) (Tells backend it can use memcpy instead of structured clone/drop logic)
-   * Bit 45 = Contains pointers/heap resources (Requires structural drop validation)
-* Bits 0–43 (44 bits) - Reserved for Optimization Passes / Incremental Flags:
-   * Bit 43 = LOCAL_DEFERRED_BIT (Flags that Word 2 contains a local generic queue index, pending Phase 2 interning)
-   * Bit 42 = SYNTHETIC_MONO_FLAG (Added for cross-crate routing to intercept external instantiations)
-* Left empty for the backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
+- Bits 60–63 (4 bits) - Visibility Modifiers: Tells the compiler how far this symbol can be seen.
+- 0000 = Private to module (pub(self))
+  - 0001 = Visible to crate (pub(crate))
+  - 0010 = Fully public (pub)
+- Bits 52–59 (8 bits) - Optimization & Evaluation Attributes: Holds high-frequency compiler hints.
+- Bit 52 = #[inline] (Hint backend to merge call sites)
+  - Bit 53 = #[inline(always)] (Force backend to inline)
+  - Bit 54 = #[cold] (Hint branch predictor that this path is rare)
+  - Bit 55 = #[must_use] (Emit warning if return value is discarded)
+- Bits 48–51 (4 bits) - Const and Evaluation Context:
+- Bit 48 = Is const function (Callable at compile time)
+  - Bit 49 = Contains compile-time evaluable constants
+- Bits 44–47 (4 bits) - Type Specialization Markers:
+- Bit 44 = Is Plain Old Data (POD) (Tells backend it can use memcpy instead of structured clone/drop logic)
+  - Bit 45 = Contains pointers/heap resources (Requires structural drop validation)
+- Bits 0–43 (44 bits) - Reserved for Optimization Passes / Incremental Flags:
+  - Bit 43 = LOCAL_DEFERRED_BIT (Flags that Word 2 contains a local generic queue index, pending Phase 2 interning)
+  - Bit 42 = SYNTHETIC_MONO_FLAG (Added for cross-crate routing to intercept external instantiations)
+- Left empty for the backend or borrow checker to overlay temporary bitmasks during dead-code elimination, dominance frontier passes, or change-tracking analysis.
 
-------------------------------
+______________________________________________________________________
+
 #### Implementation in Rust
+
 By using explicit bit shifting, masks, and constants, operations are kept locked to CPU registers. The entire evaluation of these properties compiles down to single-cycle machine instructions (AND, OR, SHL).
 
 ```rust
@@ -310,34 +319,40 @@ impl TypeId {
 }
 ```
 
-------------------------------
+______________________________________________________________________
+
 #### Pipeline Performance Wins with Word 3
+
 Integrating these flags into the final word of the identifier yields key optimizations during lower compiler phases:
 
-   1. Dead Code Elimination (DCE): During the optimization pass, a thread walking the call graph doesn't need to look up a function's AST or metadata array to see if it is public. It reads the visibility slice from Word 3. If it is Visibility::Private and has no external references inside the module, the function is dropped instantly.
-   2. Zero-Cost Codegen Branching: When the backend generation threads are emitting machine code for assignments (a = b), the compiler queries is_trivially_copyable(). If true, the thread emits an LLVM memcpy or straight register-to-register load instruction. It completely skips building complex, single-threaded pointer trees for calling custom type-destructor logic.
-   3. Cache Locality Enforcement: Because TypeId is passed along with every single AST expression node, this critical structural information stays resident in L1 cache alongside the parsing stream, eliminating the memory latency of looking up configuration properties elsewhere.
+1. Dead Code Elimination (DCE): During the optimization pass, a thread walking the call graph doesn't need to look up a function's AST or metadata array to see if it is public. It reads the visibility slice from Word 3. If it is Visibility::Private and has no external references inside the module, the function is dropped instantly.
+1. Zero-Cost Codegen Branching: When the backend generation threads are emitting machine code for assignments (a = b), the compiler queries is_trivially_copyable(). If true, the thread emits an LLVM memcpy or straight register-to-register load instruction. It completely skips building complex, single-threaded pointer trees for calling custom type-destructor logic.
+1. Cache Locality Enforcement: Because TypeId is passed along with every single AST expression node, this critical structural information stays resident in L1 cache alongside the parsing stream, eliminating the memory latency of looking up configuration properties elsewhere.
 
-
-------------------------------
+______________________________________________________________________
 
 ## 2.5 The Architecture: Moving from AST to Flat Arrays
+
 The core principle of Vx's high-performance design is that the compiler abandons the AST as early as possible.
 
 ### The Separation of Streams (Types vs. Instructions)
+
 During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinct flat arrays**:
 
 **1. `LOCAL_TYPE_STREAM`: `Vec<[u64; 4]>`**
-* **Purpose:** Stores *only* the 256-bit Global Identifiers for types, generic contexts, and signatures.
-* **Usage:** This is the array that gets processed by the Phase 2 interning barrier and the Phase 6 SIMD Patch Pass.
+
+- **Purpose:** Stores *only* the 256-bit Global Identifiers for types, generic contexts, and signatures.
+- **Usage:** This is the array that gets processed by the Phase 2 interning barrier and the Phase 6 SIMD Patch Pass.
 
 **2. `LOCAL_HIR_STREAM`: `Vec<HirInstruction>`**
-* **Purpose:** A dense, linear array of bytecode-like instructions representing the actual logic (e.g., `Add`, `Call`, `Branch`, `Store`).
-* **The Connection:** Instead of holding nested pointers or type strings, an `HirInstruction` holds a lightweight 32-bit integer index (e.g., `type_idx: u32`) that points directly into the `LOCAL_TYPE_STREAM`.
+
+- **Purpose:** A dense, linear array of bytecode-like instructions representing the actual logic (e.g., `Add`, `Call`, `Branch`, `Store`).
+- **The Connection:** Instead of holding nested pointers or type strings, an `HirInstruction` holds a lightweight 32-bit integer index (e.g., `type_idx: u32`) that points directly into the `LOCAL_TYPE_STREAM`.
 
 *Crucially: Once Phase 1 is complete, the entire AST is dropped from memory. It is dead to the compiler.*
 
 ### The Flat Array Pipeline
+
 **1. Phase 1: Parallel Parsing**: The parser generates the traditional `ast::Type` tree. This is unavoidable because human code is inherently nested and tree-like.
 **2. Phase 3: Parallel Type Checking (Tree Destruction)**: The TypeChecker acts as an ingestion funnel. As it resolves types, it constructs the 256-bit GID and pushes it into the `LOCAL_TYPE_STREAM`. Instructions are pushed to the `LOCAL_HIR_STREAM`.
 **3. Phase 4: Epoch Barrier & Deduplication**: The thread hits the sync barrier. The structural hashes of deferred types are bucketed, deduplicated, and assigned absolute 63-bit global indices in the `GLOBAL_GENERICS_ARENA`.
@@ -345,16 +360,21 @@ During Phase 1 (`sema.rs`), the human-readable AST is lowered into **two distinc
 **5. Phase 7: Parallel Module Deduplication & Codegen**: Code generation becomes a blisteringly fast `for` loop over the contiguous block of memory (`LOCAL_HIR_STREAM`), performing O(1) array lookups into the patched `LOCAL_TYPE_STREAM`.
 
 By flattening everything into arrays:
-1. Perfect cache locality is achieved.
-2. SIMD vectorization is unlocked (Phase 6).
-3. The memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
 
-------------------------------
+1. Perfect cache locality is achieved.
+1. SIMD vectorization is unlocked (Phase 6).
+1. The memory footprint drops dramatically by eliminating struct overhead for thousands of AST Node pointers.
+
+______________________________________________________________________
+
 ## 2.6 The Epoch / Worker Split (Zero-Lock Data-Oriented Session)
+
 To achieve true parallel scaling during Phase 1 (TypeChecking) without `RwLock` contention, while also supporting LSP daemon memory recycling, the monolithic `CompilationSession` is split into two distinct data-oriented structures:
 
 ### 1. `GlobalSession` (The Frozen Epoch)
+
 This struct represents the absolute, immutable truth of everything compiled *before* the current phase. It is wrapped in an `Arc` and shared freely across all threads. It contains no locks.
+
 ```rust
 pub struct GlobalSession {
     pub epoch: u64,
@@ -370,7 +390,9 @@ pub struct GlobalSession {
 ```
 
 ### 2. `LocalWorkerState` (The Phase 1 Thread Context)
+
 When Phase 1 spins up, every thread is given a clone of the `Arc<GlobalSession>` and initializes its own private, completely mutable `LocalWorkerState`.
+
 ```rust
 pub struct LocalWorkerState {
     pub global: Arc<GlobalSession>,
@@ -386,73 +408,89 @@ pub struct LocalWorkerState {
 ```
 
 ### How `TypeId` Resolution Works in Phase 1
+
 Because there are *two* arenas (the frozen global one and the mutable local one), the `TypeId::lifetime_context()` logic leverages the `LOCAL_DEFERRED_BIT` (Bit 43 in Word 3) to branch instantly:
+
 1. **If `LOCAL_DEFERRED_BIT` is 0:** The type was resolved in a previous module/epoch. The thread reads safely from `worker_state.global.slow_path_arena`.
-2. **If `LOCAL_DEFERRED_BIT` is 1:** The type was created by the *current thread*. It reads safely from `worker_state.local_slow_path_arena`.
+1. **If `LOCAL_DEFERRED_BIT` is 1:** The type was created by the *current thread*. It reads safely from `worker_state.local_slow_path_arena`.
 
 ### The Phase 2 Barrier Transition
-1. **Phase 1 Ends:** Parallel threads return their `LocalWorkerState` structs.
-2. **Phase 2 (Interning & Merge):** The main thread deduplicates the local arenas.
-3. **Phase 6 (SIMD Patch):** It patches the `local_type_stream` to clear the `LOCAL_DEFERRED_BIT` and update indices.
-4. **Phase 3 Setup (The Epoch Advance):** The patched local arenas are appended to the `GlobalSession`'s arenas, and a *new* `Arc<GlobalSession>` is constructed with an incremented epoch.
-5. **Phase 3 (Codegen):** Codegen threads are spun up with the *new* `Arc<GlobalSession>` and the patched `local_hir_stream`.
 
-------------------------------
+1. **Phase 1 Ends:** Parallel threads return their `LocalWorkerState` structs.
+1. **Phase 2 (Interning & Merge):** The main thread deduplicates the local arenas.
+1. **Phase 6 (SIMD Patch):** It patches the `local_type_stream` to clear the `LOCAL_DEFERRED_BIT` and update indices.
+1. **Phase 3 Setup (The Epoch Advance):** The patched local arenas are appended to the `GlobalSession`'s arenas, and a *new* `Arc<GlobalSession>` is constructed with an incremented epoch.
+1. **Phase 3 (Codegen):** Codegen threads are spun up with the *new* `Arc<GlobalSession>` and the patched `local_hir_stream`.
+
+______________________________________________________________________
+
 ## 3. The Linear Parallel Pipeline (Phase Separation)
+
 The compiler architecture rejects complex inter-stage pipelining in favor of a clean, phase-separated model bound by explicit synchronization barriers using Rayon's work-stealing thread pool.
 
 [Parallel Parse] ──> (Barrier) ──> [Parallel Name Resolution] ──> (Barrier) ──> [Parallel Type Check] ──> (Barrier) ──> [Parallel Routing & Codegen]
 
 ### Phase 1: Parallel Parse & Layout Skeleton
-* **Pre-conditions:** Source files exist on disk.
-* **Post-conditions:** Thread-local ASTs and symbol hashes are complete.
 
+- **Pre-conditions:** Source files exist on disk.
+- **Post-conditions:** Thread-local ASTs and symbol hashes are complete.
 
 1. File-Isolated Parsing: Threads walk the source tree. Each thread independently reads a module file and parses it into an Abstract Syntax Tree (AST).
-2. Interface Extraction: The parser extracts only the names and shapes of nominal types and function signatures. Function bodies are entirely ignored.
-3. Alias Erasure & Name Resolution (**Architectural Fix**): Resolving an alias like `use a::b::C` cannot be done in strict file isolation because `C` might itself be an alias. Name resolution must exist as a distinct topological or query-driven phase *between* raw parsing and freezing.
+1. Interface Extraction: The parser extracts only the names and shapes of nominal types and function signatures. Function bodies are entirely ignored.
+1. Alias Erasure & Name Resolution (**Architectural Fix**): Resolving an alias like `use a::b::C` cannot be done in strict file isolation because `C` might itself be an alias. Name resolution must exist as a distinct topological or query-driven phase *between* raw parsing and freezing.
+
 ### Phase 2: Global Registry Build (The Freeze Point)
-* **Pre-conditions:** All AST files are parsed.
-* **Post-conditions:** The global nominal layout table is entirely frozen and read-only. Cycle checks guarantee no infinitely recursive types.
+
+- **Pre-conditions:** All AST files are parsed.
+- **Post-conditions:** The global nominal layout table is entirely frozen and read-only. Cycle checks guarantee no infinitely recursive types.
 
 4. The Freeze Point: All nominal layout definitions are gathered into a master sequential collection, verified for infinite-size recursive structures via a lightning-fast cycle detection check (e.g., via petgraph), and moved into an immutable global `Arc<HashMap<...>>`.
 
-
 ### Phase 3: Parallel Body Type-Checking & Generic Queuing
-* **Pre-conditions:** `GlobalSession` is available and frozen.
-* **Post-conditions (Verification Hook: Isolation):** Mathematically proves zero shared mutability (aliasing) and asserts that local deferred indices fit precisely within the thread's local arena length.
+
+- **Pre-conditions:** `GlobalSession` is available and frozen.
+- **Post-conditions (Verification Hook: Isolation):** Mathematically proves zero shared mutability (aliasing) and asserts that local deferred indices fit precisely within the thread's local arena length.
 
 **The Deferred Interning Strategy (Architectural Fix)**:
 To prevent identity failures when multiple threads concurrently instantiate identical generics (e.g., `List<i32>`), the compiler defers interning.
+
 1. **The Wait-Free Local Epoch**: Threads do not hit atomic locks. They push argument GIDs to a `LOCAL_GENERICS_ARENA`, set Word 2 to that local index, and flip the `LOCAL_DEFERRED_BIT` in Word 3.
+
 ### Phase 4: Parallel Local Deduplication (Bucketed Interning)
-* **Pre-conditions:** All worker threads have returned their `LocalWorkerState`.
-* **Post-conditions:** Duplicate types within the same compilation epoch are collapsed.
+
+- **Pre-conditions:** All worker threads have returned their `LocalWorkerState`.
+- **Post-conditions:** Duplicate types within the same compilation epoch are collapsed.
 
 2. **Bucketed Interning**: After the Phase 3 barrier, the compiler hashes the local arenas, buckets them, and structurally deduplicates them in parallel into the `GLOBAL_GENERICS_ARENA`, assigning absolute 63-bit indices.
 
 ### Phase 5: Cross-Thread Merging (Epoch Advance)
-* **Pre-conditions:** Deduplication is finished.
-* **Post-conditions (Verification Hook: LSP Memory Proof):** Uses a `Weak<GlobalSession>` pointer to prove the Rust borrow checker successfully destroyed the previous epoch, mathematically verifying zero memory leaks.
+
+- **Pre-conditions:** Deduplication is finished.
+- **Post-conditions (Verification Hook: LSP Memory Proof):** Uses a `Weak<GlobalSession>` pointer to prove the Rust borrow checker successfully destroyed the previous epoch, mathematically verifying zero memory leaks.
 
 3. **Epoch Advance**: The deduplicated global arenas are wrapped in a new `Arc<GlobalSession>` with an incremented epoch. The old session is dropped.
 
 ### Phase 6: SIMD Patch Pass
-* **Pre-conditions:** `LOCAL_TYPE_STREAM` contains `LOCAL_DEFERRED_BIT` set on types.
-* **Post-conditions (Verification Hook: Absolute Identity Proof):** Mathematically proves that the SIMD unit cleared every single deferred bit, and that the new global indices correctly fit within the bounds of the newly advanced `GlobalSession` arenas.
+
+- **Pre-conditions:** `LOCAL_TYPE_STREAM` contains `LOCAL_DEFERRED_BIT` set on types.
+- **Post-conditions (Verification Hook: Absolute Identity Proof):** Mathematically proves that the SIMD unit cleared every single deferred bit, and that the new global indices correctly fit within the bounds of the newly advanced `GlobalSession` arenas.
 
 4. **The SIMD Patch Pass**: A cache-friendly, vectorized sweep over the instruction streams finds the `LOCAL_DEFERRED_BIT` and overwrites Word 2 with the global mapped index in microseconds.
 
-
 1. Lock-Free Symbol Reading: Threads type-check function bodies concurrently. Because the global nominal layout table is entirely frozen and read-only, threads pull cross-module type metadata via raw, lock-free shared references (`&TypeDefinition`).
-2. Comptime Execution Local-Registry (**Architectural Fix**): The Vx language supports `comptime` blocks that can generate arbitrary types (e.g., for shape analysis). Since the global registry is frozen, any nominal types dynamically generated during `comptime` execution are injected into a thread-local, module-internal Hash Map. Because these generated layouts are never exported or visible outside their host function/module, they preserve the frozen cross-crate boundaries while allowing full semantic analysis and error reporting to function normally.
-3. Abstract Generic Verification: Generic code (e.g., `List<T>`) is type-checked abstractly exactly once inside its host module to prove structural soundness.
-4. Thread-Local Instantiation Tracking: When Thread A type-checks a function body and encounters a concrete instantiation like `List<i32>`, it does not expand the type or generate IR. Instead, it performs instant mathematical calculation to construct the unique 256-bit GID (populating Word 2 with i32's hash) and pushes it into an isolated thread-local vector.
 
-------------------------------
+1. Comptime Execution Local-Registry (**Architectural Fix**): The Vx language supports `comptime` blocks that can generate arbitrary types (e.g., for shape analysis). Since the global registry is frozen, any nominal types dynamically generated during `comptime` execution are injected into a thread-local, module-internal Hash Map. Because these generated layouts are never exported or visible outside their host function/module, they preserve the frozen cross-crate boundaries while allowing full semantic analysis and error reporting to function normally.
+
+1. Abstract Generic Verification: Generic code (e.g., `List<T>`) is type-checked abstractly exactly once inside its host module to prove structural soundness.
+
+1. Thread-Local Instantiation Tracking: When Thread A type-checks a function body and encounters a concrete instantiation like `List<i32>`, it does not expand the type or generate IR. Instead, it performs instant mathematical calculation to construct the unique 256-bit GID (populating Word 2 with i32's hash) and pushes it into an isolated thread-local vector.
+
+______________________________________________________________________
+
 ### Phase 7: Parallel Module Deduplication & Codegen
-* **Pre-conditions:** All types are globally resolved and patched.
-* **Post-conditions (Verification Hook: Monomorphization Router):** Proves that synthetic monomorphizations (external upstream generics) are successfully intercepted and mapped to the local caller's bucket, preventing writes into frozen upstream modules.
+
+- **Pre-conditions:** All types are globally resolved and patched.
+- **Post-conditions (Verification Hook: Monomorphization Router):** Proves that synthetic monomorphizations (external upstream generics) are successfully intercepted and mapped to the local caller's bucket, preventing writes into frozen upstream modules.
 
 To prevent the backend from wasting cycles compiling duplicate generic variants (e.g., if ten independent modules all request List<i32>), the compiler executes an optimized, lock-free routing algorithm before hitting code generation.
 
@@ -470,41 +508,49 @@ To prevent the backend from wasting cycles compiling duplicate generic variants 
 ```
 
 1. Bucket Partitioning: The master compiler loop collects the thread-local request arrays. Using Word 0 (Module Hash) from the GID, it bins every monomorphization request into an array of buckets, where each bucket corresponds to an owning module.
-2. Isolated Merge Pass: Using Rayon's par_iter_mut(), a dedicated thread takes exclusive ownership of a module's bucket.
-3. Cache-Friendly Compaction: The thread executes an unstable sort (sort_unstable()) followed by a linear duplication purge (dedup()) on the flat 256-bit integers. Because threads work on entirely separate buckets, there is zero lock contention.
-4. Localized Monomorphic Generation: The unique keys remaining in the bucket represent the exact concrete variations that the specific module must expose. The thread fetches the module's generic blueprint layout and emits the concrete Intermediate Representation (IR) chunks sequentially.
-5. Cross-Crate Boundary Fallback (Architectural Fix): If `Word 0` belongs to an external, pre-compiled crate (which is not participating in the current parallel backend session), the bucketing algorithm intercepts the request. The responsibility to monomorphize the upstream blueprint (e.g., `ExternalList<MyType>`) falls back to the downstream crate that instantiated it, ensuring IR is emitted locally without attempting to route to a frozen upstream bucket.
+1. Isolated Merge Pass: Using Rayon's par_iter_mut(), a dedicated thread takes exclusive ownership of a module's bucket.
+1. Cache-Friendly Compaction: The thread executes an unstable sort (sort_unstable()) followed by a linear duplication purge (dedup()) on the flat 256-bit integers. Because threads work on entirely separate buckets, there is zero lock contention.
+1. Localized Monomorphic Generation: The unique keys remaining in the bucket represent the exact concrete variations that the specific module must expose. The thread fetches the module's generic blueprint layout and emits the concrete Intermediate Representation (IR) chunks sequentially.
+1. Cross-Crate Boundary Fallback (Architectural Fix): If `Word 0` belongs to an external, pre-compiled crate (which is not participating in the current parallel backend session), the bucketing algorithm intercepts the request. The responsibility to monomorphize the upstream blueprint (e.g., `ExternalList<MyType>`) falls back to the downstream crate that instantiated it, ensuring IR is emitted locally without attempting to route to a frozen upstream bucket.
 
-------------------------------
+______________________________________________________________________
+
 ### Phase 8: Zero-Copy Metadata Serialization Architecture
-* **Pre-conditions:** All streams are fully lowered and deduplicated.
-* **Post-conditions:** The output artifact matches the exact bitwise layout of `TypeId` for downstream compilation.
+
+- **Pre-conditions:** All streams are fully lowered and deduplicated.
+- **Post-conditions:** The output artifact matches the exact bitwise layout of `TypeId` for downstream compilation.
 
 To support rapid cross-crate compilation without requiring downstream projects to re-parse upstream source files, the 256-bit ID scheme is tightly integrated into a zero-copy metadata format.
 
-* Dictionary-Encoded Indexing: Inside the compiled metadata binary file, an isolated block acts as the Type Dictionary—a dense, flat array of all 256-bit DiskTypeId keys used by that module.
-* Variable-Length AST References: Throughout the serialized AST nodes and exported function signatures, full 32-byte IDs are omitted. They are replaced by lightweight 2-byte or 4-byte index numbers (u16/u32) pointing directly into the local dictionary.
-* Zero-Copy Memory Mapping: On reload, downstream compilers use byte-casting libraries (such as bytemuck or zerocopy) to read the dictionary block straight from disk into memory as a &[DiskTypeId] slice in a single operation. This entirely eliminates parsing loops, memory re-allocations, and pointer-swizzling steps.
+- Dictionary-Encoded Indexing: Inside the compiled metadata binary file, an isolated block acts as the Type Dictionary—a dense, flat array of all 256-bit DiskTypeId keys used by that module.
+- Variable-Length AST References: Throughout the serialized AST nodes and exported function signatures, full 32-byte IDs are omitted. They are replaced by lightweight 2-byte or 4-byte index numbers (u16/u32) pointing directly into the local dictionary.
+- Zero-Copy Memory Mapping: On reload, downstream compilers use byte-casting libraries (such as bytemuck or zerocopy) to read the dictionary block straight from disk into memory as a &[DiskTypeId] slice in a single operation. This entirely eliminates parsing loops, memory re-allocations, and pointer-swizzling steps.
 
-------------------------------
+______________________________________________________________________
+
 ## 6. Performance Engineering Guarantees
+
 By building the first draft around this layout, the architecture guarantees:
 
-* Linear Speedups: Frontend scaling scales cleanly with core count during parsing, body type-checking, and bucket deduplication.
-* Cache Optimization: Processing flat [u64; 4] structures ensures optimal hardware cache line usage during heavy compiler passes.
-* Zero Deadlocks: The complete removal of fine-grained runtime locking (Mutex/RwLock) across worker threads eliminates concurrent data races and thread stalling bugs by design.
+- Linear Speedups: Frontend scaling scales cleanly with core count during parsing, body type-checking, and bucket deduplication.
+- Cache Optimization: Processing flat [u64; 4] structures ensures optimal hardware cache line usage during heavy compiler passes.
+- Zero Deadlocks: The complete removal of fine-grained runtime locking (Mutex/RwLock) across worker threads eliminates concurrent data races and thread stalling bugs by design.
 
-------------------------------
+______________________________________________________________________
+
 ## 7. Serializing 256-bit identifiers for cross-crate metadata files
 
 Serializing 256-bit identifiers for cross-crate metadata files requires a performance engineer's approach: minimize disk footprint, maximize sequential I/O speed, and avoid pointer translation (swizzling) on reload.
 If these IDs are written out as raw, redundant 32-byte arrays for every single type reference in a large library, the metadata files will balloon in size, destroying I/O performance.
 Here is how to design a high-performance serialization format for the 256-bit IDs in Rust.
 
-------------------------------
+______________________________________________________________________
+
 ### 1. The On-Disk Strategy: The "String/ID Dictionary" Pattern
+
 Instead of embedding the full 256-bit ([u64; 4]) array inline every time a type is referenced in an AST or signature, an indexed table should be used structure.
 When exporting a crate's metadata, compile a localized, deduplicated master array of all unique TypeIds used in that crate.
+
 ```
 +-------------------------------------------------------------+
 
@@ -524,11 +570,13 @@ When exporting a crate's metadata, compile a localized, deduplicated master arra
 
 ### Why this scales performance:
 
-* Drastic Size Reduction: A typical signature or AST node no longer carries 32 bytes of type data. It carries a 2-byte or 4-byte index (u16 or u32) into the local dictionary.
-* Zero-Copy Loading: When a downstream crate reads this metadata file, it reads the Type Dictionary once. It can instantly blast that section of the file straight into a Vec<[u64; 4]> using a fast memory-copy operation.
+- Drastic Size Reduction: A typical signature or AST node no longer carries 32 bytes of type data. It carries a 2-byte or 4-byte index (u16 or u32) into the local dictionary.
+- Zero-Copy Loading: When a downstream crate reads this metadata file, it reads the Type Dictionary once. It can instantly blast that section of the file straight into a Vec\<[u64; 4]> using a fast memory-copy operation.
 
-------------------------------
+______________________________________________________________________
+
 ### 2. Fast Serialization / Deserialization Code in Rust
+
 To achieve maximum throughput, avoid text-based formats (like JSON) or heavy schema-driven systems (like Protobuf). Use a raw, byte-aligned binary format. The zerocopy or bytemuck crates are perfect for this.
 Here is how the dictionary layout is handled for instant saving and loading:
 
@@ -569,15 +617,19 @@ pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[DiskTypeId], &[u8]) {
 }
 ```
 
-------------------------------
+______________________________________________________________________
+
 ### 3. Resolving the "Cross-Crate Monomorphization" Metadata Link
+
 When a downstream crate loads an upstream metadata file, it reads the dictionary of 256-bit IDs. Because the layout is hash-bound and absolute, something incredible happens: The IDs require zero translation.
 
-* In Traditional Compilers: When loading metadata, pointer addresses or local IDs have to be "swizzled" (remapped) to match the internal state of the current compilation process.
-* In This System: Because Word 0 (Module Hash) and Word 1 (Symbol Hash) are cryptographic or content-based hashes, they mean the exact same thing to every crate.
+- In Traditional Compilers: When loading metadata, pointer addresses or local IDs have to be "swizzled" (remapped) to match the internal state of the current compilation process.
+- In This System: Because Word 0 (Module Hash) and Word 1 (Symbol Hash) are cryptographic or content-based hashes, they mean the exact same thing to every crate.
 
 If Crate A exports a generic BoxedList<T>, its ID hash is globally deterministic. When Crate B imports it, it reads the 256-bit ID from the dictionary and can instantly use it to issue a monomorphization request (Word 2 filled with Crate B's type hash) without needing to query a centralized ID dispenser.
+
 ### 4. Compacting the Hash Values on Disk (Optional 80/20 Optimization)
+
 If the metadata dictionary is still too large, it can be optimized by leveraging the fact that many types inside the same metadata file share the same Word 0 (Module Hash).
 Instead of repeating Word 0 for every symbol, the dictionary can be grouped by module on disk:
 
@@ -592,8 +644,11 @@ Instead of repeating Word 0 for every symbol, the dictionary can be grouped by m
 This strips 8 bytes off almost every entry on disk, shaving another 25% off the dictionary file size while keeping decoding to a simple, sequential pass.
 
 ## 8. Code snippets for optimization
+
 Here are the relevant code snippets developed previously, organized by the compiler phase they optimize. All snippets utilize safe, high-performance Rust idiomatic patterns.
+
 ### 1. Zero-Copy Serialization & Memory Layout (bytemuck)
+
 This snippet establishes the flat 256-bit layout as a Pod (Plain Old Data) type. It enables the compiler to flash the type dictionary from memory to disk (and vice-versa) in a single CPU cycle without parsing loops or memory allocations.
 
 ```rust
@@ -635,6 +690,7 @@ pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[TypeId], &[u8]) {
 ```
 
 ### 2. High-Level Rayon Coordination Loop
+
 This snippet demonstrates the orchestration of the three primary frontend phases using explicit synchronization barriers, passing metadata downward via a thread-safe Arc.
 
 ```rust
@@ -673,18 +729,21 @@ To achieve this without threads fighting over locks, the lookup algorithm uses a
 Here is the high-level, step-by-step parallel algorithm.
 
 ### Step 1: Parallel Declaration Discovery (Thread-Isolated)
+
 Each worker thread takes an assigned file and processes it into an isolated, local symbol table structure. No thread writes to a global structure yet.
 
 1. Parse to AST: The thread parses the file syntax tree.
-2. Scan Top-Level Declarations: It loops through items like struct, enum, and fn signatures, ignoring the bodies.
-3. Generate a Thread-Local Map: When a thread encounters a definition (e.g., struct User), it:
-    * Generates a 256-bit GID (Word 0 = current module hash, Word 1 = symbol content hash, Word 2 = 0).
-    * Maps the local string name to this GID inside a thread-isolated `HashMap<String, TypeId>`.
-    * Maps the GID to the actual type definition data structure (fields, sizes) inside a thread-isolated `HashMap<TypeId, TypeDefinition>`.
-    * **Architectural Fix**: If a thread hits a slow-path constraint (e.g. >4095 lifetimes), it pushes the un-bounded metadata into a thread-local `LOCAL_SLOW_PATH_ARENA` to avoid global lock contention during parsing.
+1. Scan Top-Level Declarations: It loops through items like struct, enum, and fn signatures, ignoring the bodies.
+1. Generate a Thread-Local Map: When a thread encounters a definition (e.g., struct User), it:
+   - Generates a 256-bit GID (Word 0 = current module hash, Word 1 = symbol content hash, Word 2 = 0).
+   - Maps the local string name to this GID inside a thread-isolated `HashMap<String, TypeId>`.
+   - Maps the GID to the actual type definition data structure (fields, sizes) inside a thread-isolated `HashMap<TypeId, TypeDefinition>`.
+   - **Architectural Fix**: If a thread hits a slow-path constraint (e.g. >4095 lifetimes), it pushes the un-bounded metadata into a thread-local `LOCAL_SLOW_PATH_ARENA` to avoid global lock contention during parsing.
 
-------------------------------
+______________________________________________________________________
+
 ### Step 2: The Parallel Merge & Freeze Point
+
 Once all files are parsed locally, the compiler must merge these independent local tables into a single global repository. This phase uses Rayon's parallel collection reduction to keep it fast.
 
 ```rust
@@ -698,13 +757,16 @@ pub struct ImmutableGlobalRegistry {
 ```
 
 1. Parallel Reduce: The thread pool merges the collection of local thread maps pairwise (using rayon's `.reduce()`). Because different modules have distinct Word 0 (Module Hash) prefixes, there are zero key collisions during the merge.
-2. Global Arena Patching (**Architectural Fix**): During this merge, the master loop computes absolute global offsets for each thread's `LOCAL_SLOW_PATH_ARENA` and concatenates them into the final `GLOBAL_SLOW_PATH_ARENA`. Any temporary slow-path indices encoded in the local 256-bit GIDs are patched with their new global offsets.
-3. Run Global Layout Validations: The single merged graph is quickly checked sequentially for cycle size errors (using the petgraph layout pass discussed earlier).
-4. Freeze and Wrap: The completed registry is wrapped inside an Arc (Atomic Reference Count). This transitions the data structure from Mutable/Exclusive to Immutable/Globally Shared.
+1. Global Arena Patching (**Architectural Fix**): During this merge, the master loop computes absolute global offsets for each thread's `LOCAL_SLOW_PATH_ARENA` and concatenates them into the final `GLOBAL_SLOW_PATH_ARENA`. Any temporary slow-path indices encoded in the local 256-bit GIDs are patched with their new global offsets.
+1. Run Global Layout Validations: The single merged graph is quickly checked sequentially for cycle size errors (using the petgraph layout pass discussed earlier).
+1. Freeze and Wrap: The completed registry is wrapped inside an Arc (Atomic Reference Count). This transitions the data structure from Mutable/Exclusive to Immutable/Globally Shared.
 
-------------------------------
+______________________________________________________________________
+
 ### Step 3: How Another Thread Queries the Shared Registry
+
 Now, Phase 2 (Parallel Body Type-Checking) begins. Let us trace exactly how a thread checking Module B resolves a nominal type defined in Module A (e.g., a function parameter typed as ModuleA::User).
+
 ### Scenario: Thread 2 encounters the text string "ModuleA::User" inside a function body.
 
 ```
@@ -723,16 +785,17 @@ Now, Phase 2 (Parallel Body Type-Checking) begins. Let us trace exactly how a th
 ```
 
 1. Namespace Resolution: Thread 2 splits the string path. It computes the 64-bit content hash of the target namespace ("ModuleA"). Let us say this evaluates to 0x1122....
-2. Module Routing: Thread 2 queries the global read-only registry: registry.module_indices.get(&0x1122...). This returns a reference to Module A's personal string-to-ID index map.
-3. Symbol ID Resolution: Thread 2 queries that inner map using the remaining identifier string ("User"). It receives the absolute 256-bit GID: TypeId([0x1122..., 0x0005, 0, 0]).
-4. Data Layout Acquisition: Thread 2 passes this 256-bit key straight into the flat layouts map: registry.layouts.get(&type_id). This yields an immutable reference to the raw layout definition (&TypeDefinition).
+1. Module Routing: Thread 2 queries the global read-only registry: registry.module_indices.get(&0x1122...). This returns a reference to Module A's personal string-to-ID index map.
+1. Symbol ID Resolution: Thread 2 queries that inner map using the remaining identifier string ("User"). It receives the absolute 256-bit GID: TypeId([0x1122..., 0x0005, 0, 0]).
+1. Data Layout Acquisition: Thread 2 passes this 256-bit key straight into the flat layouts map: registry.layouts.get(&type_id). This yields an immutable reference to the raw layout definition (&TypeDefinition).
 
 ### Why this is mathematically optimal for Performance Engineering:
 
-* Zero Synchronization Costs: Because the entire registry is frozen behind an Arc, threads use standard shared references (&registry). There are no mutexes, no read-write locks, and no thread stalling.
-* Pointer Isolation: Thread 2 never loads or inspects any code or function bodies from Module A. It only touches a tiny sliver of read-only layout metadata, ensuring perfect cache-line locality on the CPU core.
+- Zero Synchronization Costs: Because the entire registry is frozen behind an Arc, threads use standard shared references (&registry). There are no mutexes, no read-write locks, and no thread stalling.
+- Pointer Isolation: Thread 2 never loads or inspects any code or function bodies from Module A. It only touches a tiny sliver of read-only layout metadata, ensuring perfect cache-line locality on the CPU core.
 
 ### 3. Module-Based Bucket Partitioning & Parallel Deduplication
+
 This snippet implements Strategy #3, where monomorphization requests are grouped using their 64-bit Module Hash (Word 0). Threads process independent buckets simultaneously with absolute data isolation.
 
 ```rust
@@ -781,6 +844,7 @@ pub fn parallel_module_deduplication(
 ```
 
 ## The Verification Engine
+
 This is the blueprint for the Verification Engine, mapped precisely to the phase boundaries of the pipeline. By injecting these hooks at the exact sync points, a mathematical proof is created of the compiler's data-oriented invariants.
 
 Because this is intended to be a zero-cost abstraction in production, the entire engine should be gated behind `#[cfg(debug_assertions)]` or a dedicated `#[cfg(feature = "verify-arch")]`.
@@ -802,7 +866,7 @@ pub trait ArchitectureVerifier {
 
 ```
 
----
+______________________________________________________________________
 
 ### Hook 1: The Epoch Freeze (Phase 1 → Phase 2)
 
@@ -839,7 +903,7 @@ fn verify_phase_1_isolation(workers: &[LocalWorkerState], global: &Arc<GlobalSes
 
 ```
 
----
+______________________________________________________________________
 
 ### Hook 2: The Absolute Identity Proof (Phase 6)
 
@@ -871,7 +935,7 @@ fn verify_phase_3_5_simd_patch(patched_type_stream: &[[u64; 4]], session: &Arc<G
 
 ```
 
----
+______________________________________________________________________
 
 ### Hook 3: The Monomorphization Router (Phase 4)
 
@@ -910,7 +974,7 @@ fn verify_phase_4_routing(buckets: &[Vec<TypeId>], module_index_map: &HashMap<u6
 
 ```
 
----
+______________________________________________________________________
 
 ### Hook 4: The LSP Memory Proof (Phase 5 / Epoch Advance)
 

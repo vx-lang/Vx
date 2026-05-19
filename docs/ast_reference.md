@@ -23,6 +23,7 @@ pub struct Program {
 Vx explicitly models hardware locality to prevent unexpected, implicit cross-device memory operations.
 
 ### Topology
+
 Topologies define *where* computation executes. They can represent the Host CPU, an NPU cluster, or specific slices of a distributed topology.
 
 ```rust
@@ -35,6 +36,7 @@ pub enum Topology {
 ```
 
 ### Memory Space
+
 Memory Spaces define *where* data resides physically.
 
 ```rust
@@ -65,11 +67,13 @@ pub enum Type {
 ```
 
 ### Element Types
+
 Native scalar primitives supported in `Tensor`s:
-* **Floating Point**: `F16`, `BF16`, `F32`, `F64`
-* **Signed Integer**: `I4`, `I8`, `I16`, `I32`, `I64`, `I128`
-* **Unsigned Integer**: `U4`, `U8`, `U16`, `U32`, `U64`, `U128`
-* **Boolean**: `Bool`
+
+- **Floating Point**: `F16`, `BF16`, `F32`, `F64`
+- **Signed Integer**: `I4`, `I8`, `I16`, `I32`, `I64`, `I128`
+- **Unsigned Integer**: `U4`, `U8`, `U16`, `U32`, `U64`, `U128`
+- **Boolean**: `Bool`
 
 ## Expressions (`Expr`)
 
@@ -115,6 +119,7 @@ pub enum Statement {
 ## Declarations
 
 ### Functions
+
 ```rust
 pub struct Function {
     pub name: String,
@@ -126,6 +131,7 @@ pub struct Function {
 ```
 
 ### Structs
+
 ```rust
 pub struct StructDecl {
     pub name: String,
@@ -135,6 +141,7 @@ pub struct StructDecl {
 ```
 
 ### Traits & Impls
+
 ```rust
 pub struct TraitDecl {
     pub name: String,
@@ -149,6 +156,7 @@ pub struct ImplBlock {
 ```
 
 ### Extern (FFI)
+
 ```rust
 pub struct ExternDecl {
     pub name: String,

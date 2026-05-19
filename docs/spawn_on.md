@@ -51,8 +51,8 @@ Because Vx lowers to MLIR, implementing this is surprisingly elegant. There is n
 MLIR has a first-class `async` dialect.
 
 1. **Frontend:** When the semantic analyzer encounters `let x = spawn on(NPU) { ... }`, it types `x` as a `Future<T>`.
-2. **IR Emission:** The generated MLIR region is wrapped in an `async.execute` block. This block naturally returns an `async.token` and an `async.value`.
-3. **Awaiting:** When `.await` is called, an `async.await` MLIR operation is emitted.
+1. **IR Emission:** The generated MLIR region is wrapped in an `async.execute` block. This block naturally returns an `async.token` and an `async.value`.
+1. **Awaiting:** When `.await` is called, an `async.await` MLIR operation is emitted.
 
 The MLIR backend will automatically handle the lowering of these tokens to underlying threading models (like POSIX threads or custom runtime queues), allowing the Vx frontend to remain purely focused on data flow.
 
@@ -60,8 +60,8 @@ The MLIR backend will automatically handle the lowering of these tokens to under
 
 There is one vital language design decision that must be addressed: **What happens if a `Future` is dropped before it is `.await`ed?**
 
-* **Option A (Detached/Fire-and-Forget):** The NPU continues executing, but the result is discarded. This is dangerous for memory leaks on accelerators.
-* **Option B (Strict Structured Concurrency):** The compiler mandates that every `Future` returned by `spawn on` MUST be `.await`ed. If a `Future` goes out of scope without being awaited, it is a compile-time error (similar to Rust's `#[must_use]`, but strictly enforced).
+- **Option A (Detached/Fire-and-Forget):** The NPU continues executing, but the result is discarded. This is dangerous for memory leaks on accelerators.
+- **Option B (Strict Structured Concurrency):** The compiler mandates that every `Future` returned by `spawn on` MUST be `.await`ed. If a `Future` goes out of scope without being awaited, it is a compile-time error (similar to Rust's `#[must_use]`, but strictly enforced).
 
 For a systems language, **Option B is highly recommended.** It forces the programmer to acknowledge the lifecycle of remote compute, ensuring that NPU memory is gracefully freed and no rogue kernels are left spinning in the background.
 
@@ -69,12 +69,12 @@ For a systems language, **Option B is highly recommended.** It forces the progra
 
 Elevating `spawn on` to an expression returning a `Future<Pinned<T, Topology>>` perfectly aligns the language syntax with the physical reality of heterogeneous hardware: the CPU orchestrates, the NPUs compute asynchronously, and the type system strictly enforces the synchronization boundary (`.await`) and the memory boundary (`.to_host()`).
 
-
 Syntax changes to spawn:
 The Pipeline / Execution Chaining (Functional)
 This is inspired by modern data-processing frameworks (like Apache Spark or Ray). Instead of framing the action around the hardware, you frame the action around the compute, and attach the hardware as a routing instruction.
 
 The Syntax:
+
 ```rust
 let fut = matmul(pinned_A, pinned_B).spawn_on(Topology::NPU[0]);
 ```
@@ -93,6 +93,7 @@ let final_fut = softmax(
         .to_device(NPU[1]) // Your `collect_to` idea
 ).spawn_on(NPU[1]);
 ```
+
 Why this is brilliant:
 
 It maps perfectly to MLIR: The compiler reads this inside-out. It sees the inner spawn_on (emits async.execute for NPU 0), then .await (emits async.await), then .to_device (emits memref.copy over PCIe to NPU 1), and finally the outer spawn_on (emits async.execute for NPU 1).
@@ -105,6 +106,7 @@ The only danger with composable chaining is that deep neural networks will quick
 To solve this, you can encourage standard variable shadowing or introduce a Fluent Builder pattern for topologies.
 
 Standard Shadowing (Highly Readable):
+
 ```rust
 // 1. Compute on NPU 0
 let x = matmul(A, B).spawn_on(NPU[0]).await;

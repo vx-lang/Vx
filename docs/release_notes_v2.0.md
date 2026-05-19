@@ -7,16 +7,20 @@ This major release achieves one of the most critical milestones in the history o
 ## Key Achievements
 
 ### 1. Native NPU/Accelerator Offloading
+
 Vx can now dynamically dispatch computational blocks designated for non-host hardware (like `Topology::NPU`) directly to physical silicon. We achieved this by integrating Apple's Matrix Coprocessor (AMX) natively via the Accelerate framework, bypassing the need for heavy Python or ONNX translation layers!
 
 ### 2. Zero-Copy Execution (Unified Memory Architecture)
+
 The compiler natively understands and takes advantage of Apple Silicon's **Unified Memory Architecture (UMA)**.
 Memory allocated in standard RAM via `Tensor` (or `memref`) is accessed natively by the Matrix Coprocessor. This eliminates explicit data movement (like PCIe `cudaMemcpy` operations) required by legacy disaggregated architectures, proving that Vx's topology types map perfectly to modern high-performance hardware.
 
 ### 3. MLIR FFI C-Interface Bridging
+
 We introduced the `llvm.emit_c_interface` attribute to the compiler's backend logic. This bridges the MLIR standard dialect's `memref` ABI perfectly to standard C struct pointers (`MemRef2D`), allowing seamless `Objective-C++` interoperability during runtime.
 
 ### 4. JIT Dynamic Loading
+
 The Vx JIT engine has been upgraded to orchestrate native platform compilations (`clang++ -framework Accelerate`) and load dynamically linked libraries (`.dylib`) into the `lli` execution pipeline on the fly!
 
 ### Example

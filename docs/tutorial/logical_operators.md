@@ -26,6 +26,7 @@ fn test_relations() -> Tensor<Bool> {
 ## Logical Operators
 
 Complex boolean operations can be evaluated natively:
+
 - `&&` : Logical AND
 - `||` : Logical OR
 - `!` : Logical NOT
@@ -42,4 +43,5 @@ fn validate_bounds(val: Tensor<i32>) -> Tensor<Bool> {
 ```
 
 ## Interaction with Generic Tensors
+
 By abstracting boolean logic to `Tensor<Bool>`, Vx maintains full compatibility with its heterogeneous hardware abstraction. You can execute `&&` conditions seamlessly on a spawned NPU, and seamlessly pipe the resulting `Tensor<Bool>` back to the host for flow control!

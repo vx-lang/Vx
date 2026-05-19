@@ -5,6 +5,7 @@ This document summarizes the newly added features to the Vx Standard Library, fu
 ## Added Capabilities
 
 ### 1. Standard Streams (`std::io`)
+
 You can now read from and write to standard operating system streams. This handles standard input, standard output, and standard error directly.
 
 ```rust
@@ -24,6 +25,7 @@ fn main() -> i32 {
 ```
 
 ### 2. TCP Server (`std::net`)
+
 Vx now supports hosting TCP servers through `TcpListener`. Combined with `TcpStream`, full bidirectional client-server applications can be written in Vx.
 
 ```rust
@@ -44,10 +46,12 @@ fn start_server() {
 ```
 
 ## Validation
+
 - ✅ **Test Coverage**: Created integration tests `ffi_stdio.vx` and `ffi_tcp_server.vx`.
 - ✅ **JIT Linker Compatibility**: Resolved linker errors by rebuilding `vx_std_core` and properly exporting `#[no_mangle]` symbols.
 - ✅ **Parser Fixes**: Resolved implicit return bugs in `Vx` syntax parsing where missing semicolons in FFI declarations caused the `if` block parser to fail.
 - ✅ **Unified Output Stream**: Updated the `execute_mlir` test infrastructure to capture both `stdout` and `stderr` so that tests can assert properly against them.
 
 ## Next Steps
+
 The core system interoperability is completed. You can now build high-level web servers, logging systems, or general utilities natively in Vx!

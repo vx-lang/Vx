@@ -148,10 +148,10 @@ In Vx, `is_assignable` is purely a **Type Compatibility Checker**. It determines
 When verifying `let target: TargetType = source_expression;`, the compiler permits the following structural coercions:
 
 1. **Strict Equality:** If the resolved `Target` and `Source` types are identical, the assignment is valid.
-2. **Implicit Unwrapping:** A hardware-specific wrapper type can implicitly decay to its base type. For example, `Ref<T>` or `Pinned<T>` can be safely assigned to a variable explicitly requesting a raw `T`.
-3. **Literal Broadcasting (Scalar to Tensor):** Scalar numerical literals (e.g., `1.0` or `42`) can be implicitly coerced and broadcasted into `Tensor<T>` configurations, provided they are not boolean mismatches.
-4. **Numeric Scalar Coercions:** Standard numeric types are permitted to automatically coerce across differing precisions (e.g., `f64` to `f32`) to accommodate literals during compilation, ensuring mathematical continuity without verbose casting.
-5. **Pointer Decay:** Safe borrows (`&mut T`) implicitly decay into raw unsafe pointers (`*mut T`) when crossing FFI or unsafe boundaries.
-6. **Safety Coercions:** A `Ref<T, HostDRAM>` can be coerced into a `Verified<T>` boundary type, signaling that host memory access requires no further spatial validation.
+1. **Implicit Unwrapping:** A hardware-specific wrapper type can implicitly decay to its base type. For example, `Ref<T>` or `Pinned<T>` can be safely assigned to a variable explicitly requesting a raw `T`.
+1. **Literal Broadcasting (Scalar to Tensor):** Scalar numerical literals (e.g., `1.0` or `42`) can be implicitly coerced and broadcasted into `Tensor<T>` configurations, provided they are not boolean mismatches.
+1. **Numeric Scalar Coercions:** Standard numeric types are permitted to automatically coerce across differing precisions (e.g., `f64` to `f32`) to accommodate literals during compilation, ensuring mathematical continuity without verbose casting.
+1. **Pointer Decay:** Safe borrows (`&mut T`) implicitly decay into raw unsafe pointers (`*mut T`) when crossing FFI or unsafe boundaries.
+1. **Safety Coercions:** A `Ref<T, HostDRAM>` can be coerced into a `Verified<T>` boundary type, signaling that host memory access requires no further spatial validation.
 
 If the types pass the `is_assignable` constraint matrix, the Semantic Analyzer accepts the program. Advanced lifecycle validation (like borrow constraints) operates entirely independently of this type-compatibility pass.

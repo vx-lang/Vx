@@ -10,7 +10,7 @@ Since Vx elevates hardware topologies to first-class citizens, the syntax should
 Here are the four strongest single-word alternatives for Vx, categorized by the "feel" they give the language.
 
 1. The Simplest Fix: Function-Like spawn
-Why not just drop the on? Treat spawn as a strict keyword that takes an executor/topology as its argument.
+   Why not just drop the on? Treat spawn as a strict keyword that takes an executor/topology as its argument.
 
 Rust
 // Current
@@ -23,22 +23,22 @@ Why it works: It maps perfectly to what developers already know (like std::threa
 The Vibe: Familiar, clean, and unambiguous.
 
 2. The Systems-Level Word: dispatch
-If you want to distance Vx from standard OS thread spawning and emphasize that you are pushing work across a PCIe/CXL fabric to an accelerator, dispatch carries exactly that weight.
+   If you want to distance Vx from standard OS thread spawning and emphasize that you are pushing work across a PCIe/CXL fabric to an accelerator, dispatch carries exactly that weight.
 
 Rust
 let fut = dispatch(Topology::NPU[0]) {
-    return tensor::matmul(A, B);
+return tensor::matmul(A, B);
 };
 Why it works: "Dispatching" implies sending a payload (your MLIR block) to a remote queue or scheduler. It sounds like a high-performance heterogeneous operation. Apple uses this extensively in Grand Central Dispatch (GCD).
 
 The Vibe: Industrial, hardware-aware, and asynchronous.
 
 3. The Minimalist Context: on
-If hardware is truly the star of the show in Vx, you can make the topology the primary verb.
+   If hardware is truly the star of the show in Vx, you can make the topology the primary verb.
 
 Rust
 let fut = on(Topology::NPU[0]) {
-    return tensor::matmul(A, B);
+return tensor::matmul(A, B);
 };
 Why it works: It reads incredibly well. It is essentially the spawn on syntax, but distilled to its purest form.
 
@@ -47,11 +47,11 @@ The Catch: on is a very common English word. If you make it a strict, reserved k
 The Vibe: Ultra-modern, highly readable, but slightly aggressive in reserving a common word.
 
 4. The Data-Movement Word: offload
-If the primary purpose of this block is to take heavy compute away from the CPU, offload is highly descriptive.
+   If the primary purpose of this block is to take heavy compute away from the CPU, offload is highly descriptive.
 
 Rust
 let fut = offload(Topology::NPU[0]) {
-    return tensor::matmul(A, B);
+return tensor::matmul(A, B);
 };
 Why it works: It explicitly tells the programmer that a boundary is being crossed and a penalty (PCIe transfer) might be incurred.
 
@@ -71,7 +71,7 @@ You have just hit upon a profound compiler-design realization: Inline blocks ({ 
 To fix the visual illusion and prevent the "implicit capture" trap, we need a syntax that explicitly denotes a physical transfer of execution. Here are the three best paradigms from modern language design, tailored for Vx's "killer Hello World."
 
 1. The Actor Model (Message Passing)
-If Vx treats the datacenter fabric as a unified system, you can treat physical hardware topologies as Actors. You don't "spawn a block"; you send a message (a function and its data) to a physical address.
+   If Vx treats the datacenter fabric as a unified system, you can treat physical hardware topologies as Actors. You don't "spawn a block"; you send a message (a function and its data) to a physical address.
 
 Erlang and Elixir use this paradigm flawlessly for distributed computing.
 
@@ -81,14 +81,14 @@ Rust
 let npu = Topology::NPU[0];
 
 // The `<-` or `!` operator visually represents pushing compute across a PCIe bus.
-let fut = npu <- matmul(pinned_A, pinned_B);
+let fut = npu \<- matmul(pinned_A, pinned_B);
 
 // Or using standard method syntax:
 let fut = npu.dispatch(matmul, pinned_A, pinned_B);
 Why it’s brilliant for Vx: It completely destroys the scoping illusion. It reads exactly like what the hardware is doing: "Hey NPU, take this function and these arguments, and give me a Future." It forces the user to explicitly pass the Pinned<T> arguments, making implicit capture impossible.
 
 2. The Pipeline / Execution Chaining (Functional)
-This is inspired by modern data-processing frameworks (like Apache Spark or Ray). Instead of framing the action around the hardware, you frame the action around the compute, and attach the hardware as a routing instruction.
+   This is inspired by modern data-processing frameworks (like Apache Spark or Ray). Instead of framing the action around the hardware, you frame the action around the compute, and attach the hardware as a routing instruction.
 
 The Syntax:
 
@@ -102,14 +102,14 @@ It chains beautifully: matmul(A, B).spawn_on(NPU).await.to_host().
 It scales to complex routing: .try_spawn_on(NPU).unwrap_or(Host).
 
 3. Explicit Kernel Registration (The Systems / CUDA Way)
-If you want to maintain the absolute highest level of systems-programming rigor, you ban inline execution entirely. You force the user to define "Device Functions" and pass them as function pointers. This is how CUDA (<<<...>>>), SYCL, and Mojo handle it.
+   If you want to maintain the absolute highest level of systems-programming rigor, you ban inline execution entirely. You force the user to define "Device Functions" and pass them as function pointers. This is how CUDA (\<<\<...>>>), SYCL, and Mojo handle it.
 
 The Syntax:
 
 Rust
 // 1. Define the kernel (Strictly typed to NPU memory)
-fn npu_matmul(a: Pinned<Tensor, NPU>, b: Pinned<Tensor, NPU>) -> Tensor {
-    return a * b; // standard MLIR emission
+fn npu_matmul(a: Pinned\<Tensor, NPU>, b: Pinned\<Tensor, NPU>) -> Tensor {
+return a * b; // standard MLIR emission
 }
 
 // 2. Spawn by passing the function pointer and its args
@@ -126,21 +126,24 @@ Rust
 // The Vx "Hello World"
 
 fn main() {
-    let a = Tensor::ones([1024, 1024]);
-    let b = Tensor::ones([1024, 1024]);
+let a = Tensor::ones([1024, 1024]);
+let b = Tensor::ones([1024, 1024]);
 
-    // 1. Explicitly pin data to the hardware topology
-    let npu = Topology::NPU[0];
-    let dev_a = a.to_device(npu);
-    let dev_b = b.to_device(npu);
+```
+// 1. Explicitly pin data to the hardware topology
+let npu = Topology::NPU[0];
+let dev_a = a.to_device(npu);
+let dev_b = b.to_device(npu);
 
-    // 2. Dispatch compute as a first-class message (No closures, no scoping illusions)
-    let result_future = npu.dispatch(tensor::matmul, dev_a, dev_b);
+// 2. Dispatch compute as a first-class message (No closures, no scoping illusions)
+let result_future = npu.dispatch(tensor::matmul, dev_a, dev_b);
 
-    // 3. Await the execution and pull the memory back to the Host
-    let host_result = result_future.await.to_host();
+// 3. Await the execution and pull the memory back to the Host
+let host_result = result_future.await.to_host();
 
-    print(host_result);
+print(host_result);
+```
+
 }
 The Verdict
 I strongly recommend pivoting away from spawn(Topology) { ... }. You are exactly right that it is ugly and semantically misleading for physical hardware boundaries.
@@ -192,10 +195,10 @@ If we standardize on Snippet 1 (which is much better for MLIR because it builds 
 
 Rust
 let final_fut = softmax(
-    matmul(A, B)
-        .spawn_on(NPU[0])
-        .await
-        .to_device(NPU[1]) // Your `collect_to` idea
+matmul(A, B)
+.spawn_on(NPU[0])
+.await
+.to_device(NPU[1]) // Your `collect_to` idea
 ).spawn_on(NPU[1]);
 Why this is brilliant:
 
@@ -224,9 +227,9 @@ If you want to keep the "one-liner" aesthetic without the nested parentheses, yo
 
 Rust
 let result = matmul(A, B)
-    .spawn_on(NPU[0]).await
-    |> to_device(NPU[1])
-    |> softmax(_)
-    .spawn_on(NPU[1]).await;
+.spawn_on(NPU[0]).await
+|> to_device(NPU[1])
+|> softmax(\_)
+.spawn_on(NPU[1]).await;
 The Verdict
 Stick with the Lazy Graph + Method Chaining approach (matmul(A).spawn_on(NPU)). It gives you the powerful composability you want, enforces strict type-safety across memory boundaries, and lowers directly into MLIR's async dialect without any hacky compiler passes!

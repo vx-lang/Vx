@@ -14,12 +14,16 @@ None at this time. The strategy aligns with standard C++/Rust compilation techni
 ## Proposed Changes
 
 ### Module Cache & AST Retention
+
 Right now, `sema.rs` typechecks an imported module and then discards its AST. We need to retain these ASTs so they can be passed to the code generator.
+
 - Introduce `module_asts: HashMap<String, Program>` in `TypeChecker` to cache fully type-checked imported modules.
 - `TypeChecker::check_program` will return `Result<(Program, HashMap<String, Program>), Vec<String>>`.
 
 ### Name Mangling in Semantic Analysis
+
 To prevent naming collisions (e.g. multiple modules defining `add`), `sema.rs` will perform namespace mangling on imported modules.
+
 - Add `module_prefix: Option<String>` to `TypeChecker`.
 - When creating a `sub_checker` for `math.vx`, set `module_prefix = Some("math_ak_".to_string())`.
 - When `sub_checker` checks a `Function`, it renames `func.name` to `math_ak_add`.
@@ -28,9 +32,11 @@ To prevent naming collisions (e.g. multiple modules defining `add`), `sema.rs` w
 - When `main.vx` processes `math.add()`, it will look up `add` in `Type::Module`, retrieve the mangled name `math_ak_add`, and emit `Expr::FunctionCall("math_ak_add")`.
 
 #### [MODIFY] `src/ast.rs`
+
 - Add mangled name support to `Type::Module` if necessary, or just rely on the `exports` map returning the mangled name string.
 
 #### [MODIFY] `src/sema.rs`
+
 - Add `module_asts: HashMap<String, Program>` to store the parsed modules.
 - Add `module_prefix: Option<String>` to `TypeChecker`.
 - Implement `mangle_name(name)` which prefixes the name if `module_prefix` is set.
@@ -40,16 +46,19 @@ To prevent naming collisions (e.g. multiple modules defining `add`), `sema.rs` w
 - Update the return type of `check_program` to `Result<(Program, Vec<Program>), Vec<String>>`.
 
 #### [MODIFY] `src/main.rs`
+
 - Receive the tuple of `(main_program, modules)` from `sema.check_program`.
 - Pass both `main_program` and `modules` into `MlirGenerator::generate`.
 
 #### [MODIFY] `src/codegen.rs`
+
 - Update `MlirGenerator::generate` to accept `modules: Vec<Program>`.
 - Generate MLIR for all functions in all modules inside the same MLIR `module { }` block before generating `main_program`.
 
 ## Verification Plan
 
 ### Automated Tests
+
 - Run `vxc tests/frontend/pass/modules_basic/main.vx --emit-mlir`. Verify that `@tests_frontend_pass_modules_basic_math_add` is generated and called correctly.
 - Run `vxc tests/frontend/pass/modules_nested/main.vx --run` and verify that the JIT compiler successfully executes the cross-module code and prints the correct exit code or stdout.
 - Execute `cargo test` to ensure no regressions in existing AST and parser logic.

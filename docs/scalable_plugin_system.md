@@ -191,7 +191,7 @@ If complex multi-device pooling across distinct vendors is needed within a singl
 To start coding this into `vxc` today, follow this sequence to avoid getting blocked. Use Apples NPE for your reference implementation.
 
 1. **Implement the Trait (`hardware_trait.rs`):** Define the `VxHardwarePlugin` Rust trait in your compiler tree.
-2. **Build a "Dummy" Plugin:** Create a mock CPU backend plugin (`DummyCPUPlugin`) that implements the trait but just lowers MLIR `linalg` to standard LLVM IR. This acts as your test harness to ensure the plugin registry and pass manager injection works.
-3. **Draft the C Header:** Add the `vx_hardware_runtime.h` to your project and implement a mock C library for it.
-4. **Wire the IR Emission:** Update your `src/codegen.rs` so that `spawn on` regions are wrapped in `scf.execute_region`, and inside those blocks, ensure standard math calls map to `linalg` MLIR operations.
-5. **Wire the Runtime:** Have your compiler emit LLVM IR calls to the C-ABI (`vx_plugin_dispatch_async`) when it encounters the `spawn on` block boundaries.
+1. **Build a "Dummy" Plugin:** Create a mock CPU backend plugin (`DummyCPUPlugin`) that implements the trait but just lowers MLIR `linalg` to standard LLVM IR. This acts as your test harness to ensure the plugin registry and pass manager injection works.
+1. **Draft the C Header:** Add the `vx_hardware_runtime.h` to your project and implement a mock C library for it.
+1. **Wire the IR Emission:** Update your `src/codegen.rs` so that `spawn on` regions are wrapped in `scf.execute_region`, and inside those blocks, ensure standard math calls map to `linalg` MLIR operations.
+1. **Wire the Runtime:** Have your compiler emit LLVM IR calls to the C-ABI (`vx_plugin_dispatch_async`) when it encounters the `spawn on` block boundaries.
