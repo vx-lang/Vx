@@ -1,3 +1,4 @@
+use melior::ir::operation::OperationLike;
 use std::env;
 use std::fs;
 use vxc::lexer::Lexer;
@@ -10,6 +11,7 @@ fn main() {
     let mut parse_only = false;
     let mut emit_mlir = false;
     let mut run_jit = false;
+    let mut use_melior = false;
     let mut filename = "";
 
     let mut print_ast = false;
@@ -23,6 +25,8 @@ fn main() {
             emit_mlir = true;
         } else if arg == "--run" {
             run_jit = true;
+        } else if arg == "--use-melior" {
+            use_melior = true;
         } else {
             filename = arg;
         }
@@ -87,15 +91,55 @@ fn main() {
                         }
 
                         if emit_mlir {
-                            let mut codegen = vxc::codegen::MlirGenerator::new();
-                            let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                            println!("{}", mlir_str);
+                            if use_melior {
+                                let registry = melior::dialect::DialectRegistry::new();
+                                melior::utility::register_all_dialects(&registry);
+                                let context = melior::Context::new();
+                                context.append_dialect_registry(&registry);
+                                context.load_all_available_dialects();
+                                let mut codegen =
+                                    vxc::melior_codegen::MeliorGenerator::new(&context);
+                                codegen.generate(&monomorphized_ast, &module_asts);
+                                let module = codegen.into_module();
+                                if module.as_operation().verify() {
+                                    println!("{}", module.as_operation());
+                                } else {
+                                    eprintln!("MLIR Verification failed:");
+                                    println!("{}", module.as_operation());
+                                }
+                            } else {
+                                let mut codegen = vxc::codegen::MlirGenerator::new();
+                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                                println!("{}", mlir_str);
+                            }
                         } else if run_jit {
-                            let mut codegen = vxc::codegen::MlirGenerator::new();
-                            let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                            match vxc::jit::execute_mlir(&mlir_str) {
-                                Ok(output) => println!("{}", output),
-                                Err(e) => eprintln!("Execution Error: {}", e),
+                            if use_melior {
+                                let registry = melior::dialect::DialectRegistry::new();
+                                melior::utility::register_all_dialects(&registry);
+                                let context = melior::Context::new();
+                                context.append_dialect_registry(&registry);
+                                context.load_all_available_dialects();
+                                let mut codegen =
+                                    vxc::melior_codegen::MeliorGenerator::new(&context);
+                                codegen.generate(&monomorphized_ast, &module_asts);
+                                let module = codegen.into_module();
+                                if module.as_operation().verify() {
+                                    let mlir_str = format!("{}", module.as_operation());
+                                    match vxc::jit::execute_mlir(&mlir_str) {
+                                        Ok(output) => println!("{}", output),
+                                        Err(e) => eprintln!("Execution Error: {}", e),
+                                    }
+                                } else {
+                                    eprintln!("MLIR Verification failed:");
+                                    println!("{}", module.as_operation());
+                                }
+                            } else {
+                                let mut codegen = vxc::codegen::MlirGenerator::new();
+                                let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                                match vxc::jit::execute_mlir(&mlir_str) {
+                                    Ok(output) => println!("{}", output),
+                                    Err(e) => eprintln!("Execution Error: {}", e),
+                                }
                             }
                         }
                     } else {

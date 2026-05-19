@@ -2,11 +2,7 @@ use std::collections::HashMap;
 
 use melior::{
     dialect::DialectRegistry,
-    ir::{
-        attribute::{StringAttribute, TypeAttribute},
-        operation::OperationLike,
-        Block, BlockLike, Location, Module, Region, RegionLike, Type, Value,
-    },
+    ir::{Block, BlockLike, Location, Module, Region, RegionLike, Type, Value},
     Context,
 };
 
@@ -19,7 +15,6 @@ pub struct MeliorGenerator<'c> {
     structs: HashMap<String, StructDecl>,
     enums: HashMap<String, Vec<String>>,
     functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
-    current_el_ty: Type<'c>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -31,8 +26,6 @@ impl<'c> MeliorGenerator<'c> {
         let location = Location::unknown(context);
         let module = Module::new(location);
 
-        let default_type = Type::parse(context, "f32").unwrap();
-
         Self {
             context,
             module,
@@ -40,8 +33,11 @@ impl<'c> MeliorGenerator<'c> {
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
-            current_el_ty: default_type,
         }
+    }
+
+    pub fn into_module(self) -> Module<'c> {
+        self.module
     }
 
     pub fn generate(&mut self, program: &Program, modules: &HashMap<String, Program>) -> String {
@@ -147,53 +143,13 @@ impl<'c> MeliorGenerator<'c> {
             self.env.insert(name.clone(), (arg_val, arg_tys[i]));
         }
 
-        // Parse body
         for stmt in &func.body {
-            if let Statement::Return(..) = stmt {
-                if is_main {
-                    // Ignore explicit returns in main for simplicity
-                    continue;
-                }
-            }
             self.generate_statement(stmt, &block);
-        }
-
-        if is_main {
-            let zero_op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(self.context),
-            )
-            .add_results(&[Type::parse(self.context, "i32").unwrap()])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(self.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(
-                    Type::parse(self.context, "i32").unwrap(),
-                    0,
-                )
-                .into(),
-            )])
-            .build()
-            .unwrap();
-            let zero_val = zero_op.result(0).unwrap().into();
-            block.append_operation(zero_op);
-
-            let ret_op = melior::ir::operation::OperationBuilder::new(
-                "func.return",
-                Location::unknown(self.context),
-            )
-            .add_operands(&[zero_val])
-            .build()
-            .unwrap();
-            block.append_operation(ret_op);
         }
 
         region.append_block(block);
 
-        let func_op = melior::ir::operation::OperationBuilder::new(
-            "func.func",
-            Location::unknown(self.context),
-        )
-        .add_attributes(&[
+        let mut func_attributes = vec![
             (
                 melior::ir::Identifier::new(self.context, "sym_name"),
                 name_attr.into(),
@@ -202,7 +158,20 @@ impl<'c> MeliorGenerator<'c> {
                 melior::ir::Identifier::new(self.context, "function_type"),
                 type_attr.into(),
             ),
-        ])
+        ];
+
+        if is_main {
+            func_attributes.push((
+                melior::ir::Identifier::new(self.context, "llvm.emit_c_interface"),
+                melior::ir::attribute::Attribute::parse(self.context, "unit").unwrap(),
+            ));
+        }
+
+        let func_op = melior::ir::operation::OperationBuilder::new(
+            "func.func",
+            Location::unknown(self.context),
+        )
+        .add_attributes(&func_attributes)
         .add_regions([region])
         .build()
         .unwrap();
@@ -223,13 +192,32 @@ impl<'c> MeliorGenerator<'c> {
                 .unwrap();
                 block.append_operation(ret_op);
             }
-            Statement::LetDecl(name, is_mut, ty_ann, expr, _) => {
+            Statement::LetDecl(name, is_mut, _ty_ann, expr, _) => {
                 let (val, ty) = self.generate_expr(expr, block);
                 if *is_mut {
-                    // For mutable variables, we should allocate a memref and store the value
-                    // But for simple types we can just rely on SSA reassignment or MLIR memref later
-                    // For now we just insert the value into env
-                    self.env.insert(name.clone(), (val, ty));
+                    let memref_ty = format!("memref<{}>", ty);
+                    let parsed_memref_ty = Type::parse(self.context, &memref_ty).unwrap();
+                    let alloca_op = melior::ir::operation::OperationBuilder::new(
+                        "memref.alloca",
+                        Location::unknown(self.context),
+                    )
+                    .add_results(&[parsed_memref_ty])
+                    .build()
+                    .unwrap();
+                    let alloca_ref = block.append_operation(alloca_op);
+                    let alloca_val = alloca_ref.result(0).unwrap().into();
+
+                    let store_op = melior::ir::operation::OperationBuilder::new(
+                        "memref.store",
+                        Location::unknown(self.context),
+                    )
+                    .add_operands(&[val, alloca_val])
+                    .build()
+                    .unwrap();
+                    block.append_operation(store_op);
+
+                    self.env
+                        .insert(name.clone(), (alloca_val, parsed_memref_ty));
                 } else {
                     self.env.insert(name.clone(), (val, ty));
                 }
@@ -237,15 +225,64 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Assign(lhs, rhs, _) => {
                 let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
                 if let Expr::Identifier(name, _) = lhs {
-                    // Reassigning in our simple SSA representation
-                    self.env.insert(name.clone(), (rhs_val, rhs_ty));
+                    if let Some((mem_val, mem_ty)) = self.env.get(name).cloned() {
+                        let mem_ty_str = mem_ty.to_string();
+                        if mem_ty_str.starts_with("memref<") {
+                            let mut store_val = rhs_val;
+                            let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
+                            let inner_ty = Type::parse(self.context, inner_ty_str).unwrap();
+                            if rhs_ty != inner_ty
+                                && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
+                                    || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
+                            {
+                                let cast_op = melior::ir::operation::OperationBuilder::new(
+                                    "arith.index_cast",
+                                    Location::unknown(self.context),
+                                )
+                                .add_operands(&[rhs_val])
+                                .add_results(&[inner_ty])
+                                .build()
+                                .unwrap();
+
+                                store_val =
+                                    block.append_operation(cast_op).result(0).unwrap().into();
+                            }
+
+                            let store_op = melior::ir::operation::OperationBuilder::new(
+                                "memref.store",
+                                Location::unknown(self.context),
+                            )
+                            .add_operands(&[store_val, mem_val])
+                            .build()
+                            .unwrap();
+                            block.append_operation(store_op);
+                        } else {
+                            self.env.insert(name.clone(), (rhs_val, rhs_ty));
+                        }
+                    }
                 } else {
                     // TODO: handle array indexing or struct member assign
                 }
             }
             Statement::CompoundAssign(lhs, op, rhs, _) => {
-                let (rhs_val, _) = self.generate_expr(rhs, block);
+                let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
                 let (lhs_val, ty) = self.generate_expr(lhs, block);
+
+                let mut actual_rhs = rhs_val;
+                if rhs_ty != ty
+                    && ((rhs_ty.to_string() == "index" && ty.to_string() == "i32")
+                        || (rhs_ty.to_string() == "i32" && ty.to_string() == "index"))
+                {
+                    let cast_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.index_cast",
+                        Location::unknown(self.context),
+                    )
+                    .add_operands(&[actual_rhs])
+                    .add_results(&[ty])
+                    .build()
+                    .unwrap();
+                    actual_rhs = block.append_operation(cast_op).result(0).unwrap().into();
+                }
 
                 let is_float = ty.to_string().contains("f32") || ty.to_string().contains("f64");
                 let op_name = match op {
@@ -284,7 +321,7 @@ impl<'c> MeliorGenerator<'c> {
                     op_name,
                     Location::unknown(self.context),
                 )
-                .add_operands(&[lhs_val, rhs_val])
+                .add_operands(&[lhs_val, actual_rhs])
                 .add_results(&[ty])
                 .build()
                 .unwrap();
@@ -292,7 +329,21 @@ impl<'c> MeliorGenerator<'c> {
                 let result_val = bin_ref.result(0).unwrap().into();
 
                 if let Expr::Identifier(name, _) = lhs {
-                    self.env.insert(name.clone(), (result_val, ty));
+                    if let Some((mem_val, mem_ty)) = self.env.get(name).cloned() {
+                        let mem_ty_str = mem_ty.to_string();
+                        if mem_ty_str.starts_with("memref<") {
+                            let store_op = melior::ir::operation::OperationBuilder::new(
+                                "memref.store",
+                                Location::unknown(self.context),
+                            )
+                            .add_operands(&[result_val, mem_val])
+                            .build()
+                            .unwrap();
+                            block.append_operation(store_op);
+                        } else {
+                            self.env.insert(name.clone(), (result_val, ty));
+                        }
+                    }
                 }
             }
             Statement::ExprStmt(expr, _, _) => {
@@ -406,17 +457,63 @@ impl<'c> MeliorGenerator<'c> {
         match expr {
             Expr::Identifier(name, _) => {
                 if let Some((val, ty)) = self.env.get(name) {
-                    (*val, *ty)
+                    let ty_str = ty.to_string();
+                    if ty_str.starts_with("memref<") && !ty_str.contains("x") {
+                        let inner_ty_str = &ty_str[7..ty_str.len() - 1];
+                        let inner_ty = Type::parse(self.context, inner_ty_str).unwrap();
+                        let load_op = melior::ir::operation::OperationBuilder::new(
+                            "memref.load",
+                            Location::unknown(self.context),
+                        )
+                        .add_operands(&[*val])
+                        .add_results(&[inner_ty])
+                        .build()
+                        .unwrap();
+                        let load_ref = block.append_operation(load_op);
+                        (load_ref.result(0).unwrap().into(), inner_ty)
+                    } else {
+                        (*val, *ty)
+                    }
                 } else {
                     panic!("Undefined variable: {}", name);
                 }
             }
             Expr::BinaryOp(lhs, op, rhs, _) => {
-                let (lhs_val, lhs_ty) = self.generate_expr(lhs, block);
-                let (rhs_val, _) = self.generate_expr(rhs, block);
-                // Assume lhs_ty == rhs_ty for simplicity right now
+                let (mut lhs_val, lhs_ty) = self.generate_expr(lhs, block);
+                let (mut rhs_val, rhs_ty) = self.generate_expr(rhs, block);
+
+                let mut final_ty = lhs_ty;
+
+                if lhs_ty != rhs_ty
+                    && ((lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32")
+                        || (lhs_ty.to_string() == "i32" && rhs_ty.to_string() == "index"))
+                {
+                    if lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32" {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(self.context),
+                        )
+                        .add_operands(&[rhs_val])
+                        .add_results(&[lhs_ty])
+                        .build()
+                        .unwrap();
+                        rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    } else {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(self.context),
+                        )
+                        .add_operands(&[lhs_val])
+                        .add_results(&[rhs_ty])
+                        .build()
+                        .unwrap();
+                        lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                        final_ty = rhs_ty;
+                    }
+                }
+
                 let is_float =
-                    lhs_ty.to_string().contains("f32") || lhs_ty.to_string().contains("f64");
+                    final_ty.to_string().contains("f32") || final_ty.to_string().contains("f64");
 
                 let op_name = match op {
                     BinaryOp::Add => {
@@ -504,8 +601,8 @@ impl<'c> MeliorGenerator<'c> {
                     op,
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
                 ) {
-                    builder = builder.add_results(&[lhs_ty]);
-                    lhs_ty
+                    builder = builder.add_results(&[final_ty]);
+                    final_ty
                 } else {
                     let i1_ty = Type::parse(self.context, "i1").unwrap();
                     builder = builder.add_results(&[i1_ty]);
