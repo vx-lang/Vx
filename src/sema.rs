@@ -287,7 +287,7 @@ impl<'a> TypeChecker<'a> {
         match stmt {
             Statement::Assign(AssignStmt {
                 lhs: _lhs,
-                rhs: rhs,
+                rhs,
                 span: _,
             }) => {
                 let (ty, rhs_reg) = self.check_expr(rhs);
@@ -295,10 +295,7 @@ impl<'a> TypeChecker<'a> {
                 self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
                 // Fallthrough to standard semantic checks
             }
-            Statement::Return(ReturnStmt {
-                expr: expr,
-                span: _,
-            }) => {
+            Statement::Return(ReturnStmt { expr, span: _ }) => {
                 let (ty, ret_reg) = self.check_expr(expr);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
@@ -308,7 +305,7 @@ impl<'a> TypeChecker<'a> {
                 name: _name,
                 is_mut: _,
                 ty_ann: _,
-                expr: expr,
+                expr,
                 span: _,
             }) => {
                 let (ty, val_reg) = self.check_expr(expr);
@@ -320,10 +317,10 @@ impl<'a> TypeChecker<'a> {
 
         match stmt {
             Statement::LetDecl(LetDeclStmt {
-                name: name,
+                name,
                 is_mut: _is_mut,
-                ty_ann: ty_ann,
-                expr: expr,
+                ty_ann,
+                expr,
                 span: _,
             }) => {
                 let ty = self.check_expr_type(expr);
@@ -339,10 +336,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::ForLoop(ForLoopStmt {
-                iter: iter,
-                start: start,
-                end: end,
-                body: body,
+                iter,
+                start,
+                end,
+                body,
                 span: _,
             }) => {
                 self.check_expr_type(start);
@@ -354,15 +351,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.pop_scope();
             }
-            Statement::Assign(AssignStmt {
-                lhs: lhs,
-                rhs: rhs,
-                span: _,
-            })
+            Statement::Assign(AssignStmt { lhs, rhs, span: _ })
             | Statement::CompoundAssign(CompoundAssignStmt {
-                lhs: lhs,
+                lhs,
                 op: _,
-                rhs: rhs,
+                rhs,
                 span: _,
             }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, false);
@@ -371,10 +364,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
             }
-            Statement::Return(ReturnStmt {
-                expr: expr,
-                span: _,
-            }) => {
+            Statement::Return(ReturnStmt { expr, span: _ }) => {
                 let ty = self.check_expr_type(expr);
                 if !self.is_assignable(return_type, &ty) {
                     self.errors.push(format!(
@@ -384,8 +374,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::SpawnOn(SpawnOnStmt {
-                top: top,
-                stmts: stmts,
+                top,
+                stmts,
                 span: _,
             }) => {
                 let prev_top = self.active_topology.clone();
@@ -425,14 +415,14 @@ impl<'a> TypeChecker<'a> {
                 self.active_memory = prev_mem;
             }
             Statement::ExprStmt(ExprStmtStmt {
-                expr: expr,
+                expr,
                 has_semi: _,
                 span: _,
             }) => {
                 self.check_expr_type(expr);
             }
             Statement::Assert(AssertStmt {
-                expr: expr,
+                expr,
                 msg: _msg,
                 span: _,
             }) => {
@@ -466,9 +456,9 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
             Expr::BinaryOp(BinaryOpExpr {
-                lhs: lhs,
-                op: op,
-                rhs: rhs,
+                lhs,
+                op,
+                rhs,
                 span: _,
             }) => {
                 let l = self.eval_expr(lhs, env)?;
@@ -501,8 +491,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::FunctionCall(FunctionCallExpr {
-                name: name,
-                args: args,
+                name,
+                args,
                 span: _,
             }) => {
                 let func = self.env.ast_functions.get(name)?;
@@ -525,10 +515,10 @@ impl<'a> TypeChecker<'a> {
     fn eval_statement(&self, stmt: &Statement, env: &mut HashMap<String, Value>) -> Option<Value> {
         match stmt {
             Statement::LetDecl(LetDeclStmt {
-                name: name,
+                name,
                 is_mut: _,
                 ty_ann: _,
-                expr: expr,
+                expr,
                 span: _,
             }) => {
                 if let Some(val) = self.eval_expr(expr, env) {
@@ -537,12 +527,8 @@ impl<'a> TypeChecker<'a> {
                 None
             }
             Statement::Assign(AssignStmt {
-                lhs:
-                    Expr::Identifier(IdentifierExpr {
-                        name: name,
-                        span: _,
-                    }),
-                rhs: rhs,
+                lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
+                rhs,
                 span: _,
             }) => {
                 if let Some(val) = self.eval_expr(rhs, env) {
@@ -550,10 +536,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 None
             }
-            Statement::Return(ReturnStmt {
-                expr: expr,
-                span: _,
-            }) => self.eval_expr(expr, env),
+            Statement::Return(ReturnStmt { expr, span: _ }) => self.eval_expr(expr, env),
             _ => None,
         }
     }
@@ -571,7 +554,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(IdentifierExpr { name: _, span: _ }) => crate::hir::OP_LOAD,
             Expr::BinaryOp(BinaryOpExpr {
                 lhs: _,
-                op: op,
+                op,
                 rhs: _,
                 span: _,
             }) => match op {
@@ -602,10 +585,7 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr {
-                name: name,
-                span: _,
-            }) => {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
@@ -678,7 +658,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::EnumVariant(EnumVariantExpr {
-                enum_name: enum_name,
+                enum_name,
                 variant_name: variant,
                 span: _,
             }) => {
@@ -737,14 +717,14 @@ impl<'a> TypeChecker<'a> {
             }
 
             Expr::ComptimeBlock(ComptimeBlockExpr {
-                stmts: stmts,
-                ret: ret,
+                stmts,
+                ret,
                 span: _,
             }) => {
                 self.push_scope();
                 for stmt in stmts {
                     if let Statement::ExprStmt(ExprStmtStmt {
-                        expr: ref mut expr,
+                        ref mut expr,
                         has_semi: _,
                         span: _,
                     }) = stmt
@@ -753,12 +733,7 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
                     }
-                    if let Statement::Assert(AssertStmt {
-                        expr: expr,
-                        msg: msg,
-                        span: _,
-                    }) = stmt
-                    {
+                    if let Statement::Assert(AssertStmt { expr, msg, span: _ }) = stmt {
                         let ty = self.check_expr_type(expr);
                         if ty != Type::Scalar(ElementType::Bool) {
                             self.errors
@@ -786,9 +761,9 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             }
             Expr::If(IfExpr {
-                cond: cond,
-                then_block: then_block,
-                else_block: else_block,
+                cond,
+                then_block,
+                else_block,
                 span: _,
             }) => {
                 let cond_ty = self.check_expr_type(cond);
@@ -800,7 +775,7 @@ impl<'a> TypeChecker<'a> {
                 let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
                 for s in then_block.iter_mut() {
                     if let Statement::ExprStmt(ExprStmtStmt {
-                        expr: ref mut expr,
+                        ref mut expr,
                         has_semi: _,
                         span: _,
                     }) = s
@@ -817,7 +792,7 @@ impl<'a> TypeChecker<'a> {
                     self.push_scope();
                     for s in else_b.iter_mut() {
                         if let Statement::ExprStmt(ExprStmtStmt {
-                            expr: ref mut expr,
+                            ref mut expr,
                             has_semi: _,
                             span: _,
                         }) = s
@@ -842,8 +817,8 @@ impl<'a> TypeChecker<'a> {
                 then_ty
             }
             Expr::FunctionCall(FunctionCallExpr {
-                name: name,
-                args: args,
+                name,
+                args,
                 span: _,
             }) => {
                 let resolved_name = name.clone();
@@ -1015,10 +990,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
-            Expr::Array(ArrayExpr {
-                elements: elements,
-                span: _,
-            }) => {
+            Expr::Array(ArrayExpr { elements, span: _ }) => {
                 for el in elements {
                     self.check_expr_type(el);
                 }
@@ -1026,7 +998,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::MemberAccess(MemberAccessExpr {
                 base: obj,
-                member: member,
+                member,
                 span: _,
             }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
@@ -1084,7 +1056,7 @@ impl<'a> TypeChecker<'a> {
             Expr::MethodCall(MethodCallExpr {
                 base: obj,
                 method_name: _method,
-                args: args,
+                args,
                 span: _,
             }) => {
                 let mut base_ty = self.check_expr_type_flag(obj, false, silent);
@@ -1124,7 +1096,7 @@ impl<'a> TypeChecker<'a> {
                         let mut is_exact = true;
                         if args.len() >= 2 {
                             if let Expr::EnumVariant(EnumVariantExpr {
-                                enum_name: enum_name,
+                                enum_name,
                                 variant_name: variant,
                                 span: _,
                             }) = &args[1]
@@ -1406,9 +1378,9 @@ impl<'a> TypeChecker<'a> {
                 base_ty
             }
             Expr::BinaryOp(BinaryOpExpr {
-                lhs: lhs,
-                op: op,
-                rhs: rhs,
+                lhs,
+                op,
+                rhs,
                 span: _,
             }) => {
                 let op_consume = match op {
@@ -1444,7 +1416,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::UnaryOp(UnaryOpExpr {
-                op: op,
+                op,
                 expr: inner,
                 span: _,
             }) => {
@@ -1455,7 +1427,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Borrow(BorrowExpr {
                 expr: inner,
-                is_mut: is_mut,
+                is_mut,
                 span: _,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
@@ -1480,7 +1452,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::UnsafeBlock(UnsafeBlockExpr {
-                stmts: stmts,
+                stmts,
                 ret: ret_expr,
                 span: _,
             }) => {
@@ -1489,7 +1461,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 for s in stmts.iter_mut() {
                     if let Statement::ExprStmt(ExprStmtStmt {
-                        expr: ref mut expr,
+                        ref mut expr,
                         has_semi: _,
                         span: _,
                     }) = s
@@ -1511,8 +1483,8 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             }
             Expr::StructInit(StructInitExpr {
-                name: name,
-                fields: fields,
+                name,
+                fields,
                 span: _,
             }) => {
                 let resolved_name = name.clone();

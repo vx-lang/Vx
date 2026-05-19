@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
             let right = self.parse_binary_expr(op_prec + 1)?;
             left = Expr::BinaryOp(BinaryOpExpr {
                 lhs: Box::new(left),
-                op: op,
+                op,
                 rhs: Box::new(right),
                 span: Span::default(),
             });
@@ -387,7 +387,7 @@ impl<'a> Parser<'a> {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(inner),
-                is_mut: is_mut,
+                is_mut,
                 span: Span::default(),
             }));
         } else if self.match_token(&TokenType::Star) {
@@ -404,8 +404,8 @@ impl<'a> Parser<'a> {
             }
             let mut ret = None;
             if let Some(Statement::ExprStmt(ExprStmtStmt {
-                expr: expr,
-                has_semi: has_semi,
+                expr,
+                has_semi,
                 span: _,
             })) = stmts.last().cloned()
             {
@@ -416,8 +416,8 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
             return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
-                stmts: stmts,
-                ret: ret,
+                stmts,
+                ret,
                 span: Span::default(),
             }));
         } else if self.match_token(&TokenType::If) {
@@ -451,8 +451,8 @@ impl<'a> Parser<'a> {
             }
             return Ok(Expr::If(IfExpr {
                 cond: Box::new(cond),
-                then_block: then_block,
-                else_block: else_block,
+                then_block,
+                else_block,
                 span: Span::default(),
             }));
         }
@@ -480,7 +480,7 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightBracket, "Expected ']'")?;
             Expr::Array(ArrayExpr {
-                elements: elements,
+                elements,
                 span: Span::default(),
             })
         } else if self.check(&TokenType::Memory) {
@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         Expr::FunctionCall(FunctionCallExpr {
                             name: call_name,
-                            args: args,
+                            args,
                             span: Span::default(),
                         })
                     } else if self.check(&TokenType::LeftBrace) {
@@ -596,7 +596,7 @@ impl<'a> Parser<'a> {
                             self.consume(&TokenType::RightBrace, "Expected '}'")?;
                             Expr::StructInit(StructInitExpr {
                                 name: call_name,
-                                fields: fields,
+                                fields,
                                 span: Span::default(),
                             })
                         } else if self.match_token(&TokenType::DoubleColon) {
@@ -688,7 +688,7 @@ impl<'a> Parser<'a> {
                         if self.check(&TokenType::RightBrace) {
                             if let Statement::ExprStmt(ExprStmtStmt {
                                 expr: e,
-                                has_semi: has_semi,
+                                has_semi,
                                 span: _,
                             }) = stmt
                             {
@@ -702,7 +702,7 @@ impl<'a> Parser<'a> {
                     }
                     self.consume(&TokenType::RightBrace, "Expected '}'")?;
                     Expr::ComptimeBlock(ComptimeBlockExpr {
-                        stmts: stmts,
+                        stmts,
                         ret: ret_expr,
                         span: Span::default(),
                     })
@@ -732,7 +732,7 @@ impl<'a> Parser<'a> {
                     expr = Expr::MethodCall(MethodCallExpr {
                         base: Box::new(expr),
                         method_name: ident,
-                        args: args,
+                        args,
                         span: Span::default(),
                     });
                 } else {
@@ -779,10 +779,10 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::LetDecl(LetDeclStmt {
-                    name: name,
-                    is_mut: is_mut,
+                    name,
+                    is_mut,
                     ty_ann: type_annotation,
-                    expr: expr,
+                    expr,
                     span: Span::default(),
                 }))
             }
@@ -797,8 +797,8 @@ impl<'a> Parser<'a> {
                 }
                 let mut ret = None;
                 if let Some(Statement::ExprStmt(ExprStmtStmt {
-                    expr: expr,
-                    has_semi: has_semi,
+                    expr,
+                    has_semi,
                     span: _,
                 })) = stmts.last().cloned()
                 {
@@ -810,8 +810,8 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::RightBrace, "Expected '}' after comptime block")?;
                 Ok(Statement::ExprStmt(ExprStmtStmt {
                     expr: Expr::ComptimeBlock(ComptimeBlockExpr {
-                        stmts: stmts,
-                        ret: ret,
+                        stmts,
+                        ret,
                         span: Span::default(),
                     }),
                     has_semi: true,
@@ -840,7 +840,7 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
                 Ok(Statement::Assert(AssertStmt {
                     expr: Box::new(expr),
-                    msg: msg,
+                    msg,
                     span: Span::default(),
                 }))
             }
@@ -849,7 +849,7 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::Return(ReturnStmt {
-                    expr: expr,
+                    expr,
                     span: Span::default(),
                 }))
             }
@@ -865,23 +865,20 @@ impl<'a> Parser<'a> {
                     stmts.push(self.parse_statement()?);
                 }
                 if let Some(Statement::ExprStmt(ExprStmtStmt {
-                    expr: expr,
-                    has_semi: has_semi,
-                    span: span,
+                    expr,
+                    has_semi,
+                    span,
                 })) = stmts.last().cloned()
                 {
                     if !has_semi {
                         let last_idx = stmts.len() - 1;
-                        stmts[last_idx] = Statement::Return(ReturnStmt {
-                            expr: expr,
-                            span: span,
-                        });
+                        stmts[last_idx] = Statement::Return(ReturnStmt { expr, span });
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::SpawnOn(SpawnOnStmt {
-                    top: top,
-                    stmts: stmts,
+                    top,
+                    stmts,
                     span: Span::default(),
                 }))
             }
@@ -902,7 +899,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::ForLoop(ForLoopStmt {
-                    iter: iter,
+                    iter,
                     start: Box::new(start),
                     end: Box::new(end),
                     body: stmts,
@@ -916,7 +913,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::Semicolon, "Expected ';'")?;
                     Ok(Statement::Assign(AssignStmt {
                         lhs: expr,
-                        rhs: rhs,
+                        rhs,
                         span: Span::default(),
                     }))
                 } else if self.match_token(&TokenType::PlusEquals) {
@@ -925,7 +922,7 @@ impl<'a> Parser<'a> {
                     Ok(Statement::CompoundAssign(CompoundAssignStmt {
                         lhs: expr,
                         op: BinaryOp::Add,
-                        rhs: rhs,
+                        rhs,
                         span: Span::default(),
                     }))
                 } else {
@@ -945,7 +942,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     Ok(Statement::ExprStmt(ExprStmtStmt {
-                        expr: expr,
+                        expr,
                         has_semi: has_semicolon,
                         span: Span::default(),
                     }))
@@ -1023,17 +1020,14 @@ impl<'a> Parser<'a> {
 
         // Transform implicit return
         if let Some(Statement::ExprStmt(ExprStmtStmt {
-            expr: expr,
-            has_semi: has_semi,
-            span: span,
+            expr,
+            has_semi,
+            span,
         })) = body.last().cloned()
         {
             if !has_semi {
                 let last_idx = body.len() - 1;
-                body[last_idx] = Statement::Return(ReturnStmt {
-                    expr: expr,
-                    span: span,
-                });
+                body[last_idx] = Statement::Return(ReturnStmt { expr, span });
             }
         }
 
@@ -1364,8 +1358,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
         if let Statement::SpawnOn(SpawnOnStmt {
-            top: top,
-            stmts: stmts,
+            top,
+            stmts,
             span: _,
         }) = &func.body[0]
         {
@@ -1390,10 +1384,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let program = parser.parse().unwrap();
         let func = &program.functions[0];
         if let Statement::LetDecl(LetDeclStmt {
-            name: name,
-            is_mut: is_mut,
+            name,
+            is_mut,
             ty_ann: ty,
-            expr: expr,
+            expr,
             span: _,
         }) = &func.body[0]
         {
@@ -1402,17 +1396,13 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             assert_eq!(ty, &Some(Type::Tensor(ElementType::F32, vec![], None)));
             if let Expr::FunctionCall(FunctionCallExpr {
                 name: func_name,
-                args: args,
+                args,
                 span: _,
             }) = expr
             {
                 assert_eq!(func_name, "Tensor");
                 assert_eq!(args.len(), 1);
-                if let Expr::Array(ArrayExpr {
-                    elements: elements,
-                    span: _,
-                }) = &args[0]
-                {
+                if let Expr::Array(ArrayExpr { elements, span: _ }) = &args[0] {
                     assert_eq!(elements.len(), 2);
                 } else {
                     panic!("Expected array");
@@ -1431,10 +1421,10 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(ForLoopStmt {
-            iter: iter,
-            start: start,
-            end: end,
-            body: body,
+            iter,
+            start,
+            end,
+            body,
             span: _,
         }) = &program.functions[0].body[0]
         {
@@ -1456,12 +1446,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 })
             );
             assert_eq!(body.len(), 1);
-            if let Statement::Assign(AssignStmt {
-                lhs: lhs,
-                rhs: rhs,
-                span: _,
-            }) = &body[0]
-            {
+            if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
                 assert_eq!(
                     *lhs,
                     Expr::Identifier(IdentifierExpr {
@@ -1491,9 +1476,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::CompoundAssign(CompoundAssignStmt {
-            lhs: lhs,
-            op: op,
-            rhs: rhs,
+            lhs,
+            op,
+            rhs,
             span: _,
         }) = &program.functions[0].body[0]
         {
@@ -1559,7 +1544,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
         let program = parser.parse().unwrap();
         if let Statement::ExprStmt(ExprStmtStmt {
-            expr: expr,
+            expr,
             has_semi: _,
             span: _,
         }) = &program.functions[0].body[0]
@@ -1567,7 +1552,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             if let Expr::MethodCall(MethodCallExpr {
                 base: obj,
                 method_name: method,
-                args: args,
+                args,
                 span: _,
             }) = expr
             {
@@ -1575,7 +1560,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 assert_eq!(args.len(), 1);
                 if let Expr::MemberAccess(MemberAccessExpr {
                     base: inner_obj,
-                    member: member,
+                    member,
                     span: _,
                 }) = &**obj
                 {
@@ -1623,7 +1608,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         assert_eq!(func.name, "custom_matmul");
         if let Statement::SpawnOn(SpawnOnStmt {
             top: _,
-            stmts: stmts,
+            stmts,
             span: _,
         }) = &func.body[0]
         {
@@ -1677,7 +1662,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         if let Statement::ExprStmt(ExprStmtStmt {
             expr:
                 Expr::UnsafeBlock(UnsafeBlockExpr {
-                    stmts: stmts,
+                    stmts,
                     ret: None,
                     span: _,
                 }),
@@ -1729,14 +1714,10 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
 
         // stdout_write should have a Return statement (implicit return converted)
         let func1 = &program.functions[0];
-        if let Statement::Return(ReturnStmt {
-            expr: expr,
-            span: _,
-        }) = &func1.body[0]
-        {
+        if let Statement::Return(ReturnStmt { expr, span: _ }) = &func1.body[0] {
             if let Expr::FunctionCall(FunctionCallExpr {
-                name: name,
-                args: args,
+                name,
+                args,
                 span: _,
             }) = expr
             {
@@ -1752,15 +1733,15 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         // stderr_write should have an ExprStmt with has_semicolon = true
         let func2 = &program.functions[1];
         if let Statement::ExprStmt(ExprStmtStmt {
-            expr: expr,
+            expr,
             has_semi: has_semicolon,
             span: _,
         }) = &func2.body[0]
         {
             assert!(*has_semicolon);
             if let Expr::FunctionCall(FunctionCallExpr {
-                name: name,
-                args: args,
+                name,
+                args,
                 span: _,
             }) = expr
             {

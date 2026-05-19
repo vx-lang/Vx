@@ -47,10 +47,10 @@ impl AstPrinter {
 
             match stmt {
                 Statement::LetDecl(LetDeclStmt {
-                    name: name,
-                    is_mut: is_mut,
+                    name,
+                    is_mut,
                     ty_ann: ty,
-                    expr: expr,
+                    expr,
                     span: _,
                 }) => {
                     println!(
@@ -67,11 +67,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::Assign(AssignStmt {
-                    lhs: lhs,
-                    rhs: rhs,
-                    span: _,
-                }) => {
+                Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
                     println!(" {}{}Assign", indent, prefix);
                     Self::print_expr(
                         lhs,
@@ -84,10 +80,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::Return(ReturnStmt {
-                    expr: expr,
-                    span: _,
-                }) => {
+                Statement::Return(ReturnStmt { expr, span: _ }) => {
                     println!("{}{}Return", indent, prefix);
                     Self::print_expr(
                         expr,
@@ -96,7 +89,7 @@ impl AstPrinter {
                     );
                 }
                 Statement::ExprStmt(ExprStmtStmt {
-                    expr: expr,
+                    expr,
                     has_semi: _,
                     span: _,
                 }) => {
@@ -117,10 +110,9 @@ impl AstPrinter {
     fn print_expr(expr: &Expr, indent: &str, is_last: bool) {
         let prefix = if is_last { "└─ " } else { "├─ " };
         match expr {
-            Expr::Identifier(IdentifierExpr {
-                name: name,
-                span: _,
-            }) => println!("{}{}Identifier({})", indent, prefix, name),
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
+                println!("{}{}Identifier({})", indent, prefix, name)
+            }
             Expr::Number(NumberExpr {
                 value: val,
                 ty: el_ty,
@@ -132,9 +124,9 @@ impl AstPrinter {
                 println!("{}{}String(\"{}\")", indent, prefix, s)
             }
             Expr::BinaryOp(BinaryOpExpr {
-                lhs: lhs,
-                op: op,
-                rhs: rhs,
+                lhs,
+                op,
+                rhs,
                 span: _,
             }) => {
                 println!("{}{}BinaryOp({:?})", indent, prefix, op);
@@ -143,8 +135,8 @@ impl AstPrinter {
                 Self::print_expr(rhs, &new_indent, true);
             }
             Expr::FunctionCall(FunctionCallExpr {
-                name: name,
-                args: args,
+                name,
+                args,
                 span: _,
             }) => {
                 println!("{}{}Call({})", indent, prefix, name);
@@ -156,7 +148,7 @@ impl AstPrinter {
             Expr::MethodCall(MethodCallExpr {
                 base: expr,
                 method_name: method,
-                args: args,
+                args,
                 span: _,
             }) => {
                 println!("{}{}MethodCall(.'{}')", indent, prefix, method);
@@ -177,7 +169,7 @@ impl AstPrinter {
                 }
             }
             Expr::EnumVariant(EnumVariantExpr {
-                enum_name: enum_name,
+                enum_name,
                 variant_name: variant,
                 span: _,
             }) => {
@@ -185,8 +177,8 @@ impl AstPrinter {
             }
 
             Expr::ComptimeBlock(ComptimeBlockExpr {
-                stmts: stmts,
-                ret: ret,
+                stmts,
+                ret,
                 span: _,
             }) => {
                 println!("{}{}ComptimeBlock", indent, prefix);

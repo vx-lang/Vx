@@ -451,10 +451,7 @@ impl MeliorOpInfo for BinaryOp {
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let IdentifierExpr {
-            name: name,
-            span: _,
-        } = self;
+        let IdentifierExpr { name, span: _ } = self;
         if let Some((val, ty)) = gen.env.get(name) {
             let ty_str = ty.to_string();
             if ty_str.starts_with("memref<") && !ty_str.contains("x") {
@@ -483,9 +480,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let BinaryOpExpr {
-            lhs: lhs,
-            op: op,
-            rhs: rhs,
+            lhs,
+            op,
+            rhs,
             span: _,
         } = self;
         let (mut lhs_val, lhs_ty) = gen.generate_expr(lhs, block);
@@ -552,8 +549,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let StructInitExpr {
-            name: name,
-            fields: fields,
+            name,
+            fields,
             span: _,
         } = self;
         let struct_decl = gen.structs.get(name).unwrap().clone();
@@ -619,8 +616,8 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let MemberAccessExpr {
-            base: base,
-            member: member,
+            base,
+            member,
             span: _,
         } = self;
         let (base_val, base_ty) = gen.generate_expr(base, block);
@@ -668,8 +665,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let FunctionCallExpr {
-            name: name,
-            args: args,
+            name,
+            args,
             span: _,
         } = self;
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
@@ -745,10 +742,10 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let MethodCallExpr {
-            base: base,
-            method_name: method_name,
-            args: args,
-            span: span,
+            base,
+            method_name,
+            args,
+            span,
         } = self;
         let mut new_args = vec![*base.clone()];
         new_args.extend(args.clone());
@@ -800,8 +797,8 @@ impl<'c> LowerToMelior<'c> for IfExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let IfExpr {
-            cond: cond,
-            then_block: then_block,
+            cond,
+            then_block,
             else_block: else_block_opt,
             span: _,
         } = self;
@@ -913,10 +910,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
 impl<'c> LowerToMelior<'c> for ReturnStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let ReturnStmt {
-            expr: expr,
-            span: _,
-        } = self;
+        let ReturnStmt { expr, span: _ } = self;
         let (val, _) = gen.generate_expr(expr, block);
         let ret_op = melior::ir::operation::OperationBuilder::new(
             "func.return",
@@ -933,10 +927,10 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let LetDeclStmt {
-            name: name,
-            is_mut: is_mut,
+            name,
+            is_mut,
             ty_ann: _ty_ann,
-            expr: expr,
+            expr,
             span: _,
         } = self;
         let (val, ty) = gen.generate_expr(expr, block);
@@ -972,17 +966,9 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
 impl<'c> LowerToMelior<'c> for AssignStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let AssignStmt {
-            lhs: lhs,
-            rhs: rhs,
-            span: _,
-        } = self;
+        let AssignStmt { lhs, rhs, span: _ } = self;
         let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
-        if let Expr::Identifier(IdentifierExpr {
-            name: name,
-            span: _,
-        }) = lhs
-        {
+        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
@@ -1018,8 +1004,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 }
             }
         } else if let Expr::MemberAccess(MemberAccessExpr {
-            base: base,
-            member: member,
+            base,
+            member,
             span: _,
         }) = lhs
         {
@@ -1114,9 +1100,9 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let CompoundAssignStmt {
-            lhs: lhs,
-            op: op,
-            rhs: rhs,
+            lhs,
+            op,
+            rhs,
             span: _,
         } = self;
         let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
@@ -1150,11 +1136,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let bin_ref = block.append_operation(bin_op);
         let result_val = bin_ref.result(0).unwrap().into();
 
-        if let Expr::Identifier(IdentifierExpr {
-            name: name,
-            span: _,
-        }) = lhs
-        {
+        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
@@ -1178,7 +1160,7 @@ impl<'c> LowerToMelior<'c> for ExprStmtStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let ExprStmtStmt {
-            expr: expr,
+            expr,
             has_semi: _,
             span: _,
         } = self;
@@ -1190,10 +1172,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let ForLoopStmt {
-            iter: iter,
-            start: start,
-            end: end,
-            body: body,
+            iter,
+            start,
+            end,
+            body,
             span: _,
         } = self;
         let (start_val, start_ty) = gen.generate_expr(start, block);
