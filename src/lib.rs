@@ -9,6 +9,7 @@ pub mod hash;
 pub mod hir;
 pub mod jit;
 pub mod lexer;
+pub mod melior_codegen;
 pub mod metadata;
 pub mod module_loader;
 pub mod parallel_architecture_verifier;
