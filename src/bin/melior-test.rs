@@ -9,9 +9,13 @@ fn main() {
 
     // Create a dummy AST
     // fn test_func() -> i32 {
-    //     let a = 20;
-    //     let b = 22;
-    //     return a + b;
+    //     let mut sum = 0;
+    //     for i in 0..10 {
+    //         if i > 5 {
+    //             sum = sum + i;
+    //         }
+    //     }
+    //     return sum;
     // }
     let func = Function {
         name: "test_func".to_string(),
@@ -20,26 +24,44 @@ fn main() {
         return_type: Type::Scalar(ElementType::I32),
         body: vec![
             Statement::LetDecl(
-                "a".to_string(),
-                false,
+                "sum".to_string(),
+                true,
                 None,
-                Expr::Number("20".to_string(), None, Span::default()),
+                Expr::Number("0".to_string(), None, Span::default()),
                 Span::default(),
             ),
-            Statement::LetDecl(
-                "b".to_string(),
-                false,
-                None,
-                Expr::Number("22".to_string(), None, Span::default()),
+            Statement::ForLoop(
+                "i".to_string(),
+                Box::new(Expr::Number("0".to_string(), None, Span::default())),
+                Box::new(Expr::Number("10".to_string(), None, Span::default())),
+                vec![Statement::ExprStmt(
+                    Expr::If(
+                        Box::new(Expr::BinaryOp(
+                            Box::new(Expr::Identifier("i".to_string(), Span::default())),
+                            BinaryOp::Gt,
+                            Box::new(Expr::Number("5".to_string(), None, Span::default())),
+                            Span::default(),
+                        )),
+                        vec![Statement::Assign(
+                            Expr::Identifier("sum".to_string(), Span::default()),
+                            Expr::BinaryOp(
+                                Box::new(Expr::Identifier("sum".to_string(), Span::default())),
+                                BinaryOp::Add,
+                                Box::new(Expr::Identifier("i".to_string(), Span::default())),
+                                Span::default(),
+                            ),
+                            Span::default(),
+                        )],
+                        None,
+                        Span::default(),
+                    ),
+                    false,
+                    Span::default(),
+                )],
                 Span::default(),
             ),
             Statement::Return(
-                Expr::BinaryOp(
-                    Box::new(Expr::Identifier("a".to_string(), Span::default())),
-                    BinaryOp::Add,
-                    Box::new(Expr::Identifier("b".to_string(), Span::default())),
-                    Span::default(),
-                ),
+                Expr::Identifier("sum".to_string(), Span::default()),
                 Span::default(),
             ),
         ],
