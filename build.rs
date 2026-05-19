@@ -20,16 +20,28 @@ use std::process::Command;
 
 fn main() {
     // Ensure llvm-config is in PATH because the `melior` and `tblgen` dependencies require it.
-    if Command::new("llvm-config")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
+    let llvm_configs = [
+        "llvm-config-18",
+        "llvm-config-17",
+        "llvm-config-16",
+        "llvm-config-15",
+        "llvm-config",
+    ];
+    let mut found = false;
+    for cfg in llvm_configs.iter() {
+        if Command::new(cfg).arg("--version").output().is_ok() {
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
         println!(
             "cargo:warning=⚠️  LLVM is not in PATH! `melior` and `tblgen` will fail to build."
         );
         println!("cargo:warning=On macOS with Homebrew, run: export PATH=\"/opt/homebrew/opt/llvm/bin:$PATH\"");
-        panic!("llvm-config not found in PATH");
+        println!("cargo:warning=On Ubuntu, run: sudo apt-get install llvm-17 llvm-17-dev");
+        panic!("llvm-config not found in PATH. Make sure LLVM 15+ is installed.");
     }
 
     // Check if we're on macOS
