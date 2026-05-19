@@ -765,21 +765,33 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
 
 impl<'c> LowerToMelior<'c> for ArrayExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    fn lower(
+        &self,
+        _gen: &mut MeliorGenerator<'c>,
+        _block: &melior::ir::Block<'c>,
+    ) -> Self::Output {
         panic!("Should not be evaluated directly")
     }
 }
 
 impl<'c> LowerToMelior<'c> for MemorySpaceExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    fn lower(
+        &self,
+        _gen: &mut MeliorGenerator<'c>,
+        _block: &melior::ir::Block<'c>,
+    ) -> Self::Output {
         panic!("Should not be evaluated directly")
     }
 }
 
 impl<'c> LowerToMelior<'c> for TopologyExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    fn lower(
+        &self,
+        _gen: &mut MeliorGenerator<'c>,
+        _block: &melior::ir::Block<'c>,
+    ) -> Self::Output {
         panic!("Should not be evaluated directly")
     }
 }
