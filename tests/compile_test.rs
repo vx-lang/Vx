@@ -250,7 +250,7 @@ fn test_backend() {
     let dir = Path::new("tests/backend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_iter().for_each(|entry| {
+        entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 println!("Running test_backend on {:?}", path);
