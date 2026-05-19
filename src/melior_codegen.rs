@@ -365,6 +365,89 @@ pub trait LowerToMelior<'c> {
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output;
 }
 
+pub trait MeliorOpInfo {
+    fn get_op_name(&self, is_float: bool) -> &'static str;
+    fn get_predicate(&self, is_float: bool) -> Option<i64>;
+}
+
+impl MeliorOpInfo for BinaryOp {
+    fn get_op_name(&self, is_float: bool) -> &'static str {
+        match self {
+            BinaryOp::Add => {
+                if is_float {
+                    "arith.addf"
+                } else {
+                    "arith.addi"
+                }
+            }
+            BinaryOp::Sub => {
+                if is_float {
+                    "arith.subf"
+                } else {
+                    "arith.subi"
+                }
+            }
+            BinaryOp::Mul => {
+                if is_float {
+                    "arith.mulf"
+                } else {
+                    "arith.muli"
+                }
+            }
+            BinaryOp::Div => {
+                if is_float {
+                    "arith.divf"
+                } else {
+                    "arith.divsi"
+                }
+            }
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::Le
+            | BinaryOp::Ge => {
+                if is_float {
+                    "arith.cmpf"
+                } else {
+                    "arith.cmpi"
+                }
+            }
+            _ => panic!("Unsupported binary op for get_op_name"),
+        }
+    }
+
+    fn get_predicate(&self, is_float: bool) -> Option<i64> {
+        if matches!(
+            self,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            return None;
+        }
+        Some(if is_float {
+            match self {
+                BinaryOp::Eq => 1,    // oeq
+                BinaryOp::Gt => 2,    // ogt
+                BinaryOp::Ge => 3,    // oge
+                BinaryOp::Lt => 4,    // olt
+                BinaryOp::Le => 5,    // ole
+                BinaryOp::NotEq => 6, // one
+                _ => 0,
+            }
+        } else {
+            match self {
+                BinaryOp::Eq => 0,    // eq
+                BinaryOp::NotEq => 1, // ne
+                BinaryOp::Lt => 2,    // slt
+                BinaryOp::Le => 3,    // sle
+                BinaryOp::Gt => 4,    // sgt
+                BinaryOp::Ge => 5,    // sge
+                _ => 0,
+            }
+        })
+    }
+}
+
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
@@ -440,124 +523,23 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
         let is_float = final_ty.to_string().contains("f32") || final_ty.to_string().contains("f64");
 
-        let op_name = match op {
-            BinaryOp::Add => {
-                if is_float {
-                    "arith.addf"
-                } else {
-                    "arith.addi"
-                }
-            }
-            BinaryOp::Sub => {
-                if is_float {
-                    "arith.subf"
-                } else {
-                    "arith.subi"
-                }
-            }
-            BinaryOp::Mul => {
-                if is_float {
-                    "arith.mulf"
-                } else {
-                    "arith.muli"
-                }
-            }
-            BinaryOp::Div => {
-                if is_float {
-                    "arith.divf"
-                } else {
-                    "arith.divsi"
-                }
-            }
-            // Compare operations
-            BinaryOp::Eq => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::NotEq => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::Lt => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::Gt => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::Le => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::Ge => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            _ => panic!("Unsupported binary op"),
-        };
-
-        let mut builder =
-            melior::ir::operation::OperationBuilder::new(op_name, Location::unknown(gen.context));
+        let mut builder = melior::ir::operation::OperationBuilder::new(
+            op.get_op_name(is_float),
+            Location::unknown(gen.context),
+        );
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
-        // Comparisons return i1
-        let ret_ty = if matches!(
-            op,
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
-        ) {
-            builder = builder.add_results(&[final_ty]);
-            final_ty
-        } else {
+        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
-            builder = builder.add_results(&[i1_ty]);
-
-            // Add predicate attribute
-            let pred_val: i64 = if is_float {
-                match op {
-                    BinaryOp::Eq => 1,    // oeq
-                    BinaryOp::Gt => 2,    // ogt
-                    BinaryOp::Ge => 3,    // oge
-                    BinaryOp::Lt => 4,    // olt
-                    BinaryOp::Le => 5,    // ole
-                    BinaryOp::NotEq => 6, // one
-                    _ => 0,
-                }
-            } else {
-                match op {
-                    BinaryOp::Eq => 0,    // eq
-                    BinaryOp::NotEq => 1, // ne
-                    BinaryOp::Lt => 2,    // slt
-                    BinaryOp::Le => 3,    // sle
-                    BinaryOp::Gt => 4,    // sgt
-                    BinaryOp::Ge => 5,    // sge
-                    _ => 0,
-                }
-            };
             let i64_ty = Type::parse(gen.context, "i64").unwrap();
-            builder = builder.add_attributes(&[(
+            builder = builder.add_results(&[i1_ty]).add_attributes(&[(
                 melior::ir::Identifier::new(gen.context, "predicate"),
                 melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
             )]);
             i1_ty
+        } else {
+            builder = builder.add_results(&[final_ty]);
+            final_ty
         };
 
         let bin_op = builder.build().unwrap();
@@ -1145,44 +1127,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         }
 
         let is_float = ty.to_string().contains("f32") || ty.to_string().contains("f64");
-        let op_name = match op {
-            BinaryOp::Add => {
-                if is_float {
-                    "arith.addf"
-                } else {
-                    "arith.addi"
-                }
-            }
-            BinaryOp::Sub => {
-                if is_float {
-                    "arith.subf"
-                } else {
-                    "arith.subi"
-                }
-            }
-            BinaryOp::Mul => {
-                if is_float {
-                    "arith.mulf"
-                } else {
-                    "arith.muli"
-                }
-            }
-            BinaryOp::Div => {
-                if is_float {
-                    "arith.divf"
-                } else {
-                    "arith.divsi"
-                }
-            }
-            _ => panic!("Unsupported compound assign op"),
-        };
-
-        let bin_op =
-            melior::ir::operation::OperationBuilder::new(op_name, Location::unknown(gen.context))
-                .add_operands(&[lhs_val, actual_rhs])
-                .add_results(&[ty])
-                .build()
-                .unwrap();
+        let bin_op = melior::ir::operation::OperationBuilder::new(
+            op.get_op_name(is_float),
+            Location::unknown(gen.context),
+        )
+        .add_operands(&[lhs_val, actual_rhs])
+        .add_results(&[ty])
+        .build()
+        .unwrap();
         let bin_ref = block.append_operation(bin_op);
         let result_val = bin_ref.result(0).unwrap().into();
 
