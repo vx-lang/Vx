@@ -1,0 +1,20 @@
+// RUN: vxc %s -o %t.mlir
+// RUN: FileCheck %s < %t.mlir
+
+fn my_matmul(a: Tensor<f32, [128, 64]>, b: Tensor<f32, [64, 256]>) -> Tensor<f32, [128, 256]> {
+    let c = a * b;
+    return c;
+}
+
+// CHECK: "func.func"() <{function_type = (memref<128x64xf32>, memref<64x256xf32>) -> memref<128x256xf32>, sym_name = "my_matmul"}>
+// CHECK: "memref.alloc"()
+// CHECK: "arith.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
+// CHECK: "linalg.fill"
+// CHECK: "linalg.matmul"
+
+fn main() -> i32 {
+    let a: Tensor<f32, [128, 64]> = 1.0;
+    let b: Tensor<f32, [64, 256]> = 1.0;
+    my_matmul(a, b);
+    return 0;
+}

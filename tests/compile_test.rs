@@ -283,3 +283,62 @@ fn test_backend_fail() {
         });
     }
 }
+
+#[test]
+fn test_melior_matmul() {
+    let path = Path::new("tests/middle_end/pass/matmul.mlr");
+    let source = fs::read_to_string(path).expect("Failed to read test file");
+
+    let check_lines: Vec<String> = source
+        .lines()
+        .filter(|line| line.trim().starts_with("// CHECK:"))
+        .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
+        .collect();
+
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut program_arr = loader
+        .load_main(path.to_str().unwrap())
+        .expect("Failed to parse");
+
+    let ast_idx = program_arr
+        .iter()
+        .position(|p| p.module_path == path.to_str().unwrap())
+        .unwrap();
+    let program = program_arr.remove(ast_idx);
+
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    let mut checked_program = program.clone();
+    for f in &mut checked_program.functions {
+        checker.check_function(f);
+    }
+    assert!(
+        checker.errors.is_empty(),
+        "Sema failed on {:?}: {:#?}",
+        path,
+        checker.errors
+    );
+
+    let registry = melior::dialect::DialectRegistry::new();
+    melior::utility::register_all_dialects(&registry);
+
+    let context = melior::Context::new();
+    context.append_dialect_registry(&registry);
+    context.load_all_available_dialects();
+
+    let mut gen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mlir_str = gen.generate(&checked_program, &std::collections::HashMap::new());
+
+    let mut current_idx = 0;
+    for check in check_lines {
+        if let Some(pos) = mlir_str[current_idx..].find(&check) {
+            current_idx += pos + check.len();
+        } else {
+            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str);
+        }
+    }
+}

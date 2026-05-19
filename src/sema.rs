@@ -1396,9 +1396,32 @@ impl<'a> TypeChecker<'a> {
                 };
                 let lhs_ty = self.check_expr_type_flag(lhs, op_consume, silent);
                 let rhs_ty = self.check_expr_type_flag(rhs, op_consume, silent);
+
+                // Tensor operator overloading (A * B) -> Matmul
+                if let (
+                    Type::Tensor(el_ty_l, dims_l, top_l),
+                    Type::Tensor(el_ty_r, dims_r, _top_r),
+                ) = (&lhs_ty, &rhs_ty)
+                {
+                    if *op == BinaryOp::Mul {
+                        if el_ty_l != el_ty_r {
+                            self.errors.push(format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r));
+                        }
+                        if dims_l.len() != 2 || dims_r.len() != 2 {
+                            self.errors.push(format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", dims_l.len(), dims_r.len()));
+                            return Type::Tensor(*el_ty_l, vec![], top_l.clone());
+                        }
+                        let m = dims_l[0].clone();
+                        let n = dims_r[1].clone();
+                        return Type::Tensor(*el_ty_l, vec![m, n], top_l.clone());
+                    }
+                }
+
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors
-                        .push("Type mismatch in binary operation".to_string());
+                    self.errors.push(format!(
+                        "Type mismatch in binary operation: {:?} vs {:?}",
+                        lhs_ty, rhs_ty
+                    ));
                 }
                 match op {
                     BinaryOp::Eq

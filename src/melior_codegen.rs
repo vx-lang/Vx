@@ -532,12 +532,140 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let (mut rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
 
         let mut final_ty = lhs_ty;
+        let lhs_ty_str = lhs_ty.to_string();
+        let rhs_ty_str = rhs_ty.to_string();
+
+        println!(
+            "DEBUG: op={:?}, lhs_ty_str={}, rhs_ty_str={}",
+            op, lhs_ty_str, rhs_ty_str
+        );
+
+        if op == &BinaryOp::Mul
+            && lhs_ty_str.starts_with("memref<")
+            && rhs_ty_str.starts_with("memref<")
+        {
+            // Linalg Matmul Lowering
+            // Parse dimensions from lhs_ty_str and rhs_ty_str
+            // lhs: memref<MxKxf32>, rhs: memref<KxNxf32>
+            let lhs_inner = &lhs_ty_str[7..lhs_ty_str.len() - 1]; // MxKxf32
+            let rhs_inner = &rhs_ty_str[7..rhs_ty_str.len() - 1]; // KxNxf32
+
+            let lhs_parts: Vec<&str> = lhs_inner.split('x').collect();
+            let rhs_parts: Vec<&str> = rhs_inner.split('x').collect();
+
+            let m_str = lhs_parts[0];
+            let n_str = rhs_parts[1];
+            let el_ty_str = lhs_parts[2];
+
+            let out_ty_str = format!("memref<{}x{}x{}>", m_str, n_str, el_ty_str);
+            let out_ty = Type::parse(gen.context, &out_ty_str).unwrap();
+
+            // Determine dynamic dimensions for alloc
+            let mut alloc_operands = Vec::new();
+            let index_ty = Type::parse(gen.context, "index").unwrap();
+
+            if m_str == "?" {
+                let m_idx_attr =
+                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0)
+                        .into();
+                let dim_m_op = melior::ir::operation::OperationBuilder::new(
+                    "memref.dim",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[lhs_val])
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "index"),
+                    m_idx_attr,
+                )])
+                .build()
+                .unwrap();
+                alloc_operands.push(block.append_operation(dim_m_op).result(0).unwrap().into());
+            }
+
+            if n_str == "?" {
+                let n_idx_attr =
+                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 1)
+                        .into();
+                let dim_n_op = melior::ir::operation::OperationBuilder::new(
+                    "memref.dim",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[rhs_val])
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "index"),
+                    n_idx_attr,
+                )])
+                .build()
+                .unwrap();
+                alloc_operands.push(block.append_operation(dim_n_op).result(0).unwrap().into());
+            }
+
+            // Alloc output buffer
+            let alloc_op = melior::ir::operation::OperationBuilder::new(
+                "memref.alloc",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&alloc_operands)
+            .add_results(&[out_ty])
+            .build()
+            .unwrap();
+            let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+
+            // Zero initialize the output buffer since matmul accumulates!
+            let zero_attr = if el_ty_str.starts_with('i') {
+                melior::ir::attribute::IntegerAttribute::new(
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    0,
+                )
+                .into()
+            } else {
+                melior::ir::attribute::FloatAttribute::new(
+                    gen.context,
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    0.0,
+                )
+                .into()
+            };
+
+            let zero_op = melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+            .add_attributes(&[(melior::ir::Identifier::new(gen.context, "value"), zero_attr)])
+            .build()
+            .unwrap();
+            let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
+
+            let linalg_fill = melior::ir::operation::OperationBuilder::new(
+                "linalg.fill",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[zero_val, out_val])
+            .build()
+            .unwrap();
+            block.append_operation(linalg_fill);
+
+            // Execute linalg.matmul
+            let matmul_op = melior::ir::operation::OperationBuilder::new(
+                "linalg.matmul",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[lhs_val, rhs_val, out_val])
+            .build()
+            .unwrap();
+            block.append_operation(matmul_op);
+
+            return (out_val, out_ty);
+        }
 
         if lhs_ty != rhs_ty
-            && ((lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32")
-                || (lhs_ty.to_string() == "i32" && rhs_ty.to_string() == "index"))
+            && ((lhs_ty_str == "index" && rhs_ty_str == "i32")
+                || (lhs_ty_str == "i32" && rhs_ty_str == "index"))
         {
-            if lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32" {
+            if lhs_ty_str == "index" && rhs_ty_str == "i32" {
                 let cast_op = melior::ir::operation::OperationBuilder::new(
                     "arith.index_cast",
                     Location::unknown(gen.context),
