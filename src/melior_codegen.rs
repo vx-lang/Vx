@@ -4,7 +4,8 @@ use melior::{
     dialect::DialectRegistry,
     ir::{
         attribute::{StringAttribute, TypeAttribute},
-        Block, BlockLike, Location, Module, Region, Type, Value,
+        operation::OperationLike,
+        Block, BlockLike, Location, Module, Region, RegionLike, Type, Value,
     },
     Context,
 };
@@ -43,7 +44,7 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    pub fn generate(&mut self, program: &Program, _modules: &HashMap<String, Program>) -> String {
+    pub fn generate(&mut self, program: &Program, modules: &HashMap<String, Program>) -> String {
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
         }
@@ -57,6 +58,19 @@ impl<'c> MeliorGenerator<'c> {
                 arg_tys.push(self.lower_type(ty));
             }
             self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
+        }
+
+        let mut operations = Vec::new();
+
+        // Emit module functions
+        for module_prog in modules.values() {
+            for func in &module_prog.functions {
+                operations.push(self.generate_function(func));
+            }
+        }
+
+        for func in &program.functions {
+            operations.push(self.generate_function(func));
         }
 
         let body = self.module.body();
@@ -93,8 +107,98 @@ impl<'c> MeliorGenerator<'c> {
             body.append_operation(func_op);
         }
 
+        for op in operations {
+            body.append_operation(op);
+        }
+
         let op = self.module.as_operation();
         op.to_string()
+    }
+
+    fn generate_function(&mut self, func: &Function) -> melior::ir::Operation<'c> {
+        let is_main = func.name == "main";
+        let true_ret_ty = self.lower_type(&func.return_type);
+        let ret_ty = if is_main {
+            Type::parse(self.context, "i32").unwrap()
+        } else {
+            true_ret_ty
+        };
+
+        let mut arg_tys = Vec::new();
+        for (_, ty) in &func.params {
+            arg_tys.push(self.lower_type(ty));
+        }
+
+        let func_type = melior::ir::r#type::FunctionType::new(self.context, &arg_tys, &[ret_ty]);
+        let name_attr = melior::ir::attribute::StringAttribute::new(self.context, &func.name);
+        let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
+
+        let region = Region::new();
+
+        let mut block_args = Vec::new();
+        for ty in &arg_tys {
+            block_args.push((*ty, Location::unknown(self.context)));
+        }
+        let block = Block::new(&block_args);
+
+        // Map arguments into the environment
+        for (i, (name, _)) in func.params.iter().enumerate() {
+            let arg_val = block.argument(i).unwrap().into();
+            self.env.insert(name.clone(), (arg_val, arg_tys[i]));
+        }
+
+        // Parse body...
+        // For now, if it's main, emit a return 0
+        if is_main {
+            let zero_op = melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(self.context),
+            )
+            .add_results(&[Type::parse(self.context, "i32").unwrap()])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(
+                    Type::parse(self.context, "i32").unwrap(),
+                    0,
+                )
+                .into(),
+            )])
+            .build()
+            .unwrap();
+            let zero_val = zero_op.result(0).unwrap().into();
+            block.append_operation(zero_op);
+
+            let ret_op = melior::ir::operation::OperationBuilder::new(
+                "func.return",
+                Location::unknown(self.context),
+            )
+            .add_operands(&[zero_val])
+            .build()
+            .unwrap();
+            block.append_operation(ret_op);
+        }
+
+        region.append_block(block);
+
+        let func_op = melior::ir::operation::OperationBuilder::new(
+            "func.func",
+            Location::unknown(self.context),
+        )
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(self.context, "sym_name"),
+                name_attr.into(),
+            ),
+            (
+                melior::ir::Identifier::new(self.context, "function_type"),
+                type_attr.into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()
+        .unwrap();
+
+        func_op
     }
 
     fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
