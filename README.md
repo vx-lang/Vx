@@ -30,23 +30,14 @@ In Vx, developers have explicit, type-safe control over where data lives and whe
 
 ```rust
 // Declare a verified matrix multiplication
-fn custom_matmul(a: Ref<Tensor, Memory::NPU_HBM>, b: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
-
+fn custom_matmul(A: Ref<Tensor, Memory::NPU_HBM>,
+                 B: Ref<Tensor, Memory::NPU_HBM>) -> Verified<Tensor> {
     // Explicitly dispatch computation to an AI Accelerator
     spawn on(Topology::NPU[0]) {
-        let mut result = Tensor([4, 4]).with_memory(Memory::NPU_HBM);
-
-        for i in 0..4 {
-            for j in 0..4 {
-                result[i][j] = 0;
-                for k in 0..4 {
-                    result[i][j] = result[i][j] + a[i][k] * b[k][j];
-                }
-            }
-        }
-
+        // Natively lowers to linalg.matmul
+        let C = A * B;
         // Return a verified result
-        return Verified(result);
+        return Verified(C);
     }
 }
 ```
