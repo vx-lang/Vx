@@ -147,8 +147,17 @@ impl<'c> MeliorGenerator<'c> {
             self.env.insert(name.clone(), (arg_val, arg_tys[i]));
         }
 
-        // Parse body...
-        // For now, if it's main, emit a return 0
+        // Parse body
+        for stmt in &func.body {
+            if let Statement::Return(..) = stmt {
+                if is_main {
+                    // Ignore explicit returns in main for simplicity
+                    continue;
+                }
+            }
+            self.generate_statement(stmt, &block);
+        }
+
         if is_main {
             let zero_op = melior::ir::operation::OperationBuilder::new(
                 "arith.constant",
@@ -199,6 +208,93 @@ impl<'c> MeliorGenerator<'c> {
         .unwrap();
 
         func_op
+    }
+
+    fn generate_statement(&mut self, stmt: &Statement, block: &melior::ir::Block<'c>) {
+        match stmt {
+            Statement::Return(expr, _) => {
+                let (val, _) = self.generate_expr(expr, block);
+                let ret_op = melior::ir::operation::OperationBuilder::new(
+                    "func.return",
+                    Location::unknown(self.context),
+                )
+                .add_operands(&[val])
+                .build()
+                .unwrap();
+                block.append_operation(ret_op);
+            }
+            _ => {
+                // TODO: implement other statements
+            }
+        }
+    }
+
+    fn generate_expr(
+        &mut self,
+        expr: &Expr,
+        block: &melior::ir::Block<'c>,
+    ) -> (Value<'c, 'c>, Type<'c>) {
+        match expr {
+            Expr::Number(val_str, _, _) => {
+                if val_str.contains('.') {
+                    let ty = Type::parse(self.context, "f32").unwrap();
+                    let op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(self.context),
+                    )
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "value"),
+                        melior::ir::attribute::FloatAttribute::new(
+                            self.context,
+                            ty,
+                            val_str.parse::<f64>().unwrap(),
+                        )
+                        .into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    let op_ref = block.append_operation(op);
+                    (op_ref.result(0).unwrap().into(), ty)
+                } else {
+                    let ty = Type::parse(self.context, "i32").unwrap();
+                    let op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(self.context),
+                    )
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(
+                            ty,
+                            val_str.parse::<i64>().unwrap(),
+                        )
+                        .into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    let op_ref = block.append_operation(op);
+                    (op_ref.result(0).unwrap().into(), ty)
+                }
+            }
+            _ => {
+                // Return dummy for now
+                let ty = Type::parse(self.context, "i32").unwrap();
+                let op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(self.context),
+                )
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(self.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
+                )])
+                .build()
+                .unwrap();
+                let op_ref = block.append_operation(op);
+                (op_ref.result(0).unwrap().into(), ty)
+            }
+        }
     }
 
     fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
