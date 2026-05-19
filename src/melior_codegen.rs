@@ -548,7 +548,7 @@ impl<'c> MeliorGenerator<'c> {
                 block.append_operation(for_op);
             }
             _ => {
-                // TODO: implement other statements
+                panic!("Not implemented: {}", stmt)
             }
         }
     }

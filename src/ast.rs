@@ -1,4 +1,3 @@
-// TODO: see if ResolvedType enum make sense
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Span {
     pub line: usize,
