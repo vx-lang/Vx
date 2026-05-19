@@ -195,361 +195,13 @@ impl<'c> MeliorGenerator<'c> {
 
     fn generate_statement(&mut self, stmt: &Statement, block: &melior::ir::Block<'c>) {
         match stmt {
-            Statement::Return(expr, _) => {
-                let (val, _) = self.generate_expr(expr, block);
-                let ret_op = melior::ir::operation::OperationBuilder::new(
-                    "func.return",
-                    Location::unknown(self.context),
-                )
-                .add_operands(&[val])
-                .build()
-                .unwrap();
-                block.append_operation(ret_op);
-            }
-            Statement::LetDecl(name, is_mut, _ty_ann, expr, _) => {
-                let (val, ty) = self.generate_expr(expr, block);
-                if *is_mut {
-                    let memref_ty = format!("memref<{}>", ty);
-                    let parsed_memref_ty = Type::parse(self.context, &memref_ty).unwrap();
-                    let alloca_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.alloca",
-                        Location::unknown(self.context),
-                    )
-                    .add_results(&[parsed_memref_ty])
-                    .build()
-                    .unwrap();
-                    let alloca_ref = block.append_operation(alloca_op);
-                    let alloca_val = alloca_ref.result(0).unwrap().into();
-
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&[val, alloca_val])
-                    .build()
-                    .unwrap();
-                    block.append_operation(store_op);
-
-                    self.env
-                        .insert(name.clone(), (alloca_val, parsed_memref_ty));
-                } else {
-                    self.env.insert(name.clone(), (val, ty));
-                }
-            }
-            Statement::Assign(lhs, rhs, _) => {
-                let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
-                if let Expr::Identifier(name, _) = lhs {
-                    if let Some((mem_val, mem_ty)) = self.env.get(name).cloned() {
-                        let mem_ty_str = mem_ty.to_string();
-                        if mem_ty_str.starts_with("memref<") {
-                            let mut store_val = rhs_val;
-                            let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
-                            let inner_ty = Type::parse(self.context, inner_ty_str).unwrap();
-                            if rhs_ty != inner_ty
-                                && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
-                                    || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
-                            {
-                                let cast_op = melior::ir::operation::OperationBuilder::new(
-                                    "arith.index_cast",
-                                    Location::unknown(self.context),
-                                )
-                                .add_operands(&[rhs_val])
-                                .add_results(&[inner_ty])
-                                .build()
-                                .unwrap();
-
-                                store_val =
-                                    block.append_operation(cast_op).result(0).unwrap().into();
-                            }
-
-                            let store_op = melior::ir::operation::OperationBuilder::new(
-                                "memref.store",
-                                Location::unknown(self.context),
-                            )
-                            .add_operands(&[store_val, mem_val])
-                            .build()
-                            .unwrap();
-                            block.append_operation(store_op);
-                        } else {
-                            self.env.insert(name.clone(), (rhs_val, rhs_ty));
-                        }
-                    }
-                } else if let Expr::MemberAccess(base, member, _) = lhs {
-                    if let Expr::Identifier(base_name, _) = &**base {
-                        let (base_val, base_ty) = self.generate_expr(base, block);
-                        let base_ty_str = base_ty.to_string();
-
-                        let mut struct_name_opt = None;
-                        if let Some(start_idx) = base_ty_str.find('\"') {
-                            if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
-                                struct_name_opt = Some(
-                                    base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string(),
-                                );
-                            }
-                        }
-
-                        if let Some(struct_name) = struct_name_opt {
-                            if let Some(struct_decl) = self.structs.get(&struct_name).cloned() {
-                                if let Some(field_idx) =
-                                    struct_decl.fields.iter().position(|(n, _)| n == member)
-                                {
-                                    let field_ty =
-                                        self.lower_type(&struct_decl.fields[field_idx].1);
-                                    let mut field_val = rhs_val;
-
-                                    if rhs_ty != field_ty
-                                        && ((rhs_ty.to_string() == "index"
-                                            && field_ty.to_string() == "i32")
-                                            || (rhs_ty.to_string() == "i32"
-                                                && field_ty.to_string() == "index"))
-                                    {
-                                        let cast_op = melior::ir::operation::OperationBuilder::new(
-                                            "arith.index_cast",
-                                            Location::unknown(self.context),
-                                        )
-                                        .add_operands(&[rhs_val])
-                                        .add_results(&[field_ty])
-                                        .build()
-                                        .unwrap();
-                                        field_val = block
-                                            .append_operation(cast_op)
-                                            .result(0)
-                                            .unwrap()
-                                            .into();
-                                    }
-
-                                    let pos_attr =
-                                        melior::ir::attribute::DenseI64ArrayAttribute::new(
-                                            self.context,
-                                            &[field_idx as i64],
-                                        );
-                                    let insert_op = melior::ir::operation::OperationBuilder::new(
-                                        "llvm.insertvalue",
-                                        Location::unknown(self.context),
-                                    )
-                                    .add_operands(&[base_val, field_val])
-                                    .add_attributes(&[(
-                                        melior::ir::Identifier::new(self.context, "position"),
-                                        pos_attr.into(),
-                                    )])
-                                    .add_results(&[base_ty])
-                                    .build()
-                                    .unwrap();
-
-                                    let new_struct_val =
-                                        block.append_operation(insert_op).result(0).unwrap().into();
-
-                                    if let Some((mem_val, mem_ty)) =
-                                        self.env.get(base_name).cloned()
-                                    {
-                                        let mem_ty_str = mem_ty.to_string();
-                                        if mem_ty_str.starts_with("memref<") {
-                                            let store_op =
-                                                melior::ir::operation::OperationBuilder::new(
-                                                    "memref.store",
-                                                    Location::unknown(self.context),
-                                                )
-                                                .add_operands(&[new_struct_val, mem_val])
-                                                .build()
-                                                .unwrap();
-                                            block.append_operation(store_op);
-                                        } else {
-                                            self.env.insert(
-                                                base_name.clone(),
-                                                (new_struct_val, base_ty),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        panic!("Complex struct assignment lhs not supported");
-                    }
-                }
-            }
-            Statement::CompoundAssign(lhs, op, rhs, _) => {
-                let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
-                let (lhs_val, ty) = self.generate_expr(lhs, block);
-
-                let mut actual_rhs = rhs_val;
-                if rhs_ty != ty
-                    && ((rhs_ty.to_string() == "index" && ty.to_string() == "i32")
-                        || (rhs_ty.to_string() == "i32" && ty.to_string() == "index"))
-                {
-                    let cast_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.index_cast",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&[actual_rhs])
-                    .add_results(&[ty])
-                    .build()
-                    .unwrap();
-                    actual_rhs = block.append_operation(cast_op).result(0).unwrap().into();
-                }
-
-                let is_float = ty.to_string().contains("f32") || ty.to_string().contains("f64");
-                let op_name = match op {
-                    BinaryOp::Add => {
-                        if is_float {
-                            "arith.addf"
-                        } else {
-                            "arith.addi"
-                        }
-                    }
-                    BinaryOp::Sub => {
-                        if is_float {
-                            "arith.subf"
-                        } else {
-                            "arith.subi"
-                        }
-                    }
-                    BinaryOp::Mul => {
-                        if is_float {
-                            "arith.mulf"
-                        } else {
-                            "arith.muli"
-                        }
-                    }
-                    BinaryOp::Div => {
-                        if is_float {
-                            "arith.divf"
-                        } else {
-                            "arith.divsi"
-                        }
-                    }
-                    _ => panic!("Unsupported compound assign op"),
-                };
-
-                let bin_op = melior::ir::operation::OperationBuilder::new(
-                    op_name,
-                    Location::unknown(self.context),
-                )
-                .add_operands(&[lhs_val, actual_rhs])
-                .add_results(&[ty])
-                .build()
-                .unwrap();
-                let bin_ref = block.append_operation(bin_op);
-                let result_val = bin_ref.result(0).unwrap().into();
-
-                if let Expr::Identifier(name, _) = lhs {
-                    if let Some((mem_val, mem_ty)) = self.env.get(name).cloned() {
-                        let mem_ty_str = mem_ty.to_string();
-                        if mem_ty_str.starts_with("memref<") {
-                            let store_op = melior::ir::operation::OperationBuilder::new(
-                                "memref.store",
-                                Location::unknown(self.context),
-                            )
-                            .add_operands(&[result_val, mem_val])
-                            .build()
-                            .unwrap();
-                            block.append_operation(store_op);
-                        } else {
-                            self.env.insert(name.clone(), (result_val, ty));
-                        }
-                    }
-                }
-            }
-            Statement::ExprStmt(expr, _, _) => {
-                self.generate_expr(expr, block);
-            }
-            Statement::ForLoop(iter, start, end, body, _) => {
-                let (start_val, start_ty) = self.generate_expr(start, block);
-                let (end_val, end_ty) = self.generate_expr(end, block);
-
-                let ty_index = Type::parse(self.context, "index").unwrap();
-
-                // step = 1
-                let step_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(self.context),
-                )
-                .add_results(&[ty_index])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(self.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
-                )])
-                .build()
-                .unwrap();
-                let step_ref = block.append_operation(step_op);
-                let step_val = step_ref.result(0).unwrap().into();
-
-                // cast start/end to index if necessary
-                let start_idx = if start_ty == ty_index {
-                    start_val
-                } else {
-                    let cast_start_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.index_cast",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&[start_val])
-                    .add_results(&[ty_index])
-                    .build()
-                    .unwrap();
-                    block
-                        .append_operation(cast_start_op)
-                        .result(0)
-                        .unwrap()
-                        .into()
-                };
-
-                let end_idx = if end_ty == ty_index {
-                    end_val
-                } else {
-                    let cast_end_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.index_cast",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&[end_val])
-                    .add_results(&[ty_index])
-                    .build()
-                    .unwrap();
-                    block
-                        .append_operation(cast_end_op)
-                        .result(0)
-                        .unwrap()
-                        .into()
-                };
-
-                let body_region = Region::new();
-                let body_block = Block::new(&[(ty_index, Location::unknown(self.context))]);
-
-                let iter_val = body_block.argument(0).unwrap().into();
-                let prev_env_val = self.env.get(iter).cloned();
-                self.env.insert(iter.clone(), (iter_val, ty_index));
-
-                for stmt in body {
-                    self.generate_statement(stmt, &body_block);
-                }
-
-                if let Some(prev) = prev_env_val {
-                    self.env.insert(iter.clone(), prev);
-                } else {
-                    self.env.remove(iter);
-                }
-
-                let yield_op = melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(self.context),
-                )
-                .build()
-                .unwrap();
-                body_block.append_operation(yield_op);
-                body_region.append_block(body_block);
-
-                let for_op = melior::ir::operation::OperationBuilder::new(
-                    "scf.for",
-                    Location::unknown(self.context),
-                )
-                .add_operands(&[start_idx, end_idx, step_val])
-                .add_regions([body_region])
-                .build()
-                .unwrap();
-                block.append_operation(for_op);
-            }
-            _ => {
-                panic!("Not implemented: {:?}", stmt)
-            }
+            Statement::Return(s) => s.lower(self, block),
+            Statement::LetDecl(s) => s.lower(self, block),
+            Statement::Assign(s) => s.lower(self, block),
+            Statement::CompoundAssign(s) => s.lower(self, block),
+            Statement::ExprStmt(s) => s.lower(self, block),
+            Statement::ForLoop(s) => s.lower(self, block),
+            _ => todo!("{:?}", stmt),
         }
     }
 
@@ -559,491 +211,16 @@ impl<'c> MeliorGenerator<'c> {
         block: &melior::ir::Block<'c>,
     ) -> (Value<'c, 'c>, Type<'c>) {
         match expr {
-            Expr::Identifier(name, _) => {
-                if let Some((val, ty)) = self.env.get(name) {
-                    let ty_str = ty.to_string();
-                    if ty_str.starts_with("memref<") && !ty_str.contains("x") {
-                        let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                        let inner_ty = Type::parse(self.context, inner_ty_str).unwrap();
-                        let load_op = melior::ir::operation::OperationBuilder::new(
-                            "memref.load",
-                            Location::unknown(self.context),
-                        )
-                        .add_operands(&[*val])
-                        .add_results(&[inner_ty])
-                        .build()
-                        .unwrap();
-                        let load_ref = block.append_operation(load_op);
-                        (load_ref.result(0).unwrap().into(), inner_ty)
-                    } else {
-                        (*val, *ty)
-                    }
-                } else {
-                    panic!("Undefined variable: {}", name);
-                }
-            }
-            Expr::BinaryOp(lhs, op, rhs, _) => {
-                let (mut lhs_val, lhs_ty) = self.generate_expr(lhs, block);
-                let (mut rhs_val, rhs_ty) = self.generate_expr(rhs, block);
-
-                let mut final_ty = lhs_ty;
-
-                if lhs_ty != rhs_ty
-                    && ((lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32")
-                        || (lhs_ty.to_string() == "i32" && rhs_ty.to_string() == "index"))
-                {
-                    if lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32" {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
-                            "arith.index_cast",
-                            Location::unknown(self.context),
-                        )
-                        .add_operands(&[rhs_val])
-                        .add_results(&[lhs_ty])
-                        .build()
-                        .unwrap();
-                        rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
-                    } else {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
-                            "arith.index_cast",
-                            Location::unknown(self.context),
-                        )
-                        .add_operands(&[lhs_val])
-                        .add_results(&[rhs_ty])
-                        .build()
-                        .unwrap();
-                        lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
-                        final_ty = rhs_ty;
-                    }
-                }
-
-                let is_float =
-                    final_ty.to_string().contains("f32") || final_ty.to_string().contains("f64");
-
-                let op_name = match op {
-                    BinaryOp::Add => {
-                        if is_float {
-                            "arith.addf"
-                        } else {
-                            "arith.addi"
-                        }
-                    }
-                    BinaryOp::Sub => {
-                        if is_float {
-                            "arith.subf"
-                        } else {
-                            "arith.subi"
-                        }
-                    }
-                    BinaryOp::Mul => {
-                        if is_float {
-                            "arith.mulf"
-                        } else {
-                            "arith.muli"
-                        }
-                    }
-                    BinaryOp::Div => {
-                        if is_float {
-                            "arith.divf"
-                        } else {
-                            "arith.divsi"
-                        }
-                    }
-                    // Compare operations
-                    BinaryOp::Eq => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    BinaryOp::NotEq => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    BinaryOp::Lt => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    BinaryOp::Gt => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    BinaryOp::Le => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    BinaryOp::Ge => {
-                        if is_float {
-                            "arith.cmpf"
-                        } else {
-                            "arith.cmpi"
-                        }
-                    }
-                    _ => panic!("Unsupported binary op"),
-                };
-
-                let mut builder = melior::ir::operation::OperationBuilder::new(
-                    op_name,
-                    Location::unknown(self.context),
-                );
-                builder = builder.add_operands(&[lhs_val, rhs_val]);
-
-                // Comparisons return i1
-                let ret_ty = if matches!(
-                    op,
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
-                ) {
-                    builder = builder.add_results(&[final_ty]);
-                    final_ty
-                } else {
-                    let i1_ty = Type::parse(self.context, "i1").unwrap();
-                    builder = builder.add_results(&[i1_ty]);
-
-                    // Add predicate attribute
-                    let pred_val: i64 = if is_float {
-                        match op {
-                            BinaryOp::Eq => 1,    // oeq
-                            BinaryOp::Gt => 2,    // ogt
-                            BinaryOp::Ge => 3,    // oge
-                            BinaryOp::Lt => 4,    // olt
-                            BinaryOp::Le => 5,    // ole
-                            BinaryOp::NotEq => 6, // one
-                            _ => 0,
-                        }
-                    } else {
-                        match op {
-                            BinaryOp::Eq => 0,    // eq
-                            BinaryOp::NotEq => 1, // ne
-                            BinaryOp::Lt => 2,    // slt
-                            BinaryOp::Le => 3,    // sle
-                            BinaryOp::Gt => 4,    // sgt
-                            BinaryOp::Ge => 5,    // sge
-                            _ => 0,
-                        }
-                    };
-                    let i64_ty = Type::parse(self.context, "i64").unwrap();
-                    builder = builder.add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "predicate"),
-                        melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
-                    )]);
-                    i1_ty
-                };
-
-                let bin_op = builder.build().unwrap();
-                let bin_ref = block.append_operation(bin_op);
-                (bin_ref.result(0).unwrap().into(), ret_ty)
-            }
-            Expr::StructInit(name, fields, _) => {
-                let struct_decl = self.structs.get(name).unwrap().clone();
-                let struct_ty = self.lower_type(&crate::ast::Type::Struct(name.clone(), None));
-
-                let undef_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.mlir.undef",
-                    Location::unknown(self.context),
-                )
-                .add_results(&[struct_ty])
-                .build()
-                .unwrap();
-                let mut current_struct = block.append_operation(undef_op).result(0).unwrap().into();
-
-                for (field_name, f_expr) in fields {
-                    let field_idx = struct_decl
-                        .fields
-                        .iter()
-                        .position(|(n, _)| n == field_name)
-                        .unwrap();
-                    let field_ty = self.lower_type(&struct_decl.fields[field_idx].1);
-                    let (mut field_val, expr_ty) = self.generate_expr(f_expr, block);
-
-                    if expr_ty != field_ty
-                        && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
-                            || (expr_ty.to_string() == "i32" && field_ty.to_string() == "index"))
-                    {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
-                            "arith.index_cast",
-                            Location::unknown(self.context),
-                        )
-                        .add_operands(&[field_val])
-                        .add_results(&[field_ty])
-                        .build()
-                        .unwrap();
-                        field_val = block.append_operation(cast_op).result(0).unwrap().into();
-                    }
-
-                    let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
-                        self.context,
-                        &[field_idx as i64],
-                    );
-
-                    let insert_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.insertvalue",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&[current_struct, field_val])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "position"),
-                        pos_attr.into(),
-                    )])
-                    .add_results(&[struct_ty])
-                    .build()
-                    .unwrap();
-                    current_struct = block.append_operation(insert_op).result(0).unwrap().into();
-                }
-                (current_struct, struct_ty)
-            }
-            Expr::MemberAccess(base, member, _) => {
-                let (base_val, base_ty) = self.generate_expr(base, block);
-                let base_ty_str = base_ty.to_string();
-
-                let mut struct_name_opt = None;
-                if let Some(start_idx) = base_ty_str.find('\"') {
-                    if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
-                        struct_name_opt =
-                            Some(base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string());
-                    }
-                }
-
-                if let Some(struct_name) = struct_name_opt {
-                    if let Some(struct_decl) = self.structs.get(&struct_name).cloned() {
-                        if let Some(field_idx) =
-                            struct_decl.fields.iter().position(|(n, _)| n == member)
-                        {
-                            let field_ty = self.lower_type(&struct_decl.fields[field_idx].1);
-                            let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
-                                self.context,
-                                &[field_idx as i64],
-                            );
-
-                            let ext_op = melior::ir::operation::OperationBuilder::new(
-                                "llvm.extractvalue",
-                                Location::unknown(self.context),
-                            )
-                            .add_operands(&[base_val])
-                            .add_attributes(&[(
-                                melior::ir::Identifier::new(self.context, "position"),
-                                pos_attr.into(),
-                            )])
-                            .add_results(&[field_ty])
-                            .build()
-                            .unwrap();
-                            let ext_ref = block.append_operation(ext_op);
-                            return (ext_ref.result(0).unwrap().into(), field_ty);
-                        }
-                    }
-                }
-                panic!("Cannot resolve member access {}", member);
-            }
-            Expr::FunctionCall(name, args, _) => {
-                if let Some((ret_ty, arg_tys)) = self.functions.get(name).cloned() {
-                    let mut arg_vals = Vec::new();
-                    for (i, arg) in args.iter().enumerate() {
-                        let (mut arg_val, expr_ty) = self.generate_expr(arg, block);
-                        let field_ty = arg_tys[i];
-                        if expr_ty != field_ty
-                            && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
-                                || (expr_ty.to_string() == "i32"
-                                    && field_ty.to_string() == "index"))
-                        {
-                            let cast_op = melior::ir::operation::OperationBuilder::new(
-                                "arith.index_cast",
-                                Location::unknown(self.context),
-                            )
-                            .add_operands(&[arg_val])
-                            .add_results(&[field_ty])
-                            .build()
-                            .unwrap();
-                            arg_val = block.append_operation(cast_op).result(0).unwrap().into();
-                        }
-                        arg_vals.push(arg_val);
-                    }
-
-                    let name_attr =
-                        melior::ir::attribute::FlatSymbolRefAttribute::new(self.context, name);
-                    let mut builder = melior::ir::operation::OperationBuilder::new(
-                        "func.call",
-                        Location::unknown(self.context),
-                    )
-                    .add_operands(&arg_vals)
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "callee"),
-                        name_attr.into(),
-                    )]);
-
-                    if ret_ty.to_string() != "none" {
-                        builder = builder.add_results(&[ret_ty]);
-                        let call_op = builder.build().unwrap();
-                        let call_ref = block.append_operation(call_op);
-                        (call_ref.result(0).unwrap().into(), ret_ty)
-                    } else {
-                        let call_op = builder.build().unwrap();
-                        block.append_operation(call_op);
-                        let none_ty = Type::parse(self.context, "none").unwrap();
-                        // this value shouldn't be used
-                        let dummy_op = melior::ir::operation::OperationBuilder::new(
-                            "arith.constant",
-                            Location::unknown(self.context),
-                        )
-                        .add_results(&[Type::parse(self.context, "i32").unwrap()])
-                        .add_attributes(&[(
-                            melior::ir::Identifier::new(self.context, "value"),
-                            melior::ir::attribute::IntegerAttribute::new(
-                                Type::parse(self.context, "i32").unwrap(),
-                                0,
-                            )
-                            .into(),
-                        )])
-                        .build()
-                        .unwrap();
-                        (
-                            block.append_operation(dummy_op).result(0).unwrap().into(),
-                            none_ty,
-                        )
-                    }
-                } else {
-                    panic!("Function {} not found", name);
-                }
-            }
-            Expr::MethodCall(base, method_name, args, span) => {
-                let mut new_args = vec![*base.clone()];
-                new_args.extend(args.clone());
-                self.generate_expr(
-                    &Expr::FunctionCall(method_name.clone(), new_args, span.clone()),
-                    block,
-                )
-            }
-            Expr::Array(..) | Expr::MemorySpace(..) | Expr::Topology(..) => {
-                panic!("Should not be evaluated directly")
-            }
-            Expr::If(cond, then_block, else_block_opt, _) => {
-                let (cond_val, _) = self.generate_expr(cond, block);
-
-                let then_region = Region::new();
-                let then_b = Block::new(&[]);
-                for stmt in then_block {
-                    self.generate_statement(stmt, &then_b);
-                }
-                let yield_op = melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(self.context),
-                )
-                .build()
-                .unwrap();
-                then_b.append_operation(yield_op);
-                then_region.append_block(then_b);
-
-                let else_region = Region::new();
-                let else_b = Block::new(&[]);
-                if let Some(else_block) = else_block_opt {
-                    for stmt in else_block {
-                        self.generate_statement(stmt, &else_b);
-                    }
-                }
-                let yield_op = melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(self.context),
-                )
-                .build()
-                .unwrap();
-                else_b.append_operation(yield_op);
-                else_region.append_block(else_b);
-
-                let if_op = melior::ir::operation::OperationBuilder::new(
-                    "scf.if",
-                    Location::unknown(self.context),
-                )
-                .add_operands(&[cond_val])
-                .add_regions([then_region, else_region])
-                .build()
-                .unwrap();
-
-                block.append_operation(if_op);
-
-                let ty = Type::parse(self.context, "i32").unwrap();
-                let op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(self.context),
-                )
-                .add_results(&[ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(self.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
-                )])
-                .build()
-                .unwrap();
-                let op_ref = block.append_operation(op);
-                (op_ref.result(0).unwrap().into(), ty)
-            }
-            Expr::Number(val_str, _, _) => {
-                if val_str.contains('.') {
-                    let ty = Type::parse(self.context, "f32").unwrap();
-                    let op = melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(self.context),
-                    )
-                    .add_results(&[ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "value"),
-                        melior::ir::attribute::FloatAttribute::new(
-                            self.context,
-                            ty,
-                            val_str.parse::<f64>().unwrap(),
-                        )
-                        .into(),
-                    )])
-                    .build()
-                    .unwrap();
-                    let op_ref = block.append_operation(op);
-                    (op_ref.result(0).unwrap().into(), ty)
-                } else {
-                    let ty = Type::parse(self.context, "i32").unwrap();
-                    let op = melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(self.context),
-                    )
-                    .add_results(&[ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(
-                            ty,
-                            val_str.parse::<i64>().unwrap(),
-                        )
-                        .into(),
-                    )])
-                    .build()
-                    .unwrap();
-                    let op_ref = block.append_operation(op);
-                    (op_ref.result(0).unwrap().into(), ty)
-                }
-            }
-            _ => {
-                // Return dummy for now
-                let ty = Type::parse(self.context, "i32").unwrap();
-                let op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(self.context),
-                )
-                .add_results(&[ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(self.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
-                )])
-                .build()
-                .unwrap();
-                let op_ref = block.append_operation(op);
-                (op_ref.result(0).unwrap().into(), ty)
-            }
+            Expr::Identifier(e) => e.lower(self, block),
+            Expr::BinaryOp(e) => e.lower(self, block),
+            Expr::StructInit(e) => e.lower(self, block),
+            Expr::MemberAccess(e) => e.lower(self, block),
+            Expr::FunctionCall(e) => e.lower(self, block),
+            Expr::MethodCall(e) => e.lower(self, block),
+            Expr::Array(e) => e.lower(self, block),
+            Expr::If(e) => e.lower(self, block),
+            Expr::Number(e) => e.lower(self, block),
+            _ => todo!("{:?}", expr),
         }
     }
 
@@ -1069,7 +246,7 @@ impl<'c> MeliorGenerator<'c> {
                     shape_str = "?x?".to_string();
                 } else {
                     for (i, dim) in dims.iter().enumerate() {
-                        if let crate::ast::Expr::Number(n_str, _, _) = dim {
+                        if let crate::ast::Expr::Number(NumberExpr { value: n_str, ty: _, span: _ }) = dim {
                             if let Ok(n) = n_str.parse::<f64>() {
                                 shape_str.push_str(&format!("{}", n as i64));
                             }
@@ -1175,5 +352,918 @@ impl<'c> MeliorGenerator<'c> {
     fn lower_type_str(&self, ty: &crate::ast::Type) -> String {
         let t = self.lower_type(ty);
         t.to_string()
+    }
+}
+
+
+pub trait LowerToMelior<'c> {
+    type Output;
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output;
+}
+
+impl<'c> LowerToMelior<'c> for IdentifierExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let IdentifierExpr { name: name, span: _ } = self;
+                if let Some((val, ty)) = gen.env.get(name) {
+                    let ty_str = ty.to_string();
+                    if ty_str.starts_with("memref<") && !ty_str.contains("x") {
+                        let inner_ty_str = &ty_str[7..ty_str.len() - 1];
+                        let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                        let load_op = melior::ir::operation::OperationBuilder::new(
+                            "memref.load",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[*val])
+                        .add_results(&[inner_ty])
+                        .build()
+                        .unwrap();
+                        let load_ref = block.append_operation(load_op);
+                        (load_ref.result(0).unwrap().into(), inner_ty)
+                    } else {
+                        (*val, *ty)
+                    }
+                } else {
+                    panic!("Undefined variable: {}", name);
+                }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for BinaryOpExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let BinaryOpExpr { lhs: lhs, op: op, rhs: rhs, span: _ } = self;
+                let (mut lhs_val, lhs_ty) = gen.generate_expr(lhs, block);
+                let (mut rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
+
+                let mut final_ty = lhs_ty;
+
+                if lhs_ty != rhs_ty
+                    && ((lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32")
+                        || (lhs_ty.to_string() == "i32" && rhs_ty.to_string() == "index"))
+                {
+                    if lhs_ty.to_string() == "index" && rhs_ty.to_string() == "i32" {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[rhs_val])
+                        .add_results(&[lhs_ty])
+                        .build()
+                        .unwrap();
+                        rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    } else {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[lhs_val])
+                        .add_results(&[rhs_ty])
+                        .build()
+                        .unwrap();
+                        lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                        final_ty = rhs_ty;
+                    }
+                }
+
+                let is_float =
+                    final_ty.to_string().contains("f32") || final_ty.to_string().contains("f64");
+
+                let op_name = match op {
+                    BinaryOp::Add => {
+                        if is_float {
+                            "arith.addf"
+                        } else {
+                            "arith.addi"
+                        }
+                    }
+                    BinaryOp::Sub => {
+                        if is_float {
+                            "arith.subf"
+                        } else {
+                            "arith.subi"
+                        }
+                    }
+                    BinaryOp::Mul => {
+                        if is_float {
+                            "arith.mulf"
+                        } else {
+                            "arith.muli"
+                        }
+                    }
+                    BinaryOp::Div => {
+                        if is_float {
+                            "arith.divf"
+                        } else {
+                            "arith.divsi"
+                        }
+                    }
+                    // Compare operations
+                    BinaryOp::Eq => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    BinaryOp::NotEq => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    BinaryOp::Lt => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    BinaryOp::Gt => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    BinaryOp::Le => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    BinaryOp::Ge => {
+                        if is_float {
+                            "arith.cmpf"
+                        } else {
+                            "arith.cmpi"
+                        }
+                    }
+                    _ => panic!("Unsupported binary op"),
+                };
+
+                let mut builder = melior::ir::operation::OperationBuilder::new(
+                    op_name,
+                    Location::unknown(gen.context),
+                );
+                builder = builder.add_operands(&[lhs_val, rhs_val]);
+
+                // Comparisons return i1
+                let ret_ty = if matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                ) {
+                    builder = builder.add_results(&[final_ty]);
+                    final_ty
+                } else {
+                    let i1_ty = Type::parse(gen.context, "i1").unwrap();
+                    builder = builder.add_results(&[i1_ty]);
+
+                    // Add predicate attribute
+                    let pred_val: i64 = if is_float {
+                        match op {
+                            BinaryOp::Eq => 1,    // oeq
+                            BinaryOp::Gt => 2,    // ogt
+                            BinaryOp::Ge => 3,    // oge
+                            BinaryOp::Lt => 4,    // olt
+                            BinaryOp::Le => 5,    // ole
+                            BinaryOp::NotEq => 6, // one
+                            _ => 0,
+                        }
+                    } else {
+                        match op {
+                            BinaryOp::Eq => 0,    // eq
+                            BinaryOp::NotEq => 1, // ne
+                            BinaryOp::Lt => 2,    // slt
+                            BinaryOp::Le => 3,    // sle
+                            BinaryOp::Gt => 4,    // sgt
+                            BinaryOp::Ge => 5,    // sge
+                            _ => 0,
+                        }
+                    };
+                    let i64_ty = Type::parse(gen.context, "i64").unwrap();
+                    builder = builder.add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "predicate"),
+                        melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
+                    )]);
+                    i1_ty
+                };
+
+                let bin_op = builder.build().unwrap();
+                let bin_ref = block.append_operation(bin_op);
+                (bin_ref.result(0).unwrap().into(), ret_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for StructInitExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let StructInitExpr { name: name, fields: fields, span: _ } = self;
+                let struct_decl = gen.structs.get(name).unwrap().clone();
+                let struct_ty = gen.lower_type(&crate::ast::Type::Struct(name.clone(), None));
+
+                let undef_op = melior::ir::operation::OperationBuilder::new(
+                    "llvm.mlir.undef",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[struct_ty])
+                .build()
+                .unwrap();
+                let mut current_struct = block.append_operation(undef_op).result(0).unwrap().into();
+
+                for (field_name, f_expr) in fields {
+                    let field_idx = struct_decl
+                        .fields
+                        .iter()
+                        .position(|(n, _)| n == field_name)
+                        .unwrap();
+                    let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1);
+                    let (mut field_val, expr_ty) = gen.generate_expr(f_expr, block);
+
+                    if expr_ty != field_ty
+                        && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
+                            || (expr_ty.to_string() == "i32" && field_ty.to_string() == "index"))
+                    {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[field_val])
+                        .add_results(&[field_ty])
+                        .build()
+                        .unwrap();
+                        field_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    }
+
+                    let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
+                        gen.context,
+                        &[field_idx as i64],
+                    );
+
+                    let insert_op = melior::ir::operation::OperationBuilder::new(
+                        "llvm.insertvalue",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[current_struct, field_val])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "position"),
+                        pos_attr.into(),
+                    )])
+                    .add_results(&[struct_ty])
+                    .build()
+                    .unwrap();
+                    current_struct = block.append_operation(insert_op).result(0).unwrap().into();
+                }
+                (current_struct, struct_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for MemberAccessExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let MemberAccessExpr { base: base, member: member, span: _ } = self;
+                let (base_val, base_ty) = gen.generate_expr(base, block);
+                let base_ty_str = base_ty.to_string();
+
+                let mut struct_name_opt = None;
+                if let Some(start_idx) = base_ty_str.find('\"') {
+                    if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
+                        struct_name_opt =
+                            Some(base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string());
+                    }
+                }
+
+                if let Some(struct_name) = struct_name_opt {
+                    if let Some(struct_decl) = gen.structs.get(&struct_name).cloned() {
+                        if let Some(field_idx) =
+                            struct_decl.fields.iter().position(|(n, _)| n == member)
+                        {
+                            let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1);
+                            let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                gen.context,
+                                &[field_idx as i64],
+                            );
+
+                            let ext_op = melior::ir::operation::OperationBuilder::new(
+                                "llvm.extractvalue",
+                                Location::unknown(gen.context),
+                            )
+                            .add_operands(&[base_val])
+                            .add_attributes(&[(
+                                melior::ir::Identifier::new(gen.context, "position"),
+                                pos_attr.into(),
+                            )])
+                            .add_results(&[field_ty])
+                            .build()
+                            .unwrap();
+                            let ext_ref = block.append_operation(ext_op);
+                            return (ext_ref.result(0).unwrap().into(), field_ty);
+                        }
+                    }
+                }
+                panic!("Cannot resolve member access {}", member);
+    }
+}
+
+impl<'c> LowerToMelior<'c> for FunctionCallExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let FunctionCallExpr { name: name, args: args, span: _ } = self;
+                if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
+                    let mut arg_vals = Vec::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        let (mut arg_val, expr_ty) = gen.generate_expr(arg, block);
+                        let field_ty = arg_tys[i];
+                        if expr_ty != field_ty
+                            && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
+                                || (expr_ty.to_string() == "i32"
+                                    && field_ty.to_string() == "index"))
+                        {
+                            let cast_op = melior::ir::operation::OperationBuilder::new(
+                                "arith.index_cast",
+                                Location::unknown(gen.context),
+                            )
+                            .add_operands(&[arg_val])
+                            .add_results(&[field_ty])
+                            .build()
+                            .unwrap();
+                            arg_val = block.append_operation(cast_op).result(0).unwrap().into();
+                        }
+                        arg_vals.push(arg_val);
+                    }
+
+                    let name_attr =
+                        melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, name);
+                    let mut builder = melior::ir::operation::OperationBuilder::new(
+                        "func.call",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&arg_vals)
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "callee"),
+                        name_attr.into(),
+                    )]);
+
+                    if ret_ty.to_string() != "none" {
+                        builder = builder.add_results(&[ret_ty]);
+                        let call_op = builder.build().unwrap();
+                        let call_ref = block.append_operation(call_op);
+                        (call_ref.result(0).unwrap().into(), ret_ty)
+                    } else {
+                        let call_op = builder.build().unwrap();
+                        block.append_operation(call_op);
+                        let none_ty = Type::parse(gen.context, "none").unwrap();
+                        // this value shouldn't be used
+                        let dummy_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.constant",
+                            Location::unknown(gen.context),
+                        )
+                        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(gen.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(
+                                Type::parse(gen.context, "i32").unwrap(),
+                                0,
+                            )
+                            .into(),
+                        )])
+                        .build()
+                        .unwrap();
+                        (
+                            block.append_operation(dummy_op).result(0).unwrap().into(),
+                            none_ty,
+                        )
+                    }
+                } else {
+                    panic!("Function {} not found", name);
+                }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for MethodCallExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let MethodCallExpr { base: base, method_name: method_name, args: args, span: span } = self;
+                let mut new_args = vec![*base.clone()];
+                new_args.extend(args.clone());
+                gen.generate_expr(
+                    &Expr::FunctionCall(FunctionCallExpr { name: method_name.clone(), args: new_args, span: span.clone() }),
+                    block,
+                )
+    }
+}
+
+impl<'c> LowerToMelior<'c> for ArrayExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        panic!("Should not be evaluated directly")
+    }
+}
+
+impl<'c> LowerToMelior<'c> for MemorySpaceExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        panic!("Should not be evaluated directly")
+    }
+}
+
+impl<'c> LowerToMelior<'c> for TopologyExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        panic!("Should not be evaluated directly")
+    }
+}
+
+impl<'c> LowerToMelior<'c> for IfExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let IfExpr { cond: cond, then_block: then_block, else_block: else_block_opt, span: _ } = self;
+                let (cond_val, _) = gen.generate_expr(cond, block);
+
+                let then_region = Region::new();
+                let then_b = Block::new(&[]);
+                for stmt in then_block {
+                    gen.generate_statement(stmt, &then_b);
+                }
+                let yield_op = melior::ir::operation::OperationBuilder::new(
+                    "scf.yield",
+                    Location::unknown(gen.context),
+                )
+                .build()
+                .unwrap();
+                then_b.append_operation(yield_op);
+                then_region.append_block(then_b);
+
+                let else_region = Region::new();
+                let else_b = Block::new(&[]);
+                if let Some(else_block) = else_block_opt {
+                    for stmt in else_block {
+                        gen.generate_statement(stmt, &else_b);
+                    }
+                }
+                let yield_op = melior::ir::operation::OperationBuilder::new(
+                    "scf.yield",
+                    Location::unknown(gen.context),
+                )
+                .build()
+                .unwrap();
+                else_b.append_operation(yield_op);
+                else_region.append_block(else_b);
+
+                let if_op = melior::ir::operation::OperationBuilder::new(
+                    "scf.if",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[cond_val])
+                .add_regions([then_region, else_region])
+                .build()
+                .unwrap();
+
+                block.append_operation(if_op);
+
+                let ty = Type::parse(gen.context, "i32").unwrap();
+                let op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
+                )])
+                .build()
+                .unwrap();
+                let op_ref = block.append_operation(op);
+                (op_ref.result(0).unwrap().into(), ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for NumberExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let NumberExpr { value: val_str, ty: _, span: _ } = self;
+                if val_str.contains('.') {
+                    let ty = Type::parse(gen.context, "f32").unwrap();
+                    let op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::FloatAttribute::new(
+                            gen.context,
+                            ty,
+                            val_str.parse::<f64>().unwrap(),
+                        )
+                        .into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    let op_ref = block.append_operation(op);
+                    (op_ref.result(0).unwrap().into(), ty)
+                } else {
+                    let ty = Type::parse(gen.context, "i32").unwrap();
+                    let op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(
+                            ty,
+                            val_str.parse::<i64>().unwrap(),
+                        )
+                        .into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    let op_ref = block.append_operation(op);
+                    (op_ref.result(0).unwrap().into(), ty)
+                }
+    }
+}
+impl<'c> LowerToMelior<'c> for ReturnStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let ReturnStmt { expr: expr, span: _ } = self;
+                let (val, _) = gen.generate_expr(expr, block);
+                let ret_op = melior::ir::operation::OperationBuilder::new(
+                    "func.return",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[val])
+                .build()
+                .unwrap();
+                block.append_operation(ret_op);
+    }
+}
+
+impl<'c> LowerToMelior<'c> for LetDeclStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let LetDeclStmt { name: name, is_mut: is_mut, ty_ann: _ty_ann, expr: expr, span: _ } = self;
+                let (val, ty) = gen.generate_expr(expr, block);
+                if *is_mut {
+                    let memref_ty = format!("memref<{}>", ty);
+                    let parsed_memref_ty = Type::parse(gen.context, &memref_ty).unwrap();
+                    let alloca_op = melior::ir::operation::OperationBuilder::new(
+                        "memref.alloca",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[parsed_memref_ty])
+                    .build()
+                    .unwrap();
+                    let alloca_ref = block.append_operation(alloca_op);
+                    let alloca_val = alloca_ref.result(0).unwrap().into();
+
+                    let store_op = melior::ir::operation::OperationBuilder::new(
+                        "memref.store",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[val, alloca_val])
+                    .build()
+                    .unwrap();
+                    block.append_operation(store_op);
+
+                    gen.env
+                        .insert(name.clone(), (alloca_val, parsed_memref_ty));
+                } else {
+                    gen.env.insert(name.clone(), (val, ty));
+                }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for AssignStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let AssignStmt { lhs: lhs, rhs: rhs, span: _ } = self;
+                let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
+                if let Expr::Identifier(IdentifierExpr { name: name, span: _ }) = lhs {
+                    if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
+                        let mem_ty_str = mem_ty.to_string();
+                        if mem_ty_str.starts_with("memref<") {
+                            let mut store_val = rhs_val;
+                            let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
+                            let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                            if rhs_ty != inner_ty
+                                && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
+                                    || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
+                            {
+                                let cast_op = melior::ir::operation::OperationBuilder::new(
+                                    "arith.index_cast",
+                                    Location::unknown(gen.context),
+                                )
+                                .add_operands(&[rhs_val])
+                                .add_results(&[inner_ty])
+                                .build()
+                                .unwrap();
+
+                                store_val =
+                                    block.append_operation(cast_op).result(0).unwrap().into();
+                            }
+
+                            let store_op = melior::ir::operation::OperationBuilder::new(
+                                "memref.store",
+                                Location::unknown(gen.context),
+                            )
+                            .add_operands(&[store_val, mem_val])
+                            .build()
+                            .unwrap();
+                            block.append_operation(store_op);
+                        } else {
+                            gen.env.insert(name.clone(), (rhs_val, rhs_ty));
+                        }
+                    }
+                } else if let Expr::MemberAccess(MemberAccessExpr { base: base, member: member, span: _ }) = lhs {
+                    if let Expr::Identifier(IdentifierExpr { name: base_name, span: _ }) = &**base {
+                        let (base_val, base_ty) = gen.generate_expr(base, block);
+                        let base_ty_str = base_ty.to_string();
+
+                        let mut struct_name_opt = None;
+                        if let Some(start_idx) = base_ty_str.find('\"') {
+                            if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
+                                struct_name_opt = Some(
+                                    base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string(),
+                                );
+                            }
+                        }
+
+                        if let Some(struct_name) = struct_name_opt {
+                            if let Some(struct_decl) = gen.structs.get(&struct_name).cloned() {
+                                if let Some(field_idx) =
+                                    struct_decl.fields.iter().position(|(n, _)| n == member)
+                                {
+                                    let field_ty =
+                                        gen.lower_type(&struct_decl.fields[field_idx].1);
+                                    let mut field_val = rhs_val;
+
+                                    if rhs_ty != field_ty
+                                        && ((rhs_ty.to_string() == "index"
+                                            && field_ty.to_string() == "i32")
+                                            || (rhs_ty.to_string() == "i32"
+                                                && field_ty.to_string() == "index"))
+                                    {
+                                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                                            "arith.index_cast",
+                                            Location::unknown(gen.context),
+                                        )
+                                        .add_operands(&[rhs_val])
+                                        .add_results(&[field_ty])
+                                        .build()
+                                        .unwrap();
+                                        field_val = block
+                                            .append_operation(cast_op)
+                                            .result(0)
+                                            .unwrap()
+                                            .into();
+                                    }
+
+                                    let pos_attr =
+                                        melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                            gen.context,
+                                            &[field_idx as i64],
+                                        );
+                                    let insert_op = melior::ir::operation::OperationBuilder::new(
+                                        "llvm.insertvalue",
+                                        Location::unknown(gen.context),
+                                    )
+                                    .add_operands(&[base_val, field_val])
+                                    .add_attributes(&[(
+                                        melior::ir::Identifier::new(gen.context, "position"),
+                                        pos_attr.into(),
+                                    )])
+                                    .add_results(&[base_ty])
+                                    .build()
+                                    .unwrap();
+
+                                    let new_struct_val =
+                                        block.append_operation(insert_op).result(0).unwrap().into();
+
+                                    if let Some((mem_val, mem_ty)) =
+                                        gen.env.get(base_name).cloned()
+                                    {
+                                        let mem_ty_str = mem_ty.to_string();
+                                        if mem_ty_str.starts_with("memref<") {
+                                            let store_op =
+                                                melior::ir::operation::OperationBuilder::new(
+                                                    "memref.store",
+                                                    Location::unknown(gen.context),
+                                                )
+                                                .add_operands(&[new_struct_val, mem_val])
+                                                .build()
+                                                .unwrap();
+                                            block.append_operation(store_op);
+                                        } else {
+                                            gen.env.insert(
+                                                base_name.clone(),
+                                                (new_struct_val, base_ty),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        panic!("Complex struct assignment lhs not supported");
+                    }
+                }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let CompoundAssignStmt { lhs: lhs, op: op, rhs: rhs, span: _ } = self;
+                let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
+                let (lhs_val, ty) = gen.generate_expr(lhs, block);
+
+                let mut actual_rhs = rhs_val;
+                if rhs_ty != ty
+                    && ((rhs_ty.to_string() == "index" && ty.to_string() == "i32")
+                        || (rhs_ty.to_string() == "i32" && ty.to_string() == "index"))
+                {
+                    let cast_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.index_cast",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[actual_rhs])
+                    .add_results(&[ty])
+                    .build()
+                    .unwrap();
+                    actual_rhs = block.append_operation(cast_op).result(0).unwrap().into();
+                }
+
+                let is_float = ty.to_string().contains("f32") || ty.to_string().contains("f64");
+                let op_name = match op {
+                    BinaryOp::Add => {
+                        if is_float {
+                            "arith.addf"
+                        } else {
+                            "arith.addi"
+                        }
+                    }
+                    BinaryOp::Sub => {
+                        if is_float {
+                            "arith.subf"
+                        } else {
+                            "arith.subi"
+                        }
+                    }
+                    BinaryOp::Mul => {
+                        if is_float {
+                            "arith.mulf"
+                        } else {
+                            "arith.muli"
+                        }
+                    }
+                    BinaryOp::Div => {
+                        if is_float {
+                            "arith.divf"
+                        } else {
+                            "arith.divsi"
+                        }
+                    }
+                    _ => panic!("Unsupported compound assign op"),
+                };
+
+                let bin_op = melior::ir::operation::OperationBuilder::new(
+                    op_name,
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[lhs_val, actual_rhs])
+                .add_results(&[ty])
+                .build()
+                .unwrap();
+                let bin_ref = block.append_operation(bin_op);
+                let result_val = bin_ref.result(0).unwrap().into();
+
+                if let Expr::Identifier(IdentifierExpr { name: name, span: _ }) = lhs {
+                    if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
+                        let mem_ty_str = mem_ty.to_string();
+                        if mem_ty_str.starts_with("memref<") {
+                            let store_op = melior::ir::operation::OperationBuilder::new(
+                                "memref.store",
+                                Location::unknown(gen.context),
+                            )
+                            .add_operands(&[result_val, mem_val])
+                            .build()
+                            .unwrap();
+                            block.append_operation(store_op);
+                        } else {
+                            gen.env.insert(name.clone(), (result_val, ty));
+                        }
+                    }
+                }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for ExprStmtStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let ExprStmtStmt { expr: expr, has_semi: _, span: _ } = self;
+                gen.generate_expr(expr, block);
+    }
+}
+
+impl<'c> LowerToMelior<'c> for ForLoopStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let ForLoopStmt { iter: iter, start: start, end: end, body: body, span: _ } = self;
+                let (start_val, start_ty) = gen.generate_expr(start, block);
+                let (end_val, end_ty) = gen.generate_expr(end, block);
+
+                let ty_index = Type::parse(gen.context, "index").unwrap();
+
+                // step = 1
+                let step_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[ty_index])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
+                )])
+                .build()
+                .unwrap();
+                let step_ref = block.append_operation(step_op);
+                let step_val = step_ref.result(0).unwrap().into();
+
+                // cast start/end to index if necessary
+                let start_idx = if start_ty == ty_index {
+                    start_val
+                } else {
+                    let cast_start_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.index_cast",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[start_val])
+                    .add_results(&[ty_index])
+                    .build()
+                    .unwrap();
+                    block
+                        .append_operation(cast_start_op)
+                        .result(0)
+                        .unwrap()
+                        .into()
+                };
+
+                let end_idx = if end_ty == ty_index {
+                    end_val
+                } else {
+                    let cast_end_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.index_cast",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[end_val])
+                    .add_results(&[ty_index])
+                    .build()
+                    .unwrap();
+                    block
+                        .append_operation(cast_end_op)
+                        .result(0)
+                        .unwrap()
+                        .into()
+                };
+
+                let body_region = Region::new();
+                let body_block = Block::new(&[(ty_index, Location::unknown(gen.context))]);
+
+                let iter_val = body_block.argument(0).unwrap().into();
+                let prev_env_val = gen.env.get(iter).cloned();
+                gen.env.insert(iter.clone(), (iter_val, ty_index));
+
+                for stmt in body {
+                    gen.generate_statement(stmt, &body_block);
+                }
+
+                if let Some(prev) = prev_env_val {
+                    gen.env.insert(iter.clone(), prev);
+                } else {
+                    gen.env.remove(iter);
+                }
+
+                let yield_op = melior::ir::operation::OperationBuilder::new(
+                    "scf.yield",
+                    Location::unknown(gen.context),
+                )
+                .build()
+                .unwrap();
+                body_block.append_operation(yield_op);
+                body_region.append_block(body_block);
+
+                let for_op = melior::ir::operation::OperationBuilder::new(
+                    "scf.for",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[start_idx, end_idx, step_val])
+                .add_regions([body_region])
+                .build()
+                .unwrap();
+                block.append_operation(for_op);
     }
 }

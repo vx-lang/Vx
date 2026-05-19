@@ -23,47 +23,47 @@ fn main() {
         params: vec![],
         return_type: Type::Scalar(ElementType::I32),
         body: vec![
-            Statement::LetDecl(
-                "sum".to_string(),
-                true,
-                None,
-                Expr::Number("0".to_string(), None, Span::default()),
-                Span::default(),
-            ),
-            Statement::ForLoop(
-                "i".to_string(),
-                Box::new(Expr::Number("0".to_string(), None, Span::default())),
-                Box::new(Expr::Number("10".to_string(), None, Span::default())),
-                vec![Statement::ExprStmt(
-                    Expr::If(
-                        Box::new(Expr::BinaryOp(
-                            Box::new(Expr::Identifier("i".to_string(), Span::default())),
-                            BinaryOp::Gt,
-                            Box::new(Expr::Number("5".to_string(), None, Span::default())),
-                            Span::default(),
-                        )),
-                        vec![Statement::Assign(
-                            Expr::Identifier("sum".to_string(), Span::default()),
-                            Expr::BinaryOp(
-                                Box::new(Expr::Identifier("sum".to_string(), Span::default())),
-                                BinaryOp::Add,
-                                Box::new(Expr::Identifier("i".to_string(), Span::default())),
-                                Span::default(),
-                            ),
-                            Span::default(),
-                        )],
-                        None,
-                        Span::default(),
-                    ),
-                    false,
-                    Span::default(),
-                )],
-                Span::default(),
-            ),
-            Statement::Return(
-                Expr::Identifier("sum".to_string(), Span::default()),
-                Span::default(),
-            ),
+            Statement::LetDecl(LetDeclStmt {
+                name: "sum".to_string(),
+                is_mut: true,
+                ty_ann: None,
+                expr: Expr::Number(NumberExpr { value: "0".to_string(), ty: None, span: Span::default() }),
+                span: Span::default(),
+            }),
+            Statement::ForLoop(ForLoopStmt {
+                iter: "i".to_string(),
+                start: Box::new(Expr::Number(NumberExpr { value: "0".to_string(), ty: None, span: Span::default() })),
+                end: Box::new(Expr::Number(NumberExpr { value: "10".to_string(), ty: None, span: Span::default() })),
+                body: vec![Statement::ExprStmt(ExprStmtStmt {
+                    expr: Expr::If(IfExpr {
+                        cond: Box::new(Expr::BinaryOp(BinaryOpExpr {
+                            lhs: Box::new(Expr::Identifier(IdentifierExpr { name: "i".to_string(), span: Span::default() })),
+                            op: BinaryOp::Gt,
+                            rhs: Box::new(Expr::Number(NumberExpr { value: "5".to_string(), ty: None, span: Span::default() })),
+                            span: Span::default(),
+                        })),
+                        then_block: vec![Statement::Assign(AssignStmt {
+                            lhs: Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() }),
+                            rhs: Expr::BinaryOp(BinaryOpExpr {
+                                lhs: Box::new(Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() })),
+                                op: BinaryOp::Add,
+                                rhs: Box::new(Expr::Identifier(IdentifierExpr { name: "i".to_string(), span: Span::default() })),
+                                span: Span::default(),
+                            }),
+                            span: Span::default(),
+                        })],
+                        else_block: None,
+                        span: Span::default(),
+                    }),
+                    has_semi: false,
+                    span: Span::default(),
+                })],
+                span: Span::default(),
+            }),
+            Statement::Return(ReturnStmt {
+                expr: Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() }),
+                span: Span::default(),
+            }),
         ],
     };
 

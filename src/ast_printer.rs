@@ -46,7 +46,7 @@ impl AstPrinter {
             let prefix = if is_last { "└─ " } else { "├─ " };
 
             match stmt {
-                Statement::LetDecl(name, is_mut, ty, expr, _) => {
+                Statement::LetDecl(LetDeclStmt { name: name, is_mut: is_mut, ty_ann: ty, expr: expr, span: _ }) => {
                     println!(
                         "{}{}Let {}{}{} = ",
                         indent,
@@ -61,7 +61,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::Assign(lhs, rhs, _) => {
+                Statement::Assign(AssignStmt { lhs: lhs, rhs: rhs, span: _ }) => {
                     println!(" {}{}Assign", indent, prefix);
                     Self::print_expr(
                         lhs,
@@ -74,7 +74,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::Return(expr, _) => {
+                Statement::Return(ReturnStmt { expr: expr, span: _ }) => {
                     println!("{}{}Return", indent, prefix);
                     Self::print_expr(
                         expr,
@@ -82,7 +82,7 @@ impl AstPrinter {
                         true,
                     );
                 }
-                Statement::ExprStmt(expr, _, _) => {
+                Statement::ExprStmt(ExprStmtStmt { expr: expr, has_semi: _, span: _ }) => {
                     println!("{}{}ExprStmt", indent, prefix);
                     Self::print_expr(
                         expr,
@@ -100,25 +100,25 @@ impl AstPrinter {
     fn print_expr(expr: &Expr, indent: &str, is_last: bool) {
         let prefix = if is_last { "└─ " } else { "├─ " };
         match expr {
-            Expr::Identifier(name, _) => println!("{}{}Identifier({})", indent, prefix, name),
-            Expr::Number(val, el_ty, _) => {
+            Expr::Identifier(IdentifierExpr { name: name, span: _ }) => println!("{}{}Identifier({})", indent, prefix, name),
+            Expr::Number(NumberExpr { value: val, ty: el_ty, span: _ }) => {
                 println!("{}{}Number({}{:?})", indent, prefix, val, el_ty)
             }
-            Expr::StringLiteral(s, _) => println!("{}{}String(\"{}\")", indent, prefix, s),
-            Expr::BinaryOp(lhs, op, rhs, _) => {
+            Expr::StringLiteral(StringLiteralExpr { value: s, span: _ }) => println!("{}{}String(\"{}\")", indent, prefix, s),
+            Expr::BinaryOp(BinaryOpExpr { lhs: lhs, op: op, rhs: rhs, span: _ }) => {
                 println!("{}{}BinaryOp({:?})", indent, prefix, op);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
                 Self::print_expr(lhs, &new_indent, false);
                 Self::print_expr(rhs, &new_indent, true);
             }
-            Expr::FunctionCall(name, args, _) => {
+            Expr::FunctionCall(FunctionCallExpr { name: name, args: args, span: _ }) => {
                 println!("{}{}Call({})", indent, prefix, name);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
                 for (i, arg) in args.iter().enumerate() {
                     Self::print_expr(arg, &new_indent, i == args.len() - 1);
                 }
             }
-            Expr::MethodCall(expr, method, args, _) => {
+            Expr::MethodCall(MethodCallExpr { base: expr, method_name: method, args: args, span: _ }) => {
                 println!("{}{}MethodCall(.'{}')", indent, prefix, method);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
                 Self::print_expr(expr, &new_indent, args.is_empty());
@@ -126,18 +126,18 @@ impl AstPrinter {
                     Self::print_expr(arg, &new_indent, i == args.len() - 1);
                 }
             }
-            Expr::Array(items, _) => {
+            Expr::Array(ArrayExpr { elements: items, span: _ }) => {
                 println!("{}{}Array", indent, prefix);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
                 for (i, item) in items.iter().enumerate() {
                     Self::print_expr(item, &new_indent, i == items.len() - 1);
                 }
             }
-            Expr::EnumVariant(enum_name, variant, _) => {
+            Expr::EnumVariant(EnumVariantExpr { enum_name: enum_name, variant_name: variant, span: _ }) => {
                 println!("{}{}Enum({}::{})", indent, prefix, enum_name, variant);
             }
 
-            Expr::ComptimeBlock(stmts, ret, _) => {
+            Expr::ComptimeBlock(ComptimeBlockExpr { stmts: stmts, ret: ret, span: _ }) => {
                 println!("{}{}ComptimeBlock", indent, prefix);
                 let new_indent = format!("{}{}", indent, if is_last { "   " } else { "│  " });
                 Self::print_statements(stmts, &new_indent);
