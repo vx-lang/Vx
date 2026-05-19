@@ -223,6 +223,81 @@ impl<'c> MeliorGenerator<'c> {
                 .unwrap();
                 block.append_operation(ret_op);
             }
+            Statement::LetDecl(name, is_mut, ty_ann, expr, _) => {
+                let (val, ty) = self.generate_expr(expr, block);
+                if *is_mut {
+                    // For mutable variables, we should allocate a memref and store the value
+                    // But for simple types we can just rely on SSA reassignment or MLIR memref later
+                    // For now we just insert the value into env
+                    self.env.insert(name.clone(), (val, ty));
+                } else {
+                    self.env.insert(name.clone(), (val, ty));
+                }
+            }
+            Statement::Assign(lhs, rhs, _) => {
+                let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
+                if let Expr::Identifier(name, _) = lhs {
+                    // Reassigning in our simple SSA representation
+                    self.env.insert(name.clone(), (rhs_val, rhs_ty));
+                } else {
+                    // TODO: handle array indexing or struct member assign
+                }
+            }
+            Statement::CompoundAssign(lhs, op, rhs, _) => {
+                let (rhs_val, _) = self.generate_expr(rhs, block);
+                let (lhs_val, ty) = self.generate_expr(lhs, block);
+
+                let is_float = ty.to_string().contains("f32") || ty.to_string().contains("f64");
+                let op_name = match op {
+                    BinaryOp::Add => {
+                        if is_float {
+                            "arith.addf"
+                        } else {
+                            "arith.addi"
+                        }
+                    }
+                    BinaryOp::Sub => {
+                        if is_float {
+                            "arith.subf"
+                        } else {
+                            "arith.subi"
+                        }
+                    }
+                    BinaryOp::Mul => {
+                        if is_float {
+                            "arith.mulf"
+                        } else {
+                            "arith.muli"
+                        }
+                    }
+                    BinaryOp::Div => {
+                        if is_float {
+                            "arith.divf"
+                        } else {
+                            "arith.divsi"
+                        }
+                    }
+                    _ => panic!("Unsupported compound assign op"),
+                };
+
+                let bin_op = melior::ir::operation::OperationBuilder::new(
+                    op_name,
+                    Location::unknown(self.context),
+                )
+                .add_operands(&[lhs_val, rhs_val])
+                .add_results(&[ty])
+                .build()
+                .unwrap();
+                let bin_ref = block.append_operation(bin_op);
+                let result_val = bin_ref.result(0).unwrap().into();
+
+                if let Expr::Identifier(name, _) = lhs {
+                    self.env.insert(name.clone(), (result_val, ty));
+                }
+            }
+            Statement::ExprStmt(expr, _, _) => {
+                self.generate_expr(expr, block);
+            }
             _ => {
                 // TODO: implement other statements
             }
@@ -235,6 +310,63 @@ impl<'c> MeliorGenerator<'c> {
         block: &melior::ir::Block<'c>,
     ) -> (Value<'c, 'c>, Type<'c>) {
         match expr {
+            Expr::Identifier(name, _) => {
+                if let Some((val, ty)) = self.env.get(name) {
+                    (*val, *ty)
+                } else {
+                    panic!("Undefined variable: {}", name);
+                }
+            }
+            Expr::BinaryOp(lhs, op, rhs, _) => {
+                let (lhs_val, lhs_ty) = self.generate_expr(lhs, block);
+                let (rhs_val, rhs_ty) = self.generate_expr(rhs, block);
+                // Assume lhs_ty == rhs_ty for simplicity right now
+                let is_float =
+                    lhs_ty.to_string().contains("f32") || lhs_ty.to_string().contains("f64");
+
+                let op_name = match op {
+                    BinaryOp::Add => {
+                        if is_float {
+                            "arith.addf"
+                        } else {
+                            "arith.addi"
+                        }
+                    }
+                    BinaryOp::Sub => {
+                        if is_float {
+                            "arith.subf"
+                        } else {
+                            "arith.subi"
+                        }
+                    }
+                    BinaryOp::Mul => {
+                        if is_float {
+                            "arith.mulf"
+                        } else {
+                            "arith.muli"
+                        }
+                    }
+                    BinaryOp::Div => {
+                        if is_float {
+                            "arith.divf"
+                        } else {
+                            "arith.divsi"
+                        }
+                    }
+                    _ => panic!("Unsupported binary op"),
+                };
+
+                let bin_op = melior::ir::operation::OperationBuilder::new(
+                    op_name,
+                    Location::unknown(self.context),
+                )
+                .add_operands(&[lhs_val, rhs_val])
+                .add_results(&[lhs_ty])
+                .build()
+                .unwrap();
+                let bin_ref = block.append_operation(bin_op);
+                (bin_ref.result(0).unwrap().into(), lhs_ty)
+            }
             Expr::Number(val_str, _, _) => {
                 if val_str.contains('.') {
                     let ty = Type::parse(self.context, "f32").unwrap();

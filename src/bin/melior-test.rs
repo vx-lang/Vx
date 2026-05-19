@@ -8,16 +8,41 @@ fn main() {
     let mut generator = MeliorGenerator::new(&context);
 
     // Create a dummy AST
-    // fn test_func() -> i32 { return 42; }
+    // fn test_func() -> i32 {
+    //     let a = 20;
+    //     let b = 22;
+    //     return a + b;
+    // }
     let func = Function {
         name: "test_func".to_string(),
         generics: vec![],
         params: vec![],
         return_type: Type::Scalar(ElementType::I32),
-        body: vec![Statement::Return(
-            Expr::Number("42".to_string(), None, Span::default()),
-            Span::default(),
-        )],
+        body: vec![
+            Statement::LetDecl(
+                "a".to_string(),
+                false,
+                None,
+                Expr::Number("20".to_string(), None, Span::default()),
+                Span::default(),
+            ),
+            Statement::LetDecl(
+                "b".to_string(),
+                false,
+                None,
+                Expr::Number("22".to_string(), None, Span::default()),
+                Span::default(),
+            ),
+            Statement::Return(
+                Expr::BinaryOp(
+                    Box::new(Expr::Identifier("a".to_string(), Span::default())),
+                    BinaryOp::Add,
+                    Box::new(Expr::Identifier("b".to_string(), Span::default())),
+                    Span::default(),
+                ),
+                Span::default(),
+            ),
+        ],
     };
 
     let program = Program {
