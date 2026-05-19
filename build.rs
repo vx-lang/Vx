@@ -19,6 +19,19 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    // Ensure llvm-config is in PATH because the `melior` and `tblgen` dependencies require it.
+    if Command::new("llvm-config")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        println!(
+            "cargo:warning=⚠️  LLVM is not in PATH! `melior` and `tblgen` will fail to build."
+        );
+        println!("cargo:warning=On macOS with Homebrew, run: export PATH=\"/opt/homebrew/opt/llvm/bin:$PATH\"");
+        panic!("llvm-config not found in PATH");
+    }
+
     // Check if we're on macOS
     if cfg!(target_os = "macos") {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
