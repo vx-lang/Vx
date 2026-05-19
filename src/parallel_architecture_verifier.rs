@@ -8,7 +8,7 @@
 //
 // This file verifies the structural integrity of the compiler's parallel passes.
 // It enforces project-specific constraints, such as the strict prohibition of
-// standard locking primitives (Mutex, RwLock), ensuring the compiler maintains a
+// standard locking primitives, ensuring the compiler maintains a
 // lock-free, high-throughput architecture.
 //
 //===----------------------------------------------------------------------===//
