@@ -285,19 +285,32 @@ impl<'a> TypeChecker<'a> {
     fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
         // Intercept for HIR lowering
         match stmt {
-            Statement::Assign(AssignStmt { lhs: _lhs, rhs: rhs, span: _ }) => {
+            Statement::Assign(AssignStmt {
+                lhs: _lhs,
+                rhs: rhs,
+                span: _,
+            }) => {
                 let (ty, rhs_reg) = self.check_expr(rhs);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
                 // Fallthrough to standard semantic checks
             }
-            Statement::Return(ReturnStmt { expr: expr, span: _ }) => {
+            Statement::Return(ReturnStmt {
+                expr: expr,
+                span: _,
+            }) => {
                 let (ty, ret_reg) = self.check_expr(expr);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
                 // Fallthrough to standard semantic checks
             }
-            Statement::LetDecl(LetDeclStmt { name: _name, is_mut: _, ty_ann: _, expr: expr, span: _ }) => {
+            Statement::LetDecl(LetDeclStmt {
+                name: _name,
+                is_mut: _,
+                ty_ann: _,
+                expr: expr,
+                span: _,
+            }) => {
                 let (ty, val_reg) = self.check_expr(expr);
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_STORE, val_reg, 0, type_idx);
@@ -306,7 +319,13 @@ impl<'a> TypeChecker<'a> {
         }
 
         match stmt {
-            Statement::LetDecl(LetDeclStmt { name: name, is_mut: _is_mut, ty_ann: ty_ann, expr: expr, span: _ }) => {
+            Statement::LetDecl(LetDeclStmt {
+                name: name,
+                is_mut: _is_mut,
+                ty_ann: ty_ann,
+                expr: expr,
+                span: _,
+            }) => {
                 let ty = self.check_expr_type(expr);
 
                 if let Some(ann) = ty_ann {
@@ -319,7 +338,13 @@ impl<'a> TypeChecker<'a> {
                     self.insert(name.clone(), ty);
                 }
             }
-            Statement::ForLoop(ForLoopStmt { iter: iter, start: start, end: end, body: body, span: _ }) => {
+            Statement::ForLoop(ForLoopStmt {
+                iter: iter,
+                start: start,
+                end: end,
+                body: body,
+                span: _,
+            }) => {
                 self.check_expr_type(start);
                 self.check_expr_type(end);
                 self.push_scope();
@@ -329,14 +354,27 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.pop_scope();
             }
-            Statement::Assign(AssignStmt { lhs: lhs, rhs: rhs, span: _ }) | Statement::CompoundAssign(CompoundAssignStmt { lhs: lhs, op: _, rhs: rhs, span: _ }) => {
+            Statement::Assign(AssignStmt {
+                lhs: lhs,
+                rhs: rhs,
+                span: _,
+            })
+            | Statement::CompoundAssign(CompoundAssignStmt {
+                lhs: lhs,
+                op: _,
+                rhs: rhs,
+                span: _,
+            }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, false);
                 let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
             }
-            Statement::Return(ReturnStmt { expr: expr, span: _ }) => {
+            Statement::Return(ReturnStmt {
+                expr: expr,
+                span: _,
+            }) => {
                 let ty = self.check_expr_type(expr);
                 if !self.is_assignable(return_type, &ty) {
                     self.errors.push(format!(
@@ -345,7 +383,11 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
-            Statement::SpawnOn(SpawnOnStmt { top: top, stmts: stmts, span: _ }) => {
+            Statement::SpawnOn(SpawnOnStmt {
+                top: top,
+                stmts: stmts,
+                span: _,
+            }) => {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = top.clone();
@@ -382,10 +424,18 @@ impl<'a> TypeChecker<'a> {
                 self.active_topology = prev_top;
                 self.active_memory = prev_mem;
             }
-            Statement::ExprStmt(ExprStmtStmt { expr: expr, has_semi: _, span: _ }) => {
+            Statement::ExprStmt(ExprStmtStmt {
+                expr: expr,
+                has_semi: _,
+                span: _,
+            }) => {
                 self.check_expr_type(expr);
             }
-            Statement::Assert(AssertStmt { expr: expr, msg: _msg, span: _ }) => {
+            Statement::Assert(AssertStmt {
+                expr: expr,
+                msg: _msg,
+                span: _,
+            }) => {
                 let ty = self.check_expr_type(expr);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
@@ -397,17 +447,30 @@ impl<'a> TypeChecker<'a> {
 
     fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
         match expr {
-            Expr::Number(NumberExpr { value: n_str, ty: _, span: _ }) => {
+            Expr::Number(NumberExpr {
+                value: n_str,
+                ty: _,
+                span: _,
+            }) => {
                 if let Ok(n) = n_str.parse::<f64>() {
                     Some(Value::Number(n))
                 } else {
                     None
                 }
             }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "true" => Some(Value::Bool(true)),
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => Some(Value::Bool(false)),
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "true" => {
+                Some(Value::Bool(true))
+            }
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => {
+                Some(Value::Bool(false))
+            }
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
-            Expr::BinaryOp(BinaryOpExpr { lhs: lhs, op: op, rhs: rhs, span: _ }) => {
+            Expr::BinaryOp(BinaryOpExpr {
+                lhs: lhs,
+                op: op,
+                rhs: rhs,
+                span: _,
+            }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 match (l, r, op) {
@@ -426,14 +489,22 @@ impl<'a> TypeChecker<'a> {
                     _ => None,
                 }
             }
-            Expr::UnaryOp(UnaryOpExpr { op: UnaryOp::Not, expr: inner, span: _ }) => {
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Not,
+                expr: inner,
+                span: _,
+            }) => {
                 if let Value::Bool(b) = self.eval_expr(inner, env)? {
                     Some(Value::Bool(!b))
                 } else {
                     None
                 }
             }
-            Expr::FunctionCall(FunctionCallExpr { name: name, args: args, span: _ }) => {
+            Expr::FunctionCall(FunctionCallExpr {
+                name: name,
+                args: args,
+                span: _,
+            }) => {
                 let func = self.env.ast_functions.get(name)?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -453,19 +524,36 @@ impl<'a> TypeChecker<'a> {
 
     fn eval_statement(&self, stmt: &Statement, env: &mut HashMap<String, Value>) -> Option<Value> {
         match stmt {
-            Statement::LetDecl(LetDeclStmt { name: name, is_mut: _, ty_ann: _, expr: expr, span: _ }) => {
+            Statement::LetDecl(LetDeclStmt {
+                name: name,
+                is_mut: _,
+                ty_ann: _,
+                expr: expr,
+                span: _,
+            }) => {
                 if let Some(val) = self.eval_expr(expr, env) {
                     env.insert(name.clone(), val);
                 }
                 None
             }
-            Statement::Assign(AssignStmt { lhs: Expr::Identifier(IdentifierExpr { name: name, span: _ }), rhs: rhs, span: _ }) => {
+            Statement::Assign(AssignStmt {
+                lhs:
+                    Expr::Identifier(IdentifierExpr {
+                        name: name,
+                        span: _,
+                    }),
+                rhs: rhs,
+                span: _,
+            }) => {
                 if let Some(val) = self.eval_expr(rhs, env) {
                     env.insert(name.clone(), val);
                 }
                 None
             }
-            Statement::Return(ReturnStmt { expr: expr, span: _ }) => self.eval_expr(expr, env),
+            Statement::Return(ReturnStmt {
+                expr: expr,
+                span: _,
+            }) => self.eval_expr(expr, env),
             _ => None,
         }
     }
@@ -481,14 +569,23 @@ impl<'a> TypeChecker<'a> {
         let opcode = match expr {
             Expr::Number(NumberExpr { .. }) => crate::hir::OP_CONST,
             Expr::Identifier(IdentifierExpr { name: _, span: _ }) => crate::hir::OP_LOAD,
-            Expr::BinaryOp(BinaryOpExpr { lhs: _, op: op, rhs: _, span: _ }) => match op {
+            Expr::BinaryOp(BinaryOpExpr {
+                lhs: _,
+                op: op,
+                rhs: _,
+                span: _,
+            }) => match op {
                 BinaryOp::Add => crate::hir::OP_ADD,
                 BinaryOp::Sub => crate::hir::OP_SUB,
                 BinaryOp::Mul => crate::hir::OP_MUL,
                 BinaryOp::Div => crate::hir::OP_DIV,
                 _ => crate::hir::OP_NOP,
             },
-            Expr::FunctionCall(FunctionCallExpr { name: _, args: _, span: _ }) => crate::hir::OP_CALL,
+            Expr::FunctionCall(FunctionCallExpr {
+                name: _,
+                args: _,
+                span: _,
+            }) => crate::hir::OP_CALL,
             _ => crate::hir::OP_NOP,
         };
 
@@ -505,7 +602,10 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr { name: name, span: _ }) => {
+            Expr::Identifier(IdentifierExpr {
+                name: name,
+                span: _,
+            }) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
@@ -577,7 +677,11 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            Expr::EnumVariant(EnumVariantExpr { enum_name: enum_name, variant_name: variant, span: _ }) => {
+            Expr::EnumVariant(EnumVariantExpr {
+                enum_name: enum_name,
+                variant_name: variant,
+                span: _,
+            }) => {
                 if let Some(variants) = self.env.enums.get(enum_name) {
                     if !variants.contains(variant) {
                         self.errors.push(format!(
@@ -590,20 +694,36 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Enum(enum_name.clone(), None)
             }
-            Expr::Number(NumberExpr { value: _, ty: Some(el_ty), span: _ }) => Type::Scalar(*el_ty),
-            Expr::Number(NumberExpr { value: _, ty: None, span: _ }) => Type::Scalar(ElementType::F32),
+            Expr::Number(NumberExpr {
+                value: _,
+                ty: Some(el_ty),
+                span: _,
+            }) => Type::Scalar(*el_ty),
+            Expr::Number(NumberExpr {
+                value: _,
+                ty: None,
+                span: _,
+            }) => Type::Scalar(ElementType::F32),
             Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
                 None,
                 false, // const
             ),
-            Expr::Transfer(TransferExpr { expr: inner_expr, space: target_mem, span: _ }) => {
+            Expr::Transfer(TransferExpr {
+                expr: inner_expr,
+                space: target_mem,
+                span: _,
+            }) => {
                 let inner_ty = self.check_expr_type_flag(inner_expr, false, silent);
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => Type::Pinned(
                         Box::new(inner_ty.clone()),
-                        Topology::NPU(Box::new(Expr::Number(NumberExpr { value: "0".to_string(), ty: Some(crate::ast::ElementType::I32), span: Span::default() }))),
+                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(crate::ast::ElementType::I32),
+                            span: Span::default(),
+                        }))),
                     ),
                     Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
@@ -616,15 +736,29 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            Expr::ComptimeBlock(ComptimeBlockExpr { stmts: stmts, ret: ret, span: _ }) => {
+            Expr::ComptimeBlock(ComptimeBlockExpr {
+                stmts: stmts,
+                ret: ret,
+                span: _,
+            }) => {
                 self.push_scope();
                 for stmt in stmts {
-                    if let Statement::ExprStmt(ExprStmtStmt { expr: ref mut expr, has_semi: _, span: _ }) = stmt {
+                    if let Statement::ExprStmt(ExprStmtStmt {
+                        expr: ref mut expr,
+                        has_semi: _,
+                        span: _,
+                    }) = stmt
+                    {
                         self.check_expr_type(expr);
                     } else {
                         self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
                     }
-                    if let Statement::Assert(AssertStmt { expr: expr, msg: msg, span: _ }) = stmt {
+                    if let Statement::Assert(AssertStmt {
+                        expr: expr,
+                        msg: msg,
+                        span: _,
+                    }) = stmt
+                    {
                         let ty = self.check_expr_type(expr);
                         if ty != Type::Scalar(ElementType::Bool) {
                             self.errors
@@ -651,7 +785,12 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 ret_ty
             }
-            Expr::If(IfExpr { cond: cond, then_block: then_block, else_block: else_block, span: _ }) => {
+            Expr::If(IfExpr {
+                cond: cond,
+                then_block: then_block,
+                else_block: else_block,
+                span: _,
+            }) => {
                 let cond_ty = self.check_expr_type(cond);
                 if cond_ty != Type::Scalar(ElementType::Bool) {
                     self.errors
@@ -660,7 +799,12 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
                 for s in then_block.iter_mut() {
-                    if let Statement::ExprStmt(ExprStmtStmt { expr: ref mut expr, has_semi: _, span: _ }) = s {
+                    if let Statement::ExprStmt(ExprStmtStmt {
+                        expr: ref mut expr,
+                        has_semi: _,
+                        span: _,
+                    }) = s
+                    {
                         then_ty = self.check_expr_type(expr);
                     } else {
                         self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
@@ -672,7 +816,12 @@ impl<'a> TypeChecker<'a> {
                 if let Some(else_b) = else_block.as_mut() {
                     self.push_scope();
                     for s in else_b.iter_mut() {
-                        if let Statement::ExprStmt(ExprStmtStmt { expr: ref mut expr, has_semi: _, span: _ }) = s {
+                        if let Statement::ExprStmt(ExprStmtStmt {
+                            expr: ref mut expr,
+                            has_semi: _,
+                            span: _,
+                        }) = s
+                        {
                             else_ty = self.check_expr_type(expr);
                         } else {
                             self.check_statement(s, &Type::Tensor(ElementType::F32, vec![], None));
@@ -692,7 +841,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 then_ty
             }
-            Expr::FunctionCall(FunctionCallExpr { name: name, args: args, span: _ }) => {
+            Expr::FunctionCall(FunctionCallExpr {
+                name: name,
+                args: args,
+                span: _,
+            }) => {
                 let resolved_name = name.clone();
 
                 // Mocking built-ins
@@ -862,13 +1015,20 @@ impl<'a> TypeChecker<'a> {
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
-            Expr::Array(ArrayExpr { elements: elements, span: _ }) => {
+            Expr::Array(ArrayExpr {
+                elements: elements,
+                span: _,
+            }) => {
                 for el in elements {
                     self.check_expr_type(el);
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::MemberAccess(MemberAccessExpr { base: obj, member: member, span: _ }) => {
+            Expr::MemberAccess(MemberAccessExpr {
+                base: obj,
+                member: member,
+                span: _,
+            }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 let mut base_ty = obj_ty.clone();
                 if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
@@ -904,7 +1064,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::IndexAccess(IndexAccessExpr { base: obj, index: idx, span: _ }) => {
+            Expr::IndexAccess(IndexAccessExpr {
+                base: obj,
+                index: idx,
+                span: _,
+            }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
@@ -917,7 +1081,12 @@ impl<'a> TypeChecker<'a> {
                     Type::Scalar(ElementType::F32)
                 }
             }
-            Expr::MethodCall(MethodCallExpr { base: obj, method_name: _method, args: args, span: _ }) => {
+            Expr::MethodCall(MethodCallExpr {
+                base: obj,
+                method_name: _method,
+                args: args,
+                span: _,
+            }) => {
                 let mut base_ty = self.check_expr_type_flag(obj, false, silent);
                 for arg in args.iter_mut() {
                     self.check_expr_type(arg);
@@ -927,8 +1096,11 @@ impl<'a> TypeChecker<'a> {
                     if let Some(exported_ty) = exports.get(_method) {
                         let prefix = TypeChecker::mangle_path(path);
                         let mangled_name = format!("{}_{}", prefix, _method);
-                        let func_call =
-                            Expr::FunctionCall(FunctionCallExpr { name: mangled_name, args: args.clone(), span: Span::default() });
+                        let func_call = Expr::FunctionCall(FunctionCallExpr {
+                            name: mangled_name,
+                            args: args.clone(),
+                            span: Span::default(),
+                        });
                         *expr = func_call;
                         return exported_ty.clone();
                     } else {
@@ -951,7 +1123,12 @@ impl<'a> TypeChecker<'a> {
 
                         let mut is_exact = true;
                         if args.len() >= 2 {
-                            if let Expr::EnumVariant(EnumVariantExpr { enum_name: enum_name, variant_name: variant, span: _ }) = &args[1] {
+                            if let Expr::EnumVariant(EnumVariantExpr {
+                                enum_name: enum_name,
+                                variant_name: variant,
+                                span: _,
+                            }) = &args[1]
+                            {
                                 if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim")
                                 {
                                     is_exact = false;
@@ -969,7 +1146,11 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
 
-                        if let Expr::Array(ArrayExpr { elements: new_dims, span: _ }) = &args[0] {
+                        if let Expr::Array(ArrayExpr {
+                            elements: new_dims,
+                            span: _,
+                        }) = &args[0]
+                        {
                             let empty_env = HashMap::new();
                             let mut src_elements = 1.0;
                             for d in dims {
@@ -1015,10 +1196,18 @@ impl<'a> TypeChecker<'a> {
                             self.errors.push("transpose requires exactly 1 argument (an array of permutation indices)".to_string());
                             return base_ty;
                         }
-                        if let Expr::Array(ArrayExpr { elements: perm, span: _ }) = &args[0] {
+                        if let Expr::Array(ArrayExpr {
+                            elements: perm,
+                            span: _,
+                        }) = &args[0]
+                        {
                             let empty_env = HashMap::new();
                             let mut new_dims = vec![
-                                Expr::Number(NumberExpr { value: "0".to_string(), ty: Some(crate::ast::ElementType::I32), span: Span::default() });
+                                Expr::Number(NumberExpr {
+                                    value: "0".to_string(),
+                                    ty: Some(crate::ast::ElementType::I32),
+                                    span: Span::default()
+                                });
                                 dims.len()
                             ];
                             if perm.len() != dims.len() {
@@ -1118,7 +1307,11 @@ impl<'a> TypeChecker<'a> {
                             first_param.1,
                             Type::Borrow(_, _, _) | Type::Pointer(_, _, _)
                         ) {
-                            call_args.push(Expr::Borrow(BorrowExpr { expr: Box::new((**obj).clone()), is_mut: false, span: Span::default() }));
+                            call_args.push(Expr::Borrow(BorrowExpr {
+                                expr: Box::new((**obj).clone()),
+                                is_mut: false,
+                                span: Span::default(),
+                            }));
                         } else {
                             call_args.push((**obj).clone());
                         }
@@ -1130,8 +1323,11 @@ impl<'a> TypeChecker<'a> {
                         call_args.push(a.clone());
                     }
 
-                    let mut func_call =
-                        Expr::FunctionCall(FunctionCallExpr { name: mangled_name, args: call_args, span: Span::default() });
+                    let mut func_call = Expr::FunctionCall(FunctionCallExpr {
+                        name: mangled_name,
+                        args: call_args,
+                        span: Span::default(),
+                    });
                     let ret_ty = self.check_expr_type_flag(&mut func_call, consume, silent);
 
                     // Replace the AST node in-place!
@@ -1146,13 +1342,25 @@ impl<'a> TypeChecker<'a> {
                     let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
-                        Topology::NPU(Box::new(Expr::Number(NumberExpr { value: "0".to_string(), ty: Some(crate::ast::ElementType::I32), span: Span::default() }))),
+                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(crate::ast::ElementType::I32),
+                            span: Span::default(),
+                        }))),
                     ); // Default to NPU[0]
-                    *expr = Expr::Transfer(TransferExpr { expr: obj.clone(), space: target_mem, span: Span::default() });
+                    *expr = Expr::Transfer(TransferExpr {
+                        expr: obj.clone(),
+                        space: target_mem,
+                        span: Span::default(),
+                    });
                 } else if _method == "to_host" {
                     let target_mem = MemorySpace::HostDRAM;
                     base_ty = Type::Pinned(Box::new(base_ty), Topology::Host);
-                    *expr = Expr::Transfer(TransferExpr { expr: obj.clone(), space: target_mem, span: Span::default() });
+                    *expr = Expr::Transfer(TransferExpr {
+                        expr: obj.clone(),
+                        space: target_mem,
+                        span: Span::default(),
+                    });
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {
                     let is_mut = _method == "as_mut_ptr";
                     match &base_ty {
@@ -1197,7 +1405,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 base_ty
             }
-            Expr::BinaryOp(BinaryOpExpr { lhs: lhs, op: op, rhs: rhs, span: _ }) => {
+            Expr::BinaryOp(BinaryOpExpr {
+                lhs: lhs,
+                op: op,
+                rhs: rhs,
+                span: _,
+            }) => {
                 let op_consume = match op {
                     BinaryOp::Eq
                     | BinaryOp::NotEq
@@ -1230,17 +1443,28 @@ impl<'a> TypeChecker<'a> {
             Expr::MemorySpace(MemorySpaceExpr { .. }) | Expr::Topology(TopologyExpr { .. }) => {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            Expr::UnaryOp(UnaryOpExpr { op: op, expr: inner, span: _ }) => {
+            Expr::UnaryOp(UnaryOpExpr {
+                op: op,
+                expr: inner,
+                span: _,
+            }) => {
                 self.check_expr_type(inner);
                 match op {
                     UnaryOp::Not => Type::Scalar(ElementType::Bool),
                 }
             }
-            Expr::Borrow(BorrowExpr { expr: inner, is_mut: is_mut, span: _ }) => {
+            Expr::Borrow(BorrowExpr {
+                expr: inner,
+                is_mut: is_mut,
+                span: _,
+            }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
                 Type::Borrow(Box::new(inner_ty), None, *is_mut)
             }
-            Expr::Dereference(DereferenceExpr { expr: inner, span: _ }) => {
+            Expr::Dereference(DereferenceExpr {
+                expr: inner,
+                span: _,
+            }) => {
                 if !self.in_unsafe_block {
                     self.errors
                         .push("Dereference of raw pointer outside of unsafe block!".to_string());
@@ -1255,12 +1479,21 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            Expr::UnsafeBlock(UnsafeBlockExpr { stmts: stmts, ret: ret_expr, span: _ }) => {
+            Expr::UnsafeBlock(UnsafeBlockExpr {
+                stmts: stmts,
+                ret: ret_expr,
+                span: _,
+            }) => {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
                 for s in stmts.iter_mut() {
-                    if let Statement::ExprStmt(ExprStmtStmt { expr: ref mut expr, has_semi: _, span: _ }) = s {
+                    if let Statement::ExprStmt(ExprStmtStmt {
+                        expr: ref mut expr,
+                        has_semi: _,
+                        span: _,
+                    }) = s
+                    {
                         self.check_expr_type(expr);
                     } else {
                         self.check_statement(
@@ -1277,7 +1510,11 @@ impl<'a> TypeChecker<'a> {
                 self.in_unsafe_block = prev_unsafe;
                 ret_ty
             }
-            Expr::StructInit(StructInitExpr { name: name, fields: fields, span: _ }) => {
+            Expr::StructInit(StructInitExpr {
+                name: name,
+                fields: fields,
+                span: _,
+            }) => {
                 let resolved_name = name.clone();
                 if false {
                     /* resolved_name = mangled.clone(); */

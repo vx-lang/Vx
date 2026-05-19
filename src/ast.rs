@@ -134,86 +134,261 @@ pub enum UnaryOp {
     Not,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct IdentifierExpr {
+    pub name: String,
+    pub span: Span,
+}
+impl IdentifierExpr {
+    pub fn new(name: String, span: Span) -> Self {
+        Self { name, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct IdentifierExpr { pub name: String, pub span: Span }
-impl IdentifierExpr { pub fn new(name: String, span: Span) -> Self { Self { name, span } } }
+pub struct EnumVariantExpr {
+    pub enum_name: String,
+    pub variant_name: String,
+    pub span: Span,
+}
+impl EnumVariantExpr {
+    pub fn new(enum_name: String, variant_name: String, span: Span) -> Self {
+        Self {
+            enum_name,
+            variant_name,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct EnumVariantExpr { pub enum_name: String, pub variant_name: String, pub span: Span }
-impl EnumVariantExpr { pub fn new(enum_name: String, variant_name: String, span: Span) -> Self { Self { enum_name, variant_name, span } } }
+pub struct NumberExpr {
+    pub value: String,
+    pub ty: Option<ElementType>,
+    pub span: Span,
+}
+impl NumberExpr {
+    pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
+        Self { value, ty, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct NumberExpr { pub value: String, pub ty: Option<ElementType>, pub span: Span }
-impl NumberExpr { pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self { Self { value, ty, span } } }
+pub struct StringLiteralExpr {
+    pub value: String,
+    pub span: Span,
+}
+impl StringLiteralExpr {
+    pub fn new(value: String, span: Span) -> Self {
+        Self { value, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StringLiteralExpr { pub value: String, pub span: Span }
-impl StringLiteralExpr { pub fn new(value: String, span: Span) -> Self { Self { value, span } } }
+pub struct TransferExpr {
+    pub expr: Box<Expr>,
+    pub space: MemorySpace,
+    pub span: Span,
+}
+impl TransferExpr {
+    pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self {
+        Self { expr, space, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct TransferExpr { pub expr: Box<Expr>, pub space: MemorySpace, pub span: Span }
-impl TransferExpr { pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self { Self { expr, space, span } } }
+pub struct FunctionCallExpr {
+    pub name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl FunctionCallExpr {
+    pub fn new(name: String, args: Vec<Expr>, span: Span) -> Self {
+        Self { name, args, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct FunctionCallExpr { pub name: String, pub args: Vec<Expr>, pub span: Span }
-impl FunctionCallExpr { pub fn new(name: String, args: Vec<Expr>, span: Span) -> Self { Self { name, args, span } } }
+pub struct ArrayExpr {
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+impl ArrayExpr {
+    pub fn new(elements: Vec<Expr>, span: Span) -> Self {
+        Self { elements, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ArrayExpr { pub elements: Vec<Expr>, pub span: Span }
-impl ArrayExpr { pub fn new(elements: Vec<Expr>, span: Span) -> Self { Self { elements, span } } }
+pub struct MemberAccessExpr {
+    pub base: Box<Expr>,
+    pub member: String,
+    pub span: Span,
+}
+impl MemberAccessExpr {
+    pub fn new(base: Box<Expr>, member: String, span: Span) -> Self {
+        Self { base, member, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct MemberAccessExpr { pub base: Box<Expr>, pub member: String, pub span: Span }
-impl MemberAccessExpr { pub fn new(base: Box<Expr>, member: String, span: Span) -> Self { Self { base, member, span } } }
+pub struct IndexAccessExpr {
+    pub base: Box<Expr>,
+    pub index: Box<Expr>,
+    pub span: Span,
+}
+impl IndexAccessExpr {
+    pub fn new(base: Box<Expr>, index: Box<Expr>, span: Span) -> Self {
+        Self { base, index, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct IndexAccessExpr { pub base: Box<Expr>, pub index: Box<Expr>, pub span: Span }
-impl IndexAccessExpr { pub fn new(base: Box<Expr>, index: Box<Expr>, span: Span) -> Self { Self { base, index, span } } }
+pub struct MethodCallExpr {
+    pub base: Box<Expr>,
+    pub method_name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl MethodCallExpr {
+    pub fn new(base: Box<Expr>, method_name: String, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            base,
+            method_name,
+            args,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct MethodCallExpr { pub base: Box<Expr>, pub method_name: String, pub args: Vec<Expr>, pub span: Span }
-impl MethodCallExpr { pub fn new(base: Box<Expr>, method_name: String, args: Vec<Expr>, span: Span) -> Self { Self { base, method_name, args, span } } }
+pub struct BinaryOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: BinaryOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl BinaryOpExpr {
+    pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct BinaryOpExpr { pub lhs: Box<Expr>, pub op: BinaryOp, pub rhs: Box<Expr>, pub span: Span }
-impl BinaryOpExpr { pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self { Self { lhs, op, rhs, span } } }
+pub struct UnaryOpExpr {
+    pub op: UnaryOp,
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+impl UnaryOpExpr {
+    pub fn new(op: UnaryOp, expr: Box<Expr>, span: Span) -> Self {
+        Self { op, expr, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct UnaryOpExpr { pub op: UnaryOp, pub expr: Box<Expr>, pub span: Span }
-impl UnaryOpExpr { pub fn new(op: UnaryOp, expr: Box<Expr>, span: Span) -> Self { Self { op, expr, span } } }
+pub struct BorrowExpr {
+    pub expr: Box<Expr>,
+    pub is_mut: bool,
+    pub span: Span,
+}
+impl BorrowExpr {
+    pub fn new(expr: Box<Expr>, is_mut: bool, span: Span) -> Self {
+        Self { expr, is_mut, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct BorrowExpr { pub expr: Box<Expr>, pub is_mut: bool, pub span: Span }
-impl BorrowExpr { pub fn new(expr: Box<Expr>, is_mut: bool, span: Span) -> Self { Self { expr, is_mut, span } } }
+pub struct DereferenceExpr {
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+impl DereferenceExpr {
+    pub fn new(expr: Box<Expr>, span: Span) -> Self {
+        Self { expr, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct DereferenceExpr { pub expr: Box<Expr>, pub span: Span }
-impl DereferenceExpr { pub fn new(expr: Box<Expr>, span: Span) -> Self { Self { expr, span } } }
+pub struct UnsafeBlockExpr {
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+impl UnsafeBlockExpr {
+    pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self { stmts, ret, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct UnsafeBlockExpr { pub stmts: Vec<Statement>, pub ret: Option<Box<Expr>>, pub span: Span }
-impl UnsafeBlockExpr { pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self { Self { stmts, ret, span } } }
+pub struct ComptimeBlockExpr {
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+impl ComptimeBlockExpr {
+    pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self { stmts, ret, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ComptimeBlockExpr { pub stmts: Vec<Statement>, pub ret: Option<Box<Expr>>, pub span: Span }
-impl ComptimeBlockExpr { pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self { Self { stmts, ret, span } } }
+pub struct StructInitExpr {
+    pub name: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+impl StructInitExpr {
+    pub fn new(name: String, fields: Vec<(String, Expr)>, span: Span) -> Self {
+        Self { name, fields, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StructInitExpr { pub name: String, pub fields: Vec<(String, Expr)>, pub span: Span }
-impl StructInitExpr { pub fn new(name: String, fields: Vec<(String, Expr)>, span: Span) -> Self { Self { name, fields, span } } }
+pub struct MemorySpaceExpr {
+    pub space: MemorySpace,
+    pub span: Span,
+}
+impl MemorySpaceExpr {
+    pub fn new(space: MemorySpace, span: Span) -> Self {
+        Self { space, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct MemorySpaceExpr { pub space: MemorySpace, pub span: Span }
-impl MemorySpaceExpr { pub fn new(space: MemorySpace, span: Span) -> Self { Self { space, span } } }
+pub struct TopologyExpr {
+    pub top: Topology,
+    pub span: Span,
+}
+impl TopologyExpr {
+    pub fn new(top: Topology, span: Span) -> Self {
+        Self { top, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct TopologyExpr { pub top: Topology, pub span: Span }
-impl TopologyExpr { pub fn new(top: Topology, span: Span) -> Self { Self { top, span } } }
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct IfExpr { pub cond: Box<Expr>, pub then_block: Vec<Statement>, pub else_block: Option<Vec<Statement>>, pub span: Span }
-impl IfExpr { pub fn new(cond: Box<Expr>, then_block: Vec<Statement>, else_block: Option<Vec<Statement>>, span: Span) -> Self { Self { cond, then_block, else_block, span } } }
+pub struct IfExpr {
+    pub cond: Box<Expr>,
+    pub then_block: Vec<Statement>,
+    pub else_block: Option<Vec<Statement>>,
+    pub span: Span,
+}
+impl IfExpr {
+    pub fn new(
+        cond: Box<Expr>,
+        then_block: Vec<Statement>,
+        else_block: Option<Vec<Statement>>,
+        span: Span,
+    ) -> Self {
+        Self {
+            cond,
+            then_block,
+            else_block,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
@@ -238,7 +413,6 @@ pub enum Expr {
     Topology(TopologyExpr),
     If(IfExpr),
 }
-
 
 impl Expr {
     pub fn span(&self) -> Span {
@@ -330,13 +504,20 @@ impl Expr {
             }),
             Expr::StructInit(e) => Expr::StructInit(StructInitExpr {
                 name: e.name.clone(),
-                fields: e.fields.iter().map(|(n, ex)| (n.clone(), ex.substitute(mapping))).collect(),
+                fields: e
+                    .fields
+                    .iter()
+                    .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
+                    .collect(),
                 span: e.span.clone(),
             }),
             Expr::If(e) => Expr::If(IfExpr {
                 cond: Box::new(e.cond.substitute(mapping)),
                 then_block: e.then_block.iter().map(|s| s.substitute(mapping)).collect(),
-                else_block: e.else_block.as_ref().map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
+                else_block: e
+                    .else_block
+                    .as_ref()
+                    .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
                 span: e.span.clone(),
             }),
             Expr::Identifier(_)
@@ -349,38 +530,127 @@ impl Expr {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct LetDeclStmt {
+    pub name: String,
+    pub is_mut: bool,
+    pub ty_ann: Option<Type>,
+    pub expr: Expr,
+    pub span: Span,
+}
+impl LetDeclStmt {
+    pub fn new(name: String, is_mut: bool, ty_ann: Option<Type>, expr: Expr, span: Span) -> Self {
+        Self {
+            name,
+            is_mut,
+            ty_ann,
+            expr,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct LetDeclStmt { pub name: String, pub is_mut: bool, pub ty_ann: Option<Type>, pub expr: Expr, pub span: Span }
-impl LetDeclStmt { pub fn new(name: String, is_mut: bool, ty_ann: Option<Type>, expr: Expr, span: Span) -> Self { Self { name, is_mut, ty_ann, expr, span } } }
+pub struct ReturnStmt {
+    pub expr: Expr,
+    pub span: Span,
+}
+impl ReturnStmt {
+    pub fn new(expr: Expr, span: Span) -> Self {
+        Self { expr, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ReturnStmt { pub expr: Expr, pub span: Span }
-impl ReturnStmt { pub fn new(expr: Expr, span: Span) -> Self { Self { expr, span } } }
+pub struct SpawnOnStmt {
+    pub top: Topology,
+    pub stmts: Vec<Statement>,
+    pub span: Span,
+}
+impl SpawnOnStmt {
+    pub fn new(top: Topology, stmts: Vec<Statement>, span: Span) -> Self {
+        Self { top, stmts, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct SpawnOnStmt { pub top: Topology, pub stmts: Vec<Statement>, pub span: Span }
-impl SpawnOnStmt { pub fn new(top: Topology, stmts: Vec<Statement>, span: Span) -> Self { Self { top, stmts, span } } }
+pub struct ExprStmtStmt {
+    pub expr: Expr,
+    pub has_semi: bool,
+    pub span: Span,
+}
+impl ExprStmtStmt {
+    pub fn new(expr: Expr, has_semi: bool, span: Span) -> Self {
+        Self {
+            expr,
+            has_semi,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ExprStmtStmt { pub expr: Expr, pub has_semi: bool, pub span: Span }
-impl ExprStmtStmt { pub fn new(expr: Expr, has_semi: bool, span: Span) -> Self { Self { expr, has_semi, span } } }
+pub struct ForLoopStmt {
+    pub iter: String,
+    pub start: Box<Expr>,
+    pub end: Box<Expr>,
+    pub body: Vec<Statement>,
+    pub span: Span,
+}
+impl ForLoopStmt {
+    pub fn new(
+        iter: String,
+        start: Box<Expr>,
+        end: Box<Expr>,
+        body: Vec<Statement>,
+        span: Span,
+    ) -> Self {
+        Self {
+            iter,
+            start,
+            end,
+            body,
+            span,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct ForLoopStmt { pub iter: String, pub start: Box<Expr>, pub end: Box<Expr>, pub body: Vec<Statement>, pub span: Span }
-impl ForLoopStmt { pub fn new(iter: String, start: Box<Expr>, end: Box<Expr>, body: Vec<Statement>, span: Span) -> Self { Self { iter, start, end, body, span } } }
+pub struct AssignStmt {
+    pub lhs: Expr,
+    pub rhs: Expr,
+    pub span: Span,
+}
+impl AssignStmt {
+    pub fn new(lhs: Expr, rhs: Expr, span: Span) -> Self {
+        Self { lhs, rhs, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct AssignStmt { pub lhs: Expr, pub rhs: Expr, pub span: Span }
-impl AssignStmt { pub fn new(lhs: Expr, rhs: Expr, span: Span) -> Self { Self { lhs, rhs, span } } }
+pub struct CompoundAssignStmt {
+    pub lhs: Expr,
+    pub op: BinaryOp,
+    pub rhs: Expr,
+    pub span: Span,
+}
+impl CompoundAssignStmt {
+    pub fn new(lhs: Expr, op: BinaryOp, rhs: Expr, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct CompoundAssignStmt { pub lhs: Expr, pub op: BinaryOp, pub rhs: Expr, pub span: Span }
-impl CompoundAssignStmt { pub fn new(lhs: Expr, op: BinaryOp, rhs: Expr, span: Span) -> Self { Self { lhs, op, rhs, span } } }
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct AssertStmt { pub expr: Box<Expr>, pub msg: Option<String>, pub span: Span }
-impl AssertStmt { pub fn new(expr: Box<Expr>, msg: Option<String>, span: Span) -> Self { Self { expr, msg, span } } }
+pub struct AssertStmt {
+    pub expr: Box<Expr>,
+    pub msg: Option<String>,
+    pub span: Span,
+}
+impl AssertStmt {
+    pub fn new(expr: Box<Expr>, msg: Option<String>, span: Span) -> Self {
+        Self { expr, msg, span }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
@@ -393,7 +663,6 @@ pub enum Statement {
     CompoundAssign(CompoundAssignStmt),
     Assert(AssertStmt),
 }
-
 
 impl Statement {
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Statement {
@@ -571,8 +840,6 @@ impl Topology {
         }
     }
 }
-
-
 
 impl Expr {
     pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {

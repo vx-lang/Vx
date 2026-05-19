@@ -142,19 +142,27 @@ fn test_expr_and_stmt_resolution() {
             params: vec![],
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             // let c: Config = ...;
-            body: vec![Statement::LetDecl(LetDeclStmt { name: "c".to_string(), is_mut: false, ty_ann: Some(Type::Struct("Config".to_string(), None)), expr: Expr::Number(NumberExpr { value:
-                    "0.0".to_string(),
+            body: vec![Statement::LetDecl(LetDeclStmt {
+                name: "c".to_string(),
+                is_mut: false,
+                ty_ann: Some(Type::Struct("Config".to_string(), None)),
+                expr: Expr::Number(NumberExpr {
+                    value: "0.0".to_string(),
                     ty: Some(vxc::ast::ElementType::F64),
                     span: Span::default(),
-                }), span: Span::default() })],
+                }),
+                span: Span::default(),
+            })],
         }],
     };
 
     let symbol_map = build_symbol_map(&[module.clone()]);
     module.resolve_names(&symbol_map);
 
-    if let Statement::LetDecl(LetDeclStmt { ty_ann: Some(Type::Struct(name, id)), .. }) =
-        &module.functions[0].body[0]
+    if let Statement::LetDecl(LetDeclStmt {
+        ty_ann: Some(Type::Struct(name, id)),
+        ..
+    }) = &module.functions[0].body[0]
     {
         assert_eq!(name, "Config");
         assert!(id.is_some()); // The Type annotation deep within the LetDecl Statement was resolved!

@@ -27,27 +27,55 @@ fn main() {
                 name: "sum".to_string(),
                 is_mut: true,
                 ty_ann: None,
-                expr: Expr::Number(NumberExpr { value: "0".to_string(), ty: None, span: Span::default() }),
+                expr: Expr::Number(NumberExpr {
+                    value: "0".to_string(),
+                    ty: None,
+                    span: Span::default(),
+                }),
                 span: Span::default(),
             }),
             Statement::ForLoop(ForLoopStmt {
                 iter: "i".to_string(),
-                start: Box::new(Expr::Number(NumberExpr { value: "0".to_string(), ty: None, span: Span::default() })),
-                end: Box::new(Expr::Number(NumberExpr { value: "10".to_string(), ty: None, span: Span::default() })),
+                start: Box::new(Expr::Number(NumberExpr {
+                    value: "0".to_string(),
+                    ty: None,
+                    span: Span::default(),
+                })),
+                end: Box::new(Expr::Number(NumberExpr {
+                    value: "10".to_string(),
+                    ty: None,
+                    span: Span::default(),
+                })),
                 body: vec![Statement::ExprStmt(ExprStmtStmt {
                     expr: Expr::If(IfExpr {
                         cond: Box::new(Expr::BinaryOp(BinaryOpExpr {
-                            lhs: Box::new(Expr::Identifier(IdentifierExpr { name: "i".to_string(), span: Span::default() })),
+                            lhs: Box::new(Expr::Identifier(IdentifierExpr {
+                                name: "i".to_string(),
+                                span: Span::default(),
+                            })),
                             op: BinaryOp::Gt,
-                            rhs: Box::new(Expr::Number(NumberExpr { value: "5".to_string(), ty: None, span: Span::default() })),
+                            rhs: Box::new(Expr::Number(NumberExpr {
+                                value: "5".to_string(),
+                                ty: None,
+                                span: Span::default(),
+                            })),
                             span: Span::default(),
                         })),
                         then_block: vec![Statement::Assign(AssignStmt {
-                            lhs: Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() }),
+                            lhs: Expr::Identifier(IdentifierExpr {
+                                name: "sum".to_string(),
+                                span: Span::default(),
+                            }),
                             rhs: Expr::BinaryOp(BinaryOpExpr {
-                                lhs: Box::new(Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() })),
+                                lhs: Box::new(Expr::Identifier(IdentifierExpr {
+                                    name: "sum".to_string(),
+                                    span: Span::default(),
+                                })),
                                 op: BinaryOp::Add,
-                                rhs: Box::new(Expr::Identifier(IdentifierExpr { name: "i".to_string(), span: Span::default() })),
+                                rhs: Box::new(Expr::Identifier(IdentifierExpr {
+                                    name: "i".to_string(),
+                                    span: Span::default(),
+                                })),
                                 span: Span::default(),
                             }),
                             span: Span::default(),
@@ -61,7 +89,10 @@ fn main() {
                 span: Span::default(),
             }),
             Statement::Return(ReturnStmt {
-                expr: Expr::Identifier(IdentifierExpr { name: "sum".to_string(), span: Span::default() }),
+                expr: Expr::Identifier(IdentifierExpr {
+                    name: "sum".to_string(),
+                    span: Span::default(),
+                }),
                 span: Span::default(),
             }),
         ],
