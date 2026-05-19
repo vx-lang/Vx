@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use melior::{
     dialect::DialectRegistry,
-    ir::{Block, BlockLike, Location, Module, Region, RegionLike, Type, Value},
+    ir::{Block, BlockLike, Location, Module, Region, RegionLike, Type, Value, ValueLike},
     Context,
 };
 
@@ -357,6 +357,49 @@ impl<'c> MeliorGenerator<'c> {
     fn lower_type_str(&self, ty: &crate::ast::Type) -> String {
         let t = self.lower_type(ty);
         t.to_string()
+    }
+
+    pub fn flatten_indices(
+        &mut self,
+        expr: &Expr,
+        block: &melior::ir::Block<'c>,
+    ) -> Option<(Value<'c, 'c>, Type<'c>, Vec<Value<'c, 'c>>)> {
+        match expr {
+            Expr::IndexAccess(crate::ast::IndexAccessExpr {
+                base,
+                index: idx,
+                span: _,
+            }) => {
+                let (base_val, base_ty, mut indices) = self.flatten_indices(base, block)?;
+                let (idx_val, _) = self.generate_expr(idx, block);
+
+                let idx_ty_str = idx_val.r#type().to_string();
+                let actual_idx = if idx_ty_str != "index" {
+                    let cast_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.index_cast",
+                        Location::unknown(self.context),
+                    )
+                    .add_operands(&[idx_val])
+                    .add_results(&[Type::parse(self.context, "index").unwrap()])
+                    .build()
+                    .unwrap();
+                    block.append_operation(cast_op).result(0).unwrap().into()
+                } else {
+                    idx_val
+                };
+
+                indices.push(actual_idx);
+                Some((base_val, base_ty, indices))
+            }
+            Expr::Identifier(crate::ast::IdentifierExpr { name, span: _ }) => {
+                if let Some((val, ty)) = self.env.get(name).cloned() {
+                    Some((val, ty, Vec::new()))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1136,21 +1179,21 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let bin_ref = block.append_operation(bin_op);
         let result_val = bin_ref.result(0).unwrap().into();
 
-        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
-                let mem_ty_str = mem_ty.to_string();
-                if mem_ty_str.starts_with("memref<") {
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[result_val, mem_val])
-                    .build()
-                    .unwrap();
-                    block.append_operation(store_op);
-                } else {
-                    gen.env.insert(name.clone(), (result_val, ty));
-                }
+        if let Some((mem_val, mem_ty, indices)) = gen.flatten_indices(lhs, block) {
+            let mem_ty_str = mem_ty.to_string();
+            if mem_ty_str.starts_with("memref<") {
+                let mut operands = vec![result_val, mem_val];
+                operands.extend(indices);
+                let store_op = melior::ir::operation::OperationBuilder::new(
+                    "memref.store",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&operands)
+                .build()
+                .unwrap();
+                block.append_operation(store_op);
+            } else if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
+                gen.env.insert(name.clone(), (result_val, ty));
             }
         }
     }
@@ -1182,21 +1225,6 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         let (end_val, end_ty) = gen.generate_expr(end, block);
 
         let ty_index = Type::parse(gen.context, "index").unwrap();
-
-        // step = 1
-        let step_op = melior::ir::operation::OperationBuilder::new(
-            "arith.constant",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[ty_index])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
-        )])
-        .build()
-        .unwrap();
-        let step_ref = block.append_operation(step_op);
-        let step_val = step_ref.result(0).unwrap().into();
 
         // cast start/end to index if necessary
         let start_idx = if start_ty == ty_index {
@@ -1253,7 +1281,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         }
 
         let yield_op = melior::ir::operation::OperationBuilder::new(
-            "scf.yield",
+            "affine.yield",
             Location::unknown(gen.context),
         )
         .build()
@@ -1261,12 +1289,42 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         body_block.append_operation(yield_op);
         body_region.append_block(body_block);
 
-        let for_op =
-            melior::ir::operation::OperationBuilder::new("scf.for", Location::unknown(gen.context))
-                .add_operands(&[start_idx, end_idx, step_val])
-                .add_regions([body_region])
-                .build()
+        let map_attr =
+            melior::ir::attribute::Attribute::parse(gen.context, "affine_map<(d0) -> (d0)>")
                 .unwrap();
+        let segment_sizes =
+            melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1, 0]);
+
+        let for_op = melior::ir::operation::OperationBuilder::new(
+            "affine.for",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&[start_idx, end_idx])
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(gen.context, "lowerBoundMap"),
+                map_attr,
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "upperBoundMap"),
+                map_attr,
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "step"),
+                melior::ir::attribute::IntegerAttribute::new(
+                    Type::parse(gen.context, "index").unwrap(),
+                    1,
+                )
+                .into(),
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                segment_sizes.into(),
+            ),
+        ])
+        .add_regions([body_region])
+        .build()
+        .unwrap();
         block.append_operation(for_op);
     }
 }

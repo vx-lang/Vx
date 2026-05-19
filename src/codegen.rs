@@ -473,13 +473,13 @@ impl MlirGenerator {
                 let step_val = self.next_var();
                 self.write_line(&format!("{} = arith.constant 1 : index", step_val));
 
-                let iter_ssa = format!("%{}", iter);
+                let loop_var_name = format!("%{}", iter);
                 self.env
-                    .insert(iter.clone(), (iter_ssa.clone(), "index".to_string()));
+                    .insert(iter.clone(), (loop_var_name.clone(), "index".to_string()));
 
-                self.write_line(&format!(
-                    "scf.for {} = {} to {} step {} {{",
-                    iter_ssa, start_val, end_val, step_val
+                self.output.push_str(&format!(
+                    "scf.for {} = {} to {} step {} {{\n",
+                    loop_var_name, start_val, end_val, step_val
                 ));
                 self.push_indent();
                 for s in body {

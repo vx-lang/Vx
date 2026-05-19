@@ -21,9 +21,6 @@ path = "src/lib.rs"
 name = "cargo-vx-bench"
 path = "src/bin/cargo-vx-bench.rs"
 
-[[bin]]
-name = "melior-test"
-path = "src/bin/melior-test.rs"
 
 [dependencies]
 rayon = "1.10"

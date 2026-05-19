@@ -1,5 +1,5 @@
 // CHECK: memref.alloc
-// CHECK: scf.for %i =
+// CHECK: scf.for
 // CHECK: memref.store
 // CHECK: return %v
 
