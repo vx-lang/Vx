@@ -9,9 +9,13 @@ echo "Running Pre-commit Checks for Vx..."
 echo "======================================"
 
 # Rule 1: Markdown Formatting
-echo "[1/4] Checking Markdown Formatting..."
-find docs/ -name "*.md" -type f -exec perl -pi -e 's/[ \t]+$//' {} +
-echo "✅ Markdown files stripped of trailing whitespaces!"
+echo "[1/4] Checking Markdown Formatting (mdformat)..."
+if ! command -v mdformat &> /dev/null; then
+    echo "❌ mdformat could not be found. Please install it using: pipx install mdformat"
+    exit 1
+fi
+mdformat --check docs/ README.md || (echo "❌ Markdown files are not formatted properly. Run 'mdformat docs/ README.md' locally to fix." && exit 1)
+echo "✅ Markdown files formatted perfectly!"
 
 # Rule 2: Rust Formatting Check
 echo "[2/4] Checking Code Formatting (cargo fmt)..."
