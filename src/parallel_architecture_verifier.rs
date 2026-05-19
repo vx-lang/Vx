@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file verifies the structural integrity of the compiler's parallel passes.
+// It enforces project-specific constraints, such as the strict prohibition of
+// standard locking primitives (Mutex, RwLock), ensuring the compiler maintains a
+// lock-free, high-throughput architecture.
+//
+//===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
     use crate::gid::{

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Borrow Checker for the Vx compiler.
+// It statically verifies memory safety by enforcing borrowing rules, ensuring that
+// aliasing and mutability invariants are respected, and guaranteeing that pinned
+// memory (like NPU HBM) does not leak outside its required scope.
+//
+//===----------------------------------------------------------------------===//
 use crate::gid::{LifetimeSignature, TypeId, UnboundedFunctionMetadata};
 use crate::session::LocalWorkerState;
 

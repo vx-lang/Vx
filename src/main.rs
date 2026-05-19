@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file is the main executable entry point for the Vx compiler CLI.
+// It parses command-line arguments, initializes the global compiler session,
+// orchestrates the parsing and lowering passes, and handles the final output
+// of compiled MLIR, object files, or JIT execution.
+//
+//===----------------------------------------------------------------------===//
 use melior::ir::operation::OperationLike;
 use std::env;
 use std::fs;

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the core compiler session and local worker states.
+// It orchestrates the compilation pipeline across multiple threads, managing shared
+// diagnostics, module registries, and global state required during the lowering
+// of Vx source code to MLIR.
+//
+//===----------------------------------------------------------------------===//
 use crate::gid::{TypeId, UnboundedFunctionMetadata, ESCAPE_HATCH_MASK, INDEX_MASK};
 use crate::hir::HirInstruction;
 use std::sync::Arc;

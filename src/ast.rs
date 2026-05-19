@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the Abstract Syntax Tree (AST) structures for the Vx language.
+// It contains the enums and structs representing expressions, statements, types,
+// and declarations, serving as the foundational data model for the entire frontend
+// of the compiler.
+//
+//===----------------------------------------------------------------------===//
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Span {
     pub line: usize,

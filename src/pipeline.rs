@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the end-to-end compilation pipeline architecture.
+// It structures the execution order of the lexer, parser, resolver, semantic
+// analyzer, borrow checker, and code generator, providing a clean interface for
+// invoking the compiler on a project.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::VxModule;
 use rayon::prelude::*;
 

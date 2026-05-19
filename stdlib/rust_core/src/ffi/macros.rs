@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file provides macros used to simplify FFI definitions.
+// It contains helper macros that automatically generate the boilerplate required
+// to safely expose Rust functions to the Vx compiler's MLIR execution engine.
+//
+//===----------------------------------------------------------------------===//
 /// Macro to instantiate C-ABI compatible FFI wrappers for `Vec<T>`.
 ///
 /// This generates `vx_vec_new_<name>`, `vx_vec_push_<name>`,

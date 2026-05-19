@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains tests verifying compiler architecture constraints.
+// It runs static analysis checks against the compiler source code itself to ensure
+// that prohibited locking primitives are not accidentally introduced into the
+// highly parallel, lock-free pipeline.
+//
+//===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::PathBuf;
 

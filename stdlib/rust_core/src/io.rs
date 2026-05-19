@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the standard library I/O primitives.
+// It contains the Rust-side FFI implementations for file system operations,
+// console printing, and basic input/output functionality exposed to Vx programs.
+//
+//===----------------------------------------------------------------------===//
 //! FFI bindings for `std::fs::File`.
 
 use crate::{instantiate_file_ffi, instantiate_stdio_ffi};

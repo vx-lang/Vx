@@ -5,5 +5,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file aggregates the FFI (Foreign Function Interface) modules.
+// It serves as the gateway between the dynamically compiled Vx MLIR code and the
+// statically compiled Rust standard library, ensuring safe data boundary crossings.
+//
+//===----------------------------------------------------------------------===//
 pub mod macros;
 pub mod rt;

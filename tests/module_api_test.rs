@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file tests the compiler's programmatic Module API.
+// It verifies that external Rust code can successfully inject custom ASTs,
+// register synthetic functions, and manipulate the module registry bypassing
+// the standard text-based parser.
+//
+//===----------------------------------------------------------------------===//
 use vxc::parse_module;
 
 #[test]

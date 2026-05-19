@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file provides specialized, stable hashing utilities for the compiler.
+// It implements robust hash generation for type IDs, module signatures, and
+// anonymous structural types, ensuring consistent symbol mangling and metadata
+// serialization across incremental builds.
+//
+//===----------------------------------------------------------------------===//
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 

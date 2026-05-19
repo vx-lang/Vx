@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the FFI bindings for the HashSet type.
+// It wraps the standard Rust HashSet implementation, exposing a safe C-ABI
+// interface for Vx programs to manage collections of unique elements.
+//
+//===----------------------------------------------------------------------===//
 use crate::instantiate_hash_set_ffi;
 
 // Common hash set specializations

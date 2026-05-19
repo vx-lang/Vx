@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the FFI bindings for the Result type.
+// It provides the memory layout and utility routines required to handle robust
+// error propagation and Ok/Err states between Vx and the native Rust runtime.
+//
+//===----------------------------------------------------------------------===//
 use crate::instantiate_result_ffi;
 
 // Common primitive results. Error codes represented as i32.

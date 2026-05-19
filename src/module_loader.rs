@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file handles the filesystem interaction and parsing of Vx source files.
+// It is responsible for recursively discovering dependencies, reading source code
+// from disk, invoking the parser, and feeding the resulting ASTs into the global
+// module registry.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::Program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;

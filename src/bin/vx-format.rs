@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the standalone Vx code formatter.
+// It parses raw Vx source code using the compiler's lexer and outputs a standardized,
+// cleanly indented version of the code, enforcing consistent styling conventions
+// across all Vx projects.
+//
+//===----------------------------------------------------------------------===//
 use std::env;
 use std::fs;
 use std::path::Path;

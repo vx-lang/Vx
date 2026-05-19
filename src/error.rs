@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the error handling and diagnostic reporting infrastructure.
+// It provides formatting routines to display rich compiler errors with source code
+// snippets, line numbers, and colorful annotations to help developers quickly
+// identify and resolve syntax or semantic issues.
+//
+//===----------------------------------------------------------------------===//
 pub fn format_compiler_error(
     source: &str,
     line: usize,

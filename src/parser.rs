@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Recursive Descent Parser for the Vx language.
+// It consumes tokens produced by the lexer and constructs the hierarchical Abstract
+// Syntax Tree (AST), enforcing the grammatical rules and structural syntax of
+// the Vx language.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::*;
 use crate::lexer::{Token, TokenType};
 

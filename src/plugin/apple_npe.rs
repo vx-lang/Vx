@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains the plugin implementation for the Apple Neural Engine (ANE).
+// It acts as a bridge between the Vx compiler's dispatch system and the proprietary
+// execution models required to schedule and execute tensor workloads on Apple
+// Silicon hardware.
+//
+//===----------------------------------------------------------------------===//
 use super::hardware_trait::{mlir, TensorLayout, TopologyID, VxHardwarePlugin};
 
 pub struct AppleNPEPlugin;

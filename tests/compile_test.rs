@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the file-driven compilation test harness.
+// It walks the `tests/` directory, compiles `.vx` files, and verifies that the
+// compiler appropriately emits expected error messages for negative tests or
+// successfully generates MLIR for positive tests.
+//
+//===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::Path;
 

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file provides utility functions for pretty-printing the Abstract Syntax Tree.
+// It translates parsed Vx AST nodes back into human-readable string representations,
+// which is primarily used for debugging, diagnostic messages, and testing the parser's
+// fidelity.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::*;
 
 pub struct AstPrinter;

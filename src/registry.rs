@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file manages the central Module Registry for the Vx compiler.
+// It handles the storage and retrieval of loaded modules, tracks dependencies to
+// prevent circular imports, and maintains a unified namespace for functions and
+// types across the entire project.
+//
+//===----------------------------------------------------------------------===//
 use petgraph::algo::toposort;
 use petgraph::graph::DiGraph;
 use std::collections::HashMap;

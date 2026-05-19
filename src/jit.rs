@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Just-In-Time (JIT) compilation and execution engine.
+// It leverages the MLIR execution engine to compile lowered MLIR modules into
+// machine code on the fly, enabling dynamic execution of Vx code without
+// requiring a separate ahead-of-time compilation step.
+//
+//===----------------------------------------------------------------------===//
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;

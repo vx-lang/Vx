@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains integration tests for the Name Resolution pass.
+// It verifies that the compiler correctly links identifiers to their declarations
+// across complex nested scopes, module boundaries, and shadowing scenarios.
+//
+//===----------------------------------------------------------------------===//
 use vxc::ast::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
 

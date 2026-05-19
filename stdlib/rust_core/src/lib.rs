@@ -6,6 +6,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file is the root of the statically linked Vx standard library core.
+// It aggregates all the low-level FFI implementations (math, networking, I/O,
+// collections) that are natively compiled and linked against lowered Vx MLIR code.
+//
+//===----------------------------------------------------------------------===//
 #![allow(clippy::box_default)]
 
 pub mod collections;

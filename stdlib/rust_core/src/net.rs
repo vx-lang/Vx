@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the standard library networking primitives.
+// It provides the Rust FFI bindings for TCP/UDP sockets, allowing Vx programs
+// to create servers, handle incoming connections, and stream data across the
+// network.
+//
+//===----------------------------------------------------------------------===//
 //! FFI bindings for `std::net::TcpStream` and `std::net::UdpSocket`.
 
 use crate::{instantiate_tcp_listener_ffi, instantiate_tcp_stream_ffi, instantiate_udp_socket_ffi};

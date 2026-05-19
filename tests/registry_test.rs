@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file tests the Module Registry's dependency resolution logic.
+// It verifies that the registry can correctly topologically sort module imports,
+// detect cyclic dependencies, and gracefully report errors when cyclical imports
+// are encountered.
+//
+//===----------------------------------------------------------------------===//
 use vxc::gid::TypeId;
 use vxc::hash::{compute_module_hash, DefPath};
 use vxc::registry::{ImmutableGlobalRegistry, TypeDefinition};

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file provides the core logic for the Vx code formatter.
+// It iterates over token streams produced by the lexer and applies intelligent
+// spacing, indentation, and line-wrapping rules to generate idiomatic and
+// readable Vx source code.
+//
+//===----------------------------------------------------------------------===//
 use crate::lexer::{Lexer, TokenType};
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {

@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file manages the dynamic loading and registration of Akar hardware plugins.
+// It allows the Vx compiler to discover and interface with external, cycle-accurate
+// hardware models (like NPUs or TPUs) at runtime using C-ABI shared libraries.
+//
+//===----------------------------------------------------------------------===//
 use super::hardware_trait::{TopologyID, VxHardwarePlugin};
 use std::collections::HashMap;
 

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file is the primary library entry point for the Vx compiler crate.
+// It exports all public modules, encompassing the lexer, parser, semantic analyzer,
+// borrow checker, and the MLIR code generation backend, allowing the compiler to
+// be embedded or tested modularly.
+//
+//===----------------------------------------------------------------------===//
 pub mod ast;
 pub mod ast_printer;
 pub mod borrow;

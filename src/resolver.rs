@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Name Resolution pass for the Vx compiler.
+// It maps local and global identifiers to their corresponding definitions in the AST,
+// handling scope shadowing, namespace resolution, and ensuring that all referenced
+// variables and functions actually exist.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::VxModule;
 use crate::gid::TypeId;
 use crate::hash::{compute_module_hash, DefPath};

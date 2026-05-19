@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Lexical Analyzer (Scanner) for the Vx language.
+// It processes raw source text and converts it into a stream of discrete tokens
+// (keywords, identifiers, literals, symbols), handling whitespace, comments, and
+// basic syntax validation.
+//
+//===----------------------------------------------------------------------===//
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
     // Keywords

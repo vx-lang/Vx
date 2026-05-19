@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the core runtime initialization routines for Vx.
+// It manages standard library state, threading infrastructure, and any required
+// setup or teardown steps that must occur before and after the execution of
+// a compiled Vx program.
+//
+//===----------------------------------------------------------------------===//
 use std::ffi::{c_char, c_void, CStr};
 use std::fs::File;
 use std::io::Read;

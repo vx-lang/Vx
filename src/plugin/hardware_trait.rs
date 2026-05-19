@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the core traits and interfaces for hardware accelerators.
+// It establishes the standard contract that all external accelerator plugins must
+// implement to interact with the Vx compiler's dispatch and memory management
+// systems.
+//
+//===----------------------------------------------------------------------===//
 // Mock MLIR types since Vx currently uses string-based codegen instead of a Rust MLIR crate.
 pub mod mlir {
     pub struct Operation {

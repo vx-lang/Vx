@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the primary MLIR lowering pipeline using the Melior crate.
+// It translates the type-checked Vx Abstract Syntax Tree into specific MLIR dialects
+// (such as arith, scf, func, and linalg), performing the heavy lifting required
+// for optimization and hardware targeting.
+//
+//===----------------------------------------------------------------------===//
 use std::collections::HashMap;
 
 use melior::{

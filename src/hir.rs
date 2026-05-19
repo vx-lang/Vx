@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the High-Level Intermediate Representation (HIR) for Vx.
+// It provides a flattened, bytecode-like representation that bridges the gap
+// between the verbose Abstract Syntax Tree and the highly structured MLIR dialects,
+// facilitating easier analysis and optimization.
+//
+//===----------------------------------------------------------------------===//
 /// High-Level Intermediate Representation (HIR)
 /// Flat Array Bytecode replacing the AST.
 

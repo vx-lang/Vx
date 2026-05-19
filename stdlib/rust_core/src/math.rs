@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the standard library math operations.
+// It provides the Rust-side FFI implementations for complex mathematical functions,
+// transcendental functions, and intrinsic routines exposed to the Vx language.
+//
+//===----------------------------------------------------------------------===//
 #[no_mangle]
 pub extern "C" fn vx_math_sin_f32(x: f32) -> f32 {
     x.sin()

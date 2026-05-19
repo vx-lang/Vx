@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements Global Identifiers (GIDs) and architectural metadata.
+// It defines the core `TypeId` structure and the bit-packing logic used to encode
+// type information, lifetimes, mutability, and hardware topology targets directly
+// into lightweight 64-bit integers.
+//
+//===----------------------------------------------------------------------===//
 use bytemuck::{Pod, Zeroable};
 
 // Architectural Masks

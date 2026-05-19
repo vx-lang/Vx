@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains the main end-to-end integration test suite.
+// It executes full Vx programs through the entire compilation pipeline and JIT
+// engine, asserting that the runtime behavior, math operations, and control flow
+// match expected outcomes.
+//
+//===----------------------------------------------------------------------===//
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
 use vxc::sema::TypeChecker;

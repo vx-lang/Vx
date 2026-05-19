@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains integration tests for the Borrow Checker.
+// It ensures that the compiler correctly catches mutability violations, lifetime
+// escapes, and invalid aliases, confirming the static memory safety guarantees
+// of the Vx language.
+//
+//===----------------------------------------------------------------------===//
 use vxc::borrow::verify_subtyping_bounds;
 use vxc::gid::TypeId;
 

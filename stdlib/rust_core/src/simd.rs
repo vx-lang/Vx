@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the FFI bindings for SIMD intrinsics.
+// It provides the Rust-side implementations for vectorized math operations that
+// are exposed to the Vx standard library, mapping them to optimized, native CPU
+// vector instructions.
+//
+//===----------------------------------------------------------------------===//
 use std::slice;
 
 #[no_mangle]

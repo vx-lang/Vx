@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the FFI bindings for the Option type.
+// It provides the underlying memory layout and utility functions required to safely
+// manipulate optional values (Some/None) originating from the Vx compiler.
+//
+//===----------------------------------------------------------------------===//
 use crate::instantiate_option_ffi;
 
 // Instantiate FFI endpoints for primitive options

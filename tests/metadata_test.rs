@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file tests the zero-copy metadata serialization infrastructure.
+// It ensures that complex compiler metadata, such as type signatures and module
+// interfaces, can be safely encoded and decoded to disk without data corruption
+// or unexpected allocation overhead.
+//
+//===----------------------------------------------------------------------===//
 use std::fs;
 use vxc::gid::TypeId;
 use vxc::metadata::VxMetadata;

@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file handles the serialization and deserialization of compiler metadata.
+// It defines the zero-copy structures used to encode type information, function
+// signatures, and ABI details into compiled artifacts, enabling robust cross-module
+// linking and FFI interoperability.
+//
+//===----------------------------------------------------------------------===//
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
 use std::fs;
 use std::io;

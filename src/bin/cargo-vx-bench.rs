@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the cargo-vx-bench custom cargo command.
+// It provides a CLI harness for executing Vx benchmark scripts, collecting performance
+// metrics, and formatting the output to compare execution times and throughput
+// across different hardware backends.
+//
+//===----------------------------------------------------------------------===//
 use std::env;
 use std::fs;
 use vxc::lexer::Lexer;

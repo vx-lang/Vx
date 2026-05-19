@@ -5,6 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the FFI bindings for the dynamic Vector type.
+// It manages heap allocations, dynamic resizing, and safe pointer arithmetic for
+// variable-length arrays used within the Vx standard library.
+//
+//===----------------------------------------------------------------------===//
 use crate::instantiate_vec_ffi;
 
 // Instantiate FFI endpoints for primitive vectors

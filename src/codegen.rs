@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains the legacy code generation infrastructure.
+// It was historically used for direct object file or assembly emission, but is
+// currently being phased out in favor of the more robust MLIR-based lowering
+// pipeline provided by melior_codegen.rs.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::*;
 use std::collections::HashMap;
 

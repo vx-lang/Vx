@@ -5,6 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+//
+// This file implements the Semantic Analyzer for the Vx compiler.
+// It is responsible for type checking, resolving operator overloading (e.g., tensor
+// matrix multiplication), verifying memory topology constraints, and constructing
+// the global AST environment for subsequent lowering phases.
+//
+//===----------------------------------------------------------------------===//
 use crate::ast::*;
 use std::collections::HashMap;
 
