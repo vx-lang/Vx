@@ -36,9 +36,13 @@ impl HardwareGraph {
         var_topology: &Topology,
         ty: &Type,
     ) -> bool {
-        // If it's a Pinned type, the active topology must match the pinned one exactly
         if let Type::Pinned(_, pinned_top) = ty {
-            return pinned_top == active_topology;
+            if pinned_top == active_topology {
+                return true;
+            }
+            let mem = Self::default_memory_for(pinned_top);
+            let mock_ty = Type::Ref(Box::new(Type::Scalar(crate::ast::ElementType::F32)), mem);
+            return Self::is_type_accessible(active_topology, pinned_top, &mock_ty);
         }
 
         // If it's a specific memory reference, check reachability

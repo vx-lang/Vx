@@ -1,21 +1,17 @@
 //===- legal_acccore_transfer.vx - Vx Compiler ---------------------------*- Vx -*-===//
-//
-// Part of the Vx Project, under the BSD 3-Clause License.
-// See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
-//
-//===----------------------------------------------------------------------===//
 // RUN: vxc %s | FileCheck %s
 
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
-  let t_npu = transfer(t_host, Memory::NPUHBM);
+  let t_npu = transfer(t_host, Memory::NPU_HBM);
   
-  spawn on (Topology::AccCore[0]) {
-    // CHECK-NOT: error
+  spawn on (Topology::NPU[0]) {
     // Legal transfer from NPU HBM to Local SRAM
-    let t_sram = transfer(t_npu, Memory::LocalSRAM);
-    let valid = t_sram;
+    let t_sram = transfer(t_npu, Memory::Local_SRAM);
+    spawn on (Topology::AccCore[0]) {
+      // CHECK-NOT: error
+      let valid = t_sram;
+    }
   }
 
   return 0;
