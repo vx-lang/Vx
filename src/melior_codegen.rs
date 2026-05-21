@@ -215,6 +215,7 @@ impl<'c> MeliorGenerator<'c> {
             Statement::CompoundAssign(s) => s.lower(self, block),
             Statement::ExprStmt(s) => s.lower(self, block),
             Statement::ForLoop(s) => s.lower(self, block),
+            Statement::SpawnOn(s) => s.lower(self, block),
             _ => todo!("{:?}", stmt),
         }
     }
@@ -234,6 +235,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Array(e) => e.lower(self, block),
             Expr::If(e) => e.lower(self, block),
             Expr::Number(e) => e.lower(self, block),
+            Expr::UnsafeBlock(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -794,6 +796,41 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             current_struct = block.append_operation(insert_op).result(0).unwrap().into();
         }
         (current_struct, struct_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        for stmt in &self.stmts {
+            gen.generate_statement(stmt, block);
+        }
+        if let Some(ret_expr) = &self.ret {
+            gen.generate_expr(ret_expr, block)
+        } else {
+            // Return an i32 0 or something empty if no return type is expected.
+            let i32_ty = Type::parse(gen.context, "i32").unwrap();
+            let zero_attr = melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into();
+            let zero_op = melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[i32_ty])
+            .add_attributes(&[(melior::ir::Identifier::new(gen.context, "value"), zero_attr)])
+            .build()
+            .unwrap();
+            let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
+            (zero_val, i32_ty)
+        }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for SpawnOnStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        for stmt in &self.stmts {
+            gen.generate_statement(stmt, block);
+        }
     }
 }
 
