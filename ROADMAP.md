@@ -63,3 +63,10 @@ Establishing a robust native library to reduce reliance on raw C-FFI for common 
 - `[ ]` Core mathematical functions and constants
 - `[ ]` Native Topologically-Aware Tensors (`Tensor<f32, ANE_SRAM>`) backing to MLIR `memref`
 - `[ ]` Standardized collection types (Vectors, HashMaps)
+
+## 9. Auto-diff
+IR-level Automatic Differentiation with language-level intrinsics.
+- `[ ]` Language-level intrinsics for `grad`, `vjp` (Vector-Jacobian Product), and `jvp` (Jacobian-Vector Product)
+- `[ ]` Compile-time differentiability proofs (the semantic analyzer must guarantee that the target function is mathematically differentiable)
+- `[ ]` Explicit memory ownership for gradients (e.g., Mutable Adjoint Buffers) to adhere to deterministic memory control
+- `[ ]` Define implications of backward pass of `spawn on` for topology and memory spaces.
