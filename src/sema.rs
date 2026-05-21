@@ -395,15 +395,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = top.clone();
-                self.active_memory = match top {
-                    Topology::NPU(_) => MemorySpace::NPUHBM,
-                    Topology::AccCore(_) => MemorySpace::LocalSRAM,
-                    Topology::Host => MemorySpace::HostDRAM,
-                    Topology::AMX => MemorySpace::HostDRAM,
-                    Topology::ANE => MemorySpace::NPUHBM,
-                    Topology::GPU => MemorySpace::HostDRAM,
-                    Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
-                };
+                self.active_memory = crate::arch::HardwareGraph::default_memory_for(top);
 
                 self.push_scope();
 
@@ -627,33 +619,11 @@ impl<'a> TypeChecker<'a> {
                         }
 
                         // Enforce Topology Boundaries!
-                        let mut is_valid = top == self.active_topology
-                            || (top == Topology::Host
-                                && matches!(
-                                    self.active_topology,
-                                    Topology::AMX | Topology::ANE | Topology::GPU
-                                ));
-                        if let Type::Pinned(_, pinned_top) = &ty {
-                            if *pinned_top == self.active_topology {
-                                is_valid = true;
-                            }
-                        }
-                        if let Type::Ref(_, MemorySpace::NPUHBM) = &ty {
-                            if matches!(
-                                self.active_topology,
-                                Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE
-                            ) {
-                                is_valid = true;
-                            }
-                        }
-                        if let Type::Ref(_, MemorySpace::HostDRAM) = &ty {
-                            if matches!(
-                                self.active_topology,
-                                Topology::Host | Topology::AMX | Topology::GPU | Topology::ANE
-                            ) {
-                                is_valid = true;
-                            }
-                        }
+                        let is_valid = crate::arch::HardwareGraph::is_type_accessible(
+                            &self.active_topology,
+                            &top,
+                            &ty,
+                        );
 
                         if !is_valid {
                             let msg = format!(
@@ -709,6 +679,24 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner_expr, false, silent);
+
+                // Extract source memory space, default to HostDRAM if it's not explicitly a Ref
+                let source_mem = match &inner_ty {
+                    Type::Ref(_, mem) => mem.clone(),
+                    Type::Pinned(_, top) => crate::arch::HardwareGraph::default_memory_for(top),
+                    _ => MemorySpace::HostDRAM,
+                };
+
+                if !crate::arch::HardwareGraph::can_transfer(&source_mem, target_mem) {
+                    if !silent {
+                        self.errors.push(format!(
+                            "Cannot transfer from {:?} to {:?}: no hardware path exists",
+                            source_mem, target_mem
+                        ));
+                    }
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                }
+
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => Type::Pinned(
@@ -721,10 +709,12 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Type::Pinned(base, top) => Type::Pinned(base, top),
                     _ => {
-                        self.errors.push(format!(
-                            "Cannot transfer non-reference type: {:?}",
-                            inner_ty
-                        ));
+                        if !silent {
+                            self.errors.push(format!(
+                                "Cannot transfer non-reference type: {:?}",
+                                inner_ty
+                            ));
+                        }
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 }

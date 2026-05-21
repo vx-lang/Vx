@@ -12,6 +12,7 @@
 // be embedded or tested modularly.
 //
 //===----------------------------------------------------------------------===//
+pub mod arch;
 pub mod ast;
 pub mod ast_printer;
 pub mod borrow;

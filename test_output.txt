@@ -1,1 +1,0 @@
-Hello, File I/O from Vx!
