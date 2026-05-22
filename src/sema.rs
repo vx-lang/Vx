@@ -626,11 +626,14 @@ impl<'a> TypeChecker<'a> {
                         );
 
                         if !is_valid {
-                            let msg = format!(
-                                "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                name, top, ty, self.active_topology
-                            );
-                            self.errors.push(msg);
+                            let is_pinned = matches!(ty, Type::Pinned(_, _));
+                            if !is_pinned {
+                                let msg = format!(
+                                    "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                    name, top, ty, self.active_topology
+                                );
+                                self.errors.push(msg);
+                            }
                         }
                         ty.clone()
                     }

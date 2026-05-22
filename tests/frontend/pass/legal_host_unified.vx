@@ -4,13 +4,13 @@
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
   let t_host2: Tensor<f32> = 1.0;
-  
+
   // GPU and ANE have unified memory access to Host DRAM
   spawn on (Topology::GPU) {
     // CHECK-NOT: error
     let valid_gpu = t_host;
   }
-  
+
   spawn on (Topology::ANE) {
     // CHECK-NOT: error
     let valid_ane = t_host2;

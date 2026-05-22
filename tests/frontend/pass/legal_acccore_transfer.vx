@@ -4,7 +4,7 @@
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
   let t_npu = transfer(t_host, Memory::NPU_HBM);
-  
+
   spawn on (Topology::NPU[0]) {
     // Legal transfer from NPU HBM to Local SRAM
     let t_sram = transfer(t_npu, Memory::Local_SRAM);

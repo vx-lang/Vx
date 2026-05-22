@@ -42,8 +42,8 @@ fn main() -> Verified<Tensor<f64>> {
   let b = transfer(b_host, Memory::NPU_HBM);
 
   let result = custom_matmul(a, b);
-  
+
   print(&result);
-  
+
   return result;
 }
