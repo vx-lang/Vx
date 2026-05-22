@@ -43,6 +43,7 @@ fn main() -> Verified<Tensor<f64>> {
 
   let result = custom_matmul(a, b);
 
+  // Implicit lowering to unranked memref for debugging
   print(&result);
 
   return result;
