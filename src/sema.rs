@@ -626,8 +626,9 @@ impl<'a> TypeChecker<'a> {
                         );
 
                         if !is_valid {
-                            let is_pinned = matches!(ty, Type::Pinned(_, _));
-                            if !is_pinned {
+                            let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
+                                && matches!(self.active_topology, Topology::Host);
+                            if !is_pinned_on_host {
                                 let msg = format!(
                                     "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
                                     name, top, ty, self.active_topology
@@ -704,32 +705,44 @@ impl<'a> TypeChecker<'a> {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
                     Type::Tensor(_, _, _) => {
                         let pinned_top = match &target_mem {
-                            MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                                value: "0".to_string(),
-                                ty: Some(crate::ast::ElementType::I32),
-                                span: Span::default(),
-                            }))),
-                            MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                                value: "0".to_string(),
-                                ty: Some(crate::ast::ElementType::I32),
-                                span: Span::default(),
-                            }))),
+                            MemorySpace::NPUHBM => {
+                                Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                                    value: "0".to_string(),
+                                    ty: Some(crate::ast::ElementType::I32),
+                                    span: Span::default(),
+                                })))
+                            }
+                            MemorySpace::LocalSRAM => {
+                                Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                                    value: "0".to_string(),
+                                    ty: Some(crate::ast::ElementType::I32),
+                                    span: Span::default(),
+                                })))
+                            }
                             MemorySpace::HostDRAM => Topology::Host,
                         };
                         Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
                     }
+                    Type::Verified(_inner) => {
+                        let inner_pinned = self.check_expr_type_flag(inner_expr, consume, silent);
+                        Type::Verified(Box::new(inner_pinned))
+                    }
                     Type::Pinned(base, _) => {
                         let pinned_top = match &target_mem {
-                            MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                                value: "0".to_string(),
-                                ty: Some(crate::ast::ElementType::I32),
-                                span: Span::default(),
-                            }))),
-                            MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                                value: "0".to_string(),
-                                ty: Some(crate::ast::ElementType::I32),
-                                span: Span::default(),
-                            }))),
+                            MemorySpace::NPUHBM => {
+                                Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                                    value: "0".to_string(),
+                                    ty: Some(crate::ast::ElementType::I32),
+                                    span: Span::default(),
+                                })))
+                            }
+                            MemorySpace::LocalSRAM => {
+                                Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                                    value: "0".to_string(),
+                                    ty: Some(crate::ast::ElementType::I32),
+                                    span: Span::default(),
+                                })))
+                            }
                             MemorySpace::HostDRAM => Topology::Host,
                         };
                         Type::Pinned(base, pinned_top)

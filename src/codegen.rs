@@ -991,12 +991,23 @@ impl MlirGenerator {
                     {
                         print_arg = inner;
                     }
-                    let (arg_val, _) = self
+                    let (mut arg_val, arg_ty) = self
                         .generate_expr(print_arg, &format!("memref<?x?x{}>", self.current_el_ty));
+                    let mut final_ty = arg_ty.clone();
+                    if arg_ty.contains(", ") {
+                        let stripped = format!("memref<?x?x{}>", self.current_el_ty);
+                        let mcast_val = self.next_var();
+                        self.write_line(&format!(
+                            "{} = memref.memory_space_cast {} : {} to {}",
+                            mcast_val, arg_val, arg_ty, stripped
+                        ));
+                        arg_val = mcast_val;
+                        final_ty = stripped;
+                    }
                     let cast_val = self.next_var();
                     self.write_line(&format!(
-                        "{} = memref.cast {} : memref<?x?x{}> to memref<*x{}>",
-                        cast_val, arg_val, self.current_el_ty, self.current_el_ty
+                        "{} = memref.cast {} : {} to memref<*x{}>",
+                        cast_val, arg_val, final_ty, self.current_el_ty
                     ));
                     self.write_line(&format!(
                         "func.call @printMemref{}({}) : (memref<*x{}>) -> ()",
@@ -1169,14 +1180,14 @@ impl MlirGenerator {
                         "f32".to_string()
                     } else if name == "vx_print_int" {
                         "i32".to_string()
-                    } else if ret_ty.starts_with("memref") {
-                        format!("memref<?x?x{}>", self.current_el_ty)
                     } else if let Some((_, arg_tys)) = self.functions.get(name) {
                         if i < arg_tys.len() {
                             arg_tys[i].clone()
                         } else {
                             "any".to_string()
                         }
+                    } else if ret_ty.starts_with("memref") {
+                        format!("memref<?x?x{}>", self.current_el_ty)
                     } else {
                         self.current_el_ty.clone()
                     };
