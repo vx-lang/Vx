@@ -9,7 +9,7 @@
 // EXPECT:  [24.0,   24.0,   24.0,   24.0],
 // EXPECT:  [24.0,   24.0,   24.0,   24.0]]
 
-fn custom_matmul(a: Pinned<Tensor<bf16>, Topology::NPU[0]>, b: Pinned<Tensor<bf16>, Topology::NPU[0]>) -> Verified<Tensor<bf16>> {
+fn custom_matmul(a: Pinned<Tensor<bf16>, Topology::NPU[0]>, b: Pinned<Tensor<bf16>, Topology::NPU[0]>) -> Verified<Pinned<Tensor<bf16>, Topology::NPU[0]>> {
   spawn on(Topology::NPU[0]) {
     let mut result = Tensor<bf16>([4, 4]).with_memory(Memory::NPU_HBM);
     for i in 0..4 {
@@ -24,7 +24,7 @@ fn custom_matmul(a: Pinned<Tensor<bf16>, Topology::NPU[0]>, b: Pinned<Tensor<bf1
   }
 }
 
-fn main() -> Verified<Tensor<bf16>> {
+fn main() -> Verified<Pinned<Tensor<bf16>, Topology::NPU[0]>> {
   let mut a_host = Tensor<bf16>([4, 4]); // Defaults to Host_DRAM
   let mut b_host = Tensor<bf16>([4, 4]);
 

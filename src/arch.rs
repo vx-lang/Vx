@@ -37,6 +37,11 @@ impl HardwareGraph {
         ty: &Type,
     ) -> bool {
         if let Type::Pinned(_, pinned_top) = ty {
+            // If the handle itself resides in `var_topology` and we are executing in `var_topology`,
+            // we can access the *handle* (e.g. to pass it to a function).
+            if active_topology == var_topology {
+                return true;
+            }
             if pinned_top == active_topology {
                 return true;
             }
