@@ -202,7 +202,21 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                e1 == e2 && d1 == d2 && t1 == t2
+                if e1 != e2 || d1.len() != d2.len() || t1 != t2 {
+                    return false;
+                }
+                for (dim1, dim2) in d1.iter().zip(d2.iter()) {
+                    if let crate::ast::Expr::Identifier(id) = dim1 {
+                        if let crate::ast::Expr::Number(n) = dim2 {
+                            mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
+                        } else if dim1 != dim2 {
+                            return false;
+                        }
+                    } else if dim1 != dim2 {
+                        return false;
+                    }
+                }
+                true
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
@@ -427,15 +441,31 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 self.check_expr_type(expr);
             }
-            Statement::Assert(AssertStmt {
-                expr,
-                msg: _msg,
-                span: _,
-            }) => {
+            Statement::Assert(AssertStmt { expr, msg, span: _ }) => {
                 let ty = self.check_expr_type(expr);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());
+                }
+
+                let is_verified = matches!(return_type, Type::Verified(_));
+                let empty_env = std::collections::HashMap::new();
+                if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
+                    if !b {
+                        let m = msg
+                            .clone()
+                            .unwrap_or_else(|| "Comptime assertion failed".to_string());
+                        if is_verified {
+                            self.errors
+                                .push(format!("Contract violated for Verified return type: {}", m));
+                        } else {
+                            self.errors.push(format!("Comptime assert failed: {}", m));
+                        }
+                    }
+                } else if is_verified {
+                    self.errors.push(
+                        "Cannot statically prove assertion for Verified return type".to_string(),
+                    );
                 }
             }
         }
@@ -478,6 +508,18 @@ impl<'a> TypeChecker<'a> {
                     (Value::Number(a), Value::Number(b), BinaryOp::Gt) => Some(Value::Bool(a > b)),
                     (Value::Number(a), Value::Number(b), BinaryOp::Le) => Some(Value::Bool(a <= b)),
                     (Value::Number(a), Value::Number(b), BinaryOp::Ge) => Some(Value::Bool(a >= b)),
+                    (Value::Number(a), Value::Number(b), BinaryOp::Add) => {
+                        Some(Value::Number(a + b))
+                    }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Sub) => {
+                        Some(Value::Number(a - b))
+                    }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Mul) => {
+                        Some(Value::Number(a * b))
+                    }
+                    (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
+                        Some(Value::Number(a / b))
+                    }
                     (Value::Bool(a), Value::Bool(b), BinaryOp::Eq) => Some(Value::Bool(a == b)),
                     (Value::Bool(a), Value::Bool(b), BinaryOp::NotEq) => Some(Value::Bool(a != b)),
                     (Value::Bool(a), Value::Bool(b), BinaryOp::And) => Some(Value::Bool(a && b)),
@@ -1767,9 +1809,12 @@ impl<'a> TypeChecker<'a> {
         // Semantic coercion rule: Ref<T, HostDRAM> can be assigned to Verified<T>
         // Also allow returning Verified(Ref(T, Memory)) as Verified(T)
         if let Type::Verified(inner_target) = target {
+            if self.is_assignable(inner_target, &source) {
+                return true;
+            }
             if let Type::Verified(inner_source) = source {
-                if let Type::Ref(base_source, _) = &**inner_source {
-                    return *inner_target.as_ref() == **base_source;
+                if self.is_assignable(inner_target, inner_source) {
+                    return true;
                 }
             }
             if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {

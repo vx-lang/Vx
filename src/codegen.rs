@@ -872,7 +872,7 @@ impl MlirGenerator {
                     (res, mlir_ty.to_string())
                 } else if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
                     self.write_line(&format!(
-                        "{} = arith.constant {} : f32",
+                        "{} = arith.constant {:?} : f32",
                         res,
                         num_str.parse::<f64>().unwrap_or(0.0)
                     ));
@@ -2097,7 +2097,11 @@ impl MlirGenerator {
                     self.write_line("} else {");
                     self.push_indent();
                     let zero = self.next_var();
-                    self.write_line(&format!("{} = arith.constant 0 : {}", zero, ret_ty));
+                    let zero_const = get_zero_const(&ret_ty);
+                    self.write_line(&format!(
+                        "{} = arith.constant {} : {}",
+                        zero, zero_const, ret_ty
+                    ));
                     self.write_line(&format!("scf.yield {} : {}", zero, ret_ty));
                     self.pop_indent();
                 }

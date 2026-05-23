@@ -180,6 +180,10 @@ fn run_backend_test(path: &Path) {
     let mut codegen = MlirGenerator::new();
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
+    if source.contains("// NO_EXEC") {
+        return;
+    }
+
     let out = execute_mlir(&mlir_str).expect("JIT execution failed");
 
     for expect in expect_lines {

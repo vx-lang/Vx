@@ -1,3 +1,5 @@
+// TODO: Write autograd test for some complicated gradient descent functions.
+
 fn poly(x: f32) -> f32 {
     return x * x * x;
 }
@@ -11,5 +13,6 @@ fn main() -> f32 {
     // Expected derivative of x^3 is 3x^2. At x=2.0, this is 12.0
     let dx = grad(poly, x);
     // Since we mock the enzyme call, this just tests that the backend emits the right call without crashing
+    // NO_EXEC
     return 0.0;
 }

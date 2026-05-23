@@ -609,8 +609,19 @@ impl Expr {
                 tangent: Box::new(e.tangent.substitute(mapping)),
                 span: e.span.clone(),
             }),
-            Expr::Identifier(_)
-            | Expr::EnumVariant(_)
+            Expr::Identifier(id) => {
+                if let Some(Type::Generic(val_str, _)) = mapping.get(&id.name) {
+                    if val_str.parse::<f64>().is_ok() {
+                        return Expr::Number(crate::ast::NumberExpr {
+                            value: val_str.clone(),
+                            ty: None,
+                            span: id.span.clone(),
+                        });
+                    }
+                }
+                self.clone()
+            }
+            Expr::EnumVariant(_)
             | Expr::Number(_)
             | Expr::StringLiteral(_)
             | Expr::MemorySpace(_)

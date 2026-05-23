@@ -1,0 +1,11 @@
+fn process<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
+    assert(N == M, "Tensor must be square");
+    return val;
+}
+
+fn main() -> i32 {
+    let t: Tensor<f32, [128, 128]> = Tensor_f32(128, 128);
+    let v: Verified<Tensor<f32, [128, 128]>> = process(t);
+    // NO_EXEC
+    return 0;
+}
