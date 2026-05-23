@@ -49,7 +49,7 @@ impl HardwareGraph {
         if let Type::Ref(_, MemorySpace::NPUHBM) = ty {
             return matches!(
                 active_topology,
-                Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE
+                Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE | Topology::Host
             );
         }
 
@@ -213,8 +213,8 @@ mod tests {
             &Topology::Host,
             &pinned_ane
         ));
-        // Host cannot access ANE pinned
-        assert!(!HardwareGraph::is_type_accessible(
+        // Host CAN access ANE pinned (as a handle)
+        assert!(HardwareGraph::is_type_accessible(
             &Topology::Host,
             &Topology::Host,
             &pinned_ane
@@ -243,7 +243,7 @@ mod tests {
             &Topology::Host,
             &ref_hbm
         ));
-        assert!(!HardwareGraph::is_type_accessible(
+        assert!(HardwareGraph::is_type_accessible(
             &Topology::Host,
             &Topology::Host,
             &ref_hbm
