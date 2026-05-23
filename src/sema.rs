@@ -1625,8 +1625,25 @@ impl<'a> TypeChecker<'a> {
                     return Type::Tensor(ElementType::F32, vec![], None);
                 };
                 self.check_differentiability(&func);
-                for arg in args {
-                    self.check_expr_type(arg);
+
+                if args.len() != func.params.len() {
+                    self.errors.push(format!(
+                        "Function {} expects {} arguments, but {} were provided",
+                        target_fn,
+                        func.params.len(),
+                        args.len()
+                    ));
+                } else {
+                    for (i, arg) in args.iter_mut().enumerate() {
+                        let arg_type = self.check_expr_type(arg);
+                        let param_type = &func.params[i].1;
+                        if !self.is_assignable(param_type, &arg_type) {
+                            self.errors.push(format!(
+                                "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
+                                i + 1, target_fn, param_type, arg_type
+                            ));
+                        }
+                    }
                 }
                 func.return_type.clone()
             }
@@ -1644,8 +1661,25 @@ impl<'a> TypeChecker<'a> {
                     return Type::Tensor(ElementType::F32, vec![], None);
                 };
                 self.check_differentiability(&func);
-                for arg in args {
-                    self.check_expr_type(arg);
+
+                if args.len() != func.params.len() {
+                    self.errors.push(format!(
+                        "Function {} expects {} arguments, but {} were provided",
+                        target_fn,
+                        func.params.len(),
+                        args.len()
+                    ));
+                } else {
+                    for (i, arg) in args.iter_mut().enumerate() {
+                        let arg_type = self.check_expr_type(arg);
+                        let param_type = &func.params[i].1;
+                        if !self.is_assignable(param_type, &arg_type) {
+                            self.errors.push(format!(
+                                "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
+                                i + 1, target_fn, param_type, arg_type
+                            ));
+                        }
+                    }
                 }
                 self.check_expr_type(cotangent);
                 func.return_type.clone()
@@ -1664,8 +1698,25 @@ impl<'a> TypeChecker<'a> {
                     return Type::Tensor(ElementType::F32, vec![], None);
                 };
                 self.check_differentiability(&func);
-                for arg in args {
-                    self.check_expr_type(arg);
+
+                if args.len() != func.params.len() {
+                    self.errors.push(format!(
+                        "Function {} expects {} arguments, but {} were provided",
+                        target_fn,
+                        func.params.len(),
+                        args.len()
+                    ));
+                } else {
+                    for (i, arg) in args.iter_mut().enumerate() {
+                        let arg_type = self.check_expr_type(arg);
+                        let param_type = &func.params[i].1;
+                        if !self.is_assignable(param_type, &arg_type) {
+                            self.errors.push(format!(
+                                "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
+                                i + 1, target_fn, param_type, arg_type
+                            ));
+                        }
+                    }
                 }
                 self.check_expr_type(tangent);
                 func.return_type.clone()
@@ -1806,21 +1857,17 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Semantic coercion rule: Ref<T, HostDRAM> can be assigned to Verified<T>
-        // Also allow returning Verified(Ref(T, Memory)) as Verified(T)
+        // Semantic coercion rule: Verified<T> can only be assigned from another Verified<U> where is_assignable(T, U)
         if let Type::Verified(inner_target) = target {
-            if self.is_assignable(inner_target, &source) {
-                return true;
-            }
             if let Type::Verified(inner_source) = source {
                 if self.is_assignable(inner_target, inner_source) {
                     return true;
                 }
             }
-            if let Type::Ref(inner_source, MemorySpace::HostDRAM) = source {
-                return inner_target.as_ref() == inner_source.as_ref();
-            }
         }
+
+        // Wait, Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
+        // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {

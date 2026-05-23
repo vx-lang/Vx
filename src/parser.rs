@@ -527,13 +527,11 @@ impl<'a> Parser<'a> {
                 }
             };
             let mut args = Vec::new();
-            if self.match_token(&TokenType::Comma) {
-                if !self.check(&TokenType::RightParen) {
-                    loop {
-                        args.push(self.parse_expr()?);
-                        if !self.match_token(&TokenType::Comma) {
-                            break;
-                        }
+            if self.match_token(&TokenType::Comma) && !self.check(&TokenType::RightParen) {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
                     }
                 }
             }

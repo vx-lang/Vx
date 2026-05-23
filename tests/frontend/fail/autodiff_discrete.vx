@@ -1,14 +1,14 @@
 fn discrete_func(x: f32) -> i32 {
-    if x > 0.0 {
-        return 1;
-    } else {
-        return 0;
-    }
+  if x > 0.0 {
+    return 1;
+  } else {
+    return 0;
+  }
 }
 
 fn main() -> f32 {
-    let x = 2.0;
-    // This should fail semantic analysis because discrete_func returns i32, which is discrete.
-    let dx = grad(discrete_func, x);
-    return 0.0;
+  let x = 2.0;
+  // This should fail semantic analysis because discrete_func returns i32, which is discrete.
+  let dx = grad(discrete_func, x);
+  return 0.0;
 }

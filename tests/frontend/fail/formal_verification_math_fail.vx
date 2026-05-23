@@ -1,0 +1,15 @@
+//===- formal_verification_math_fail.vx ---------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+
+fn verify_math<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
+  // This will fail because N * M + P is not equal to K
+  // EXPECT: Contract violated for Verified return type
+  assert(N * M + 8 == 100, "Math constraint failed");
+  return Verified(val);
+}
+
+fn main() -> i32 {
+  let t: Tensor<f32, [16, 32]> = Tensor_f32(16, 32);
+  let v: Verified<Tensor<f32, [16, 32]>> = verify_math(t);
+  return 0;
+}

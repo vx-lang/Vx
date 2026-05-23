@@ -1,0 +1,19 @@
+//===- formal_verification_math_pass.vx ---------------------------------===//
+// RUN: vxc %s | FileCheck %s
+
+fn verify_math<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
+  // Test multiplication, addition, division, and logical operators
+  // N=16, M=32
+  assert(N * M + 8 == 520, "Math constraint failed");
+  assert(520 - N * M == 8, "Inverse math constraint failed");
+  assert(N > 0 && M > 0, "Dimensions must be positive");
+  assert(M >= N, "M must be greater than or equal to N");
+  return Verified(val);
+}
+
+fn main() -> i32 {
+  let t: Tensor<f32, [16, 32]> = Tensor_f32(16, 32);
+  let v: Verified<Tensor<f32, [16, 32]>> = verify_math(t);
+  // NO_EXEC
+  return 0;
+}

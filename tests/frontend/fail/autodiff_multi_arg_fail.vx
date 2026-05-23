@@ -1,0 +1,17 @@
+//===- autodiff_multi_arg_fail.vx ---------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+
+fn compute_val(x: f32, y: f32) -> f32 {
+  return x * y;
+}
+
+fn main() -> i32 {
+  let x: f32 = 4.0;
+  let y: f32 = 5.0;
+
+  // Test grad with wrong number of arguments
+  // EXPECT: Function compute_val expects 2 arguments, but 1 were provided
+  let df: f32 = grad(compute_val, x);
+
+  return 0;
+}

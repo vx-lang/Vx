@@ -1,0 +1,9 @@
+//===- formal_verification_coercion_fail.vx -----------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let t: Tensor<f32, [16, 32]> = Tensor_f32(16, 32);
+  // EXPECT: Type mismatch in variable declaration 'v'
+  let v: Verified<Tensor<f32, [16, 32]>> = t;
+  return 0;
+}
