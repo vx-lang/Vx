@@ -39,6 +39,9 @@ pub enum TokenType {
     Import,
     Assert,
     Enum,
+    Grad,
+    Vjp,
+    Jvp,
 
     // Types & Topology
     Topology,
@@ -119,6 +122,10 @@ impl std::fmt::Display for TokenType {
             TokenType::Comptime => write!(f, "comptime"),
             TokenType::Import => write!(f, "import"),
             TokenType::Assert => write!(f, "assert"),
+            TokenType::Enum => write!(f, "enum"),
+            TokenType::Grad => write!(f, "grad"),
+            TokenType::Vjp => write!(f, "vjp"),
+            TokenType::Jvp => write!(f, "jvp"),
 
             TokenType::Topology => write!(f, "Topology"),
             TokenType::Memory => write!(f, "Memory"),
@@ -166,7 +173,6 @@ impl std::fmt::Display for TokenType {
             TokenType::Whitespace(s) => write!(f, "{}", s),
             TokenType::Unknown(c) => write!(f, "{}", c),
             TokenType::Eof => write!(f, ""),
-            TokenType::Enum => write!(f, "enum"),
         }
     }
 }
@@ -287,6 +293,9 @@ impl<'a> Lexer<'a> {
             "import" => TokenType::Import,
             "assert" => TokenType::Assert,
             "enum" => TokenType::Enum,
+            "grad" => TokenType::Grad,
+            "vjp" => TokenType::Vjp,
+            "jvp" => TokenType::Jvp,
             _ => TokenType::Identifier(text.clone()),
         };
 

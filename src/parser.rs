@@ -517,6 +517,92 @@ impl<'a> Parser<'a> {
                 args: vec![inner],
                 span: Span::default(),
             })
+        } else if self.check(&TokenType::Grad) {
+            self.advance();
+            self.consume(&TokenType::LeftParen, "Expected '(' after 'grad'")?;
+            let target_fn = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => {
+                    return Err("Expected function identifier as first argument to grad".to_string())
+                }
+            };
+            let mut args = Vec::new();
+            if self.match_token(&TokenType::Comma) {
+                if !self.check(&TokenType::RightParen) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            Expr::Grad(GradExpr {
+                target_fn,
+                args,
+                span: Span::default(),
+            })
+        } else if self.check(&TokenType::Vjp) {
+            self.advance();
+            self.consume(&TokenType::LeftParen, "Expected '(' after 'vjp'")?;
+            let target_fn = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => {
+                    return Err("Expected function identifier as first argument to vjp".to_string())
+                }
+            };
+            self.consume(&TokenType::Comma, "Expected comma after function name")?;
+            let mut all_args = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    all_args.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            if all_args.is_empty() {
+                return Err("Expected cotangent argument for vjp".to_string());
+            }
+            let cotangent = all_args.pop().unwrap();
+            Expr::Vjp(VjpExpr {
+                target_fn,
+                args: all_args,
+                cotangent: Box::new(cotangent),
+                span: Span::default(),
+            })
+        } else if self.check(&TokenType::Jvp) {
+            self.advance();
+            self.consume(&TokenType::LeftParen, "Expected '(' after 'jvp'")?;
+            let target_fn = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => {
+                    return Err("Expected function identifier as first argument to jvp".to_string())
+                }
+            };
+            self.consume(&TokenType::Comma, "Expected comma after function name")?;
+            let mut all_args = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    all_args.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            if all_args.is_empty() {
+                return Err("Expected tangent argument for jvp".to_string());
+            }
+            let tangent = all_args.pop().unwrap();
+            Expr::Jvp(JvpExpr {
+                target_fn,
+                args: all_args,
+                tangent: Box::new(tangent),
+                span: Span::default(),
+            })
         } else {
             let token = self.advance().clone();
             match token.kind {

@@ -1568,6 +1568,75 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Struct(resolved_name, None)
             }
+            Expr::Grad(GradExpr {
+                target_fn,
+                args,
+                span: _,
+            }) => {
+                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                    f.clone()
+                } else {
+                    self.errors.push(format!(
+                        "Cannot differentiate unknown function '{}'",
+                        target_fn
+                    ));
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                };
+                self.check_differentiability(&func);
+                for arg in args {
+                    self.check_expr_type(arg);
+                }
+                func.return_type.clone()
+            }
+            Expr::Vjp(VjpExpr {
+                target_fn,
+                args,
+                cotangent,
+                span: _,
+            }) => {
+                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                    f.clone()
+                } else {
+                    self.errors
+                        .push(format!("Cannot vjp unknown function '{}'", target_fn));
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                };
+                self.check_differentiability(&func);
+                for arg in args {
+                    self.check_expr_type(arg);
+                }
+                self.check_expr_type(cotangent);
+                func.return_type.clone()
+            }
+            Expr::Jvp(JvpExpr {
+                target_fn,
+                args,
+                tangent,
+                span: _,
+            }) => {
+                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                    f.clone()
+                } else {
+                    self.errors
+                        .push(format!("Cannot jvp unknown function '{}'", target_fn));
+                    return Type::Tensor(ElementType::F32, vec![], None);
+                };
+                self.check_differentiability(&func);
+                for arg in args {
+                    self.check_expr_type(arg);
+                }
+                self.check_expr_type(tangent);
+                func.return_type.clone()
+            }
+        }
+    }
+
+    fn check_differentiability(&mut self, func: &crate::ast::Function) {
+        match &func.return_type {
+            Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
+            _ => {
+                self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {:?}", func.name, func.return_type));
+            }
         }
     }
 

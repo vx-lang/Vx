@@ -1911,6 +1911,91 @@ impl MlirGenerator {
                     (last_val, last_ty)
                 }
             }
+            Expr::Grad(GradExpr {
+                target_fn,
+                args,
+                span: _,
+            }) => {
+                let ret_ty = self.functions.get(target_fn).unwrap().0.clone();
+                let mut arg_vals = Vec::new();
+                let mut arg_tys = Vec::new();
+                for arg in args {
+                    let (v, t) = self.generate_expr(arg, "any");
+                    arg_vals.push(v);
+                    arg_tys.push(t);
+                }
+                let res = self.next_var();
+                self.write_line(&format!("// enzyme autodiff grad for {}", target_fn));
+                self.write_line(&format!(
+                    "{} = func.call @__enzyme_autodiff_grad_{}({}) : ({}) -> {}",
+                    res,
+                    target_fn,
+                    arg_vals.join(", "),
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
+                (res, ret_ty)
+            }
+            Expr::Vjp(VjpExpr {
+                target_fn,
+                args,
+                cotangent,
+                span: _,
+            }) => {
+                let ret_ty = self.functions.get(target_fn).unwrap().0.clone();
+                let mut arg_vals = Vec::new();
+                let mut arg_tys = Vec::new();
+                for arg in args {
+                    let (v, t) = self.generate_expr(arg, "any");
+                    arg_vals.push(v);
+                    arg_tys.push(t);
+                }
+                let (c_val, c_ty) = self.generate_expr(cotangent, "any");
+                arg_vals.push(c_val);
+                arg_tys.push(c_ty);
+
+                let res = self.next_var();
+                self.write_line(&format!("// enzyme autodiff vjp for {}", target_fn));
+                self.write_line(&format!(
+                    "{} = func.call @__enzyme_autodiff_vjp_{}({}) : ({}) -> {}",
+                    res,
+                    target_fn,
+                    arg_vals.join(", "),
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
+                (res, ret_ty)
+            }
+            Expr::Jvp(JvpExpr {
+                target_fn,
+                args,
+                tangent,
+                span: _,
+            }) => {
+                let ret_ty = self.functions.get(target_fn).unwrap().0.clone();
+                let mut arg_vals = Vec::new();
+                let mut arg_tys = Vec::new();
+                for arg in args {
+                    let (v, t) = self.generate_expr(arg, "any");
+                    arg_vals.push(v);
+                    arg_tys.push(t);
+                }
+                let (t_val, t_ty) = self.generate_expr(tangent, "any");
+                arg_vals.push(t_val);
+                arg_tys.push(t_ty);
+
+                let res = self.next_var();
+                self.write_line(&format!("// enzyme autodiff jvp for {}", target_fn));
+                self.write_line(&format!(
+                    "{} = func.call @__enzyme_autodiff_jvp_{}({}) : ({}) -> {}",
+                    res,
+                    target_fn,
+                    arg_vals.join(", "),
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
+                (res, ret_ty)
+            }
             Expr::If(IfExpr {
                 cond,
                 then_block,

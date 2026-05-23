@@ -382,6 +382,58 @@ impl TopologyExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct GradExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl GradExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct VjpExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub cotangent: Box<Expr>,
+    pub span: Span,
+}
+impl VjpExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, cotangent: Box<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            cotangent,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct JvpExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub tangent: Box<Expr>,
+    pub span: Span,
+}
+impl JvpExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, tangent: Box<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            tangent,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct IfExpr {
     pub cond: Box<Expr>,
     pub then_block: Vec<Statement>,
@@ -426,6 +478,9 @@ pub enum Expr {
     MemorySpace(MemorySpaceExpr),
     Topology(TopologyExpr),
     If(IfExpr),
+    Grad(GradExpr),
+    Vjp(VjpExpr),
+    Jvp(JvpExpr),
 }
 
 impl Expr {
@@ -451,6 +506,9 @@ impl Expr {
             Expr::MemorySpace(e) => e.span.clone(),
             Expr::Topology(e) => e.span.clone(),
             Expr::If(e) => e.span.clone(),
+            Expr::Grad(e) => e.span.clone(),
+            Expr::Vjp(e) => e.span.clone(),
+            Expr::Jvp(e) => e.span.clone(),
         }
     }
 
@@ -532,6 +590,23 @@ impl Expr {
                     .else_block
                     .as_ref()
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
+                span: e.span.clone(),
+            }),
+            Expr::Grad(e) => Expr::Grad(GradExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::Vjp(e) => Expr::Vjp(VjpExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                cotangent: Box::new(e.cotangent.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::Jvp(e) => Expr::Jvp(JvpExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                tangent: Box::new(e.tangent.substitute(mapping)),
                 span: e.span.clone(),
             }),
             Expr::Identifier(_)
