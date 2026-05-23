@@ -8,6 +8,9 @@ fn verify_math<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> 
   assert(520 - N * M == 8, "Inverse math constraint failed");
   assert(N > 0 && M > 0, "Dimensions must be positive");
   assert(M >= N, "M must be greater than or equal to N");
+  assert((N + 4) * (M - 2) == 600, "Compound math constraint 1");
+  assert((N * 2) + (M / 2) == 48, "Compound math constraint 2");
+  assert((N > 0) && (M > 0) || (N == M), "Compound logical constraint");
   return Verified(val);
 }
 

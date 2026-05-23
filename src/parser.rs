@@ -604,6 +604,11 @@ impl<'a> Parser<'a> {
         } else {
             let token = self.advance().clone();
             match token.kind {
+                TokenType::LeftParen => {
+                    let expr = self.parse_expr()?;
+                    self.consume(&TokenType::RightParen, "Expected ')' after expression")?;
+                    expr
+                }
                 TokenType::Identifier(s) => {
                     let mut call_name = s;
                     if call_name == "Tensor" {
