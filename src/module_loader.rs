@@ -27,12 +27,13 @@ pub struct ModuleLoader {
 impl ModuleLoader {
     pub fn new() -> Self {
         let mut search_paths = Vec::new();
-        // Add default stdlib path
         if let Ok(env_path) = std::env::var("VX_STD_PATH") {
             search_paths.push(PathBuf::from(env_path));
         } else {
             search_paths.push(PathBuf::from("stdlib/std"));
         }
+
+        search_paths.push(PathBuf::from("."));
 
         Self {
             search_paths,

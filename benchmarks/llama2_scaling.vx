@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import std::llama_rt;
+import tests::backend::pass::llama_rt;
 
 struct Config {
   dim: i32,

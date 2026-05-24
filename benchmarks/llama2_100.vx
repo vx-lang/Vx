@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+
+import tests::backend::pass::llama_rt;
+
 struct Config {
   dim: i32,
   hidden_dim: i32,
@@ -44,8 +47,6 @@ struct RunState {
   key_cache: *mut f32,
   value_cache: *mut f32
 }
-
-import std::llama_rt;
 
 fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv_heads: i32, seq_len: i32, vocab_size: i32) -> RunState {
   let div_kv: i32 = dim * n_kv_heads;
