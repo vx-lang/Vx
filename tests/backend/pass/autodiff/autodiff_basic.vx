@@ -1,7 +1,33 @@
 // RUN: vxc %s
 // RUN: vxc --emit-mlir %s | FileCheck %s
-// CHECK: @__enzyme_autodiff_grad_poly
-// CHECK: @vx_googletest_expect_eq_f32
+// CHECK: module {
+// CHECK:   func.func private @__enzyme_autodiff_grad_poly((f32) -> f32, f32) -> f32
+// CHECK:   func.func private @vx_googletest_expect_eq_f32(f32, f32) -> i32
+// CHECK:   func.func private @vx_googletest_expect_eq_i32(i32, i32) -> i32
+// CHECK:   func.func @Scalar_F32_expect_eq(%arg0: f32, %arg1: f32) -> i32 {
+// CHECK:     %0 = call @vx_googletest_expect_eq_f32(%arg0, %arg1) : (f32, f32) -> i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @expect_eq_ScalarF32(%arg0: f32, %arg1: f32) -> i32 {
+// CHECK:     %0 = call @Scalar_F32_expect_eq(%arg0, %arg1) : (f32, f32) -> i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @poly(%arg0: f32) -> f32 {
+// CHECK:     %0 = arith.mulf %arg0, %arg0 : f32
+// CHECK:     %1 = arith.mulf %0, %arg0 : f32
+// CHECK:     return %1 : f32
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %cst = arith.constant 2.000000e+00 : f32
+// CHECK:     %f = constant @poly : (f32) -> f32
+// CHECK:     %0 = call @__enzyme_autodiff_grad_poly(%f, %cst) : ((f32) -> f32, f32) -> f32
+// CHECK:     %cst_0 = arith.constant 1.200000e+01 : f32
+// CHECK:     %1 = call @expect_eq_ScalarF32(%0, %cst_0) : (f32, f32) -> i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }
+// CHECK: 
 import std::googletest;
 
 fn poly(x: f32) -> f32 {
