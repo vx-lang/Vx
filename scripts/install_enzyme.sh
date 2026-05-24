@@ -66,9 +66,9 @@ if [ "$LLVM_MAJOR" -gt 20 ]; then
     mkdir -p "$ENZYME_SRC/build_dir"
     cd "$ENZYME_SRC/build_dir"
     
-    # Enzyme requires matching LLVMDIR
+    # Enzyme requires matching LLVM_DIR
     LLVM_DIR=$($LLVM_CONFIG --prefix)/lib/cmake/llvm
-    cmake -G Ninja ../enzyme -DENZYME_LLVM_DIR="$LLVM_DIR" -DCMAKE_BUILD_TYPE=Release
+    cmake -G Ninja ../enzyme -DLLVM_DIR="$LLVM_DIR" -DENZYME_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
     ninja
     
     if [ "$OS" = "Darwin" ]; then
