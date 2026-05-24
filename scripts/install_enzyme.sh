@@ -63,12 +63,12 @@ if [ "$LLVM_MAJOR" -gt 20 ]; then
     rm -rf "$ENZYME_SRC"
     git clone --depth 1 https://github.com/EnzymeAD/Enzyme.git "$ENZYME_SRC"
     
-    mkdir -p "$ENZYME_SRC/enzyme/build"
-    cd "$ENZYME_SRC/enzyme/build"
+    mkdir -p "$ENZYME_SRC/build_dir"
+    cd "$ENZYME_SRC/build_dir"
     
     # Enzyme requires matching LLVMDIR
     LLVM_DIR=$($LLVM_CONFIG --prefix)/lib/cmake/llvm
-    cmake -G Ninja .. -DENZYME_LLVM_DIR="$LLVM_DIR" -DCMAKE_BUILD_TYPE=Release
+    cmake -G Ninja ../enzyme -DENZYME_LLVM_DIR="$LLVM_DIR" -DCMAKE_BUILD_TYPE=Release
     ninja
     
     if [ "$OS" = "Darwin" ]; then
