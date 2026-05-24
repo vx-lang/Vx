@@ -694,13 +694,17 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 if let Some(variants) = self.env.enums.get(enum_name) {
                     if !variants.contains(variant) {
-                        self.errors.push(format!(
-                            "Enum {} does not have variant {}",
-                            enum_name, variant
-                        ));
+                        if !silent {
+                            self.errors.push(format!(
+                                "Enum {} does not have variant {}",
+                                enum_name, variant
+                            ));
+                        }
                     }
                 } else {
-                    self.errors.push(format!("Unknown enum {}", enum_name));
+                    if !silent {
+                        self.errors.push(format!("Unknown enum {}", enum_name));
+                    }
                 }
                 Type::Enum(enum_name.clone(), None)
             }
@@ -1752,6 +1756,28 @@ impl<'a> TypeChecker<'a> {
 
         if let Type::Enum(n_target, id_target) = target {
             if let Type::Enum(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Struct(n_target, id_target) = target {
+            if let Type::Enum(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Enum(n_target, id_target) = target {
+            if let Type::Struct(n_source, id_source) = source {
                 if n_target == n_source {
                     if id_target.is_some() && id_source.is_some() {
                         return id_target == id_source;
