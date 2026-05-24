@@ -1522,7 +1522,17 @@ fn emit_enzyme_decl<'c>(
     arg_tys: &[Type<'c>],
     ret_ty: Type<'c>,
 ) -> String {
-    let enzyme_name = format!("__enzyme_autodiff_{}_{}", base_name, target_fn);
+    let prefix = match base_name {
+        "fwddiff" => "__enzyme_fwddiff",
+        _ => "__enzyme_autodiff",
+    };
+    let suffix = match base_name {
+        "fwddiff" => "jvp",
+        "grad" => "grad",
+        "vjp" => "vjp",
+        _ => base_name,
+    };
+    let enzyme_name = format!("{}_{}_{}", prefix, suffix, target_fn);
     if !gen.functions.contains_key(&enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
         let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
         let name_attr = melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name);
@@ -1564,18 +1574,37 @@ impl<'c> LowerToMelior<'c> for GradExpr {
             args,
             span: _,
         } = self;
-        let (ret_ty, arg_types) = gen
+        let (ret_ty, orig_arg_types) = gen
             .functions
             .get(target_fn)
             .cloned()
             .expect("Function not found");
-        let mut arg_vals = Vec::new();
+
+        let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+        let const_op = melior::ir::operation::OperationBuilder::new(
+            "func.constant",
+            Location::unknown(gen.context),
+        )
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+        )])
+        .add_results(&[fn_ty.into()])
+        .build()
+        .unwrap();
+        let const_ref = block.append_operation(const_op);
+        let target_fn_val = const_ref.result(0).unwrap().into();
+
+        let mut arg_vals = vec![target_fn_val];
+        let mut enzyme_arg_types = vec![fn_ty.into()];
+
         for arg in args {
-            let (v, _) = gen.generate_expr(arg, block);
+            let (v, ty) = gen.generate_expr(arg, block);
             arg_vals.push(v);
+            enzyme_arg_types.push(ty);
         }
 
-        let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &arg_types, ret_ty);
+        let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
         let name_attr =
             melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
@@ -1612,18 +1641,33 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             .cloned()
             .expect("Function not found");
 
-        let mut arg_vals = Vec::new();
-        let mut arg_tys = orig_arg_types.clone();
+        let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+        let const_op = melior::ir::operation::OperationBuilder::new(
+            "func.constant",
+            Location::unknown(gen.context),
+        )
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+        )])
+        .add_results(&[fn_ty.into()])
+        .build()
+        .unwrap();
+        let const_ref = block.append_operation(const_op);
+        let target_fn_val = const_ref.result(0).unwrap().into();
+
+        let mut arg_vals = vec![target_fn_val];
+        let mut enzyme_arg_types = vec![fn_ty.into()];
+
         for arg in args {
-            let (v, _) = gen.generate_expr(arg, block);
+            let (v, ty) = gen.generate_expr(arg, block);
             arg_vals.push(v);
+            enzyme_arg_types.push(ty);
         }
 
-        let (c_val, c_ty) = gen.generate_expr(cotangent, block);
-        arg_vals.push(c_val);
-        arg_tys.push(c_ty);
-
-        let enzyme_name = emit_enzyme_decl(gen, "vjp", target_fn, &arg_tys, ret_ty);
+        // For a scalar VJP in Enzyme, we just compute the gradient (implicitly seed=1.0)
+        // and then multiply by the cotangent seed.
+        let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
         let name_attr =
             melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
@@ -1641,7 +1685,22 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         .unwrap();
 
         let call_ref = block.append_operation(call_op);
-        (call_ref.result(0).unwrap().into(), ret_ty)
+        let grad_val = call_ref.result(0).unwrap().into();
+
+        let (c_val, _) = gen.generate_expr(cotangent, block);
+
+        // Multiply grad by cotangent
+        let is_float = ret_ty.to_string().contains("f32") || ret_ty.to_string().contains("f64");
+        let op_name = if is_float { "arith.mulf" } else { "arith.muli" };
+        let mul_op =
+            melior::ir::operation::OperationBuilder::new(op_name, Location::unknown(gen.context))
+                .add_operands(&[grad_val, c_val])
+                .add_results(&[ret_ty])
+                .build()
+                .unwrap();
+        let mul_ref = block.append_operation(mul_op);
+
+        (mul_ref.result(0).unwrap().into(), ret_ty)
     }
 }
 
@@ -1660,18 +1719,36 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
             .cloned()
             .expect("Function not found");
 
-        let mut arg_vals = Vec::new();
-        let mut arg_tys = orig_arg_types.clone();
+        let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+        let const_op = melior::ir::operation::OperationBuilder::new(
+            "func.constant",
+            Location::unknown(gen.context),
+        )
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+        )])
+        .add_results(&[fn_ty.into()])
+        .build()
+        .unwrap();
+        let const_ref = block.append_operation(const_op);
+        let target_fn_val = const_ref.result(0).unwrap().into();
+
+        let mut arg_vals = vec![target_fn_val];
+        let mut enzyme_arg_types = vec![fn_ty.into()];
+
         for arg in args {
-            let (v, _) = gen.generate_expr(arg, block);
+            let (v, ty) = gen.generate_expr(arg, block);
             arg_vals.push(v);
+            enzyme_arg_types.push(ty);
         }
 
         let (t_val, t_ty) = gen.generate_expr(tangent, block);
         arg_vals.push(t_val);
-        arg_tys.push(t_ty);
+        enzyme_arg_types.push(t_ty);
 
-        let enzyme_name = emit_enzyme_decl(gen, "jvp", target_fn, &arg_tys, ret_ty);
+        // Enzyme intercepts `__enzyme_fwddiff` for forward mode.
+        let enzyme_name = emit_enzyme_decl(gen, "fwddiff", target_fn, &enzyme_arg_types, ret_ty);
 
         let name_attr =
             melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);

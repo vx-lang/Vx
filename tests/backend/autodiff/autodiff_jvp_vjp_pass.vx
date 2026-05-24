@@ -2,8 +2,7 @@
 // RUN: vxc %s | FileCheck %s
 
 // EXPECT: callee = @__enzyme_autodiff_grad_compute_val
-// EXPECT: callee = @__enzyme_autodiff_jvp_compute_val
-// EXPECT: callee = @__enzyme_autodiff_vjp_compute_val
+// EXPECT: callee = @__enzyme_fwddiff_jvp_compute_val
 // EXPECT: [48.000000]
 // EXPECT: [75.000000]
 // EXPECT: [48.000000]
