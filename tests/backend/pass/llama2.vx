@@ -426,7 +426,7 @@ fn matmul_ane(xout: *mut f32, x: *mut f32, w: *mut f32, n: i32, d: i32) -> i32 {
 
 fn main() -> i32 {
   unsafe {
-    let config_ptr: *mut i32 = vx_load_config("stories15M.bin");
+    let config_ptr: *mut i32 = vx_load_config("tests/backend/pass/stories15M.bin");
 
     let dim_f: f32 = config_ptr[0];
     let hidden_dim_f: f32 = config_ptr[1];
@@ -450,14 +450,14 @@ fn main() -> i32 {
       seq_len: max_tokens
     };
 
-    let weights_ptr: *mut f32 = vx_load_weights("stories15M.bin");
+    let weights_ptr: *mut f32 = vx_load_weights("tests/backend/pass/stories15M.bin");
     let weights = memory_map_weights(weights_ptr, config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
     let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers, config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
-    let tokenizer_ptr: *mut i8 = vx_build_tokenizer("tokenizer.bin", config.vocab_size);
+    let tokenizer_ptr: *mut i8 = vx_build_tokenizer("tests/backend/pass/tokenizer.bin", config.vocab_size);
 
-    let prompt_str: *mut i8 = vx_read_prompt_file("prompt.txt");
+    let prompt_str: *mut i8 = vx_read_prompt_file("tests/backend/pass/prompt.txt");
     let prompt_tokens: *mut i32 = vx_encode_prompt(tokenizer_ptr, prompt_str);
     let num_prompt_tokens: i32 = prompt_tokens[0];
 
