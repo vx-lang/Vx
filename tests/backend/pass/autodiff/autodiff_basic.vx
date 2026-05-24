@@ -1,4 +1,7 @@
 // RUN: vxc %s
+// RUN: vxc --emit-mlir %s | FileCheck %s
+// CHECK: @__enzyme_autodiff_grad_poly
+// CHECK: @vx_googletest_expect_eq_f32
 import std::googletest;
 
 fn poly(x: f32) -> f32 {
