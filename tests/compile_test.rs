@@ -357,6 +357,14 @@ fn run_backend_autodiff_test(path: &Path) {
         return;
     }
 
+    if std::env::var("ENZYME_LIB").is_err() {
+        println!(
+            "Skipping JIT execution for {} because ENZYME_LIB is not set.",
+            path.display()
+        );
+        return;
+    }
+
     let out = execute_mlir(&mlir_str).expect("JIT execution failed");
 
     for expect in expect_lines {

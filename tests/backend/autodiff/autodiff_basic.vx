@@ -9,10 +9,6 @@ fn poly(x: f32) -> f32 {
   return x * x * x;
 }
 
-fn __enzyme_autodiff_grad_poly(x: f32) -> f32 {
-  return 12.0;
-}
-
 fn main() -> i32 {
   let x = 2.0;
   // Expected derivative of x^3 is 3x^2. At x=2.0, this is 12.0

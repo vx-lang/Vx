@@ -128,6 +128,29 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
         .write_all(&mlir_translate_out.stdout)
         .map_err(|e| e.to_string())?;
 
+    let temp_opt_ll = format!("target/jit/temp_opt_{}.ll", uid);
+    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
+        println!("[JIT] Optimizing with Enzyme Pass...");
+        let opt_out = Command::new("/opt/homebrew/opt/llvm/bin/opt")
+            .args([
+                &format!("-load-pass-plugin={}", enzyme_lib),
+                "-passes=enzyme",
+                "-S",
+                &temp_ll,
+                "-o",
+                &temp_opt_ll,
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !opt_out.status.success() {
+            let err_str = String::from_utf8_lossy(&opt_out.stderr);
+            return Err(format!("opt (enzyme) failed:\n{}", err_str));
+        }
+    } else {
+        std::fs::copy(&temp_ll, &temp_opt_ll).map_err(|e| e.to_string())?;
+    }
+
     println!("[JIT] Executing via LLI...");
     let current_dir = std::env::current_dir().unwrap();
     let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
@@ -139,7 +162,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
                 "--load={}/target/debug/libvx_std_core.dylib",
                 current_dir.display()
             ),
-            &temp_ll,
+            &temp_opt_ll,
         ])
         .output()
         .map_err(|e| e.to_string())?;

@@ -17,16 +17,6 @@ fn compute_val(x: f32) -> f32 {
   return x * x * x; // x^3
 }
 
-fn __enzyme_autodiff_grad_compute_val(x: f32) -> f32 {
-  return 3.0 * x * x;
-}
-fn __enzyme_autodiff_jvp_compute_val(x: f32, t: f32) -> f32 {
-  return 3.0 * x * x * t;
-}
-fn __enzyme_autodiff_vjp_compute_val(x: f32, c: f32) -> f32 {
-  return 3.0 * x * x * c;
-}
-
 // First derivative: 3x^2
 // Second derivative: 6x
 fn main() -> i32 {
