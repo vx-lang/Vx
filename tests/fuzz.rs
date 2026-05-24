@@ -23,4 +23,9 @@ proptest! {
     fn test_parser_ascii(s in "[ -~]*") {
         fuzz_parser(&s);
     }
+
+    #[test]
+    fn test_parser_autodiff(s in "(grad|vjp|jvp) *\\( *[a-zA-Z_][a-zA-Z0-9_]* *(, *[a-zA-Z_][a-zA-Z0-9_]*)* *\\) *") {
+        fuzz_parser(&s);
+    }
 }
