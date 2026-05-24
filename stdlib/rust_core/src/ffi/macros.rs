@@ -402,6 +402,25 @@ macro_rules! instantiate_file_ffi {
         }
 
         #[no_mangle]
+        pub extern "C" fn vx_get_temp_file(
+            c_filename: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_char {
+            let filename = unsafe { std::ffi::CStr::from_ptr(c_filename) }.to_string_lossy();
+            let mut path = std::env::temp_dir();
+            path.push(filename.as_ref());
+            let path_str = path.to_string_lossy().into_owned();
+            let c_string = std::ffi::CString::new(path_str).unwrap();
+            c_string.into_raw()
+        }
+
+        #[no_mangle]
+        pub extern "C" fn vx_free_temp_file(ptr: *mut std::ffi::c_char) {
+            if !ptr.is_null() {
+                let _ = unsafe { std::ffi::CString::from_raw(ptr) };
+            }
+        }
+
+        #[no_mangle]
         pub extern "C" fn vx_file_drop(ptr: *mut std::ffi::c_void) {
             if !ptr.is_null() {
                 let _ = unsafe { Box::from_raw(ptr as *mut std::fs::File) };

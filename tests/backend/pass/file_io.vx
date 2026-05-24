@@ -11,14 +11,21 @@ extern {
   fn fclose(stream: *mut i8) -> i32;
   fn printf(format: *const i8, val: i32) -> i32;
   fn remove(filename: *const i8) -> i32;
+  fn vx_get_temp_file(filename: *const i8) -> *mut i8;
+  fn vx_free_temp_file(ptr: *mut i8);
 }
 
 fn main() -> i32 {
   unsafe {
-    let f: *mut i8 = fopen("/tmp/test_output.txt", "w");
+    let path_buf: *mut i8 = vx_get_temp_file("test_output.txt");
+
+    let f: *mut i8 = fopen(path_buf, "w");
     fputs("Hello, File I/O from Vx!\n", f);
     fclose(f);
-    remove("/tmp/test_output.txt");
+    remove(path_buf);
+
+    vx_free_temp_file(path_buf);
+
     printf("Done: %d\n", 0);
   }
   return 0;

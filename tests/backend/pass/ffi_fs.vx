@@ -15,11 +15,13 @@ extern {
   fn free(ptr: *mut u8) -> i32;
   fn vx_printf_i32(format: *const i8, val: i32) -> i32;
   fn remove(filename: *const i8) -> i32;
+  fn vx_get_temp_file(filename: *const i8) -> *mut i8;
+  fn vx_free_temp_file(ptr: *mut i8);
 }
 
 fn main() -> i32 {
   unsafe {
-    let path = "/tmp/test_output.txt";
+    let path: *mut i8 = vx_get_temp_file("test_output.txt");
 
     let file_w = vx_file_open(path, 1);
     let msg = "Hello";
@@ -33,6 +35,8 @@ fn main() -> i32 {
     free(buffer);
 
     remove(path);
+
+    vx_free_temp_file(path);
 
     let mut success: i32 = 0;
     if bytes_written != 5 {
