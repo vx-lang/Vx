@@ -25,6 +25,7 @@ pub struct MlirGenerator {
     structs: HashMap<String, StructDecl>,
     enums: HashMap<String, Vec<String>>,
     globals: String,
+    enzyme_decls: std::collections::HashSet<String>,
 }
 
 impl Default for MlirGenerator {
@@ -45,6 +46,7 @@ impl MlirGenerator {
             structs: HashMap::new(),
             enums: HashMap::new(),
             globals: String::new(),
+            enzyme_decls: std::collections::HashSet::new(),
         }
     }
 
@@ -186,6 +188,11 @@ impl MlirGenerator {
         }
 
         self.output.push_str(&self.globals);
+
+        let decls: Vec<_> = self.enzyme_decls.iter().cloned().collect();
+        for decl in decls {
+            self.write_line(&decl);
+        }
 
         self.pop_indent();
         self.write_line("}");
@@ -1934,6 +1941,12 @@ impl MlirGenerator {
                     arg_tys.join(", "),
                     ret_ty
                 ));
+                self.enzyme_decls.insert(format!(
+                    "func.func private @__enzyme_autodiff_grad_{}({}) -> {}",
+                    target_fn,
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
                 (res, ret_ty)
             }
             Expr::Vjp(VjpExpr {
@@ -1964,6 +1977,12 @@ impl MlirGenerator {
                     arg_tys.join(", "),
                     ret_ty
                 ));
+                self.enzyme_decls.insert(format!(
+                    "func.func private @__enzyme_autodiff_vjp_{}({}) -> {}",
+                    target_fn,
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
                 (res, ret_ty)
             }
             Expr::Jvp(JvpExpr {
@@ -1991,6 +2010,12 @@ impl MlirGenerator {
                     res,
                     target_fn,
                     arg_vals.join(", "),
+                    arg_tys.join(", "),
+                    ret_ty
+                ));
+                self.enzyme_decls.insert(format!(
+                    "func.func private @__enzyme_autodiff_jvp_{}({}) -> {}",
+                    target_fn,
                     arg_tys.join(", "),
                     ret_ty
                 ));

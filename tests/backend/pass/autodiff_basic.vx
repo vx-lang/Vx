@@ -4,9 +4,7 @@ fn poly(x: f32) -> f32 {
   return x * x * x;
 }
 
-extern {
-  fn __enzyme_autodiff_grad_poly(x: f32) -> f32;
-}
+
 
 fn main() -> f32 {
   let x = 2.0;
