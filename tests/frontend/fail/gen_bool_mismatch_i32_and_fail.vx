@@ -1,0 +1,9 @@
+//===- gen_bool_mismatch_i32_and_fail.vx ---------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+
+fn main() -> Bool {
+  let a: Bool = true;
+  let b: i32 = 1i32;
+  // EXPECT: Type mismatch
+  return a && b;
+}

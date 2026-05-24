@@ -1,0 +1,8 @@
+//===- gen_math_coercion_i64_f32_add_pass.vx ---------------------------------===//
+// RUN: vxc %s
+
+fn main() -> i64 {
+  let a: i64 = 10i64;
+  let b: f32 = 5f32;
+  return a + b;
+}

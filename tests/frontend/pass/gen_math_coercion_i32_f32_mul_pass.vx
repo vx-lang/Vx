@@ -1,0 +1,8 @@
+//===- gen_math_coercion_i32_f32_mul_pass.vx ---------------------------------===//
+// RUN: vxc %s
+
+fn main() -> i32 {
+  let a: i32 = 10i32;
+  let b: f32 = 5f32;
+  return a * b;
+}

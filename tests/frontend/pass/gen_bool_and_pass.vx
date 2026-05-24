@@ -1,0 +1,8 @@
+//===- gen_bool_and_pass.vx ---------------------------------===//
+// RUN: vxc %s
+
+fn main() -> Bool {
+  let a: Bool = true;
+  let b: Bool = false;
+  return a && b;
+}
