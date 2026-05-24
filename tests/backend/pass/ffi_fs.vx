@@ -14,11 +14,12 @@ extern {
   fn malloc(size: i64) -> *mut u8;
   fn free(ptr: *mut u8) -> i32;
   fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+  fn remove(filename: *const i8) -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
-    let path = "test_output.txt";
+    let path = "/tmp/test_output.txt";
 
     let file_w = vx_file_open(path, 1);
     let msg = "Hello";
@@ -31,6 +32,8 @@ fn main() -> i32 {
     vx_file_drop(file_r);
     free(buffer);
 
+    remove(path);
+
     let mut success: i32 = 0;
     if bytes_written != 5 {
       success = 1;
@@ -38,8 +41,7 @@ fn main() -> i32 {
     if bytes_read != 5 {
       success = 2;
     }
-    vx_printf_i32("Success: %d
-", success);
+    vx_printf_i32("Success: %d\n", success);
   }
   return 0;
 }
