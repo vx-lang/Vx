@@ -1,82 +1,48 @@
-# Auto-diff Primitives Implementation Plan
+# Strategy to Scale Compiler Testing
 
-This document outlines the design and implementation strategy for adding IR-level Automatic Differentiation (AD) with language-level intrinsics (`grad`, `vjp`, `jvp`) to the Vx compiler, as specified in Section 9 of the `ROADMAP.md`.
+Scaling from ~87 to ~300 tests efficiently requires a shift from manually writing individual `.vx` files to automated, systematic, and programmatic test generation. 
+
+Here is my proposed plan to rapidly expand the testing suite and improve confidence in the compiler.
 
 ## User Review Required
 
-> [!WARNING]
-> **IR-level Autodiff Framework**: Writing a custom MLIR autodiff pass from scratch is a massive undertaking. I propose we use **Enzyme AD**, which operates at the LLVM IR level. Vx will emit standard MLIR, lower it to LLVM IR, and then invoke Enzyme's `__enzyme_autodiff` intrinsic to generate the derivative code. Do you approve of using Enzyme as the backbone?
-
 > [!IMPORTANT]
-> **Syntax for Intrinsics**: Since Vx does not currently support first-class functions (closures/function pointers), I propose we introduce new syntax specifically for these intrinsics: `grad(func_name, arg1, arg2)`. Is this syntax acceptable, or would you prefer extending the parser to support first-class function references like `grad(func_name)(arg1, arg2)`?
-
-## Open Questions
-
-1. **Gradient Memory Ownership**: If `x` is `Pinned<Tensor, Topology::NPU[0]>`, should the gradient `dx` returned by `grad` automatically be allocated as `Pinned<Tensor, Topology::NPU[0]>`, or should it default to `HostDRAM` requiring an explicit transfer?
-1. **Control Flow**: Do we need to support differentiating through `if` statements and `for` loops in this initial implementation, or should we restrict it to straight-line math functions first?
+> Please review the three primary approaches below. Which direction do you prefer we tackle first?
+> 
+> 1. **Generative Testing Scripts** (Fastest way to get 100-200 tests)
+> 2. **Fuzz Testing** (Best for finding edge cases and compiler panics)
+> 3. **Coverage-Guided Expansion** (Best for tracking un-tested branches in the codebase)
 
 ## Proposed Changes
 
-______________________________________________________________________
+### Phase 1: Generative Test Scripting
+Writing tests manually for every combination of data types, operators, and functions is tedious. Instead, we can write a generator script.
+- **Action**: Create `scripts/generate_tests.py`.
+- **Details**: The script will dynamically generate `.vx` test files covering combinatorial edge cases. For instance:
+    - **Binary Operators**: Cross-product of `(+, -, *, /, &&, ||, <, >)` with `(i32, i64, f32, f64, bool)`.
+    - **Tensor Dimensions**: Generate tests validating type-checking rules for matrix multiplication across various static shape combinations (`[N, M] * [M, P] = [N, P]`).
+    - **Formal Verification**: Procedurally generate 50 deep compound math expressions that pass, and 50 that fail.
+- **Output**: This will easily generate 150+ deterministic `.vx` files covering semantic checking bounds.
 
-### AST & Parser Updates
+### Phase 2: Table-Driven / Inline Testing
+Adding 200 separate `.vx` files can clutter the file system and slow down the compiler test runner (`compile_test.rs`).
+- **Action**: Update `tests/compile_test.rs`.
+- **Details**: Allow a single `.vx` file to contain multiple isolated snippets. We can use a custom macro or annotation format (e.g., `// TEST-CASE: name`) inside a single file, and `compile_test.rs` will parse and run them individually.
+- **Output**: This keeps the repository clean while vastly scaling the number of test assertions.
 
-Introduce new AST nodes to represent the AD intrinsics.
+### Phase 3: Fuzz Testing (`cargo fuzz`)
+To ensure industrial-grade robustness, we should use property-based testing and fuzzing to catch compiler panics.
+- **Action**: Introduce `cargo fuzz` (via `libfuzzer-sys`).
+- **Details**: Create a fuzzer target that continuously feeds randomized AST structures and raw strings into the `parser` and `sema` (Type Checker). 
+- **Output**: While this doesn't create static `.vx` files, it provides the coverage equivalent of thousands of tests by finding infinite loops or panics.
 
-#### [MODIFY] \[src/ast.rs\](file:///Users/adityak/go/Vx/src/ast.rs)
+### Phase 4: Coverage-Guided Manual Tests
+- **Action**: Run `cargo tarpaulin` or `cargo llvm-cov` to generate an HTML coverage report of the compiler.
+- **Details**: Identify exactly which `match` arms in `parser.rs` and `sema.rs` have 0% coverage.
+- **Output**: Manually write the remaining ~50 tests to hit those specific unreachable edge cases (e.g., specific `ffi` boundaries, layout mismatches, specific error propagations).
 
-- Add `GradExpr`, `VjpExpr`, and `JvpExpr` structs.
-  ```rust
-  pub struct GradExpr {
-      pub target_fn: String,
-      pub args: Vec<Expr>,
-      pub span: Span,
-  }
-  ```
-- Add these as variants to the `Expr` enum.
+## Open Questions
 
-#### [MODIFY] \[src/parser.rs\](file:///Users/adityak/go/Vx/src/parser.rs)
-
-- Register `grad`, `vjp`, and `jvp` as reserved keywords.
-- Implement parsing logic to parse `grad(my_func, x, y)` and construct the corresponding AST nodes.
-
-______________________________________________________________________
-
-### Semantic Analysis (Differentiability Proofs)
-
-The semantic analyzer must mathematically guarantee that the target function can be differentiated.
-
-#### [MODIFY] \[src/sema.rs\](file:///Users/adityak/go/Vx/src/sema.rs)
-
-- Implement a `check_differentiability(&Function)` pass.
-- **Rules**:
-  - The function must only contain differentiable operations (e.g., arithmetic, `Math::` intrinsics).
-  - The function must return a continuous type (e.g., `Tensor<f32>`, not `i32` or `bool`).
-- **Topology Implications (`spawn on`)**:
-  - If the target function contains a `spawn on(Topology::X)` block, the Semantic Analyzer will tag the AST node to ensure that the backward pass (adjoint computation) is also scheduled on `Topology::X`.
-
-______________________________________________________________________
-
-### Backend / MLIR Lowering
-
-Lower the AD intrinsics to MLIR that interfaces with the autodiff backend.
-
-#### [MODIFY] \[src/codegen.rs\](file:///Users/adityak/go/Vx/src/codegen.rs)
-
-- Add `lower_grad`, `lower_vjp`, and `lower_jvp` methods.
-- **Implementation Strategy**:
-  - The backend will emit an LLVM/MLIR external function declaration for `__enzyme_autodiff`.
-  - `codegen.rs` will emit a `func.call` to the Enzyme intrinsic, passing the MLIR symbol reference to the target function, the inputs, and the gradient result buffers.
-  - Memory spaces (`NPUHBM` vs `HostDRAM`) will be preserved, ensuring that Enzyme calculates the adjoints in the correct hardware address spaces.
-
-## Verification Plan
-
-### Automated Tests
-
-- Create `tests/backend/pass/autodiff_basic.vx`: Test `grad` on a simple polynomial function.
-- Create `tests/backend/pass/autodiff_vjp.vx`: Test Vector-Jacobian Product on matrix multiplication.
-- Create `tests/frontend/fail/autodiff_discrete.vx`: Verify the semantic analyzer rejects attempts to differentiate functions returning discrete types (`i32`).
-
-### Manual Verification
-
-- Execute `cargo test` and verify that the generated LLVM IR correctly invokes Enzyme and passes all JIT execution tests.
+> [!QUESTION]
+> 1. Are you okay with introducing a python script to autogenerate test files in `tests/frontend/` and `tests/backend/`?
+> 2. Do you want me to start with the **Generative Script** to immediately crank out 100+ tests for type coercion, formal verification, and autodiff, or do you want to start by gathering **Code Coverage** data to see what we are currently missing?

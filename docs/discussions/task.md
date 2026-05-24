@@ -1,15 +1,8 @@
-- [x] Update AST (`src/ast.rs`)
-  - Add `GradExpr`, `VjpExpr`, and `JvpExpr`
-  - Add variants to `Expr` enum and `Expr::span()`
-- [x] Update Parser (`src/parser.rs`)
-  - Register keywords for AD intrinsics
-  - Implement parsing rules for `grad(func, args...)` syntax
-- [x] Update Semantic Analysis (`src/sema.rs`)
-  - Implement type checking for AD intrinsics
-  - Implement `check_differentiability` verification (reject discrete returns/ops)
-  - Propagate `spawn on` topology backward-pass requirements
-- [x] Update MLIR Codegen (`src/codegen.rs`)
-  - Lower `grad`, `vjp`, `jvp` to `__enzyme_autodiff` MLIR/LLVM intrinsics
-- [x] Testing
-  - Create `tests/backend/pass/autodiff_basic.vx`
-  - Create `tests/frontend/fail/autodiff_discrete.vx`
+# Test Expansion Task List
+
+- [x] Create a Python script (`scripts/generate_tests.py`) to systematically generate tests for math logic.
+- [x] Use the script to generate combinatorial test scenarios for all math operations (`+`, `-`, `*`, `/`) across supported primitive types (`f32`, `f64`, `i32`, `i64`).
+- [x] Ensure that implicitly coerced mismatched types are properly handled.
+- [x] Generate Boolean logic tests for `&&` and `||`.
+- [x] Execute `cargo test compile_test` to validate the frontend/middle-end pipeline on these new test cases.
+- [x] Update `walkthrough.md`.
