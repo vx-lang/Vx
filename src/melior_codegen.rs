@@ -22,6 +22,23 @@ use melior::{
 
 use crate::ast::*;
 
+pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<(), String> {
+    let pass_manager = melior::pass::PassManager::new(context);
+
+    // Register all passes first
+    melior::utility::register_all_passes();
+
+    // Use the parse_pass_pipeline utility to configure our exact pipeline
+    let pipeline = "builtin.module(lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)";
+    melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), pipeline)
+        .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
+
+    pass_manager
+        .run(module)
+        .map_err(|e| format!("Failed to run passes: {}", e))?;
+    Ok(())
+}
+
 pub struct MeliorGenerator<'c> {
     context: &'c Context,
     module: Module<'c>,
@@ -884,7 +901,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
 
         let mut struct_name_opt = None;
         if let Some(start_idx) = base_ty_str.find('\"') {
-            if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
+            if let Some(end_idx) = base_ty_str[start_idx + 1..].find('"') {
                 struct_name_opt =
                     Some(base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string());
             }
@@ -1277,8 +1294,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 let base_ty_str = base_ty.to_string();
 
                 let mut struct_name_opt = None;
-                if let Some(start_idx) = base_ty_str.find('\"') {
-                    if let Some(end_idx) = base_ty_str[start_idx + 1..].find('\"') {
+                if let Some(start_idx) = base_ty_str.find('"') {
+                    if let Some(end_idx) = base_ty_str[start_idx + 1..].find('"') {
                         struct_name_opt =
                             Some(base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string());
                     }
