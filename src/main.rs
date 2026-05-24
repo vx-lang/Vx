@@ -100,9 +100,21 @@ fn main() {
                     }
 
                     if checker.errors.is_empty() {
-                        let monomorphized_ast = ast;
+                        let mut monomorphized_ast = ast;
+                        let mut orig_functions = monomorphized_ast.functions;
+                        orig_functions.retain(|f| f.generics.is_empty());
+
+                        let mut new_functions: Vec<_> = checker
+                            .monomorphized_functions
+                            .into_iter()
+                            .map(|(f, _)| f)
+                            .collect();
+                        new_functions.extend(orig_functions);
+                        monomorphized_ast.functions = new_functions;
+
                         let mut module_asts = std::collections::HashMap::new();
-                        for p in program_arr {
+                        for mut p in program_arr {
+                            p.functions.retain(|f| f.generics.is_empty());
                             module_asts.insert(p.module_path.clone(), p);
                         }
 
