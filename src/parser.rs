@@ -306,7 +306,7 @@ impl<'a> Parser<'a> {
                 "u32" => Ok(Type::Scalar(ElementType::U32)),
                 "u64" => Ok(Type::Scalar(ElementType::U64)),
                 "u128" => Ok(Type::Scalar(ElementType::U128)),
-                "Bool" => Ok(Type::Scalar(ElementType::Bool)),
+                "bool" | "Bool" => Ok(Type::Scalar(ElementType::Bool)),
                 _ => {
                     // Check for GenericInstance like Config<f32>
                     if self.check(&TokenType::LeftAngle) {

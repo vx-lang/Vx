@@ -32,7 +32,7 @@ pub struct GlobalAstEnv<'a> {
     pub enums: HashMap<String, &'a Vec<String>>,
     pub traits: HashMap<String, &'a TraitDecl>,
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
-    pub functions: HashMap<String, (Type, bool)>,
+    pub functions: HashMap<String, (Type, bool, Vec<Type>)>,
     pub ast_functions: HashMap<String, &'a Function>,
     pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
 }
@@ -67,8 +67,11 @@ impl<'a> GlobalAstEnv<'a> {
                 env.impls.entry(trait_name).or_default().push(i);
             }
             for ext in &module.externs {
-                env.functions
-                    .insert(ext.name.clone(), (ext.return_type.clone(), !ext.is_safe));
+                let param_types: Vec<Type> = ext.params.iter().map(|(_, t)| t.clone()).collect();
+                env.functions.insert(
+                    ext.name.clone(),
+                    (ext.return_type.clone(), !ext.is_safe, param_types),
+                );
             }
             for func in &module.functions {
                 if !func.generics.is_empty() {
@@ -76,9 +79,15 @@ impl<'a> GlobalAstEnv<'a> {
                     env.generic_functions
                         .insert(func.name.clone(), (func, module_hash));
                 } else {
+                    let param_types: Vec<Type> =
+                        func.params.iter().map(|(_, t)| t.clone()).collect();
                     env.functions.insert(
                         func.name.clone(),
-                        (func.return_type.clone(), false /* func.is_unsafe */),
+                        (
+                            func.return_type.clone(),
+                            false, /* func.is_unsafe */
+                            param_types,
+                        ),
                     );
                     env.ast_functions.insert(func.name.clone(), func);
                 }
@@ -988,9 +997,29 @@ impl<'a> TypeChecker<'a> {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
-                } else if let Some((ret_ty, is_unsafe)) = self.env.functions.get(&resolved_name) {
+                } else if let Some((ret_ty, is_unsafe, param_types)) =
+                    self.env.functions.get(&resolved_name)
+                {
                     if *is_unsafe && !self.in_unsafe_block {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
+                    }
+                    if args.len() != param_types.len() {
+                        self.errors.push(format!(
+                            "Function '{}' expects {} arguments, got {}",
+                            resolved_name,
+                            param_types.len(),
+                            args.len()
+                        ));
+                    } else {
+                        for (i, param_ty) in param_types.iter().enumerate() {
+                            let arg_ty = &arg_types[i];
+                            if !self.is_assignable(param_ty, arg_ty) {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
+                            }
+                        }
                     }
                     ret_ty.clone()
                 } else if let Some(func) = self
@@ -998,6 +1027,26 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
+                    let param_types: Vec<Type> =
+                        func.0.params.iter().map(|(_, t)| t.clone()).collect();
+                    if args.len() != param_types.len() {
+                        self.errors.push(format!(
+                            "Function '{}' expects {} arguments, got {}",
+                            resolved_name,
+                            param_types.len(),
+                            args.len()
+                        ));
+                    } else {
+                        for (i, param_ty) in param_types.iter().enumerate() {
+                            let arg_ty = &arg_types[i];
+                            if !self.is_assignable(param_ty, arg_ty) {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
+                            }
+                        }
+                    }
                     func.0.return_type.clone()
                 } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(&resolved_name).cloned()
@@ -1611,12 +1660,46 @@ impl<'a> TypeChecker<'a> {
                     *name = resolved_name.clone();
                 }
 
-                if !self.env.structs.contains_key(&resolved_name) {
+                if let Some(struct_decl) = self.env.structs.get(&resolved_name) {
+                    // Check missing fields and type mismatch
+                    for (expected_name, expected_type) in &struct_decl.fields {
+                        let mut found = false;
+                        for (f_name, f_expr) in fields.iter_mut() {
+                            if f_name == expected_name {
+                                found = true;
+                                let f_type = self.check_expr_type(f_expr);
+                                if !self.is_assignable(expected_type, &f_type) {
+                                    self.errors.push(format!(
+                                        "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                        expected_name, expected_type, f_type
+                                    ));
+                                }
+                                break;
+                            }
+                        }
+                        if !found {
+                            self.errors.push(format!(
+                                "Missing field '{}' in initialization of struct '{}'",
+                                expected_name, resolved_name
+                            ));
+                        }
+                    }
+                    // Check extra fields
+                    for (f_name, f_expr) in fields.iter_mut() {
+                        if !struct_decl.fields.iter().any(|(n, _)| n == f_name) {
+                            self.errors.push(format!(
+                                "Struct '{}' has no field '{}'",
+                                resolved_name, f_name
+                            ));
+                            self.check_expr_type(f_expr); // evaluate to find errors
+                        }
+                    }
+                } else {
                     self.errors
                         .push(format!("Unknown struct {}", resolved_name));
-                }
-                for (_, f_expr) in fields {
-                    self.check_expr_type(f_expr);
+                    for (_, f_expr) in fields.iter_mut() {
+                        self.check_expr_type(f_expr);
+                    }
                 }
                 Type::Struct(resolved_name, None)
             }
@@ -1904,11 +1987,30 @@ impl<'a> TypeChecker<'a> {
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Borrow(source_inner, source_mem, source_mut) = source {
-                if target_inner.as_ref() == source_inner.as_ref()
-                    && target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                {
-                    return true;
+                if target_mem == source_mem && (!*target_mut || *source_mut) {
+                    if self.is_assignable(target_inner, source_inner) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Type::Borrow(target_inner, target_mem, target_mut) = target {
+            if let Type::Borrow(source_inner, source_mem, source_mut) = source {
+                if target_mem == source_mem && (!*target_mut || *source_mut) {
+                    if self.is_assignable(target_inner, source_inner) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
+            if let Type::Pointer(source_inner, source_mem, source_mut) = source {
+                if target_mem == source_mem && (!*target_mut || *source_mut) {
+                    if self.is_assignable(target_inner, source_inner) {
+                        return true;
+                    }
                 }
             }
         }

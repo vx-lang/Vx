@@ -1,0 +1,6 @@
+struct MyStruct { a: i32 }
+
+fn main() -> MyStruct {
+    let b: bool = true;
+    return MyStruct { a: b };
+}

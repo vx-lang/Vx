@@ -1,0 +1,5 @@
+struct MyStruct { a: i32, b: f32 }
+
+fn main() -> MyStruct {
+    return MyStruct { a: 1 };
+}
