@@ -708,13 +708,11 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 if let Some(variants) = self.env.enums.get(enum_name) {
-                    if !variants.contains(variant) {
-                        if !silent {
-                            self.errors.push(format!(
-                                "Enum {} does not have variant {}",
-                                enum_name, variant
-                            ));
-                        }
+                    if !variants.contains(variant) && !silent {
+                        self.errors.push(format!(
+                            "Enum {} does not have variant {}",
+                            enum_name, variant
+                        ));
                     }
                 } else {
                     if !silent {
@@ -1987,30 +1985,33 @@ impl<'a> TypeChecker<'a> {
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Borrow(source_inner, source_mem, source_mut) = source {
-                if target_mem == source_mem && (!*target_mut || *source_mut) {
-                    if self.is_assignable(target_inner, source_inner) {
-                        return true;
-                    }
+                if target_mem == source_mem
+                    && (!*target_mut || *source_mut)
+                    && self.is_assignable(target_inner, source_inner)
+                {
+                    return true;
                 }
             }
         }
 
         if let Type::Borrow(target_inner, target_mem, target_mut) = target {
             if let Type::Borrow(source_inner, source_mem, source_mut) = source {
-                if target_mem == source_mem && (!*target_mut || *source_mut) {
-                    if self.is_assignable(target_inner, source_inner) {
-                        return true;
-                    }
+                if target_mem == source_mem
+                    && (!*target_mut || *source_mut)
+                    && self.is_assignable(target_inner, source_inner)
+                {
+                    return true;
                 }
             }
         }
 
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Pointer(source_inner, source_mem, source_mut) = source {
-                if target_mem == source_mem && (!*target_mut || *source_mut) {
-                    if self.is_assignable(target_inner, source_inner) {
-                        return true;
-                    }
+                if target_mem == source_mem
+                    && (!*target_mut || *source_mut)
+                    && self.is_assignable(target_inner, source_inner)
+                {
+                    return true;
                 }
             }
         }

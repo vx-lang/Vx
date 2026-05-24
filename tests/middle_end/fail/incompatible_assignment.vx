@@ -1,5 +1,5 @@
 fn main() -> i32 {
-    let mut a: bool = true;
-    a = 2.0;
-    return 1;
+  let mut a: bool = true;
+  a = 2.0;
+  return 1;
 }

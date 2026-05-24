@@ -279,6 +279,99 @@ fn test_backend() {
 }
 
 #[test]
+fn test_backend_autodiff() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let dir = Path::new("tests/backend/autodiff");
+    if dir.exists() {
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                println!("Running test_backend_autodiff on {:?}", path);
+                run_backend_autodiff_test(&path);
+            }
+        });
+    }
+}
+
+// Backend Autodiff Runner
+fn run_backend_autodiff_test(path: &Path) {
+    let source = fs::read_to_string(path).expect("Failed to read test file");
+
+    let expect_lines: Vec<String> = source
+        .lines()
+        .filter(|line| line.trim().starts_with("// EXPECT:"))
+        .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
+        .collect();
+
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
+        Ok(p) => p,
+        Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
+    };
+
+    let ast_idx = program_arr
+        .iter()
+        .position(|p| p.module_path == path.to_str().unwrap())
+        .unwrap();
+    let mut program = program_arr.remove(ast_idx);
+
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
+    if !checker.errors.is_empty() {
+        panic!(
+            "Semantic check failed on '{}':\n{:?}",
+            path.display(),
+            checker.errors
+        );
+    }
+    let monomorphized_program = program;
+    let mut module_asts = std::collections::HashMap::new();
+    for p in program_arr {
+        module_asts.insert(p.module_path.clone(), p);
+    }
+
+    let context = melior::Context::new();
+    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
+
+    if source.contains("// NO_EXEC") {
+        for expect in expect_lines {
+            assert!(
+                mlir_str.contains(&expect),
+                "MLIR Output mismatch on {:?}.\nExpected to find: `{}`\nActual MLIR:\n{}",
+                path,
+                expect,
+                mlir_str
+            );
+        }
+        return;
+    }
+
+    let out = execute_mlir(&mlir_str).expect("JIT execution failed");
+
+    for expect in expect_lines {
+        assert!(
+            mlir_str.contains(&expect) || out.contains(&expect),
+            "Output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}\nMLIR:\n{}",
+            path,
+            expect,
+            out,
+            mlir_str
+        );
+    }
+}
+
+#[test]
 fn test_backend_fail() {
     if !cfg!(target_os = "macos") {
         return;

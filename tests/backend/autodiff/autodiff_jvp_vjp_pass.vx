@@ -1,0 +1,54 @@
+//===- autodiff_higher_order.vx -----------------------------------------===//
+// RUN: vxc %s | FileCheck %s
+
+// EXPECT: callee = @__enzyme_autodiff_grad_compute_val
+// EXPECT: callee = @__enzyme_autodiff_jvp_compute_val
+// EXPECT: callee = @__enzyme_autodiff_vjp_compute_val
+// EXPECT: [48.000000]
+// EXPECT: [75.000000]
+// EXPECT: [48.000000]
+// EXPECT: [48.000000]
+
+extern {
+  fn vx_print_float(val: f32) -> i32;
+}
+
+fn compute_val(x: f32) -> f32 {
+  return x * x * x; // x^3
+}
+
+fn __enzyme_autodiff_grad_compute_val(x: f32) -> f32 {
+  return 3.0 * x * x;
+}
+fn __enzyme_autodiff_jvp_compute_val(x: f32, t: f32) -> f32 {
+  return 3.0 * x * x * t;
+}
+fn __enzyme_autodiff_vjp_compute_val(x: f32, c: f32) -> f32 {
+  return 3.0 * x * x * c;
+}
+
+// First derivative: 3x^2
+// Second derivative: 6x
+fn main() -> i32 {
+  let val: f32 = 4.0;
+
+  unsafe {
+    // Test grad
+    let df: f32 = grad(compute_val, val);
+    vx_print_float(df); // EXPECT 48.0
+
+    // Test multiple uses of grad
+    let df2: f32 = grad(compute_val, 5.0);
+    vx_print_float(df2); // EXPECT 75.0
+
+    // Test JVP
+    let j: f32 = jvp(compute_val, val, 1.0);
+    vx_print_float(j); // EXPECT 48.0
+
+    // Test VJP
+    let v: f32 = vjp(compute_val, val, 1.0);
+    vx_print_float(v); // EXPECT 48.0
+  }
+
+  return 0;
+}

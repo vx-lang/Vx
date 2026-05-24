@@ -29,6 +29,7 @@ pub struct MeliorGenerator<'c> {
     structs: HashMap<String, StructDecl>,
     enums: HashMap<String, Vec<String>>,
     functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
+    enzyme_decls: std::collections::HashSet<String>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -47,6 +48,7 @@ impl<'c> MeliorGenerator<'c> {
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
+            enzyme_decls: std::collections::HashSet::new(),
         }
     }
 
@@ -107,6 +109,7 @@ impl<'c> MeliorGenerator<'c> {
             let name_attr = melior::ir::attribute::StringAttribute::new(self.context, name);
             let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
+            let region = melior::ir::Region::new();
             let func_op = melior::ir::operation::OperationBuilder::new(
                 "func.func",
                 melior::ir::Location::unknown(self.context),
@@ -125,6 +128,7 @@ impl<'c> MeliorGenerator<'c> {
                     melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
                 ),
             ])
+            .add_regions([region])
             .build()
             .unwrap();
 
@@ -236,6 +240,9 @@ impl<'c> MeliorGenerator<'c> {
             Expr::If(e) => e.lower(self, block),
             Expr::Number(e) => e.lower(self, block),
             Expr::UnsafeBlock(e) => e.lower(self, block),
+            Expr::Grad(e) => e.lower(self, block),
+            Expr::Vjp(e) => e.lower(self, block),
+            Expr::Jvp(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -1505,5 +1512,183 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         .build()
         .unwrap();
         block.append_operation(for_op);
+    }
+}
+
+fn emit_enzyme_decl<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    base_name: &str,
+    target_fn: &str,
+    arg_tys: &[Type<'c>],
+    ret_ty: Type<'c>,
+) -> String {
+    let enzyme_name = format!("__enzyme_autodiff_{}_{}", base_name, target_fn);
+    if !gen.functions.contains_key(&enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
+        let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
+        let name_attr = melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name);
+        let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
+
+        let region = melior::ir::Region::new();
+        let func_op = melior::ir::operation::OperationBuilder::new(
+            "func.func",
+            Location::unknown(gen.context),
+        )
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(gen.context, "sym_name"),
+                name_attr.into(),
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "function_type"),
+                type_attr.into(),
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "sym_visibility"),
+                melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()
+        .unwrap();
+
+        gen.module.body().append_operation(func_op);
+    }
+    enzyme_name
+}
+
+impl<'c> LowerToMelior<'c> for GradExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let GradExpr {
+            target_fn,
+            args,
+            span: _,
+        } = self;
+        let (ret_ty, arg_types) = gen
+            .functions
+            .get(target_fn)
+            .cloned()
+            .expect("Function not found");
+        let mut arg_vals = Vec::new();
+        for arg in args {
+            let (v, _) = gen.generate_expr(arg, block);
+            arg_vals.push(v);
+        }
+
+        let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &arg_types, ret_ty);
+
+        let name_attr =
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = melior::ir::operation::OperationBuilder::new(
+            "func.call",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&arg_vals)
+        .add_results(&[ret_ty])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "callee"),
+            name_attr.into(),
+        )])
+        .build()
+        .unwrap();
+
+        let call_ref = block.append_operation(call_op);
+        (call_ref.result(0).unwrap().into(), ret_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for VjpExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let VjpExpr {
+            target_fn,
+            args,
+            cotangent,
+            span: _,
+        } = self;
+        let (ret_ty, orig_arg_types) = gen
+            .functions
+            .get(target_fn)
+            .cloned()
+            .expect("Function not found");
+
+        let mut arg_vals = Vec::new();
+        let mut arg_tys = orig_arg_types.clone();
+        for arg in args {
+            let (v, _) = gen.generate_expr(arg, block);
+            arg_vals.push(v);
+        }
+
+        let (c_val, c_ty) = gen.generate_expr(cotangent, block);
+        arg_vals.push(c_val);
+        arg_tys.push(c_ty);
+
+        let enzyme_name = emit_enzyme_decl(gen, "vjp", target_fn, &arg_tys, ret_ty);
+
+        let name_attr =
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = melior::ir::operation::OperationBuilder::new(
+            "func.call",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&arg_vals)
+        .add_results(&[ret_ty])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "callee"),
+            name_attr.into(),
+        )])
+        .build()
+        .unwrap();
+
+        let call_ref = block.append_operation(call_op);
+        (call_ref.result(0).unwrap().into(), ret_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for JvpExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let JvpExpr {
+            target_fn,
+            args,
+            tangent,
+            span: _,
+        } = self;
+        let (ret_ty, orig_arg_types) = gen
+            .functions
+            .get(target_fn)
+            .cloned()
+            .expect("Function not found");
+
+        let mut arg_vals = Vec::new();
+        let mut arg_tys = orig_arg_types.clone();
+        for arg in args {
+            let (v, _) = gen.generate_expr(arg, block);
+            arg_vals.push(v);
+        }
+
+        let (t_val, t_ty) = gen.generate_expr(tangent, block);
+        arg_vals.push(t_val);
+        arg_tys.push(t_ty);
+
+        let enzyme_name = emit_enzyme_decl(gen, "jvp", target_fn, &arg_tys, ret_ty);
+
+        let name_attr =
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = melior::ir::operation::OperationBuilder::new(
+            "func.call",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&arg_vals)
+        .add_results(&[ret_ty])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "callee"),
+            name_attr.into(),
+        )])
+        .build()
+        .unwrap();
+
+        let call_ref = block.append_operation(call_op);
+        (call_ref.result(0).unwrap().into(), ret_ty)
     }
 }

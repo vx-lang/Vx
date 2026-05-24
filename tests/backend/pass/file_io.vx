@@ -20,13 +20,15 @@ fn main() -> i32 {
     let path_buf: *mut i8 = vx_get_temp_file("test_output.txt");
 
     let f: *mut i8 = fopen(path_buf, "w");
-    fputs("Hello, File I/O from Vx!\n", f);
+    fputs("Hello, File I/O from Vx!
+", f);
     fclose(f);
     remove(path_buf);
 
     vx_free_temp_file(path_buf);
 
-    printf("Done: %d\n", 0);
+    printf("Done: %d
+", 0);
   }
   return 0;
 }

@@ -1,5 +1,5 @@
 fn main() -> i32 {
-    let a: i32 = 1;
-    let b: bool = true;
-    return a + b;
+  let a: i32 = 1;
+  let b: bool = true;
+  return a + b;
 }

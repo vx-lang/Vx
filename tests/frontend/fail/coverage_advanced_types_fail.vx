@@ -2,11 +2,11 @@
 // RUN: vxc %s 2>&1 | FileCheck %s
 
 enum MyEnum {
-    VariantA,
+  VariantA,
 }
 
 fn test_missing_variant() -> MyEnum {
-    // EXPECT: Enum MyEnum does not have variant VariantB
-    let e: MyEnum = MyEnum::VariantB;
-    return e;
+  // EXPECT: Enum MyEnum does not have variant VariantB
+  let e: MyEnum = MyEnum::VariantB;
+  return e;
 }
