@@ -286,7 +286,11 @@ impl<'a> TypeChecker<'a> {
         let new_params = generic_func
             .params
             .iter()
-            .map(|(n, t)| (n.clone(), t.substitute(mapping)))
+            .map(|(n, t)| {
+                let substituted = t.substitute(mapping);
+                println!("Substituting param {}: {:?} -> {:?}", n, t, substituted);
+                (n.clone(), substituted)
+            })
             .collect();
         let new_ret = generic_func.return_type.substitute(mapping);
         let new_body = generic_func
@@ -1110,7 +1114,12 @@ impl<'a> TypeChecker<'a> {
                         // Rewrite AST name
                         *name = inst_name.clone();
 
-                        if !self.env.functions.contains_key(&inst_name) {
+                        if !self.env.functions.contains_key(&inst_name)
+                            && !self
+                                .monomorphized_functions
+                                .iter()
+                                .any(|(f, _)| f.name == inst_name)
+                        {
                             // self.env is immutable, monomorphization tracks functions internally
                             self.check_function(&mut inst_func);
                             self.monomorphized_functions.push((inst_func, origin_hash));
@@ -1407,7 +1416,12 @@ impl<'a> TypeChecker<'a> {
                     // Register the method if it doesn't exist
                     if !method_func.generics.is_empty() {
                         /* self.env.generic_functions.insert is mock */
-                    } else if !self.env.functions.contains_key(&mangled_name) {
+                    } else if !self.env.functions.contains_key(&mangled_name)
+                        && !self
+                            .monomorphized_functions
+                            .iter()
+                            .any(|(f, _)| f.name == mangled_name)
+                    {
                         // Since it's not generic, we must type check it once!
                         let mut func_to_check = method_func.clone();
                         self.check_function(&mut func_to_check);

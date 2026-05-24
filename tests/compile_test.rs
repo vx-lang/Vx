@@ -171,9 +171,34 @@ fn run_backend_test(path: &Path) {
             checker.errors
         );
     }
-    let monomorphized_program = program;
+    let mut monomorphized_program = program;
+    let mut orig_functions = monomorphized_program.functions;
+    orig_functions.retain(|f| f.generics.is_empty());
+
+    let mut new_functions: Vec<_> = checker
+        .monomorphized_functions
+        .into_iter()
+        .map(|(f, _)| f)
+        .collect();
+    new_functions.extend(orig_functions);
+    monomorphized_program.functions = new_functions;
     let mut module_asts = std::collections::HashMap::new();
-    for p in program_arr {
+    for mut p in program_arr {
+        let before = p.functions.len();
+        p.functions.retain(|f| f.generics.is_empty());
+        let after = p.functions.len();
+        println!(
+            "Module {}: retained {} out of {} functions",
+            p.module_path, after, before
+        );
+        for f in &p.functions {
+            if f.name == "expect_eq" {
+                println!(
+                    "WARNING: expect_eq was retained! Generics: {:?}",
+                    f.generics
+                );
+            }
+        }
         module_asts.insert(p.module_path.clone(), p);
     }
 
@@ -334,9 +359,21 @@ fn run_backend_autodiff_test(path: &Path) {
             checker.errors
         );
     }
-    let monomorphized_program = program;
+    let mut monomorphized_program = program;
+    let mut orig_functions = monomorphized_program.functions;
+    orig_functions.retain(|f| f.generics.is_empty());
+
+    let mut new_functions: Vec<_> = checker
+        .monomorphized_functions
+        .into_iter()
+        .map(|(f, _)| f)
+        .collect();
+    new_functions.extend(orig_functions);
+    monomorphized_program.functions = new_functions;
+
     let mut module_asts = std::collections::HashMap::new();
-    for p in program_arr {
+    for mut p in program_arr {
+        p.functions.retain(|f| f.generics.is_empty());
         module_asts.insert(p.module_path.clone(), p);
     }
 

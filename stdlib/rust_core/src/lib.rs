@@ -16,6 +16,7 @@
 
 pub mod collections;
 pub mod ffi;
+pub mod googletest;
 pub mod io;
 pub mod math;
 pub mod net;

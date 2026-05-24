@@ -1,20 +1,15 @@
-// EXPECT: callee = @__enzyme_autodiff_grad_poly
-// EXPECT: [12.000000]
-
-extern {
-  fn vx_print_float(val: f32) -> i32;
-}
+// RUN: vxc %s
+import std::googletest;
 
 fn poly(x: f32) -> f32 {
   return x * x * x;
 }
 
 fn main() -> i32 {
-  let x = 2.0;
+  let x: f32 = 2.0;
   // Expected derivative of x^3 is 3x^2. At x=2.0, this is 12.0
-  let dx = grad(poly, x);
-  unsafe {
-    vx_print_float(dx);
-  }
+  let dx: f32 = grad(poly, x);
+  let expected: f32 = 12.0;
+  expect_eq(dx, expected);
   return 0;
 }

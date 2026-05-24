@@ -72,6 +72,17 @@ impl<'c> MeliorGenerator<'c> {
             self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
         }
 
+        for module_prog in modules.values() {
+            for ext in &module_prog.externs {
+                let ret_ty = self.lower_type(&ext.return_type);
+                let mut arg_tys = Vec::new();
+                for (_, ty) in &ext.params {
+                    arg_tys.push(self.lower_type(ty));
+                }
+                self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
+            }
+        }
+
         let mut operations = Vec::new();
 
         // Emit module functions
@@ -98,7 +109,13 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         let body = self.module.body();
-        for ext in &program.externs {
+
+        let mut all_externs = program.externs.clone();
+        for module_prog in modules.values() {
+            all_externs.extend(module_prog.externs.clone());
+        }
+
+        for ext in &all_externs {
             let name = &ext.name;
             let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
             // FunctionType::new takes arg_tys and ret_tys
@@ -154,7 +171,17 @@ impl<'c> MeliorGenerator<'c> {
 
         let mut arg_tys = Vec::new();
         for (_, ty) in &func.params {
-            arg_tys.push(self.lower_type(ty));
+            let lowered =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.lower_type(ty)));
+            match lowered {
+                Ok(t) => arg_tys.push(t),
+                Err(_e) => {
+                    panic!(
+                        "Failed to lower type for function parameter in {}: {:?}",
+                        func.name, ty
+                    );
+                }
+            }
         }
 
         let func_type = melior::ir::r#type::FunctionType::new(self.context, &arg_tys, &[ret_ty]);
@@ -351,7 +378,10 @@ impl<'c> MeliorGenerator<'c> {
                 }
             }
             crate::ast::Type::Generic(_, _) | crate::ast::Type::GenericInstance(_, _) => {
-                panic!("Generic types should have been monomorphized before codegen!");
+                panic!(
+                    "Generic types should have been monomorphized before codegen! Got type: {:?}",
+                    ty
+                );
             }
             crate::ast::Type::Simd(el_ty, n) => {
                 let ty_str = match el_ty {
