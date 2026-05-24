@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// The `extern` block here maps directly to the C-ABI FFI functions
+// exposed by `libvx_std_core.dylib` (via `rt.rs` and `math.rs`).
+// This allows Vx to hook into native mathematical operations at the LLVM level.
 extern {
   fn vx_math_sin_f32(x: f32) -> f32;
   fn vx_math_cos_f32(x: f32) -> f32;

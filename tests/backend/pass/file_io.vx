@@ -12,7 +12,7 @@ extern {
   fn printf(format: *const i8, val: i32) -> i32;
   fn remove(filename: *const i8) -> i32;
   fn vx_get_temp_file(filename: *const i8) -> *mut i8;
-  fn vx_free_temp_file(ptr: *mut i8);
+  fn vx_free_temp_file(ptr: *mut i8) -> i32;
 }
 
 fn main() -> i32 {

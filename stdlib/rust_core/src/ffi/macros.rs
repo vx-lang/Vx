@@ -414,10 +414,11 @@ macro_rules! instantiate_file_ffi {
         }
 
         #[no_mangle]
-        pub extern "C" fn vx_free_temp_file(ptr: *mut std::ffi::c_char) {
+        pub extern "C" fn vx_free_temp_file(ptr: *mut std::ffi::c_char) -> i32 {
             if !ptr.is_null() {
                 let _ = unsafe { std::ffi::CString::from_raw(ptr) };
             }
+            0
         }
 
         #[no_mangle]
