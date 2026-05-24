@@ -11,6 +11,12 @@
 // matrix multiplication), verifying memory topology constraints, and constructing
 // the global AST environment for subsequent lowering phases.
 //
+// DESIGN NOTE: The `silent` parameter (used in `check_expr_type_flag` and others)
+// prevents duplicate compiler errors. Because AST nodes are often traversed multiple
+// times (once for initial type validation, and again later when lowering to HIR),
+// the `silent` flag is set to `true` on subsequent passes to suppress redundant
+// error emissions.
+//
 //===----------------------------------------------------------------------===//
 use crate::ast::*;
 use std::collections::HashMap;
