@@ -1,0 +1,26 @@
+//===- formal_verification_transitive_pass.vx ---------------------------------===//
+// RUN: vxc %s | FileCheck %s
+
+fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
+  assert(N == M, "Must be square");
+  return Verified(val);
+}
+
+fn outer<A, B, C>(t: Tensor<f32, [A, C]>) -> Verified<Tensor<f32, [A, C]>> {
+  // If we know A == B and B == C, the type checker should prove A == C
+  assert(A == B, "A equals B");
+  assert(B == C, "B equals C");
+  return wrap(t);
+}
+
+fn main() -> i32 {
+  let n: i32 = 10;
+  let m: i32 = 10;
+  let o: i32 = 10;
+  assert(n == m, "Proving A == B");
+  assert(m == o, "Proving B == C");
+  let t: Tensor<f32, [n, o]> = Tensor_f32(n, o);
+  let v: Verified<Tensor<f32, [n, o]>> = outer(t);
+  // NO_EXEC
+  return 0;
+}

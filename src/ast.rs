@@ -620,6 +620,11 @@ impl Expr {
                             ty: None,
                             span: id.span.clone(),
                         });
+                    } else {
+                        return Expr::Identifier(crate::ast::IdentifierExpr {
+                            name: val_str.clone(),
+                            span: id.span.clone(),
+                        });
                     }
                 }
                 self.clone()

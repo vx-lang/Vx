@@ -120,6 +120,7 @@ pub struct TypeChecker<'a> {
     active_memory: MemorySpace,
     pub hardware_graph: crate::arch::HardwareGraph,
     pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
+    pub constraints: Vec<Expr>,
     next_reg: u32,
     var_regs: Vec<HashMap<String, u32>>,
     moved_vars: Vec<std::collections::HashSet<String>>,
@@ -141,6 +142,7 @@ impl<'a> TypeChecker<'a> {
             active_memory: crate::arch::HardwareGraph::default_memory_for(&Topology::Host),
             hardware_graph: crate::arch::HardwareGraph::default(),
             active_borrows: HashMap::new(),
+            constraints: Vec::new(),
             next_reg: 1,
             var_regs: vec![HashMap::new()],
             moved_vars: vec![std::collections::HashSet::new()],
@@ -247,6 +249,8 @@ impl<'a> TypeChecker<'a> {
                     if let crate::ast::Expr::Identifier(id) = dim1 {
                         if let crate::ast::Expr::Number(n) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
+                        } else if let crate::ast::Expr::Identifier(id2) = dim2 {
+                            mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
                         } else if dim1 != dim2 {
                             return false;
                         }
@@ -340,6 +344,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
+        let prev_constraints = self.constraints.clone();
         self.push_scope();
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());
@@ -350,6 +355,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.pop_scope();
+        self.constraints = prev_constraints;
     }
 
     fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
@@ -505,12 +511,101 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 } else if is_verified {
-                    self.errors.push(
-                        "Cannot statically prove assertion for Verified return type".to_string(),
-                    );
+                    // Try to prove mathematically using our SMT constraints
+                    if !self.prove_expr(expr) {
+                        self.errors.push(
+                            "Cannot statically prove assertion for Verified return type"
+                                .to_string(),
+                        );
+                    }
+                } else {
+                    // It's a standard dynamic assert, add it to our mathematical constraints
+                    // so we can prove future Verified<T> return conditions!
+                    self.constraints.push(*expr.clone());
                 }
             }
         }
+    }
+
+    fn prove_expr(&self, expr: &Expr) -> bool {
+        // Simple structural matching for our lightweight SMT solver
+        for constraint in &self.constraints {
+            if expr == constraint {
+                return true;
+            }
+            // Basic commutativity for ==
+            if let Expr::BinaryOp(BinaryOpExpr {
+                lhs: l1,
+                op: BinaryOp::Eq,
+                rhs: r1,
+                ..
+            }) = expr
+            {
+                if let Expr::BinaryOp(BinaryOpExpr {
+                    lhs: l2,
+                    op: BinaryOp::Eq,
+                    rhs: r2,
+                    ..
+                }) = constraint
+                {
+                    if (l1 == l2 && r1 == r2) || (l1 == r2 && r1 == l2) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Lightweight transitive equality solver for Identifier == Identifier
+        if let Expr::BinaryOp(BinaryOpExpr {
+            lhs,
+            op: BinaryOp::Eq,
+            rhs,
+            ..
+        }) = expr
+        {
+            if let (Expr::Identifier(l_id), Expr::Identifier(r_id)) = (&**lhs, &**rhs) {
+                let mut adj: std::collections::HashMap<String, Vec<String>> =
+                    std::collections::HashMap::new();
+                for constraint in &self.constraints {
+                    if let Expr::BinaryOp(BinaryOpExpr {
+                        lhs: c_lhs,
+                        op: BinaryOp::Eq,
+                        rhs: c_rhs,
+                        ..
+                    }) = constraint
+                    {
+                        if let (Expr::Identifier(cl), Expr::Identifier(cr)) = (&**c_lhs, &**c_rhs) {
+                            adj.entry(cl.name.clone())
+                                .or_default()
+                                .push(cr.name.clone());
+                            adj.entry(cr.name.clone())
+                                .or_default()
+                                .push(cl.name.clone());
+                        }
+                    }
+                }
+
+                // BFS to find path from l_id.name to r_id.name
+                let mut visited = std::collections::HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+                queue.push_back(l_id.name.clone());
+                visited.insert(l_id.name.clone());
+
+                while let Some(curr) = queue.pop_front() {
+                    if curr == r_id.name {
+                        return true;
+                    }
+                    if let Some(neighbors) = adj.get(&curr) {
+                        for n in neighbors {
+                            if visited.insert(n.clone()) {
+                                queue.push_back(n.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {

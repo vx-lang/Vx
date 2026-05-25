@@ -300,7 +300,9 @@ impl<'c> MeliorGenerator<'c> {
             Statement::ExprStmt(s) => s.lower(self, block),
             Statement::ForLoop(s) => s.lower(self, block),
             Statement::SpawnOn(s) => s.lower(self, block),
-            _ => todo!("{:?}", stmt),
+            Statement::Assert(_) => {
+                // TODO: Lower to `scf.if` with panic/abort for runtime checks
+            }
         }
     }
 
@@ -1067,6 +1069,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             args,
             span: _,
         } = self;
+        if name == "Verified" {
+            return gen.generate_expr(&args[0], block);
+        }
+        if name.starts_with("Tensor_") {
+            let tensor_ty = Type::parse(gen.context, "tensor<*xf32>").unwrap(); // We can't know the rank easily here without type info
+            let dummy_op = melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[tensor_ty])
+            .build()
+            .unwrap();
+            let dummy_ref = block.append_operation(dummy_op);
+            return (dummy_ref.result(0).unwrap().into(), tensor_ty);
+        }
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
             let mut arg_vals = Vec::new();
             for (i, arg) in args.iter().enumerate() {

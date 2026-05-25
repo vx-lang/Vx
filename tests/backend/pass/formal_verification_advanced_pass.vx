@@ -1,0 +1,70 @@
+//===- formal_verification_advanced_pass.vx ---------------------------------===//
+// RUN: vxc %s | FileCheck %s
+
+fn check_complex_logic<A, B>(val: Tensor<f32, [A, B]>) -> Verified<Tensor<f32, [A, B]>> {
+  assert(A == 10 || B == 20, "Logical OR constraint");
+  assert(A > 0 && B > 0, "Positive bounds");
+  assert(A + B == 30, "Sum constraint");
+  return Verified(val);
+}
+
+fn test_inference<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
+  assert(N == M, "Square constraint");
+  assert(N * 2 == M * 2, "Proved by arithmetic but structural for now");
+  return Verified(val);
+}
+
+fn nested_verified<X, Y>(t: Tensor<f32, [X, Y]>) -> Verified<Tensor<f32, [X, Y]>> {
+  assert(X == Y, "Outer condition");
+  return test_inference(t);
+}
+
+fn compound_math_constraint<K, L>(t: Tensor<f32, [K, L]>) -> Verified<Tensor<f32, [K, L]>> {
+  assert((K * 2) + (L * 3) == 100, "Linear equation constraint");
+  return Verified(t);
+}
+
+fn multi_transitive_bounds<A, D>(t: Tensor<f32, [A, D]>, b: i32, c: i32) -> Verified<Tensor<f32, [A, D]>> {
+  assert(A == b, "A equals b");
+  assert(b == c, "b equals c");
+  assert(c == D, "c equals D");
+  // Check if our BFS solver can find A == D
+  let res: Verified<Tensor<f32, [A, D]>> = test_inference(t);
+  return res;
+}
+
+fn main() -> i32 {
+  // Test 1: Complex logic
+  assert(10 == 10 || 20 == 20, "Dynamic logic");
+  assert(10 > 0 && 20 > 0, "Dynamic bounds");
+  assert(10 + 20 == 30, "Dynamic sum");
+  let t1: Tensor<f32, [10, 20]> = Tensor_f32(10, 20);
+  let v1 = check_complex_logic(t1);
+
+  // Test 2: Inference and Nested
+  assert(16 == 16, "Dynamic square");
+  assert(16 * 2 == 16 * 2, "Dynamic math");
+  let t2: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let v2 = nested_verified(t2);
+
+  // Test 3: Compound Math
+  assert((20 * 2) + (20 * 3) == 100, "Linear eq hold");
+  let t3: Tensor<f32, [20, 20]> = Tensor_f32(20, 20);
+  let v3 = compound_math_constraint(t3);
+
+  // Test 4: Multi transitive bounds
+  let a: i32 = 5;
+  let b: i32 = 5;
+  let c: i32 = 5;
+  let d: i32 = 5;
+  assert(a == b, "a=b");
+  assert(b == c, "b=c");
+  assert(c == d, "c=d");
+  assert(a == d, "Needed for test_inference inner constraint");
+  assert(a * 2 == d * 2, "Needed for test_inference inner constraint");
+  let t4: Tensor<f32, [a, d]> = Tensor_f32(a, d);
+  let v4 = multi_transitive_bounds(t4, b, c);
+
+  // NO_EXEC
+  return 0;
+}
