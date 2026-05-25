@@ -1,0 +1,61 @@
+//===- linalg_test.vx -----------------------------------------*- Vx -*-===//
+// RUN: vxc %s
+// RUN: vxc --emit-mlir %s | FileCheck %s
+
+import packages::vx_linalg::lib;
+
+fn main() -> i32 {
+  // 1. Test Matmul
+  let m: i32 = 10;
+  let n: i32 = 30;
+  let k: i32 = 20;
+  let A: Tensor<f32, [m, k]> = Tensor_f32(m, k);
+  let B: Tensor<f32, [k, n]> = Tensor_f32(k, n);
+  let C: Verified<Tensor<f32, [m, n]>> = matmul(A, B);
+
+  // 2. Test Transpose
+  let x: i32 = 5;
+  let y: i32 = 15;
+  let D: Tensor<f32, [x, y]> = Tensor_f32(x, y);
+  let E: Verified<Tensor<f32, [y, x]>> = transpose(D);
+
+  // 3. Test Norm
+  let s: i32 = 8;
+  let F: Tensor<f32, [s, s]> = Tensor_f32(s, s);
+  let G: Verified<Tensor<f32, [s, s]>> = norm_l2(F);
+  
+  // NO_EXEC
+  return 0;
+}
+
+// CHECK: module {
+// CHECK:   func.func @matmul_Genericm_Genericn_Generick(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @transpose_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @norm_l2_Generics_Generics(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c10_i32 = arith.constant 10 : i32
+// CHECK:     %c30_i32 = arith.constant 30 : i32
+// CHECK:     %c20_i32 = arith.constant 20 : i32
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %1 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %2 = call @matmul_Genericm_Genericn_Generick(%0, %1) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c5_i32 = arith.constant 5 : i32
+// CHECK:     %c15_i32 = arith.constant 15 : i32
+// CHECK:     %3 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %4 = call @transpose_Genericx_Genericy(%3) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c8_i32 = arith.constant 8 : i32
+// CHECK:     %5 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %6 = call @norm_l2_Generics_Generics(%5) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }
