@@ -30,7 +30,7 @@ pub enum Topology {
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum MemorySpace {
     HostDRAM,
     NPUHBM,

@@ -106,6 +106,7 @@ pub struct TypeChecker<'a> {
     in_unsafe_block: bool,
     active_topology: Topology,
     active_memory: MemorySpace,
+    pub hardware_graph: crate::arch::HardwareGraph,
     next_reg: u32,
     var_regs: Vec<HashMap<String, u32>>,
     moved_vars: Vec<std::collections::HashSet<String>>,
@@ -124,7 +125,8 @@ impl<'a> TypeChecker<'a> {
             errors: Vec::new(),
             in_unsafe_block: false,
             active_topology: Topology::Host,
-            active_memory: MemorySpace::HostDRAM,
+            active_memory: crate::arch::HardwareGraph::default_memory_for(&Topology::Host),
+            hardware_graph: crate::arch::HardwareGraph::default(),
             next_reg: 1,
             var_regs: vec![HashMap::new()],
             moved_vars: vec![std::collections::HashSet::new()],
@@ -680,7 +682,7 @@ impl<'a> TypeChecker<'a> {
                         }
 
                         // Enforce Topology Boundaries!
-                        let is_valid = crate::arch::HardwareGraph::is_type_accessible(
+                        let is_valid = self.hardware_graph.is_type_accessible(
                             &self.active_topology,
                             &top,
                             &ty,
@@ -754,7 +756,7 @@ impl<'a> TypeChecker<'a> {
                     _ => MemorySpace::HostDRAM,
                 };
 
-                if !crate::arch::HardwareGraph::can_transfer(&source_mem, target_mem) {
+                if !self.hardware_graph.can_transfer(&source_mem, target_mem) {
                     if !silent {
                         self.errors.push(format!(
                             "Cannot transfer from {:?} to {:?}: no hardware path exists",
