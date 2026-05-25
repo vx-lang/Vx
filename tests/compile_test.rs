@@ -535,7 +535,7 @@ fn test_vx_dialect_registration() {
     // but we can parse a dummy module that requires the `vx` dialect.
     let mlir_source = r#"
         module {
-            "vx.spawn"() : () -> ()
+            "vx.spawn"() <{topology = 100 : i32}> ({}) : () -> ()
         }
     "#;
 

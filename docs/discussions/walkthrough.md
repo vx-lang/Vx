@@ -17,6 +17,7 @@ This document summarizes the changes made to port the `spawn on` blocks and `tra
   - `TransferExpr` parses its interior expression and outputs `vx.transfer`- Handled proper mapping of nested AST constructs to `Location` boundaries.
 
 ### Formalized Topological Memory Graph (v3.0)
+
 - **`HardwareGraph` Restructure**: Transformed the static boolean match logic in `src/arch.rs` into a rigorous stateful `HardwareGraph`.
 - **Graph Edges**: Explicitly added `transfer_edges` for Memory-to-Memory transfers and `visibility_edges` for Topology-to-Memory visibility.
 - **BFS Multi-Hop Pathfinding**: Converted `can_transfer` into a dynamic Breadth-First Search (BFS) pathfinding algorithm, enabling automatic multi-hop transfer validation (e.g. `LocalSRAM <-> HostDRAM` routing via `NPUHBM`).
@@ -29,6 +30,7 @@ This document summarizes the changes made to port the `spawn on` blocks and `tra
 - Automatically updated our `middle_end/pass` checks using the test script: `cargo run update_mlir_test_checks -- tests/middle_end/pass/*.vx tests/middle_end/pass/*.mlr`.
 
 ### Lexical Borrow Checker (v3.0)
+
 - Implemented **Strict Aliasing** rules embedded directly into the Semantic Analyzer (`src/sema.rs`).
 - `TypeChecker` now maintains an `active_borrows` hash map that tracks Lexical Lifetimes of references.
 - Verified Shared XOR Mutable properties:

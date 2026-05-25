@@ -11,6 +11,11 @@
 // matrix multiplication), verifying memory topology constraints, and constructing
 // the global AST environment for subsequent lowering phases.
 //
+// The Semantic Analyzer also includes the Lexical Borrow Checker, which handles local variable
+// lifetimes and Strict Aliasing (Shared XOR Mutable).
+// For a comprehensive overview of the Borrow Checker architecture (and how it interacts with
+// the FastPath in borrow.rs), see: `docs/discussions/borrow_checker_architecture.md`.
+//
 // DESIGN NOTE: The `silent` parameter (used in `check_expr_type_flag` and others)
 // prevents duplicate compiler errors. Because AST nodes are often traversed multiple
 // times (once for initial type validation, and again later when lowering to HIR),
@@ -1462,10 +1467,10 @@ impl<'a> TypeChecker<'a> {
                     // Rewrite AST from MethodCall to FunctionCall
                     let mut call_args = vec![];
                     if let Some(first_param) = method_func.params.first() {
-                        let needs_borrow = match first_param.1 {
-                            Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _) => true,
-                            _ => false,
-                        };
+                        let needs_borrow = matches!(
+                            first_param.1,
+                            Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _)
+                        );
                         if needs_borrow {
                             call_args.push(Expr::Borrow(BorrowExpr {
                                 expr: Box::new((**obj).clone()),
@@ -1653,10 +1658,8 @@ impl<'a> TypeChecker<'a> {
                                 if !silent {
                                     self.errors.push(format!("Cannot borrow '{}' because it is already borrowed as mutable.", name));
                                 }
-                            } else if *is_mut {
-                                if !silent {
-                                    self.errors.push(format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name));
-                                }
+                            } else if *is_mut && !silent {
+                                self.errors.push(format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name));
                             }
                         }
                     }
@@ -2097,7 +2100,7 @@ impl<'a> TypeChecker<'a> {
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
-            if let Type::Borrow(source_inner, source_mem, source_mut, source_region) = source {
+            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
                 if target_mem == source_mem
                     && (!*target_mut || *source_mut)
                     && self.is_assignable(target_inner, source_inner)

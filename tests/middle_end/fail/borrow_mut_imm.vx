@@ -1,6 +1,6 @@
 fn main() -> Tensor<f32> {
-    let mut x: Tensor<f32> = Tensor_f32();
-    let y = &mut x;
-    let z = &x; // Error: cannot borrow as immutable because it is already borrowed as mutable
-    return 0.0;
+  let mut x: Tensor<f32> = Tensor_f32();
+  let y = &mut x;
+  let z = &x; // Error: cannot borrow as immutable because it is already borrowed as mutable
+  return 0.0;
 }

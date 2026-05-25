@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
+// For a comprehensive overview of how this module interacts with the Lexical Borrow Checker
+// in sema.rs, please read: `docs/discussions/borrow_checker_architecture.md`.
+//
 //===----------------------------------------------------------------------===//
 //
 // This file implements the Borrow Checker for the Vx compiler.
@@ -77,7 +80,7 @@ use crate::session::LocalWorkerState;
 /// The Region ID represents the lifetime scope depth.
 /// - `Region 0`: The `'static` lifetime (lives forever).
 /// - `Region N`: An inner block at depth N.
-/// Therefore, a **smaller Region ID lives longer** than a larger Region ID.
+///   Therefore, a **smaller Region ID lives longer** than a larger Region ID.
 ///
 /// **Variance Math:**
 /// - `Invariant (0x0)`: Requires strict equality (`region_a == region_b`).
