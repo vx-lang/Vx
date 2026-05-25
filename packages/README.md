@@ -1,0 +1,15 @@
+# Vx Ecosystem Packages
+
+This directory contains the first-party ecosystem packages for the Vx programming language. 
+
+While the core primitives (like `Tensor`, `Verified`, memory layout intrinsics) live in `stdlib/`, higher-level domain-specific code belongs here. These packages behave as standard third-party libraries, but are maintained natively in-house for the v3.0 release.
+
+## Available Packages
+- **`vx_nn`**: Core neural network layers (Conv2D, Linear, Transformers, Activations).
+- **`vx_optim`**: Common optimizers (Adam, SGD, RMSProp) and learning rate schedulers.
+- **`vx_linalg`**: Advanced matrix decompositions, solvers, and mathematical operations.
+- **`vx_vision`**: Tools for image loading, pre-processing, and augmentation.
+- **`vx_models`**: Fully implemented reference architectures (e.g. ResNet, LLaMA).
+
+## Usage
+Currently, these packages can be imported by providing their include paths to the `vxc` compiler via the `-I` flag. As module resolution evolves, they will be importable directly (e.g. `import vx_nn::layers`).
