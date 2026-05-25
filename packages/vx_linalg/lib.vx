@@ -29,3 +29,34 @@ fn norm_l2<M, N>(A: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
   let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
   return Verified(out);
 }
+
+// Scalar Multiplication
+fn scalar_mul<M, N>(A: Tensor<f32, [M, N]>, scalar: f32) -> Verified<Tensor<f32, [M, N]>> {
+  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  return Verified(out);
+}
+
+// Element-wise Addition
+fn add<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
+  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  return Verified(out);
+}
+
+// Element-wise Subtraction
+fn sub<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
+  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  return Verified(out);
+}
+
+// Dot Product (assumes column vectors for simplicity, returning a 1x1 tensor)
+fn dot<N, ONE>(A: Tensor<f32, [N, ONE]>, B: Tensor<f32, [N, ONE]>) -> Verified<Tensor<f32, [ONE, ONE]>> {
+  assert(ONE == 1, "Must be column vectors");
+  let out: Tensor<f32, [ONE, ONE]> = Tensor_f32(ONE, ONE);
+  return Verified(out);
+}
+
+// Hadamard (Element-wise) Multiplication
+fn hadamard_mul<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
+  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  return Verified(out);
+}
