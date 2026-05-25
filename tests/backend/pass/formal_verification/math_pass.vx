@@ -1,4 +1,4 @@
-//===- formal_verification_math_pass.vx ---------------------------------===//
+//===- math_pass.vx ---------------------------------===//
 // RUN: vxc %s
 
 fn verify_math<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {

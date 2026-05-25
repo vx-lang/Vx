@@ -1,4 +1,4 @@
-//===- formal_verification_cross_boundary_pass.vx ---------------------------------===//
+//===- cross_boundary_pass.vx ---------------------------------===//
 // RUN: vxc %s
 
 fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {

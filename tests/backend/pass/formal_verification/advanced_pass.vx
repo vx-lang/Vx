@@ -1,4 +1,4 @@
-//===- formal_verification_advanced_pass.vx ---------------------------------===//
+//===- advanced_pass.vx ---------------------------------===//
 // RUN: vxc %s
 
 fn check_complex_logic<A, B>(val: Tensor<f32, [A, B]>) -> Verified<Tensor<f32, [A, B]>> {

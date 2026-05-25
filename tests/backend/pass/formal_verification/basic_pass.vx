@@ -1,3 +1,4 @@
+//===- basic_pass.vx ---------------------------------===//
 fn process<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   assert(N == M, "Tensor must be square");
   return Verified(val);
