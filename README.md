@@ -97,6 +97,19 @@ A `.vx` script can be run using the built-in JIT compilation engine:
 cargo run --release --bin vxc -- --run source_file.vx
 ```
 
+### Testing the Compiler
+
+The test suite relies on Apple Silicon AMX (NPU) dispatchers and Enzyme MLIR plugins. To run the tests, you must specify the corresponding `CARGO_HOME`, `RUSTUP_HOME`, and `ENZYME_LIB` paths manually.
+
+```bash
+export CARGO_HOME=$(pwd)/.cargo
+export RUSTUP_HOME=$(pwd)/.rustup
+export ENZYME_LIB="$(pwd)/.cargo/enzyme/LLVMEnzyme-22.dylib"
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+
+cargo test
+```
+
 ### Benchmarking
 
 Vx includes a custom native benchmarking suite that injects high-resolution timing harnesses directly into the Abstract Syntax Tree (AST) to measure true hardware execution time.
