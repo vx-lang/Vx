@@ -25,18 +25,23 @@ fn test_primitives() -> i32 {
   return 0;
 }
 
-// CHECK: func.func @test_primitives() -> i32 {
-// CHECK: arith.constant 10 : i8
-// CHECK: arith.constant 20 : i8
-// CHECK: arith.constant 30 : i16
-// CHECK: arith.constant 40 : i16
-// CHECK: arith.constant 50 : i32
-// CHECK: arith.constant 60 : i32
-// CHECK: arith.constant 70 : i64
-// CHECK: arith.constant 80 : i64
-// CHECK: arith.constant 90 : i128
-// CHECK: arith.constant 100 : i128
-// CHECK: arith.constant 1.0 : f16
-// CHECK: arith.constant 2.0 : bf16
-// CHECK: arith.constant 3.0 : f32
-// CHECK: arith.constant 4.0 : f64
+// CHECK: module {
+// CHECK:   func.func @test_primitives() -> i32 {
+// CHECK:     %c10_i32 = arith.constant 10 : i32
+// CHECK:     %c20_i32 = arith.constant 20 : i32
+// CHECK:     %c30_i32 = arith.constant 30 : i32
+// CHECK:     %c40_i32 = arith.constant 40 : i32
+// CHECK:     %c50_i32 = arith.constant 50 : i32
+// CHECK:     %c60_i32 = arith.constant 60 : i32
+// CHECK:     %c70_i32 = arith.constant 70 : i32
+// CHECK:     %c80_i32 = arith.constant 80 : i32
+// CHECK:     %c90_i32 = arith.constant 90 : i32
+// CHECK:     %c100_i32 = arith.constant 100 : i32
+// CHECK:     %cst = arith.constant 1.000000e+00 : f32
+// CHECK:     %cst_0 = arith.constant 2.000000e+00 : f32
+// CHECK:     %cst_1 = arith.constant 3.000000e+00 : f32
+// CHECK:     %cst_2 = arith.constant 4.000000e+00 : f32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

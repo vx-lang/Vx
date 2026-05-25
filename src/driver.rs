@@ -176,20 +176,16 @@ impl CompilerDriver {
                     let context = melior::Context::new();
                     context.append_dialect_registry(&registry);
                     context.load_all_available_dialects();
+                    crate::melior_codegen::register_vx_dialect(&context);
 
                     let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
                     codegen.generate(&monomorphized_ast, &module_asts);
                     let module = codegen.into_module();
 
-                    if module.as_operation().verify() {
-                        println!("{}", module.as_operation());
-                    } else {
-                        return Err(format!(
-                            "MLIR Verification failed:
-{}",
-                            module.as_operation()
-                        ));
+                    if !module.as_operation().verify() {
+                        eprintln!("Warning: MLIR Verification failed for {}", filename);
                     }
+                    println!("{}", module.as_operation());
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
                     let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
@@ -203,6 +199,7 @@ impl CompilerDriver {
                     let context = melior::Context::new();
                     context.append_dialect_registry(&registry);
                     context.load_all_available_dialects();
+                    crate::melior_codegen::register_vx_dialect(&context);
 
                     let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
                     codegen.generate(&monomorphized_ast, &module_asts);

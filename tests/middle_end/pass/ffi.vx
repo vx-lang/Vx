@@ -18,6 +18,14 @@ fn main() -> Tensor<i32> {
   return 0;
 }
 
-// CHECK: func.func private @malloc(memref<?x?xi32>) -> !llvm.ptr<0>
-// CHECK: = arith.constant 1024 : i32
-// CHECK: func.call @malloc(%v0) : (i32) -> !llvm.ptr<0>
+// CHECK: "builtin.module"() ({
+// CHECK:   "func.func"() <{function_type = (memref<?x?xi32>) -> !llvm.ptr, sym_name = "malloc", sym_visibility = "private"}> ({
+// CHECK:   }) : () -> ()
+// CHECK:   "func.func"() <{function_type = () -> i32, sym_name = "main"}> ({
+// CHECK:     %0 = "arith.constant"() <{value = 1024 : i32}> : () -> i32
+// CHECK:     %1 = "func.call"(%0) <{callee = @malloc}> : (i32) -> !llvm.ptr
+// CHECK:     %2 = "arith.constant"() <{value = 0 : i32}> : () -> i32
+// CHECK:     %3 = "arith.constant"() <{value = 0 : i32}> : () -> i32
+// CHECK:     "func.return"(%3) : (i32) -> ()
+// CHECK:   }) {llvm.emit_c_interface} : () -> ()
+// CHECK: }) : () -> ()

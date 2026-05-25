@@ -27,11 +27,15 @@ extern "C" {
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
 }
 
-pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<bool, String> {
-    // Register the custom `vx` dialect before loading dialects
+pub fn register_vx_dialect(context: &Context) {
     unsafe {
         registerVxDialect(context.to_raw());
     }
+}
+
+pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<bool, String> {
+    // Register the custom `vx` dialect before loading dialects
+    register_vx_dialect(context);
 
     let pass_manager = melior::pass::PassManager::new(context);
 
@@ -636,12 +640,6 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let mut final_ty = lhs_ty;
         let lhs_ty_str = lhs_ty.to_string();
         let rhs_ty_str = rhs_ty.to_string();
-
-        println!(
-            "DEBUG: op={:?}, lhs_ty_str={}, rhs_ty_str={}",
-            op, lhs_ty_str, rhs_ty_str
-        );
-
         if op == &BinaryOp::Mul
             && lhs_ty_str.starts_with("memref<")
             && rhs_ty_str.starts_with("memref<")
@@ -746,6 +744,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 Location::unknown(gen.context),
             )
             .add_operands(&[zero_val, out_val])
+            .add_regions([Region::new()])
             .build()
             .unwrap();
             block.append_operation(linalg_fill);
@@ -756,6 +755,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 Location::unknown(gen.context),
             )
             .add_operands(&[lhs_val, rhs_val, out_val])
+            .add_regions([Region::new()])
             .build()
             .unwrap();
             block.append_operation(matmul_op);

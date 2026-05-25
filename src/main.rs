@@ -17,9 +17,6 @@ use std::process;
 use vxc::driver::{CompilerDriver, DriverOptions};
 
 fn main() {
-    println!("Vx Compiler (vxc)");
-    println!("============================================");
-
     let options = DriverOptions::parse();
     let driver = CompilerDriver::new(options);
 

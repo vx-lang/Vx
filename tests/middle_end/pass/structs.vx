@@ -24,13 +24,16 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: func.func @main() -> i32 {
-// CHECK: = llvm.mlir.undef : !llvm.struct<"Config", (i32, f32)>
-// CHECK: = arith.constant 288 : i32
-// CHECK: = llvm.insertvalue %
-// CHECK: = arith.constant 0.00001 : f32
-// CHECK: = llvm.insertvalue %
-// CHECK: = llvm.extractvalue %
-// CHECK: = llvm.extractvalue %
-// CHECK: return %
+// CHECK: module {
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"Config", (i32, f32)>
+// CHECK:     %c288_i32 = arith.constant 288 : i32
+// CHECK:     %1 = llvm.insertvalue %c288_i32, %0[0] : !llvm.struct<"Config", (i32, f32)> 
+// CHECK:     %cst = arith.constant 9.99999974E-6 : f32
+// CHECK:     %2 = llvm.insertvalue %cst, %1[1] : !llvm.struct<"Config", (i32, f32)> 
+// CHECK:     %3 = llvm.extractvalue %2[0] : !llvm.struct<"Config", (i32, f32)> 
+// CHECK:     %4 = llvm.extractvalue %2[1] : !llvm.struct<"Config", (i32, f32)> 
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
 // CHECK: }

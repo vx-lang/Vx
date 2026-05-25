@@ -28,8 +28,20 @@ fn main() -> Tensor<i32> {
   return res;
 }
 
-// CHECK: func.func @Tensor__F32_dim(%self: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK:   %v0 = arith.constant 2 : i32
-// CHECK:   return %v0 : i32
-// CHECK: }
-// CHECK: func.func @process_TensorF32_(%val: memref<?x?xf32>) -> memref<?x?xi32> {
+// CHECK: "builtin.module"() ({
+// CHECK:   "func.func"() <{function_type = (memref<?x?xf32>) -> memref<?x?xi32>, sym_name = "Tensor__F32_dim"}> ({
+// CHECK:   ^bb0(%arg1: memref<?x?xf32>):
+// CHECK:     %3 = "arith.constant"() <{value = 2 : i32}> : () -> i32
+// CHECK:     "func.return"(%3) : (i32) -> ()
+// CHECK:   }) : () -> ()
+// CHECK:   "func.func"() <{function_type = (memref<?x?xf32>) -> memref<?x?xi32>, sym_name = "process_TensorF32_"}> ({
+// CHECK:   ^bb0(%arg0: memref<?x?xf32>):
+// CHECK:     %2 = "func.call"(%arg0) <{callee = @Tensor__F32_dim}> : (memref<?x?xf32>) -> memref<?x?xi32>
+// CHECK:     "func.return"(%2) : (memref<?x?xi32>) -> ()
+// CHECK:   }) : () -> ()
+// CHECK:   "func.func"() <{function_type = () -> i32, sym_name = "main"}> ({
+// CHECK:     %0 = "arith.constant"() <{value = 1.000000e+00 : f32}> : () -> f32
+// CHECK:     %1 = "func.call"(%0) <{callee = @process_TensorF32_}> : (f32) -> memref<?x?xi32>
+// CHECK:     "func.return"(%1) : (memref<?x?xi32>) -> ()
+// CHECK:   }) {llvm.emit_c_interface} : () -> ()
+// CHECK: }) : () -> ()

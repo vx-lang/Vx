@@ -1,97 +1,122 @@
+//===- update_mlir_test_checks.rs - Vx Compiler ------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// A utility inspired by LLVM's update_llc_test_checks.py.
+// It runs `vxc --emit-mlir` on the given test files and updates the `// CHECK:`
+// lines in the file to match the actual MLIR output.
+//
+// Usage: cargo run --bin update_mlir_test_checks -- tests/middle_end/pass/*.vx
+//
+//===----------------------------------------------------------------------===//
+
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
-  let args: Vec<String> = env::args().collect();
-  if args.len() < 2 {
-    eprintln!(
-    "Usage: rustc utils/update_mlir_test_checks.rs && ./update_mlir_test_checks <test_files...>"
-    );
-    std::process::exit(1);
-  }
-
-  let mut project_root = env::current_dir().unwrap();
-  if !project_root.join("target/debug/vxc").exists() {
-    // Fallback or handle differently, but usually it's run from project root
-    eprintln!("Could not find target/debug/vxc. Are you running from the project root?");
-  }
-
-  let vxc_path = project_root.join("target/debug/vxc");
-
-  for file_path in args.iter().skip(1) {
-    println!("Updating {}...", file_path);
-
-    let source = match fs::read_to_string(file_path) {
-      Ok(s) => s,
-      Err(e) => {
-        eprintln!("Failed to read {}: {}", file_path, e);
-        continue;
-      }
-    };
-
-    // Run vxc --emit-mlir
-    let output = Command::new(&vxc_path)
-    .arg("--emit-mlir")
-    .arg(file_path)
-    .output()
-    .expect("Failed to execute vxc");
-
-    if !output.status.success() {
-      let stderr = String::from_utf8_lossy(&output.stderr);
-      eprintln!("vxc failed on {}:
-{}", file_path, stderr);
-      continue;
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        eprintln!("Usage: update_mlir_test_checks <test_files...>");
+        std::process::exit(1);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Build the vxc compiler first
+    println!("Building vxc...");
+    let status = Command::new("cargo")
+        .args(["build", "--bin", "vxc"])
+        .status()
+        .expect("Failed to run cargo build");
 
-    // Extract mlir, skipping the debug prints before the module
-    let mut mlir_lines = Vec::new();
-    let mut in_module = false;
-    for line in stdout.lines() {
-      if line.starts_with("module {") {
-        in_module = true;
-      }
-      if in_module {
-        // To avoid overly brittle SSA matching, we just write the exact line.
-        // Note: FileCheck will exact-match these lines. 
-        mlir_lines.push(format!("// CHECK: {}", line));
-      }
+    if !status.success() {
+        eprintln!("Failed to build vxc. Exiting.");
+        std::process::exit(1);
     }
 
-    if mlir_lines.is_empty() {
-      eprintln!("Warning: No MLIR module output found for {}", file_path);
-      continue;
-    }
+    let vxc_bin = Path::new("target/debug/vxc");
 
-    let mut new_lines = Vec::new();
-    let mut insert_idx = 0;
+    for file_path in args {
+        println!("Updating {}...", file_path);
 
-    for line in source.lines() {
-      if line.trim_start().starts_with("// CHECK:") {
-        continue;
-      }
-      new_lines.push(line.to_string());
-      if line.trim_start().starts_with("// RUN:") {
-        insert_idx = new_lines.len();
-      }
-    }
+        // Read the original file
+        let original_content = match fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Warning: Failed to read {}: {}", file_path, e);
+                continue;
+            }
+        };
 
-    // Insert new check lines at insert_idx
-    for check_line in mlir_lines.into_iter().rev() {
-      new_lines.insert(insert_idx, check_line);
-    }
+        // Run vxc --emit-mlir on the file
+        let output = Command::new(vxc_bin)
+            .args(["--emit-mlir", &file_path])
+            .output()
+            .expect("Failed to execute vxc");
 
-    // Write back
-    let new_content = new_lines.join("
-") + "
-";
-    if let Err(e) = fs::write(file_path, new_content) {
-      eprintln!("Failed to write {}: {}", file_path, e);
-    } else {
-      println!("Updated {}", file_path);
+        if !output.status.success() {
+            eprintln!(
+                "Warning: vxc failed on {}:\n{}",
+                file_path,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            continue;
+        }
+
+        let mlir_output = String::from_utf8_lossy(&output.stdout);
+
+        // Strip existing CHECK lines and trailing whitespace
+        let mut new_lines = Vec::new();
+        for line in original_content.lines() {
+            if !line.trim().starts_with("// CHECK:") {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        // Remove trailing empty lines before appending checks
+        while let Some(last) = new_lines.last() {
+            if last.trim().is_empty() {
+                new_lines.pop();
+            } else {
+                break;
+            }
+        }
+
+        // Add a blank line separator
+        new_lines.push("".to_string());
+
+        // Append new CHECK lines for MLIR only
+        let mut in_mlir = false;
+        for line in mlir_output.lines() {
+            if line.starts_with("module {") || line.starts_with("\"builtin.module\"") {
+                in_mlir = true;
+            }
+            if !in_mlir {
+                continue;
+            }
+            if line.trim().is_empty() {
+                continue; // Skip empty lines in MLIR output to keep tests clean
+            }
+            new_lines.push(format!("// CHECK: {}", line));
+        }
+
+        // Ensure trailing newline
+        new_lines.push("".to_string());
+
+        let new_content = new_lines.join("\n");
+
+        if new_content != original_content {
+            if let Err(e) = fs::write(&file_path, new_content) {
+                eprintln!("Error writing {}: {}", file_path, e);
+            } else {
+                println!("  Updated.");
+            }
+        } else {
+            println!("  Unchanged.");
+        }
     }
-  }
 }

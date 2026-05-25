@@ -24,16 +24,21 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: func.func @Struct_Point_distance(%self: !llvm.struct<"Point", (f32, f32)>) -> f32 {
-// CHECK:   %v0 = llvm.extractvalue %self[0] : !llvm.struct<"Point", (f32, f32)>
-// CHECK:   %v1 = llvm.extractvalue %self[1] : !llvm.struct<"Point", (f32, f32)>
-// CHECK:   %v2 = arith.addf %v0, %v1 : f32
-// CHECK:   return %v2 : f32
+// CHECK: module {
+// CHECK:   func.func @Struct_Point_distance(%arg0: !llvm.struct<"Point", (f32, f32)>) -> f32 {
+// CHECK:     %0 = llvm.extractvalue %arg0[0] : !llvm.struct<"Point", (f32, f32)> 
+// CHECK:     %1 = llvm.extractvalue %arg0[1] : !llvm.struct<"Point", (f32, f32)> 
+// CHECK:     %2 = arith.addf %0, %1 : f32
+// CHECK:     return %2 : f32
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"Point", (f32, f32)>
+// CHECK:     %cst = arith.constant 3.000000e+00 : f32
+// CHECK:     %1 = llvm.insertvalue %cst, %0[0] : !llvm.struct<"Point", (f32, f32)> 
+// CHECK:     %cst_0 = arith.constant 4.000000e+00 : f32
+// CHECK:     %2 = llvm.insertvalue %cst_0, %1[1] : !llvm.struct<"Point", (f32, f32)> 
+// CHECK:     %3 = call @Struct_Point_distance(%2) : (!llvm.struct<"Point", (f32, f32)>) -> f32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
 // CHECK: }
-// CHECK: func.func @main() -> i32 {
-// CHECK:   %v3 = llvm.mlir.undef : !llvm.struct<"Point", (f32, f32)>
-// CHECK:   %v4 = arith.constant 3.0 : f32
-// CHECK:   %v5 = llvm.insertvalue %v4, %v3[0] : !llvm.struct<"Point", (f32, f32)>
-// CHECK:   %v6 = arith.constant 4.0 : f32
-// CHECK:   %v7 = llvm.insertvalue %v6, %v5[1] : !llvm.struct<"Point", (f32, f32)>
-// CHECK:   %v8 = func.call @Struct_Point_distance(%v7) : (!llvm.struct<"Point", (f32, f32)>) -> f32

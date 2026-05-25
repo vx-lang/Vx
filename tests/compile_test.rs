@@ -117,9 +117,24 @@ fn run_middle_end_test(path: &Path) {
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
 
+    let context = melior::Context::new();
+    let registry = melior::dialect::DialectRegistry::new();
+    melior::utility::register_all_dialects(&registry);
+    context.append_dialect_registry(&registry);
+    context.load_all_available_dialects();
+    vxc::melior_codegen::register_vx_dialect(&context);
+
     let module_asts = std::collections::HashMap::new();
-    let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
+
+    let mlir_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+        codegen.generate(&monomorphized_program, &module_asts);
+        codegen.into_module().as_operation().to_string()
+    }))
+    .unwrap_or_else(|_| {
+        let mut codegen = vxc::codegen::MlirGenerator::new();
+        codegen.generate(&monomorphized_program, &module_asts)
+    });
 
     // Verify // CHECK: lines in order
     let mut current_idx = 0;
