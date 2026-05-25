@@ -22,21 +22,47 @@ use melior::{
 
 use crate::ast::*;
 
-pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<(), String> {
+extern "C" {
+    fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
+}
+
+pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<bool, String> {
     let pass_manager = melior::pass::PassManager::new(context);
 
-    // Register all passes first
+    // Register all built-in passes
     melior::utility::register_all_passes();
 
+    // Check if an external plugin is specified via ENZYME_LIB (for MLIR Enzyme)
+    let mut has_enzyme = false;
+    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
+        let c_path = std::ffi::CString::new(enzyme_lib.clone()).unwrap();
+        let loaded = unsafe { loadMlirPassPlugin(c_path.as_ptr()) };
+        if loaded {
+            println!("[CodeGen] Loaded MLIR Pass Plugin: {}", enzyme_lib);
+            has_enzyme = true;
+        } else {
+            eprintln!(
+                "[CodeGen] Failed to load MLIR Pass Plugin (may not export MLIR plugin hooks): {}",
+                enzyme_lib
+            );
+        }
+    }
+
     // Use the parse_pass_pipeline utility to configure our exact pipeline
-    let pipeline = "builtin.module(lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)";
-    melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), pipeline)
+    let mut pipeline = "builtin.module(".to_string();
+    if has_enzyme {
+        pipeline.push_str("enzyme,");
+    }
+    pipeline.push_str("lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
+
+    melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
 
     pass_manager
         .run(module)
-        .map_err(|e| format!("Failed to run passes: {}", e))?;
-    Ok(())
+        .map_err(|e| format!("Failed to lower MLIR module to LLVM: {}", e))?;
+
+    Ok(has_enzyme)
 }
 
 pub struct MeliorGenerator<'c> {
