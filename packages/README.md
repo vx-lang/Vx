@@ -13,3 +13,9 @@ While the core primitives (like `Tensor`, `Verified`, memory layout intrinsics) 
 
 ## Usage
 Currently, these packages can be imported by providing their include paths to the `vxc` compiler via the `-I` flag. As module resolution evolves, they will be importable directly (e.g. `import vx_nn::layers`).
+
+## Ecosystem Guidelines
+
+1. **Self-Contained Testing**: All tests for a specific package must reside within that package's own directory (e.g., `packages/vx_nn/tests/`). Do not place ecosystem package tests in the root `tests/` directory.
+2. **Minimal Sibling Dependencies**: Packages should strive to be as standalone as possible, relying primarily on the core `stdlib/`. If a package must depend on a sibling (e.g., `vx_models` depending on `vx_nn`), it should be done thoughtfully. 
+3. **No Cyclic Dependencies**: Under no circumstances should two ecosystem packages depend on each other cyclically.
