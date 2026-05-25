@@ -178,15 +178,30 @@ fn main() {
     println!("cargo:rerun-if-changed=include/VxDialect.h");
     println!("cargo:rerun-if-changed=src/dialect/VxDialect.cpp");
 
-    let tblgen = "/opt/homebrew/opt/llvm/bin/mlir-tblgen";
-    let llvm_include = "/opt/homebrew/opt/llvm/include";
+    let llvm_bindir_out = Command::new("llvm-config")
+        .arg("--bindir")
+        .output()
+        .expect("Failed to get llvm-config bindir");
+    let llvm_bindir = String::from_utf8_lossy(&llvm_bindir_out.stdout)
+        .trim()
+        .to_string();
+    let tblgen = PathBuf::from(&llvm_bindir).join("mlir-tblgen");
+    let tblgen_str = tblgen.to_str().unwrap();
+
+    let llvm_includedir_out = Command::new("llvm-config")
+        .arg("--includedir")
+        .output()
+        .expect("Failed to get llvm-config includedir");
+    let llvm_include = String::from_utf8_lossy(&llvm_includedir_out.stdout)
+        .trim()
+        .to_string();
 
     // 1. Generate Dialect Declarations
-    let status = Command::new(tblgen)
+    let status = Command::new(tblgen_str)
         .args([
             "-gen-dialect-decls",
             "-I",
-            llvm_include,
+            &llvm_include,
             "include/VxDialect.td",
             "-o",
             &format!("{}/VxDialect.h.inc", out_dir),
@@ -196,11 +211,11 @@ fn main() {
     assert!(status.success(), "mlir-tblgen failed");
 
     // 2. Generate Dialect Definitions
-    let status = Command::new(tblgen)
+    let status = Command::new(tblgen_str)
         .args([
             "-gen-dialect-defs",
             "-I",
-            llvm_include,
+            &llvm_include,
             "include/VxDialect.td",
             "-o",
             &format!("{}/VxDialect.cpp.inc", out_dir),
@@ -210,11 +225,11 @@ fn main() {
     assert!(status.success(), "mlir-tblgen failed");
 
     // 3. Generate Operation Declarations
-    let status = Command::new(tblgen)
+    let status = Command::new(tblgen_str)
         .args([
             "-gen-op-decls",
             "-I",
-            llvm_include,
+            &llvm_include,
             "include/VxDialect.td",
             "-o",
             &format!("{}/VxOps.h.inc", out_dir),
@@ -224,11 +239,11 @@ fn main() {
     assert!(status.success(), "mlir-tblgen failed");
 
     // 4. Generate Operation Definitions
-    let status = Command::new(tblgen)
+    let status = Command::new(tblgen_str)
         .args([
             "-gen-op-defs",
             "-I",
-            llvm_include,
+            &llvm_include,
             "include/VxDialect.td",
             "-o",
             &format!("{}/VxOps.cpp.inc", out_dir),
