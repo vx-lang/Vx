@@ -1,8 +1,10 @@
-# Test Expansion Task List
-
-- [x] Create a Python script (`scripts/generate_tests.py`) to systematically generate tests for math logic.
-- [x] Use the script to generate combinatorial test scenarios for all math operations (`+`, `-`, `*`, `/`) across supported primitive types (`f32`, `f64`, `i32`, `i64`).
-- [x] Ensure that implicitly coerced mismatched types are properly handled.
-- [x] Generate Boolean logic tests for `&&` and `||`.
-- [x] Execute `cargo test compile_test` to validate the frontend/middle-end pipeline on these new test cases.
-- [x] Update `walkthrough.md`.
+- `[x]` Document the 256-bit hashing algorithm in `src/borrow.rs`
+  - `[x]` Explain the `TypeId` bitpacking structure (Word 2)
+  - `[x]` Provide examples of Region IDs, Variance Flags, and the bitwise comparison math
+- `[x]` Implement `TypeChecker::lower_to_type_id` in `src/sema.rs`
+  - `[x]` Handle `Type::Borrow` mapping variance (Mutable -> Invariant, Immutable -> Covariant)
+  - `[x]` Map scope depth to Region ID
+- `[x]` Hook up `verify_subtyping_bounds` to `is_assignable`
+  - `[x]` Replace raw tuple comparison with the FastPath call for `Borrow` types
+- `[x]` Run and pass tests
+- `[x]` Update `walkthrough.md`

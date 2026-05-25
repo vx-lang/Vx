@@ -1,56 +1,43 @@
-# Strategy to Scale Compiler Testing
+# Global Borrow Checker & 256-bit FastPath Integration
 
-Scaling from ~87 to ~300 tests efficiently requires a shift from manually writing individual `.vx` files to automated, systematic, and programmatic test generation.
+You are absolutely right. While the Lexical Borrow Checker prevents immediate aliasing conflicts within a single function scope, it lacks the cross-module capability to verify if references passed through generic signatures or function bounds satisfy lifetime rules (`'a : 'b`). 
 
-Here is my proposed plan to rapidly expand the testing suite and improve confidence in the compiler.
-
-## User Review Required
-
-> [!IMPORTANT]
-> Please review the three primary approaches below. Which direction do you prefer we tackle first?
->
-> 1. **Generative Testing Scripts** (Fastest way to get 100-200 tests)
-> 1. **Fuzz Testing** (Best for finding edge cases and compiler panics)
-> 1. **Coverage-Guided Expansion** (Best for tracking un-tested branches in the codebase)
+To claim full victory, we need to utilize the **256-bit Creative Hashing Strategy** (`TypeId`) to perform high-speed hardware-level register checks for subtype and variance bounding.
 
 ## Proposed Changes
 
-### Phase 1: Generative Test Scripting
+### 1. Document the Hashing Algorithm (`src/borrow.rs`)
+I will rewrite the top-level documentation of `src/borrow.rs` to thoroughly detail the algorithm.
+- **The Data Structure**: The `TypeId` is a 256-bit (4-word) structure. Word 2 handles generic lifetimes.
+- **Fast Path Bitpacking**: Instead of iterating through graph edges, we pack up to 4 lifetime boundaries directly into Word 2 (16 bits per parameter).
+- **Variance Math**: The 16 bits use 4 bits for Variance Flags (Covariant, Contravariant, Invariant) and 12 bits for the Region ID. 
+- **Subtyping Evaluation**: A single bitwise evaluation and numerical comparison checks if `Region A <= Region B` (where lower Region IDs live longer, with Region 0 being `'static`).
 
-Writing tests manually for every combination of data types, operators, and functions is tedious. Instead, we can write a generator script.
+### 2. Lowering AST `Type` to `TypeId`
+Currently, `is_assignable` in `sema.rs` operates purely on AST enums. I will introduce a helper method `lower_to_type_id(&Type, scope_depth) -> TypeId`.
+- For `Type::Borrow(&mut T)`, it will assign the variance flag to `Invariant` and extract the current `scope_depth` as the `region_id`.
+- For `Type::Borrow(&T)`, it will assign the variance flag to `Covariant`.
+- It will pack these directly into a `TypeId` using `tid.try_set_fast_param(...)`.
 
-- **Action**: Create `scripts/generate_tests.py`.
-- **Details**: The script will dynamically generate `.vx` test files covering combinatorial edge cases. For instance:
-  - **Binary Operators**: Cross-product of `(+, -, *, /, &&, ||, <, >)` with `(i32, i64, f32, f64, bool)`.
-  - **Tensor Dimensions**: Generate tests validating type-checking rules for matrix multiplication across various static shape combinations (`[N, M] * [M, P] = [N, P]`).
-  - **Formal Verification**: Procedurally generate 50 deep compound math expressions that pass, and 50 that fail.
-- **Output**: This will easily generate 150+ deterministic `.vx` files covering semantic checking bounds.
+### 3. Hooking up `verify_subtyping_bounds` (`src/sema.rs`)
+In `sema.rs`, we will modify `is_assignable()` to utilize the bitwise FastPath when assigning references:
+```rust
+if let Type::Borrow(...) = target {
+    if let Type::Borrow(...) = source {
+        // ... (Memory space checks) ...
+        
+        let id_target = self.lower_to_type_id(target);
+        let id_source = self.lower_to_type_id(source);
+        
+        // Execute the 256-bit register hash strategy!
+        if !crate::borrow::verify_subtyping_bounds(&id_source, &id_target, self.worker) {
+            return false;
+        }
+    }
+}
+```
 
-### Phase 2: Table-Driven / Inline Testing
+## User Review Required
 
-Adding 200 separate `.vx` files can clutter the file system and slow down the compiler test runner (`compile_test.rs`).
-
-- **Action**: Update `tests/compile_test.rs`.
-- **Details**: Allow a single `.vx` file to contain multiple isolated snippets. We can use a custom macro or annotation format (e.g., `// TEST-CASE: name`) inside a single file, and `compile_test.rs` will parse and run them individually.
-- **Output**: This keeps the repository clean while vastly scaling the number of test assertions.
-
-### Phase 3: Fuzz Testing (`cargo fuzz`)
-
-To ensure industrial-grade robustness, we should use property-based testing and fuzzing to catch compiler panics.
-
-- **Action**: Introduce `cargo fuzz` (via `libfuzzer-sys`).
-- **Details**: Create a fuzzer target that continuously feeds randomized AST structures and raw strings into the `parser` and `sema` (Type Checker).
-- **Output**: While this doesn't create static `.vx` files, it provides the coverage equivalent of thousands of tests by finding infinite loops or panics.
-
-### Phase 4: Coverage-Guided Manual Tests
-
-- **Action**: Run `cargo tarpaulin` or `cargo llvm-cov` to generate an HTML coverage report of the compiler.
-- **Details**: Identify exactly which `match` arms in `parser.rs` and `sema.rs` have 0% coverage.
-- **Output**: Manually write the remaining ~50 tests to hit those specific unreachable edge cases (e.g., specific `ffi` boundaries, layout mismatches, specific error propagations).
-
-## Open Questions
-
-> [!QUESTION]
->
-> 1. Are you okay with introducing a python script to autogenerate test files in `tests/frontend/` and `tests/backend/`?
-> 1. Do you want me to start with the **Generative Script** to immediately crank out 100+ tests for type coercion, formal verification, and autodiff, or do you want to start by gathering **Code Coverage** data to see what we are currently missing?
+> [!NOTE]
+> Currently, the FastPath bitwise math assumes "smaller region IDs live longer" (e.g. Scope Depth 0 > Scope Depth 1). Is this the exact mathematical convention you envisioned for the numerical `region_a <= region_b` check in `verify_subtyping_bounds`? I will proceed using AST scope depth as the literal Region ID unless instructed otherwise!

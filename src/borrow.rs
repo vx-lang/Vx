@@ -72,6 +72,17 @@ use crate::session::LocalWorkerState;
 
 /// High-performance verification check for variance and lifetime compatibility.
 /// Encodes borrow checker math directly into the 256-bit registers.
+/// 
+/// **Region ID Mathematical Convention:**
+/// The Region ID represents the lifetime scope depth.
+/// - `Region 0`: The `'static` lifetime (lives forever).
+/// - `Region N`: An inner block at depth N.
+/// Therefore, a **smaller Region ID lives longer** than a larger Region ID.
+/// 
+/// **Variance Math:**
+/// - `Invariant (0x0)`: Requires strict equality (`region_a == region_b`).
+/// - `Covariant (0x1)`: Source must outlive target (`region_a <= region_b`).
+/// - `Contravariant (0x2)`: Target must outlive source (`region_a >= region_b`).
 pub fn verify_subtyping_bounds(
     type_a: &TypeId,
     type_b: &TypeId,
