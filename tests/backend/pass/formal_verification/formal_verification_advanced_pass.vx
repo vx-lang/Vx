@@ -35,21 +35,25 @@ fn multi_transitive_bounds<A, D>(t: Tensor<f32, [A, D]>, b: i32, c: i32) -> Veri
 
 fn main() -> i32 {
   // Test 1: Complex logic
-  assert(10 == 10 || 20 == 20, "Dynamic logic");
-  assert(10 > 0 && 20 > 0, "Dynamic bounds");
-  assert(10 + 20 == 30, "Dynamic sum");
-  let t1: Tensor<f32, [10, 20]> = Tensor_f32(10, 20);
+  let x: i32 = 10;
+  let y: i32 = 20;
+  assert(x == 10 || y == 20, "Dynamic logic");
+  assert(x > 0 && y > 0, "Dynamic bounds");
+  assert(x + y == 30, "Dynamic sum");
+  let t1: Tensor<f32, [x, y]> = Tensor_f32(x, y);
   let v1 = check_complex_logic(t1);
 
   // Test 2: Inference and Nested
-  assert(16 == 16, "Dynamic square");
-  assert(16 * 2 == 16 * 2, "Dynamic math");
-  let t2: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let sixteen: i32 = 16;
+  assert(sixteen == sixteen, "Dynamic square");
+  assert(sixteen * 2 == sixteen * 2, "Dynamic math");
+  let t2: Tensor<f32, [sixteen, sixteen]> = Tensor_f32(sixteen, sixteen);
   let v2 = nested_verified(t2);
 
   // Test 3: Compound Math
-  assert((20 * 2) + (20 * 3) == 100, "Linear eq hold");
-  let t3: Tensor<f32, [20, 20]> = Tensor_f32(20, 20);
+  let twenty: i32 = 20;
+  assert((twenty * 2) + (twenty * 3) == 100, "Linear eq hold");
+  let t3: Tensor<f32, [twenty, twenty]> = Tensor_f32(twenty, twenty);
   let v3 = compound_math_constraint(t3);
 
   // Test 4: Multi transitive bounds

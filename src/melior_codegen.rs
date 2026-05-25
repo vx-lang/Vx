@@ -1073,7 +1073,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return gen.generate_expr(&args[0], block);
         }
         if name.starts_with("Tensor_") {
-            let tensor_ty = Type::parse(gen.context, "tensor<*xf32>").unwrap(); // We can't know the rank easily here without type info
+            let tensor_ty = Type::parse(gen.context, "memref<?x?xf32>").unwrap();
             let dummy_op = melior::ir::operation::OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),
