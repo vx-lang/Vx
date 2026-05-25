@@ -323,6 +323,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Grad(e) => e.lower(self, block),
             Expr::Vjp(e) => e.lower(self, block),
             Expr::Jvp(e) => e.lower(self, block),
+            Expr::Transfer(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -911,12 +912,101 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
     }
 }
 
+fn topology_to_i32(top: &crate::ast::Topology) -> i32 {
+    use crate::ast::Topology::*;
+    match top {
+        Host => 0,
+        NPU(expr) => {
+            if let crate::ast::Expr::Number(n) = &**expr {
+                100 + n.value.parse::<i32>().unwrap_or(0)
+            } else {
+                100
+            }
+        }
+        AccCore(expr) => {
+            if let crate::ast::Expr::Number(n) = &**expr {
+                200 + n.value.parse::<i32>().unwrap_or(0)
+            } else {
+                200
+            }
+        }
+        AMX => 300,
+        ANE => 400,
+        GPU => 500,
+        Slice(_, _, _) => 900,
+    }
+}
+
 impl<'c> LowerToMelior<'c> for SpawnOnStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let location = melior::ir::Location::unknown(gen.context);
+        let region = melior::ir::Region::new();
+        let body_block = melior::ir::Block::new(&[]);
         for stmt in &self.stmts {
-            gen.generate_statement(stmt, block);
+            gen.generate_statement(stmt, &body_block);
         }
+
+        // MLIR requires regions to be terminated, add a dummy return if missing
+        // For simplicity, we can just let it be or add an empty yield. We will add a yield if needed later,
+        // but since our dialect is custom, we don't strictly enforce terminator yet, or we use `func.return`.
+        // Wait, if it's inside a function, `vx.spawn` region doesn't need to return.
+        region.append_block(body_block);
+
+        let topology_id = topology_to_i32(&self.top);
+        let top_attr = melior::ir::attribute::IntegerAttribute::new(
+            melior::ir::Type::parse(gen.context, "i32").unwrap(),
+            topology_id as i64,
+        )
+        .into();
+
+        let spawn_op = melior::ir::operation::OperationBuilder::new("vx.spawn", location)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "topology"),
+                top_attr,
+            )])
+            .add_regions([region])
+            .build()
+            .expect("Failed to build vx.spawn operation");
+
+        block.append_operation(spawn_op);
+    }
+}
+
+impl<'c> LowerToMelior<'c> for crate::ast::TransferExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let (src_val, src_ty) = gen.generate_expr(&self.expr, block);
+        let location = melior::ir::Location::unknown(gen.context);
+
+        // Map memory space to topology target.
+        let target_topology_id = match self.space {
+            crate::ast::MemorySpace::HostDRAM => 0,
+            crate::ast::MemorySpace::NPUHBM => 100,
+            crate::ast::MemorySpace::LocalSRAM => 200,
+        };
+
+        let top_attr = melior::ir::attribute::IntegerAttribute::new(
+            melior::ir::Type::parse(gen.context, "i32").unwrap(),
+            target_topology_id as i64,
+        )
+        .into();
+
+        let transfer_op = melior::ir::operation::OperationBuilder::new("vx.transfer", location)
+            .add_operands(&[src_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "target_topology"),
+                top_attr,
+            )])
+            .add_results(&[src_ty])
+            .build()
+            .expect("Failed to build vx.transfer operation");
+
+        use melior::ir::operation::OperationLike;
+        let result_val = transfer_op.result(0).unwrap().into();
+        block.append_operation(transfer_op);
+
+        (result_val, src_ty)
     }
 }
 
