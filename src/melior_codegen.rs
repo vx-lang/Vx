@@ -24,9 +24,15 @@ use crate::ast::*;
 
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
+    fn registerVxDialect(ctx: mlir_sys::MlirContext);
 }
 
 pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Result<bool, String> {
+    // Register the custom `vx` dialect before loading dialects
+    unsafe {
+        registerVxDialect(context.to_raw());
+    }
+
     let pass_manager = melior::pass::PassManager::new(context);
 
     // Register all built-in passes

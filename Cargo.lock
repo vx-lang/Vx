@@ -9,6 +9,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "melior",
+ "mlir-sys",
  "once_cell",
  "petgraph",
  "proptest",

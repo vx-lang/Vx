@@ -498,3 +498,36 @@ fn test_melior_matmul() {
         }
     }
 }
+
+extern "C" {
+    fn registerVxDialect(ctx: mlir_sys::MlirContext);
+}
+
+#[test]
+fn test_vx_dialect_registration() {
+    let registry = melior::dialect::DialectRegistry::new();
+    let context = melior::Context::new();
+
+    // Register our custom dialect using the FFI
+    unsafe {
+        registerVxDialect(context.to_raw());
+    }
+
+    context.append_dialect_registry(&registry);
+    context.load_all_available_dialects();
+
+    // We can't directly check the registered dialects easily in melior without parsing,
+    // but we can parse a dummy module that requires the `vx` dialect.
+    let mlir_source = r#"
+        module {
+            "vx.spawn"() : () -> ()
+        }
+    "#;
+
+    // If the dialect wasn't registered, parsing this would fail.
+    let module = melior::ir::Module::parse(&context, mlir_source);
+    assert!(
+        module.is_some(),
+        "Failed to parse module containing vx.spawn. Dialect may not be registered!"
+    );
+}

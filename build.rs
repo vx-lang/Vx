@@ -172,4 +172,100 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir);
     println!("cargo:rustc-link-lib=static=plugin_loader");
+
+    // --- Compile Vx MLIR Dialect ---
+    println!("cargo:rerun-if-changed=include/VxDialect.td");
+    println!("cargo:rerun-if-changed=include/VxDialect.h");
+    println!("cargo:rerun-if-changed=src/dialect/VxDialect.cpp");
+
+    let tblgen = "/opt/homebrew/opt/llvm/bin/mlir-tblgen";
+    let llvm_include = "/opt/homebrew/opt/llvm/include";
+
+    // 1. Generate Dialect Declarations
+    let status = Command::new(tblgen)
+        .args([
+            "-gen-dialect-decls",
+            "-I",
+            llvm_include,
+            "include/VxDialect.td",
+            "-o",
+            &format!("{}/VxDialect.h.inc", out_dir),
+        ])
+        .status()
+        .expect("Failed to run mlir-tblgen for dialect decls");
+    assert!(status.success(), "mlir-tblgen failed");
+
+    // 2. Generate Dialect Definitions
+    let status = Command::new(tblgen)
+        .args([
+            "-gen-dialect-defs",
+            "-I",
+            llvm_include,
+            "include/VxDialect.td",
+            "-o",
+            &format!("{}/VxDialect.cpp.inc", out_dir),
+        ])
+        .status()
+        .expect("Failed to run mlir-tblgen for dialect defs");
+    assert!(status.success(), "mlir-tblgen failed");
+
+    // 3. Generate Operation Declarations
+    let status = Command::new(tblgen)
+        .args([
+            "-gen-op-decls",
+            "-I",
+            llvm_include,
+            "include/VxDialect.td",
+            "-o",
+            &format!("{}/VxOps.h.inc", out_dir),
+        ])
+        .status()
+        .expect("Failed to run mlir-tblgen for op decls");
+    assert!(status.success(), "mlir-tblgen failed");
+
+    // 4. Generate Operation Definitions
+    let status = Command::new(tblgen)
+        .args([
+            "-gen-op-defs",
+            "-I",
+            llvm_include,
+            "include/VxDialect.td",
+            "-o",
+            &format!("{}/VxOps.cpp.inc", out_dir),
+        ])
+        .status()
+        .expect("Failed to run mlir-tblgen for op defs");
+    assert!(status.success(), "mlir-tblgen failed");
+
+    // Compile the dialect
+    let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
+    let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
+
+    let mut dialect_cmd = Command::new(&cxx);
+    dialect_cmd.args([
+        "-c",
+        "src/dialect/VxDialect.cpp",
+        "-o",
+        dialect_obj_path.to_str().unwrap(),
+        "-std=c++17",
+        &format!("-I{}", out_dir), // to find the generated .inc files
+        "-Iinclude",               // to find VxDialect.h
+    ]);
+    dialect_cmd.args(&llvm_cxxflags_vec);
+
+    let status = dialect_cmd
+        .status()
+        .expect("Failed to execute cxx for VxDialect");
+    assert!(status.success(), "clang++ compilation failed for VxDialect");
+
+    let mut ar_cmd = Command::new(&ar);
+    ar_cmd.args(&arflags);
+    ar_cmd.args([
+        dialect_lib_path.to_str().unwrap(),
+        dialect_obj_path.to_str().unwrap(),
+    ]);
+    let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
+    assert!(status.success(), "ar failed for libvx_dialect");
+
+    println!("cargo:rustc-link-lib=static=vx_dialect");
 }
