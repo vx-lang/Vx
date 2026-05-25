@@ -315,7 +315,7 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .map(|(n, t)| {
                 let substituted = t.substitute(mapping);
-                println!("Substituting param {}: {:?} -> {:?}", n, t, substituted);
+
                 (n.clone(), substituted)
             })
             .collect();
