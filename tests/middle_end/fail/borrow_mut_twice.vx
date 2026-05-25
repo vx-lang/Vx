@@ -1,0 +1,6 @@
+fn main() -> Tensor<f32> {
+    let mut x: Tensor<f32> = Tensor_f32();
+    let y = &mut x;
+    let z = &mut x; // Error: cannot borrow as mutable more than once
+    return 0.0;
+}

@@ -97,6 +97,13 @@ impl<'a> GlobalAstEnv<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BorrowRecord {
+    pub is_mut: bool,
+    pub scope_depth: usize,
+    pub borrower_name: Option<String>,
+}
+
 pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
@@ -107,6 +114,7 @@ pub struct TypeChecker<'a> {
     active_topology: Topology,
     active_memory: MemorySpace,
     pub hardware_graph: crate::arch::HardwareGraph,
+    pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
     next_reg: u32,
     var_regs: Vec<HashMap<String, u32>>,
     moved_vars: Vec<std::collections::HashSet<String>>,
@@ -127,6 +135,7 @@ impl<'a> TypeChecker<'a> {
             active_topology: Topology::Host,
             active_memory: crate::arch::HardwareGraph::default_memory_for(&Topology::Host),
             hardware_graph: crate::arch::HardwareGraph::default(),
+            active_borrows: HashMap::new(),
             next_reg: 1,
             var_regs: vec![HashMap::new()],
             moved_vars: vec![std::collections::HashSet::new()],
@@ -163,8 +172,15 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn pop_scope(&mut self) {
+        let depth = self.scopes.len();
         self.scopes.pop();
+        self.var_regs.pop();
         self.moved_vars.pop();
+
+        // Lexical Lifetime cleanup: Remove borrows originating in this scope
+        for (_, borrows) in self.active_borrows.iter_mut() {
+            borrows.retain(|b| b.scope_depth < depth);
+        }
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
@@ -658,6 +674,19 @@ impl<'a> TypeChecker<'a> {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
+
+                if let Some(borrows) = self.active_borrows.get(name) {
+                    for b in borrows {
+                        if b.is_mut && !silent {
+                            self.errors.push(format!(
+                                "Cannot access '{}' because it is mutably borrowed.",
+                                name
+                            ));
+                            break;
+                        }
+                    }
+                }
+
                 let lookup_res = self.lookup(name).cloned();
 
                 if lookup_res.is_none() && self.is_moved(name) {
@@ -1612,6 +1641,34 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
+
+                // If the inner expression is an identifier, track the borrow
+                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**inner {
+                    if let Some(borrows) = self.active_borrows.get(name) {
+                        for b in borrows {
+                            if b.is_mut {
+                                if !silent {
+                                    self.errors.push(format!("Cannot borrow '{}' because it is already borrowed as mutable.", name));
+                                }
+                            } else if *is_mut {
+                                if !silent {
+                                    self.errors.push(format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name));
+                                }
+                            }
+                        }
+                    }
+                    if !silent {
+                        self.active_borrows
+                            .entry(name.clone())
+                            .or_default()
+                            .push(BorrowRecord {
+                                is_mut: *is_mut,
+                                scope_depth: self.scopes.len(),
+                                borrower_name: None,
+                            });
+                    }
+                }
+
                 Type::Borrow(Box::new(inner_ty), None, *is_mut)
             }
             Expr::Dereference(DereferenceExpr {
