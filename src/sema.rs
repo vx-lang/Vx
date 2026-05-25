@@ -242,7 +242,17 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                if e1 != e2 || d1.len() != d2.len() || t1 != t2 {
+                let e1_match = if let crate::ast::ElementType::Generic(ref name) = e1 {
+                    if let Some(existing) = mapping.get(name) {
+                        existing == &Type::Scalar(e2.clone())
+                    } else {
+                        mapping.insert(name.clone(), Type::Scalar(e2.clone()));
+                        true
+                    }
+                } else {
+                    e1 == e2
+                };
+                if !e1_match || d1.len() != d2.len() || t1 != t2 {
                     return false;
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
@@ -860,7 +870,7 @@ impl<'a> TypeChecker<'a> {
                 value: _,
                 ty: Some(el_ty),
                 span: _,
-            }) => Type::Scalar(*el_ty),
+            }) => Type::Scalar(el_ty.clone()),
             Expr::Number(NumberExpr {
                 value: _,
                 ty: None,
@@ -1105,7 +1115,18 @@ impl<'a> TypeChecker<'a> {
                         "Tensor_bf16" => ElementType::BF16,
                         "Tensor_i32" => ElementType::I32,
                         "Tensor_i64" => ElementType::I64,
-                        _ => ElementType::F32,
+                        _ => {
+                            if resolved_name.starts_with("Tensor_") {
+                                let t_name = resolved_name.strip_prefix("Tensor_").unwrap();
+                                if t_name != "f32" {
+                                    ElementType::Generic(t_name.to_string())
+                                } else {
+                                    ElementType::F32
+                                }
+                            } else {
+                                ElementType::F32
+                            }
+                        }
                     };
                     Type::Tensor(el_ty, vec![], None)
                 } else if resolved_name.starts_with("Math::") {
@@ -1437,7 +1458,7 @@ impl<'a> TypeChecker<'a> {
                                 return base_ty;
                             }
 
-                            return Type::Tensor(*el_ty, new_dims.clone(), top.clone());
+                            return Type::Tensor(el_ty.clone(), new_dims.clone(), top.clone());
                         } else {
                             self.errors.push(
                                 "reshape requires an array of dimensions as the first argument"
@@ -1497,7 +1518,7 @@ impl<'a> TypeChecker<'a> {
                                     return base_ty;
                                 }
                             }
-                            return Type::Tensor(*el_ty, new_dims, top.clone());
+                            return Type::Tensor(el_ty.clone(), new_dims, top.clone());
                         } else {
                             self.errors.push(
                                 "transpose requires an array of permutation indices".to_string(),
@@ -1626,7 +1647,7 @@ impl<'a> TypeChecker<'a> {
                     match &base_ty {
                         Type::Tensor(el_ty, dims, top) => {
                             base_ty = Type::Pointer(
-                                Box::new(Type::Tensor(*el_ty, dims.clone(), top.clone())),
+                                Box::new(Type::Tensor(el_ty.clone(), dims.clone(), top.clone())),
                                 None,
                                 is_mut,
                             );
@@ -1699,11 +1720,11 @@ impl<'a> TypeChecker<'a> {
                         }
                         if dims_l.len() != 2 || dims_r.len() != 2 {
                             self.errors.push(format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", dims_l.len(), dims_r.len()));
-                            return Type::Tensor(*el_ty_l, vec![], top_l.clone());
+                            return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                         }
                         let m = dims_l[0].clone();
                         let n = dims_r[1].clone();
-                        return Type::Tensor(*el_ty_l, vec![m, n], top_l.clone());
+                        return Type::Tensor(el_ty_l.clone(), vec![m, n], top_l.clone());
                     }
                 }
 
@@ -2036,7 +2057,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn is_assignable(&self, target: &Type, source: &Type) -> bool {
-        // println!("is_assignable({:?}, {:?})", target, source);
+        println!("is_assignable(target: {:?}, source: {:?})", target, source);
         if target == source {
             return true;
         }

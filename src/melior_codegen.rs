@@ -345,6 +345,9 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 };
 
                 let mut shape_str = String::new();
@@ -388,6 +391,9 @@ impl<'c> MeliorGenerator<'c> {
                 ElementType::I64 | ElementType::U64 => "i64",
                 ElementType::I128 | ElementType::U128 => "i128",
                 ElementType::Bool => "i1",
+                ElementType::Generic(_) => {
+                    panic!("Generic element type should be instantiated before codegen")
+                }
             }
             .to_string(),
             crate::ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
@@ -452,6 +458,9 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 };
                 format!("vector<{}x{}>", n, ty_str)
             }
@@ -1073,7 +1082,19 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return gen.generate_expr(&args[0], block);
         }
         if name.starts_with("Tensor_") {
-            let tensor_ty = Type::parse(gen.context, "memref<?x?xf32>").unwrap();
+            let el_ty_str = name.strip_prefix("Tensor_").unwrap();
+            let mlir_ty_str = match el_ty_str {
+                "f16" => "f16",
+                "f32" => "f32",
+                "f64" => "f64",
+                "bf16" => "bf16",
+                "i32" => "i32",
+                "i64" => "i64",
+                "Bool" => "i1",
+                _ => "f32", // Default fallback
+            };
+            let tensor_ty_str = format!("memref<?x?x{}>", mlir_ty_str);
+            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
             let dummy_op = melior::ir::operation::OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),

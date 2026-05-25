@@ -1,62 +1,62 @@
 //===- lib.vx - Linear Algebra Ecosystem Package -----------------*- Vx -*-===//
 //
 // This is the core linear algebra package for Vx.
-// It provides formally verified math primitives.
+// It provides formally verified math primitives, generic over element type T.
 //
 
 // Matrix Multiplication
 // M: Rows of A, K: Cols of A / Rows of B, N: Cols of B
-fn matmul<M, N, K>(A: Tensor<f32, [M, K]>, B: Tensor<f32, [K, N]>) -> Verified<Tensor<f32, [M, N]>> {
+fn matmul<T, M, N, K>(A: Tensor<T, [M, K]>, B: Tensor<T, [K, N]>) -> Verified<Tensor<T, [M, N]>> {
   // The generic type signature `[M, K]` and `[K, N]` inherently forces the inner dimensions to match.
   // We can add an explicit assert that the type-checker will trivially prove, for documentation.
   assert(K == K, "Inner dimensions must match");
   
   // Construct the resulting tensor
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }
 
 // Matrix Transposition
-fn transpose<M, N>(A: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [N, M]>> {
+fn transpose<T, M, N>(A: Tensor<T, [M, N]>) -> Verified<Tensor<T, [N, M]>> {
   // Transposes an M x N matrix into an N x M matrix
-  let out: Tensor<f32, [N, M]> = Tensor_f32(N, M);
+  let out: Tensor<T, [N, M]> = Tensor<T>(N, M);
   return Verified(out);
 }
 
 // L2 Normalization (Row-wise)
-fn norm_l2<M, N>(A: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
+fn norm_l2<T, M, N>(A: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
   // Normalizing doesn't change the shape
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }
 
 // Scalar Multiplication
-fn scalar_mul<M, N>(A: Tensor<f32, [M, N]>, scalar: f32) -> Verified<Tensor<f32, [M, N]>> {
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+fn scalar_mul<T, M, N>(A: Tensor<T, [M, N]>, scalar: T) -> Verified<Tensor<T, [M, N]>> {
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }
 
 // Element-wise Addition
-fn add<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+fn add<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }
 
 // Element-wise Subtraction
-fn sub<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+fn sub<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }
 
 // Dot Product (assumes column vectors for simplicity, returning a 1x1 tensor)
-fn dot<N, ONE>(A: Tensor<f32, [N, ONE]>, B: Tensor<f32, [N, ONE]>) -> Verified<Tensor<f32, [ONE, ONE]>> {
+fn dot<T, N, ONE>(A: Tensor<T, [N, ONE]>, B: Tensor<T, [N, ONE]>) -> Verified<Tensor<T, [ONE, ONE]>> {
   assert(ONE == 1, "Must be column vectors");
-  let out: Tensor<f32, [ONE, ONE]> = Tensor_f32(ONE, ONE);
+  let out: Tensor<T, [ONE, ONE]> = Tensor<T>(ONE, ONE);
   return Verified(out);
 }
 
 // Hadamard (Element-wise) Multiplication
-fn hadamard_mul<M, N>(A: Tensor<f32, [M, N]>, B: Tensor<f32, [M, N]>) -> Verified<Tensor<f32, [M, N]>> {
-  let out: Tensor<f32, [M, N]> = Tensor_f32(M, N);
+fn hadamard_mul<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
+  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
 }

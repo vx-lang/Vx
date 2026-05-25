@@ -329,7 +329,10 @@ fn test_backend_pass_formal_verification() {
         entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!("Running test_backend_pass_formal_verification on {:?}", path);
+                println!(
+                    "Running test_backend_pass_formal_verification on {:?}",
+                    path
+                );
                 run_backend_test(&path);
             }
         });

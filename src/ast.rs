@@ -37,25 +37,26 @@ pub enum MemorySpace {
     LocalSRAM,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ElementType {
-    Bool,
-    BF16,
     F16,
     F32,
     F64,
+    BF16,
     I4,
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
     U4,
+    I8,
     U8,
+    I16,
     U16,
+    I32,
     U32,
+    I64,
     U64,
+    I128,
     U128,
+    Bool,
+    Generic(String),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -114,15 +115,35 @@ impl Type {
                 Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
             }
             Type::Tensor(el_ty, dims, top) => {
+                let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
+                    if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
+                        concrete_el.clone()
+                    } else {
+                        el_ty.clone()
+                    }
+                } else {
+                    el_ty.clone()
+                };
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
-                Type::Tensor(*el_ty, new_dims, top.clone())
+                Type::Tensor(new_el_ty, new_dims, top.clone())
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(inner.substitute(mapping)), top.clone())
             }
-            Type::Simd(el_ty, n) => Type::Simd(*el_ty, *n),
+            Type::Simd(el_ty, n) => {
+                let new_el_ty = if let ElementType::Generic(ref name) = el_ty {
+                    if let Some(Type::Scalar(concrete_el)) = mapping.get(name) {
+                        concrete_el.clone()
+                    } else {
+                        el_ty.clone()
+                    }
+                } else {
+                    el_ty.clone()
+                };
+                Type::Simd(new_el_ty, *n)
+            }
             _ => self.clone(),
         }
     }
@@ -527,11 +548,31 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span.clone(),
             }),
-            Expr::FunctionCall(e) => Expr::FunctionCall(FunctionCallExpr {
-                name: e.name.clone(),
-                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
-                span: e.span.clone(),
-            }),
+            Expr::FunctionCall(e) => {
+                let mut new_name = e.name.clone();
+                if new_name.starts_with("Tensor_") {
+                    let t_name = new_name.strip_prefix("Tensor_").unwrap();
+                    if let Some(Type::Scalar(concrete_el)) = mapping.get(t_name) {
+                        let concrete_name = match concrete_el {
+                            ElementType::F16 => "f16",
+                            ElementType::F32 => "f32",
+                            ElementType::F64 => "f64",
+                            ElementType::BF16 => "bf16",
+                            ElementType::I32 => "i32",
+                            ElementType::I64 => "i64",
+                            ElementType::Bool => "Bool",
+                            ElementType::Generic(g) => g,
+                            _ => "f32",
+                        };
+                        new_name = format!("Tensor_{}", concrete_name);
+                    }
+                }
+                Expr::FunctionCall(FunctionCallExpr {
+                    name: new_name,
+                    args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                    span: e.span.clone(),
+                })
+            }
             Expr::Array(e) => Expr::Array(ArrayExpr {
                 elements: e.elements.iter().map(|a| a.substitute(mapping)).collect(),
                 span: e.span.clone(),

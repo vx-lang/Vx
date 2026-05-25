@@ -214,6 +214,9 @@ impl MlirGenerator {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 };
 
                 let mut shape_str = String::new();
@@ -258,6 +261,9 @@ impl MlirGenerator {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 };
                 ty_str.to_string()
             }
@@ -320,6 +326,9 @@ impl MlirGenerator {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 };
                 format!("vector<{}x{}>", n, ty_str)
             }
@@ -429,6 +438,9 @@ impl MlirGenerator {
                         ElementType::I64 | ElementType::U64 => "i64",
                         ElementType::I128 | ElementType::U128 => "i128",
                         ElementType::Bool => "i1",
+                        ElementType::Generic(_) => {
+                            panic!("Generic element type should be instantiated before codegen")
+                        }
                     };
                     self.current_el_ty = ty_str.to_string();
                 } else if let Some(Type::Scalar(el_ty)) = ty_ann {
@@ -444,6 +456,9 @@ impl MlirGenerator {
                         ElementType::I64 | ElementType::U64 => "i64",
                         ElementType::I128 | ElementType::U128 => "i128",
                         ElementType::Bool => "i1",
+                        ElementType::Generic(_) => {
+                            panic!("Generic element type should be instantiated before codegen")
+                        }
                     };
                     self.current_el_ty = ty_str.to_string();
                 }

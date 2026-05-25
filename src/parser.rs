@@ -240,7 +240,13 @@ impl<'a> Parser<'a> {
                             "i32" => ElementType::I32,
                             "i64" => ElementType::I64,
                             "Bool" => ElementType::Bool,
-                            _ => return Err(format!("Unknown element type {}", ty_ident)),
+                            _ => {
+                                if self.generic_params.contains(&ty_ident) {
+                                    ElementType::Generic(ty_ident)
+                                } else {
+                                    return Err(format!("Unknown element type {}", ty_ident));
+                                }
+                            }
                         };
                         let mut dims = Vec::new();
                         if self.match_token(&TokenType::Comma) {

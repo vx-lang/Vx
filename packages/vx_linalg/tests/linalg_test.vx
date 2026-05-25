@@ -1,90 +1,38 @@
 //===- linalg_test.vx -----------------------------------------*- Vx -*-===//
-// RUN: vxc %s
-// RUN: vxc --emit-mlir %s | FileCheck %s
-
-import packages::vx_linalg::lib;
-
-fn main() -> i32 {
-  // 1. Test Matmul
-  let m: i32 = 10;
-  let n: i32 = 30;
-  let k: i32 = 20;
-  let A: Tensor<f32, [m, k]> = Tensor_f32(m, k);
-  let B: Tensor<f32, [k, n]> = Tensor_f32(k, n);
-  let C: Verified<Tensor<f32, [m, n]>> = matmul(A, B);
-
-  // 2. Test Transpose
-  let x: i32 = 5;
-  let y: i32 = 15;
-  let D: Tensor<f32, [x, y]> = Tensor_f32(x, y);
-  let E: Verified<Tensor<f32, [y, x]>> = transpose(D);
-
-  // 3. Test Norm
-  let s: i32 = 8;
-  let F: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let G: Verified<Tensor<f32, [s, s]>> = norm_l2(F);
-
-  // 4. Test Scalar Multiplication
-  let F2: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let two: f32 = 2.0;
-  let H: Verified<Tensor<f32, [s, s]>> = scalar_mul(F2, two);
-
-  // 5. Test Addition & Subtraction
-  let F3: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let F4: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let I: Verified<Tensor<f32, [s, s]>> = add(F3, F4);
-  
-  let F5: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let F6: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let J: Verified<Tensor<f32, [s, s]>> = sub(F5, F6);
-
-  // 6. Test Dot Product
-  let one: i32 = 1;
-  let len: i32 = 64;
-  assert(one == 1, "Satisfy SMT solver for dot product");
-  let V1: Tensor<f32, [len, one]> = Tensor_f32(len, one);
-  let V2: Tensor<f32, [len, one]> = Tensor_f32(len, one);
-  let dot_res: Verified<Tensor<f32, [one, one]>> = dot(V1, V2);
-
-  // 7. Test Hadamard (Element-wise) Multiplication
-  let F7: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let F8: Tensor<f32, [s, s]> = Tensor_f32(s, s);
-  let K: Verified<Tensor<f32, [s, s]>> = hadamard_mul(F7, F8);
-  
-  // NO_EXEC
-  return 0;
-}
-
 // CHECK: module {
-// CHECK:   func.func @matmul_Genericm_Genericn_Generick(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @matmul_ScalarF32_Genericm_Genericn_Generick(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @transpose_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @matmul_ScalarBF16_Genericm_Genericn_Generick(%arg0: memref<?x?xbf16>, %arg1: memref<?x?xbf16>) -> memref<?x?xbf16> {
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xbf16>
+// CHECK:     return %0 : memref<?x?xbf16>
+// CHECK:   }
+// CHECK:   func.func @transpose_ScalarF32_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @norm_l2_Generics_Generics(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @norm_l2_ScalarF32_Generics_Generics(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @scalar_mul_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: f32) -> memref<?x?xf32> {
+// CHECK:   func.func @scalar_mul_ScalarF32_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: f32) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @add_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @add_ScalarF32_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @sub_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @sub_ScalarF32_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @dot_Genericlen_Genericone(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @dot_ScalarF32_Genericlen_Genericone(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @hadamard_mul_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @hadamard_mul_ScalarF32_Generics_Generics(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
@@ -94,32 +42,93 @@ fn main() -> i32 {
 // CHECK:     %c20_i32 = arith.constant 20 : i32
 // CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     %1 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %2 = call @matmul_Genericm_Genericn_Generick(%0, %1) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %2 = call @matmul_ScalarF32_Genericm_Genericn_Generick(%0, %1) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %3 = builtin.unrealized_conversion_cast to memref<?x?xbf16>
+// CHECK:     %4 = builtin.unrealized_conversion_cast to memref<?x?xbf16>
+// CHECK:     %5 = call @matmul_ScalarBF16_Genericm_Genericn_Generick(%3, %4) : (memref<?x?xbf16>, memref<?x?xbf16>) -> memref<?x?xbf16>
 // CHECK:     %c5_i32 = arith.constant 5 : i32
 // CHECK:     %c15_i32 = arith.constant 15 : i32
-// CHECK:     %3 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %4 = call @transpose_Genericx_Genericy(%3) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %6 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %7 = call @transpose_ScalarF32_Genericx_Genericy(%6) : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     %c8_i32 = arith.constant 8 : i32
-// CHECK:     %5 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %6 = call @norm_l2_Generics_Generics(%5) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     %7 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %cst = arith.constant 2.000000e+00 : f32
-// CHECK:     %8 = call @scalar_mul_Generics_Generics(%7, %cst) : (memref<?x?xf32>, f32) -> memref<?x?xf32>
-// CHECK:     %9 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %8 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %9 = call @norm_l2_ScalarF32_Generics_Generics(%8) : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     %10 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %11 = call @add_Generics_Generics(%9, %10) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %cst = arith.constant 2.000000e+00 : f32
+// CHECK:     %11 = call @scalar_mul_ScalarF32_Generics_Generics(%10, %cst) : (memref<?x?xf32>, f32) -> memref<?x?xf32>
 // CHECK:     %12 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     %13 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %14 = call @sub_Generics_Generics(%12, %13) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     %c1_i32 = arith.constant 1 : i32
-// CHECK:     %c64_i32 = arith.constant 64 : i32
+// CHECK:     %14 = call @add_ScalarF32_Generics_Generics(%12, %13) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     %15 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     %16 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %17 = call @dot_Genericlen_Genericone(%15, %16) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %17 = call @sub_ScalarF32_Generics_Generics(%15, %16) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %c64_i32 = arith.constant 64 : i32
 // CHECK:     %18 = builtin.unrealized_conversion_cast to memref<?x?xf32>
 // CHECK:     %19 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %20 = call @hadamard_mul_Generics_Generics(%18, %19) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %20 = call @dot_ScalarF32_Genericlen_Genericone(%18, %19) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %21 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %22 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %23 = call @hadamard_mul_ScalarF32_Generics_Generics(%21, %22) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
 // CHECK: }
+
+import packages::vx_linalg::lib;
+
+fn main() -> i32 {
+  // 1. Test Matmul
+  let m: i32 = 10;
+  let n: i32 = 30;
+  let k: i32 = 20;
+  let A: Tensor<f32, [m, k]> = Tensor<f32>(m, k);
+  let B: Tensor<f32, [k, n]> = Tensor<f32>(k, n);
+  let C: Verified<Tensor<f32, [m, n]>> = matmul(A, B);
+
+  // Test Matmul bf16
+  let A_bf16: Tensor<bf16, [m, k]> = Tensor<bf16>(m, k);
+  let B_bf16: Tensor<bf16, [k, n]> = Tensor<bf16>(k, n);
+  let C_bf16: Verified<Tensor<bf16, [m, n]>> = matmul(A_bf16, B_bf16);
+
+  // 2. Test Transpose
+  let x: i32 = 5;
+  let y: i32 = 15;
+  let D: Tensor<f32, [x, y]> = Tensor<f32>(x, y);
+  let E: Verified<Tensor<f32, [y, x]>> = transpose(D);
+
+  // 3. Test Norm
+  let s: i32 = 8;
+  let F: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let G: Verified<Tensor<f32, [s, s]>> = norm_l2(F);
+
+  // 4. Test Scalar Multiplication
+  let F2: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let two: f32 = 2.0;
+  let H: Verified<Tensor<f32, [s, s]>> = scalar_mul(F2, two);
+
+  // 5. Test Addition & Subtraction
+  let F3: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let F4: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let I: Verified<Tensor<f32, [s, s]>> = add(F3, F4);
+  
+  let F5: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let F6: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let J: Verified<Tensor<f32, [s, s]>> = sub(F5, F6);
+
+  // 6. Test Dot Product
+  let one: i32 = 1;
+  let len: i32 = 64;
+  assert(one == 1, "Satisfy SMT solver for dot product");
+  let V1: Tensor<f32, [len, one]> = Tensor<f32>(len, one);
+  let V2: Tensor<f32, [len, one]> = Tensor<f32>(len, one);
+  let dot_res: Verified<Tensor<f32, [one, one]>> = dot(V1, V2);
+
+  // 7. Test Hadamard (Element-wise) Multiplication
+  let F7: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let F8: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
+  let K: Verified<Tensor<f32, [s, s]>> = hadamard_mul(F7, F8);
+  
+  // NO_EXEC
+  return 0;
+}
