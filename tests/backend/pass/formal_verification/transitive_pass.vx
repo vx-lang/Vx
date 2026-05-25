@@ -1,12 +1,13 @@
 //===- transitive_pass.vx ---------------------------------===//
 // RUN: vxc %s
+// RUN: vxc --emit-mlir %s | FileCheck %s
 
 fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   assert(N == M, "Must be square");
   return Verified(val);
 }
 
-fn outer<A, B, C>(t: Tensor<f32, [A, C]>) -> Verified<Tensor<f32, [A, C]>> {
+fn outer<A, B, C>(t: Tensor<f32, [A, C]>, dummy_b: Tensor<f32, [B, B]>) -> Verified<Tensor<f32, [A, C]>> {
   // If we know A == B and B == C, the type checker should prove A == C
   assert(A == B, "A equals B");
   assert(B == C, "B equals C");
@@ -20,7 +21,28 @@ fn main() -> i32 {
   assert(n == m, "Proving A == B");
   assert(m == o, "Proving B == C");
   let t: Tensor<f32, [n, o]> = Tensor_f32(n, o);
-  let v: Verified<Tensor<f32, [n, o]>> = outer(t);
+  let t_b: Tensor<f32, [m, m]> = Tensor_f32(m, m);
+  let v: Verified<Tensor<f32, [n, o]>> = outer(t, t_b);
   // NO_EXEC
   return 0;
 }
+
+// CHECK: module {
+// CHECK:   func.func @wrap_Genericn_Generico(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @outer_Genericn_Genericm_Generico(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %0 = call @wrap_Genericn_Generico(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c10_i32 = arith.constant 10 : i32
+// CHECK:     %c10_i32_0 = arith.constant 10 : i32
+// CHECK:     %c10_i32_1 = arith.constant 10 : i32
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %1 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %2 = call @outer_Genericn_Genericm_Generico(%0, %1) : (memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

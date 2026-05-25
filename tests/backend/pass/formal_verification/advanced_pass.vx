@@ -1,5 +1,6 @@
 //===- advanced_pass.vx ---------------------------------===//
 // RUN: vxc %s
+// RUN: vxc --emit-mlir %s | FileCheck %s
 
 fn check_complex_logic<A, B>(val: Tensor<f32, [A, B]>) -> Verified<Tensor<f32, [A, B]>> {
   assert(A == 10 || B == 20, "Logical OR constraint");
@@ -72,3 +73,46 @@ fn main() -> i32 {
   // NO_EXEC
   return 0;
 }
+
+// CHECK: module {
+// CHECK:   func.func @check_complex_logic_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @test_inference_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @nested_verified_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %0 = call @test_inference_Genericsixteen_Genericsixteen(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @compound_math_constraint_Generictwenty_Generictwenty(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @test_inference_Generica_Genericd(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @multi_transitive_bounds_Generica_Genericd(%arg0: memref<?x?xf32>, %arg1: i32, %arg2: i32) -> memref<?x?xf32> {
+// CHECK:     %0 = call @test_inference_Generica_Genericd(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     return %0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c10_i32 = arith.constant 10 : i32
+// CHECK:     %c20_i32 = arith.constant 20 : i32
+// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %1 = call @check_complex_logic_Genericx_Genericy(%0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c16_i32 = arith.constant 16 : i32
+// CHECK:     %2 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %3 = call @nested_verified_Genericsixteen_Genericsixteen(%2) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c20_i32_0 = arith.constant 20 : i32
+// CHECK:     %4 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %5 = call @compound_math_constraint_Generictwenty_Generictwenty(%4) : (memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %c5_i32 = arith.constant 5 : i32
+// CHECK:     %c5_i32_1 = arith.constant 5 : i32
+// CHECK:     %c5_i32_2 = arith.constant 5 : i32
+// CHECK:     %c5_i32_3 = arith.constant 5 : i32
+// CHECK:     %6 = builtin.unrealized_conversion_cast to memref<?x?xf32>
+// CHECK:     %7 = call @multi_transitive_bounds_Generica_Genericd(%6, %c5_i32_1, %c5_i32_2) : (memref<?x?xf32>, i32, i32) -> memref<?x?xf32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

@@ -319,6 +319,24 @@ fn test_backend() {
 }
 
 #[test]
+fn test_backend_pass_formal_verification() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let dir = Path::new("tests/backend/pass/formal_verification");
+    if dir.exists() {
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                println!("Running test_backend_pass_formal_verification on {:?}", path);
+                run_backend_test(&path);
+            }
+        });
+    }
+}
+
+#[test]
 fn test_backend_pass_autodiff() {
     if !cfg!(target_os = "macos") {
         return;
