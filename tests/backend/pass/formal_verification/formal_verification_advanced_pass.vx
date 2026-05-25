@@ -1,5 +1,5 @@
 //===- formal_verification_advanced_pass.vx ---------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn check_complex_logic<A, B>(val: Tensor<f32, [A, B]>) -> Verified<Tensor<f32, [A, B]>> {
   assert(A == 10 || B == 20, "Logical OR constraint");

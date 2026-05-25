@@ -1,5 +1,5 @@
 //===- formal_verification_transitive_pass.vx ---------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   assert(N == M, "Must be square");

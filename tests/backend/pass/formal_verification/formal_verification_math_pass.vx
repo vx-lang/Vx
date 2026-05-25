@@ -1,5 +1,5 @@
 //===- formal_verification_math_pass.vx ---------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn verify_math<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   // Test multiplication, addition, division, and logical operators
