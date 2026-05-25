@@ -113,6 +113,7 @@ fn test_nested_type_resolution() {
                     Box::new(Type::Struct("Matrix".to_string(), None)),
                     Some(MemorySpace::HostDRAM),
                     true,
+                    0,
                 ),
             )],
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
@@ -123,7 +124,7 @@ fn test_nested_type_resolution() {
     let symbol_map = build_symbol_map(&[module.clone()]);
     module.resolve_names(&symbol_map);
 
-    if let Type::Borrow(inner, _, _) = &module.functions[0].params[0].1 {
+    if let Type::Borrow(inner, _, _, _) = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
             assert_eq!(name, "Matrix");
             assert!(id.is_some()); // Deeply nested type must be resolved!

@@ -281,7 +281,7 @@ impl MlirGenerator {
                     inner_ty_str
                 }
             }
-            Type::Borrow(_, mem, _) | Type::Pointer(_, mem, _) => {
+            Type::Borrow(_, mem, _, _) | Type::Pointer(_, mem, _) => {
                 let addr_space = match mem {
                     Some(MemorySpace::NPUHBM) => 1,
                     Some(MemorySpace::LocalSRAM) => 2,

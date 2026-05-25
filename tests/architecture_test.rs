@@ -63,7 +63,8 @@ fn test_pipeline_architecture_hooks() {
 
         fn run_module_b(t: Tensor) -> Tensor {
             let mut result = t;
-            compute_heavy(&result, &result, &result, &result, &result, &result, &result, &result, &result, &result, &mut result);
+            let mut result2: Tensor = Tensor_f32();
+            compute_heavy(&result, &result, &result, &result, &result, &result, &result, &result, &result, &result, &mut result2);
             return result;
         }
         "#,

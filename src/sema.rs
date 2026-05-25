@@ -254,7 +254,7 @@ impl<'a> TypeChecker<'a> {
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
             }
-            (Type::Borrow(t1, m1, mut1), Type::Borrow(t2, m2, mut2)) => {
+            (Type::Borrow(t1, m1, mut1, _r1), Type::Borrow(t2, m2, mut2, _r2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
             }
             (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
@@ -1185,7 +1185,7 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 let mut base_ty = obj_ty.clone();
-                if let Type::Borrow(t, _, _) | Type::Pointer(t, _, _) = base_ty {
+                if let Type::Borrow(t, _, _, _) | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
                 }
 
@@ -1227,7 +1227,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
                     *inner
-                } else if let Type::Borrow(inner, _, _) = obj_ty {
+                } else if let Type::Borrow(inner, _, _, _) = obj_ty {
                     *inner
                 } else if let Type::Tensor(el_ty, _, _) = obj_ty {
                     Type::Scalar(el_ty)
@@ -1462,10 +1462,11 @@ impl<'a> TypeChecker<'a> {
                     // Rewrite AST from MethodCall to FunctionCall
                     let mut call_args = vec![];
                     if let Some(first_param) = method_func.params.first() {
-                        if matches!(
-                            first_param.1,
-                            Type::Borrow(_, _, _) | Type::Pointer(_, _, _)
-                        ) {
+                        let needs_borrow = match first_param.1 {
+                            Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _) => true,
+                            _ => false,
+                        };
+                        if needs_borrow {
                             call_args.push(Expr::Borrow(BorrowExpr {
                                 expr: Box::new((**obj).clone()),
                                 is_mut: false,
@@ -1530,7 +1531,7 @@ impl<'a> TypeChecker<'a> {
                                 is_mut,
                             );
                         }
-                        Type::Borrow(inner, mem, mutability) => {
+                        Type::Borrow(inner, mem, mutability, _region) => {
                             if is_mut && !mutability {
                                 self.errors.push(
                                     "Cannot get mutable pointer from immutable borrow".to_string(),
@@ -1548,7 +1549,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else if _method == "len" {
                     match &base_ty {
-                        Type::Tensor(_, _, _) | Type::Borrow(_, _, _) | Type::Pointer(_, _, _) => {
+                        Type::Tensor(_, _, _)
+                        | Type::Borrow(_, _, _, _)
+                        | Type::Pointer(_, _, _) => {
                             base_ty = Type::Tensor(ElementType::I64, vec![], None);
                         }
                         _ => {
@@ -1669,7 +1672,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                Type::Borrow(Box::new(inner_ty), None, *is_mut)
+                Type::Borrow(Box::new(inner_ty), None, *is_mut, self.scopes.len())
             }
             Expr::Dereference(DereferenceExpr {
                 expr: inner,
@@ -1681,7 +1684,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 let inner_ty = self.check_expr_type(inner);
                 match inner_ty {
-                    Type::Pointer(t, _, _) | Type::Borrow(t, _, _) => *t,
+                    Type::Pointer(t, _, _) | Type::Borrow(t, _, _, _) => *t,
                     _ => {
                         self.errors
                             .push("Cannot dereference non-pointer type".to_string());
@@ -1897,6 +1900,43 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Lowers an AST `Type` to a globally resolved `TypeId` structure.
+    /// This integrates the AST semantic boundary with the hardware-level
+    /// 256-bit FastPath borrow checking rules.
+    pub fn lower_to_type_id(&self, ty: &Type) -> crate::gid::TypeId {
+        // We use a dummy symbol_hash for local types, as we are only concerned
+        // with the Lifetime Signature (Word 2) for borrow checking right now.
+        let mut id = crate::gid::TypeId::new(0, 0, 0, 0);
+
+        match ty {
+            Type::Borrow(_inner, _mem, _is_mut, region) => {
+                // The lifetime of the borrow itself is Covariant (even for mutable borrows,
+                // which allows reborrowing for shorter lifetimes during function calls).
+                // (The inner type T would be invariant for mutable borrows, but we are
+                // only hashing the outer lifetime here).
+                let variance: u8 = 0x1;
+
+                // Pack the region and variance directly into Param 0 of the FastPath hash!
+                // We use standard try_set_fast_param to pack the 16 bits.
+                if let Err(e) = id.try_set_fast_param(0, *region as u16, variance) {
+                    // If we exceed 4095 lexical scopes, we log but continue safely with max
+                    // In a production compiler, this would trigger the SlowPath allocation.
+                    println!("Warning: Region overflow during lowering: {}", e);
+                    let _ = id.try_set_fast_param(0, 4095, variance);
+                }
+            }
+            Type::Pointer(_inner, _mem, is_mut) => {
+                let variance: u8 = if *is_mut { 0x0 } else { 0x1 };
+                // Pointers don't have safe lifetimes, so we assign 'static (0)
+                // which represents the unconstrained lifetime.
+                let _ = id.try_set_fast_param(0, 0, variance);
+            }
+            // For other types, we just return the raw un-initialized hash
+            _ => {}
+        }
+        id
+    }
+
     fn is_assignable(&self, target: &Type, source: &Type) -> bool {
         // println!("is_assignable({:?}, {:?})", target, source);
         if target == source {
@@ -2057,7 +2097,7 @@ impl<'a> TypeChecker<'a> {
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
-            if let Type::Borrow(source_inner, source_mem, source_mut) = source {
+            if let Type::Borrow(source_inner, source_mem, source_mut, source_region) = source {
                 if target_mem == source_mem
                     && (!*target_mut || *source_mut)
                     && self.is_assignable(target_inner, source_inner)
@@ -2067,13 +2107,18 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::Borrow(target_inner, target_mem, target_mut) = target {
-            if let Type::Borrow(source_inner, source_mem, source_mut) = source {
+        if let Type::Borrow(target_inner, target_mem, target_mut, _target_region) = target {
+            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
                 if target_mem == source_mem
                     && (!*target_mut || *source_mut)
                     && self.is_assignable(target_inner, source_inner)
                 {
-                    return true;
+                    // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
+                    let id_target = self.lower_to_type_id(target);
+                    let id_source = self.lower_to_type_id(source);
+                    if crate::borrow::verify_subtyping_bounds(&id_source, &id_target, self.worker) {
+                        return true;
+                    }
                 }
             }
         }

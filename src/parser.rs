@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_type()?;
-            Ok(Type::Borrow(Box::new(inner), None, is_mut))
+            Ok(Type::Borrow(Box::new(inner), None, is_mut, 4095))
         } else if self.match_token(&TokenType::Star) {
             let is_mut = if self.check(&TokenType::Mut) {
                 self.advance();
@@ -1751,7 +1751,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
 
         // Param should be &mut Config
         let param_ty = &func.params[0].1;
-        if let Type::Borrow(inner, None, true) = param_ty {
+        if let Type::Borrow(inner, None, true, _) = param_ty {
             if let Type::Struct(s, _) = &**inner {
                 assert_eq!(s, "Config");
             } else {

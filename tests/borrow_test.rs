@@ -20,20 +20,27 @@ fn test_fast_path_variance_checks() {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let worker = vxc::session::LocalWorkerState::new(global_session.clone());
 
-    // Type A: Variance = 0, Region = 0 ('static)
+    // Type A: Variance = 1 (Covariant), Region = 0 ('static)
     let mut type_a = TypeId::new(0, 0, 0, 0);
-    type_a.try_set_fast_param(0, 0, 0).unwrap();
+    type_a.try_set_fast_param(0, 0, 1).unwrap();
 
-    // Type B: Variance = 0, Region = 1 ('a)
+    // Type B: Variance = 1 (Covariant), Region = 1 ('a)
     let mut type_b = TypeId::new(0, 0, 0, 0);
-    type_b.try_set_fast_param(0, 1, 0).unwrap();
+    type_b.try_set_fast_param(0, 1, 1).unwrap();
 
-    // 'static (0) can be coerced to 'a (1)
+    // 'static (0) can be coerced to 'a (1) for Covariant types
     assert!(verify_subtyping_bounds(&type_a, &type_b, &worker));
 
     // 'a (1) cannot be coerced to 'static (0)
     assert!(!verify_subtyping_bounds(&type_b, &type_a, &worker));
 
-    // Exact structural match
-    assert!(verify_subtyping_bounds(&type_a, &type_a, &worker));
+    // Type C: Variance = 0 (Invariant), Region = 0
+    let mut type_c = TypeId::new(0, 0, 0, 0);
+    type_c.try_set_fast_param(0, 0, 0).unwrap();
+    let mut type_d = TypeId::new(0, 0, 0, 0);
+    type_d.try_set_fast_param(0, 1, 0).unwrap();
+
+    // Invariant requires EXACT match
+    assert!(verify_subtyping_bounds(&type_c, &type_c, &worker));
+    assert!(!verify_subtyping_bounds(&type_c, &type_d, &worker));
 }

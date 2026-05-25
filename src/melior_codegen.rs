@@ -408,7 +408,7 @@ impl<'c> MeliorGenerator<'c> {
                     inner_ty_str
                 }
             }
-            crate::ast::Type::Borrow(_, mem, _) | crate::ast::Type::Pointer(_, mem, _) => {
+            crate::ast::Type::Borrow(_, mem, _, _) | crate::ast::Type::Pointer(_, mem, _) => {
                 let addr_space = match mem {
                     Some(MemorySpace::NPUHBM) => 1,
                     Some(MemorySpace::LocalSRAM) => 2,

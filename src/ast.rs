@@ -63,8 +63,8 @@ pub enum Type {
     Tensor(ElementType, Vec<Expr>, Option<Topology>),
     Matrix,
     Ref(Box<Type>, MemorySpace),
-    Borrow(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
-    Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
+    Borrow(Box<Type>, Option<MemorySpace>, bool, usize), // (type, mem_space, is_mut, region_id)
+    Pointer(Box<Type>, Option<MemorySpace>, bool),       // (type, mem_space, is_mut)
     Scalar(ElementType),
     Struct(String, Option<crate::gid::TypeId>),
     Enum(String, Option<crate::gid::TypeId>),
@@ -104,9 +104,12 @@ impl Type {
                 let new_args = args.iter().map(|a| a.substitute(mapping)).collect();
                 Type::GenericInstance(Box::new(new_base), new_args)
             }
-            Type::Borrow(inner, mem, is_mut) => {
-                Type::Borrow(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
-            }
+            Type::Borrow(inner, mem, is_mut, region) => Type::Borrow(
+                Box::new(inner.substitute(mapping)),
+                mem.clone(),
+                *is_mut,
+                *region,
+            ),
             Type::Pointer(inner, mem, is_mut) => {
                 Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
             }
@@ -905,7 +908,7 @@ impl Type {
                 }
             }
             Type::Ref(inner, _)
-            | Type::Borrow(inner, _, _)
+            | Type::Borrow(inner, _, _, _)
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => {
