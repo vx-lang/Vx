@@ -1,10 +1,8 @@
-- `[x]` Document the 256-bit hashing algorithm in `src/borrow.rs`
-  - `[x]` Explain the `TypeId` bitpacking structure (Word 2)
-  - `[x]` Provide examples of Region IDs, Variance Flags, and the bitwise comparison math
-- `[x]` Implement `TypeChecker::lower_to_type_id` in `src/sema.rs`
-  - `[x]` Handle `Type::Borrow` mapping variance (Mutable -> Invariant, Immutable -> Covariant)
-  - `[x]` Map scope depth to Region ID
-- `[x]` Hook up `verify_subtyping_bounds` to `is_assignable`
-  - `[x]` Replace raw tuple comparison with the FastPath call for `Borrow` types
-- `[x]` Run and pass tests
-- `[x]` Update `walkthrough.md`
+- [x] Create `tests/backend/fail/formal_verification/` directory
+- [x] Add `verified_assignment.vx` fail test
+- [x] Add `verified_stripping.vx` fail test
+- [x] Add `smt_generic_mismatch.vx` fail test
+- [x] Add `failed_assertion.vx` fail test
+- [x] Add `tests/backend/pass/formal_verification/verified_coercion.vx` pass test
+- [x] Update `tests/compile_test.rs` to run `test_backend_fail_formal_verification`
+- [x] Run test suite to verify tests fail/pass correctly
