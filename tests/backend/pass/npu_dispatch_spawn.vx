@@ -1,0 +1,18 @@
+//===- npu_dispatch_spawn.vx -----------------------------------*- Vx -*-===//
+//
+// Tests that vx.spawn on Topology::NPU[0] successfully outlines the region
+// into a separate MLIR func.func and replaces the original block with a call.
+//
+//===----------------------------------------------------------------------===//
+
+fn main() -> i32 {
+  let a = transfer(Tensor([4, 4]), Memory::NPU_HBM);
+  let b = transfer(Tensor([4, 4]), Memory::NPU_HBM);
+
+  spawn on(Topology::NPU[0]) {
+    b[0][0] = a[0][0];
+    let x = a;
+    let y = b;
+  }
+  return 0;
+}

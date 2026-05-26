@@ -180,7 +180,15 @@ impl CompilerDriver {
 
                     let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
                     codegen.generate(&monomorphized_ast, &module_asts);
-                    let module = codegen.into_module();
+                    let mut module = codegen.into_module();
+
+                    let vx_pm = melior::pass::PassManager::new(&context);
+                    unsafe {
+                        crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
+                    }
+                    if let Err(e) = vx_pm.run(&mut module) {
+                        eprintln!("Failed to lower Vx dialect: {}", e);
+                    }
 
                     if !module.as_operation().verify() {
                         eprintln!("Warning: MLIR Verification failed for {}", filename);
@@ -203,11 +211,14 @@ impl CompilerDriver {
 
                     let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
                     codegen.generate(&monomorphized_ast, &module_asts);
-                    let module = codegen.into_module();
+                    let mut module = codegen.into_module();
 
                     if !module.as_operation().verify() {
                         return Err("MLIR Module Verification Failed".to_string());
                     }
+
+                    crate::melior_codegen::lower_to_llvm(&context, &mut module)
+                        .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
 
                     let mlir_str = format!("{}", module.as_operation());
                     let out = crate::jit::execute_mlir(&mlir_str).map_err(|e| e.to_string())?;

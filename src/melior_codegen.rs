@@ -25,7 +25,7 @@ use crate::ast::*;
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
-    fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
+    pub fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
 }
 
 pub fn register_vx_dialect(context: &Context) {
@@ -64,7 +64,27 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
         }
     }
 
-    // Use the parse_pass_pipeline utility to configure our exact pipeline
+    // Instead of overwriting with parse_pass_pipeline, we append passes manually
+    // or we parse a pipeline into an empty manager and nest it?
+    // Let's just use pass_manager.add_pass() for standard passes!
+    // But `parse_pass_pipeline` is easier. So we can just parse the rest of the pipeline
+    // by appending our pass name to the string!
+    // Wait, the pass name is not registered as a string! ConvertVxToStandardPass has no String name unless we give it one!
+    // We can just add the passes one by one using the string API, or `pass_manager.add_pass`.
+    // Actually, `parse_pass_pipeline` adds to the pass manager, it doesn't necessarily clear it?
+    // Wait! `melior::utility::parse_pass_pipeline` DOES clear or overwrite if it's top level!
+    // Wait, let's just add the C++ pass AFTER parse_pass_pipeline?
+    // NO, VxLowering must happen FIRST because it removes custom `vx` ops.
+    // So let's parse the standard pipeline, but wait, `addVxLoweringPass` is a C API.
+    // If we call `addVxLoweringPass` BEFORE, and `parse_pass_pipeline` clears it, that's bad.
+    // Let's just use a separate PassManager for VxLowering!
+    let vx_pm = melior::pass::PassManager::new(context);
+    unsafe {
+        addVxLoweringPass(vx_pm.to_raw());
+    }
+    vx_pm.run(module).map_err(|e| format!("Failed to lower Vx dialect: {}", e))?;
+
+    // Now run standard pipeline
     let mut pipeline = "builtin.module(".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
@@ -1226,6 +1246,11 @@ impl<'c> LowerToMelior<'c> for SpawnOnStmt {
         // For simplicity, we can just let it be or add an empty yield. We will add a yield if needed later,
         // but since our dialect is custom, we don't strictly enforce terminator yet, or we use `func.return`.
         // Wait, if it's inside a function, `vx.spawn` region doesn't need to return.
+        let yield_op = melior::ir::operation::OperationBuilder::new("vx.yield", location)
+            .build()
+            .expect("Failed to build vx.yield operation");
+        body_block.append_operation(yield_op);
+
         region.append_block(body_block);
 
         let topology_id = topology_to_i32(&self.top);
@@ -1365,15 +1390,35 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             };
             let tensor_ty_str = format!("memref<?x?x{}>", mlir_ty_str);
             let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
-            let dummy_op = melior::ir::operation::OperationBuilder::new(
-                "builtin.unrealized_conversion_cast",
+
+            let c4_op = melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
                 Location::unknown(gen.context),
             )
+            .add_results(&[Type::index(gen.context)])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 4).into(),
+            )])
+            .build()
+            .unwrap();
+            let c4_ref = block.append_operation(c4_op);
+            let c4_val: Value<'c, 'c> = c4_ref.result(0).unwrap().into();
+
+            let alloc_op = melior::ir::operation::OperationBuilder::new(
+                "memref.alloc",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[c4_val, c4_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 0]).into()
+            )])
             .add_results(&[tensor_ty])
             .build()
             .unwrap();
-            let dummy_ref = block.append_operation(dummy_op);
-            return (dummy_ref.result(0).unwrap().into(), tensor_ty);
+            let alloc_ref = block.append_operation(alloc_op);
+            return (alloc_ref.result(0).unwrap().into(), tensor_ty);
         }
 
         if name == "reshape" || name == "transpose" {
