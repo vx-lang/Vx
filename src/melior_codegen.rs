@@ -336,7 +336,7 @@ impl<'c> MeliorGenerator<'c> {
 
     fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
         let ty_str = match ty {
-            crate::ast::Type::Tensor(el_ty, dims, _) => {
+            crate::ast::Type::Tensor(el_ty, dims, top) => {
                 let ty_str = match el_ty {
                     ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
@@ -381,7 +381,22 @@ impl<'c> MeliorGenerator<'c> {
                     shape_str.push('x');
                 }
 
-                format!("memref<{}{}>", shape_str, ty_str)
+                let addr_space = match top {
+                    Some(crate::ast::Topology::NPU(_))
+                    | Some(crate::ast::Topology::Slice(_, _, _))
+                    | Some(crate::ast::Topology::ANE) => 1,
+                    Some(crate::ast::Topology::AccCore(_)) => 2,
+                    Some(crate::ast::Topology::Host)
+                    | Some(crate::ast::Topology::AMX)
+                    | Some(crate::ast::Topology::GPU)
+                    | None => 0,
+                };
+
+                if addr_space != 0 {
+                    format!("memref<{}{}, {}>", shape_str, ty_str, addr_space)
+                } else {
+                    format!("memref<{}{}>", shape_str, ty_str)
+                }
             }
             crate::ast::Type::Scalar(el_ty) => match el_ty {
                 ElementType::F16 => "f16",

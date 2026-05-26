@@ -1,31 +1,32 @@
-# Binary Operators Refactoring
+# Standard Library & MLIR Tensor Refactoring
 
-We have successfully refactored the abstract syntax tree to provide clearer semantic separation of binary operations. `BinaryOp` was overloaded and has been split into three distinct categories.
+We have successfully implemented four major standard library and compiler backend pillars for the Vx v3.0 release. These additions transform the language from utilizing raw C-FFI hacks into providing an ergonomic, native standard library and topologically-aware MLIR constructs.
 
 ## Changes Made
 
-- **AST Restructuring (`src/ast.rs`)**:
-  - Reduced `BinaryOp` to purely arithmetic operations (`Add`, `Sub`, `Mul`, `Div`).
-  - Introduced `RelationalOp` (`Eq`, `NotEq`, `Lt`, `Gt`, `Le`, `Ge`) and `RelationalOpExpr`.
-  - Introduced `LogicalOp` (`And`, `Or`) and `LogicalOpExpr`.
-- **Operator Hierarchy**:
-  - Added the `BinaryOperator` trait, which guarantees `lhs()`, `rhs()`, and `span()` methods. Implemented it for `BinaryOpExpr`, `RelationalOpExpr`, and `LogicalOpExpr`.
-  - Added the `is_binary_operator()` and `get_binary_operands()` helper functions directly on `Expr` to allow querying without needing to unwrap the enum variants.
-- **Parser Updates (`src/parser.rs`)**:
-  - `parse_binary_expr` now correctly emits `Expr::BinaryOp`, `Expr::RelationalOp`, or `Expr::LogicalOp` depending on the matched token.
-- **Semantic Analysis (`src/sema.rs`)**:
-  - Updated constant evaluation to match and evaluate values according to their new semantic types.
-  - Corrected `type_check_expr` and `check_expr` to branch logic depending on arithmetic, relational, or logical operations.
-- **MLIR Codegen (`src/melior_codegen.rs` and `src/codegen.rs`)**:
-  - Implemented `MeliorOpInfo` uniquely for `BinaryOp`, `RelationalOp`, and `LogicalOp`.
-  - Added dedicated `LowerToMelior` implementations for `RelationalOpExpr` and `LogicalOpExpr`.
-  - Adapted string-based MLIR emission logic in `codegen.rs` to map the new expression types properly.
+### Phase 1: File I/O (`fs.vx` & `io.vx`)
+- Retained the `File` struct wrapping low-level `vx_file_*` extern functions.
+- Introduced `print_i32` into `io.vx` to provide standard formatting capabilities, mirroring the standard `stdin_read`, `stdout_write`, and `stderr_write`.
 
-## Validation Results
+### Phase 2: Native Strings (`string.vx`)
+- Defined a formal `struct String` wrapper over `*mut i8` to abstract raw C string operations.
+- Implemented core memory and string-manipulation methods: `new()`, `from_c_str()`, `push_c_str()`, `len()`, `as_c_str()`, and `drop()`.
+- This lays the groundwork for standard string iteration and manipulation.
 
-- `cargo fmt` completed successfully.
-- All core unit tests and compilation tests passed successfully.
-- The tests ran without requiring modification, ensuring that we achieved complete backwards compatibility at the syntactic level while massively improving internal AST semantics.
+### Phase 3: Core Mathematical Functions (`math.vx`)
+- Refactored `trait Math` to accept `self`, making it function as an object-oriented interface.
+- Implemented `Math` for both `f32` and `f64`.
+- The trait implementation safely bridges to the highly optimized `libvx_std_core.dylib` LLVM intrinsics.
+
+### Phase 4: Topologically-Aware Tensors (`melior_codegen.rs`)
+- In Vx, the AST supports a Topology identifier inside the type system: `Type::Tensor(ElementType, Vec<Expr>, Option<Topology>)`.
+- Previously, this topology was discarded, lowering to raw `memref<?x?xf32>`.
+- Modified `melior_codegen.rs` to intercept the tensor's `Topology` and map it dynamically to an MLIR Memory Space integer (e.g. `1` for `NPUHBM`, `2` for `AccCore`, `0` for `HostDRAM`).
+- Tensors correctly emit topology-aware MLIR variables like `memref<?x?xf32, 1>`.
+
+## Validation
+- All backend generation tests pass! The compiler successfully emits the memory space integers for tensor `memref` constructs.
+- Core standard library parses successfully and acts as a solid baseline for `stdlib/std`.
 
 > [!NOTE]
-> The changes were committed with a placeholder issue ID `[#42]`.
+> These changes were grouped under Issue ID `[#43]`.

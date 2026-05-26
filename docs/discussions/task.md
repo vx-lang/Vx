@@ -1,4 +1,4 @@
-- [ ] Phase 1: Implement File I/O (`fs.vx` and `io.vx`)
-- [ ] Phase 2: Native Strings (`string.vx`)
-- [ ] Phase 3: Core Mathematical Functions (`math.vx`)
-- [ ] Phase 4: MLIR Memref-Backed Topologically-Aware Tensors
+- [x] Phase 1: Implement File I/O (`fs.vx` and `io.vx`)
+- [x] Phase 2: Native Strings (`string.vx`)
+- [x] Phase 3: Core Mathematical Functions (`math.vx`)
+- [x] Phase 4: MLIR Memref-Backed Topologically-Aware Tensors
