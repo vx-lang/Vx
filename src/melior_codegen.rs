@@ -962,8 +962,8 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             rhs,
             span: _,
         } = self;
-        let (mut lhs_val, mut lhs_ty) = gen.generate_expr(lhs, block);
-        let (mut rhs_val, mut rhs_ty) = gen.generate_expr(rhs, block);
+        let (lhs_val, lhs_ty) = gen.generate_expr(lhs, block);
+        let (rhs_val, _rhs_ty) = gen.generate_expr(rhs, block);
 
         let lhs_ty_str = lhs_ty.to_string();
         let rhs_ty_str = rhs_ty.to_string();

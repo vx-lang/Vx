@@ -1627,8 +1627,8 @@ impl MlirGenerator {
                 rhs,
                 span: _,
             }) => {
-                let (mut lhs_val, mut lhs_ty) = self.generate_expr(lhs, expected_ty);
-                let (rhs_val, rhs_ty) = self.generate_expr(rhs, &lhs_ty);
+                let (lhs_val, lhs_ty) = self.generate_expr(lhs, expected_ty);
+                let (rhs_val, _rhs_ty) = self.generate_expr(rhs, &lhs_ty);
 
                 let res = self.next_var();
                 let is_int = lhs_ty.starts_with("i") || lhs_ty == "index";
