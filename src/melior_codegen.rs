@@ -82,7 +82,9 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     unsafe {
         addVxLoweringPass(vx_pm.to_raw());
     }
-    vx_pm.run(module).map_err(|e| format!("Failed to lower Vx dialect: {}", e))?;
+    vx_pm
+        .run(module)
+        .map_err(|e| format!("Failed to lower Vx dialect: {}", e))?;
 
     // Now run standard pipeline
     let mut pipeline = "builtin.module(".to_string();
@@ -1412,7 +1414,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             .add_operands(&[c4_val, c4_val])
             .add_attributes(&[(
                 melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 0]).into()
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 0]).into(),
             )])
             .add_results(&[tensor_ty])
             .build()

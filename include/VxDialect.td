@@ -30,4 +30,9 @@ def Vx_TransferOp : Vx_Op<"transfer"> {
     let results = (outs AnyType:$dst);
 }
 
+// A yield operation to terminate vx.spawn regions
+def Vx_YieldOp : Vx_Op<"yield", [Terminator]> {
+    let summary = "Terminates a vx.spawn region.";
+}
+
 #endif // VX_DIALECT
