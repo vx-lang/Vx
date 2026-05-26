@@ -582,6 +582,13 @@ impl MeliorOpInfo for BinaryOp {
         }
     }
 
+    /// Returns the integer value corresponding to the MLIR `arith.cmpf` or `arith.cmpi` predicate enum.
+    ///
+    /// These integer values map directly to the internal enum representation in MLIR's C++ API:
+    /// - For `arith.cmpf` (is_float = true), values map to `mlir::arith::cmpfPredicate`:
+    ///   1 = oeq, 2 = ogt, 3 = oge, 4 = olt, 5 = ole, 6 = one
+    /// - For `arith.cmpi` (is_float = false), values map to `mlir::arith::cmpiPredicate`:
+    ///   0 = eq, 1 = ne, 2 = slt, 3 = sle, 4 = sgt, 5 = sge
     fn get_predicate(&self, is_float: bool) -> Option<i64> {
         if matches!(
             self,
