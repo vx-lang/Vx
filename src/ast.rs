@@ -572,6 +572,22 @@ impl Expr {
         }
     }
 
+    pub fn is_binary_operator(&self) -> bool {
+        matches!(
+            self,
+            Expr::BinaryOp(_) | Expr::RelationalOp(_) | Expr::LogicalOp(_)
+        )
+    }
+
+    pub fn get_binary_operands(&self) -> Option<(&Expr, &Expr)> {
+        match self {
+            Expr::BinaryOp(e) => Some((&e.lhs, &e.rhs)),
+            Expr::RelationalOp(e) => Some((&e.lhs, &e.rhs)),
+            Expr::LogicalOp(e) => Some((&e.lhs, &e.rhs)),
+            _ => None,
+        }
+    }
+
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Expr {
         match self {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {

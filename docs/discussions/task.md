@@ -1,5 +1,4 @@
-- [x] Update `src/ast.rs` with `RelationalOp`, `LogicalOp` and new `Expr` variants.
-- [x] Update `src/parser.rs` to parse the new `Expr` variants correctly.
-- [x] Update `src/sema.rs` to type check `RelationalOpExpr` and `LogicalOpExpr`.
-- [x] Update `src/melior_codegen.rs` to implement `LowerToMelior` for the new variants.
-- [x] Run `cargo test` and `cargo fmt`.
+- [x] Implement Option 2 from the Implementation Plan.
+- [x] Add `is_binary_operator` to `Expr`.
+- [x] Add `get_binary_operands` to `Expr`.
+- [x] Verify tests pass.

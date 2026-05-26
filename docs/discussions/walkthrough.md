@@ -8,6 +8,8 @@ We have successfully refactored the abstract syntax tree to provide clearer sema
   - Reduced `BinaryOp` to purely arithmetic operations (`Add`, `Sub`, `Mul`, `Div`).
   - Introduced `RelationalOp` (`Eq`, `NotEq`, `Lt`, `Gt`, `Le`, `Ge`) and `RelationalOpExpr`.
   - Introduced `LogicalOp` (`And`, `Or`) and `LogicalOpExpr`.
+- **Operator Hierarchy**:
+  - To compensate for the lack of traditional OOP inheritance, we added the `is_binary_operator()` and `get_binary_operands()` helper functions directly on `Expr`. This establishes a clear hierarchy where arithmetic, relational, and logical operations can be queried generically.
 - **Parser Updates (`src/parser.rs`)**:
   - `parse_binary_expr` now correctly emits `Expr::BinaryOp`, `Expr::RelationalOp`, or `Expr::LogicalOp` depending on the matched token.
 - **Semantic Analysis (`src/sema.rs`)**:
@@ -21,8 +23,7 @@ We have successfully refactored the abstract syntax tree to provide clearer sema
 ## Validation Results
 
 - `cargo fmt` completed successfully.
-- All 31 core unit tests passed.
-- All 11 compilation and backend-generation integration tests passed successfully.
+- All core unit tests and compilation tests passed successfully.
 - The tests ran without requiring modification, ensuring that we achieved complete backwards compatibility at the syntactic level while massively improving internal AST semantics.
 
 > [!NOTE]
