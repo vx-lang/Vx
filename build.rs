@@ -269,7 +269,9 @@ fn main() {
         "-Iinclude",               // to find VxDialect.h
     ]);
     dialect_cmd.args(&llvm_cxxflags_vec);
-    let status = dialect_cmd.status().expect("Failed to execute cxx for VxDialect");
+    let status = dialect_cmd
+        .status()
+        .expect("Failed to execute cxx for VxDialect");
     assert!(status.success(), "clang++ compilation failed for VxDialect");
 
     let mut lowering_cmd = Command::new(&cxx);
@@ -283,8 +285,13 @@ fn main() {
         "-Iinclude",               // to find VxDialect.h
     ]);
     lowering_cmd.args(&llvm_cxxflags_vec);
-    let status = lowering_cmd.status().expect("Failed to execute cxx for VxLowering");
-    assert!(status.success(), "clang++ compilation failed for VxLowering");
+    let status = lowering_cmd
+        .status()
+        .expect("Failed to execute cxx for VxLowering");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for VxLowering"
+    );
 
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);

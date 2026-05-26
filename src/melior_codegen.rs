@@ -39,7 +39,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     register_vx_dialect(context);
 
     let pass_manager = melior::pass::PassManager::new(context);
-    
+
     // Add custom Vx lowering passes
     unsafe {
         addVxLoweringPass(pass_manager.to_raw());

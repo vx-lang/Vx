@@ -3,6 +3,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/IR/Builders.h"
@@ -68,17 +69,65 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   }
 };
 
+struct TransferOpLowering : public OpRewritePattern<TransferOp> {
+  using OpRewritePattern<TransferOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TransferOp op, PatternRewriter &rewriter) const override {
+    Value src = op.getSrc();
+    auto srcType = dyn_cast<MemRefType>(src.getType());
+    
+    // If it's not a MemRef (e.g., primitive i32/f32), we fail compilation.
+    // The user explicitly mandated that implicit conversions/pass-throughs
+    // are disabled to enforce strict data layout transitions.
+    if (!srcType) {
+      op.emitError("vx.transfer currently only supports MemRef types. Attempted to transfer a scalar/primitive.");
+      return failure();
+    }
+
+    int32_t topology = op.getTargetTopology();
+    auto memorySpace = IntegerAttr::get(IntegerType::get(getContext(), 32), topology);
+
+    auto targetType = MemRefType::get(srcType.getShape(), srcType.getElementType(),
+                                      srcType.getLayout(), memorySpace);
+
+    // Emit memref.alloc on target topology
+    auto allocOp = rewriter.create<memref::AllocOp>(op.getLoc(), targetType);
+
+    // Emit memref.copy from src to alloc
+    rewriter.create<memref::CopyOp>(op.getLoc(), src, allocOp);
+
+    // Enforce Zero Memory Leaks:
+    // We must emit a memref.dealloc at the end of the current scope (block)
+    // so that the allocated memory behaves like a C++ RAII object.
+    Block *currentBlock = op->getBlock();
+    if (!currentBlock->empty() && currentBlock->back().hasTrait<OpTrait::IsTerminator>()) {
+      // Temporarily move insertion point to just before the terminator
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(&currentBlock->back());
+      rewriter.create<memref::DeallocOp>(op.getLoc(), allocOp);
+    } else {
+      // If there is no terminator yet, just append it to the block
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(currentBlock);
+      rewriter.create<memref::DeallocOp>(op.getLoc(), allocOp);
+    }
+
+    // Replace transfer with the allocated memref
+    rewriter.replaceOp(op, allocOp.getResult());
+    return success();
+  }
+};
+
 struct ConvertVxToStandardPass : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<SpawnOpLowering>(&getContext());
+    patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
     ConversionTarget target(getContext());
-    target.addLegalDialect<async::AsyncDialect, func::FuncDialect>();
-    target.addIllegalOp<SpawnOp>();
-    // We allow transfer op to remain for now or mark it illegal if we implement lowering
+    target.addLegalDialect<async::AsyncDialect, func::FuncDialect, memref::MemRefDialect>();
+    target.addIllegalOp<SpawnOp, TransferOp>();
 
     if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
       signalPassFailure();

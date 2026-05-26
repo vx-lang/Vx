@@ -7,7 +7,7 @@ Keep all your attention on this repository and the tasks related to it. If I nee
 - Always write detailed commit messages.
 - Always run formatters: 'clang-format', fix all the warnings/errors before commiting.
 - Make sure there is a github issue ID attached to each commit unless the commit is cleanup (formatting, minor fixes)
-- If you have finished a walkthrough then save the Walkthrough, Task.md, and Implementation Plan in the docs/discussions/ directory.
+- If you have finished a walkthrough then save the Walkthrough, Task.md, and Implementation Plan in the docs/discussions/ directory. Create a new file, do not overwrite an existing file.
 - When planning to add TODO to make progress: better add a `assert` to prevent accidental usage of the feature (prefer adding a github issue ID to it as well).
 
 ## Build instructions
