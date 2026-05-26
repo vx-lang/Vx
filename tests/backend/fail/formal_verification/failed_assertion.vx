@@ -3,13 +3,13 @@
 // CHECK: Contract violated for Verified return type
 
 fn test_failed_assertion() -> Verified<i32> {
-    let x: i32 = 5;
-    let y: i32 = 10;
-    assert(x > y); // This assertion should fail statically during SMT solving
-    return Verified(x);
+  let x: i32 = 5;
+  let y: i32 = 10;
+  assert(x > y); // This assertion should fail statically during SMT solving
+  return Verified(x);
 }
 
 fn main() -> i32 {
-    let res: Verified<i32> = test_failed_assertion();
-    return 0;
+  let res: Verified<i32> = test_failed_assertion();
+  return 0;
 }

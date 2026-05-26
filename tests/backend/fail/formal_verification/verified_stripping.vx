@@ -3,16 +3,16 @@
 // CHECK: Type mismatch in argument 1 for function 'requires_unverified'. Expected Tensor(F32, [Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }), Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None), got Verified(Tensor(F32, [Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }), Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None))
 
 fn requires_unverified(x: Tensor<f32, [10, 10]>) -> i32 {
-    return 0;
+  return 0;
 }
 
 fn test() -> i32 {
-    let unverified: Tensor<f32, [10, 10]> = Tensor<f32>(10, 10);
-    let verified: Verified<Tensor<f32, [10, 10]>> = Verified(unverified);
-    // Verified wrappers must be explicitly unpacked, they do not implicitly coerce down to unverified equivalents
-    return requires_unverified(verified);
+  let unverified: Tensor<f32, [10, 10]> = Tensor<f32>(10, 10);
+  let verified: Verified<Tensor<f32, [10, 10]>> = Verified(unverified);
+  // Verified wrappers must be explicitly unpacked, they do not implicitly coerce down to unverified equivalents
+  return requires_unverified(verified);
 }
 
 fn main() -> i32 {
-    return test();
+  return test();
 }
