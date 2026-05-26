@@ -14,3 +14,35 @@ extern {
   fn vx_string_free_c_str(ptr: *const i8) -> i32;
   fn vx_string_drop(ptr: *mut i8) -> i32;
 }
+
+struct String {
+  ptr: *mut i8;
+}
+
+impl String {
+  fn new() -> String {
+    let ptr = vx_string_new();
+    String { ptr }
+  }
+
+  fn from_c_str(c_str: *const i8) -> String {
+    let ptr = vx_string_from_c_str(c_str);
+    String { ptr }
+  }
+
+  fn push_c_str(self: *mut String, c_str: *const i8) -> i32 {
+    vx_string_push_c_str(self.ptr, c_str)
+  }
+
+  fn len(self: *mut String) -> i32 {
+    vx_string_len(self.ptr)
+  }
+
+  fn as_c_str(self: *mut String) -> *const i8 {
+    vx_string_as_c_str(self.ptr)
+  }
+
+  fn drop(self: *mut String) -> i32 {
+    vx_string_drop(self.ptr)
+  }
+}
