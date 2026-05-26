@@ -30,7 +30,7 @@ fn process(t_host: Tensor<f32>) -> Tensor<f32> {
 // CHECK:   ^bb0(%arg0: memref<?x?xf32>):
 // CHECK:     %0 = "vx.transfer"(%arg0) <{target_topology = 100 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     "vx.spawn"() <{topology = 100 : i32}> ({
-// CHECK:     ^bb0:
+// CHECK:       "vx.yield"() : () -> ()
 // CHECK:     }) : () -> ()
 // CHECK:     "func.return"(%arg0) : (memref<?x?xf32>) -> ()
 // CHECK:   }) : () -> ()

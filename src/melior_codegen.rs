@@ -358,6 +358,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Vjp(e) => e.lower(self, block),
             Expr::Jvp(e) => e.lower(self, block),
             Expr::Transfer(e) => e.lower(self, block),
+            Expr::Borrow(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -704,6 +705,20 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
         } else {
             panic!("Undefined variable: {}", name);
         }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for BorrowExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let BorrowExpr { expr, .. } = self;
+        if let Expr::Identifier(id) = &**expr {
+            if let Some((val, ty)) = gen.env.get(&id.name) {
+                return (*val, *ty);
+            }
+        }
+        let (val, ty) = gen.generate_expr(expr, block);
+        (val, ty)
     }
 }
 
