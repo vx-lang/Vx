@@ -609,7 +609,7 @@ impl MeliorOpInfo for BinaryOp {
                 BinaryOp::Lt => 4,    // olt
                 BinaryOp::Le => 5,    // ole
                 BinaryOp::NotEq => 6, // one
-                _ => 0,
+                _ => unreachable!("Unsupported binary op for float get_predicate: {:?}", self),
             }
         } else {
             match self {
@@ -619,7 +619,7 @@ impl MeliorOpInfo for BinaryOp {
                 BinaryOp::Le => 3,    // sle
                 BinaryOp::Gt => 4,    // sgt
                 BinaryOp::Ge => 5,    // sge
-                _ => 0,
+                _ => unreachable!("Unsupported binary op for int get_predicate: {:?}", self),
             }
         })
     }
