@@ -12,8 +12,8 @@ fn main() -> i32 {
   let half_pi: f32 = 1.570796;
 
   // sin(pi/2) approx 1.0
-  let s: f32 = sin_f32(half_pi);
-  let s_abs: f32 = abs_f32(s);
+  let s: f32 = half_pi.sin();
+  let s_abs: f32 = s.abs();
 
   let mut ret: i32 = 1;
   // Test that FFI correctly returned scalar 1.0

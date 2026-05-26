@@ -2,6 +2,7 @@
 Keep all your attention on this repository and the tasks related to it. If I need help with other repositories, I will open a separate chat session.
 
 ## Git
+- **CRITICAL** You are not allowed to `git push`
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.
