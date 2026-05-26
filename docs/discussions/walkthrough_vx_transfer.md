@@ -17,3 +17,8 @@ We have successfully implemented the MLIR conversion pattern for the `vx.transfe
 
 - Compiled the MLIR C++ plugin using LLVM 22's updated `dyn_cast` semantics.
 - Passed `cargo test`, ensuring that the pipeline integration doesn't crash the compiler and correctly links the new conversion logic.
+
+## Frontend Enforcement (Rust)
+
+- **Strict Implicit Coercion Rules**: Updated `is_assignable` in `src/sema.rs` to completely remove implicit unwrapping of `Type::Ref` and `Type::Pinned`. This makes cross-device memory tracking 100% explicit; the compiler will reject any assignment across different memory topologies unless wrapped in a `transfer(...)` or explicitly using `.to_device()` / `.to_host()`.
+- **Test Suite Updates**: Updated `tests/frontend/pass/custom_matmul.vx` to use `transfer()` since implicit conversions are no longer permitted. Tests now correctly fail if explicit memory bounds are ignored.
