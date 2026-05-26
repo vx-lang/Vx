@@ -22,13 +22,13 @@ extern {
 }
 
 struct TcpStream {
-  ptr: *mut i8;
+  ptr: *mut i8,
 }
 
 impl TcpStream {
   fn connect(addr: *const i8) -> TcpStream {
     let ptr = vx_tcp_stream_connect(addr);
-    TcpStream { ptr }
+    TcpStream { ptr: ptr }
   }
 
   fn read(self: *mut TcpStream, buffer: *mut u8, len: i64) -> i64 {
@@ -45,13 +45,13 @@ fn tcp_stream_drop(stream: *mut TcpStream) {
 }
 
 struct UdpSocket {
-  ptr: *mut i8;
+  ptr: *mut i8,
 }
 
 impl UdpSocket {
   fn bind(addr: *const i8) -> UdpSocket {
     let ptr = vx_udp_socket_bind(addr);
-    UdpSocket { ptr }
+    UdpSocket { ptr: ptr }
   }
 
   fn recv(self: *mut UdpSocket, buffer: *mut u8, len: i64) -> i64 {
@@ -68,13 +68,13 @@ fn udp_socket_drop(socket: *mut UdpSocket) {
 }
 
 struct TcpListener {
-  ptr: *mut i8;
+  ptr: *mut i8,
 }
 
 impl TcpListener {
   fn bind(addr: *const i8) -> TcpListener {
     let ptr = vx_tcp_listener_bind(addr);
-    TcpListener { ptr }
+    TcpListener { ptr: ptr }
   }
 
   fn accept(self: *mut TcpListener) -> TcpStream {

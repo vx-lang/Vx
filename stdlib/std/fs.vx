@@ -14,14 +14,14 @@ extern {
 }
 
 struct File {
-  ptr: *mut i8;
+  ptr: *mut i8,
 }
 
 impl File {
   // Mode flags: 0 = read, 1 = write, 2 = read/write (create)
   fn open(path: *const i8, mode: i32) -> File {
     let ptr = vx_file_open(path, mode);
-    File { ptr }
+    File { ptr: ptr }
   }
 
   fn read(self: *mut File, buffer: *mut u8, len: i64) -> i64 {

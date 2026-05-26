@@ -16,33 +16,33 @@ extern {
 }
 
 struct String {
-  ptr: *mut i8;
+  ptr: *mut i8,
 }
 
 impl String {
   fn new() -> String {
     let ptr = vx_string_new();
-    String { ptr }
+    String { ptr: ptr }
   }
 
   fn from_c_str(c_str: *const i8) -> String {
     let ptr = vx_string_from_c_str(c_str);
-    String { ptr }
+    String { ptr: ptr }
   }
 
   fn push_c_str(self: *mut String, c_str: *const i8) -> i32 {
-    vx_string_push_c_str(self.ptr, c_str)
+    return vx_string_push_c_str(self.ptr, c_str);
   }
 
   fn len(self: *mut String) -> i32 {
-    vx_string_len(self.ptr)
+    return vx_string_len(self.ptr);
   }
 
   fn as_c_str(self: *mut String) -> *const i8 {
-    vx_string_as_c_str(self.ptr)
+    return vx_string_as_c_str(self.ptr);
   }
 
   fn drop(self: *mut String) -> i32 {
-    vx_string_drop(self.ptr)
+    return vx_string_drop(self.ptr);
   }
 }
