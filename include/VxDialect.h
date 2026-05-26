@@ -9,6 +9,7 @@
 #include "mlir/Interfaces/CastInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir-c/IR.h"
+#include "mlir-c/Pass.h"
 
 // Include the auto-generated Dialect header.
 #include "VxDialect.h.inc"
@@ -20,6 +21,9 @@
 extern "C" {
     // FFI entry point for Rust / Melior to register the dialect
     void registerVxDialect(MlirContext ctx);
+    
+    // FFI entry point for Rust / Melior to register the lowering pass
+    void addVxLoweringPass(MlirPassManager pm);
 }
 
 #endif // VX_DIALECT_H

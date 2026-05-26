@@ -1,4 +1,5 @@
-- [x] Phase 1: Implement File I/O (`fs.vx` and `io.vx`)
-- [x] Phase 2: Native Strings (`string.vx`)
-- [x] Phase 3: Core Mathematical Functions (`math.vx`)
-- [x] Phase 4: MLIR Memref-Backed Topologically-Aware Tensors
+- [x] Step 1: Extend `VxDialect.td` with required traits.
+- [x] Step 2: Create `src/dialect/VxLowering.cpp` for MLIR conversion logic.
+- [x] Step 3: Expose C-API pass registration in `VxDialect.cpp` / `VxDialect.h`.
+- [x] Step 4: Update `build.rs` to compile the new C++ files.
+- [x] Step 5: Update `src/melior_codegen.rs` to add the new pass to the pipeline.

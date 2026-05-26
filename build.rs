@@ -251,9 +251,11 @@ fn main() {
         .status()
         .expect("Failed to run mlir-tblgen for op defs");
     assert!(status.success(), "mlir-tblgen failed");
+    println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
+    let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
 
     let mut dialect_cmd = Command::new(&cxx);
@@ -267,17 +269,29 @@ fn main() {
         "-Iinclude",               // to find VxDialect.h
     ]);
     dialect_cmd.args(&llvm_cxxflags_vec);
-
-    let status = dialect_cmd
-        .status()
-        .expect("Failed to execute cxx for VxDialect");
+    let status = dialect_cmd.status().expect("Failed to execute cxx for VxDialect");
     assert!(status.success(), "clang++ compilation failed for VxDialect");
+
+    let mut lowering_cmd = Command::new(&cxx);
+    lowering_cmd.args([
+        "-c",
+        "src/dialect/VxLowering.cpp",
+        "-o",
+        lowering_obj_path.to_str().unwrap(),
+        "-std=c++17",
+        &format!("-I{}", out_dir), // to find the generated .inc files
+        "-Iinclude",               // to find VxDialect.h
+    ]);
+    lowering_cmd.args(&llvm_cxxflags_vec);
+    let status = lowering_cmd.status().expect("Failed to execute cxx for VxLowering");
+    assert!(status.success(), "clang++ compilation failed for VxLowering");
 
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);
     ar_cmd.args([
         dialect_lib_path.to_str().unwrap(),
         dialect_obj_path.to_str().unwrap(),
+        lowering_obj_path.to_str().unwrap(),
     ]);
     let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
     assert!(status.success(), "ar failed for libvx_dialect");
