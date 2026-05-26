@@ -1,4 +1,3 @@
-- [x] Implement Option 2 from the Implementation Plan.
-- [x] Add `is_binary_operator` to `Expr`.
-- [x] Add `get_binary_operands` to `Expr`.
+- [x] Implement Option 2 from the Implementation Plan (Helper methods on `Expr`).
+- [x] Implement Option 1 from the Implementation Plan (`BinaryOperator` trait).
 - [x] Verify tests pass.

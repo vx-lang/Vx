@@ -9,7 +9,8 @@ We have successfully refactored the abstract syntax tree to provide clearer sema
   - Introduced `RelationalOp` (`Eq`, `NotEq`, `Lt`, `Gt`, `Le`, `Ge`) and `RelationalOpExpr`.
   - Introduced `LogicalOp` (`And`, `Or`) and `LogicalOpExpr`.
 - **Operator Hierarchy**:
-  - To compensate for the lack of traditional OOP inheritance, we added the `is_binary_operator()` and `get_binary_operands()` helper functions directly on `Expr`. This establishes a clear hierarchy where arithmetic, relational, and logical operations can be queried generically.
+  - Added the `BinaryOperator` trait, which guarantees `lhs()`, `rhs()`, and `span()` methods. Implemented it for `BinaryOpExpr`, `RelationalOpExpr`, and `LogicalOpExpr`.
+  - Added the `is_binary_operator()` and `get_binary_operands()` helper functions directly on `Expr` to allow querying without needing to unwrap the enum variants.
 - **Parser Updates (`src/parser.rs`)**:
   - `parse_binary_expr` now correctly emits `Expr::BinaryOp`, `Expr::RelationalOp`, or `Expr::LogicalOp` depending on the matched token.
 - **Semantic Analysis (`src/sema.rs`)**:

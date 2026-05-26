@@ -305,6 +305,12 @@ impl MethodCallExpr {
     }
 }
 
+pub trait BinaryOperator {
+    fn lhs(&self) -> &Expr;
+    fn rhs(&self) -> &Expr;
+    fn span(&self) -> &Span;
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct BinaryOpExpr {
     pub lhs: Box<Expr>,
@@ -315,6 +321,18 @@ pub struct BinaryOpExpr {
 impl BinaryOpExpr {
     pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self {
         Self { lhs, op, rhs, span }
+    }
+}
+
+impl BinaryOperator for BinaryOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -331,6 +349,18 @@ impl RelationalOpExpr {
     }
 }
 
+impl BinaryOperator for RelationalOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct LogicalOpExpr {
     pub lhs: Box<Expr>,
@@ -341,6 +371,18 @@ pub struct LogicalOpExpr {
 impl LogicalOpExpr {
     pub fn new(lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr>, span: Span) -> Self {
         Self { lhs, op, rhs, span }
+    }
+}
+
+impl BinaryOperator for LogicalOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
     }
 }
 
