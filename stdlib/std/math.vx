@@ -37,45 +37,46 @@ extern {
 }
 
 trait Math {
-  fn sin() -> Self;
-  fn cos() -> Self;
-  fn tan() -> Self;
-  fn abs() -> Self;
-  fn sqrt() -> Self;
-  fn exp() -> Self;
-  fn ln() -> Self;
-  fn asin() -> Self;
-  fn acos() -> Self;
-  fn atan() -> Self;
-  fn log2() -> Self;
-  fn log10() -> Self;
+  fn sin(self) -> Self;
+  fn cos(self) -> Self;
+  fn tan(self) -> Self;
+  fn abs(self) -> Self;
+  fn sqrt(self) -> Self;
+  fn exp(self) -> Self;
+  fn ln(self) -> Self;
+  fn asin(self) -> Self;
+  fn acos(self) -> Self;
+  fn atan(self) -> Self;
+  fn log2(self) -> Self;
+  fn log10(self) -> Self;
 }
 
-// In Vx, to define implementations for primitive types, we can use functions mapping directly to the extern blocks.
-// Below are standard free functions that wrap the FFI calls for users.
+impl Math for f32 {
+  fn sin(self) -> f32 { vx_math_sin_f32(self) }
+  fn cos(self) -> f32 { vx_math_cos_f32(self) }
+  fn tan(self) -> f32 { vx_math_tan_f32(self) }
+  fn abs(self) -> f32 { vx_math_abs_f32(self) }
+  fn sqrt(self) -> f32 { vx_math_sqrt_f32(self) }
+  fn exp(self) -> f32 { vx_math_exp_f32(self) }
+  fn ln(self) -> f32 { vx_math_log_f32(self) }
+  fn asin(self) -> f32 { vx_math_asin_f32(self) }
+  fn acos(self) -> f32 { vx_math_acos_f32(self) }
+  fn atan(self) -> f32 { vx_math_atan_f32(self) }
+  fn log2(self) -> f32 { vx_math_log2_f32(self) }
+  fn log10(self) -> f32 { vx_math_log10_f32(self) }
+}
 
-fn sin_f32(x: f32) -> f32 { return vx_math_sin_f32(x); }
-fn cos_f32(x: f32) -> f32 { return vx_math_cos_f32(x); }
-fn tan_f32(x: f32) -> f32 { return vx_math_tan_f32(x); }
-fn abs_f32(x: f32) -> f32 { return vx_math_abs_f32(x); }
-fn sqrt_f32(x: f32) -> f32 { return vx_math_sqrt_f32(x); }
-fn exp_f32(x: f32) -> f32 { return vx_math_exp_f32(x); }
-fn ln_f32(x: f32) -> f32 { return vx_math_log_f32(x); }
-fn asin_f32(x: f32) -> f32 { return vx_math_asin_f32(x); }
-fn acos_f32(x: f32) -> f32 { return vx_math_acos_f32(x); }
-fn atan_f32(x: f32) -> f32 { return vx_math_atan_f32(x); }
-fn log2_f32(x: f32) -> f32 { return vx_math_log2_f32(x); }
-fn log10_f32(x: f32) -> f32 { return vx_math_log10_f32(x); }
-
-fn sin_f64(x: f64) -> f64 { return vx_math_sin_f64(x); }
-fn cos_f64(x: f64) -> f64 { return vx_math_cos_f64(x); }
-fn tan_f64(x: f64) -> f64 { return vx_math_tan_f64(x); }
-fn abs_f64(x: f64) -> f64 { return vx_math_abs_f64(x); }
-fn sqrt_f64(x: f64) -> f64 { return vx_math_sqrt_f64(x); }
-fn exp_f64(x: f64) -> f64 { return vx_math_exp_f64(x); }
-fn ln_f64(x: f64) -> f64 { return vx_math_log_f64(x); }
-fn asin_f64(x: f64) -> f64 { return vx_math_asin_f64(x); }
-fn acos_f64(x: f64) -> f64 { return vx_math_acos_f64(x); }
-fn atan_f64(x: f64) -> f64 { return vx_math_atan_f64(x); }
-fn log2_f64(x: f64) -> f64 { return vx_math_log2_f64(x); }
-fn log10_f64(x: f64) -> f64 { return vx_math_log10_f64(x); }
+impl Math for f64 {
+  fn sin(self) -> f64 { vx_math_sin_f64(self) }
+  fn cos(self) -> f64 { vx_math_cos_f64(self) }
+  fn tan(self) -> f64 { vx_math_tan_f64(self) }
+  fn abs(self) -> f64 { vx_math_abs_f64(self) }
+  fn sqrt(self) -> f64 { vx_math_sqrt_f64(self) }
+  fn exp(self) -> f64 { vx_math_exp_f64(self) }
+  fn ln(self) -> f64 { vx_math_log_f64(self) }
+  fn asin(self) -> f64 { vx_math_asin_f64(self) }
+  fn acos(self) -> f64 { vx_math_acos_f64(self) }
+  fn atan(self) -> f64 { vx_math_atan_f64(self) }
+  fn log2(self) -> f64 { vx_math_log2_f64(self) }
+  fn log10(self) -> f64 { vx_math_log10_f64(self) }
+}
