@@ -314,6 +314,8 @@ impl<'c> MeliorGenerator<'c> {
         match expr {
             Expr::Identifier(e) => e.lower(self, block),
             Expr::BinaryOp(e) => e.lower(self, block),
+            Expr::RelationalOp(e) => e.lower(self, block),
+            Expr::LogicalOp(e) => e.lower(self, block),
             Expr::UnaryOp(e) => e.lower(self, block),
             Expr::StructInit(e) => e.lower(self, block),
             Expr::MemberAccess(e) => e.lower(self, block),
@@ -564,64 +566,56 @@ impl MeliorOpInfo for BinaryOp {
                     "arith.divsi"
                 }
             }
-            BinaryOp::Eq
-            | BinaryOp::NotEq
-            | BinaryOp::Lt
-            | BinaryOp::Gt
-            | BinaryOp::Le
-            | BinaryOp::Ge => {
-                if is_float {
-                    "arith.cmpf"
-                } else {
-                    "arith.cmpi"
-                }
-            }
-            BinaryOp::And => "arith.andi",
-            BinaryOp::Or => "arith.ori",
-            _ => panic!("Unsupported binary op for get_op_name: {:?}", self),
         }
     }
 
-    /// Returns the integer value corresponding to the MLIR `arith.cmpf` or `arith.cmpi` predicate enum.
-    ///
-    /// These integer values map directly to the internal enum representation in MLIR's C++ API:
-    /// - For `arith.cmpf` (is_float = true), values map to `mlir::arith::cmpfPredicate`:
-    ///   1 = oeq, 2 = ogt, 3 = oge, 4 = olt, 5 = ole, 6 = one
-    /// - For `arith.cmpi` (is_float = false), values map to `mlir::arith::cmpiPredicate`:
-    ///   0 = eq, 1 = ne, 2 = slt, 3 = sle, 4 = sgt, 5 = sge
-    fn get_predicate(&self, is_float: bool) -> Option<i64> {
-        if matches!(
-            self,
-            BinaryOp::Add
-                | BinaryOp::Sub
-                | BinaryOp::Mul
-                | BinaryOp::Div
-                | BinaryOp::And
-                | BinaryOp::Or
-        ) {
-            return None;
+    fn get_predicate(&self, _is_float: bool) -> Option<i64> {
+        None
+    }
+}
+
+impl MeliorOpInfo for RelationalOp {
+    fn get_op_name(&self, is_float: bool) -> &'static str {
+        if is_float {
+            "arith.cmpf"
+        } else {
+            "arith.cmpi"
         }
+    }
+
+    fn get_predicate(&self, is_float: bool) -> Option<i64> {
         Some(if is_float {
             match self {
-                BinaryOp::Eq => 1,    // oeq
-                BinaryOp::Gt => 2,    // ogt
-                BinaryOp::Ge => 3,    // oge
-                BinaryOp::Lt => 4,    // olt
-                BinaryOp::Le => 5,    // ole
-                BinaryOp::NotEq => 6, // one
-                _ => unreachable!("Unsupported binary op for float get_predicate: {:?}", self),
+                RelationalOp::Eq => 1,    // oeq
+                RelationalOp::Gt => 2,    // ogt
+                RelationalOp::Ge => 3,    // oge
+                RelationalOp::Lt => 4,    // olt
+                RelationalOp::Le => 5,    // ole
+                RelationalOp::NotEq => 6, // one
             }
         } else {
             match self {
-                BinaryOp::Eq => 0,    // eq
-                BinaryOp::NotEq => 1, // ne
-                BinaryOp::Lt => 2,    // slt
-                BinaryOp::Le => 3,    // sle
-                BinaryOp::Gt => 4,    // sgt
-                BinaryOp::Ge => 5,    // sge
-                _ => unreachable!("Unsupported binary op for int get_predicate: {:?}", self),
+                RelationalOp::Eq => 0,    // eq
+                RelationalOp::NotEq => 1, // ne
+                RelationalOp::Lt => 2,    // slt
+                RelationalOp::Le => 3,    // sle
+                RelationalOp::Gt => 4,    // sgt
+                RelationalOp::Ge => 5,    // sge
             }
         })
+    }
+}
+
+impl MeliorOpInfo for LogicalOp {
+    fn get_op_name(&self, _is_float: bool) -> &'static str {
+        match self {
+            LogicalOp::And => "arith.andi",
+            LogicalOp::Or => "arith.ori",
+        }
+    }
+
+    fn get_predicate(&self, _is_float: bool) -> Option<i64> {
+        None
     }
 }
 
@@ -941,6 +935,105 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let bin_op = builder.build().unwrap();
         let bin_ref = block.append_operation(bin_op);
         (bin_ref.result(0).unwrap().into(), ret_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for RelationalOpExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let RelationalOpExpr {
+            lhs,
+            op,
+            rhs,
+            span: _,
+        } = self;
+        let (mut lhs_val, mut lhs_ty) = gen.generate_expr(lhs, block);
+        let (mut rhs_val, mut rhs_ty) = gen.generate_expr(rhs, block);
+
+        let lhs_ty_str = lhs_ty.to_string();
+        let rhs_ty_str = rhs_ty.to_string();
+
+        let mut final_ty = lhs_ty;
+
+        if lhs_ty != rhs_ty
+            && ((lhs_ty_str == "index" && rhs_ty_str == "i32")
+                || (lhs_ty_str == "i32" && rhs_ty_str == "index"))
+        {
+            if lhs_ty_str == "index" && rhs_ty_str == "i32" {
+                let cast_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.index_cast",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[rhs_val])
+                .add_results(&[lhs_ty])
+                .build()
+                .unwrap();
+                rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+            } else {
+                let cast_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.index_cast",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[lhs_val])
+                .add_results(&[rhs_ty])
+                .build()
+                .unwrap();
+                lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                final_ty = rhs_ty;
+            }
+        }
+
+        let is_float = final_ty.to_string().contains("f32") || final_ty.to_string().contains("f64");
+
+        let mut builder = melior::ir::operation::OperationBuilder::new(
+            op.get_op_name(is_float),
+            Location::unknown(gen.context),
+        );
+        builder = builder.add_operands(&[lhs_val, rhs_val]);
+
+        let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
+            let i1_ty = Type::parse(gen.context, "i1").unwrap();
+            let i64_ty = Type::parse(gen.context, "i64").unwrap();
+            builder = builder.add_results(&[i1_ty]).add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "predicate"),
+                melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
+            )]);
+            i1_ty
+        } else {
+            builder = builder.add_results(&[final_ty]);
+            final_ty
+        };
+
+        let bin_op = builder.build().unwrap();
+        let bin_ref = block.append_operation(bin_op);
+        (bin_ref.result(0).unwrap().into(), ret_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for LogicalOpExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let LogicalOpExpr {
+            lhs,
+            op,
+            rhs,
+            span: _,
+        } = self;
+        let (lhs_val, _lhs_ty) = gen.generate_expr(lhs, block);
+        let (rhs_val, _rhs_ty) = gen.generate_expr(rhs, block);
+
+        let final_ty = Type::parse(gen.context, "i1").unwrap();
+
+        let builder = melior::ir::operation::OperationBuilder::new(
+            op.get_op_name(false),
+            Location::unknown(gen.context),
+        )
+        .add_operands(&[lhs_val, rhs_val])
+        .add_results(&[final_ty]);
+
+        let bin_op = builder.build().unwrap();
+        let bin_ref = block.append_operation(bin_op);
+        (bin_ref.result(0).unwrap().into(), final_ty)
     }
 }
 

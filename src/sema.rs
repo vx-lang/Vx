@@ -544,16 +544,16 @@ impl<'a> TypeChecker<'a> {
                 return true;
             }
             // Basic commutativity for ==
-            if let Expr::BinaryOp(BinaryOpExpr {
+            if let Expr::RelationalOp(RelationalOpExpr {
                 lhs: l1,
-                op: BinaryOp::Eq,
+                op: RelationalOp::Eq,
                 rhs: r1,
                 ..
             }) = expr
             {
-                if let Expr::BinaryOp(BinaryOpExpr {
+                if let Expr::RelationalOp(RelationalOpExpr {
                     lhs: l2,
-                    op: BinaryOp::Eq,
+                    op: RelationalOp::Eq,
                     rhs: r2,
                     ..
                 }) = constraint
@@ -565,9 +565,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
         // Lightweight transitive equality solver for Identifier == Identifier
-        if let Expr::BinaryOp(BinaryOpExpr {
+        if let Expr::RelationalOp(RelationalOpExpr {
             lhs,
-            op: BinaryOp::Eq,
+            op: RelationalOp::Eq,
             rhs,
             ..
         }) = expr
@@ -576,9 +576,9 @@ impl<'a> TypeChecker<'a> {
                 let mut adj: std::collections::HashMap<String, Vec<String>> =
                     std::collections::HashMap::new();
                 for constraint in &self.constraints {
-                    if let Expr::BinaryOp(BinaryOpExpr {
+                    if let Expr::RelationalOp(RelationalOpExpr {
                         lhs: c_lhs,
-                        op: BinaryOp::Eq,
+                        op: RelationalOp::Eq,
                         rhs: c_rhs,
                         ..
                     }) = constraint
@@ -647,14 +647,6 @@ impl<'a> TypeChecker<'a> {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), BinaryOp::Eq) => Some(Value::Bool(a == b)),
-                    (Value::Number(a), Value::Number(b), BinaryOp::NotEq) => {
-                        Some(Value::Bool(a != b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Lt) => Some(Value::Bool(a < b)),
-                    (Value::Number(a), Value::Number(b), BinaryOp::Gt) => Some(Value::Bool(a > b)),
-                    (Value::Number(a), Value::Number(b), BinaryOp::Le) => Some(Value::Bool(a <= b)),
-                    (Value::Number(a), Value::Number(b), BinaryOp::Ge) => Some(Value::Bool(a >= b)),
                     (Value::Number(a), Value::Number(b), BinaryOp::Add) => {
                         Some(Value::Number(a + b))
                     }
@@ -667,10 +659,54 @@ impl<'a> TypeChecker<'a> {
                     (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
                         Some(Value::Number(a / b))
                     }
-                    (Value::Bool(a), Value::Bool(b), BinaryOp::Eq) => Some(Value::Bool(a == b)),
-                    (Value::Bool(a), Value::Bool(b), BinaryOp::NotEq) => Some(Value::Bool(a != b)),
-                    (Value::Bool(a), Value::Bool(b), BinaryOp::And) => Some(Value::Bool(a && b)),
-                    (Value::Bool(a), Value::Bool(b), BinaryOp::Or) => Some(Value::Bool(a || b)),
+                    _ => None,
+                }
+            }
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs,
+                op,
+                rhs,
+                span: _,
+            }) => {
+                let l = self.eval_expr(lhs, env)?;
+                let r = self.eval_expr(rhs, env)?;
+                match (l, r, op) {
+                    (Value::Number(a), Value::Number(b), RelationalOp::Eq) => {
+                        Some(Value::Bool(a == b))
+                    }
+                    (Value::Number(a), Value::Number(b), RelationalOp::NotEq) => {
+                        Some(Value::Bool(a != b))
+                    }
+                    (Value::Number(a), Value::Number(b), RelationalOp::Lt) => {
+                        Some(Value::Bool(a < b))
+                    }
+                    (Value::Number(a), Value::Number(b), RelationalOp::Gt) => {
+                        Some(Value::Bool(a > b))
+                    }
+                    (Value::Number(a), Value::Number(b), RelationalOp::Le) => {
+                        Some(Value::Bool(a <= b))
+                    }
+                    (Value::Number(a), Value::Number(b), RelationalOp::Ge) => {
+                        Some(Value::Bool(a >= b))
+                    }
+                    (Value::Bool(a), Value::Bool(b), RelationalOp::Eq) => Some(Value::Bool(a == b)),
+                    (Value::Bool(a), Value::Bool(b), RelationalOp::NotEq) => {
+                        Some(Value::Bool(a != b))
+                    }
+                    _ => None,
+                }
+            }
+            Expr::LogicalOp(LogicalOpExpr {
+                lhs,
+                op,
+                rhs,
+                span: _,
+            }) => {
+                let l = self.eval_expr(lhs, env)?;
+                let r = self.eval_expr(rhs, env)?;
+                match (l, r, op) {
+                    (Value::Bool(a), Value::Bool(b), LogicalOp::And) => Some(Value::Bool(a && b)),
+                    (Value::Bool(a), Value::Bool(b), LogicalOp::Or) => Some(Value::Bool(a || b)),
                     _ => None,
                 }
             }
@@ -757,8 +793,9 @@ impl<'a> TypeChecker<'a> {
                 BinaryOp::Sub => crate::hir::OP_SUB,
                 BinaryOp::Mul => crate::hir::OP_MUL,
                 BinaryOp::Div => crate::hir::OP_DIV,
-                _ => crate::hir::OP_NOP,
             },
+            Expr::RelationalOp(RelationalOpExpr { .. }) => crate::hir::OP_NOP,
+            Expr::LogicalOp(LogicalOpExpr { .. }) => crate::hir::OP_NOP,
             Expr::FunctionCall(FunctionCallExpr {
                 name: _,
                 args: _,
@@ -1694,19 +1731,8 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                let op_consume = match op {
-                    BinaryOp::Eq
-                    | BinaryOp::NotEq
-                    | BinaryOp::Lt
-                    | BinaryOp::Gt
-                    | BinaryOp::Le
-                    | BinaryOp::Ge
-                    | BinaryOp::And
-                    | BinaryOp::Or => false,
-                    _ => consume,
-                };
-                let lhs_ty = self.check_expr_type_flag(lhs, op_consume, silent);
-                let rhs_ty = self.check_expr_type_flag(rhs, op_consume, silent);
+                let lhs_ty = self.check_expr_type_flag(lhs, consume, silent);
+                let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
 
                 // Tensor operator overloading (A * B) -> Matmul
                 if let (
@@ -1734,17 +1760,39 @@ impl<'a> TypeChecker<'a> {
                         lhs_ty, rhs_ty
                     ));
                 }
-                match op {
-                    BinaryOp::Eq
-                    | BinaryOp::NotEq
-                    | BinaryOp::Lt
-                    | BinaryOp::Gt
-                    | BinaryOp::Le
-                    | BinaryOp::Ge
-                    | BinaryOp::And
-                    | BinaryOp::Or => Type::Scalar(ElementType::Bool),
-                    _ => lhs_ty,
+                lhs_ty
+            }
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs,
+                op: _,
+                rhs,
+                span: _,
+            }) => {
+                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
+                let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
+                if !self.is_assignable(&lhs_ty, &rhs_ty) {
+                    self.errors.push(format!(
+                        "Type mismatch in relational operation: {:?} vs {:?}",
+                        lhs_ty, rhs_ty
+                    ));
                 }
+                Type::Scalar(ElementType::Bool)
+            }
+            Expr::LogicalOp(LogicalOpExpr {
+                lhs,
+                op: _,
+                rhs,
+                span: _,
+            }) => {
+                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
+                let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
+                if !self.is_assignable(&lhs_ty, &rhs_ty) {
+                    self.errors.push(format!(
+                        "Type mismatch in logical operation: {:?} vs {:?}",
+                        lhs_ty, rhs_ty
+                    ));
+                }
+                Type::Scalar(ElementType::Bool)
             }
             Expr::MemorySpace(MemorySpaceExpr { .. }) | Expr::Topology(TopologyExpr { .. }) => {
                 Type::Tensor(ElementType::F32, vec![], None)

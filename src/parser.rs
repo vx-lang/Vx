@@ -352,28 +352,117 @@ impl<'a> Parser<'a> {
                 break;
             }
             let token = self.advance().clone();
-            let op = match token.kind {
-                TokenType::OrOr => BinaryOp::Or,
-                TokenType::AndAnd => BinaryOp::And,
-                TokenType::EqEq => BinaryOp::Eq,
-                TokenType::NotEq => BinaryOp::NotEq,
-                TokenType::LessEq => BinaryOp::Le,
-                TokenType::GreaterEq => BinaryOp::Ge,
-                TokenType::LeftAngle => BinaryOp::Lt,
-                TokenType::RightAngle => BinaryOp::Gt,
-                TokenType::Plus => BinaryOp::Add,
-                TokenType::Minus => BinaryOp::Sub,
-                TokenType::Star => BinaryOp::Mul,
-                TokenType::Slash => BinaryOp::Div,
+            match token.kind {
+                TokenType::OrOr => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::LogicalOp(LogicalOpExpr {
+                        lhs: Box::new(left),
+                        op: LogicalOp::Or,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::AndAnd => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::LogicalOp(LogicalOpExpr {
+                        lhs: Box::new(left),
+                        op: LogicalOp::And,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::EqEq => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::Eq,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::NotEq => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::NotEq,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::LessEq => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::Le,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::GreaterEq => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::Ge,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::LeftAngle => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::Lt,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::RightAngle => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::RelationalOp(RelationalOpExpr {
+                        lhs: Box::new(left),
+                        op: RelationalOp::Gt,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Plus => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::Add,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Minus => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::Sub,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Star => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::Mul,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
+                TokenType::Slash => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::Div,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
                 _ => return Err("Unknown binary operator".to_string()),
             };
-            let right = self.parse_binary_expr(op_prec + 1)?;
-            left = Expr::BinaryOp(BinaryOpExpr {
-                lhs: Box::new(left),
-                op,
-                rhs: Box::new(right),
-                span: Span::default(),
-            });
         }
 
         Ok(left)

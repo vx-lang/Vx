@@ -1,8 +1,5 @@
-- [x] Create `tests/backend/fail/formal_verification/` directory
-- [x] Add `verified_assignment.vx` fail test
-- [x] Add `verified_stripping.vx` fail test
-- [x] Add `smt_generic_mismatch.vx` fail test
-- [x] Add `failed_assertion.vx` fail test
-- [x] Add `tests/backend/pass/formal_verification/verified_coercion.vx` pass test
-- [x] Update `tests/compile_test.rs` to run `test_backend_fail_formal_verification`
-- [x] Run test suite to verify tests fail/pass correctly
+- [x] Update `src/ast.rs` with `RelationalOp`, `LogicalOp` and new `Expr` variants.
+- [x] Update `src/parser.rs` to parse the new `Expr` variants correctly.
+- [x] Update `src/sema.rs` to type check `RelationalOpExpr` and `LogicalOpExpr`.
+- [x] Update `src/melior_codegen.rs` to implement `LowerToMelior` for the new variants.
+- [x] Run `cargo test` and `cargo fmt`.

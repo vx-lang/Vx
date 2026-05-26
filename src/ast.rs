@@ -155,14 +155,20 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
-    // Relational
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RelationalOp {
     Eq,
     NotEq,
     Lt,
     Gt,
     Le,
     Ge,
-    // Logical
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LogicalOp {
     And,
     Or,
 }
@@ -308,6 +314,32 @@ pub struct BinaryOpExpr {
 }
 impl BinaryOpExpr {
     pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RelationalOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: RelationalOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl RelationalOpExpr {
+    pub fn new(lhs: Box<Expr>, op: RelationalOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct LogicalOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: LogicalOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl LogicalOpExpr {
+    pub fn new(lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr>, span: Span) -> Self {
         Self { lhs, op, rhs, span }
     }
 }
@@ -493,6 +525,8 @@ pub enum Expr {
     IndexAccess(IndexAccessExpr),
     MethodCall(MethodCallExpr),
     BinaryOp(BinaryOpExpr),
+    RelationalOp(RelationalOpExpr),
+    LogicalOp(LogicalOpExpr),
     UnaryOp(UnaryOpExpr),
     Borrow(BorrowExpr),
     Dereference(DereferenceExpr),
@@ -521,6 +555,8 @@ impl Expr {
             Expr::IndexAccess(e) => e.span.clone(),
             Expr::MethodCall(e) => e.span.clone(),
             Expr::BinaryOp(e) => e.span.clone(),
+            Expr::RelationalOp(e) => e.span.clone(),
+            Expr::LogicalOp(e) => e.span.clone(),
             Expr::UnaryOp(e) => e.span.clone(),
             Expr::Borrow(e) => e.span.clone(),
             Expr::Dereference(e) => e.span.clone(),
@@ -594,6 +630,18 @@ impl Expr {
                 span: e.span.clone(),
             }),
             Expr::BinaryOp(e) => Expr::BinaryOp(BinaryOpExpr {
+                lhs: Box::new(e.lhs.substitute(mapping)),
+                op: e.op.clone(),
+                rhs: Box::new(e.rhs.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::RelationalOp(e) => Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(e.lhs.substitute(mapping)),
+                op: e.op.clone(),
+                rhs: Box::new(e.rhs.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::LogicalOp(e) => Expr::LogicalOp(LogicalOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),

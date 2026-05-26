@@ -1,67 +1,41 @@
-# Verified<T> Testing and Directory Restructuring
+# Split Binary Operators
 
-This plan outlines the next steps to ensure `Verified<T>` is robust against edge cases and formal verification tests are properly organized.
-
-## Open Questions
-
-> [!IMPORTANT]
-> You mentioned "move all the formal verification tests into a separate directory just like autograd". Currently, we don't have a directory named `autograd`, but we have `tests/backend/pass/autodiff` and the formal verification tests are already separated in `tests/backend/pass/formal_verification`.
-> Do you want me to:
->
-> 1. Move them to a top-level `tests/formal_verification/` (with `pass` and `fail` subdirectories)?
-> 1. Create `tests/backend/fail/formal_verification/` alongside the existing `pass` directory to store the new negative edge-cases?
->
-> My proposal (detailed below) is to use option 2, keeping it consistent with the `backend/pass/` and `backend/fail/` structures. Please let me know if you prefer option 1!
+The current `BinaryOp` enum is overloaded with arithmetic, relational, and logical operators. We will separate these into distinct enums and `Expr` variants to better reflect their semantic differences.
 
 ## Proposed Changes
 
-### 1. Robust Testing for `Verified<T>` Edge Cases
+### AST (`src/ast.rs`)
 
-We will introduce a comprehensive suite of ~10-12 tests to guarantee the formal verification type logic is bulletproof.
+#### [MODIFY] \[ast.rs\](file:///Users/adityak/go/Vx/src/ast.rs)
 
-#### [NEW] `tests/backend/fail/formal_verification/verified_assignment.vx`
+- Remove relational and logical operators from `BinaryOp`.
+- Define `pub enum RelationalOp { Eq, NotEq, Lt, Gt, Le, Ge }` and `pub struct RelationalOpExpr`.
+- Define `pub enum LogicalOp { And, Or }` and `pub struct LogicalOpExpr`.
+- Add `RelationalOp(RelationalOpExpr)` and `LogicalOp(LogicalOpExpr)` to the `Expr` enum.
+- Update `Expr::span()`.
 
-Tests that an unverified `Tensor<T>` cannot be assigned to a `Verified<Tensor<T>>`.
+### Parser (`src/parser.rs`)
 
-#### [NEW] `tests/backend/fail/formal_verification/verified_stripping.vx`
+#### [MODIFY] \[parser.rs\](file:///Users/adityak/go/Vx/src/parser.rs)
 
-Tests that `Verified<Tensor<T>>` does not implicitly coerce down to `Tensor<T>` when passed into strict functions (unless explicitly unwrapped or expected by design).
+- Update `parse_binary_expr` to check the operator type and emit `Expr::BinaryOp`, `Expr::RelationalOp`, or `Expr::LogicalOp` accordingly.
+- Fix any parser tests that manually assert `BinaryOp` variants.
 
-#### [NEW] `tests/backend/fail/formal_verification/smt_generic_mismatch.vx`
+### Semantic Analysis (`src/sema.rs`)
 
-Tests that generic formal parameters that are instantiated but mismatch the pre-conditions/post-conditions trigger static compilation errors.
+#### [MODIFY] \[sema.rs\](file:///Users/adityak/go/Vx/src/sema.rs)
 
-#### [NEW] `tests/backend/fail/formal_verification/failed_assertion.vx`
+- Add match arms in `type_check_expr` for `Expr::RelationalOp` and `Expr::LogicalOp`.
+- Retain the existing type-checking logic for these operators but adapt it to the new `Expr` variants.
 
-Tests that an explicitly incorrect `assert` within a function body properly halts the compiler during the formal verification pass.
+### Code Generation (`src/melior_codegen.rs`)
 
-#### [NEW] `tests/backend/pass/formal_verification/verified_coercion.vx`
+#### [MODIFY] \[melior_codegen.rs\](file:///Users/adityak/go/Vx/src/melior_codegen.rs)
 
-Positive tests ensuring that valid operations on `Verified<T>` values propagate the verified status correctly.
-
-### 2. Directory Migration & Test Runner Updates
-
-If we stick with `backend/pass` and `backend/fail`:
-
-#### [NEW] `tests/backend/fail/formal_verification/`
-
-We will create this directory to house all the new failure-case tests.
-
-#### [MODIFY] `tests/compile_test.rs`
-
-Update the Rust test runner to explicitly traverse and run the `fail` tests for `formal_verification`.
-
-```rust
-#[test]
-fn test_backend_fail_formal_verification() {
-    // Scaffold test runner for tests/backend/fail/formal_verification
-}
-```
+- Implement `LowerToMelior` for `RelationalOpExpr` and `LogicalOpExpr`.
+- Move the MLIR predicate generation logic into the `RelationalOpExpr` lowering, and logical operation generation into `LogicalOpExpr` lowering.
 
 ## Verification Plan
 
-### Automated Tests
-
-- Run `cargo test test_backend_pass_formal_verification` to ensure existing passes work.
-- Run `cargo test test_backend_fail_formal_verification` to ensure all edge cases are properly caught and flagged by the compiler.
-- Validate that MLIR is not emitted when formal verification constraints fail.
+- Run `cargo fmt` and `cargo test`.
+- Ensure all tests (frontend, middle-end, backend) pass without any changes to the test files themselves.

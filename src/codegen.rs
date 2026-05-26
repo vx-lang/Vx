@@ -1627,30 +1627,8 @@ impl MlirGenerator {
                 rhs,
                 span: _,
             }) => {
-                let is_cmp = matches!(
-                    op,
-                    BinaryOp::Eq
-                        | BinaryOp::NotEq
-                        | BinaryOp::Lt
-                        | BinaryOp::Gt
-                        | BinaryOp::Le
-                        | BinaryOp::Ge
-                );
-
-                let op_hint = if is_cmp { "any" } else { expected_ty };
-                let (mut lhs_val, mut lhs_ty) = self.generate_expr(lhs, op_hint);
+                let (mut lhs_val, mut lhs_ty) = self.generate_expr(lhs, expected_ty);
                 let (rhs_val, rhs_ty) = self.generate_expr(rhs, &lhs_ty);
-
-                // If LHS was a generic number and RHS has a specific type, regenerate LHS with RHS type
-                if is_cmp
-                    && lhs_ty == "i64"
-                    && rhs_ty != "i64"
-                    && matches!(**lhs, Expr::Number(NumberExpr { .. }))
-                {
-                    let (new_lhs_val, new_lhs_ty) = self.generate_expr(lhs, &rhs_ty);
-                    lhs_val = new_lhs_val;
-                    lhs_ty = new_lhs_ty;
-                }
 
                 let res = self.next_var();
                 let is_int = lhs_ty.starts_with("i") || lhs_ty == "index";
@@ -1683,53 +1661,75 @@ impl MlirGenerator {
                             res, op_str, lhs_val, rhs_val, lhs_ty
                         ));
                     }
-                    BinaryOp::Eq
-                    | BinaryOp::NotEq
-                    | BinaryOp::Lt
-                    | BinaryOp::Gt
-                    | BinaryOp::Le
-                    | BinaryOp::Ge => {
-                        let res = self.next_var();
-                        let (pred_i, pred_f) = match op {
-                            BinaryOp::Eq => ("eq", "oeq"),
-                            BinaryOp::NotEq => ("ne", "one"),
-                            BinaryOp::Lt => ("slt", "olt"),
-                            BinaryOp::Gt => ("sgt", "ogt"),
-                            BinaryOp::Le => ("sle", "ole"),
-                            BinaryOp::Ge => ("sge", "oge"),
-                            _ => unreachable!(),
-                        };
-                        if is_int {
-                            self.write_line(&format!(
-                                "{} = arith.cmpi \"{}\", {}, {} : {}",
-                                res, pred_i, lhs_val, rhs_val, lhs_ty
-                            ));
-                        } else {
-                            self.write_line(&format!(
-                                "{} = arith.cmpf \"{}\", {}, {} : {}",
-                                res, pred_f, lhs_val, rhs_val, lhs_ty
-                            ));
-                        }
-                        return (res, "i1".to_string());
-                    }
-                    BinaryOp::And => {
-                        let res = self.next_var();
+                }
+                (res, lhs_ty)
+            }
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs,
+                op,
+                rhs,
+                span: _,
+            }) => {
+                let op_hint = "any";
+                let (mut lhs_val, mut lhs_ty) = self.generate_expr(lhs, op_hint);
+                let (rhs_val, rhs_ty) = self.generate_expr(rhs, &lhs_ty);
+
+                if lhs_ty == "i64"
+                    && rhs_ty != "i64"
+                    && matches!(**lhs, Expr::Number(NumberExpr { .. }))
+                {
+                    let (new_lhs_val, new_lhs_ty) = self.generate_expr(lhs, &rhs_ty);
+                    lhs_val = new_lhs_val;
+                    lhs_ty = new_lhs_ty;
+                }
+
+                let res = self.next_var();
+                let is_int = lhs_ty.starts_with("i") || lhs_ty == "index";
+                let (pred_i, pred_f) = match op {
+                    RelationalOp::Eq => ("eq", "oeq"),
+                    RelationalOp::NotEq => ("ne", "one"),
+                    RelationalOp::Lt => ("slt", "olt"),
+                    RelationalOp::Gt => ("sgt", "ogt"),
+                    RelationalOp::Le => ("sle", "ole"),
+                    RelationalOp::Ge => ("sge", "oge"),
+                };
+                if is_int {
+                    self.write_line(&format!(
+                        "{} = arith.cmpi \"{}\", {}, {} : {}",
+                        res, pred_i, lhs_val, rhs_val, lhs_ty
+                    ));
+                } else {
+                    self.write_line(&format!(
+                        "{} = arith.cmpf \"{}\", {}, {} : {}",
+                        res, pred_f, lhs_val, rhs_val, lhs_ty
+                    ));
+                }
+                (res, "i1".to_string())
+            }
+            Expr::LogicalOp(LogicalOpExpr {
+                lhs,
+                op,
+                rhs,
+                span: _,
+            }) => {
+                let (lhs_val, _) = self.generate_expr(lhs, "i1");
+                let (rhs_val, _) = self.generate_expr(rhs, "i1");
+                let res = self.next_var();
+                match op {
+                    LogicalOp::And => {
                         self.write_line(&format!(
                             "{} = arith.andi {}, {} : i1",
                             res, lhs_val, rhs_val
                         ));
-                        return (res, "i1".to_string());
                     }
-                    BinaryOp::Or => {
-                        let res = self.next_var();
+                    LogicalOp::Or => {
                         self.write_line(&format!(
                             "{} = arith.ori {}, {} : i1",
                             res, lhs_val, rhs_val
                         ));
-                        return (res, "i1".to_string());
                     }
                 }
-                (res, lhs_ty)
+                (res, "i1".to_string())
             }
             Expr::UnaryOp(UnaryOpExpr {
                 op,
