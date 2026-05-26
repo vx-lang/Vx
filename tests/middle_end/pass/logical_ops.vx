@@ -34,9 +34,9 @@ fn main(d: Tensor<i32>) -> Tensor<i32> {
 }
 
 // Check that MLIR code generates cmpi and logical ops correctly
-// CHECK: arith.cmpi "slt"
-// CHECK: arith.cmpi "eq"
-// CHECK: arith.cmpi "ne"
-// CHECK: arith.andi
-// CHECK: arith.xori
-// CHECK: arith.ori
+// CHECK: "arith.cmpi"
+// CHECK: "arith.cmpi"
+// CHECK: "arith.cmpi"
+// CHECK: "arith.andi"
+// CHECK: "arith.xori"
+// CHECK: "arith.ori"

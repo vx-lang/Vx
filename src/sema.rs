@@ -1109,7 +1109,7 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     Type::Tensor(el_ty, vec![], None)
-                } else if resolved_name.starts_with("Tensor") {
+                } else if resolved_name.starts_with("Tensor") && !resolved_name.contains("__") {
                     let el_ty = match resolved_name.as_str() {
                         "Tensor_f64" => ElementType::F64,
                         "Tensor_bf16" => ElementType::BF16,

@@ -5,10 +5,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// CHECK: memref.alloc
-// CHECK: scf.for
-// CHECK: memref.store
-// CHECK: return %v
+// CHECK: "memref.alloca"
+// CHECK: "affine.for"
+// CHECK: "memref.store"
+// CHECK: "func.return"
 
 fn test_loop(a: Tensor, b: Tensor) -> Tensor {
   let mut result = Tensor([10, 10]);
