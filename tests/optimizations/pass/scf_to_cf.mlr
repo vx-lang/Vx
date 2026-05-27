@@ -1,7 +1,11 @@
-// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
+// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
 
-fn test_scf_to_cf(a: Tensor<f32, [16]>, b: Tensor<f32, [16]>) -> Tensor<f32, [16]> {
-    return a + b;
+module {
+  func.func @test_scf_to_cf(%arg0: memref<16xf32>, %arg1: memref<16xf32>) -> memref<16xf32> {
+    %alloc = memref.alloc() : memref<16xf32>
+    linalg.add ins(%arg0, %arg1 : memref<16xf32>, memref<16xf32>) outs(%alloc : memref<16xf32>)
+    return %alloc : memref<16xf32>
+  }
 }
 
 // CHECK: func.func @test_scf_to_cf

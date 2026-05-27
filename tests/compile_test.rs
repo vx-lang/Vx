@@ -272,7 +272,8 @@ fn test_optimizations() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("mlr") {
+            let ext = path.extension().and_then(|s| s.to_str());
+            if path.is_file() && (ext == Some("mlr") || ext == Some("vx")) {
                 println!("Running test_optimizations on {:?}", path);
                 run_optimization_test(&path);
             }
