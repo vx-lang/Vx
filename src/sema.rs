@@ -2252,7 +2252,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Wait, Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
+        // Note: Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
         // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)

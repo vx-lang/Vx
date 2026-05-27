@@ -69,11 +69,11 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // Let's just use pass_manager.add_pass() for standard passes!
     // But `parse_pass_pipeline` is easier. So we can just parse the rest of the pipeline
     // by appending our pass name to the string!
-    // Wait, the pass name is not registered as a string! ConvertVxToStandardPass has no String name unless we give it one!
+    // Note: the pass name is not registered as a string! ConvertVxToStandardPass has no String name unless we give it one!
     // We can just add the passes one by one using the string API, or `pass_manager.add_pass`.
     // Actually, `parse_pass_pipeline` adds to the pass manager, it doesn't necessarily clear it?
     // Wait! `melior::utility::parse_pass_pipeline` DOES clear or overwrite if it's top level!
-    // Wait, let's just add the C++ pass AFTER parse_pass_pipeline?
+    // Note: add the C++ pass AFTER parse_pass_pipeline.
     // NO, VxLowering must happen FIRST because it removes custom `vx` ops.
     // So let's parse the standard pipeline, but wait, `addVxLoweringPass` is a C API.
     // If we call `addVxLoweringPass` BEFORE, and `parse_pass_pipeline` clears it, that's bad.
@@ -1386,7 +1386,7 @@ impl<'c> LowerToMelior<'c> for SpawnOnStmt {
         // MLIR requires regions to be terminated, add a dummy return if missing
         // For simplicity, we can just let it be or add an empty yield. We will add a yield if needed later,
         // but since our dialect is custom, we don't strictly enforce terminator yet, or we use `func.return`.
-        // Wait, if it's inside a function, `vx.spawn` region doesn't need to return.
+        // Note: if it's inside a function, `vx.spawn` region doesn't need to return.
         let yield_op = melior::ir::operation::OperationBuilder::new("vx.yield", location)
             .build()
             .expect("Failed to build vx.yield operation");

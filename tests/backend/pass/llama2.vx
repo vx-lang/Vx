@@ -147,7 +147,7 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
       let rms_w_off: i32 = l * dim;
       let rms_w: *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
 
-      // Wait, how to cast integers? Vx doesn't have 'as f32' yet natively.
+      // Note: Vx doesn't have 'as f32' yet natively for casting integers.
       // We assume dim=256 for Stories15M.
       let dim_f: f32 = 256.0;
       let hidden_dim_f: f32 = 512.0;
@@ -214,7 +214,7 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
             score += qv * kv;
           }
 
-          let head_size_f: f32 = 32.0; // Wait, 256/8 = 32
+          let head_size_f: f32 = 32.0; // 256/8 = 32
           let factor: f32 = 1.0 / vx_sqrtf(head_size_f);
           score = score * factor;
           att_h[t] = score;

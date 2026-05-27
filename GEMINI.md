@@ -3,6 +3,7 @@ Keep all your attention on this repository and the tasks related to it. If I nee
 
 ## Git
 - **CRITICAL** You are not allowed to `git push`
+- **CRITICAL** You are not allowed to edit .git/config
 - Commit changes whenever you make a meaningful change and it builds cleanly.
 - Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.

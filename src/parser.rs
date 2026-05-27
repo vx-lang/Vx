@@ -1418,7 +1418,7 @@ impl<'a> Parser<'a> {
 
         // Since we don't have lookahead to distinguish `impl Trait for Type` from `impl Type`,
         // if we see `Identifier` followed by `for`, it's a trait. Otherwise it's a type.
-        // Wait, parse_type handles `Struct(name)`, which is an identifier!
+        // Note: parse_type handles `Struct(name)`, which is an identifier!
         // We can just peek ahead.
         let parsed_type = self.parse_type()?;
         if self.check(&TokenType::For) {

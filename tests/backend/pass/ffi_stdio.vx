@@ -16,7 +16,7 @@ fn main() -> i32 {
     let msg = "Hello Stdout!
 ";
     // msg is a string literal, which in Vx acts as a pointer to bytes?
-    // Wait, what is the length of "Hello Stdout!\n"? 14
+    // Length of "Hello Stdout!\n" is 14
     vx_stdout_write(msg, 14);
 
     let msg2 = "Hello Stderr!
