@@ -101,11 +101,7 @@ impl CompilerDriver {
         let filename = main_file.to_string_lossy().to_string();
 
         let language = self.options.language.clone().unwrap_or_else(|| {
-            if filename.ends_with(".mlir") {
-                "mlir".to_string()
-            } else {
-                "vx".to_string()
-            }
+            "vx".to_string()
         });
 
         let mut mlir_args: Vec<String> = Vec::new();
