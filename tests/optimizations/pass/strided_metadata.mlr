@@ -1,0 +1,12 @@
+// PURE_MLIR
+// OPT_PIPELINE: --pass-pipeline=builtin.module(func.func(expand-strided-metadata))
+// CHECK: func.func @test_strided
+// CHECK: memref.extract_strided_metadata
+// CHECK: memref.reinterpret_cast
+
+module {
+  func.func @test_strided(%arg0: memref<16xf32>) -> memref<4xf32, strided<[1], offset: 4>> {
+    %0 = memref.subview %arg0[4] [4] [1] : memref<16xf32> to memref<4xf32, strided<[1], offset: 4>>
+    return %0 : memref<4xf32, strided<[1], offset: 4>>
+  }
+}

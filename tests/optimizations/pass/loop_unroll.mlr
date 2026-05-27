@@ -1,0 +1,27 @@
+// OPT_PIPELINE: --pass-pipeline=builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))
+// RUN: vxc %s -a emit-mlir > %t.mlir
+// RUN: mlir-opt %t.mlir --pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))" | FileCheck %s
+
+fn test_unroll(a: Tensor<f32, [16]>, b: Tensor<f32, [16]>) -> Tensor<f32, [16]> {
+    return a + b;
+}
+
+// CHECK: func.func @test_unroll
+// CHECK: affine.for
+// CHECK: step 4
+// CHECK:   affine.load
+// CHECK:   affine.load
+// CHECK:   arith.addf
+// CHECK:   affine.store
+// CHECK:   affine.load
+// CHECK:   affine.load
+// CHECK:   arith.addf
+// CHECK:   affine.store
+// CHECK:   affine.load
+// CHECK:   affine.load
+// CHECK:   arith.addf
+// CHECK:   affine.store
+// CHECK:   affine.load
+// CHECK:   affine.load
+// CHECK:   arith.addf
+// CHECK:   affine.store

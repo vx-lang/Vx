@@ -304,70 +304,81 @@ fn run_optimization_test(path: &Path) {
         .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = loader
-        .load_main(path.to_str().unwrap())
-        .expect("Failed to parse");
+    let is_pure_mlir = source.contains("// PURE_MLIR");
 
-    let ast_idx = program_arr
-        .iter()
-        .position(|p| p.module_path == path.to_str().unwrap())
-        .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mlir_str = if is_pure_mlir {
+        source.clone()
+    } else {
+        let mut loader = vxc::module_loader::ModuleLoader::new();
+        let mut program_arr = loader
+            .load_main(path.to_str().unwrap())
+            .expect("Failed to parse");
 
-    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-    let mut all_programs = program_arr.clone();
-    all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
-    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
-    let mut checker = TypeChecker::new(&env, &mut worker);
-    for f in &mut program.functions {
-        checker.check_function(f);
-    }
-    assert!(
-        checker.errors.is_empty(),
-        "Sema failed on {:?}: {:#?}",
-        path,
-        checker.errors
-    );
+        let ast_idx = program_arr
+            .iter()
+            .position(|p| p.module_path == path.to_str().unwrap())
+            .unwrap();
+        let mut program = program_arr.remove(ast_idx);
 
-    let mut monomorphized_program = program;
-    let mut orig_functions = monomorphized_program.functions;
-    orig_functions.retain(|f| f.generics.is_empty());
+        let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+        let mut all_programs = program_arr.clone();
+        all_programs.push(program.clone());
+        let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+        let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+        assert!(
+            checker.errors.is_empty(),
+            "Sema failed on {:?}: {:#?}",
+            path,
+            checker.errors
+        );
 
-    let mut new_functions: Vec<_> = checker
-        .monomorphized_functions
-        .into_iter()
-        .map(|(f, _)| f)
-        .collect();
-    new_functions.extend(orig_functions);
-    monomorphized_program.functions = new_functions;
+        let mut monomorphized_program = program;
+        let mut orig_functions = monomorphized_program.functions;
+        orig_functions.retain(|f| f.generics.is_empty());
 
-    let context = melior::Context::new();
-    let registry = melior::dialect::DialectRegistry::new();
-    melior::utility::register_all_dialects(&registry);
-    context.append_dialect_registry(&registry);
-    context.load_all_available_dialects();
-    vxc::melior_codegen::register_vx_dialect(&context);
+        let mut new_functions: Vec<_> = checker
+            .monomorphized_functions
+            .into_iter()
+            .map(|(f, _)| f)
+            .collect();
+        new_functions.extend(orig_functions);
+        monomorphized_program.functions = new_functions;
 
-    let module_asts = std::collections::HashMap::new();
+        let context = melior::Context::new();
+        let registry = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&registry);
+        context.append_dialect_registry(&registry);
+        context.load_all_available_dialects();
+        vxc::melior_codegen::register_vx_dialect(&context);
 
-    let mlir_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
-        codegen.generate(&monomorphized_program, &module_asts);
-        codegen.into_module().as_operation().to_string()
-    }))
-    .unwrap_or_else(|_| {
-        let mut codegen = vxc::codegen::MlirGenerator::new();
-        codegen.generate(&monomorphized_program, &module_asts)
-    });
+        let module_asts = std::collections::HashMap::new();
+
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+            codegen.generate(&monomorphized_program, &module_asts);
+            codegen.into_module().as_operation().to_string()
+        }))
+        .unwrap_or_else(|_| {
+            let mut codegen = vxc::codegen::MlirGenerator::new();
+            codegen.generate(&monomorphized_program, &module_asts)
+        })
+    };
 
     let temp_mlir = format!("{}_opt_temp.mlir", path.file_name().unwrap().to_string_lossy());
     let mut file = std::fs::File::create(&temp_mlir).unwrap();
     std::io::Write::write_all(&mut file, mlir_str.as_bytes()).unwrap();
 
+    let mut pipeline = vxc::jit::OPTIMIZATION_PIPELINE.to_string();
+    if let Some(custom_pipeline) = source.lines().find(|l| l.trim().starts_with("// OPT_PIPELINE:")) {
+        pipeline = custom_pipeline.split_once("OPT_PIPELINE:").unwrap().1.trim().to_string();
+    }
+
     let mlir_opt_out = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
-        .args([vxc::jit::OPTIMIZATION_PIPELINE, &temp_mlir])
+        .args([&pipeline, &temp_mlir])
         .output()
         .expect("Failed to execute mlir-opt");
 
