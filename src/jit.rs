@@ -12,6 +12,7 @@
 // requiring a separate ahead-of-time compilation step.
 //
 //===----------------------------------------------------------------------===//
+pub const OPTIMIZATION_PIPELINE: &str = "--pass-pipeline=builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}),lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)";
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
@@ -21,7 +22,7 @@ use std::sync::Once;
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static COMPILE_NPU_ONCE: Once = Once::new();
 
-pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
+pub fn execute_mlir(mlir_src: &str, custom_pipeline: Option<String>) -> Result<String, String> {
     // Ensure target/jit directory exists
     let jit_dir = std::path::Path::new("target/jit");
     if !jit_dir.exists() {
@@ -86,9 +87,12 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     }
 
     println!("[JIT] Lowering to LLVM Dialect...");
+    let pipeline_arg = custom_pipeline
+        .map(|p| format!("--pass-pipeline={}", p))
+        .unwrap_or_else(|| OPTIMIZATION_PIPELINE.to_string());
     let mlir_opt_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
         .args([
-            "--pass-pipeline=builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}),lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)",
+            &pipeline_arg,
             &temp_mlir,
         ])
         .output()

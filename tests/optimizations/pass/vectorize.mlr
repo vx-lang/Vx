@@ -1,11 +1,11 @@
-// RUN: vxc %s -a emit-mlir > %t.mlir
-// RUN: FileCheck %s < %t.mlir
+// RUN: vxc %s --action emit-mlir --pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}))"
 
 fn test_vectorize(a: Tensor<f32, [16, 16]>, b: Tensor<f32, [16, 16]>) -> Tensor<f32, [16, 16]> {
     return a + b;
 }
 
-// CHECK: llvm.func @test_vectorize
-// CHECK: llvm.intr.masked.load
-// CHECK: llvm.fadd
-// CHECK: vector<16xf32>
+// CHECK: func.func @test_vectorize
+// CHECK: vector.transfer_read
+// CHECK: vector.transfer_read
+// CHECK: arith.addf
+// CHECK: vector.transfer_write

@@ -58,6 +58,14 @@ pub struct DriverOptions {
     /// Use the legacy code generator (non-melior)
     #[arg(long = "use-legacy", hide = true)]
     pub use_legacy: bool,
+
+    /// Specify the language of the input file (e.g. mlir, vx)
+    #[arg(short = 'x', long = "language")]
+    pub language: Option<String>,
+
+    /// Optional pass pipeline to apply to MLIR
+    #[arg(long = "pass-pipeline")]
+    pub pass_pipeline: Option<String>,
 }
 
 pub struct CompilerDriver {
@@ -91,6 +99,49 @@ impl CompilerDriver {
         // just like the old main.rs behavior.
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
+
+        let language = self.options.language.clone().unwrap_or_else(|| {
+            if filename.ends_with(".mlir") {
+                "mlir".to_string()
+            } else {
+                "vx".to_string()
+            }
+        });
+
+        if language == "mlir" {
+            let mlir_src = std::fs::read_to_string(main_file).map_err(|e| e.to_string())?;
+
+            if self.options.action == Action::EmitMlir {
+                if let Some(ref pipeline) = self.options.pass_pipeline {
+                    let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
+                    let mut file = std::fs::File::create(&temp_mlir).unwrap();
+                    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
+
+                    let pipeline_arg = format!("--pass-pipeline={}", pipeline);
+                    let mlir_opt_out = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
+                        .args([&pipeline_arg, &temp_mlir])
+                        .output()
+                        .map_err(|e| e.to_string())?;
+
+                    let _ = std::fs::remove_file(&temp_mlir);
+                    if !mlir_opt_out.status.success() {
+                        return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
+                    }
+                    println!("{}", String::from_utf8_lossy(&mlir_opt_out.stdout));
+                } else {
+                    println!("{}", mlir_src);
+                }
+                return Ok(());
+            }
+
+            if self.options.action == Action::RunJit {
+                let out = crate::jit::execute_mlir(&mlir_src, self.options.pass_pipeline.clone()).map_err(|e| e.to_string())?;
+                println!("{}", out);
+                return Ok(());
+            }
+
+            return Err(format!("Action {:?} is not supported for MLIR inputs", self.options.action));
+        }
 
         let mut loader = ModuleLoader::new();
         let mut program_arr = loader
@@ -193,7 +244,28 @@ impl CompilerDriver {
                     if !module.as_operation().verify() {
                         eprintln!("Warning: MLIR Verification failed for {}", filename);
                     }
-                    println!("{}", module.as_operation());
+                    
+                    let mlir_str = format!("{}", module.as_operation());
+                    
+                    if let Some(ref pipeline) = self.options.pass_pipeline {
+                        let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
+                        let mut file = std::fs::File::create(&temp_mlir).unwrap();
+                        std::io::Write::write_all(&mut file, mlir_str.as_bytes()).unwrap();
+
+                        let pipeline_arg = format!("--pass-pipeline={}", pipeline);
+                        let mlir_opt_out = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
+                            .args([&pipeline_arg, &temp_mlir])
+                            .output()
+                            .map_err(|e| e.to_string())?;
+
+                        let _ = std::fs::remove_file(&temp_mlir);
+                        if !mlir_opt_out.status.success() {
+                            return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
+                        }
+                        println!("{}", String::from_utf8_lossy(&mlir_opt_out.stdout));
+                    } else {
+                        println!("{}", mlir_str);
+                    }
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
                     let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
@@ -221,12 +293,12 @@ impl CompilerDriver {
                         .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
 
                     let mlir_str = format!("{}", module.as_operation());
-                    let out = crate::jit::execute_mlir(&mlir_str).map_err(|e| e.to_string())?;
+                    let out = crate::jit::execute_mlir(&mlir_str, None).map_err(|e| e.to_string())?;
                     println!("{}", out);
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
                     let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                    let out = crate::jit::execute_mlir(&mlir_str).map_err(|e| e.to_string())?;
+                    let out = crate::jit::execute_mlir(&mlir_str, None).map_err(|e| e.to_string())?;
                     println!("{}", out);
                 }
             }

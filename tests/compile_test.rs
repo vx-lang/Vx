@@ -224,7 +224,7 @@ fn run_backend_test(path: &Path) {
         return;
     }
 
-    let out = execute_mlir(&mlir_str).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, None).expect("JIT execution failed");
 
     for expect in expect_lines {
         assert!(
@@ -300,102 +300,84 @@ fn run_optimization_test(path: &Path) {
 
     let check_lines: Vec<String> = source
         .lines()
-        .filter(|line| line.trim().starts_with("// CHECK:"))
+        .filter(|line| line.trim().starts_with("// CHECK:") && !line.trim().starts_with("// CHECK-NOT:"))
         .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
         .collect();
 
-    let is_pure_mlir = source.contains("// PURE_MLIR");
+    let check_not_lines: Vec<String> = source
+        .lines()
+        .filter(|line| line.trim().starts_with("// CHECK-NOT:"))
+        .map(|line| line.split_once("CHECK-NOT:").unwrap().1.trim().to_string())
+        .collect();
 
-    let mlir_str = if is_pure_mlir {
-        source.clone()
-    } else {
-        let mut loader = vxc::module_loader::ModuleLoader::new();
-        let mut program_arr = loader
-            .load_main(path.to_str().unwrap())
-            .expect("Failed to parse");
+    let run_line = source
+        .lines()
+        .find(|line| line.trim().starts_with("// RUN: vxc %s"))
+        .expect("Missing // RUN: vxc %s line");
 
-        let ast_idx = program_arr
-            .iter()
-            .position(|p| p.module_path == path.to_str().unwrap())
-            .unwrap();
-        let mut program = program_arr.remove(ast_idx);
+    let run_cmd = run_line
+        .split_once("RUN:")
+        .unwrap()
+        .1
+        .trim();
 
-        let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
-        let mut all_programs = program_arr.clone();
-        all_programs.push(program.clone());
-        let env = vxc::sema::GlobalAstEnv::build(&all_programs);
-        let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
-        let mut checker = TypeChecker::new(&env, &mut worker);
-        for f in &mut program.functions {
-            checker.check_function(f);
+    // The RUN command usually looks like: `vxc %s -x mlir --action emit-mlir --pass-pipeline="..." | FileCheck %s`
+    // We only care about the part before `| FileCheck`
+    let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
+
+    // Replace `%s` with actual path
+    let vxc_cmd_str = vxc_cmd_str.replace("%s", path.to_str().unwrap());
+    
+    // Split into args
+    let mut args: Vec<String> = vec![];
+    let mut current_arg = String::new();
+    let mut in_quotes = false;
+    for c in vxc_cmd_str.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+        } else if c == ' ' && !in_quotes {
+            if !current_arg.is_empty() {
+                args.push(current_arg.clone());
+                current_arg.clear();
+            }
+        } else {
+            current_arg.push(c);
         }
-        assert!(
-            checker.errors.is_empty(),
-            "Sema failed on {:?}: {:#?}",
-            path,
-            checker.errors
-        );
-
-        let mut monomorphized_program = program;
-        let mut orig_functions = monomorphized_program.functions;
-        orig_functions.retain(|f| f.generics.is_empty());
-
-        let mut new_functions: Vec<_> = checker
-            .monomorphized_functions
-            .into_iter()
-            .map(|(f, _)| f)
-            .collect();
-        new_functions.extend(orig_functions);
-        monomorphized_program.functions = new_functions;
-
-        let context = melior::Context::new();
-        let registry = melior::dialect::DialectRegistry::new();
-        melior::utility::register_all_dialects(&registry);
-        context.append_dialect_registry(&registry);
-        context.load_all_available_dialects();
-        vxc::melior_codegen::register_vx_dialect(&context);
-
-        let module_asts = std::collections::HashMap::new();
-
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
-            codegen.generate(&monomorphized_program, &module_asts);
-            codegen.into_module().as_operation().to_string()
-        }))
-        .unwrap_or_else(|_| {
-            let mut codegen = vxc::codegen::MlirGenerator::new();
-            codegen.generate(&monomorphized_program, &module_asts)
-        })
-    };
-
-    let temp_mlir = format!("{}_opt_temp.mlir", path.file_name().unwrap().to_string_lossy());
-    let mut file = std::fs::File::create(&temp_mlir).unwrap();
-    std::io::Write::write_all(&mut file, mlir_str.as_bytes()).unwrap();
-
-    let mut pipeline = vxc::jit::OPTIMIZATION_PIPELINE.to_string();
-    if let Some(custom_pipeline) = source.lines().find(|l| l.trim().starts_with("// OPT_PIPELINE:")) {
-        pipeline = custom_pipeline.split_once("OPT_PIPELINE:").unwrap().1.trim().to_string();
+    }
+    if !current_arg.is_empty() {
+        args.push(current_arg);
     }
 
-    let mlir_opt_out = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
-        .args([&pipeline, &temp_mlir])
+    // args[0] is "vxc", we remove it
+    args.remove(0);
+
+    let vxc_bin = env!("CARGO_BIN_EXE_vxc");
+    let output = std::process::Command::new(vxc_bin)
+        .args(&args)
         .output()
-        .expect("Failed to execute mlir-opt");
+        .expect("Failed to execute vxc");
 
-    let _ = std::fs::remove_file(&temp_mlir);
-
-    if !mlir_opt_out.status.success() {
-        panic!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr));
+    if !output.status.success() {
+        panic!(
+            "vxc failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
-    let out = String::from_utf8_lossy(&mlir_opt_out.stdout);
+    let out = String::from_utf8_lossy(&output.stdout);
 
     let mut current_idx = 0;
     for check in check_lines {
         if let Some(pos) = out[current_idx..].find(&check) {
             current_idx += pos + check.len();
         } else {
-            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, out);
+            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nOutput:\n{}", path, check, out);
+        }
+    }
+
+    for not_check in check_not_lines {
+        if out.contains(&not_check) {
+            panic!("FileCheck failed on {:?}: Found forbidden `{}`.\nOutput:\n{}", path, not_check, out);
         }
     }
 }
@@ -587,7 +569,7 @@ fn run_backend_autodiff_test(path: &Path) {
         return;
     }
 
-    let out = execute_mlir(&mlir_str).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, None).expect("JIT execution failed");
 
     for expect in expect_lines {
         assert!(

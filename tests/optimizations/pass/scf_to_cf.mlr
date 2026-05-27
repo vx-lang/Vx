@@ -1,6 +1,4 @@
-// OPT_PIPELINE: --pass-pipeline=builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)
-// RUN: vxc %s -a emit-mlir > %t.mlir
-// RUN: mlir-opt %t.mlir --pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)" | FileCheck %s
+// RUN: vxc %s --action emit-mlir --pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
 
 fn test_scf_to_cf(a: Tensor<f32, [16]>, b: Tensor<f32, [16]>) -> Tensor<f32, [16]> {
     return a + b;
