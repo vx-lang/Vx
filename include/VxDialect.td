@@ -21,6 +21,7 @@ def Vx_SpawnOp : Vx_Op<"spawn"> {
     let summary = "Spawns execution on a specific topology.";
     let arguments = (ins I32Attr:$topology);
     let regions = (region AnyRegion:$body);
+    let assemblyFormat = "`topology` `(` $topology `)` $body attr-dict";
 }
 
 // A transfer operation to move memory/execution context between topologies
@@ -33,6 +34,7 @@ def Vx_TransferOp : Vx_Op<"transfer"> {
 // A yield operation to terminate vx.spawn regions
 def Vx_YieldOp : Vx_Op<"yield", [Terminator]> {
     let summary = "Terminates a vx.spawn region.";
+    let assemblyFormat = "attr-dict";
 }
 
 #endif // VX_DIALECT

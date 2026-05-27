@@ -1,0 +1,22 @@
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int};
+
+// Force Cargo to pull in melior's transitive dependencies (MLIR libraries)
+#[allow(unused_imports)]
+use melior;
+
+#[link(name = "vx_dialect", kind = "static")]
+#[link(name = "plugin_loader", kind = "static")]
+extern "C" {
+    fn run_vx_opt(argc: c_int, argv: *const *const c_char) -> c_int;
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let c_args: Vec<CString> = args.into_iter().map(|a| CString::new(a).unwrap()).collect();
+    let c_ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
+
+    let status = unsafe { run_vx_opt(c_ptrs.len() as c_int, c_ptrs.as_ptr()) };
+
+    std::process::exit(status);
+}

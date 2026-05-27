@@ -256,6 +256,7 @@ fn main() {
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
     let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
+    let vx_opt_obj_path = PathBuf::from(&out_dir).join("vx-opt.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
 
     let mut dialect_cmd = Command::new(&cxx);
@@ -293,12 +294,29 @@ fn main() {
         "clang++ compilation failed for VxLowering"
     );
 
+    let mut vxopt_cmd = Command::new(&cxx);
+    vxopt_cmd.args([
+        "-c",
+        "src/dialect/vx-opt.cpp",
+        "-o",
+        vx_opt_obj_path.to_str().unwrap(),
+        "-std=c++17",
+        &format!("-I{}", out_dir), // to find the generated .inc files
+        "-Iinclude",               // to find VxDialect.h
+    ]);
+    vxopt_cmd.args(&llvm_cxxflags_vec);
+    let status = vxopt_cmd
+        .status()
+        .expect("Failed to execute cxx for vx-opt");
+    assert!(status.success(), "clang++ compilation failed for vx-opt");
+
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);
     ar_cmd.args([
         dialect_lib_path.to_str().unwrap(),
         dialect_obj_path.to_str().unwrap(),
         lowering_obj_path.to_str().unwrap(),
+        vx_opt_obj_path.to_str().unwrap(),
     ]);
     let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
     assert!(status.success(), "ar failed for libvx_dialect");

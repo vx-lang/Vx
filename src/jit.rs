@@ -95,10 +95,8 @@ pub fn execute_mlir(mlir_src: &str, mlir_args: Vec<String>) -> Result<String, St
             cmd.arg(arg);
         }
     }
-    
-    let mlir_opt_out = cmd.arg(&temp_mlir)
-        .output()
-        .map_err(|e| e.to_string())?;
+
+    let mlir_opt_out = cmd.arg(&temp_mlir).output().map_err(|e| e.to_string())?;
 
     if !mlir_opt_out.status.success() {
         let err_str = String::from_utf8_lossy(&mlir_opt_out.stderr);

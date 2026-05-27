@@ -1,10 +1,18 @@
-// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}))"
+// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}))" | FileCheck %s
+// RUN: vx-opt %s --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=VX
 
 module {
   func.func @test_vectorize(%arg0: memref<16x16xf32>, %arg1: memref<16x16xf32>) -> memref<16x16xf32> {
     %alloc = memref.alloc() : memref<16x16xf32>
     linalg.add ins(%arg0, %arg1 : memref<16x16xf32>, memref<16x16xf32>) outs(%alloc : memref<16x16xf32>)
     return %alloc : memref<16x16xf32>
+  }
+
+  func.func @test_vx_dialect() {
+    vx.spawn topology(0) {
+       vx.yield
+    }
+    return
   }
 }
 
@@ -13,3 +21,7 @@ module {
 // CHECK: vector.transfer_read
 // CHECK: arith.addf
 // CHECK: vector.transfer_write
+
+// VX: func.func @test_vx_dialect
+// VX: async.execute
+// VX: async.yield

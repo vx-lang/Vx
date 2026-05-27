@@ -108,9 +108,11 @@ impl CompilerDriver {
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
 
-        let language = self.options.language.clone().unwrap_or_else(|| {
-            "vx".to_string()
-        });
+        let language = self
+            .options
+            .language
+            .clone()
+            .unwrap_or_else(|| "vx".to_string());
 
         let mut mlir_args: Vec<String> = Vec::new();
         for arg in &self.options.tool_args {
@@ -134,12 +136,16 @@ impl CompilerDriver {
             }
 
             if self.options.action == Action::RunJit {
-                let out = crate::jit::execute_mlir(&mlir_src, mlir_args).map_err(|e| e.to_string())?;
+                let out =
+                    crate::jit::execute_mlir(&mlir_src, mlir_args).map_err(|e| e.to_string())?;
                 println!("{}", out);
                 return Ok(());
             }
 
-            return Err(format!("Action {:?} is not supported for MLIR inputs", self.options.action));
+            return Err(format!(
+                "Action {:?} is not supported for MLIR inputs",
+                self.options.action
+            ));
         }
 
         let mut loader = ModuleLoader::new();
@@ -243,10 +249,10 @@ impl CompilerDriver {
                     if !module.as_operation().verify() {
                         eprintln!("Warning: MLIR Verification failed for {}", filename);
                     }
-                    
+
                     let mlir_str = format!("{}", module.as_operation());
                     let optimized_mlir = apply_mlir_opt(&mlir_str, &mlir_args, main_file)?;
-                    
+
                     if self.options.action == Action::EmitLlvm {
                         let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
                         println!("{}", llvm_ir);
@@ -256,7 +262,8 @@ impl CompilerDriver {
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
                     let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                    let out = crate::jit::execute_mlir(&mlir_str, mlir_args).map_err(|e| e.to_string())?;
+                    let out = crate::jit::execute_mlir(&mlir_str, mlir_args)
+                        .map_err(|e| e.to_string())?;
                     println!("{}", out);
                 }
             }
@@ -281,12 +288,14 @@ impl CompilerDriver {
                         .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
 
                     let mlir_str = format!("{}", module.as_operation());
-                    let out = crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
+                    let out =
+                        crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
                     println!("{}", out);
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
                     let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                    let out = crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
+                    let out =
+                        crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
                     println!("{}", out);
                 }
             }
@@ -350,45 +359,78 @@ impl CompilerDriver {
     }
 }
 
-pub fn apply_mlir_opt(mlir_src: &str, mlir_args: &[String], main_file: &std::path::Path) -> Result<String, String> {
+extern "C" {
+    fn run_vx_opt(
+        argc: std::os::raw::c_int,
+        argv: *const *const std::os::raw::c_char,
+    ) -> std::os::raw::c_int;
+}
+
+pub fn apply_mlir_opt(
+    mlir_src: &str,
+    mlir_args: &[String],
+    main_file: &std::path::Path,
+) -> Result<String, String> {
     if mlir_args.is_empty() {
         return Ok(mlir_src.to_string());
     }
-    let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
-    let mut file = std::fs::File::create(&temp_mlir).unwrap();
+    let temp_in = format!(
+        "{}_temp_in.mlir",
+        main_file.file_name().unwrap().to_string_lossy()
+    );
+    let temp_out = format!(
+        "{}_temp_out.mlir",
+        main_file.file_name().unwrap().to_string_lossy()
+    );
+
+    let mut file = std::fs::File::create(&temp_in).unwrap();
     std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
 
-    let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
-    for arg in mlir_args {
-        cmd.arg(arg);
-    }
-    let mlir_opt_out = cmd
-        .arg(&temp_mlir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "vx-opt".to_string(),
+        temp_in.clone(),
+        "-o".to_string(),
+        temp_out.clone(),
+    ];
+    args.extend_from_slice(mlir_args);
 
-    let _ = std::fs::remove_file(&temp_mlir);
-    if !mlir_opt_out.status.success() {
-        return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
+    let c_args: Vec<std::ffi::CString> = args
+        .into_iter()
+        .map(|a| std::ffi::CString::new(a).unwrap())
+        .collect();
+    let c_ptrs: Vec<*const std::os::raw::c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
+
+    let status = unsafe { run_vx_opt(c_ptrs.len() as std::os::raw::c_int, c_ptrs.as_ptr()) };
+
+    let _ = std::fs::remove_file(&temp_in);
+    if status != 0 {
+        let _ = std::fs::remove_file(&temp_out);
+        return Err("vx-opt failed. Check stderr for details.".to_string());
     }
-    Ok(String::from_utf8_lossy(&mlir_opt_out.stdout).to_string())
+
+    let out_str = std::fs::read_to_string(&temp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&temp_out);
+    Ok(out_str)
 }
 
 pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Result<String, String> {
-    let temp_mlir = format!("{}_temp_llvm.mlir", main_file.file_name().unwrap().to_string_lossy());
+    let temp_mlir = format!(
+        "{}_temp_llvm.mlir",
+        main_file.file_name().unwrap().to_string_lossy()
+    );
     let mut file = std::fs::File::create(&temp_mlir).unwrap();
     std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
 
     let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate");
     cmd.arg("--mlir-to-llvmir");
-    let mlir_translate_out = cmd
-        .arg(&temp_mlir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mlir_translate_out = cmd.arg(&temp_mlir).output().map_err(|e| e.to_string())?;
 
     let _ = std::fs::remove_file(&temp_mlir);
     if !mlir_translate_out.status.success() {
-        return Err(format!("mlir-translate failed:\n{}", String::from_utf8_lossy(&mlir_translate_out.stderr)));
+        return Err(format!(
+            "mlir-translate failed:\n{}",
+            String::from_utf8_lossy(&mlir_translate_out.stderr)
+        ));
     }
     Ok(String::from_utf8_lossy(&mlir_translate_out.stdout).to_string())
 }

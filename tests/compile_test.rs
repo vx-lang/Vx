@@ -301,10 +301,13 @@ fn run_optimization_test(path: &Path) {
 
     let run_lines: Vec<_> = source
         .lines()
-        .filter(|line| line.trim().starts_with("// RUN: vxc %s"))
+        .filter(|line| {
+            line.trim().starts_with("// RUN: vxc %s")
+                || line.trim().starts_with("// RUN: vx-opt %s")
+        })
         .collect();
 
-    assert!(!run_lines.is_empty(), "Missing // RUN: vxc %s line");
+    assert!(!run_lines.is_empty(), "Missing // RUN: line");
 
     for run_line in run_lines {
         let run_cmd = run_line.split_once("RUN:").unwrap().1.trim();
@@ -312,7 +315,10 @@ fn run_optimization_test(path: &Path) {
         // Parse FileCheck prefix
         let mut prefix = "CHECK".to_string();
         if let Some(filecheck_part) = run_cmd.split('|').nth(1) {
-            if let Some(prefix_arg) = filecheck_part.split_whitespace().find(|s| s.starts_with("--check-prefix=")) {
+            if let Some(prefix_arg) = filecheck_part
+                .split_whitespace()
+                .find(|s| s.starts_with("--check-prefix="))
+            {
                 prefix = prefix_arg.split_once('=').unwrap().1.to_string();
             }
         }
@@ -322,19 +328,34 @@ fn run_optimization_test(path: &Path) {
 
         let check_lines: Vec<String> = source
             .lines()
-            .filter(|line| line.trim().starts_with(&check_prefix) && !line.trim().starts_with(&check_not_prefix))
-            .map(|line| line.split_once(&check_prefix[3..]).unwrap().1.trim().to_string())
+            .filter(|line| {
+                line.trim().starts_with(&check_prefix)
+                    && !line.trim().starts_with(&check_not_prefix)
+            })
+            .map(|line| {
+                line.split_once(&check_prefix[3..])
+                    .unwrap()
+                    .1
+                    .trim()
+                    .to_string()
+            })
             .collect();
 
         let check_not_lines: Vec<String> = source
             .lines()
             .filter(|line| line.trim().starts_with(&check_not_prefix))
-            .map(|line| line.split_once(&check_not_prefix[3..]).unwrap().1.trim().to_string())
+            .map(|line| {
+                line.split_once(&check_not_prefix[3..])
+                    .unwrap()
+                    .1
+                    .trim()
+                    .to_string()
+            })
             .collect();
 
         let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
         let vxc_cmd_str = vxc_cmd_str.replace("%s", path.to_str().unwrap());
-        
+
         let mut args: Vec<String> = vec![];
         let mut current_arg = String::new();
         let mut in_quotes = false;
@@ -354,19 +375,23 @@ fn run_optimization_test(path: &Path) {
             args.push(current_arg);
         }
 
-        args.remove(0);
+        let exec_name = args.remove(0);
 
-        let vxc_bin = env!("CARGO_BIN_EXE_vxc");
-        let output = std::process::Command::new(vxc_bin)
+        let bin_path = if exec_name == "vxc" {
+            env!("CARGO_BIN_EXE_vxc")
+        } else if exec_name == "vx-opt" {
+            env!("CARGO_BIN_EXE_vx-opt")
+        } else {
+            panic!("Unknown executable in RUN line: {}", exec_name);
+        };
+
+        let output = std::process::Command::new(bin_path)
             .args(&args)
             .output()
             .expect("Failed to execute vxc");
 
         if !output.status.success() {
-            panic!(
-                "vxc failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            panic!("vxc failed:\n{}", String::from_utf8_lossy(&output.stderr));
         }
 
         let out = String::from_utf8_lossy(&output.stdout);
@@ -382,7 +407,10 @@ fn run_optimization_test(path: &Path) {
 
         for not_check in check_not_lines {
             if out.contains(&not_check) {
-                panic!("FileCheck failed on {:?} for prefix {}: Found forbidden `{}`.\nOutput:\n{}", path, prefix, not_check, out);
+                panic!(
+                    "FileCheck failed on {:?} for prefix {}: Found forbidden `{}`.\nOutput:\n{}",
+                    path, prefix, not_check, out
+                );
             }
         }
     }

@@ -40,22 +40,24 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
                                             /*operands=*/ValueRange{});
 
       // Move the body of vx.spawn into async.execute
+      // Move the body of vx.spawn into async.execute
       Region &spawnBody = op.getBody();
       Region &asyncBody = asyncExecuteOp.getRegion();
 
-      // async.execute expects a block, but we can splice our blocks in.
-      // However, async.execute usually expects a specific terminator
-      // (async.yield).
-      rewriter.inlineRegionBefore(spawnBody, asyncBody, asyncBody.end());
+      if (!spawnBody.empty() && !asyncBody.empty()) {
+        Block &spawnBlock = spawnBody.front();
+        Block &asyncBlock = asyncBody.front();
 
-      // If the block is empty or missing a terminator, we must ensure it has
-      // async.yield
-      if (!asyncBody.empty()) {
-        Block &lastBlock = asyncBody.back();
-        if (lastBlock.empty() ||
-            !lastBlock.back().hasTrait<OpTrait::IsTerminator>()) {
-          rewriter.setInsertionPointToEnd(&lastBlock);
-          rewriter.create<async::YieldOp>(op.getLoc(), ValueRange{});
+        // Remove vx.yield if it exists
+        if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
+          rewriter.eraseOp(&spawnBlock.back());
+        }
+
+        // Inline spawnBlock into asyncBlock right before the async.yield
+        if (!asyncBlock.empty()) {
+          rewriter.inlineBlockBefore(&spawnBlock, &asyncBlock.back());
+        } else {
+          rewriter.inlineRegionBefore(spawnBody, asyncBody, asyncBody.end());
         }
       }
 
@@ -202,7 +204,25 @@ struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
 
+  llvm::StringRef getArgument() const override {
+    return "convert-vx-to-standard";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers Vx dialect operations to standard MLIR dialects";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<async::AsyncDialect, func::FuncDialect,
+                    memref::MemRefDialect, arith::ArithDialect>();
+  }
+
   void runOnOperation() override {
+    getContext().getOrLoadDialect<async::AsyncDialect>();
+    getContext().getOrLoadDialect<func::FuncDialect>();
+    getContext().getOrLoadDialect<memref::MemRefDialect>();
+    getContext().getOrLoadDialect<arith::ArithDialect>();
+
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
@@ -230,4 +250,14 @@ void registerVxLoweringPass(MlirContext ctx) {
 void addVxLoweringPass(MlirPassManager pm) {
   unwrap(pm)->addPass(std::make_unique<ConvertVxToStandardPass>());
 }
+} // extern "C"
+
+namespace mlir {
+namespace vx {
+void registerVxPasses() {
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<ConvertVxToStandardPass>();
+  });
 }
+} // namespace vx
+} // namespace mlir
