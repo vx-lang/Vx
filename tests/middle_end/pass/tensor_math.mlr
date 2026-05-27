@@ -1,0 +1,169 @@
+// RUN: vxc %s -a emit-mlir > %t.mlir
+// RUN: FileCheck %s < %t.mlir
+
+// 1. Basic Add (f32, 2D)
+fn test_add_f32_2d(a: Tensor<f32, [16, 16]>, b: Tensor<f32, [16, 16]>) -> Tensor<f32, [16, 16]> {
+    return a + b;
+}
+
+// 2. Basic Sub (f32, 2D)
+fn test_sub_f32_2d(a: Tensor<f32, [16, 16]>, b: Tensor<f32, [16, 16]>) -> Tensor<f32, [16, 16]> {
+    return a - b;
+}
+
+// 3. Basic Mul (f32, 2D)
+fn test_mul_f32_2d(a: Tensor<f32, [16, 16]>, b: Tensor<f32, [16, 16]>) -> Tensor<f32, [16, 16]> {
+    return a * b;
+}
+
+// 4. Basic Div (f32, 2D)
+fn test_div_f32_2d(a: Tensor<f32, [16, 16]>, b: Tensor<f32, [16, 16]>) -> Tensor<f32, [16, 16]> {
+    return a / b;
+}
+
+// 5. Basic Add (i32, 2D)
+fn test_add_i32_2d(a: Tensor<i32, [16, 16]>, b: Tensor<i32, [16, 16]>) -> Tensor<i32, [16, 16]> {
+    return a + b;
+}
+
+// 6. Basic Mul (i32, 2D)
+fn test_mul_i32_2d(a: Tensor<i32, [16, 16]>, b: Tensor<i32, [16, 16]>) -> Tensor<i32, [16, 16]> {
+    return a * b;
+}
+
+// 7. f64 types
+fn test_math_f64(a: Tensor<f64, [32, 64]>, b: Tensor<f64, [32, 64]>, c: Tensor<f64, [32, 64]>, d: Tensor<f64, [32, 64]>, e: Tensor<f64, [32, 64]>) -> Tensor<f64, [32, 64]> {
+    return (a + b) * (c - d) / e;
+}
+
+// 8. i64 types
+fn test_math_i64(a: Tensor<i64, [8, 8]>, b: Tensor<i64, [8, 8]>, c: Tensor<i64, [8, 8]>, d: Tensor<i64, [8, 8]>) -> Tensor<i64, [8, 8]> {
+    return a + b * c - d;
+}
+
+// 9. 1D Tensors
+fn test_math_1d(a: Tensor<f32, [1024]>, b: Tensor<f32, [1024]>) -> Tensor<f32, [1024]> {
+    return a * b;
+}
+
+// 10. 3D Tensors
+fn test_math_3d(a: Tensor<f32, [4, 16, 16]>, b: Tensor<f32, [4, 16, 16]>) -> Tensor<f32, [4, 16, 16]> {
+    return a + b;
+}
+
+// 11. 4D Tensors
+fn test_math_4d(a: Tensor<f32, [2, 3, 224, 224]>, b: Tensor<f32, [2, 3, 224, 224]>) -> Tensor<f32, [2, 3, 224, 224]> {
+    return a / b;
+}
+
+// 12. Dynamic dimension Tensors
+fn test_math_dynamic(a: Tensor<f32, [n, m]>, b: Tensor<f32, [n, m]>, c: Tensor<f32, [n, m]>) -> Tensor<f32, [n, m]> {
+    return a * b + c;
+}
+
+// 13. Dynamic 3D Tensors
+fn test_math_dynamic_3d(a: Tensor<f32, [b, s, h]>, b: Tensor<f32, [b, s, h]>) -> Tensor<f32, [b, s, h]> {
+    return a - b;
+}
+
+fn main() -> i32 {
+    return 0;
+}
+
+// CHECK: module {
+// CHECK:   func.func @test_add_f32_2d(%arg0: memref<16x16xf32>, %arg1: memref<16x16xf32>) -> memref<16x16xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xf32>
+// CHECK:     linalg.add ins(%arg0, %arg1 : memref<16x16xf32>, memref<16x16xf32>) outs(%alloc : memref<16x16xf32>)
+// CHECK:     return %alloc : memref<16x16xf32>
+// CHECK:   }
+// CHECK:   func.func @test_sub_f32_2d(%arg0: memref<16x16xf32>, %arg1: memref<16x16xf32>) -> memref<16x16xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xf32>
+// CHECK:     linalg.sub ins(%arg0, %arg1 : memref<16x16xf32>, memref<16x16xf32>) outs(%alloc : memref<16x16xf32>)
+// CHECK:     return %alloc : memref<16x16xf32>
+// CHECK:   }
+// CHECK:   func.func @test_mul_f32_2d(%arg0: memref<16x16xf32>, %arg1: memref<16x16xf32>) -> memref<16x16xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xf32>
+// CHECK:     linalg.mul ins(%arg0, %arg1 : memref<16x16xf32>, memref<16x16xf32>) outs(%alloc : memref<16x16xf32>)
+// CHECK:     return %alloc : memref<16x16xf32>
+// CHECK:   }
+// CHECK:   func.func @test_div_f32_2d(%arg0: memref<16x16xf32>, %arg1: memref<16x16xf32>) -> memref<16x16xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xf32>
+// CHECK:     linalg.div ins(%arg0, %arg1 : memref<16x16xf32>, memref<16x16xf32>) outs(%alloc : memref<16x16xf32>)
+// CHECK:     return %alloc : memref<16x16xf32>
+// CHECK:   }
+// CHECK:   func.func @test_add_i32_2d(%arg0: memref<16x16xi32>, %arg1: memref<16x16xi32>) -> memref<16x16xi32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xi32>
+// CHECK:     linalg.add ins(%arg0, %arg1 : memref<16x16xi32>, memref<16x16xi32>) outs(%alloc : memref<16x16xi32>)
+// CHECK:     return %alloc : memref<16x16xi32>
+// CHECK:   }
+// CHECK:   func.func @test_mul_i32_2d(%arg0: memref<16x16xi32>, %arg1: memref<16x16xi32>) -> memref<16x16xi32> {
+// CHECK:     %alloc = memref.alloc() : memref<16x16xi32>
+// CHECK:     linalg.mul ins(%arg0, %arg1 : memref<16x16xi32>, memref<16x16xi32>) outs(%alloc : memref<16x16xi32>)
+// CHECK:     return %alloc : memref<16x16xi32>
+// CHECK:   }
+// CHECK:   func.func @test_math_f64(%arg0: memref<32x64xf64>, %arg1: memref<32x64xf64>, %arg2: memref<32x64xf64>, %arg3: memref<32x64xf64>, %arg4: memref<32x64xf64>) -> memref<32x64xf64> {
+// CHECK:     %alloc = memref.alloc() : memref<32x64xf64>
+// CHECK:     linalg.add ins(%arg0, %arg1 : memref<32x64xf64>, memref<32x64xf64>) outs(%alloc : memref<32x64xf64>)
+// CHECK:     %alloc_0 = memref.alloc() : memref<32x64xf64>
+// CHECK:     linalg.sub ins(%arg2, %arg3 : memref<32x64xf64>, memref<32x64xf64>) outs(%alloc_0 : memref<32x64xf64>)
+// CHECK:     %alloc_1 = memref.alloc() : memref<32x64xf64>
+// CHECK:     linalg.mul ins(%alloc, %alloc_0 : memref<32x64xf64>, memref<32x64xf64>) outs(%alloc_1 : memref<32x64xf64>)
+// CHECK:     %alloc_2 = memref.alloc() : memref<32x64xf64>
+// CHECK:     linalg.div ins(%alloc_1, %arg4 : memref<32x64xf64>, memref<32x64xf64>) outs(%alloc_2 : memref<32x64xf64>)
+// CHECK:     return %alloc_2 : memref<32x64xf64>
+// CHECK:   }
+// CHECK:   func.func @test_math_i64(%arg0: memref<8x8xi64>, %arg1: memref<8x8xi64>, %arg2: memref<8x8xi64>, %arg3: memref<8x8xi64>) -> memref<8x8xi64> {
+// CHECK:     %alloc = memref.alloc() : memref<8x8xi64>
+// CHECK:     linalg.mul ins(%arg1, %arg2 : memref<8x8xi64>, memref<8x8xi64>) outs(%alloc : memref<8x8xi64>)
+// CHECK:     %alloc_0 = memref.alloc() : memref<8x8xi64>
+// CHECK:     linalg.add ins(%arg0, %alloc : memref<8x8xi64>, memref<8x8xi64>) outs(%alloc_0 : memref<8x8xi64>)
+// CHECK:     %alloc_1 = memref.alloc() : memref<8x8xi64>
+// CHECK:     linalg.sub ins(%alloc_0, %arg3 : memref<8x8xi64>, memref<8x8xi64>) outs(%alloc_1 : memref<8x8xi64>)
+// CHECK:     return %alloc_1 : memref<8x8xi64>
+// CHECK:   }
+// CHECK:   func.func @test_math_1d(%arg0: memref<1024xf32>, %arg1: memref<1024xf32>) -> memref<1024xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<1024xf32>
+// CHECK:     linalg.mul ins(%arg0, %arg1 : memref<1024xf32>, memref<1024xf32>) outs(%alloc : memref<1024xf32>)
+// CHECK:     return %alloc : memref<1024xf32>
+// CHECK:   }
+// CHECK:   func.func @test_math_3d(%arg0: memref<4x16x16xf32>, %arg1: memref<4x16x16xf32>) -> memref<4x16x16xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<4x16x16xf32>
+// CHECK:     linalg.add ins(%arg0, %arg1 : memref<4x16x16xf32>, memref<4x16x16xf32>) outs(%alloc : memref<4x16x16xf32>)
+// CHECK:     return %alloc : memref<4x16x16xf32>
+// CHECK:   }
+// CHECK:   func.func @test_math_4d(%arg0: memref<2x3x224x224xf32>, %arg1: memref<2x3x224x224xf32>) -> memref<2x3x224x224xf32> {
+// CHECK:     %alloc = memref.alloc() : memref<2x3x224x224xf32>
+// CHECK:     linalg.div ins(%arg0, %arg1 : memref<2x3x224x224xf32>, memref<2x3x224x224xf32>) outs(%alloc : memref<2x3x224x224xf32>)
+// CHECK:     return %alloc : memref<2x3x224x224xf32>
+// CHECK:   }
+// CHECK:   func.func @test_math_dynamic(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     %c0 = arith.constant 0 : index
+// CHECK:     %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+// CHECK:     %c1 = arith.constant 1 : index
+// CHECK:     %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+// CHECK:     %alloc = memref.alloc(%dim, %dim_0) : memref<?x?xf32>
+// CHECK:     linalg.mul ins(%arg0, %arg1 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc : memref<?x?xf32>)
+// CHECK:     %c0_1 = arith.constant 0 : index
+// CHECK:     %dim_2 = memref.dim %alloc, %c0_1 : memref<?x?xf32>
+// CHECK:     %c1_3 = arith.constant 1 : index
+// CHECK:     %dim_4 = memref.dim %alloc, %c1_3 : memref<?x?xf32>
+// CHECK:     %alloc_5 = memref.alloc(%dim_2, %dim_4) : memref<?x?xf32>
+// CHECK:     linalg.add ins(%alloc, %arg2 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc_5 : memref<?x?xf32>)
+// CHECK:     return %alloc_5 : memref<?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @test_math_dynamic_3d(%arg0: memref<?x?x?xf32>, %arg1: memref<?x?x?xf32>) -> memref<?x?x?xf32> {
+// CHECK:     %c0 = arith.constant 0 : index
+// CHECK:     %dim = memref.dim %arg0, %c0 : memref<?x?x?xf32>
+// CHECK:     %c1 = arith.constant 1 : index
+// CHECK:     %dim_0 = memref.dim %arg0, %c1 : memref<?x?x?xf32>
+// CHECK:     %c2 = arith.constant 2 : index
+// CHECK:     %dim_1 = memref.dim %arg0, %c2 : memref<?x?x?xf32>
+// CHECK:     %alloc = memref.alloc(%dim, %dim_0, %dim_1) : memref<?x?x?xf32>
+// CHECK:     linalg.sub ins(%arg0, %arg1 : memref<?x?x?xf32>, memref<?x?x?xf32>) outs(%alloc : memref<?x?x?xf32>)
+// CHECK:     return %alloc : memref<?x?x?xf32>
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }
