@@ -299,86 +299,91 @@ fn test_middle_end() {
 fn run_optimization_test(path: &Path) {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
-    let check_lines: Vec<String> = source
+    let run_lines: Vec<_> = source
         .lines()
-        .filter(|line| line.trim().starts_with("// CHECK:") && !line.trim().starts_with("// CHECK-NOT:"))
-        .map(|line| line.split_once("CHECK:").unwrap().1.trim().to_string())
+        .filter(|line| line.trim().starts_with("// RUN: vxc %s"))
         .collect();
 
-    let check_not_lines: Vec<String> = source
-        .lines()
-        .filter(|line| line.trim().starts_with("// CHECK-NOT:"))
-        .map(|line| line.split_once("CHECK-NOT:").unwrap().1.trim().to_string())
-        .collect();
+    assert!(!run_lines.is_empty(), "Missing // RUN: vxc %s line");
 
-    let run_line = source
-        .lines()
-        .find(|line| line.trim().starts_with("// RUN: vxc %s"))
-        .expect("Missing // RUN: vxc %s line");
+    for run_line in run_lines {
+        let run_cmd = run_line.split_once("RUN:").unwrap().1.trim();
 
-    let run_cmd = run_line
-        .split_once("RUN:")
-        .unwrap()
-        .1
-        .trim();
-
-    // The RUN command usually looks like: `vxc %s -x mlir --action emit-mlir --pass-pipeline="..." | FileCheck %s`
-    // We only care about the part before `| FileCheck`
-    let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
-
-    // Replace `%s` with actual path
-    let vxc_cmd_str = vxc_cmd_str.replace("%s", path.to_str().unwrap());
-    
-    // Split into args
-    let mut args: Vec<String> = vec![];
-    let mut current_arg = String::new();
-    let mut in_quotes = false;
-    for c in vxc_cmd_str.chars() {
-        if c == '"' {
-            in_quotes = !in_quotes;
-        } else if c == ' ' && !in_quotes {
-            if !current_arg.is_empty() {
-                args.push(current_arg.clone());
-                current_arg.clear();
+        // Parse FileCheck prefix
+        let mut prefix = "CHECK".to_string();
+        if let Some(filecheck_part) = run_cmd.split('|').nth(1) {
+            if let Some(prefix_arg) = filecheck_part.split_whitespace().find(|s| s.starts_with("--check-prefix=")) {
+                prefix = prefix_arg.split_once('=').unwrap().1.to_string();
             }
-        } else {
-            current_arg.push(c);
         }
-    }
-    if !current_arg.is_empty() {
-        args.push(current_arg);
-    }
 
-    // args[0] is "vxc", we remove it
-    args.remove(0);
+        let check_prefix = format!("// {}:", prefix);
+        let check_not_prefix = format!("// {}-NOT:", prefix);
 
-    let vxc_bin = env!("CARGO_BIN_EXE_vxc");
-    let output = std::process::Command::new(vxc_bin)
-        .args(&args)
-        .output()
-        .expect("Failed to execute vxc");
+        let check_lines: Vec<String> = source
+            .lines()
+            .filter(|line| line.trim().starts_with(&check_prefix) && !line.trim().starts_with(&check_not_prefix))
+            .map(|line| line.split_once(&check_prefix[3..]).unwrap().1.trim().to_string())
+            .collect();
 
-    if !output.status.success() {
-        panic!(
-            "vxc failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+        let check_not_lines: Vec<String> = source
+            .lines()
+            .filter(|line| line.trim().starts_with(&check_not_prefix))
+            .map(|line| line.split_once(&check_not_prefix[3..]).unwrap().1.trim().to_string())
+            .collect();
 
-    let out = String::from_utf8_lossy(&output.stdout);
-
-    let mut current_idx = 0;
-    for check in check_lines {
-        if let Some(pos) = out[current_idx..].find(&check) {
-            current_idx += pos + check.len();
-        } else {
-            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nOutput:\n{}", path, check, out);
+        let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
+        let vxc_cmd_str = vxc_cmd_str.replace("%s", path.to_str().unwrap());
+        
+        let mut args: Vec<String> = vec![];
+        let mut current_arg = String::new();
+        let mut in_quotes = false;
+        for c in vxc_cmd_str.chars() {
+            if c == '"' {
+                in_quotes = !in_quotes;
+            } else if c == ' ' && !in_quotes {
+                if !current_arg.is_empty() {
+                    args.push(current_arg.clone());
+                    current_arg.clear();
+                }
+            } else {
+                current_arg.push(c);
+            }
         }
-    }
+        if !current_arg.is_empty() {
+            args.push(current_arg);
+        }
 
-    for not_check in check_not_lines {
-        if out.contains(&not_check) {
-            panic!("FileCheck failed on {:?}: Found forbidden `{}`.\nOutput:\n{}", path, not_check, out);
+        args.remove(0);
+
+        let vxc_bin = env!("CARGO_BIN_EXE_vxc");
+        let output = std::process::Command::new(vxc_bin)
+            .args(&args)
+            .output()
+            .expect("Failed to execute vxc");
+
+        if !output.status.success() {
+            panic!(
+                "vxc failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let out = String::from_utf8_lossy(&output.stdout);
+
+        let mut current_idx = 0;
+        for check in check_lines {
+            if let Some(pos) = out[current_idx..].find(&check) {
+                current_idx += pos + check.len();
+            } else {
+                panic!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out);
+            }
+        }
+
+        for not_check in check_not_lines {
+            if out.contains(&not_check) {
+                panic!("FileCheck failed on {:?} for prefix {}: Found forbidden `{}`.\nOutput:\n{}", path, prefix, not_check, out);
+            }
         }
     }
 }

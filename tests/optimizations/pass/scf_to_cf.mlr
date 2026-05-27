@@ -1,4 +1,5 @@
-// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
+// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)" | FileCheck %s
+// RUN: vxc %s -x mlir --action emit-llvm -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf,convert-arith-to-llvm,convert-cf-to-llvm,convert-func-to-llvm,expand-strided-metadata,finalize-memref-to-llvm,reconcile-unrealized-casts)" | FileCheck %s --check-prefix=LLVM
 
 module {
   func.func @test_scf_to_cf(%arg0: memref<16xf32>, %arg1: memref<16xf32>) -> memref<16xf32> {
@@ -11,3 +12,13 @@ module {
 // CHECK: func.func @test_scf_to_cf
 // CHECK: cf.br
 // CHECK: cf.cond_br
+
+// LLVM: define { ptr, ptr, i64, [1 x i64], [1 x i64] } @test_scf_to_cf
+// LLVM: call ptr @malloc
+// LLVM: br label
+// LLVM: phi i64
+// LLVM: icmp slt i64
+// LLVM: br i1
+// LLVM: fadd float
+// LLVM: store float
+// LLVM: ret { ptr, ptr, i64, [1 x i64], [1 x i64] }

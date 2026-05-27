@@ -18,6 +18,8 @@ pub enum Action {
     RunJit,
     /// Compile to an object file
     EmitObj,
+    /// Parse, typecheck, emit MLIR, lower to LLVM dialect, and translate to LLVM IR
+    EmitLlvm,
 }
 
 #[derive(Parser, Debug)]
@@ -46,6 +48,10 @@ pub struct DriverOptions {
     /// Emit MLIR (alias for --action emit-mlir)
     #[arg(long = "emit-mlir")]
     pub emit_mlir: bool,
+
+    /// Emit LLVM IR (alias for --action emit-llvm)
+    #[arg(long = "emit-llvm")]
+    pub emit_llvm: bool,
 
     /// Run JIT (alias for --action run-jit)
     #[arg(long = "run")]
@@ -81,6 +87,8 @@ impl CompilerDriver {
             options.action = Action::PrintAst;
         } else if options.emit_mlir {
             options.action = Action::EmitMlir;
+        } else if options.emit_llvm {
+            options.action = Action::EmitLlvm;
         } else if options.run_jit {
             options.action = Action::RunJit;
         } else if options.compile {
@@ -114,28 +122,13 @@ impl CompilerDriver {
         if language == "mlir" {
             let mlir_src = std::fs::read_to_string(main_file).map_err(|e| e.to_string())?;
 
-            if self.options.action == Action::EmitMlir {
-                if !mlir_args.is_empty() {
-                    let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
-                    let mut file = std::fs::File::create(&temp_mlir).unwrap();
-                    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
-
-                    let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
-                    for arg in &mlir_args {
-                        cmd.arg(arg);
-                    }
-                    let mlir_opt_out = cmd
-                        .arg(&temp_mlir)
-                        .output()
-                        .map_err(|e| e.to_string())?;
-
-                    let _ = std::fs::remove_file(&temp_mlir);
-                    if !mlir_opt_out.status.success() {
-                        return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
-                    }
-                    println!("{}", String::from_utf8_lossy(&mlir_opt_out.stdout));
+            if self.options.action == Action::EmitMlir || self.options.action == Action::EmitLlvm {
+                let optimized_mlir = apply_mlir_opt(&mlir_src, &mlir_args, main_file)?;
+                if self.options.action == Action::EmitLlvm {
+                    let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
+                    println!("{}", llvm_ir);
                 } else {
-                    println!("{}", mlir_src);
+                    println!("{}", optimized_mlir);
                 }
                 return Ok(());
             }
@@ -226,7 +219,7 @@ impl CompilerDriver {
         let use_melior = !self.options.use_legacy;
 
         match self.options.action {
-            Action::EmitMlir => {
+            Action::EmitMlir | Action::EmitLlvm => {
                 if use_melior {
                     let registry = melior::dialect::DialectRegistry::new();
                     melior::utility::register_all_dialects(&registry);
@@ -252,28 +245,13 @@ impl CompilerDriver {
                     }
                     
                     let mlir_str = format!("{}", module.as_operation());
+                    let optimized_mlir = apply_mlir_opt(&mlir_str, &mlir_args, main_file)?;
                     
-                    if !mlir_args.is_empty() {
-                        let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
-                        let mut file = std::fs::File::create(&temp_mlir).unwrap();
-                        std::io::Write::write_all(&mut file, mlir_str.as_bytes()).unwrap();
-
-                        let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
-                        for arg in &mlir_args {
-                            cmd.arg(arg);
-                        }
-                        let mlir_opt_out = cmd
-                            .arg(&temp_mlir)
-                            .output()
-                            .map_err(|e| e.to_string())?;
-
-                        let _ = std::fs::remove_file(&temp_mlir);
-                        if !mlir_opt_out.status.success() {
-                            return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
-                        }
-                        println!("{}", String::from_utf8_lossy(&mlir_opt_out.stdout));
+                    if self.options.action == Action::EmitLlvm {
+                        let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
+                        println!("{}", llvm_ir);
                     } else {
-                        println!("{}", mlir_str);
+                        println!("{}", optimized_mlir);
                     }
                 } else {
                     let mut codegen = crate::codegen::MlirGenerator::new();
@@ -370,4 +348,47 @@ impl CompilerDriver {
 
         Ok(())
     }
+}
+
+pub fn apply_mlir_opt(mlir_src: &str, mlir_args: &[String], main_file: &std::path::Path) -> Result<String, String> {
+    if mlir_args.is_empty() {
+        return Ok(mlir_src.to_string());
+    }
+    let temp_mlir = format!("{}_temp.mlir", main_file.file_name().unwrap().to_string_lossy());
+    let mut file = std::fs::File::create(&temp_mlir).unwrap();
+    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
+
+    let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
+    for arg in mlir_args {
+        cmd.arg(arg);
+    }
+    let mlir_opt_out = cmd
+        .arg(&temp_mlir)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let _ = std::fs::remove_file(&temp_mlir);
+    if !mlir_opt_out.status.success() {
+        return Err(format!("mlir-opt failed:\n{}", String::from_utf8_lossy(&mlir_opt_out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&mlir_opt_out.stdout).to_string())
+}
+
+pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Result<String, String> {
+    let temp_mlir = format!("{}_temp_llvm.mlir", main_file.file_name().unwrap().to_string_lossy());
+    let mut file = std::fs::File::create(&temp_mlir).unwrap();
+    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
+
+    let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate");
+    cmd.arg("--mlir-to-llvmir");
+    let mlir_translate_out = cmd
+        .arg(&temp_mlir)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let _ = std::fs::remove_file(&temp_mlir);
+    if !mlir_translate_out.status.success() {
+        return Err(format!("mlir-translate failed:\n{}", String::from_utf8_lossy(&mlir_translate_out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout).to_string())
 }
