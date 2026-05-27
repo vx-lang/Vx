@@ -22,7 +22,7 @@ use std::sync::Once;
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static COMPILE_NPU_ONCE: Once = Once::new();
 
-pub fn execute_mlir(mlir_src: &str, custom_pipeline: Option<String>) -> Result<String, String> {
+pub fn execute_mlir(mlir_src: &str, mlir_args: Vec<String>) -> Result<String, String> {
     // Ensure target/jit directory exists
     let jit_dir = std::path::Path::new("target/jit");
     if !jit_dir.exists() {
@@ -87,14 +87,16 @@ pub fn execute_mlir(mlir_src: &str, custom_pipeline: Option<String>) -> Result<S
     }
 
     println!("[JIT] Lowering to LLVM Dialect...");
-    let pipeline_arg = custom_pipeline
-        .map(|p| format!("--pass-pipeline={}", p))
-        .unwrap_or_else(|| OPTIMIZATION_PIPELINE.to_string());
-    let mlir_opt_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
-        .args([
-            &pipeline_arg,
-            &temp_mlir,
-        ])
+    let mut cmd = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
+    if mlir_args.is_empty() {
+        cmd.arg(OPTIMIZATION_PIPELINE);
+    } else {
+        for arg in mlir_args {
+            cmd.arg(arg);
+        }
+    }
+    
+    let mlir_opt_out = cmd.arg(&temp_mlir)
         .output()
         .map_err(|e| e.to_string())?;
 

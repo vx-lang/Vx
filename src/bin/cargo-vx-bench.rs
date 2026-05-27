@@ -122,7 +122,7 @@ fn main() -> i32 {
                         let module_asts = std::collections::HashMap::new();
                         let mut codegen = vxc::codegen::MlirGenerator::new();
                         let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                        match vxc::jit::execute_mlir(&mlir_str, None) {
+                        match vxc::jit::execute_mlir(&mlir_str, vec![]) {
                             Ok(output) => {
                                 // Parse the output to find the float time like [0.125]
                                 if let Some(last_match) = re_time.captures_iter(&output).last() {
