@@ -937,6 +937,7 @@ impl<'a> Parser<'a> {
                     expr = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(expr),
                         member: ident,
+                        struct_name: None,
                         span: Span::default(),
                     });
                 }
@@ -1759,6 +1760,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 if let Expr::MemberAccess(MemberAccessExpr {
                     base: inner_obj,
                     member,
+                    struct_name: _,
                     span: _,
                 }) = &**obj
                 {

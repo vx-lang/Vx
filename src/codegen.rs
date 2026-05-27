@@ -1258,6 +1258,7 @@ impl MlirGenerator {
                 if let Expr::MemberAccess(MemberAccessExpr {
                     base: inner_base,
                     member,
+                    struct_name: _,
                     span: _,
                 }) = &**base
                 {
@@ -1358,6 +1359,7 @@ impl MlirGenerator {
             Expr::MemberAccess(MemberAccessExpr {
                 base,
                 member,
+                struct_name: _,
                 span: _,
             }) => {
                 if member == "shape" {

@@ -267,11 +267,17 @@ impl ArrayExpr {
 pub struct MemberAccessExpr {
     pub base: Box<Expr>,
     pub member: String,
+    pub struct_name: Option<String>,
     pub span: Span,
 }
 impl MemberAccessExpr {
     pub fn new(base: Box<Expr>, member: String, span: Span) -> Self {
-        Self { base, member, span }
+        Self {
+            base,
+            member,
+            struct_name: None,
+            span,
+        }
     }
 }
 
@@ -674,6 +680,7 @@ impl Expr {
             Expr::MemberAccess(e) => Expr::MemberAccess(MemberAccessExpr {
                 base: Box::new(e.base.substitute(mapping)),
                 member: e.member.clone(),
+                struct_name: e.struct_name.clone(),
                 span: e.span.clone(),
             }),
             Expr::IndexAccess(e) => Expr::IndexAccess(IndexAccessExpr {

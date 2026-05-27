@@ -1339,6 +1339,7 @@ impl<'a> TypeChecker<'a> {
             Expr::MemberAccess(MemberAccessExpr {
                 base: obj,
                 member,
+                struct_name: struct_name_field,
                 span: _,
             }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
@@ -1348,6 +1349,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Type::Struct(struct_name, _) = &base_ty {
+                    *struct_name_field = Some(struct_name.clone());
                     if let Some(decl) = self.env.structs.get(struct_name).cloned() {
                         for (f_name, f_type) in &decl.fields {
                             if f_name == member {

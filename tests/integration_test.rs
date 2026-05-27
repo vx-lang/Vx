@@ -19,11 +19,11 @@ use vxc::sema::TypeChecker;
 #[test]
 fn test_distributed_matmul_integration() {
     let input = r#"
-fn custom_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+fn custom_matmul(a: Pinned<Tensor<f32>, Topology::NPU[0]>, b: Pinned<Tensor<f32>, Topology::NPU[0]>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
     return a;
 }
 
-fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
     let local_a = a.to_device();
     let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
