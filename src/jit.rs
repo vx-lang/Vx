@@ -88,6 +88,7 @@ pub fn execute_mlir(mlir_src: &str) -> Result<String, String> {
     println!("[JIT] Lowering to LLVM Dialect...");
     let mlir_opt_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt")
         .args([
+            "--convert-linalg-to-loops",
             "--lower-affine",
             "--convert-scf-to-cf",
             "--expand-strided-metadata",

@@ -48,5 +48,6 @@ pub const OP_ADD: u32 = 4;
 pub const OP_SUB: u32 = 5;
 pub const OP_MUL: u32 = 6;
 pub const OP_DIV: u32 = 7;
+pub const OP_MATMUL: u32 = 10;
 pub const OP_CALL: u32 = 8;
 pub const OP_RET: u32 = 9;

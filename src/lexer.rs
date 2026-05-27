@@ -79,6 +79,7 @@ pub enum TokenType {
     Dot,
     DoubleDot,
     Ampersand,
+    At,
 
     // Logical & Relational
     EqEq,
@@ -160,6 +161,7 @@ impl std::fmt::Display for TokenType {
             TokenType::Dot => write!(f, "."),
             TokenType::DoubleDot => write!(f, ".."),
             TokenType::Ampersand => write!(f, "&"),
+            TokenType::At => write!(f, "@"),
 
             TokenType::EqEq => write!(f, "=="),
             TokenType::NotEq => write!(f, "!="),
@@ -467,6 +469,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             '*' => TokenType::Star,
+            '@' => TokenType::At,
             '/' => TokenType::Slash,
             '=' => {
                 if self.peek() == Some(&'=') {

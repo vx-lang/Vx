@@ -658,7 +658,7 @@ impl MlirGenerator {
                             }
                         }
                     }
-                } else if *op == BinaryOp::Mul {
+                } else if *op == BinaryOp::MatMul {
                     let (rhs_val, _) = self.generate_expr(rhs, &self.current_el_ty.clone());
                     let (lhs_val, _) = self.generate_expr(lhs, &self.current_el_ty.clone());
                     let prod = self.next_var();
@@ -1643,6 +1643,13 @@ impl MlirGenerator {
                         ));
                     }
                     BinaryOp::Mul => {
+                        let op_str = if is_int { "arith.muli" } else { "arith.mulf" };
+                        self.write_line(&format!(
+                            "{} = {} {}, {} : {}",
+                            res, op_str, lhs_val, rhs_val, lhs_ty
+                        ));
+                    }
+                    BinaryOp::MatMul => {
                         let op_str = if is_int { "arith.muli" } else { "arith.mulf" };
                         self.write_line(&format!(
                             "{} = {} {}, {} : {}",

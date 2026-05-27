@@ -656,6 +656,10 @@ impl<'a> TypeChecker<'a> {
                     (Value::Number(a), Value::Number(b), BinaryOp::Mul) => {
                         Some(Value::Number(a * b))
                     }
+                    (Value::Number(_), Value::Number(_), BinaryOp::MatMul) => {
+                        // MatMul not supported for pure numbers at compile time
+                        None
+                    }
                     (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
                         Some(Value::Number(a / b))
                     }
@@ -792,6 +796,7 @@ impl<'a> TypeChecker<'a> {
                 BinaryOp::Add => crate::hir::OP_ADD,
                 BinaryOp::Sub => crate::hir::OP_SUB,
                 BinaryOp::Mul => crate::hir::OP_MUL,
+                BinaryOp::MatMul => crate::hir::OP_MATMUL,
                 BinaryOp::Div => crate::hir::OP_DIV,
             },
             Expr::RelationalOp(RelationalOpExpr { .. }) => crate::hir::OP_NOP,
@@ -1742,7 +1747,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Tensor(el_ty_r, dims_r, _top_r),
                 ) = (&lhs_ty, &rhs_ty)
                 {
-                    if *op == BinaryOp::Mul {
+                    if *op == BinaryOp::MatMul {
                         if el_ty_l != el_ty_r {
                             self.errors.push(format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r));
                         }

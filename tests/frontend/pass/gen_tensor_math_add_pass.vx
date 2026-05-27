@@ -1,8 +1,9 @@
 //===- gen_tensor_math_add_pass.vx ---------------------------------===//
 // RUN: vxc %s
 
-fn main() -> Tensor<f32, [16, 16]> {
+fn main() -> i32 {
   let a: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
   let b: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
-  return a + b;
+  let c = a + b;
+  return 0;
 }

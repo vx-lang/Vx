@@ -154,6 +154,7 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    MatMul,
     Div,
 }
 

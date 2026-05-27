@@ -601,7 +601,7 @@ impl MeliorOpInfo for BinaryOp {
                     "arith.subi"
                 }
             }
-            BinaryOp::Mul => {
+            BinaryOp::Mul | BinaryOp::MatMul => {
                 if is_float {
                     "arith.mulf"
                 } else {
@@ -942,19 +942,33 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let mut final_ty = lhs_ty;
         let lhs_ty_str = lhs_ty.to_string();
         let rhs_ty_str = rhs_ty.to_string();
-        if op == &BinaryOp::Mul
-            && lhs_ty_str.starts_with("memref<")
-            && rhs_ty_str.starts_with("memref<")
-        {
+        let is_memref = lhs_ty_str.starts_with("memref<") && rhs_ty_str.starts_with("memref<");
+
+        let mut is_matmul = false;
+        let mut lhs_parts = Vec::new();
+        let mut rhs_parts = Vec::new();
+        if is_memref {
+            let lhs_inner = &lhs_ty_str[7..lhs_ty_str.len() - 1];
+            let rhs_inner = &rhs_ty_str[7..rhs_ty_str.len() - 1];
+            lhs_parts = lhs_inner.split('x').collect();
+            rhs_parts = rhs_inner.split('x').collect();
+            is_matmul = if op == &BinaryOp::MatMul
+                && is_memref
+                && lhs_parts.len() == 3
+                && rhs_parts.len() == 3
+            {
+                let lhs_dim1 = lhs_parts[1];
+                let rhs_dim0 = rhs_parts[0];
+                lhs_dim1 == rhs_dim0 || lhs_dim1 == "?" || rhs_dim0 == "?"
+            } else {
+                false
+            };
+        }
+
+        if is_matmul {
             // Linalg Matmul Lowering
             // Parse dimensions from lhs_ty_str and rhs_ty_str
             // lhs: memref<MxKxf32>, rhs: memref<KxNxf32>
-            let lhs_inner = &lhs_ty_str[7..lhs_ty_str.len() - 1]; // MxKxf32
-            let rhs_inner = &rhs_ty_str[7..rhs_ty_str.len() - 1]; // KxNxf32
-
-            let lhs_parts: Vec<&str> = lhs_inner.split('x').collect();
-            let rhs_parts: Vec<&str> = rhs_inner.split('x').collect();
-
             let m_str = lhs_parts[0];
             let n_str = rhs_parts[1];
             let el_ty_str = lhs_parts[2];
@@ -970,16 +984,25 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let m_idx_attr =
                     melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0)
                         .into();
+                let cst_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    m_idx_attr,
+                )])
+                .build()
+                .unwrap();
+                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+
                 let dim_m_op = melior::ir::operation::OperationBuilder::new(
                     "memref.dim",
                     Location::unknown(gen.context),
                 )
-                .add_operands(&[lhs_val])
+                .add_operands(&[lhs_val, idx_val])
                 .add_results(&[index_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "index"),
-                    m_idx_attr,
-                )])
                 .build()
                 .unwrap();
                 alloc_operands.push(block.append_operation(dim_m_op).result(0).unwrap().into());
@@ -989,16 +1012,25 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let n_idx_attr =
                     melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 1)
                         .into();
+                let cst_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[index_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    n_idx_attr,
+                )])
+                .build()
+                .unwrap();
+                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+
                 let dim_n_op = melior::ir::operation::OperationBuilder::new(
                     "memref.dim",
                     Location::unknown(gen.context),
                 )
-                .add_operands(&[rhs_val])
+                .add_operands(&[rhs_val, idx_val])
                 .add_results(&[index_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "index"),
-                    n_idx_attr,
-                )])
                 .build()
                 .unwrap();
                 alloc_operands.push(block.append_operation(dim_n_op).result(0).unwrap().into());
@@ -1010,6 +1042,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 Location::unknown(gen.context),
             )
             .add_operands(&alloc_operands)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(
+                    gen.context,
+                    &[alloc_operands.len() as i32, 0],
+                )
+                .into(),
+            )])
             .add_results(&[out_ty])
             .build()
             .unwrap();
@@ -1041,26 +1081,248 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             .unwrap();
             let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
 
+            let region_fill = Region::new();
+            let block_fill = melior::ir::Block::new(&[
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+            ]);
+            let yield_fill = melior::ir::operation::OperationBuilder::new(
+                "linalg.yield",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[block_fill.argument(0).unwrap().into()])
+            .build()
+            .unwrap();
+            block_fill.append_operation(yield_fill);
+            region_fill.append_block(block_fill);
+
             let linalg_fill = melior::ir::operation::OperationBuilder::new(
                 "linalg.fill",
                 Location::unknown(gen.context),
             )
             .add_operands(&[zero_val, out_val])
-            .add_regions([Region::new()])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+            )])
+            .add_regions([region_fill])
             .build()
             .unwrap();
             block.append_operation(linalg_fill);
 
             // Execute linalg.matmul
+            let region_matmul = Region::new();
+            let block_matmul = melior::ir::Block::new(&[
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+            ]);
+
+            let is_float = el_ty_str.contains("f32") || el_ty_str.contains("f64");
+            let mul_op_name = if is_float { "arith.mulf" } else { "arith.muli" };
+            let add_op_name = if is_float { "arith.addf" } else { "arith.addi" };
+
+            let mul_op = melior::ir::operation::OperationBuilder::new(
+                mul_op_name,
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[
+                block_matmul.argument(0).unwrap().into(),
+                block_matmul.argument(1).unwrap().into(),
+            ])
+            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+            .build()
+            .unwrap();
+            let mul_val = block_matmul
+                .append_operation(mul_op)
+                .result(0)
+                .unwrap()
+                .into();
+
+            let add_op = melior::ir::operation::OperationBuilder::new(
+                add_op_name,
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[block_matmul.argument(2).unwrap().into(), mul_val])
+            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+            .build()
+            .unwrap();
+            let add_val = block_matmul
+                .append_operation(add_op)
+                .result(0)
+                .unwrap()
+                .into();
+
+            let yield_matmul = melior::ir::operation::OperationBuilder::new(
+                "linalg.yield",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[add_val])
+            .build()
+            .unwrap();
+            block_matmul.append_operation(yield_matmul);
+            region_matmul.append_block(block_matmul);
+
             let matmul_op = melior::ir::operation::OperationBuilder::new(
                 "linalg.matmul",
                 Location::unknown(gen.context),
             )
             .add_operands(&[lhs_val, rhs_val, out_val])
-            .add_regions([Region::new()])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+            )])
+            .add_regions([region_matmul])
             .build()
             .unwrap();
             block.append_operation(matmul_op);
+
+            return (out_val, out_ty);
+        } else if is_memref {
+            // Element-wise Linalg Lowering (Add, Sub, Mul, Div)
+            let out_ty = Type::parse(gen.context, &lhs_ty_str).unwrap();
+
+            let mut alloc_operands = Vec::new();
+            let index_ty = Type::parse(gen.context, "index").unwrap();
+
+            let rank = lhs_parts.len() - 1; // Last part is element type
+            let el_ty_str = lhs_parts.last().unwrap();
+
+            for (i, dim_str) in lhs_parts.iter().take(rank).enumerate() {
+                if *dim_str == "?" {
+                    let idx_attr = melior::ir::attribute::IntegerAttribute::new(
+                        Type::index(gen.context),
+                        i as i64,
+                    )
+                    .into();
+                    let cst_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[index_ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        idx_attr,
+                    )])
+                    .build()
+                    .unwrap();
+                    let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+
+                    let dim_op = melior::ir::operation::OperationBuilder::new(
+                        "memref.dim",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[lhs_val, idx_val])
+                    .add_results(&[index_ty])
+                    .build()
+                    .unwrap();
+                    alloc_operands.push(block.append_operation(dim_op).result(0).unwrap().into());
+                }
+            }
+
+            // Alloc output buffer
+            let alloc_op = melior::ir::operation::OperationBuilder::new(
+                "memref.alloc",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&alloc_operands)
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(
+                    gen.context,
+                    &[alloc_operands.len() as i32, 0],
+                )
+                .into(),
+            )])
+            .add_results(&[out_ty])
+            .build()
+            .unwrap();
+            let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+
+            let op_name = match op {
+                BinaryOp::Add => "linalg.add",
+                BinaryOp::Sub => "linalg.sub",
+                BinaryOp::Mul => "linalg.mul",
+                BinaryOp::MatMul => panic!("MatMul must have been handled by is_matmul branch"),
+                BinaryOp::Div => "linalg.div",
+            };
+
+            let is_float = el_ty_str.contains("f32") || el_ty_str.contains("f64");
+            let arith_op_name = op.get_op_name(is_float);
+
+            let region = Region::new();
+            let block_inner = melior::ir::Block::new(&[
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Location::unknown(gen.context),
+                ),
+            ]);
+
+            let arith_op = melior::ir::operation::OperationBuilder::new(
+                arith_op_name,
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[
+                block_inner.argument(0).unwrap().into(),
+                block_inner.argument(1).unwrap().into(),
+            ])
+            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+            .build()
+            .unwrap();
+
+            let arith_val = block_inner
+                .append_operation(arith_op)
+                .result(0)
+                .unwrap()
+                .into();
+
+            let yield_op = melior::ir::operation::OperationBuilder::new(
+                "linalg.yield",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[arith_val])
+            .build()
+            .unwrap();
+
+            block_inner.append_operation(yield_op);
+            region.append_block(block_inner);
+
+            let linalg_op = melior::ir::operation::OperationBuilder::new(
+                op_name,
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[lhs_val, rhs_val, out_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+            )])
+            .add_regions([region])
+            .build()
+            .unwrap();
+            block.append_operation(linalg_op);
 
             return (out_val, out_ty);
         }

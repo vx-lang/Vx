@@ -452,6 +452,15 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
+                TokenType::At => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::BinaryOp(BinaryOpExpr {
+                        lhs: Box::new(left),
+                        op: BinaryOp::MatMul,
+                        rhs: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
                 TokenType::Slash => {
                     let right = self.parse_binary_expr(op_prec + 1)?;
                     left = Expr::BinaryOp(BinaryOpExpr {
@@ -478,7 +487,7 @@ impl<'a> Parser<'a> {
             | TokenType::LeftAngle
             | TokenType::RightAngle => Some(40),
             TokenType::Plus | TokenType::Minus => Some(50),
-            TokenType::Star | TokenType::Slash => Some(60),
+            TokenType::Star | TokenType::Slash | TokenType::At => Some(60),
             _ => None,
         }
     }

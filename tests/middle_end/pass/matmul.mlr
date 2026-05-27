@@ -2,7 +2,7 @@
 // RUN: FileCheck %s < %t.mlir
 
 fn my_matmul(a: Tensor<f32, [128, 64]>, b: Tensor<f32, [64, 256]>) -> Tensor<f32, [128, 256]> {
-    let c = a * b;
+    let c = a @ b;
     return c;
 }
 
@@ -19,9 +19,15 @@ fn main() -> i32 {
 // CHECK:   ^bb0(%arg0: memref<128x64xf32>, %arg1: memref<64x256xf32>):
 // CHECK:     %4 = "memref.alloc"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<128x256xf32>
 // CHECK:     %5 = "arith.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
-// CHECK:     "linalg.fill"(%5, %4) <{operandSegmentSizes = array<i32: 0, 0>}> ({
+// CHECK:     "linalg.fill"(%5, %4) <{operandSegmentSizes = array<i32: 1, 1>}> ({
+// CHECK:     ^bb0(%arg5: f32, %arg6: f32):
+// CHECK:       "linalg.yield"(%arg5) : (f32) -> ()
 // CHECK:     }) : (f32, memref<128x256xf32>) -> ()
-// CHECK:     "linalg.matmul"(%arg0, %arg1, %4) <{operandSegmentSizes = array<i32: 0, 0>}> ({
+// CHECK:     "linalg.matmul"(%arg0, %arg1, %4) <{operandSegmentSizes = array<i32: 2, 1>}> ({
+// CHECK:     ^bb0(%arg2: f32, %arg3: f32, %arg4: f32):
+// CHECK:       %6 = "arith.mulf"(%arg2, %arg3) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+// CHECK:       %7 = "arith.addf"(%arg4, %6) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+// CHECK:       "linalg.yield"(%7) : (f32) -> ()
 // CHECK:     }) : (memref<128x64xf32>, memref<64x256xf32>, memref<128x256xf32>) -> ()
 // CHECK:     "func.return"(%4) : (memref<128x256xf32>) -> ()
 // CHECK:   }) : () -> ()
