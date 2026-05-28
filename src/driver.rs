@@ -57,6 +57,10 @@ pub struct DriverOptions {
     #[arg(long = "run")]
     pub run_jit: bool,
 
+    /// Disable optimizations (e.g., skip Vx lowering pass)
+    #[arg(long = "disable-optimizations")]
+    pub disable_optimizations: bool,
+
     /// Input source files
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
@@ -231,16 +235,24 @@ impl CompilerDriver {
                 codegen.generate(&monomorphized_ast, &module_asts);
                 let mut module = codegen.into_module();
 
-                let vx_pm = melior::pass::PassManager::new(&context);
-                unsafe {
-                    crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
-                }
-                if let Err(e) = vx_pm.run(&mut module) {
-                    eprintln!("Failed to lower Vx dialect: {}", e);
+                if !self.options.disable_optimizations {
+                    let vx_pm = melior::pass::PassManager::new(&context);
+                    unsafe {
+                        crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
+                    }
+                    if let Err(e) = vx_pm.run(&mut module) {
+                        eprintln!("Failed to lower Vx dialect: {}", e);
+                    }
                 }
 
                 if !module.as_operation().verify() {
                     eprintln!("Warning: MLIR Verification failed for {}", filename);
+                }
+
+                if self.options.action == Action::EmitLlvm {
+                    if let Err(e) = crate::melior_codegen::lower_to_llvm(&context, &mut module) {
+                        eprintln!("Failed to lower to LLVM: {}", e);
+                    }
                 }
 
                 let mlir_str = format!("{}", module.as_operation());

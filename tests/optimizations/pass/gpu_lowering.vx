@@ -1,21 +1,26 @@
-// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s
+// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s --check-prefix=GPU
 
-fn dummy() -> Tensor<f32> {
-  return 0.0;
+fn dummy(x: i32) -> i32 {
+  return x;
 }
 
 fn process(t: Tensor<f32>) -> Tensor<f32> {
   let mut t_device = t.to_device();
   spawn on (Topology::NPU[0]) {
-    dummy();
+    dummy(0);
   }
   return t;
 }
 
-// Check for the host kernel launch
-// CHECK: gpu.launch_func
+// 1. Check for the frontend emission of vx.spawn
+// FRONTEND: func.func @process
+// FRONTEND: vx.spawn topology(100)
+// FRONTEND: func.call @dummy
 
-// Check for the generated device module
-// CHECK: gpu.module
-// CHECK: gpu.func
-// CHECK: gpu.return
+// 2. Check for the GPU dialect lowering
+// GPU: gpu.launch_func
+// GPU: gpu.module
+// GPU: gpu.func
+// GPU: func.call @dummy
+// GPU: gpu.return
