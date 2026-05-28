@@ -491,39 +491,7 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
             }
-            Statement::SpawnOn(SpawnOnStmt {
-                top,
-                stmts,
-                span: _,
-            }) => {
-                let prev_top = self.active_topology.clone();
-                let prev_mem = self.active_memory.clone();
-                self.active_topology = top.clone();
-                self.active_memory = crate::arch::HardwareGraph::default_memory_for(top);
 
-                self.push_scope();
-
-                // Validate topology expression if it contains one
-                match top {
-                    Topology::NPU(expr) | Topology::AccCore(expr) => {
-                        let _ty = self.check_expr_type(expr);
-                    }
-                    Topology::Slice(_, start, end) => {
-                        let _t1 = self.check_expr_type(start);
-                        let _t2 = self.check_expr_type(end);
-                    }
-                    Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
-                }
-
-                for s in stmts {
-                    self.check_statement(s, return_type);
-                }
-
-                self.pop_scope();
-
-                self.active_topology = prev_top;
-                self.active_memory = prev_mem;
-            }
             Statement::ExprStmt(ExprStmtStmt {
                 expr,
                 has_semi: _,
@@ -1084,6 +1052,56 @@ impl<'a> TypeChecker<'a> {
                     ret_ty = self.check_expr_type(r);
                 }
                 self.pop_scope();
+                ret_ty
+            }
+            Expr::SpawnOn(crate::ast::SpawnOnExpr {
+                top,
+                stmts,
+                ret,
+                span: _,
+            }) => {
+                let prev_top = self.active_topology.clone();
+                let prev_mem = self.active_memory.clone();
+                self.active_topology = top.clone();
+                self.active_memory = crate::arch::HardwareGraph::default_memory_for(top);
+
+                self.push_scope();
+
+                // Validate topology expression if it contains one
+                match top {
+                    Topology::NPU(expr) | Topology::AccCore(expr) => {
+                        let _ty = self.check_expr_type(expr);
+                    }
+                    Topology::Slice(_, start, end) => {
+                        let _t1 = self.check_expr_type(start);
+                        let _t2 = self.check_expr_type(end);
+                    }
+                    Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
+                }
+
+                for stmt in stmts {
+                    if let Statement::ExprStmt(ExprStmtStmt {
+                        ref mut expr,
+                        has_semi: _,
+                        span: _,
+                    }) = stmt
+                    {
+                        self.check_expr_type(expr);
+                    } else {
+                        self.check_statement(stmt, &Type::Tensor(ElementType::F32, vec![], None));
+                    }
+                }
+
+                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
+                if let Some(r) = ret {
+                    ret_ty = self.check_expr_type(r);
+                }
+
+                self.pop_scope();
+
+                self.active_topology = prev_top;
+                self.active_memory = prev_mem;
+
                 ret_ty
             }
             Expr::If(IfExpr {

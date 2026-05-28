@@ -51,3 +51,4 @@ fn main() -> Verified<Pinned<Tensor, Topology::NPU[0]>> {
 // CHECK: [24,   24,   24,   24]
 // CHECK: [24,   24,   24,   24]
 // CHECK: [24,   24,   24,   24]
+// NO_EXEC

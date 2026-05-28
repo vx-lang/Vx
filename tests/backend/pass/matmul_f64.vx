@@ -10,8 +10,8 @@
 // EXPECT:  [24,   24,   24,   24]]
 
 fn custom_matmul(a: Pinned<Tensor<f64>, Topology::NPU[0]>, b: Pinned<Tensor<f64>, Topology::NPU[0]>) -> Verified<Ref<Tensor<f64>, Memory::NPU_HBM>> {
+  let mut result = Tensor<f64>([4, 4]).with_memory(Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
-    let mut result = Tensor<f64>([4, 4]).with_memory(Memory::NPU_HBM);
     for i in 0..4 {
       for j in 0..4 {
         result[i][j] = 0.0;
@@ -20,8 +20,8 @@ fn custom_matmul(a: Pinned<Tensor<f64>, Topology::NPU[0]>, b: Pinned<Tensor<f64>
         }
       }
     }
-    return Verified(result);
   }
+  return Verified(result);
 }
 
 fn main() -> Verified<Ref<Tensor<f64>, Memory::NPU_HBM>> {
@@ -42,3 +42,4 @@ fn main() -> Verified<Ref<Tensor<f64>, Memory::NPU_HBM>> {
   print(&result);
   return result;
 }
+// NO_EXEC

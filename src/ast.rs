@@ -588,6 +588,7 @@ pub enum Expr {
     Grad(GradExpr),
     Vjp(VjpExpr),
     Jvp(JvpExpr),
+    SpawnOn(SpawnOnExpr),
 }
 
 impl Expr {
@@ -618,6 +619,7 @@ impl Expr {
             Expr::Grad(e) => e.span.clone(),
             Expr::Vjp(e) => e.span.clone(),
             Expr::Jvp(e) => e.span.clone(),
+            Expr::SpawnOn(e) => e.span.clone(),
         }
     }
 
@@ -767,6 +769,12 @@ impl Expr {
                 tangent: Box::new(e.tangent.substitute(mapping)),
                 span: e.span.clone(),
             }),
+            Expr::SpawnOn(e) => Expr::SpawnOn(SpawnOnExpr {
+                top: e.top.clone(),
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span.clone(),
+            }),
             Expr::Identifier(id) => {
                 if let Some(Type::Generic(val_str, _)) = mapping.get(&id.name) {
                     if val_str.parse::<f64>().is_ok() {
@@ -825,14 +833,20 @@ impl ReturnStmt {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct SpawnOnStmt {
+pub struct SpawnOnExpr {
     pub top: Topology,
     pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
     pub span: Span,
 }
-impl SpawnOnStmt {
-    pub fn new(top: Topology, stmts: Vec<Statement>, span: Span) -> Self {
-        Self { top, stmts, span }
+impl SpawnOnExpr {
+    pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self {
+            top,
+            stmts,
+            ret,
+            span,
+        }
     }
 }
 
@@ -919,7 +933,6 @@ impl AssertStmt {
 pub enum Statement {
     LetDecl(LetDeclStmt),
     Return(ReturnStmt),
-    SpawnOn(SpawnOnStmt),
     ExprStmt(ExprStmtStmt),
     ForLoop(ForLoopStmt),
     Assign(AssignStmt),
@@ -939,11 +952,6 @@ impl Statement {
             }),
             Statement::Return(e) => Statement::Return(ReturnStmt {
                 expr: e.expr.substitute(mapping),
-                span: e.span.clone(),
-            }),
-            Statement::SpawnOn(e) => Statement::SpawnOn(SpawnOnStmt {
-                top: e.top.clone(),
-                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),
             Statement::ExprStmt(e) => Statement::ExprStmt(ExprStmtStmt {
@@ -1169,6 +1177,15 @@ impl Expr {
                 }
             }
             Expr::Topology(e) => e.top.resolve_names(current_module, symbol_map),
+            Expr::SpawnOn(e) => {
+                e.top.resolve_names(current_module, symbol_map);
+                for s in &mut e.stmts {
+                    s.resolve_names(current_module, symbol_map);
+                }
+                if let Some(r) = &mut e.ret {
+                    r.resolve_names(current_module, symbol_map);
+                }
+            }
             _ => {}
         }
     }
@@ -1186,12 +1203,6 @@ impl Statement {
             Statement::Return(e) => e.expr.resolve_names(current_module, symbol_map),
             Statement::ExprStmt(e) => e.expr.resolve_names(current_module, symbol_map),
             Statement::Assert(e) => e.expr.resolve_names(current_module, symbol_map),
-            Statement::SpawnOn(e) => {
-                e.top.resolve_names(current_module, symbol_map);
-                for s in &mut e.stmts {
-                    s.resolve_names(current_module, symbol_map);
-                }
-            }
             Statement::ForLoop(e) => {
                 e.start.resolve_names(current_module, symbol_map);
                 e.end.resolve_names(current_module, symbol_map);

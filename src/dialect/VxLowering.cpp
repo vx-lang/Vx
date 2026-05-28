@@ -54,10 +54,15 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         }
       }
 
+      SmallVector<Value> yieldedValues;
       if (!spawnBody.empty()) {
         Block &spawnBlock = spawnBody.front();
         if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
-          rewriter.eraseOp(&spawnBlock.back());
+          auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
+          for (auto val : yieldOp.getOperands()) {
+            yieldedValues.push_back(val);
+          }
+          rewriter.eraseOp(yieldOp);
         }
         // Move operations from spawnBlock to asyncBlock
         auto &asyncOps = asyncBlock->getOperations();
@@ -66,7 +71,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         asyncOps.splice(std::prev(asyncOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
       }
 
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, yieldedValues);
       return success();
     }
 
@@ -103,15 +108,20 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     // Splice operations from spawnBlock to launchBlock
     Block &spawnBlock = spawnBody.front();
+    SmallVector<Value> yieldedValues;
     if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
-      rewriter.eraseOp(&spawnBlock.back());
+      auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
+      for (auto val : yieldOp.getOperands()) {
+        yieldedValues.push_back(val);
+      }
+      rewriter.eraseOp(yieldOp);
     }
     
     auto &launchOps = launchBlock->getOperations();
     auto &spawnOps = spawnBlock.getOperations();
     launchOps.splice(std::prev(launchOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
 
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, yieldedValues);
     return success();
   }
 };

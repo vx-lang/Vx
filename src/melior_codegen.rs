@@ -575,7 +575,6 @@ impl<'c> MeliorGenerator<'c> {
             Statement::CompoundAssign(s) => s.lower(self, block),
             Statement::ExprStmt(s) => s.lower(self, block),
             Statement::ForLoop(s) => s.lower(self, block),
-            Statement::SpawnOn(s) => s.lower(self, block),
             Statement::Assert(_) => {
                 // TODO: Lower to `scf.if` with panic/abort for runtime checks
             }
@@ -598,6 +597,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::IndexAccess(e) => e.lower(self, block),
             Expr::FunctionCall(e) => e.lower(self, block),
             Expr::MethodCall(e) => e.lower(self, block),
+            Expr::SpawnOn(e) => e.lower(self, block),
             Expr::Array(e) => e.lower(self, block),
             Expr::If(e) => e.lower(self, block),
             Expr::Number(e) => e.lower(self, block),
@@ -1973,8 +1973,8 @@ fn topology_to_i32(top: &crate::ast::Topology) -> i32 {
     }
 }
 
-impl<'c> LowerToMelior<'c> for SpawnOnStmt {
-    type Output = ();
+impl<'c> LowerToMelior<'c> for crate::ast::SpawnOnExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let location = melior::ir::Location::unknown(gen.context);
         let region = melior::ir::Region::new();
@@ -1984,24 +1984,34 @@ impl<'c> LowerToMelior<'c> for SpawnOnStmt {
         for stmt in &self.stmts {
             gen.generate_statement(stmt, &body_block);
         }
-        gen.in_spawn = prev_in_spawn;
 
-        // MLIR requires regions to be terminated, add a dummy return if missing
-        // For simplicity, we can just let it be or add an empty yield. We will add a yield if needed later,
-        // but since our dialect is custom, we don't strictly enforce terminator yet, or we use `func.return`.
-        // Note: if it's inside a function, `vx.spawn` region doesn't need to return.
+        let mut result_types = vec![];
+        let mut ret_val = None;
+
+        if let Some(r) = &self.ret {
+            let (val, ty) = gen.generate_expr(r, &body_block);
+            result_types.push(ty);
+            ret_val = Some(val);
+        }
+
         let mut needs_yield = true;
         if let Some(crate::ast::Statement::Return(_)) = self.stmts.last() {
             needs_yield = false;
         }
 
         if needs_yield {
-            let yield_op = melior::ir::operation::OperationBuilder::new("vx.yield", location)
+            let mut yield_builder =
+                melior::ir::operation::OperationBuilder::new("vx.yield", location);
+            if let Some(v) = ret_val {
+                yield_builder = yield_builder.add_operands(&[v]);
+            }
+            let yield_op = yield_builder
                 .build()
                 .expect("Failed to build vx.yield operation");
             body_block.append_operation(yield_op);
         }
 
+        gen.in_spawn = prev_in_spawn;
         region.append_block(body_block);
 
         let topology_id = topology_to_i32(&self.top);
@@ -2010,13 +2020,6 @@ impl<'c> LowerToMelior<'c> for SpawnOnStmt {
             topology_id as i64,
         )
         .into();
-
-        let mut result_types = vec![];
-        if !needs_yield {
-            if let Some(ret_ty) = gen.current_return_type {
-                result_types.push(ret_ty);
-            }
-        }
 
         let mut spawn_builder = melior::ir::operation::OperationBuilder::new("vx.spawn", location)
             .add_attributes(&[(
@@ -2038,8 +2041,29 @@ impl<'c> LowerToMelior<'c> for SpawnOnStmt {
             if !result_types.is_empty() {
                 ret_builder = ret_builder.add_operands(&[spawn_ref.result(0).unwrap().into()]);
             }
-            let func_ret = ret_builder.build().unwrap();
-            block.append_operation(func_ret);
+            let ret_op = ret_builder.build().unwrap();
+            block.append_operation(ret_op);
+        }
+
+        if !result_types.is_empty() {
+            (spawn_ref.result(0).unwrap().into(), result_types[0])
+        } else {
+            let none_ty =
+                Type::parse(gen.context, "none").unwrap_or_else(|| Type::index(gen.context));
+            let dummy_op = melior::ir::operation::OperationBuilder::new("arith.constant", location)
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0)
+                        .into(),
+                )])
+                .add_results(&[Type::index(gen.context)])
+                .build()
+                .unwrap();
+            let dummy_ref = block.append_operation(dummy_op);
+            (
+                dummy_ref.result(0).unwrap().into(),
+                Type::index(gen.context),
+            )
         }
     }
 }
