@@ -21,17 +21,16 @@ fn process(t_host: Tensor<f32>) -> Tensor<f32> {
   return t_host;
 }
 
-// CHECK: "builtin.module"() ({
-// CHECK:   "func.func"() <{function_type = () -> i32, sym_name = "main"}> ({
-// CHECK:     %1 = "arith.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
-// CHECK:     "func.return"(%1) : (f32) -> ()
-// CHECK:   }) {llvm.emit_c_interface} : () -> ()
-// CHECK:   "func.func"() <{function_type = (memref<?x?xf32>) -> memref<?x?xf32>, sym_name = "process"}> ({
-// CHECK:   ^bb0(%arg0: memref<?x?xf32>):
-// CHECK:     %0 = "vx.transfer"(%arg0) <{target_topology = 100 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     "vx.spawn"() <{topology = 100 : i32}> ({
-// CHECK:       "vx.yield"() : () -> ()
-// CHECK:     }) : () -> ()
-// CHECK:     "func.return"(%arg0) : (memref<?x?xf32>) -> ()
-// CHECK:   }) : () -> ()
-// CHECK: }) : () -> ()
+// CHECK: module {
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     arith.constant 0 : i32
+// CHECK:     return
+// CHECK:   }
+// CHECK:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:     "vx.transfer"
+// CHECK:     vx.spawn topology(100) {
+// CHECK:       vx.yield
+// CHECK:     }
+// CHECK:     return %arg0 : memref<?x?xf32>
+// CHECK:   }
+// CHECK: }

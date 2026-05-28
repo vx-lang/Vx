@@ -8,8 +8,11 @@ module {
     return %alloc : memref<16x16xf32>
   }
 
+  func.func private @dummy()
+
   func.func @test_vx_dialect() {
     vx.spawn topology(0) {
+       func.call @dummy() : () -> ()
        vx.yield
     }
     return

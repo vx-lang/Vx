@@ -20,11 +20,11 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: sym_name = "main"
-// CHECK: "func.call"(%
-// CHECK: "arith.constant"() <{value = 5.1
-// CHECK: "llvm.getelementptr"(%
-// CHECK: "llvm.store"(%
-// CHECK: "llvm.getelementptr"(%
-// CHECK: "llvm.load"(%
-// CHECK: "func.return"(%
+// CHECK: func.func @main
+// CHECK: call @malloc
+// CHECK: arith.constant 5.1
+// CHECK: llvm.getelementptr
+// CHECK: llvm.store
+// CHECK: llvm.getelementptr
+// CHECK: llvm.load
+// CHECK: return
