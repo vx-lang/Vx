@@ -18,14 +18,14 @@ fn main() -> Tensor<i32> {
   return 0;
 }
 
-// CHECK: "builtin.module"() ({
-// CHECK:   "func.func"() <{function_type = (memref<?x?xi32>) -> !llvm.ptr, sym_name = "malloc", sym_visibility = "private"}> ({
-// CHECK:   }) : () -> ()
-// CHECK:   "func.func"() <{function_type = () -> i32, sym_name = "main"}> ({
-// CHECK:     %0 = "arith.constant"() <{value = 1024 : i32}> : () -> i32
-// CHECK:     %1 = "func.call"(%0) <{callee = @malloc}> : (i32) -> !llvm.ptr
-// CHECK:     %2 = "arith.constant"() <{value = 0 : i32}> : () -> i32
-// CHECK:     %3 = "arith.constant"() <{value = 0 : i32}> : () -> i32
-// CHECK:     "func.return"(%3) : (i32) -> ()
-// CHECK:   }) {llvm.emit_c_interface} : () -> ()
-// CHECK: }) : () -> ()
+// CHECK: module {
+// CHECK:   func.func private @malloc(memref<?x?xi32>) -> !llvm.ptr
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c1024_i32 = arith.constant 1024 : i32
+// CHECK:     %0 = builtin.unrealized_conversion_cast %c1024_i32 : i32 to memref<?x?xi32>
+// CHECK:     %1 = call @malloc(%0) : (memref<?x?xi32>) -> !llvm.ptr
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     %c0_i32_0 = arith.constant 0 : i32
+// CHECK:     return %c0_i32_0 : i32
+// CHECK:   }
+// CHECK: }

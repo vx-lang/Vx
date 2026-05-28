@@ -20,14 +20,14 @@ fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [4, 64, 64]> {
   return final_view;
 }
 
-// CHECK: "func.func"() <{function_type = (memref<128x128xf32>) -> memref<4x64x64xf32>, sym_name = "process_tensor"}> ({
-// CHECK: "memref.cast"(%
-// CHECK: "memref.cast"(%
-// CHECK: "memref.cast"(%
-// CHECK: "memref.cast"(%
-// CHECK: "memref.cast"(%
-// CHECK: "memref.cast"(%
-// CHECK: "func.return"(%
+// CHECK: func.func @process_tensor(%arg0: memref<128x128xf32>) -> memref<4x64x64xf32> {
+// CHECK: %cast = memref.cast %
+// CHECK: %cast_0 = memref.cast %
+// CHECK: %cast_1 = memref.cast %
+// CHECK: %cast_2 = memref.cast %
+// CHECK: %cast_3 = memref.cast %
+// CHECK: %cast_4 = memref.cast %
+// CHECK: return %
 
 fn main() -> i32 {
   let v: Tensor<f32, [128, 128]> = 1.0;
