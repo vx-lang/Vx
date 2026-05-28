@@ -1,5 +1,6 @@
 // RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s --check-prefix=GPU
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining,gpu-to-llvm,reconcile-unrealized-casts)" | FileCheck %s --check-prefix=LLVM
 
 fn dummy(x: i32) -> i32 {
   return x;
@@ -24,3 +25,11 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // GPU: gpu.func
 // GPU: func.call @dummy
 // GPU: gpu.return
+
+// 3. Check for the LLVM dialect lowering
+// LLVM: llvm.func @malloc
+// LLVM: func.func @process
+// LLVM: llvm.call @malloc
+// LLVM: gpu.launch_func
+// LLVM: llvm.call @free
+// LLVM: gpu.module @process_kernel
