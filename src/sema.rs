@@ -124,6 +124,7 @@ pub struct TypeChecker<'a> {
     next_reg: u32,
     var_regs: Vec<HashMap<String, u32>>,
     moved_vars: Vec<std::collections::HashSet<String>>,
+    pub eval_env: Vec<HashMap<String, Value>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -146,6 +147,7 @@ impl<'a> TypeChecker<'a> {
             next_reg: 1,
             var_regs: vec![HashMap::new()],
             moved_vars: vec![std::collections::HashSet::new()],
+            eval_env: vec![HashMap::new()],
         }
     }
 
@@ -176,6 +178,7 @@ impl<'a> TypeChecker<'a> {
     pub fn push_scope(&mut self) {
         self.scopes.push(std::collections::HashMap::new());
         self.moved_vars.push(std::collections::HashSet::new());
+        self.eval_env.push(std::collections::HashMap::new());
     }
 
     pub fn pop_scope(&mut self) {
@@ -183,6 +186,7 @@ impl<'a> TypeChecker<'a> {
         self.scopes.pop();
         self.var_regs.pop();
         self.moved_vars.pop();
+        self.eval_env.pop();
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
         for (_, borrows) in self.active_borrows.iter_mut() {
@@ -411,6 +415,16 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let ty = self.check_expr_type(expr);
 
+                let mut tmp_env = HashMap::new();
+                for env in &self.eval_env {
+                    for (k, v) in env {
+                        tmp_env.insert(k.clone(), v.clone());
+                    }
+                }
+                if let Some(val) = self.eval_expr(expr, &tmp_env) {
+                    self.eval_env.last_mut().unwrap().insert(name.clone(), val);
+                }
+
                 if let Some(ann) = ty_ann {
                     if !self.is_assignable(ann, &ty) {
                         self.errors
@@ -448,6 +462,24 @@ impl<'a> TypeChecker<'a> {
                 let rhs_ty = self.check_expr_type(rhs);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
+                }
+
+                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
+                    let mut tmp_env = HashMap::new();
+                    for env in &self.eval_env {
+                        for (k, v) in env {
+                            tmp_env.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(val) = self.eval_expr(rhs, &tmp_env) {
+                        // find the scope that has the variable
+                        for env in self.eval_env.iter_mut().rev() {
+                            if env.contains_key(name) {
+                                env.insert(name.clone(), val);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             Statement::Return(ReturnStmt { expr, span: _ }) => {
@@ -507,8 +539,13 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let is_verified = matches!(return_type, Type::Verified(_));
-                let empty_env = std::collections::HashMap::new();
-                if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
+                let mut tmp_env = HashMap::new();
+                for env in &self.eval_env {
+                    for (k, v) in env {
+                        tmp_env.insert(k.clone(), v.clone());
+                    }
+                }
+                if let Some(Value::Bool(b)) = self.eval_expr(expr, &tmp_env) {
                     if !b {
                         let m = msg
                             .clone()
