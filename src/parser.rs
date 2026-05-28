@@ -867,9 +867,9 @@ impl<'a> Parser<'a> {
                             _ => return Err(format!("Unknown number suffix '{}'", suffix_str)),
                         }
                     } else {
-                        // Rust-like defaults: i32 for integers, f64 for floats
+                        // Rust-like defaults: i32 for integers, f32 for floats in ML context
                         if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-                            Some(crate::ast::ElementType::F64)
+                            Some(crate::ast::ElementType::F32)
                         } else {
                             Some(crate::ast::ElementType::I32)
                         }

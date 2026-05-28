@@ -120,8 +120,18 @@ fn main() -> i32 {
                     if checker.errors.is_empty() {
                         let monomorphized_ast = ast;
                         let module_asts = std::collections::HashMap::new();
-                        let mut codegen = vxc::codegen::MlirGenerator::new();
-                        let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+                        let context = melior::Context::new();
+                        let registry = melior::dialect::DialectRegistry::new();
+                        melior::utility::register_all_dialects(&registry);
+                        context.append_dialect_registry(&registry);
+                        context.load_all_available_dialects();
+                        vxc::melior_codegen::register_vx_dialect(&context);
+
+                        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+                        codegen.generate(&monomorphized_ast, &module_asts);
+                        let mut module = codegen.into_module();
+                        vxc::melior_codegen::lower_to_llvm(&context, &mut module).unwrap();
+                        let mlir_str = module.as_operation().to_string();
                         match vxc::jit::execute_mlir(&mlir_str, vec![]) {
                             Ok(output) => {
                                 // Parse the output to find the float time like [0.125]

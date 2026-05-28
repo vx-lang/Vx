@@ -79,8 +79,18 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     if checker.errors.is_empty() {
         let monomorphized_ast = program;
         let module_asts = std::collections::HashMap::new();
-        let mut codegen = vxc::codegen::MlirGenerator::new();
-        let _mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
+        let context = melior::Context::new();
+        let registry = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&registry);
+        context.append_dialect_registry(&registry);
+        context.load_all_available_dialects();
+        vxc::melior_codegen::register_vx_dialect(&context);
+
+        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+        codegen.generate(&monomorphized_ast, &module_asts);
+        let mut module = codegen.into_module();
+        vxc::melior_codegen::lower_to_llvm(&context, &mut module).unwrap();
+        let _mlir_str = module.as_operation().to_string();
         Ok(monomorphized_ast)
     } else {
         for err in &checker.errors {

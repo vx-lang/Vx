@@ -68,10 +68,6 @@ pub struct DriverOptions {
     /// Pass an argument to a specific backend tool (e.g., -X mlir=--pass-pipeline=...)
     #[arg(short = 'X')]
     pub tool_args: Vec<String>,
-
-    /// Use the legacy code generator (non-melior)
-    #[arg(long = "use-legacy", hide = true)]
-    pub use_legacy: bool,
 }
 
 pub struct CompilerDriver {
@@ -222,135 +218,108 @@ impl CompilerDriver {
             module_asts.insert(p.module_path.clone(), p);
         }
 
-        let use_melior = !self.options.use_legacy;
-
         match self.options.action {
             Action::EmitMlir | Action::EmitLlvm => {
-                if use_melior {
-                    let registry = melior::dialect::DialectRegistry::new();
-                    melior::utility::register_all_dialects(&registry);
-                    let context = melior::Context::new();
-                    context.append_dialect_registry(&registry);
-                    context.load_all_available_dialects();
-                    crate::melior_codegen::register_vx_dialect(&context);
+                let registry = melior::dialect::DialectRegistry::new();
+                melior::utility::register_all_dialects(&registry);
+                let context = melior::Context::new();
+                context.append_dialect_registry(&registry);
+                context.load_all_available_dialects();
+                crate::melior_codegen::register_vx_dialect(&context);
 
-                    let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
-                    codegen.generate(&monomorphized_ast, &module_asts);
-                    let mut module = codegen.into_module();
+                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                codegen.generate(&monomorphized_ast, &module_asts);
+                let mut module = codegen.into_module();
 
-                    let vx_pm = melior::pass::PassManager::new(&context);
-                    unsafe {
-                        crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
-                    }
-                    if let Err(e) = vx_pm.run(&mut module) {
-                        eprintln!("Failed to lower Vx dialect: {}", e);
-                    }
+                let vx_pm = melior::pass::PassManager::new(&context);
+                unsafe {
+                    crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
+                }
+                if let Err(e) = vx_pm.run(&mut module) {
+                    eprintln!("Failed to lower Vx dialect: {}", e);
+                }
 
-                    if !module.as_operation().verify() {
-                        eprintln!("Warning: MLIR Verification failed for {}", filename);
-                    }
+                if !module.as_operation().verify() {
+                    eprintln!("Warning: MLIR Verification failed for {}", filename);
+                }
 
-                    let mlir_str = format!("{}", module.as_operation());
-                    let optimized_mlir = apply_mlir_opt(&mlir_str, &mlir_args, main_file)?;
+                let mlir_str = format!("{}", module.as_operation());
+                let optimized_mlir = apply_mlir_opt(&mlir_str, &mlir_args, main_file)?;
 
-                    if self.options.action == Action::EmitLlvm {
-                        let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
-                        println!("{}", llvm_ir);
-                    } else {
-                        println!("{}", optimized_mlir);
-                    }
+                if self.options.action == Action::EmitLlvm {
+                    let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
+                    println!("{}", llvm_ir);
                 } else {
-                    let mut codegen = crate::codegen::MlirGenerator::new();
-                    let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                    let out = crate::jit::execute_mlir(&mlir_str, mlir_args)
-                        .map_err(|e| e.to_string())?;
-                    println!("{}", out);
+                    println!("{}", optimized_mlir);
                 }
             }
             Action::RunJit => {
-                if use_melior {
-                    let registry = melior::dialect::DialectRegistry::new();
-                    melior::utility::register_all_dialects(&registry);
-                    let context = melior::Context::new();
-                    context.append_dialect_registry(&registry);
-                    context.load_all_available_dialects();
-                    crate::melior_codegen::register_vx_dialect(&context);
+                let registry = melior::dialect::DialectRegistry::new();
+                melior::utility::register_all_dialects(&registry);
+                let context = melior::Context::new();
+                context.append_dialect_registry(&registry);
+                context.load_all_available_dialects();
+                crate::melior_codegen::register_vx_dialect(&context);
 
-                    let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
-                    codegen.generate(&monomorphized_ast, &module_asts);
-                    let mut module = codegen.into_module();
+                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                codegen.generate(&monomorphized_ast, &module_asts);
+                let mut module = codegen.into_module();
 
-                    if !module.as_operation().verify() {
-                        return Err("MLIR Module Verification Failed".to_string());
-                    }
-
-                    crate::melior_codegen::lower_to_llvm(&context, &mut module)
-                        .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
-
-                    let mlir_str = format!("{}", module.as_operation());
-                    let out =
-                        crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
-                    println!("{}", out);
-                } else {
-                    let mut codegen = crate::codegen::MlirGenerator::new();
-                    let mlir_str = codegen.generate(&monomorphized_ast, &module_asts);
-                    let out =
-                        crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
-                    println!("{}", out);
+                if !module.as_operation().verify() {
+                    return Err("MLIR Module Verification Failed".to_string());
                 }
+
+                crate::melior_codegen::lower_to_llvm(&context, &mut module)
+                    .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
+
+                let mlir_str = format!("{}", module.as_operation());
+                let out = crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
+                println!("{}", out);
             }
             Action::EmitObj => {
-                if use_melior {
-                    let registry = melior::dialect::DialectRegistry::new();
-                    melior::utility::register_all_dialects(&registry);
-                    let context = melior::Context::new();
-                    context.append_dialect_registry(&registry);
-                    context.load_all_available_dialects();
+                let registry = melior::dialect::DialectRegistry::new();
+                melior::utility::register_all_dialects(&registry);
+                let context = melior::Context::new();
+                context.append_dialect_registry(&registry);
+                context.load_all_available_dialects();
+                crate::melior_codegen::register_vx_dialect(&context);
 
-                    let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
-                    codegen.generate(&monomorphized_ast, &module_asts);
-                    let mut module = codegen.into_module();
+                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                codegen.generate(&monomorphized_ast, &module_asts);
+                let mut module = codegen.into_module();
 
-                    if !module.as_operation().verify() {
-                        return Err(format!(
-                            "MLIR Verification failed:
-{}",
-                            module.as_operation()
-                        ));
-                    }
-
-                    crate::melior_codegen::lower_to_llvm(&context, &mut module)?;
-
-                    let current_dir = std::env::current_dir().unwrap();
-                    let vx_std_core = format!(
-                        "{}/target/debug/libvx_std_core.dylib",
-                        current_dir.display()
-                    );
-                    let libnpu =
-                        format!("{}/target/jit/libnpu_shared.dylib", current_dir.display());
-
-                    let shared_libs = [
-                        "/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
-                        "/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
-                        &vx_std_core,
-                        &libnpu,
-                    ];
-
-                    let engine = melior::ExecutionEngine::new(&module, 2, &shared_libs, true, true);
-
-                    let output_path = self.options.output.clone().unwrap_or_else(|| {
-                        let mut p = main_file.clone();
-                        p.set_extension("o");
-                        p
-                    });
-
-                    engine.dump_to_object_file(output_path.to_str().unwrap());
-                } else {
-                    return Err(
-                        "Object file emission is only supported with the Melior backend."
-                            .to_string(),
-                    );
+                if !module.as_operation().verify() {
+                    return Err(format!(
+                        "MLIR Verification failed:\n{}",
+                        module.as_operation()
+                    ));
                 }
+
+                crate::melior_codegen::lower_to_llvm(&context, &mut module)?;
+
+                let current_dir = std::env::current_dir().unwrap();
+                let vx_std_core = format!(
+                    "{}/target/debug/libvx_std_core.dylib",
+                    current_dir.display()
+                );
+                let libnpu = format!("{}/target/jit/libnpu_shared.dylib", current_dir.display());
+
+                let shared_libs = [
+                    "/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
+                    "/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
+                    &vx_std_core,
+                    &libnpu,
+                ];
+
+                let engine = melior::ExecutionEngine::new(&module, 2, &shared_libs, true, true);
+
+                let output_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.clone();
+                    p.set_extension("o");
+                    p
+                });
+
+                engine.dump_to_object_file(output_path.to_str().unwrap());
             }
             _ => {}
         }

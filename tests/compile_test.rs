@@ -16,7 +16,7 @@ use std::fs;
 use std::path::Path;
 
 use rayon::prelude::*;
-use vxc::codegen::MlirGenerator;
+
 use vxc::jit::execute_mlir;
 use vxc::sema::TypeChecker;
 
@@ -126,15 +126,9 @@ fn run_middle_end_test(path: &Path) {
 
     let module_asts = std::collections::HashMap::new();
 
-    let mlir_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
-        codegen.generate(&monomorphized_program, &module_asts);
-        codegen.into_module().as_operation().to_string()
-    }))
-    .unwrap_or_else(|_| {
-        let mut codegen = vxc::codegen::MlirGenerator::new();
-        codegen.generate(&monomorphized_program, &module_asts)
-    });
+    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    codegen.generate(&monomorphized_program, &module_asts);
+    let mlir_str = codegen.into_module().as_operation().to_string();
 
     // Verify // CHECK: lines in order
     let mut current_idx = 0;
@@ -217,8 +211,24 @@ fn run_backend_test(path: &Path) {
         module_asts.insert(p.module_path.clone(), p);
     }
 
-    let mut codegen = MlirGenerator::new();
-    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
+    let context = melior::Context::new();
+    let registry = melior::dialect::DialectRegistry::new();
+    melior::utility::register_all_dialects(&registry);
+    context.append_dialect_registry(&registry);
+    context.load_all_available_dialects();
+    vxc::melior_codegen::register_vx_dialect(&context);
+
+    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    codegen.generate(&monomorphized_program, &module_asts);
+    let mut module = codegen.into_module();
+    if let Err(e) = vxc::melior_codegen::lower_to_llvm(&context, &mut module) {
+        println!(
+            "MLIR Before Lowering Error:\n{}",
+            module.as_operation().to_string()
+        );
+        panic!("Lowering to LLVM failed for {}: {:?}", path.display(), e);
+    }
+    let mlir_str = module.as_operation().to_string();
 
     if source.contains("// NO_EXEC") {
         return;
@@ -686,6 +696,7 @@ fn test_melior_matmul() {
     let context = melior::Context::new();
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
+    vxc::melior_codegen::register_vx_dialect(&context);
 
     let mut gen = vxc::melior_codegen::MeliorGenerator::new(&context);
     let mlir_str = gen.generate(&checked_program, &std::collections::HashMap::new());
