@@ -3,7 +3,7 @@
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining,gpu-to-llvm,reconcile-unrealized-casts)" | FileCheck %s --check-prefix=LLVM
 
 fn dummy(x: i32) -> i32 {
-  return x;
+  return x*2+1;
 }
 
 fn process(t: Tensor<f32>) -> Tensor<f32> {
