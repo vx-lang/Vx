@@ -18,8 +18,7 @@ use vxc::sema::TypeChecker;
 
 #[test]
 fn test_distributed_matmul_integration() {
-    let input = r#"
-fn custom_matmul(a: Pinned<Tensor<f32>, Topology::NPU[0]>, b: Pinned<Tensor<f32>, Topology::NPU[0]>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
+    let input = r#"fn custom_matmul(a: Pinned<Tensor<f32>, Topology::NPU[0]>, b: Pinned<Tensor<f32>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<Tensor<f32>, Topology::NPU[0]> {
     return a;
 }
 

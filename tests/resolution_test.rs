@@ -32,6 +32,7 @@ fn test_local_name_resolution() {
             name: "get_vector".to_string(),
             generics: vec![],
             params: vec![],
+            topology: vxc::ast::Topology::Host,
             return_type: Type::Struct("Vector".to_string(), None),
             body: vec![],
         }],
@@ -73,6 +74,7 @@ fn test_unresolved_symbol_remains_none() {
             name: "get_vector".to_string(),
             generics: vec![],
             params: vec![],
+            topology: vxc::ast::Topology::Host,
             return_type: Type::Struct("Vector".to_string(), None),
             body: vec![],
         }],
@@ -106,6 +108,7 @@ fn test_nested_type_resolution() {
         functions: vec![Function {
             name: "compute".to_string(),
             generics: vec![],
+            topology: vxc::ast::Topology::Host,
             params: vec![(
                 "m".to_string(),
                 // &mut Matrix
@@ -154,6 +157,7 @@ fn test_expr_and_stmt_resolution() {
             name: "setup".to_string(),
             generics: vec![],
             params: vec![],
+            topology: vxc::ast::Topology::Host,
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             // let c: Config = ...;
             body: vec![Statement::LetDecl(LetDeclStmt {

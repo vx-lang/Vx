@@ -37,7 +37,7 @@ pub struct GlobalAstEnv<'a> {
     pub enums: HashMap<String, &'a Vec<String>>,
     pub traits: HashMap<String, &'a TraitDecl>,
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
-    pub functions: HashMap<String, (Type, bool, Vec<Type>)>,
+    pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology)>,
     pub ast_functions: HashMap<String, &'a Function>,
     pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
 }
@@ -75,7 +75,12 @@ impl<'a> GlobalAstEnv<'a> {
                 let param_types: Vec<Type> = ext.params.iter().map(|(_, t)| t.clone()).collect();
                 env.functions.insert(
                     ext.name.clone(),
-                    (ext.return_type.clone(), !ext.is_safe, param_types),
+                    (
+                        ext.return_type.clone(),
+                        !ext.is_safe,
+                        param_types,
+                        Topology::Host,
+                    ),
                 );
             }
             for func in &module.functions {
@@ -92,6 +97,7 @@ impl<'a> GlobalAstEnv<'a> {
                             func.return_type.clone(),
                             false, /* func.is_unsafe */
                             param_types,
+                            func.topology.clone(),
                         ),
                     );
                     env.ast_functions.insert(func.name.clone(), func);
@@ -346,6 +352,7 @@ impl<'a> TypeChecker<'a> {
             name: mangled_name,
             generics: Vec::new(),
             params: new_params,
+            topology: generic_func.topology.clone(),
             return_type: new_ret,
             body: new_body,
         }
@@ -883,18 +890,22 @@ impl<'a> TypeChecker<'a> {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::Host);
                             if !is_pinned_on_host {
-                                let msg = format!(
-                                    "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                    name, top, ty, self.active_topology
-                                );
-                                self.errors.push(msg);
+                                if !silent {
+                                    let msg = format!(
+                                        "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                        name, top, ty, self.active_topology
+                                    );
+                                    self.errors.push(msg);
+                                }
                             }
                         }
                         ty.clone()
                     }
                     None => {
-                        let msg = format!("Undefined variable '{}'", name);
-                        self.errors.push(msg);
+                        if !silent {
+                            let msg = format!("Undefined variable '{}'", name);
+                            self.errors.push(msg);
+                        }
                         Type::Tensor(ElementType::F32, vec![], None) // Default placeholder on error
                     }
                 }
@@ -1030,7 +1041,10 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.check_expr_type(expr);
                     } else {
-                        let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
+                        let expected_ret = self
+                            .current_return_type
+                            .clone()
+                            .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
                         self.check_statement(stmt, &expected_ret);
                     }
                     if let Statement::Assert(AssertStmt { expr, msg, span: _ }) = stmt {
@@ -1040,7 +1054,7 @@ impl<'a> TypeChecker<'a> {
                                 .push("Assertion condition must be boolean".to_string());
                         }
                         let empty_env = HashMap::new();
-                        if let Some(Value::Bool(b)) = self.eval_expr(&expr, &empty_env) {
+                        if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
                             if !b {
                                 let m = msg
                                     .clone()
@@ -1096,7 +1110,10 @@ impl<'a> TypeChecker<'a> {
                         {
                             self.check_expr_type_flag(expr, consume, silent);
                         } else {
-                            let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
+                            let expected_ret = self
+                                .current_return_type
+                                .clone()
+                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
                             self.check_statement(stmt, &expected_ret);
                         }
                     }
@@ -1104,7 +1121,7 @@ impl<'a> TypeChecker<'a> {
 
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
                 if let Some(r) = ret {
-                    ret_ty = self.check_expr_type_flag(&mut **r, consume, silent);
+                    ret_ty = self.check_expr_type_flag(r, consume, silent);
                 }
 
                 self.pop_scope();
@@ -1137,7 +1154,10 @@ impl<'a> TypeChecker<'a> {
                         {
                             then_ty = self.check_expr_type_flag(expr, consume, silent);
                         } else {
-                            let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
+                            let expected_ret = self
+                                .current_return_type
+                                .clone()
+                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
                             self.check_statement(s, &expected_ret);
                         }
                     }
@@ -1157,7 +1177,10 @@ impl<'a> TypeChecker<'a> {
                             {
                                 else_ty = self.check_expr_type_flag(expr, consume, silent);
                             } else {
-                                let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
+                                let expected_ret = self
+                                    .current_return_type
+                                    .clone()
+                                    .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
                                 self.check_statement(s, &expected_ret);
                             }
                         }
@@ -1264,27 +1287,41 @@ impl<'a> TypeChecker<'a> {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
-                } else if let Some((ret_ty, is_unsafe, param_types)) =
+                } else if let Some((ret_ty, is_unsafe, param_types, req_topology)) =
                     self.env.functions.get(&resolved_name)
                 {
+                    if *req_topology != self.active_topology {
+                        if !silent {
+                            self.errors.push(format!(
+                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                resolved_name, req_topology, self.active_topology
+                            ));
+                        }
+                    }
                     if *is_unsafe && !self.in_unsafe_block {
-                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
+                        if !silent {
+                            self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
+                        }
                     }
                     if args.len() != param_types.len() {
-                        self.errors.push(format!(
-                            "Function '{}' expects {} arguments, got {}",
-                            resolved_name,
-                            param_types.len(),
-                            args.len()
-                        ));
+                        if !silent {
+                            self.errors.push(format!(
+                                "Function '{}' expects {} arguments, got {}",
+                                resolved_name,
+                                param_types.len(),
+                                args.len()
+                            ));
+                        }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) {
-                                self.errors.push(format!(
-                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                if !silent {
+                                    self.errors.push(format!(
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1294,23 +1331,35 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
+                    if func.0.topology != self.active_topology {
+                        if !silent {
+                            self.errors.push(format!(
+                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                resolved_name, func.0.topology, self.active_topology
+                            ));
+                        }
+                    }
                     let param_types: Vec<Type> =
                         func.0.params.iter().map(|(_, t)| t.clone()).collect();
                     if args.len() != param_types.len() {
-                        self.errors.push(format!(
-                            "Function '{}' expects {} arguments, got {}",
-                            resolved_name,
-                            param_types.len(),
-                            args.len()
-                        ));
+                        if !silent {
+                            self.errors.push(format!(
+                                "Function '{}' expects {} arguments, got {}",
+                                resolved_name,
+                                param_types.len(),
+                                args.len()
+                            ));
+                        }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) {
-                                self.errors.push(format!(
-                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                if !silent {
+                                    self.errors.push(format!(
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1322,19 +1371,23 @@ impl<'a> TypeChecker<'a> {
                     let mut mapping = HashMap::new();
                     let mut success = true;
                     if args.len() != generic_func.params.len() {
-                        self.errors.push(format!(
-                            "Generic function '{}' expects {} arguments, got {}",
-                            resolved_name,
-                            generic_func.params.len(),
-                            args.len()
-                        ));
+                        if !silent {
+                            self.errors.push(format!(
+                                "Generic function '{}' expects {} arguments, got {}",
+                                resolved_name,
+                                generic_func.params.len(),
+                                args.len()
+                            ));
+                        }
                         success = false;
                     } else {
                         for (i, _arg) in args.iter_mut().enumerate() {
                             let arg_ty = arg_types[i].clone();
                             let param_ty = &generic_func.params[i].1;
                             if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
-                                self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
+                                if !silent {
+                                    self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
+                                }
                                 success = false;
                             }
                         }
@@ -1359,10 +1412,12 @@ impl<'a> TypeChecker<'a> {
                                         }
                                     }
                                     if !implements_trait {
-                                        self.errors.push(format!(
-                                            "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
-                                            concrete_ty, bound_name, g_name
-                                        ));
+                                        if !silent {
+                                            self.errors.push(format!(
+                                                "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                                concrete_ty, bound_name, g_name
+                                            ));
+                                        }
                                         success = false;
                                     }
                                 }
@@ -1399,10 +1454,12 @@ impl<'a> TypeChecker<'a> {
                         .iter()
                         .map(|(f, _)| f.name.clone())
                         .collect();
-                    self.errors.push(format!(
-                        "Undefined function '{}'. Available monos: {:?}",
-                        resolved_name, mono_names
-                    ));
+                    if !silent {
+                        self.errors.push(format!(
+                            "Undefined function '{}'. Available monos: {:?}",
+                            resolved_name, mono_names
+                        ));
+                    }
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
@@ -1955,17 +2012,17 @@ impl<'a> TypeChecker<'a> {
                         {
                             self.check_expr_type(expr);
                         } else {
-                            let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                            self.check_statement(
-                                s,
-                                &expected_ret,
-                            );
+                            let expected_ret = self
+                                .current_return_type
+                                .clone()
+                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
+                            self.check_statement(s, &expected_ret);
                         }
                     }
                 }
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
                 if let Some(r) = ret_expr {
-                    ret_ty = self.check_expr_type(r);
+                    ret_ty = self.check_expr_type_flag(r, consume, silent);
                 }
                 self.pop_scope();
                 self.in_unsafe_block = prev_unsafe;
@@ -1989,38 +2046,46 @@ impl<'a> TypeChecker<'a> {
                         for (f_name, f_expr) in fields.iter_mut() {
                             if f_name == expected_name {
                                 found = true;
-                                let f_type = self.check_expr_type(f_expr);
+                                let f_type = self.check_expr_type_flag(f_expr, consume, silent);
                                 if !self.is_assignable(expected_type, &f_type) {
-                                    self.errors.push(format!(
-                                        "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
-                                        expected_name, expected_type, f_type
-                                    ));
+                                    if !silent {
+                                        self.errors.push(format!(
+                                            "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                            expected_name, expected_type, f_type
+                                        ));
+                                    }
                                 }
                                 break;
                             }
                         }
                         if !found {
-                            self.errors.push(format!(
-                                "Missing field '{}' in initialization of struct '{}'",
-                                expected_name, resolved_name
-                            ));
+                            if !silent {
+                                self.errors.push(format!(
+                                    "Missing field '{}' in initialization of struct '{}'",
+                                    expected_name, resolved_name
+                                ));
+                            }
                         }
                     }
                     // Check extra fields
                     for (f_name, f_expr) in fields.iter_mut() {
                         if !struct_decl.fields.iter().any(|(n, _)| n == f_name) {
-                            self.errors.push(format!(
-                                "Struct '{}' has no field '{}'",
-                                resolved_name, f_name
-                            ));
-                            self.check_expr_type(f_expr); // evaluate to find errors
+                            if !silent {
+                                self.errors.push(format!(
+                                    "Struct '{}' has no field '{}'",
+                                    resolved_name, f_name
+                                ));
+                            }
+                            self.check_expr_type_flag(f_expr, consume, silent); // evaluate to find errors
                         }
                     }
                 } else {
-                    self.errors
-                        .push(format!("Unknown struct {}", resolved_name));
+                    if !silent {
+                        self.errors
+                            .push(format!("Unknown struct {}", resolved_name));
+                    }
                     for (_, f_expr) in fields.iter_mut() {
-                        self.check_expr_type(f_expr);
+                        self.check_expr_type_flag(f_expr, consume, silent);
                     }
                 }
                 Type::Struct(resolved_name, None)
