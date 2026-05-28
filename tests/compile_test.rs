@@ -385,7 +385,12 @@ fn run_optimization_test(path: &Path) {
             args.push(current_arg);
         }
 
-        let exec_name = args.remove(0);
+        let mut expect_failure = false;
+        let mut exec_name = args.remove(0);
+        if exec_name == "not" {
+            expect_failure = true;
+            exec_name = args.remove(0);
+        }
 
         let bin_path = if exec_name == "vxc" {
             env!("CARGO_BIN_EXE_vxc")
@@ -399,6 +404,34 @@ fn run_optimization_test(path: &Path) {
             .args(&args)
             .output()
             .expect("Failed to execute vxc");
+
+        if expect_failure {
+            if output.status.success() {
+                panic!(
+                    "Command succeeded but was expected to fail:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+            }
+            // If it failed as expected, we probably still want to check the error message
+            // or maybe we shouldn't run FileCheck if it's expected to fail?
+            // The user expects to use `not` and probably FileCheck the error message!
+            // We should combine stdout and stderr so FileCheck can match the error message.
+            let out = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let mut current_idx = 0;
+            for check in check_lines {
+                if let Some(pos) = out[current_idx..].find(&check) {
+                    current_idx += pos + check.len();
+                } else {
+                    panic!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out);
+                }
+            }
+            return; // Skip negative checks for expected failures? No, let's keep them if needed, but return here because that's usually how it works.
+        }
 
         if !output.status.success() {
             panic!("vxc failed:\n{}", String::from_utf8_lossy(&output.stderr));
