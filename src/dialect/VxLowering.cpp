@@ -30,35 +30,39 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
                                 PatternRewriter &rewriter) const override {
     int32_t topology = op.getTopology();
 
-    // Topology 0 == Host CPU. Lower to async.execute
     if (topology == 0) {
-      // Create async.execute
       auto asyncExecuteOp =
           rewriter.create<async::ExecuteOp>(op.getLoc(),
                                             /*resultTypes=*/TypeRange{},
                                             /*dependencies=*/ValueRange{},
                                             /*operands=*/ValueRange{});
 
-      // Move the body of vx.spawn into async.execute
-      // Move the body of vx.spawn into async.execute
       Region &spawnBody = op.getBody();
       Region &asyncBody = asyncExecuteOp.getRegion();
 
-      if (!spawnBody.empty() && !asyncBody.empty()) {
-        Block &spawnBlock = spawnBody.front();
-        Block &asyncBlock = asyncBody.front();
+      Block *asyncBlock;
+      if (asyncBody.empty()) {
+        asyncBlock = rewriter.createBlock(&asyncBody);
+        rewriter.create<async::YieldOp>(op.getLoc(), ValueRange{});
+      } else {
+        asyncBlock = &asyncBody.front();
+        if (asyncBlock->empty() || !isa<async::YieldOp>(asyncBlock->back())) {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToEnd(asyncBlock);
+          rewriter.create<async::YieldOp>(op.getLoc(), ValueRange{});
+        }
+      }
 
-        // Remove vx.yield if it exists
+      if (!spawnBody.empty()) {
+        Block &spawnBlock = spawnBody.front();
         if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
           rewriter.eraseOp(&spawnBlock.back());
         }
-
-        // Inline spawnBlock into asyncBlock right before the async.yield
-        if (!asyncBlock.empty()) {
-          rewriter.inlineBlockBefore(&spawnBlock, &asyncBlock.back());
-        } else {
-          rewriter.inlineRegionBefore(spawnBody, asyncBody, asyncBody.end());
-        }
+        // Move operations from spawnBlock to asyncBlock
+        auto &asyncOps = asyncBlock->getOperations();
+        auto &spawnOps = spawnBlock.getOperations();
+        // Move before the yield (which is at the end of asyncBlock)
+        asyncOps.splice(std::prev(asyncOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
       }
 
       rewriter.eraseOp(op);
@@ -74,23 +78,42 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     // 1. Identify captured values
     SetVector<Value> capturedSet;
-    for (Block &block : spawnBody) {
-      for (Operation &nestedOp : block) {
-        for (Value operand : nestedOp.getOperands()) {
-          // If the operand is defined outside this region, it's captured
-          if (operand.getParentRegion() != &spawnBody) {
+    spawnBody.walk([&](Operation *nestedOp) {
+      for (Value operand : nestedOp->getOperands()) {
+        // If the operand is defined outside this region, it's captured
+        if (operand.getParentRegion() != &spawnBody) {
+          // Check if it's defined in a nested region of spawnBody
+          bool isDefinedInSpawn = false;
+          Region *parent = operand.getParentRegion();
+          while (parent != nullptr) {
+            if (parent == &spawnBody) {
+              isDefinedInSpawn = true;
+              break;
+            }
+            parent = parent->getParentRegion();
+          }
+          if (!isDefinedInSpawn) {
             capturedSet.insert(operand);
           }
         }
       }
-    }
+    });
 
     SmallVector<Value> capturedArgs(capturedSet.begin(), capturedSet.end());
     SmallVector<Type> argTypes;
     for (Value val : capturedArgs) {
       argTypes.push_back(val.getType());
     }
-    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{});
+    SmallVector<Type> resultTypes;
+    spawnBody.walk([&](vx::ReturnOp retOp) {
+      if (resultTypes.empty()) {
+        for (Value operand : retOp.getOperands()) {
+          resultTypes.push_back(operand.getType());
+        }
+      }
+    });
+
+    auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
 
     // 2. Create the outlined func::FuncOp at the module level
     ModuleOp module = op->getParentOfType<ModuleOp>();
@@ -115,24 +138,49 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         mapper.map(capturedArgs[i], entryBlock->getArgument(i));
       }
 
+      bool hasReturn = false;
       // Clone each operation in the spawn block
       for (Block &block : spawnBody) {
         for (Operation &nestedOp : block) {
           if (isa<vx::YieldOp>(nestedOp))
             continue; // skip yield
+          if (auto retOp = dyn_cast<vx::ReturnOp>(nestedOp)) {
+            hasReturn = true;
+            SmallVector<Value> operands;
+            for (Value operand : retOp.getOperands()) {
+              operands.push_back(mapper.lookupOrDefault(operand));
+            }
+            rewriter.create<func::ReturnOp>(retOp.getLoc(), operands);
+            llvm::errs() << "[VxLowering] Converted vx::ReturnOp to func::ReturnOp\n";
+            continue;
+          }
+          if (isa<func::ReturnOp>(nestedOp)) {
+            hasReturn = true;
+            SmallVector<Value> operands;
+            for (Value operand : nestedOp.getOperands()) {
+              operands.push_back(mapper.lookupOrDefault(operand));
+            }
+            rewriter.create<func::ReturnOp>(nestedOp.getLoc(), operands);
+            llvm::errs() << "[VxLowering] Converted func::ReturnOp to func::ReturnOp\n";
+            continue;
+          }
+          llvm::errs() << "[VxLowering] Cloning: " << nestedOp.getName().getStringRef() << "\n";
           rewriter.clone(nestedOp, mapper);
         }
       }
 
-      // Add return to the outlined function
-      rewriter.create<func::ReturnOp>(op.getLoc());
+      // Add return to the outlined function if it wasn't cloned
+      if (!hasReturn) {
+        rewriter.create<func::ReturnOp>(op.getLoc());
+      }
     }
 
     // 4. Emit func.call to the outlined function
-    rewriter.create<func::CallOp>(op.getLoc(), outlinedFunc, capturedArgs);
+    rewriter.setInsertionPoint(op);
+    auto callOp = rewriter.create<func::CallOp>(op.getLoc(), outlinedFunc, capturedArgs);
 
-    // 5. Erase the original spawn op
-    rewriter.eraseOp(op);
+    // 5. Replace the original spawn op with the call's results
+    rewriter.replaceOp(op, callOp.getResults());
     return success();
   }
 };
@@ -142,20 +190,21 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
 
   LogicalResult matchAndRewrite(TransferOp op,
                                 PatternRewriter &rewriter) const override {
-    Value src = op.getSrc();
+    auto src = op.getOperand();
     auto srcType = dyn_cast<MemRefType>(src.getType());
 
     // If it's not a MemRef (e.g., primitive i32/f32), we fail compilation.
     // The user explicitly mandated that implicit conversions/pass-throughs
     // are disabled to enforce strict data layout transitions.
     if (!srcType) {
+      llvm::errs() << "[VxLowering] TransferOp srcType is not MemRefType\n";
       op.emitError("vx.transfer currently only supports MemRef types. "
                    "Attempted to transfer a scalar/primitive.");
       return failure();
     }
 
-    auto targetType = MemRefType::get(
-        srcType.getShape(), srcType.getElementType(), srcType.getLayout());
+    auto targetType = cast<MemRefType>(op.getResult().getType());
+    llvm::errs() << "[VxLowering] TransferOp lowering from " << srcType << " to " << targetType << "\n";
 
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
@@ -186,12 +235,18 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
       // Temporarily move insertion point to just before the terminator
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(&currentBlock->back());
-      rewriter.create<memref::DeallocOp>(op.getLoc(), allocOp);
+      // Cast to memory space 0 so memref-to-llvm can use standard `free`
+      auto defaultType = MemRefType::get(targetType.getShape(), targetType.getElementType());
+      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(), defaultType, allocOp);
+      rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
     } else {
       // If there is no terminator yet, just append it to the block
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(currentBlock);
-      rewriter.create<memref::DeallocOp>(op.getLoc(), allocOp);
+      // Cast to memory space 0 so memref-to-llvm can use standard `free`
+      auto defaultType = MemRefType::get(targetType.getShape(), targetType.getElementType());
+      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(), defaultType, allocOp);
+      rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
     }
 
     // Replace transfer with the allocated memref
@@ -218,23 +273,12 @@ struct ConvertVxToStandardPass
   }
 
   void runOnOperation() override {
-    getContext().getOrLoadDialect<async::AsyncDialect>();
-    getContext().getOrLoadDialect<func::FuncDialect>();
-    getContext().getOrLoadDialect<memref::MemRefDialect>();
-    getContext().getOrLoadDialect<arith::ArithDialect>();
-
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
-    ConversionTarget target(getContext());
-    target.addLegalDialect<async::AsyncDialect, func::FuncDialect,
-                           memref::MemRefDialect, arith::ArithDialect,
-                           BuiltinDialect>();
-    target.addIllegalOp<SpawnOp, TransferOp>();
-
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
+    }
   }
 };
 
