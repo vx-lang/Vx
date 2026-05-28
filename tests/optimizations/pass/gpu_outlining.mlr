@@ -1,0 +1,23 @@
+// RUN: vx-opt %s --pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s
+
+module {
+  func.func private @dummy()
+
+  func.func @test_gpu_lowering() {
+    vx.spawn topology(100) {
+      func.call @dummy() : () -> ()
+      vx.yield
+    }
+    return
+  }
+}
+
+// CHECK: module attributes {gpu.container_module}
+// CHECK: func.func @test_gpu_lowering()
+// CHECK: arith.constant 1 : index
+// CHECK: gpu.launch_func  @test_gpu_lowering_kernel::@test_gpu_lowering_kernel
+
+// CHECK: gpu.module @test_gpu_lowering_kernel
+// CHECK: gpu.func @test_gpu_lowering_kernel()
+// CHECK: func.call @dummy()
+// CHECK: gpu.return

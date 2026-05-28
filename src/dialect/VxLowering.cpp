@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/IRMapping.h"
@@ -69,118 +70,48 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       return success();
     }
 
-    // For NPU (100) or AccCore (200), we lower to an outlined func.call.
+    // For NPU (100) or AccCore (200), we lower to a gpu.launch.
     Region &spawnBody = op.getBody();
     if (spawnBody.empty()) {
       rewriter.eraseOp(op);
       return success();
     }
 
-    // 1. Identify captured values
-    SetVector<Value> capturedSet;
-    spawnBody.walk([&](Operation *nestedOp) {
-      for (Value operand : nestedOp->getOperands()) {
-        // If the operand is defined outside this region, it's captured
-        if (operand.getParentRegion() != &spawnBody) {
-          // Check if it's defined in a nested region of spawnBody
-          bool isDefinedInSpawn = false;
-          Region *parent = operand.getParentRegion();
-          while (parent != nullptr) {
-            if (parent == &spawnBody) {
-              isDefinedInSpawn = true;
-              break;
-            }
-            parent = parent->getParentRegion();
-          }
-          if (!isDefinedInSpawn) {
-            capturedSet.insert(operand);
-          }
-        }
+    auto constOne = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+    auto launchOp = rewriter.create<gpu::LaunchOp>(
+        op.getLoc(),
+        constOne, constOne, constOne,
+        constOne, constOne, constOne);
+
+    Region &launchRegion = launchOp.getBody();
+    Block *launchBlock;
+    if (launchRegion.empty()) {
+      launchBlock = rewriter.createBlock(&launchRegion);
+      // gpu.launch takes 12 index arguments (thread/block indices and sizes)
+      for (int i = 0; i < 12; ++i) {
+        launchBlock->addArgument(rewriter.getIndexType(), op.getLoc());
       }
-    });
-
-    SmallVector<Value> capturedArgs(capturedSet.begin(), capturedSet.end());
-    SmallVector<Type> argTypes;
-    for (Value val : capturedArgs) {
-      argTypes.push_back(val.getType());
-    }
-    SmallVector<Type> resultTypes;
-    spawnBody.walk([&](vx::ReturnOp retOp) {
-      if (resultTypes.empty()) {
-        for (Value operand : retOp.getOperands()) {
-          resultTypes.push_back(operand.getType());
-        }
-      }
-    });
-
-    auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
-
-    // 2. Create the outlined func::FuncOp at the module level
-    ModuleOp module = op->getParentOfType<ModuleOp>();
-    static int kernelCount = 0;
-    std::string funcName = "__vx_npu_kernel_" + std::to_string(kernelCount++);
-
-    func::FuncOp outlinedFunc;
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToEnd(module.getBody());
-      outlinedFunc =
-          rewriter.create<func::FuncOp>(op.getLoc(), funcName, funcType);
-      outlinedFunc.setPrivate();
-
-      Block *entryBlock = outlinedFunc.addEntryBlock();
-      rewriter.setInsertionPointToEnd(entryBlock);
-
-      // 3. Clone operations using IRMapping
-      IRMapping mapper;
-      // Map the captured arguments to the block arguments
-      for (size_t i = 0; i < capturedArgs.size(); ++i) {
-        mapper.map(capturedArgs[i], entryBlock->getArgument(i));
-      }
-
-      bool hasReturn = false;
-      // Clone each operation in the spawn block
-      for (Block &block : spawnBody) {
-        for (Operation &nestedOp : block) {
-          if (isa<vx::YieldOp>(nestedOp))
-            continue; // skip yield
-          if (auto retOp = dyn_cast<vx::ReturnOp>(nestedOp)) {
-            hasReturn = true;
-            SmallVector<Value> operands;
-            for (Value operand : retOp.getOperands()) {
-              operands.push_back(mapper.lookupOrDefault(operand));
-            }
-            rewriter.create<func::ReturnOp>(retOp.getLoc(), operands);
-            llvm::errs() << "[VxLowering] Converted vx::ReturnOp to func::ReturnOp\n";
-            continue;
-          }
-          if (isa<func::ReturnOp>(nestedOp)) {
-            hasReturn = true;
-            SmallVector<Value> operands;
-            for (Value operand : nestedOp.getOperands()) {
-              operands.push_back(mapper.lookupOrDefault(operand));
-            }
-            rewriter.create<func::ReturnOp>(nestedOp.getLoc(), operands);
-            llvm::errs() << "[VxLowering] Converted func::ReturnOp to func::ReturnOp\n";
-            continue;
-          }
-          llvm::errs() << "[VxLowering] Cloning: " << nestedOp.getName().getStringRef() << "\n";
-          rewriter.clone(nestedOp, mapper);
-        }
-      }
-
-      // Add return to the outlined function if it wasn't cloned
-      if (!hasReturn) {
-        rewriter.create<func::ReturnOp>(op.getLoc());
+      rewriter.create<gpu::TerminatorOp>(op.getLoc());
+    } else {
+      launchBlock = &launchRegion.front();
+      if (launchBlock->empty() || !isa<gpu::TerminatorOp>(launchBlock->back())) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToEnd(launchBlock);
+        rewriter.create<gpu::TerminatorOp>(op.getLoc());
       }
     }
 
-    // 4. Emit func.call to the outlined function
-    rewriter.setInsertionPoint(op);
-    auto callOp = rewriter.create<func::CallOp>(op.getLoc(), outlinedFunc, capturedArgs);
+    // Splice operations from spawnBlock to launchBlock
+    Block &spawnBlock = spawnBody.front();
+    if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
+      rewriter.eraseOp(&spawnBlock.back());
+    }
+    
+    auto &launchOps = launchBlock->getOperations();
+    auto &spawnOps = spawnBlock.getOperations();
+    launchOps.splice(std::prev(launchOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
 
-    // 5. Replace the original spawn op with the call's results
-    rewriter.replaceOp(op, callOp.getResults());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -269,7 +200,7 @@ struct ConvertVxToStandardPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<async::AsyncDialect, func::FuncDialect,
-                    memref::MemRefDialect, arith::ArithDialect>();
+                    memref::MemRefDialect, arith::ArithDialect, gpu::GPUDialect>();
   }
 
   void runOnOperation() override {
