@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // A utility inspired by LLVM's update_llc_test_checks.py.
-// It runs `vxc --emit-mlir` on the given test files and updates the `// CHECK:`
-// lines in the file to match the actual MLIR output.
+// It runs the compiler commands specified in `// RUN:` lines and updates the
+// `// <PREFIX>:` lines in the file to match the actual MLIR output.
 //
-// Usage: cargo run --bin update_mlir_test_checks -- tests/middle_end/pass/*.vx
+// Usage: cargo run --bin update_mlir_test_checks -- tests/optimizations/pass/*.vx
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,7 +26,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Build the vxc compiler first
     println!("Building vxc...");
     let status = Command::new("cargo")
         .args(["build", "--bin", "vxc"])
@@ -38,12 +37,15 @@ fn main() {
         std::process::exit(1);
     }
 
-    let vxc_bin = Path::new("target/debug/vxc");
+    let vxc_bin = env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("debug")
+        .join("vxc");
 
     for file_path in args {
         println!("Updating {}...", file_path);
 
-        // Read the original file
         let original_content = match fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(e) => {
@@ -52,32 +54,58 @@ fn main() {
             }
         };
 
-        // Run vxc --emit-mlir on the file
-        let output = Command::new(vxc_bin)
-            .args(["--emit-mlir", &file_path])
-            .output()
-            .expect("Failed to execute vxc");
+        // 1. Find all RUN lines and prefixes
+        let mut runs = Vec::new();
+        let mut prefixes = Vec::new();
 
-        if !output.status.success() {
-            eprintln!(
-                "Warning: vxc failed on {}:\n{}",
-                file_path,
-                String::from_utf8_lossy(&output.stderr)
-            );
+        for line in original_content.lines() {
+            if line.trim().starts_with("// RUN:") {
+                let cmd = line.split_once("RUN:").unwrap().1.trim();
+                let vxc_cmd = cmd.split('|').next().unwrap().trim();
+                let prefix = if cmd.contains("FileCheck") {
+                    if let Some(pos) = cmd.find("--check-prefix=") {
+                        cmd[pos + 15..]
+                            .split_whitespace()
+                            .next()
+                            .unwrap()
+                            .to_string()
+                    } else {
+                        "CHECK".to_string()
+                    }
+                } else {
+                    "CHECK".to_string()
+                };
+
+                let vxc_cmd = vxc_cmd.replace("%s", &file_path);
+
+                runs.push((vxc_cmd, prefix.clone()));
+                if !prefixes.contains(&prefix) {
+                    prefixes.push(prefix);
+                }
+            }
+        }
+
+        if runs.is_empty() {
+            eprintln!("Warning: No RUN lines found in {}", file_path);
             continue;
         }
 
-        let mlir_output = String::from_utf8_lossy(&output.stdout);
-
-        // Strip existing CHECK lines and trailing whitespace
+        // 2. Filter out all existing checks for all known prefixes
         let mut new_lines = Vec::new();
         for line in original_content.lines() {
-            if !line.trim().starts_with("// CHECK:") {
+            let mut is_check = false;
+            for prefix in &prefixes {
+                let check_str = format!("// {}:", prefix);
+                if line.trim().starts_with(&check_str) {
+                    is_check = true;
+                    break;
+                }
+            }
+            if !is_check {
                 new_lines.push(line.to_string());
             }
         }
 
-        // Remove trailing empty lines before appending checks
         while let Some(last) = new_lines.last() {
             if last.trim().is_empty() {
                 new_lines.pop();
@@ -85,30 +113,62 @@ fn main() {
                 break;
             }
         }
-
-        // Add a blank line separator
         new_lines.push("".to_string());
 
-        // Append new CHECK lines for MLIR only
-        let mut in_mlir = false;
-        for line in mlir_output.lines() {
-            if line.starts_with("module {") || line.starts_with("\"builtin.module\"") {
-                in_mlir = true;
+        // 3. For each RUN line, run vxc and append output
+        for (vxc_cmd, prefix) in runs {
+            let mut args: Vec<String> = vec![];
+            let mut current_arg = String::new();
+            let mut in_quotes = false;
+            for c in vxc_cmd.chars() {
+                if c == '"' {
+                    in_quotes = !in_quotes;
+                } else if c == ' ' && !in_quotes {
+                    if !current_arg.is_empty() {
+                        args.push(current_arg.clone());
+                        current_arg.clear();
+                    }
+                } else {
+                    current_arg.push(c);
+                }
             }
-            if !in_mlir {
+            if !current_arg.is_empty() {
+                args.push(current_arg);
+            }
+
+            let exec_name = args.remove(0);
+            if exec_name != "vxc" && exec_name != "vx-opt" {
+                eprintln!("Unknown executable in RUN line: {}", exec_name);
                 continue;
             }
-            if line.trim().is_empty() {
-                continue; // Skip empty lines in MLIR output to keep tests clean
+
+            let output = Command::new(&vxc_bin)
+                .args(&args)
+                .output()
+                .expect("Failed to execute compiler");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            let mut in_mlir = false;
+            for line in stdout.lines() {
+                if line.starts_with("module {")
+                    || line.starts_with("module ")
+                    || line.starts_with("\"builtin.module\"")
+                {
+                    in_mlir = true;
+                }
+                if !in_mlir {
+                    continue;
+                }
+                if line.trim().is_empty() {
+                    continue;
+                }
+                new_lines.push(format!("// {}: {}", prefix, line));
             }
-            new_lines.push(format!("// CHECK: {}", line));
+            new_lines.push("".to_string());
         }
 
-        // Ensure trailing newline
-        new_lines.push("".to_string());
-
         let new_content = new_lines.join("\n");
-
         if new_content != original_content {
             if let Err(e) = fs::write(&file_path, new_content) {
                 eprintln!("Error writing {}: {}", file_path, e);
