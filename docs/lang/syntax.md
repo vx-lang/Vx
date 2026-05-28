@@ -36,13 +36,31 @@ fn distributed_matmul(a: Tensor<f32, [M, K]>, b: Tensor<f32, [K, N]>) -> Tensor<
 }
 ```
 
-## 3. Logical and Relational Operators
+## 3. Topology-Aware Function Signatures
+
+Functions in Vx can explicitly declare the hardware topology they are designed to run on as part of their signature using the `on` keyword. This allows the compiler to enforce correctness at the language level and ensures that functions compiled for specific accelerators (like an NPU or GPU) are only called within valid execution scopes.
+
+```rust
+// This function is strictly compiled for and bound to NPU[0]
+fn dummy_kernel(x: i32) on Topology::NPU[0] -> i32 {
+    return x;
+}
+
+fn process() {
+    // Valid: calling the function from a matching topology scope
+    spawn on (Topology::NPU[0]) {
+        dummy_kernel(0);
+    }
+}
+```
+
+## 4. Logical and Relational Operators
 
 - Compound assignment: `+=`, `*=`
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
 
-## 4. Semantics of Data Movement: `transfer`
+## 5. Semantics of Data Movement: `transfer`
 
 Data cannot be implicitly moved across address spaces. Moving data requires the `transfer` primitive, which explicitly tracks ownership and liveness across boundaries.
 
@@ -61,7 +79,7 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
 }
 ```
 
-## 5. Control Flow
+## 6. Control Flow
 
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `while`.
 Loops can be annotated for spatial unrolling.
@@ -76,7 +94,7 @@ unroll across(Topology::NPU[0..4]) { |npu_id|
 }
 ```
 
-## 6. Foreign Function Interface (FFI) & Safety
+## 7. Foreign Function Interface (FFI) & Safety
 
 Vx supports calling external C functions via the `extern` block. By default, all external functions are considered `unsafe` because the compiler cannot statically verify their memory safety across the language boundary. Calling an `unsafe` function requires an `unsafe { ... }` block.
 
