@@ -991,6 +991,7 @@ pub struct Function {
     pub name: String,
     pub generics: Vec<(String, Option<String>)>, // (TypeParamName, OptionalTraitBound)
     pub params: Vec<(String, Type)>,
+    pub topology: Topology,
     pub return_type: Type,
     pub body: Vec<Statement>,
 }
