@@ -28,7 +28,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     let local_b = b.to_device();
     spawn on(Topology::NPU[0]) {
         let result = custom_matmul(local_a, local_b);
-        return result;
+        result
     }
 }
     "#;
