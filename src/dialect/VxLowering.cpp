@@ -247,17 +247,59 @@ struct ConvertVxToStandardPass
   }
 };
 
+struct DispatchOpLowering : public OpRewritePattern<vx::DispatchOp> {
+  using OpRewritePattern<vx::DispatchOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::DispatchOp op,
+                                PatternRewriter &rewriter) const override {
+    auto callee = op.getCalleeAttr();
+    auto operands = op.getOperands();
+    auto resultTypes = op.getResultTypes();
+
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, callee, resultTypes, operands);
+    return success();
+  }
+};
+
+struct ConvertVxToLLVMPass
+    : public PassWrapper<ConvertVxToLLVMPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToLLVMPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-to-llvm";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers remaining Vx dialect operations to standard/LLVM dialects";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<func::FuncDialect>();
+  }
+
+  void runOnOperation() override {
+    RewritePatternSet patterns(&getContext());
+    patterns.add<DispatchOpLowering>(&getContext());
+
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
+      signalPassFailure();
+    }
+  }
+};
+
 } // namespace
 
 extern "C" {
 void registerVxLoweringPass(MlirContext ctx) {
-  // Technically, passes are registered globally in MLIR or added to a
-  // PassManager. We will expose a C API to add this pass to an existing
-  // MlirPassManager instead.
+  // Exposed via registerVxPasses instead.
 }
 
 void addVxLoweringPass(MlirPassManager pm) {
   unwrap(pm)->addPass(std::make_unique<ConvertVxToStandardPass>());
+}
+
+void addVxToLLVMPass(MlirPassManager pm) {
+  unwrap(pm)->addPass(std::make_unique<ConvertVxToLLVMPass>());
 }
 } // extern "C"
 
@@ -266,6 +308,9 @@ namespace vx {
 void registerVxPasses() {
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ConvertVxToStandardPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<ConvertVxToLLVMPass>();
   });
 }
 } // namespace vx
