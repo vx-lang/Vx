@@ -149,11 +149,19 @@ fn main() {
 
             let stdout = String::from_utf8_lossy(&output.stdout);
 
+            let is_llvm = args.contains(&"--emit-llvm".to_string());
             let mut in_mlir = false;
             for line in stdout.lines() {
-                if line.starts_with("module {")
-                    || line.starts_with("module ")
-                    || line.starts_with("\"builtin.module\"")
+                if !is_llvm
+                    && (line.starts_with("module {")
+                        || line.starts_with("module ")
+                        || line.starts_with("\"builtin.module\""))
+                {
+                    in_mlir = true;
+                } else if is_llvm
+                    && (line.starts_with("; ModuleID")
+                        || line.starts_with("declare ")
+                        || line.starts_with("define "))
                 {
                     in_mlir = true;
                 }
