@@ -1228,15 +1228,11 @@ impl<'a> Parser<'a> {
             topology = self.parse_topology()?;
         }
 
-        let mut return_type = Type::Scalar(crate::ast::ElementType::F32);
-        if self.match_token(&TokenType::Arrow) {
-            return_type = self.parse_type()?;
-        } else {
-            // Optional return type in some test contexts might be missing,
-            // but if it is required, we should enforce '->'
+        if !self.match_token(&TokenType::Arrow) {
             // In Vx, '->' is currently required for functions in parse_function
             return Err("Expected '->'".to_string());
         }
+        let return_type = self.parse_type()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();

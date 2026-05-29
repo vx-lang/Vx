@@ -306,7 +306,7 @@ impl<'c> MeliorGenerator<'c> {
         self.generate_module(program, modules);
 
         println!("[CODEGEN] Finished generating modules.");
-        let mut op = self.module.as_operation();
+        let op = self.module.as_operation();
         let s = format!("{}", op);
         println!("[CODEGEN] Formatted MLIR string.");
         s
@@ -333,7 +333,7 @@ impl<'c> MeliorGenerator<'c> {
             let func_name = format!("printMemref{}", ty_str.to_uppercase());
             let unranked_memref_ty =
                 Type::parse(self.context, &format!("memref<*x{}>", ty_str)).unwrap();
-            let none_ty = Type::parse(self.context, "none").unwrap();
+            let _none_ty = Type::parse(self.context, "none").unwrap();
 
             let func_ty = melior::ir::attribute::TypeAttribute::new(
                 Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()")).unwrap(),
@@ -1264,8 +1264,8 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         gen.expected_type = prev_expected;
 
         let mut final_ty = lhs_ty;
-        let lhs_ty_str = lhs_ty.to_string();
-        let rhs_ty_str = rhs_ty.to_string();
+        let _lhs_ty_str = lhs_ty.to_string();
+        let _rhs_ty_str = rhs_ty.to_string();
 
         if lhs_ty != rhs_ty && op != &BinaryOp::MatMul {
             // Priority coercion: f64 > f32 > i64 > i32
@@ -1739,14 +1739,14 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             rhs,
             span: _,
         } = self;
-        let (mut lhs_val, lhs_ty) = gen.generate_expr(lhs, block);
+        let (lhs_val, lhs_ty) = gen.generate_expr(lhs, block);
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
-        let (mut rhs_val, mut rhs_ty) = gen.generate_expr(rhs, block);
+        let (mut rhs_val, rhs_ty) = gen.generate_expr(rhs, block);
         gen.expected_type = prev_expected;
 
-        let lhs_ty_str = lhs_ty.to_string();
-        let rhs_ty_str = rhs_ty.to_string();
+        let _lhs_ty_str = lhs_ty.to_string();
+        let _rhs_ty_str = rhs_ty.to_string();
 
         let mut final_ty = lhs_ty;
 
@@ -1754,7 +1754,7 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             // Prioritize standard coercion depending on which type is more generic (e.g. f64 > f32 > i64 > i32)
             // For simplicity, just cast rhs to lhs for now.
             rhs_val = gen.coerce_type(block, rhs_val, rhs_ty, lhs_ty);
-            rhs_ty = lhs_ty;
+            _ = lhs_ty;
             final_ty = lhs_ty;
         }
 
@@ -2051,7 +2051,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::SpawnOnExpr {
         if !result_types.is_empty() {
             (spawn_ref.result(0).unwrap().into(), result_types[0])
         } else {
-            let none_ty =
+            let _none_ty =
                 Type::parse(gen.context, "none").unwrap_or_else(|| Type::index(gen.context));
             let dummy_op = melior::ir::operation::OperationBuilder::new("arith.constant", location)
                 .add_attributes(&[(
@@ -2383,7 +2383,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 print_arg = &borrow.expr;
             }
 
-            let (mut arg_val, mut arg_ty) = gen.generate_expr(print_arg, block);
+            let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block);
 
             let el_ty_str = if arg_ty.to_string().contains("f64") {
                 "f64"
@@ -2720,9 +2720,9 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     let mut cast_op_name = "memref.cast";
                     let expr_parts = expr_ty.to_string();
                     let ret_parts = ret_ty.to_string();
-                    let expr_has_space =
+                    let _expr_has_space =
                         expr_parts.matches(',').count() > 0 && !expr_parts.contains("strided");
-                    let ret_has_space =
+                    let _ret_has_space =
                         ret_parts.matches(',').count() > 0 && !ret_parts.contains("strided");
                     if expr_parts.matches(',').count() != ret_parts.matches(',').count() {
                         cast_op_name = "memref.memory_space_cast";
@@ -3300,8 +3300,8 @@ fn emit_enzyme_decl<'c>(
     let enzyme_name = format!("{}_{}_{}", prefix, suffix, target_fn);
     if !gen.functions.contains_key(&enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
         let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
-        let name_attr = melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name);
-        let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
+        let _name_attr = melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name);
+        let _type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
         let region = melior::ir::Region::new();
         let func_op = melior::ir::operation::OperationBuilder::new(
