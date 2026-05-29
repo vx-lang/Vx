@@ -1,0 +1,16 @@
+// EXPECT: Unranked Memref base@ =
+// EXPECT: rank = 2 offset = 0 sizes = [4, 4] strides = [4, 1] data =
+// EXPECT: [[42,   0,   0,   0],
+
+fn main() -> Pinned<Tensor<i32>, Topology::NPU[0]> {
+  let mut res_host = Tensor<i32>([1, 1]);
+  let mut res = transfer(res_host, Memory::NPU_HBM);
+
+  spawn on (Topology::NPU[0]) {
+    res[0][0] = 42;
+  };
+
+  // Implicit lowering to unranked memref for debugging
+  print(&res);
+  return res;
+}
