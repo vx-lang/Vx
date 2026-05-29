@@ -40,6 +40,14 @@ def Vx_YieldOp : Vx_Op<"yield", [Terminator, ReturnLike]> {
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
 }
 
+// A dispatch operation to execute an outlined kernel
+def Vx_DispatchOp : Vx_Op<"dispatch"> {
+    let summary = "Dispatches an outlined kernel.";
+    let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
+    let results = (outs Variadic<AnyType>:$results);
+    let assemblyFormat = "$callee `(` $operands `)` attr-dict `:` functional-type($operands, results)";
+}
+
 // A return operation to terminate vx.spawn regions from anywhere
 def Vx_ReturnOp : Vx_Op<"return", [Terminator, ReturnLike]> {
     let summary = "Returns from a vx.spawn region.";

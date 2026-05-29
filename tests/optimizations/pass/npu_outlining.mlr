@@ -1,0 +1,14 @@
+// RUN: vx-opt %s --pass-pipeline="builtin.module(convert-vx-to-standard,gpu-kernel-outlining)" | FileCheck %s
+
+module {
+  func.func private @dummy()
+
+  func.func @test_gpu_lowering() {
+    vx.spawn topology(100) {
+      func.call @dummy() : () -> ()
+      vx.yield
+    }
+    return
+  }
+}
+

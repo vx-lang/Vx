@@ -1,0 +1,61 @@
+// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=NPU
+fn dummy(x: i32) on Topology::NPU[0] -> i32 {
+  return x;
+}
+
+fn process(t: Tensor<f32>) -> Tensor<f32> {
+  let mut res = Tensor<i32>([1]).with_memory(Memory::NPU_HBM);
+  spawn on (Topology::NPU[0]) {
+    dummy(0);
+  }
+  return t;
+}
+
+// FRONTEND: module {
+// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
+// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
+// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
+// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
+// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
+// FRONTEND:   func.func @dummy(%arg0: i32) -> i32 {
+// FRONTEND:     return %arg0 : i32
+// FRONTEND:   }
+// FRONTEND:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     %c4 = arith.constant 4 : index
+// FRONTEND:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
+// FRONTEND:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
+// FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
+// FRONTEND:     vx.spawn topology(100) {
+// FRONTEND:       %c0_i32 = arith.constant 0 : i32
+// FRONTEND:       %0 = func.call @dummy(%c0_i32) : (i32) -> i32
+// FRONTEND:       vx.yield
+// FRONTEND:     }
+// FRONTEND:     %c0 = arith.constant 0 : index
+// FRONTEND:     return %arg0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND: }
+
+// NPU: module {
+// NPU:   func.func private @printMemrefF32(memref<*xf32>)
+// NPU:   func.func private @printMemrefF64(memref<*xf64>)
+// NPU:   func.func private @printMemrefI32(memref<*xi32>)
+// NPU:   func.func private @printMemrefI64(memref<*xi64>)
+// NPU:   func.func private @printMemrefBF16(memref<*xbf16>)
+// NPU:   func.func @dummy(%arg0: i32) -> i32 {
+// NPU:     return %arg0 : i32
+// NPU:   }
+// NPU:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// NPU:     %c0_i32 = arith.constant 0 : i32
+// NPU:     %c4 = arith.constant 4 : index
+// NPU:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
+// NPU:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
+// NPU:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
+// NPU:     vx.dispatch @vx_npu_kernel_0(%c0_i32) : (i32) -> ()
+// NPU:     return %arg0 : memref<?x?xf32>
+// NPU:   }
+// NPU:   func.func @vx_npu_kernel_0(%arg0: i32) attributes {vx.kernel, vx.topology = 100 : i32} {
+// NPU:     %0 = call @dummy(%arg0) : (i32) -> i32
+// NPU:     return
+// NPU:   }
+// NPU: }

@@ -75,53 +75,77 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       return success();
     }
 
-    // For NPU (100) or AccCore (200), we lower to a gpu.launch.
+    // For NPU (100) or AccCore (200), we lower to an outlined kernel.
     Region &spawnBody = op.getBody();
     if (spawnBody.empty()) {
       rewriter.eraseOp(op);
       return success();
     }
 
-    auto constOne = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-    auto launchOp = rewriter.create<gpu::LaunchOp>(
-        op.getLoc(),
-        constOne, constOne, constOne,
-        constOne, constOne, constOne);
+    SetVector<Value> captures;
+    getUsedValuesDefinedAbove(spawnBody, captures);
 
-    Region &launchRegion = launchOp.getBody();
-    Block *launchBlock;
-    if (launchRegion.empty()) {
-      launchBlock = rewriter.createBlock(&launchRegion);
-      // gpu.launch takes 12 index arguments (thread/block indices and sizes)
-      for (int i = 0; i < 12; ++i) {
-        launchBlock->addArgument(rewriter.getIndexType(), op.getLoc());
-      }
-      rewriter.create<gpu::TerminatorOp>(op.getLoc());
-    } else {
-      launchBlock = &launchRegion.front();
-      if (launchBlock->empty() || !isa<gpu::TerminatorOp>(launchBlock->back())) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToEnd(launchBlock);
-        rewriter.create<gpu::TerminatorOp>(op.getLoc());
-      }
+    // Create the outlined function at the module level
+    auto module = op->getParentOfType<ModuleOp>();
+    auto ip = rewriter.saveInsertionPoint();
+    rewriter.setInsertionPointToEnd(module.getBody());
+
+    SmallVector<Type> argTypes;
+    for (auto val : captures) {
+      argTypes.push_back(val.getType());
     }
 
-    // Splice operations from spawnBlock to launchBlock
-    Block &spawnBlock = spawnBody.front();
+    // Determine result types from the yield operation
+    SmallVector<Type> resultTypes;
     SmallVector<Value> yieldedValues;
+    Block &spawnBlock = spawnBody.front();
     if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
       auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
       for (auto val : yieldOp.getOperands()) {
-        yieldedValues.push_back(val);
+        resultTypes.push_back(val.getType());
       }
-      rewriter.eraseOp(yieldOp);
+    }
+
+    auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
+    static int kernelIdx = 0;
+    std::string funcName = "vx_npu_kernel_" + std::to_string(kernelIdx++);
+    auto funcOp = rewriter.create<func::FuncOp>(op.getLoc(), funcName, funcType);
+    funcOp->setAttr("vx.kernel", rewriter.getUnitAttr());
+    funcOp->setAttr("vx.topology", rewriter.getI32IntegerAttr(topology));
+    
+    // Copy the region
+    Block *funcBlock = rewriter.createBlock(&funcOp.getBody(), funcOp.getBody().end(), argTypes, SmallVector<Location>(argTypes.size(), op.getLoc()));
+    
+    IRMapping mapping;
+    for (auto [cap, arg] : llvm::zip(captures, funcBlock->getArguments())) {
+      mapping.map(cap, arg);
     }
     
-    auto &launchOps = launchBlock->getOperations();
-    auto &spawnOps = spawnBlock.getOperations();
-    launchOps.splice(std::prev(launchOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
+    // Clone operations
+    for (auto &innerOp : spawnBlock.without_terminator()) {
+      rewriter.clone(innerOp, mapping);
+    }
 
-    rewriter.replaceOp(op, yieldedValues);
+    // Handle yield by returning the mapped values
+    if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
+      auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
+      SmallVector<Value> returnOperands;
+      for (auto val : yieldOp.getOperands()) {
+        returnOperands.push_back(mapping.lookupOrDefault(val));
+      }
+      rewriter.create<func::ReturnOp>(op.getLoc(), returnOperands);
+    } else {
+      rewriter.create<func::ReturnOp>(op.getLoc());
+    }
+
+    // Restore insertion point to replace vx.spawn with vx.dispatch
+    rewriter.restoreInsertionPoint(ip);
+    
+    SmallVector<Value> dispatchOperands(captures.begin(), captures.end());
+    auto dispatchOp = rewriter.create<vx::DispatchOp>(
+        op.getLoc(), resultTypes, SymbolRefAttr::get(rewriter.getContext(), funcName), dispatchOperands);
+
+    rewriter.replaceOp(op, dispatchOp.getResults());
     return success();
   }
 };
