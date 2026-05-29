@@ -76,7 +76,18 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // VXLLVM:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
 // VXLLVM:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
 // VXLLVM:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// VXLLVM:     %0 = call @vx_npu_kernel_0(%c0_i32) : (i32) -> i32
+// VXLLVM:     %0 = llvm.mlir.addressof @vx_npu_kernel_0_str : !llvm.ptr
+// VXLLVM:     %1 = llvm.mlir.constant(1 : i32) : i32
+// VXLLVM:     %2 = llvm.alloca %1 x !llvm.ptr : (i32) -> !llvm.ptr
+// VXLLVM:     %3 = llvm.mlir.constant(1 : i32) : i32
+// VXLLVM:     %4 = llvm.alloca %3 x i32 : (i32) -> !llvm.ptr
+// VXLLVM:     llvm.store %c0_i32, %4 : i32, !llvm.ptr
+// VXLLVM:     %5 = llvm.mlir.constant(0 : i32) : i32
+// VXLLVM:     %6 = llvm.getelementptr %2[0] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// VXLLVM:     llvm.store %4, %6 : !llvm.ptr, !llvm.ptr
+// VXLLVM:     %7 = llvm.mlir.constant(0 : i64) : i64
+// VXLLVM:     %8 = llvm.call @vx_plugin_dispatch_async(%0, %7, %2) : (!llvm.ptr, i64, !llvm.ptr) -> i64
+// VXLLVM:     %9 = llvm.mlir.constant(0 : i32) : i32
 // VXLLVM:     return %arg0 : memref<?x?xf32>
 // VXLLVM:   }
 // VXLLVM:   func.func @vx_npu_kernel_0(%arg0: i32) -> i32 attributes {vx.kernel, vx.topology = 100 : i32} {
@@ -118,7 +129,11 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // LLVM:   %26 = insertvalue { ptr, ptr, i64 } %25, i64 0, 2
 // LLVM:   %27 = extractvalue { ptr, ptr, i64 } %26, 1
 // LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %22, ptr %27, align 8
-// LLVM:   %28 = call i32 @vx_npu_kernel_0(i32 0)
+// LLVM:   %28 = alloca ptr, align 8
+// LLVM:   %29 = alloca i32, align 4
+// LLVM:   store i32 0, ptr %29, align 4
+// LLVM:   store ptr %29, ptr %28, align 8
+// LLVM:   %30 = call i64 @vx_plugin_dispatch_async(ptr @vx_npu_kernel_0_str, i64 0, ptr %28)
 // LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %14
 // LLVM: }
 // LLVM: define i32 @vx_npu_kernel_0(i32 %0) {

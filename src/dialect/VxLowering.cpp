@@ -3,11 +3,14 @@
 #include "VxDialect.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/IRMapping.h"
@@ -68,7 +71,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         auto &asyncOps = asyncBlock->getOperations();
         auto &spawnOps = spawnBlock.getOperations();
         // Move before the yield (which is at the end of asyncBlock)
-        asyncOps.splice(std::prev(asyncOps.end()), spawnOps, spawnOps.begin(), spawnOps.end());
+        asyncOps.splice(std::prev(asyncOps.end()), spawnOps, spawnOps.begin(),
+                        spawnOps.end());
       }
 
       rewriter.replaceOp(op, yieldedValues);
@@ -109,18 +113,21 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
     static int kernelIdx = 0;
     std::string funcName = "vx_npu_kernel_" + std::to_string(kernelIdx++);
-    auto funcOp = rewriter.create<func::FuncOp>(op.getLoc(), funcName, funcType);
+    auto funcOp =
+        rewriter.create<func::FuncOp>(op.getLoc(), funcName, funcType);
     funcOp->setAttr("vx.kernel", rewriter.getUnitAttr());
     funcOp->setAttr("vx.topology", rewriter.getI32IntegerAttr(topology));
-    
+
     // Copy the region
-    Block *funcBlock = rewriter.createBlock(&funcOp.getBody(), funcOp.getBody().end(), argTypes, SmallVector<Location>(argTypes.size(), op.getLoc()));
-    
+    Block *funcBlock = rewriter.createBlock(
+        &funcOp.getBody(), funcOp.getBody().end(), argTypes,
+        SmallVector<Location>(argTypes.size(), op.getLoc()));
+
     IRMapping mapping;
     for (auto [cap, arg] : llvm::zip(captures, funcBlock->getArguments())) {
       mapping.map(cap, arg);
     }
-    
+
     // Clone operations
     for (auto &innerOp : spawnBlock.without_terminator()) {
       rewriter.clone(innerOp, mapping);
@@ -140,10 +147,11 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     // Restore insertion point to replace vx.spawn with vx.dispatch
     rewriter.restoreInsertionPoint(ip);
-    
+
     SmallVector<Value> dispatchOperands(captures.begin(), captures.end());
     auto dispatchOp = rewriter.create<vx::DispatchOp>(
-        op.getLoc(), resultTypes, SymbolRefAttr::get(rewriter.getContext(), funcName), dispatchOperands);
+        op.getLoc(), resultTypes,
+        SymbolRefAttr::get(rewriter.getContext(), funcName), dispatchOperands);
 
     rewriter.replaceOp(op, dispatchOp.getResults());
     return success();
@@ -169,7 +177,8 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     }
 
     auto targetType = cast<MemRefType>(op.getResult().getType());
-    llvm::errs() << "[VxLowering] TransferOp lowering from " << srcType << " to " << targetType << "\n";
+    llvm::errs() << "[VxLowering] TransferOp lowering from " << srcType
+                 << " to " << targetType << "\n";
 
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
@@ -201,16 +210,20 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(&currentBlock->back());
       // Cast to memory space 0 so memref-to-llvm can use standard `free`
-      auto defaultType = MemRefType::get(targetType.getShape(), targetType.getElementType());
-      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(), defaultType, allocOp);
+      auto defaultType =
+          MemRefType::get(targetType.getShape(), targetType.getElementType());
+      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(
+          op.getLoc(), defaultType, allocOp);
       rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
     } else {
       // If there is no terminator yet, just append it to the block
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(currentBlock);
       // Cast to memory space 0 so memref-to-llvm can use standard `free`
-      auto defaultType = MemRefType::get(targetType.getShape(), targetType.getElementType());
-      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(), defaultType, allocOp);
+      auto defaultType =
+          MemRefType::get(targetType.getShape(), targetType.getElementType());
+      auto castOp = rewriter.create<memref::MemorySpaceCastOp>(
+          op.getLoc(), defaultType, allocOp);
       rewriter.create<memref::DeallocOp>(op.getLoc(), castOp);
     }
 
@@ -233,30 +246,122 @@ struct ConvertVxToStandardPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<async::AsyncDialect, func::FuncDialect,
-                    memref::MemRefDialect, arith::ArithDialect, gpu::GPUDialect>();
+    registry
+        .insert<async::AsyncDialect, func::FuncDialect, memref::MemRefDialect,
+                arith::ArithDialect, gpu::GPUDialect>();
   }
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(getOperation(),
+                                            std::move(patterns)))) {
       signalPassFailure();
     }
   }
 };
 
-struct DispatchOpLowering : public OpRewritePattern<vx::DispatchOp> {
-  using OpRewritePattern<vx::DispatchOp>::OpRewritePattern;
+struct DispatchOpLowering : public ConvertOpToLLVMPattern<vx::DispatchOp> {
+  using ConvertOpToLLVMPattern<vx::DispatchOp>::ConvertOpToLLVMPattern;
 
-  LogicalResult matchAndRewrite(vx::DispatchOp op,
-                                PatternRewriter &rewriter) const override {
-    auto callee = op.getCalleeAttr();
-    auto operands = op.getOperands();
-    auto resultTypes = op.getResultTypes();
+  LogicalResult
+  matchAndRewrite(vx::DispatchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto callee = op.getCalleeAttr().getValue();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
 
-    rewriter.replaceOpWithNewOp<func::CallOp>(op, callee, resultTypes, operands);
+    auto llvmI8Type = IntegerType::get(getContext(), 8);
+    auto llvmPtrType = LLVM::LLVMPointerType::get(getContext());
+    auto llvmI64Type = IntegerType::get(getContext(), 64);
+    auto llvmI32Type = IntegerType::get(getContext(), 32);
+
+    // 1. Create the global string for the kernel name
+    std::string globalName = (callee + "_str").str();
+    LLVM::GlobalOp globalOp = module.lookupSymbol<LLVM::GlobalOp>(globalName);
+    if (!globalOp) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      std::string strWithNull = callee.str() + '\0';
+      auto arrayTy = LLVM::LLVMArrayType::get(llvmI8Type, strWithNull.size());
+      globalOp = rewriter.create<LLVM::GlobalOp>(
+          loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+          globalName,
+          rewriter.getStringAttr(
+              StringRef(strWithNull.data(), strWithNull.size())));
+    }
+    Value globalPtr =
+        rewriter.create<LLVM::AddressOfOp>(loc, llvmPtrType, globalName);
+
+    // 2. Allocate the array of pointers for device_args
+    auto operands =
+        adaptor.getOperands(); // These are already converted to LLVM types!
+    Value numArgs = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(operands.size()));
+    Value argsArray = rewriter.create<LLVM::AllocaOp>(
+        loc, llvmPtrType, llvmPtrType, numArgs, /*alignment=*/0);
+
+    for (auto en : llvm::enumerate(operands)) {
+      Value arg = en.value();
+      Type argTy = arg.getType();
+
+      // Allocate space for this argument to get a pointer to it
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(1));
+      Value argAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
+                                                       one, /*alignment=*/0);
+      rewriter.create<LLVM::StoreOp>(loc, arg, argAlloc);
+
+      // Get pointer to argsArray[i]
+      Value index = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(en.index()));
+      Value slotPtr =
+          rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
+                                       ArrayRef<LLVM::GEPArg>{en.index()});
+
+      // Store the argument pointer into argsArray[i]
+      rewriter.create<LLVM::StoreOp>(loc, argAlloc, slotPtr);
+    }
+
+    // 3. Declare vx_plugin_dispatch_async
+    StringRef dispatchFuncName = "vx_plugin_dispatch_async";
+    LLVM::LLVMFuncOp dispatchFunc =
+        module.lookupSymbol<LLVM::LLVMFuncOp>(dispatchFuncName);
+    if (!dispatchFunc) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto funcType = LLVM::LLVMFunctionType::get(
+          llvmI64Type, {llvmPtrType, llvmI64Type, llvmPtrType}, false);
+      dispatchFunc =
+          rewriter.create<LLVM::LLVMFuncOp>(loc, dispatchFuncName, funcType);
+    }
+
+    // 4. Emit the call
+    Value payloadSize = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI64Type, rewriter.getI64IntegerAttr(0));
+    auto callOp = rewriter.create<LLVM::CallOp>(
+        loc, dispatchFunc, ValueRange{globalPtr, payloadSize, argsArray});
+
+    // 5. Handle return type
+    // If the original operation had a result, we must provide it.
+    // Since this is a stub for now, we provide a dummy value (e.g., 0) casted
+    // to the expected LLVM type.
+    if (op.getNumResults() > 0) {
+      Type resultTy = getTypeConverter()->convertType(op.getResultTypes()[0]);
+      if (resultTy.isInteger(32)) {
+        Value zero = rewriter.create<LLVM::ConstantOp>(
+            loc, resultTy, rewriter.getI32IntegerAttr(0));
+        rewriter.replaceOp(op, zero);
+      } else {
+        // Fallback to undef for other types (e.g. memref returns)
+        Value undef = rewriter.create<LLVM::UndefOp>(loc, resultTy);
+        rewriter.replaceOp(op, undef);
+      }
+    } else {
+      rewriter.eraseOp(op);
+    }
+
     return success();
   }
 };
@@ -265,23 +370,26 @@ struct ConvertVxToLLVMPass
     : public PassWrapper<ConvertVxToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToLLVMPass)
 
-  llvm::StringRef getArgument() const override {
-    return "vx-to-llvm";
-  }
+  llvm::StringRef getArgument() const override { return "vx-to-llvm"; }
 
   llvm::StringRef getDescription() const override {
     return "Lowers remaining Vx dialect operations to standard/LLVM dialects";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect>();
+    registry.insert<LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
-    RewritePatternSet patterns(&getContext());
-    patterns.add<DispatchOpLowering>(&getContext());
+    ConversionTarget target(getContext());
+    target.addLegalDialect<LLVM::LLVMDialect>();
 
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
+    LLVMTypeConverter typeConverter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    patterns.add<DispatchOpLowering>(typeConverter);
+
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }
