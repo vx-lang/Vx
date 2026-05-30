@@ -1,0 +1,30 @@
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+
+fn test_match(c: Color) -> i32 {
+  let mut res = 0;
+  match c {
+    Color::Red => {
+      res = 10;
+    }
+    Color::Green => {
+      res = 20;
+    }
+    Color::Blue => {
+      res = 30;
+    }
+    _ => {
+      res = 40;
+    }
+  }
+  return res;
+}
+
+fn main() -> i32 {
+  let c = Color::Green;
+  let val = test_match(c);
+  return val - 20;
+}

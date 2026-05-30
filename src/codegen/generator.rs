@@ -13,6 +13,7 @@ pub struct MeliorGenerator<'c> {
     pub current_return_type: Option<Type<'c>>,
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
+    pub break_flags: Vec<melior::ir::Value<'c, 'c>>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -186,6 +187,7 @@ impl<'c> MeliorGenerator<'c> {
             current_return_type: None,
             expected_type: None,
             in_spawn: false,
+            break_flags: Vec::new(),
         }
     }
 
@@ -480,9 +482,8 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Assert(_) => {
                 // TODO: Lower to `scf.if` with panic/abort for runtime checks
             }
-            Statement::Loop(_) | Statement::Break(_) => {
-                todo!("Phase 2: MLIR Codegen for Loop and Break");
-            }
+            Statement::Loop(s) => s.lower(self, block),
+            Statement::Break(s) => s.lower(self, block),
         }
     }
 
@@ -505,6 +506,8 @@ impl<'c> MeliorGenerator<'c> {
             Expr::SpawnOn(e) => e.lower(self, block),
             Expr::Array(e) => e.lower(self, block),
             Expr::If(e) => e.lower(self, block),
+            Expr::EnumVariant(e) => e.lower(self, block),
+            Expr::Match(e) => e.lower(self, block),
             Expr::Number(e) => e.lower(self, block),
             Expr::UnsafeBlock(e) => e.lower(self, block),
             Expr::Grad(e) => e.lower(self, block),
@@ -618,6 +621,9 @@ impl<'c> MeliorGenerator<'c> {
                 format!("!llvm.ptr<{}>", addr_space)
             }
             crate::ast::Type::Struct(name, _) => {
+                if self.enums.contains_key(name) {
+                    return Type::parse(self.context, "i32").unwrap();
+                }
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {

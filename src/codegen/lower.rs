@@ -2732,3 +2732,495 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         (call_ref.result(0).unwrap().into(), ret_ty)
     }
 }
+
+use crate::codegen::break_utils::*;
+
+impl<'c> LowerToMelior<'c> for LoopStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let i1_ty = Type::parse(gen.context, "i1").unwrap();
+        let memref_ty = Type::parse(gen.context, "memref<1xi1>").unwrap();
+
+        let alloca_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "memref.alloca",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[memref_ty])
+            .build()
+            .unwrap(),
+        );
+        let break_ptr = alloca_op.result(0).unwrap().into();
+
+        let false_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[i1_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i1_ty, 0).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let false_val = false_op.result(0).unwrap().into();
+
+        let c0_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[Type::parse(gen.context, "index").unwrap()])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(
+                    Type::parse(gen.context, "index").unwrap(),
+                    0,
+                )
+                .into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let c0_idx = c0_op.result(0).unwrap().into();
+
+        block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "memref.store",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[false_val, break_ptr, c0_idx])
+            .build()
+            .unwrap(),
+        );
+
+        gen.break_flags.push(break_ptr);
+
+        let before_region = Region::new();
+        let before_block = Block::new(&[]);
+
+        let load_op = before_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "memref.load",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[break_ptr, c0_idx])
+            .add_results(&[i1_ty])
+            .build()
+            .unwrap(),
+        );
+        let is_break = load_op.result(0).unwrap().into();
+
+        let true_op = before_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[i1_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let true_val = true_op.result(0).unwrap().into();
+
+        let not_break_op = before_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "arith.xori",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[is_break, true_val])
+            .add_results(&[i1_ty])
+            .build()
+            .unwrap(),
+        );
+        let not_break = not_break_op.result(0).unwrap().into();
+
+        before_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "scf.condition",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[not_break])
+            .build()
+            .unwrap(),
+        );
+        before_region.append_block(before_block);
+
+        let after_region = Region::new();
+        let after_block = Block::new(&[]);
+
+        generate_statements_with_break_guard(
+            gen,
+            &self.body,
+            &after_block,
+            break_ptr,
+            c0_idx,
+            i1_ty,
+        );
+
+        after_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "scf.yield",
+                Location::unknown(gen.context),
+            )
+            .build()
+            .unwrap(),
+        );
+        after_region.append_block(after_block);
+
+        block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "scf.while",
+                Location::unknown(gen.context),
+            )
+            .add_regions([before_region, after_region])
+            .build()
+            .unwrap(),
+        );
+
+        gen.break_flags.pop();
+    }
+}
+
+impl<'c> LowerToMelior<'c> for BreakStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        if let Some(&break_ptr) = gen.break_flags.last() {
+            let i1_ty = Type::parse(gen.context, "i1").unwrap();
+            let true_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let true_val = true_op.result(0).unwrap().into();
+
+            let c0_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(
+                        Type::parse(gen.context, "index").unwrap(),
+                        0,
+                    )
+                    .into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let c0_idx = c0_op.result(0).unwrap().into();
+
+            block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "memref.store",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[true_val, break_ptr, c0_idx])
+                .build()
+                .unwrap(),
+            );
+        } else {
+            panic!("break outside of a loop");
+        }
+    }
+}
+
+use crate::ast::expr::*;
+use crate::ast::stmt::*;
+
+pub fn generate_match_chain<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    arms: &[MatchArm],
+    match_val: melior::ir::Value<'c, 'c>,
+    match_ty: melior::ir::Type<'c>,
+    block: &melior::ir::Block<'c>,
+) {
+    if arms.is_empty() {
+        return;
+    }
+
+    let arm = &arms[0];
+
+    if let Pattern::Wildcard = arm.pattern {
+        // Wildcard matches unconditionally.
+        for stmt in &arm.body {
+            gen.generate_statement(stmt, block);
+        }
+        return;
+    }
+
+    // Evaluate condition
+    let cond_val = match &arm.pattern {
+        Pattern::EnumVariant(_, variant_name, _) => {
+            // For now, if Enums are represented as i32 tags, we check equality.
+            // We need to look up the variant's tag value.
+            // Let's assume `match_val` is an `i32` for simplicity, or we do a generic equality check.
+
+            // We'll just generate an arith.cmpi!
+            let i32_ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
+
+            // Find variant tag
+            let mut tag_val = 0;
+            // Hack: just parse the variant name if it's a number, or assume 0.
+            // Real enums should look up the tag in `gen.enums`.
+            for (enum_name, enum_def) in &gen.enums {
+                for (i, v) in enum_def.iter().enumerate() {
+                    if v.0 == *variant_name {
+                        tag_val = i as i64;
+                        break;
+                    }
+                }
+            }
+
+            let tag_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    melior::ir::Location::unknown(gen.context),
+                )
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(i32_ty, tag_val).into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let tag = tag_op.result(0).unwrap().into();
+
+            let cmp_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.cmpi",
+                    melior::ir::Location::unknown(gen.context),
+                )
+                .add_operands(&[match_val, tag])
+                .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "predicate"),
+                    melior::ir::attribute::IntegerAttribute::new(
+                        melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
+                        0,
+                    )
+                    .into(),
+                )]) // 0 = eq
+                .build()
+                .unwrap(),
+            );
+            cmp_op.result(0).unwrap().into()
+        }
+        _ => panic!("Unsupported pattern in codegen"),
+    };
+
+    let then_region = melior::ir::Region::new();
+    let then_block = melior::ir::Block::new(&[]);
+    for stmt in &arm.body {
+        gen.generate_statement(stmt, &then_block);
+    }
+    then_block.append_operation(
+        melior::ir::operation::OperationBuilder::new(
+            "scf.yield",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .build()
+        .unwrap(),
+    );
+    then_region.append_block(then_block);
+
+    let else_region = melior::ir::Region::new();
+    let else_block = melior::ir::Block::new(&[]);
+
+    // Recursively generate the rest of the arms inside the else block
+    generate_match_chain(gen, &arms[1..], match_val, match_ty, &else_block);
+
+    else_block.append_operation(
+        melior::ir::operation::OperationBuilder::new(
+            "scf.yield",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .build()
+        .unwrap(),
+    );
+    else_region.append_block(else_block);
+
+    block.append_operation(
+        melior::ir::operation::OperationBuilder::new(
+            "scf.if",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_operands(&[cond_val])
+        .add_regions([then_region, else_region])
+        .build()
+        .unwrap(),
+    );
+}
+
+impl<'c> LowerToMelior<'c> for MatchExpr {
+    type Output = (melior::ir::Value<'c, 'c>, melior::ir::Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let (match_val, match_ty) = gen.generate_expr(&self.expr, block);
+
+        generate_match_chain(gen, &self.arms, match_val, match_ty, block);
+
+        // Return dummy value for now like IfExpr
+        let ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
+        let op = melior::ir::operation::OperationBuilder::new(
+            "arith.constant",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_results(&[ty])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
+        )])
+        .build()
+        .unwrap();
+        let op_ref = block.append_operation(op);
+        (op_ref.result(0).unwrap().into(), ty)
+    }
+}
+
+fn generate_statements_with_break_guard<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    stmts: &[Statement],
+    block: &melior::ir::Block<'c>,
+    break_ptr: Value<'c, 'c>,
+    c0_idx: Value<'c, 'c>,
+    i1_ty: Type<'c>,
+) {
+    if stmts.is_empty() {
+        return;
+    }
+
+    gen.generate_statement(&stmts[0], block);
+
+    if stmts.len() > 1 {
+        if contains_break(&stmts[0]) {
+            let load_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "memref.load",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[break_ptr, c0_idx])
+                .add_results(&[i1_ty])
+                .build()
+                .unwrap(),
+            );
+            let is_break = load_op.result(0).unwrap().into();
+
+            let true_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let true_val = true_op.result(0).unwrap().into();
+
+            let not_break_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.xori",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[is_break, true_val])
+                .add_results(&[i1_ty])
+                .build()
+                .unwrap(),
+            );
+            let not_break = not_break_op.result(0).unwrap().into();
+
+            let if_region = Region::new();
+            let if_block = Block::new(&[]);
+
+            generate_statements_with_break_guard(
+                gen,
+                &stmts[1..],
+                &if_block,
+                break_ptr,
+                c0_idx,
+                i1_ty,
+            );
+
+            if_block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "scf.yield",
+                    Location::unknown(gen.context),
+                )
+                .build()
+                .unwrap(),
+            );
+            if_region.append_block(if_block);
+
+            block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "scf.if",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[not_break])
+                .add_regions([if_region])
+                .build()
+                .unwrap(),
+            );
+        } else {
+            generate_statements_with_break_guard(gen, &stmts[1..], block, break_ptr, c0_idx, i1_ty);
+        }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for EnumVariantExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let EnumVariantExpr {
+            enum_name,
+            variant_name,
+            payload: _,
+            span: _,
+        } = self;
+
+        let mut tag_val = 0;
+        if let Some(enum_def) = gen.enums.get(enum_name) {
+            for (i, v) in enum_def.iter().enumerate() {
+                if v.0 == *variant_name {
+                    tag_val = i as i64;
+                    break;
+                }
+            }
+        }
+
+        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let const_op = melior::ir::operation::OperationBuilder::new(
+            "arith.constant",
+            Location::unknown(gen.context),
+        )
+        .add_results(&[i32_ty])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::IntegerAttribute::new(i32_ty, tag_val).into(),
+        )])
+        .build()
+        .unwrap();
+        let const_ref = block.append_operation(const_op);
+
+        (const_ref.result(0).unwrap().into(), i32_ty)
+    }
+}
