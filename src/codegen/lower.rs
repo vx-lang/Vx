@@ -1426,31 +1426,66 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 "Bool" => "i1",
                 _ => "f32", // Default fallback
             };
-            let tensor_ty_str = format!("memref<?x?x{}>", mlir_ty_str);
-            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
+            let mut dynamic_sizes = Vec::new();
+            let mut dims_count = 2; // Default fallback
 
-            let c4_op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[Type::index(gen.context)])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 4).into(),
-            )])
-            .build()
-            .unwrap();
-            let c4_ref = block.append_operation(c4_op);
-            let c4_val: Value<'c, 'c> = c4_ref.result(0).unwrap().into();
+            if args.len() == 1 {
+                if let Expr::Array(arr) = &args[0] {
+                    dims_count = arr.elements.len();
+                    for el in &arr.elements {
+                        let (mut val, ty) = gen.generate_expr(el, block);
+                        if ty.to_string() != "index" {
+                            let cast_op = melior::ir::operation::OperationBuilder::new(
+                                "arith.index_cast",
+                                Location::unknown(gen.context),
+                            )
+                            .add_operands(&[val])
+                            .add_results(&[Type::index(gen.context)])
+                            .build()
+                            .unwrap();
+                            val = block.append_operation(cast_op).result(0).unwrap().into();
+                        }
+                        dynamic_sizes.push(val);
+                    }
+                }
+            } else if !args.is_empty() {
+                dims_count = args.len();
+                for el in args {
+                    let (mut val, ty) = gen.generate_expr(el, block);
+                    if ty.to_string() != "index" {
+                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.index_cast",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[val])
+                        .add_results(&[Type::index(gen.context)])
+                        .build()
+                        .unwrap();
+                        val = block.append_operation(cast_op).result(0).unwrap().into();
+                    }
+                    dynamic_sizes.push(val);
+                }
+            }
+
+            let mut shape_str = String::new();
+            for _ in 0..dims_count {
+                shape_str.push_str("?x");
+            }
+            let tensor_ty_str = format!("memref<{}{}>", shape_str, mlir_ty_str);
+            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
 
             let alloc_op = melior::ir::operation::OperationBuilder::new(
                 "memref.alloc",
                 Location::unknown(gen.context),
             )
-            .add_operands(&[c4_val, c4_val])
+            .add_operands(&dynamic_sizes)
             .add_attributes(&[(
                 melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 0]).into(),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(
+                    gen.context,
+                    &[dynamic_sizes.len() as i32, 0],
+                )
+                .into(),
             )])
             .add_results(&[tensor_ty])
             .build()

@@ -454,8 +454,13 @@ impl<'a> TypeChecker<'a> {
                     } else if resolved_name.contains("_f64") {
                         el_ty = ElementType::F64;
                     }
-
-                    Type::Tensor(el_ty, vec![], None)
+                    let mut dims = Vec::new();
+                    if args.len() == 2 {
+                        if let Expr::Array(arr) = &args[1] {
+                            dims = arr.elements.clone();
+                        }
+                    }
+                    Type::Tensor(el_ty, dims, None)
                 } else if resolved_name.starts_with("Tensor") && !resolved_name.contains("__") {
                     let el_ty = match resolved_name.as_str() {
                         "Tensor_f64" => ElementType::F64,
@@ -475,7 +480,15 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     };
-                    Type::Tensor(el_ty, vec![], None)
+                    let mut dims = Vec::new();
+                    if !args.is_empty() {
+                        if let Expr::Array(arr) = &args[0] {
+                            dims = arr.elements.clone();
+                        } else {
+                            dims = args.clone();
+                        }
+                    }
+                    Type::Tensor(el_ty, dims, None)
                 } else if resolved_name.starts_with("Math::") {
                     if args.len() != 1 {
                         self.errors.push(format!(
@@ -1090,13 +1103,13 @@ impl<'a> TypeChecker<'a> {
                         if el_ty_l != el_ty_r {
                             self.errors.push(format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r));
                         }
-                        if dims_l.len() != 2 || dims_r.len() != 2 {
-                            self.errors.push(format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", dims_l.len(), dims_r.len()));
+                        let l_len = dims_l.len();
+                        let r_len = dims_r.len();
+                        if (l_len != 2 && l_len != 0) || (r_len != 2 && r_len != 0) {
+                            self.errors.push(format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", l_len, r_len));
                             return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                         }
-                        let m = dims_l[0].clone();
-                        let n = dims_r[1].clone();
-                        return Type::Tensor(el_ty_l.clone(), vec![m, n], top_l.clone());
+                        return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                     }
                 }
 

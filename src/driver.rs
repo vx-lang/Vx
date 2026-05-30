@@ -278,6 +278,10 @@ impl CompilerDriver {
                 let mut module = codegen.into_module();
 
                 if !module.as_operation().verify() {
+                    eprintln!(
+                        "MLIR Module Verification Failed:\n{}",
+                        module.as_operation()
+                    );
                     return Err("MLIR Module Verification Failed".to_string());
                 }
 
