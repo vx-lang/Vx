@@ -1,0 +1,1495 @@
+//===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
+// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
+
+extern "C" {
+  fn vx_get_time() -> f32;
+  fn print_f32(val: f32) -> i32;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor_f32(128, 128);
+  let mut b = Tensor_f32(128, 128);
+  let mut bias = Tensor_f32(128, 128);
+  let mut out_unfused = Tensor_f32(128, 128);
+  let mut out_fused = Tensor_f32(128, 128);
+
+  for i in 0..128 {
+    for j in 0..128 {
+      let sum_idx = i + j;
+      if sum_idx == 0 {
+        a[i][j] = 1.0;
+        bias[i][j] = 0.0 - 150.0;
+      } else {
+        a[i][j] = 0.0 - 1.0;
+        bias[i][j] = 50.0;
+      }
+      b[i][j] = 1.0;
+      out_unfused[i][j] = 0.0;
+      out_fused[i][j] = 0.0;
+    }
+  }
+
+  let mut temp_matmul = Tensor_f32(128, 128);
+  let mut temp_bias = Tensor_f32(128, 128);
+
+  // Warmup Unfused
+  for i in 0..128 {
+    for j in 0..128 {
+      temp_matmul[i][j] = 0.0;
+      for k in 0..128 {
+         temp_matmul[i][j] += a[i][k] * b[k][j];
+      }
+    }
+  }
+  for i in 0..128 {
+    for j in 0..128 {
+      temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
+    }
+  }
+  for i in 0..128 {
+    for j in 0..128 {
+      let val = temp_bias[i][j];
+      if val > 0.0 {
+         out_unfused[i][j] = val;
+      } else {
+         out_unfused[i][j] = 0.0;
+      }
+    }
+  }
+
+  // Warmup Fused
+  for i in 0..128 {
+    for j in 0..128 {
+      let mut sum = 0.0;
+      for k in 0..128 {
+         sum += a[i][k] * b[k][j];
+      }
+      sum += bias[i][j];
+      if sum > 0.0 {
+         out_fused[i][j] = sum;
+      } else {
+         out_fused[i][j] = 0.0;
+      }
+    }
+  }
+
+  // Verify correctness
+  for i in 0..128 {
+    for j in 0..128 {
+      assert(out_unfused[i][j] == out_fused[i][j], "Mismatch between fused and unfused results");
+    }
+  }
+
+  unsafe {
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for _iter in 0..10 {
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_matmul[i][j] = 0.0;
+          for k in 0..128 {
+             temp_matmul[i][j] += a[i][k] * b[k][j];
+          }
+        }
+      }
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
+        }
+      }
+      for i in 0..128 {
+        for j in 0..128 {
+          let val = temp_bias[i][j];
+          if val > 0.0 {
+             out_unfused[i][j] = val;
+          } else {
+             out_unfused[i][j] = 0.0;
+          }
+        }
+      }
+    }
+    let t2 = vx_get_time();
+    let time_unfused = t2 - t1;
+
+    // Benchmark Fused
+    let t3 = vx_get_time();
+    for _iter in 0..10 {
+      for i in 0..128 {
+        for j in 0..128 {
+          let mut sum = 0.0;
+          for k in 0..128 {
+             sum += a[i][k] * b[k][j];
+          }
+          sum += bias[i][j];
+          if sum > 0.0 {
+             out_fused[i][j] = sum;
+          } else {
+             out_fused[i][j] = 0.0;
+          }
+        }
+      }
+    }
+    let t4 = vx_get_time();
+    let time_fused = t4 - t3;
+
+    print_f32(time_unfused);
+    print_f32(time_fused);
+  }
+
+  // NO_EXEC
+  return 0;
+}
+
+// FRONTEND: module {
+// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
+// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
+// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
+// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
+// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
+// FRONTEND:   func.func private @vx_get_time() -> f32
+// FRONTEND:   func.func private @print_f32(f32) -> i32
+// FRONTEND:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// FRONTEND:     %c128_i32 = arith.constant 128 : i32
+// FRONTEND:     %0 = arith.index_cast %c128_i32 : i32 to index
+// FRONTEND:     %c128_i32_0 = arith.constant 128 : i32
+// FRONTEND:     %1 = arith.index_cast %c128_i32_0 : i32 to index
+// FRONTEND:     %alloc = memref.alloc(%0, %1) : memref<?x?xf32>
+// FRONTEND:     %alloca = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c128_i32_1 = arith.constant 128 : i32
+// FRONTEND:     %2 = arith.index_cast %c128_i32_1 : i32 to index
+// FRONTEND:     %c128_i32_2 = arith.constant 128 : i32
+// FRONTEND:     %3 = arith.index_cast %c128_i32_2 : i32 to index
+// FRONTEND:     %alloc_3 = memref.alloc(%2, %3) : memref<?x?xf32>
+// FRONTEND:     %alloca_4 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_3, %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c128_i32_5 = arith.constant 128 : i32
+// FRONTEND:     %4 = arith.index_cast %c128_i32_5 : i32 to index
+// FRONTEND:     %c128_i32_6 = arith.constant 128 : i32
+// FRONTEND:     %5 = arith.index_cast %c128_i32_6 : i32 to index
+// FRONTEND:     %alloc_7 = memref.alloc(%4, %5) : memref<?x?xf32>
+// FRONTEND:     %alloca_8 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_7, %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c128_i32_9 = arith.constant 128 : i32
+// FRONTEND:     %6 = arith.index_cast %c128_i32_9 : i32 to index
+// FRONTEND:     %c128_i32_10 = arith.constant 128 : i32
+// FRONTEND:     %7 = arith.index_cast %c128_i32_10 : i32 to index
+// FRONTEND:     %alloc_11 = memref.alloc(%6, %7) : memref<?x?xf32>
+// FRONTEND:     %alloca_12 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_11, %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c128_i32_13 = arith.constant 128 : i32
+// FRONTEND:     %8 = arith.index_cast %c128_i32_13 : i32 to index
+// FRONTEND:     %c128_i32_14 = arith.constant 128 : i32
+// FRONTEND:     %9 = arith.index_cast %c128_i32_14 : i32 to index
+// FRONTEND:     %alloc_15 = memref.alloc(%8, %9) : memref<?x?xf32>
+// FRONTEND:     %alloca_16 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_15, %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c0_i32 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_17 = arith.constant 128 : i32
+// FRONTEND:     %10 = arith.index_cast %c0_i32 : i32 to index
+// FRONTEND:     %11 = arith.index_cast %c128_i32_17 : i32 to index
+// FRONTEND:     %c1 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %10 to %11 step %c1 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %40 = arith.addi %arg0, %arg1 : index
+// FRONTEND:         %c0_i32_51 = arith.constant 0 : i32
+// FRONTEND:         %41 = arith.index_cast %c0_i32_51 : i32 to index
+// FRONTEND:         %42 = arith.cmpi eq, %40, %41 : index
+// FRONTEND:         scf.if %42 {
+// FRONTEND:           %cst_55 = arith.constant 1.000000e+00 : f32
+// FRONTEND:           %46 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %cst_55, %46[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:           %cst_56 = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %cst_57 = arith.constant 1.500000e+02 : f32
+// FRONTEND:           %47 = arith.subf %cst_56, %cst_57 : f32
+// FRONTEND:           %48 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %47, %48[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         } else {
+// FRONTEND:           %cst_55 = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %cst_56 = arith.constant 1.000000e+00 : f32
+// FRONTEND:           %46 = arith.subf %cst_55, %cst_56 : f32
+// FRONTEND:           %47 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %46, %47[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:           %cst_57 = arith.constant 5.000000e+01 : f32
+// FRONTEND:           %48 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %cst_57, %48[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         }
+// FRONTEND:         %c0_i32_52 = arith.constant 0 : i32
+// FRONTEND:         %cst = arith.constant 1.000000e+00 : f32
+// FRONTEND:         %43 = memref.load %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:         memref.store %cst, %43[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %cst_53 = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %44 = memref.load %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:         memref.store %cst_53, %44[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %cst_54 = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %45 = memref.load %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:         memref.store %cst_54, %45[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %c128_i32_18 = arith.constant 128 : i32
+// FRONTEND:     %12 = arith.index_cast %c128_i32_18 : i32 to index
+// FRONTEND:     %c128_i32_19 = arith.constant 128 : i32
+// FRONTEND:     %13 = arith.index_cast %c128_i32_19 : i32 to index
+// FRONTEND:     %alloc_20 = memref.alloc(%12, %13) : memref<?x?xf32>
+// FRONTEND:     %alloca_21 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_20, %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c128_i32_22 = arith.constant 128 : i32
+// FRONTEND:     %14 = arith.index_cast %c128_i32_22 : i32 to index
+// FRONTEND:     %c128_i32_23 = arith.constant 128 : i32
+// FRONTEND:     %15 = arith.index_cast %c128_i32_23 : i32 to index
+// FRONTEND:     %alloc_24 = memref.alloc(%14, %15) : memref<?x?xf32>
+// FRONTEND:     %alloca_25 = memref.alloca() : memref<memref<?x?xf32>>
+// FRONTEND:     memref.store %alloc_24, %alloca_25[] : memref<memref<?x?xf32>>
+// FRONTEND:     %c0_i32_26 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_27 = arith.constant 128 : i32
+// FRONTEND:     %16 = arith.index_cast %c0_i32_26 : i32 to index
+// FRONTEND:     %17 = arith.index_cast %c128_i32_27 : i32 to index
+// FRONTEND:     %c1_28 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %16 to %17 step %c1_28 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %40 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:         memref.store %cst, %40[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %c0_i32_51 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_52 = arith.constant 128 : i32
+// FRONTEND:         %41 = arith.index_cast %c0_i32_51 : i32 to index
+// FRONTEND:         %42 = arith.index_cast %c128_i32_52 : i32 to index
+// FRONTEND:         %c1_53 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %41 to %42 step %c1_53 {
+// FRONTEND:           %43 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:           %44 = memref.load %43[%arg0, %arg2] : memref<?x?xf32>
+// FRONTEND:           %45 = memref.load %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:           %46 = memref.load %45[%arg2, %arg1] : memref<?x?xf32>
+// FRONTEND:           %47 = arith.mulf %44, %46 : f32
+// FRONTEND:           %48 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:           %49 = memref.load %48[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:           %50 = arith.addf %49, %47 : f32
+// FRONTEND:           %51 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %50, %51[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         }
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %c0_i32_29 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_30 = arith.constant 128 : i32
+// FRONTEND:     %18 = arith.index_cast %c0_i32_29 : i32 to index
+// FRONTEND:     %19 = arith.index_cast %c128_i32_30 : i32 to index
+// FRONTEND:     %c1_31 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %18 to %19 step %c1_31 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %40 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:         %41 = memref.load %40[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %42 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:         %43 = memref.load %42[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %44 = arith.addf %41, %43 : f32
+// FRONTEND:         %45 = memref.load %alloca_25[] : memref<memref<?x?xf32>>
+// FRONTEND:         memref.store %44, %45[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %c0_i32_32 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_33 = arith.constant 128 : i32
+// FRONTEND:     %20 = arith.index_cast %c0_i32_32 : i32 to index
+// FRONTEND:     %21 = arith.index_cast %c128_i32_33 : i32 to index
+// FRONTEND:     %c1_34 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %20 to %21 step %c1_34 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %40 = memref.load %alloca_25[] : memref<memref<?x?xf32>>
+// FRONTEND:         %41 = memref.load %40[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %42 = arith.cmpf ogt, %41, %cst : f32
+// FRONTEND:         scf.if %42 {
+// FRONTEND:           %43 = memref.load %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %41, %43[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         } else {
+// FRONTEND:           %cst_52 = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %43 = memref.load %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %cst_52, %43[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         }
+// FRONTEND:         %c0_i32_51 = arith.constant 0 : i32
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %c0_i32_35 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_36 = arith.constant 128 : i32
+// FRONTEND:     %22 = arith.index_cast %c0_i32_35 : i32 to index
+// FRONTEND:     %23 = arith.index_cast %c128_i32_36 : i32 to index
+// FRONTEND:     %c1_37 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %22 to %23 step %c1_37 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %alloca_51 = memref.alloca() : memref<f32>
+// FRONTEND:         memref.store %cst, %alloca_51[] : memref<f32>
+// FRONTEND:         %c0_i32_52 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_53 = arith.constant 128 : i32
+// FRONTEND:         %40 = arith.index_cast %c0_i32_52 : i32 to index
+// FRONTEND:         %41 = arith.index_cast %c128_i32_53 : i32 to index
+// FRONTEND:         %c1_54 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %40 to %41 step %c1_54 {
+// FRONTEND:           %48 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:           %49 = memref.load %48[%arg0, %arg2] : memref<?x?xf32>
+// FRONTEND:           %50 = memref.load %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:           %51 = memref.load %50[%arg2, %arg1] : memref<?x?xf32>
+// FRONTEND:           %52 = arith.mulf %49, %51 : f32
+// FRONTEND:           %53 = memref.load %alloca_51[] : memref<f32>
+// FRONTEND:           %54 = arith.addf %53, %52 : f32
+// FRONTEND:           memref.store %54, %alloca_51[] : memref<f32>
+// FRONTEND:         }
+// FRONTEND:         %42 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:         %43 = memref.load %42[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         %44 = memref.load %alloca_51[] : memref<f32>
+// FRONTEND:         %45 = arith.addf %44, %43 : f32
+// FRONTEND:         memref.store %45, %alloca_51[] : memref<f32>
+// FRONTEND:         %46 = memref.load %alloca_51[] : memref<f32>
+// FRONTEND:         %cst_55 = arith.constant 0.000000e+00 : f32
+// FRONTEND:         %47 = arith.cmpf ogt, %46, %cst_55 : f32
+// FRONTEND:         scf.if %47 {
+// FRONTEND:           %48 = memref.load %alloca_51[] : memref<f32>
+// FRONTEND:           %49 = memref.load %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %48, %49[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         } else {
+// FRONTEND:           %cst_57 = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %48 = memref.load %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %cst_57, %48[%arg0, %arg1] : memref<?x?xf32>
+// FRONTEND:         }
+// FRONTEND:         %c0_i32_56 = arith.constant 0 : i32
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %c0_i32_38 = arith.constant 0 : i32
+// FRONTEND:     %c128_i32_39 = arith.constant 128 : i32
+// FRONTEND:     %24 = arith.index_cast %c0_i32_38 : i32 to index
+// FRONTEND:     %25 = arith.index_cast %c128_i32_39 : i32 to index
+// FRONTEND:     %c1_40 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %24 to %25 step %c1_40 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %26 = call @vx_get_time() : () -> f32
+// FRONTEND:     %c0_i32_41 = arith.constant 0 : i32
+// FRONTEND:     %c10_i32 = arith.constant 10 : i32
+// FRONTEND:     %27 = arith.index_cast %c0_i32_41 : i32 to index
+// FRONTEND:     %28 = arith.index_cast %c10_i32 : i32 to index
+// FRONTEND:     %c1_42 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %27 to %28 step %c1_42 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %c0_i32_57 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_58 = arith.constant 128 : i32
+// FRONTEND:         %44 = arith.index_cast %c0_i32_57 : i32 to index
+// FRONTEND:         %45 = arith.index_cast %c128_i32_58 : i32 to index
+// FRONTEND:         %c1_59 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %44 to %45 step %c1_59 {
+// FRONTEND:           %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %46 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %cst, %46[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           %c0_i32_60 = arith.constant 0 : i32
+// FRONTEND:           %c128_i32_61 = arith.constant 128 : i32
+// FRONTEND:           %47 = arith.index_cast %c0_i32_60 : i32 to index
+// FRONTEND:           %48 = arith.index_cast %c128_i32_61 : i32 to index
+// FRONTEND:           %c1_62 = arith.constant 1 : index
+// FRONTEND:           scf.for %arg3 = %47 to %48 step %c1_62 {
+// FRONTEND:             %49 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:             %50 = memref.load %49[%arg1, %arg3] : memref<?x?xf32>
+// FRONTEND:             %51 = memref.load %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:             %52 = memref.load %51[%arg3, %arg2] : memref<?x?xf32>
+// FRONTEND:             %53 = arith.mulf %50, %52 : f32
+// FRONTEND:             %54 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:             %55 = memref.load %54[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:             %56 = arith.addf %55, %53 : f32
+// FRONTEND:             %57 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:             memref.store %56, %57[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           }
+// FRONTEND:         }
+// FRONTEND:       }
+// FRONTEND:       %c0_i32_51 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_52 = arith.constant 128 : i32
+// FRONTEND:       %40 = arith.index_cast %c0_i32_51 : i32 to index
+// FRONTEND:       %41 = arith.index_cast %c128_i32_52 : i32 to index
+// FRONTEND:       %c1_53 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %40 to %41 step %c1_53 {
+// FRONTEND:         %c0_i32_57 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_58 = arith.constant 128 : i32
+// FRONTEND:         %44 = arith.index_cast %c0_i32_57 : i32 to index
+// FRONTEND:         %45 = arith.index_cast %c128_i32_58 : i32 to index
+// FRONTEND:         %c1_59 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %44 to %45 step %c1_59 {
+// FRONTEND:           %46 = memref.load %alloca_21[] : memref<memref<?x?xf32>>
+// FRONTEND:           %47 = memref.load %46[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           %48 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:           %49 = memref.load %48[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           %50 = arith.addf %47, %49 : f32
+// FRONTEND:           %51 = memref.load %alloca_25[] : memref<memref<?x?xf32>>
+// FRONTEND:           memref.store %50, %51[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:         }
+// FRONTEND:       }
+// FRONTEND:       %c0_i32_54 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_55 = arith.constant 128 : i32
+// FRONTEND:       %42 = arith.index_cast %c0_i32_54 : i32 to index
+// FRONTEND:       %43 = arith.index_cast %c128_i32_55 : i32 to index
+// FRONTEND:       %c1_56 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %42 to %43 step %c1_56 {
+// FRONTEND:         %c0_i32_57 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_58 = arith.constant 128 : i32
+// FRONTEND:         %44 = arith.index_cast %c0_i32_57 : i32 to index
+// FRONTEND:         %45 = arith.index_cast %c128_i32_58 : i32 to index
+// FRONTEND:         %c1_59 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %44 to %45 step %c1_59 {
+// FRONTEND:           %46 = memref.load %alloca_25[] : memref<memref<?x?xf32>>
+// FRONTEND:           %47 = memref.load %46[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %48 = arith.cmpf ogt, %47, %cst : f32
+// FRONTEND:           scf.if %48 {
+// FRONTEND:             %49 = memref.load %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:             memref.store %47, %49[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           } else {
+// FRONTEND:             %cst_61 = arith.constant 0.000000e+00 : f32
+// FRONTEND:             %49 = memref.load %alloca_12[] : memref<memref<?x?xf32>>
+// FRONTEND:             memref.store %cst_61, %49[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           }
+// FRONTEND:           %c0_i32_60 = arith.constant 0 : i32
+// FRONTEND:         }
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %29 = call @vx_get_time() : () -> f32
+// FRONTEND:     %30 = arith.subf %29, %26 : f32
+// FRONTEND:     %31 = call @vx_get_time() : () -> f32
+// FRONTEND:     %c0_i32_43 = arith.constant 0 : i32
+// FRONTEND:     %c10_i32_44 = arith.constant 10 : i32
+// FRONTEND:     %32 = arith.index_cast %c0_i32_43 : i32 to index
+// FRONTEND:     %33 = arith.index_cast %c10_i32_44 : i32 to index
+// FRONTEND:     %c1_45 = arith.constant 1 : index
+// FRONTEND:     scf.for %arg0 = %32 to %33 step %c1_45 {
+// FRONTEND:       %c0_i32_48 = arith.constant 0 : i32
+// FRONTEND:       %c128_i32_49 = arith.constant 128 : i32
+// FRONTEND:       %38 = arith.index_cast %c0_i32_48 : i32 to index
+// FRONTEND:       %39 = arith.index_cast %c128_i32_49 : i32 to index
+// FRONTEND:       %c1_50 = arith.constant 1 : index
+// FRONTEND:       scf.for %arg1 = %38 to %39 step %c1_50 {
+// FRONTEND:         %c0_i32_51 = arith.constant 0 : i32
+// FRONTEND:         %c128_i32_52 = arith.constant 128 : i32
+// FRONTEND:         %40 = arith.index_cast %c0_i32_51 : i32 to index
+// FRONTEND:         %41 = arith.index_cast %c128_i32_52 : i32 to index
+// FRONTEND:         %c1_53 = arith.constant 1 : index
+// FRONTEND:         scf.for %arg2 = %40 to %41 step %c1_53 {
+// FRONTEND:           %cst = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %alloca_54 = memref.alloca() : memref<f32>
+// FRONTEND:           memref.store %cst, %alloca_54[] : memref<f32>
+// FRONTEND:           %c0_i32_55 = arith.constant 0 : i32
+// FRONTEND:           %c128_i32_56 = arith.constant 128 : i32
+// FRONTEND:           %42 = arith.index_cast %c0_i32_55 : i32 to index
+// FRONTEND:           %43 = arith.index_cast %c128_i32_56 : i32 to index
+// FRONTEND:           %c1_57 = arith.constant 1 : index
+// FRONTEND:           scf.for %arg3 = %42 to %43 step %c1_57 {
+// FRONTEND:             %50 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// FRONTEND:             %51 = memref.load %50[%arg1, %arg3] : memref<?x?xf32>
+// FRONTEND:             %52 = memref.load %alloca_4[] : memref<memref<?x?xf32>>
+// FRONTEND:             %53 = memref.load %52[%arg3, %arg2] : memref<?x?xf32>
+// FRONTEND:             %54 = arith.mulf %51, %53 : f32
+// FRONTEND:             %55 = memref.load %alloca_54[] : memref<f32>
+// FRONTEND:             %56 = arith.addf %55, %54 : f32
+// FRONTEND:             memref.store %56, %alloca_54[] : memref<f32>
+// FRONTEND:           }
+// FRONTEND:           %44 = memref.load %alloca_8[] : memref<memref<?x?xf32>>
+// FRONTEND:           %45 = memref.load %44[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           %46 = memref.load %alloca_54[] : memref<f32>
+// FRONTEND:           %47 = arith.addf %46, %45 : f32
+// FRONTEND:           memref.store %47, %alloca_54[] : memref<f32>
+// FRONTEND:           %48 = memref.load %alloca_54[] : memref<f32>
+// FRONTEND:           %cst_58 = arith.constant 0.000000e+00 : f32
+// FRONTEND:           %49 = arith.cmpf ogt, %48, %cst_58 : f32
+// FRONTEND:           scf.if %49 {
+// FRONTEND:             %50 = memref.load %alloca_54[] : memref<f32>
+// FRONTEND:             %51 = memref.load %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:             memref.store %50, %51[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           } else {
+// FRONTEND:             %cst_60 = arith.constant 0.000000e+00 : f32
+// FRONTEND:             %50 = memref.load %alloca_16[] : memref<memref<?x?xf32>>
+// FRONTEND:             memref.store %cst_60, %50[%arg1, %arg2] : memref<?x?xf32>
+// FRONTEND:           }
+// FRONTEND:           %c0_i32_59 = arith.constant 0 : i32
+// FRONTEND:         }
+// FRONTEND:       }
+// FRONTEND:     }
+// FRONTEND:     %34 = call @vx_get_time() : () -> f32
+// FRONTEND:     %35 = arith.subf %34, %31 : f32
+// FRONTEND:     %36 = call @print_f32(%30) : (f32) -> i32
+// FRONTEND:     %37 = call @print_f32(%35) : (f32) -> i32
+// FRONTEND:     %c0_i32_46 = arith.constant 0 : i32
+// FRONTEND:     %c0_i32_47 = arith.constant 0 : i32
+// FRONTEND:     return %c0_i32_47 : i32
+// FRONTEND:   }
+// FRONTEND: }
+
+// MLIR: module {
+// MLIR:   func.func private @printMemrefF32(memref<*xf32>)
+// MLIR:   func.func private @printMemrefF64(memref<*xf64>)
+// MLIR:   func.func private @printMemrefI32(memref<*xi32>)
+// MLIR:   func.func private @printMemrefI64(memref<*xi64>)
+// MLIR:   func.func private @printMemrefBF16(memref<*xbf16>)
+// MLIR:   func.func private @vx_get_time() -> f32
+// MLIR:   func.func private @print_f32(f32) -> i32
+// MLIR:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR:     %c10 = arith.constant 10 : index
+// MLIR:     %cst = arith.constant -1.000000e+00 : f32
+// MLIR:     %cst_0 = arith.constant -1.500000e+02 : f32
+// MLIR:     %c0 = arith.constant 0 : index
+// MLIR:     %cst_1 = arith.constant 5.000000e+01 : f32
+// MLIR:     %cst_2 = arith.constant 0.000000e+00 : f32
+// MLIR:     %cst_3 = arith.constant 1.000000e+00 : f32
+// MLIR:     %c1 = arith.constant 1 : index
+// MLIR:     %c0_i32 = arith.constant 0 : i32
+// MLIR:     %c128 = arith.constant 128 : index
+// MLIR:     %alloc = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc, %alloca[] : memref<memref<?x?xf32>>
+// MLIR:     %alloc_4 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_5 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_4, %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:     %alloc_6 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_7 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_6, %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:     %alloc_8 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_9 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_8, %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:     %alloc_10 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_11 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_10, %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:     scf.for %arg0 = %c0 to %c128 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         %8 = arith.addi %arg0, %arg1 : index
+// MLIR:         %9 = arith.cmpi eq, %8, %c0 : index
+// MLIR:         scf.if %9 {
+// MLIR:           %13 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_3, %13[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:           %14 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_0, %14[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         } else {
+// MLIR:           %13 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst, %13[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:           %14 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_1, %14[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         }
+// MLIR:         %10 = memref.load %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:         memref.store %cst_3, %10[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %11 = memref.load %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:         memref.store %cst_2, %11[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %12 = memref.load %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:         memref.store %cst_2, %12[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:       }
+// MLIR:     }
+// MLIR:     %alloc_12 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_13 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_12, %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:     %alloc_14 = memref.alloc(%c128, %c128) : memref<?x?xf32>
+// MLIR:     %alloca_15 = memref.alloca() : memref<memref<?x?xf32>>
+// MLIR:     memref.store %alloc_14, %alloca_15[] : memref<memref<?x?xf32>>
+// MLIR:     scf.for %arg0 = %c0 to %c128 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         %8 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:         memref.store %cst_2, %8[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %9 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:           %10 = memref.load %9[%arg0, %arg2] : memref<?x?xf32>
+// MLIR:           %11 = memref.load %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:           %12 = memref.load %11[%arg2, %arg1] : memref<?x?xf32>
+// MLIR:           %13 = arith.mulf %10, %12 : f32
+// MLIR:           %14 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:           %15 = memref.load %14[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:           %16 = arith.addf %15, %13 : f32
+// MLIR:           %17 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %16, %17[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         }
+// MLIR:       }
+// MLIR:     }
+// MLIR:     scf.for %arg0 = %c0 to %c128 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         %8 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:         %9 = memref.load %8[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %10 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:         %11 = memref.load %10[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %12 = arith.addf %9, %11 : f32
+// MLIR:         %13 = memref.load %alloca_15[] : memref<memref<?x?xf32>>
+// MLIR:         memref.store %12, %13[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:       }
+// MLIR:     }
+// MLIR:     scf.for %arg0 = %c0 to %c128 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         %8 = memref.load %alloca_15[] : memref<memref<?x?xf32>>
+// MLIR:         %9 = memref.load %8[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %10 = arith.cmpf ogt, %9, %cst_2 : f32
+// MLIR:         scf.if %10 {
+// MLIR:           %11 = memref.load %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %9, %11[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         } else {
+// MLIR:           %11 = memref.load %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_2, %11[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         }
+// MLIR:       }
+// MLIR:     }
+// MLIR:     scf.for %arg0 = %c0 to %c128 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         %alloca_16 = memref.alloca() : memref<f32>
+// MLIR:         memref.store %cst_2, %alloca_16[] : memref<f32>
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %14 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:           %15 = memref.load %14[%arg0, %arg2] : memref<?x?xf32>
+// MLIR:           %16 = memref.load %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:           %17 = memref.load %16[%arg2, %arg1] : memref<?x?xf32>
+// MLIR:           %18 = arith.mulf %15, %17 : f32
+// MLIR:           %19 = memref.load %alloca_16[] : memref<f32>
+// MLIR:           %20 = arith.addf %19, %18 : f32
+// MLIR:           memref.store %20, %alloca_16[] : memref<f32>
+// MLIR:         }
+// MLIR:         %8 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:         %9 = memref.load %8[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         %10 = memref.load %alloca_16[] : memref<f32>
+// MLIR:         %11 = arith.addf %10, %9 : f32
+// MLIR:         memref.store %11, %alloca_16[] : memref<f32>
+// MLIR:         %12 = memref.load %alloca_16[] : memref<f32>
+// MLIR:         %13 = arith.cmpf ogt, %12, %cst_2 : f32
+// MLIR:         scf.if %13 {
+// MLIR:           %14 = memref.load %alloca_16[] : memref<f32>
+// MLIR:           %15 = memref.load %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %14, %15[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         } else {
+// MLIR:           %14 = memref.load %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_2, %14[%arg0, %arg1] : memref<?x?xf32>
+// MLIR:         }
+// MLIR:       }
+// MLIR:     }
+// MLIR:     %0 = call @vx_get_time() : () -> f32
+// MLIR:     scf.for %arg0 = %c0 to %c10 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %8 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %cst_2, %8[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           scf.for %arg3 = %c0 to %c128 step %c1 {
+// MLIR:             %9 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:             %10 = memref.load %9[%arg1, %arg3] : memref<?x?xf32>
+// MLIR:             %11 = memref.load %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:             %12 = memref.load %11[%arg3, %arg2] : memref<?x?xf32>
+// MLIR:             %13 = arith.mulf %10, %12 : f32
+// MLIR:             %14 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:             %15 = memref.load %14[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:             %16 = arith.addf %15, %13 : f32
+// MLIR:             %17 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:             memref.store %16, %17[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           }
+// MLIR:         }
+// MLIR:       }
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %8 = memref.load %alloca_13[] : memref<memref<?x?xf32>>
+// MLIR:           %9 = memref.load %8[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           %10 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:           %11 = memref.load %10[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           %12 = arith.addf %9, %11 : f32
+// MLIR:           %13 = memref.load %alloca_15[] : memref<memref<?x?xf32>>
+// MLIR:           memref.store %12, %13[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:         }
+// MLIR:       }
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %8 = memref.load %alloca_15[] : memref<memref<?x?xf32>>
+// MLIR:           %9 = memref.load %8[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           %10 = arith.cmpf ogt, %9, %cst_2 : f32
+// MLIR:           scf.if %10 {
+// MLIR:             %11 = memref.load %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:             memref.store %9, %11[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           } else {
+// MLIR:             %11 = memref.load %alloca_9[] : memref<memref<?x?xf32>>
+// MLIR:             memref.store %cst_2, %11[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           }
+// MLIR:         }
+// MLIR:       }
+// MLIR:     }
+// MLIR:     %1 = call @vx_get_time() : () -> f32
+// MLIR:     %2 = arith.subf %1, %0 : f32
+// MLIR:     %3 = call @vx_get_time() : () -> f32
+// MLIR:     scf.for %arg0 = %c0 to %c10 step %c1 {
+// MLIR:       scf.for %arg1 = %c0 to %c128 step %c1 {
+// MLIR:         scf.for %arg2 = %c0 to %c128 step %c1 {
+// MLIR:           %alloca_16 = memref.alloca() : memref<f32>
+// MLIR:           memref.store %cst_2, %alloca_16[] : memref<f32>
+// MLIR:           scf.for %arg3 = %c0 to %c128 step %c1 {
+// MLIR:             %14 = memref.load %alloca[] : memref<memref<?x?xf32>>
+// MLIR:             %15 = memref.load %14[%arg1, %arg3] : memref<?x?xf32>
+// MLIR:             %16 = memref.load %alloca_5[] : memref<memref<?x?xf32>>
+// MLIR:             %17 = memref.load %16[%arg3, %arg2] : memref<?x?xf32>
+// MLIR:             %18 = arith.mulf %15, %17 : f32
+// MLIR:             %19 = memref.load %alloca_16[] : memref<f32>
+// MLIR:             %20 = arith.addf %19, %18 : f32
+// MLIR:             memref.store %20, %alloca_16[] : memref<f32>
+// MLIR:           }
+// MLIR:           %8 = memref.load %alloca_7[] : memref<memref<?x?xf32>>
+// MLIR:           %9 = memref.load %8[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           %10 = memref.load %alloca_16[] : memref<f32>
+// MLIR:           %11 = arith.addf %10, %9 : f32
+// MLIR:           memref.store %11, %alloca_16[] : memref<f32>
+// MLIR:           %12 = memref.load %alloca_16[] : memref<f32>
+// MLIR:           %13 = arith.cmpf ogt, %12, %cst_2 : f32
+// MLIR:           scf.if %13 {
+// MLIR:             %14 = memref.load %alloca_16[] : memref<f32>
+// MLIR:             %15 = memref.load %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:             memref.store %14, %15[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           } else {
+// MLIR:             %14 = memref.load %alloca_11[] : memref<memref<?x?xf32>>
+// MLIR:             memref.store %cst_2, %14[%arg1, %arg2] : memref<?x?xf32>
+// MLIR:           }
+// MLIR:         }
+// MLIR:       }
+// MLIR:     }
+// MLIR:     %4 = call @vx_get_time() : () -> f32
+// MLIR:     %5 = arith.subf %4, %3 : f32
+// MLIR:     %6 = call @print_f32(%2) : (f32) -> i32
+// MLIR:     %7 = call @print_f32(%5) : (f32) -> i32
+// MLIR:     return %c0_i32 : i32
+// MLIR:   }
+// MLIR: }
+
+// LLVM: ; ModuleID = 'LLVMDialectModule'
+// LLVM: source_filename = "LLVMDialectModule"
+// LLVM: declare ptr @malloc(i64)
+// LLVM: declare void @printMemrefF32(i64, ptr)
+// LLVM: declare void @printMemrefF64(i64, ptr)
+// LLVM: declare void @printMemrefI32(i64, ptr)
+// LLVM: declare void @printMemrefI64(i64, ptr)
+// LLVM: declare void @printMemrefBF16(i64, ptr)
+// LLVM: declare float @vx_get_time()
+// LLVM: declare i32 @print_f32(float)
+// LLVM: define i32 @main() {
+// LLVM:   %1 = call ptr @malloc(i64 65536)
+// LLVM:   %2 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %1, 0
+// LLVM:   %3 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %2, ptr %1, 1
+// LLVM:   %4 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %3, i64 0, 2
+// LLVM:   %5 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %4, i64 128, 3, 0
+// LLVM:   %6 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %5, i64 128, 3, 1
+// LLVM:   %7 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %6, i64 128, 4, 0
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %7, i64 1, 4, 1
+// LLVM:   %9 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %10 = insertvalue { ptr, ptr, i64 } poison, ptr %9, 0
+// LLVM:   %11 = insertvalue { ptr, ptr, i64 } %10, ptr %9, 1
+// LLVM:   %12 = insertvalue { ptr, ptr, i64 } %11, i64 0, 2
+// LLVM:   %13 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %13, align 8
+// LLVM:   %14 = call ptr @malloc(i64 65536)
+// LLVM:   %15 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %14, 0
+// LLVM:   %16 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %15, ptr %14, 1
+// LLVM:   %17 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, i64 0, 2
+// LLVM:   %18 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %17, i64 128, 3, 0
+// LLVM:   %19 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %18, i64 128, 3, 1
+// LLVM:   %20 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %19, i64 128, 4, 0
+// LLVM:   %21 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %20, i64 1, 4, 1
+// LLVM:   %22 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %23 = insertvalue { ptr, ptr, i64 } poison, ptr %22, 0
+// LLVM:   %24 = insertvalue { ptr, ptr, i64 } %23, ptr %22, 1
+// LLVM:   %25 = insertvalue { ptr, ptr, i64 } %24, i64 0, 2
+// LLVM:   %26 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %21, ptr %26, align 8
+// LLVM:   %27 = call ptr @malloc(i64 65536)
+// LLVM:   %28 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %27, 0
+// LLVM:   %29 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %28, ptr %27, 1
+// LLVM:   %30 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %29, i64 0, 2
+// LLVM:   %31 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %30, i64 128, 3, 0
+// LLVM:   %32 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %31, i64 128, 3, 1
+// LLVM:   %33 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %32, i64 128, 4, 0
+// LLVM:   %34 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %33, i64 1, 4, 1
+// LLVM:   %35 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %36 = insertvalue { ptr, ptr, i64 } poison, ptr %35, 0
+// LLVM:   %37 = insertvalue { ptr, ptr, i64 } %36, ptr %35, 1
+// LLVM:   %38 = insertvalue { ptr, ptr, i64 } %37, i64 0, 2
+// LLVM:   %39 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, ptr %39, align 8
+// LLVM:   %40 = call ptr @malloc(i64 65536)
+// LLVM:   %41 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %40, 0
+// LLVM:   %42 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %41, ptr %40, 1
+// LLVM:   %43 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %42, i64 0, 2
+// LLVM:   %44 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %43, i64 128, 3, 0
+// LLVM:   %45 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %44, i64 128, 3, 1
+// LLVM:   %46 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %45, i64 128, 4, 0
+// LLVM:   %47 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %46, i64 1, 4, 1
+// LLVM:   %48 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %49 = insertvalue { ptr, ptr, i64 } poison, ptr %48, 0
+// LLVM:   %50 = insertvalue { ptr, ptr, i64 } %49, ptr %48, 1
+// LLVM:   %51 = insertvalue { ptr, ptr, i64 } %50, i64 0, 2
+// LLVM:   %52 = extractvalue { ptr, ptr, i64 } %51, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %47, ptr %52, align 8
+// LLVM:   %53 = call ptr @malloc(i64 65536)
+// LLVM:   %54 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %53, 0
+// LLVM:   %55 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %54, ptr %53, 1
+// LLVM:   %56 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %55, i64 0, 2
+// LLVM:   %57 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, i64 128, 3, 0
+// LLVM:   %58 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %57, i64 128, 3, 1
+// LLVM:   %59 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %58, i64 128, 4, 0
+// LLVM:   %60 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %59, i64 1, 4, 1
+// LLVM:   %61 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %62 = insertvalue { ptr, ptr, i64 } poison, ptr %61, 0
+// LLVM:   %63 = insertvalue { ptr, ptr, i64 } %62, ptr %61, 1
+// LLVM:   %64 = insertvalue { ptr, ptr, i64 } %63, i64 0, 2
+// LLVM:   %65 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %60, ptr %65, align 8
+// LLVM:   br label %66
+// LLVM: 66:                                               ; preds = %116, %0
+// LLVM:   %67 = phi i64 [ %117, %116 ], [ 0, %0 ]
+// LLVM:   %68 = icmp slt i64 %67, 128
+// LLVM:   br i1 %68, label %69, label %118
+// LLVM: 69:                                               ; preds = %66
+// LLVM:   br label %70
+// LLVM: 70:                                               ; preds = %93, %69
+// LLVM:   %71 = phi i64 [ %115, %93 ], [ 0, %69 ]
+// LLVM:   %72 = icmp slt i64 %71, 128
+// LLVM:   br i1 %72, label %73, label %116
+// LLVM: 73:                                               ; preds = %70
+// LLVM:   %74 = add i64 %67, %71
+// LLVM:   %75 = icmp eq i64 %74, 0
+// LLVM:   br i1 %75, label %76, label %571
+// LLVM: 76:                                               ; preds = %571, %73
+// LLVM:   %77 = phi float [ %572, %571 ], [ 1.000000e+00, %73 ]
+// LLVM:   %78 = phi float [ %573, %571 ], [ -1.500000e+02, %73 ]
+// LLVM:   %79 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   %80 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %79, align 8
+// LLVM:   %81 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %80, 1
+// LLVM:   %82 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %80, 4, 0
+// LLVM:   %83 = mul nuw nsw i64 %67, %82
+// LLVM:   %84 = add nuw nsw i64 %83, %71
+// LLVM:   %85 = getelementptr inbounds nuw float, ptr %81, i64 %84
+// LLVM:   store float %77, ptr %85, align 4
+// LLVM:   %86 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   %87 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %86, align 8
+// LLVM:   %88 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %87, 1
+// LLVM:   %89 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %87, 4, 0
+// LLVM:   %90 = mul nuw nsw i64 %67, %89
+// LLVM:   %91 = add nuw nsw i64 %90, %71
+// LLVM:   %92 = getelementptr inbounds nuw float, ptr %88, i64 %91
+// LLVM:   store float %78, ptr %92, align 4
+// LLVM:   br label %93
+// LLVM: 93:                                               ; preds = %76
+// LLVM:   %94 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   %95 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %94, align 8
+// LLVM:   %96 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %95, 1
+// LLVM:   %97 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %95, 4, 0
+// LLVM:   %98 = mul nuw nsw i64 %67, %97
+// LLVM:   %99 = add nuw nsw i64 %98, %71
+// LLVM:   %100 = getelementptr inbounds nuw float, ptr %96, i64 %99
+// LLVM:   store float 1.000000e+00, ptr %100, align 4
+// LLVM:   %101 = extractvalue { ptr, ptr, i64 } %51, 1
+// LLVM:   %102 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %101, align 8
+// LLVM:   %103 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %102, 1
+// LLVM:   %104 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %102, 4, 0
+// LLVM:   %105 = mul nuw nsw i64 %67, %104
+// LLVM:   %106 = add nuw nsw i64 %105, %71
+// LLVM:   %107 = getelementptr inbounds nuw float, ptr %103, i64 %106
+// LLVM:   store float 0.000000e+00, ptr %107, align 4
+// LLVM:   %108 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   %109 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %108, align 8
+// LLVM:   %110 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %109, 1
+// LLVM:   %111 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %109, 4, 0
+// LLVM:   %112 = mul nuw nsw i64 %67, %111
+// LLVM:   %113 = add nuw nsw i64 %112, %71
+// LLVM:   %114 = getelementptr inbounds nuw float, ptr %110, i64 %113
+// LLVM:   store float 0.000000e+00, ptr %114, align 4
+// LLVM:   %115 = add i64 %71, 1
+// LLVM:   br label %70
+// LLVM: 116:                                              ; preds = %70
+// LLVM:   %117 = add i64 %67, 1
+// LLVM:   br label %66
+// LLVM: 118:                                              ; preds = %66
+// LLVM:   %119 = call ptr @malloc(i64 65536)
+// LLVM:   %120 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %119, 0
+// LLVM:   %121 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %120, ptr %119, 1
+// LLVM:   %122 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %121, i64 0, 2
+// LLVM:   %123 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %122, i64 128, 3, 0
+// LLVM:   %124 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %123, i64 128, 3, 1
+// LLVM:   %125 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %124, i64 128, 4, 0
+// LLVM:   %126 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %125, i64 1, 4, 1
+// LLVM:   %127 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %128 = insertvalue { ptr, ptr, i64 } poison, ptr %127, 0
+// LLVM:   %129 = insertvalue { ptr, ptr, i64 } %128, ptr %127, 1
+// LLVM:   %130 = insertvalue { ptr, ptr, i64 } %129, i64 0, 2
+// LLVM:   %131 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %126, ptr %131, align 8
+// LLVM:   %132 = call ptr @malloc(i64 65536)
+// LLVM:   %133 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %132, 0
+// LLVM:   %134 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %133, ptr %132, 1
+// LLVM:   %135 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %134, i64 0, 2
+// LLVM:   %136 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %135, i64 128, 3, 0
+// LLVM:   %137 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %136, i64 128, 3, 1
+// LLVM:   %138 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %137, i64 128, 4, 0
+// LLVM:   %139 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %138, i64 1, 4, 1
+// LLVM:   %140 = alloca { ptr, ptr, i64, [2 x i64], [2 x i64] }, i64 1, align 8
+// LLVM:   %141 = insertvalue { ptr, ptr, i64 } poison, ptr %140, 0
+// LLVM:   %142 = insertvalue { ptr, ptr, i64 } %141, ptr %140, 1
+// LLVM:   %143 = insertvalue { ptr, ptr, i64 } %142, i64 0, 2
+// LLVM:   %144 = extractvalue { ptr, ptr, i64 } %143, 1
+// LLVM:   store { ptr, ptr, i64, [2 x i64], [2 x i64] } %139, ptr %144, align 8
+// LLVM:   br label %145
+// LLVM: 145:                                              ; preds = %200, %118
+// LLVM:   %146 = phi i64 [ %201, %200 ], [ 0, %118 ]
+// LLVM:   %147 = icmp slt i64 %146, 128
+// LLVM:   br i1 %147, label %148, label %202
+// LLVM: 148:                                              ; preds = %145
+// LLVM:   br label %149
+// LLVM: 149:                                              ; preds = %198, %148
+// LLVM:   %150 = phi i64 [ %199, %198 ], [ 0, %148 ]
+// LLVM:   %151 = icmp slt i64 %150, 128
+// LLVM:   br i1 %151, label %152, label %200
+// LLVM: 152:                                              ; preds = %149
+// LLVM:   %153 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %154 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %153, align 8
+// LLVM:   %155 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %154, 1
+// LLVM:   %156 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %154, 4, 0
+// LLVM:   %157 = mul nuw nsw i64 %146, %156
+// LLVM:   %158 = add nuw nsw i64 %157, %150
+// LLVM:   %159 = getelementptr inbounds nuw float, ptr %155, i64 %158
+// LLVM:   store float 0.000000e+00, ptr %159, align 4
+// LLVM:   br label %160
+// LLVM: 160:                                              ; preds = %163, %152
+// LLVM:   %161 = phi i64 [ %197, %163 ], [ 0, %152 ]
+// LLVM:   %162 = icmp slt i64 %161, 128
+// LLVM:   br i1 %162, label %163, label %198
+// LLVM: 163:                                              ; preds = %160
+// LLVM:   %164 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   %165 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %164, align 8
+// LLVM:   %166 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %165, 1
+// LLVM:   %167 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %165, 4, 0
+// LLVM:   %168 = mul nuw nsw i64 %146, %167
+// LLVM:   %169 = add nuw nsw i64 %168, %161
+// LLVM:   %170 = getelementptr inbounds nuw float, ptr %166, i64 %169
+// LLVM:   %171 = load float, ptr %170, align 4
+// LLVM:   %172 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   %173 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %172, align 8
+// LLVM:   %174 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %173, 1
+// LLVM:   %175 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %173, 4, 0
+// LLVM:   %176 = mul nuw nsw i64 %161, %175
+// LLVM:   %177 = add nuw nsw i64 %176, %150
+// LLVM:   %178 = getelementptr inbounds nuw float, ptr %174, i64 %177
+// LLVM:   %179 = load float, ptr %178, align 4
+// LLVM:   %180 = fmul float %171, %179
+// LLVM:   %181 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %182 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %181, align 8
+// LLVM:   %183 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %182, 1
+// LLVM:   %184 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %182, 4, 0
+// LLVM:   %185 = mul nuw nsw i64 %146, %184
+// LLVM:   %186 = add nuw nsw i64 %185, %150
+// LLVM:   %187 = getelementptr inbounds nuw float, ptr %183, i64 %186
+// LLVM:   %188 = load float, ptr %187, align 4
+// LLVM:   %189 = fadd float %188, %180
+// LLVM:   %190 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %191 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %190, align 8
+// LLVM:   %192 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %191, 1
+// LLVM:   %193 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %191, 4, 0
+// LLVM:   %194 = mul nuw nsw i64 %146, %193
+// LLVM:   %195 = add nuw nsw i64 %194, %150
+// LLVM:   %196 = getelementptr inbounds nuw float, ptr %192, i64 %195
+// LLVM:   store float %189, ptr %196, align 4
+// LLVM:   %197 = add i64 %161, 1
+// LLVM:   br label %160
+// LLVM: 198:                                              ; preds = %160
+// LLVM:   %199 = add i64 %150, 1
+// LLVM:   br label %149
+// LLVM: 200:                                              ; preds = %149
+// LLVM:   %201 = add i64 %146, 1
+// LLVM:   br label %145
+// LLVM: 202:                                              ; preds = %145
+// LLVM:   br label %203
+// LLVM: 203:                                              ; preds = %236, %202
+// LLVM:   %204 = phi i64 [ %237, %236 ], [ 0, %202 ]
+// LLVM:   %205 = icmp slt i64 %204, 128
+// LLVM:   br i1 %205, label %206, label %238
+// LLVM: 206:                                              ; preds = %203
+// LLVM:   br label %207
+// LLVM: 207:                                              ; preds = %210, %206
+// LLVM:   %208 = phi i64 [ %235, %210 ], [ 0, %206 ]
+// LLVM:   %209 = icmp slt i64 %208, 128
+// LLVM:   br i1 %209, label %210, label %236
+// LLVM: 210:                                              ; preds = %207
+// LLVM:   %211 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %212 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %211, align 8
+// LLVM:   %213 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %212, 1
+// LLVM:   %214 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %212, 4, 0
+// LLVM:   %215 = mul nuw nsw i64 %204, %214
+// LLVM:   %216 = add nuw nsw i64 %215, %208
+// LLVM:   %217 = getelementptr inbounds nuw float, ptr %213, i64 %216
+// LLVM:   %218 = load float, ptr %217, align 4
+// LLVM:   %219 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   %220 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %219, align 8
+// LLVM:   %221 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %220, 1
+// LLVM:   %222 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %220, 4, 0
+// LLVM:   %223 = mul nuw nsw i64 %204, %222
+// LLVM:   %224 = add nuw nsw i64 %223, %208
+// LLVM:   %225 = getelementptr inbounds nuw float, ptr %221, i64 %224
+// LLVM:   %226 = load float, ptr %225, align 4
+// LLVM:   %227 = fadd float %218, %226
+// LLVM:   %228 = extractvalue { ptr, ptr, i64 } %143, 1
+// LLVM:   %229 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %228, align 8
+// LLVM:   %230 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %229, 1
+// LLVM:   %231 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %229, 4, 0
+// LLVM:   %232 = mul nuw nsw i64 %204, %231
+// LLVM:   %233 = add nuw nsw i64 %232, %208
+// LLVM:   %234 = getelementptr inbounds nuw float, ptr %230, i64 %233
+// LLVM:   store float %227, ptr %234, align 4
+// LLVM:   %235 = add i64 %208, 1
+// LLVM:   br label %207
+// LLVM: 236:                                              ; preds = %207
+// LLVM:   %237 = add i64 %204, 1
+// LLVM:   br label %203
+// LLVM: 238:                                              ; preds = %203
+// LLVM:   br label %239
+// LLVM: 239:                                              ; preds = %267, %238
+// LLVM:   %240 = phi i64 [ %268, %267 ], [ 0, %238 ]
+// LLVM:   %241 = icmp slt i64 %240, 128
+// LLVM:   br i1 %241, label %242, label %269
+// LLVM: 242:                                              ; preds = %239
+// LLVM:   br label %243
+// LLVM: 243:                                              ; preds = %265, %242
+// LLVM:   %244 = phi i64 [ %266, %265 ], [ 0, %242 ]
+// LLVM:   %245 = icmp slt i64 %244, 128
+// LLVM:   br i1 %245, label %246, label %267
+// LLVM: 246:                                              ; preds = %243
+// LLVM:   %247 = extractvalue { ptr, ptr, i64 } %143, 1
+// LLVM:   %248 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %247, align 8
+// LLVM:   %249 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %248, 1
+// LLVM:   %250 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %248, 4, 0
+// LLVM:   %251 = mul nuw nsw i64 %240, %250
+// LLVM:   %252 = add nuw nsw i64 %251, %244
+// LLVM:   %253 = getelementptr inbounds nuw float, ptr %249, i64 %252
+// LLVM:   %254 = load float, ptr %253, align 4
+// LLVM:   %255 = fcmp ogt float %254, 0.000000e+00
+// LLVM:   br i1 %255, label %256, label %574
+// LLVM: 256:                                              ; preds = %574, %246
+// LLVM:   %257 = phi float [ %575, %574 ], [ %254, %246 ]
+// LLVM:   %258 = extractvalue { ptr, ptr, i64 } %51, 1
+// LLVM:   %259 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %258, align 8
+// LLVM:   %260 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %259, 1
+// LLVM:   %261 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %259, 4, 0
+// LLVM:   %262 = mul nuw nsw i64 %240, %261
+// LLVM:   %263 = add nuw nsw i64 %262, %244
+// LLVM:   %264 = getelementptr inbounds nuw float, ptr %260, i64 %263
+// LLVM:   store float %257, ptr %264, align 4
+// LLVM:   br label %265
+// LLVM: 265:                                              ; preds = %256
+// LLVM:   %266 = add i64 %244, 1
+// LLVM:   br label %243
+// LLVM: 267:                                              ; preds = %243
+// LLVM:   %268 = add i64 %240, 1
+// LLVM:   br label %239
+// LLVM: 269:                                              ; preds = %239
+// LLVM:   br label %270
+// LLVM: 270:                                              ; preds = %345, %269
+// LLVM:   %271 = phi i64 [ %346, %345 ], [ 0, %269 ]
+// LLVM:   %272 = icmp slt i64 %271, 128
+// LLVM:   br i1 %272, label %273, label %347
+// LLVM: 273:                                              ; preds = %270
+// LLVM:   br label %274
+// LLVM: 274:                                              ; preds = %343, %273
+// LLVM:   %275 = phi i64 [ %344, %343 ], [ 0, %273 ]
+// LLVM:   %276 = icmp slt i64 %275, 128
+// LLVM:   br i1 %276, label %277, label %345
+// LLVM: 277:                                              ; preds = %274
+// LLVM:   %278 = alloca float, i64 1, align 4
+// LLVM:   %279 = insertvalue { ptr, ptr, i64 } poison, ptr %278, 0
+// LLVM:   %280 = insertvalue { ptr, ptr, i64 } %279, ptr %278, 1
+// LLVM:   %281 = insertvalue { ptr, ptr, i64 } %280, i64 0, 2
+// LLVM:   %282 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   store float 0.000000e+00, ptr %282, align 4
+// LLVM:   br label %283
+// LLVM: 283:                                              ; preds = %286, %277
+// LLVM:   %284 = phi i64 [ %308, %286 ], [ 0, %277 ]
+// LLVM:   %285 = icmp slt i64 %284, 128
+// LLVM:   br i1 %285, label %286, label %309
+// LLVM: 286:                                              ; preds = %283
+// LLVM:   %287 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   %288 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %287, align 8
+// LLVM:   %289 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %288, 1
+// LLVM:   %290 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %288, 4, 0
+// LLVM:   %291 = mul nuw nsw i64 %271, %290
+// LLVM:   %292 = add nuw nsw i64 %291, %284
+// LLVM:   %293 = getelementptr inbounds nuw float, ptr %289, i64 %292
+// LLVM:   %294 = load float, ptr %293, align 4
+// LLVM:   %295 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   %296 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %295, align 8
+// LLVM:   %297 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %296, 1
+// LLVM:   %298 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %296, 4, 0
+// LLVM:   %299 = mul nuw nsw i64 %284, %298
+// LLVM:   %300 = add nuw nsw i64 %299, %275
+// LLVM:   %301 = getelementptr inbounds nuw float, ptr %297, i64 %300
+// LLVM:   %302 = load float, ptr %301, align 4
+// LLVM:   %303 = fmul float %294, %302
+// LLVM:   %304 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   %305 = load float, ptr %304, align 4
+// LLVM:   %306 = fadd float %305, %303
+// LLVM:   %307 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   store float %306, ptr %307, align 4
+// LLVM:   %308 = add i64 %284, 1
+// LLVM:   br label %283
+// LLVM: 309:                                              ; preds = %283
+// LLVM:   %310 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   %311 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %310, align 8
+// LLVM:   %312 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %311, 1
+// LLVM:   %313 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %311, 4, 0
+// LLVM:   %314 = mul nuw nsw i64 %271, %313
+// LLVM:   %315 = add nuw nsw i64 %314, %275
+// LLVM:   %316 = getelementptr inbounds nuw float, ptr %312, i64 %315
+// LLVM:   %317 = load float, ptr %316, align 4
+// LLVM:   %318 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   %319 = load float, ptr %318, align 4
+// LLVM:   %320 = fadd float %319, %317
+// LLVM:   %321 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   store float %320, ptr %321, align 4
+// LLVM:   %322 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   %323 = load float, ptr %322, align 4
+// LLVM:   %324 = fcmp ogt float %323, 0.000000e+00
+// LLVM:   br i1 %324, label %325, label %335
+// LLVM: 325:                                              ; preds = %309
+// LLVM:   %326 = extractvalue { ptr, ptr, i64 } %281, 1
+// LLVM:   %327 = load float, ptr %326, align 4
+// LLVM:   %328 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   %329 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %328, align 8
+// LLVM:   %330 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %329, 1
+// LLVM:   %331 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %329, 4, 0
+// LLVM:   %332 = mul nuw nsw i64 %271, %331
+// LLVM:   %333 = add nuw nsw i64 %332, %275
+// LLVM:   %334 = getelementptr inbounds nuw float, ptr %330, i64 %333
+// LLVM:   store float %327, ptr %334, align 4
+// LLVM:   br label %343
+// LLVM: 335:                                              ; preds = %309
+// LLVM:   %336 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   %337 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %336, align 8
+// LLVM:   %338 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %337, 1
+// LLVM:   %339 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %337, 4, 0
+// LLVM:   %340 = mul nuw nsw i64 %271, %339
+// LLVM:   %341 = add nuw nsw i64 %340, %275
+// LLVM:   %342 = getelementptr inbounds nuw float, ptr %338, i64 %341
+// LLVM:   store float 0.000000e+00, ptr %342, align 4
+// LLVM:   br label %343
+// LLVM: 343:                                              ; preds = %325, %335
+// LLVM:   %344 = add i64 %275, 1
+// LLVM:   br label %274
+// LLVM: 345:                                              ; preds = %274
+// LLVM:   %346 = add i64 %271, 1
+// LLVM:   br label %270
+// LLVM: 347:                                              ; preds = %270
+// LLVM:   %348 = call float @vx_get_time()
+// LLVM:   br label %349
+// LLVM: 349:                                              ; preds = %477, %347
+// LLVM:   %350 = phi i64 [ %478, %477 ], [ 0, %347 ]
+// LLVM:   %351 = icmp slt i64 %350, 10
+// LLVM:   br i1 %351, label %352, label %479
+// LLVM: 352:                                              ; preds = %349
+// LLVM:   br label %353
+// LLVM: 353:                                              ; preds = %408, %352
+// LLVM:   %354 = phi i64 [ %409, %408 ], [ 0, %352 ]
+// LLVM:   %355 = icmp slt i64 %354, 128
+// LLVM:   br i1 %355, label %356, label %410
+// LLVM: 356:                                              ; preds = %353
+// LLVM:   br label %357
+// LLVM: 357:                                              ; preds = %406, %356
+// LLVM:   %358 = phi i64 [ %407, %406 ], [ 0, %356 ]
+// LLVM:   %359 = icmp slt i64 %358, 128
+// LLVM:   br i1 %359, label %360, label %408
+// LLVM: 360:                                              ; preds = %357
+// LLVM:   %361 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %362 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %361, align 8
+// LLVM:   %363 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %362, 1
+// LLVM:   %364 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %362, 4, 0
+// LLVM:   %365 = mul nuw nsw i64 %354, %364
+// LLVM:   %366 = add nuw nsw i64 %365, %358
+// LLVM:   %367 = getelementptr inbounds nuw float, ptr %363, i64 %366
+// LLVM:   store float 0.000000e+00, ptr %367, align 4
+// LLVM:   br label %368
+// LLVM: 368:                                              ; preds = %371, %360
+// LLVM:   %369 = phi i64 [ %405, %371 ], [ 0, %360 ]
+// LLVM:   %370 = icmp slt i64 %369, 128
+// LLVM:   br i1 %370, label %371, label %406
+// LLVM: 371:                                              ; preds = %368
+// LLVM:   %372 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   %373 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %372, align 8
+// LLVM:   %374 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %373, 1
+// LLVM:   %375 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %373, 4, 0
+// LLVM:   %376 = mul nuw nsw i64 %354, %375
+// LLVM:   %377 = add nuw nsw i64 %376, %369
+// LLVM:   %378 = getelementptr inbounds nuw float, ptr %374, i64 %377
+// LLVM:   %379 = load float, ptr %378, align 4
+// LLVM:   %380 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   %381 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %380, align 8
+// LLVM:   %382 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %381, 1
+// LLVM:   %383 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %381, 4, 0
+// LLVM:   %384 = mul nuw nsw i64 %369, %383
+// LLVM:   %385 = add nuw nsw i64 %384, %358
+// LLVM:   %386 = getelementptr inbounds nuw float, ptr %382, i64 %385
+// LLVM:   %387 = load float, ptr %386, align 4
+// LLVM:   %388 = fmul float %379, %387
+// LLVM:   %389 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %390 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %389, align 8
+// LLVM:   %391 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %390, 1
+// LLVM:   %392 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %390, 4, 0
+// LLVM:   %393 = mul nuw nsw i64 %354, %392
+// LLVM:   %394 = add nuw nsw i64 %393, %358
+// LLVM:   %395 = getelementptr inbounds nuw float, ptr %391, i64 %394
+// LLVM:   %396 = load float, ptr %395, align 4
+// LLVM:   %397 = fadd float %396, %388
+// LLVM:   %398 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %399 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %398, align 8
+// LLVM:   %400 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %399, 1
+// LLVM:   %401 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %399, 4, 0
+// LLVM:   %402 = mul nuw nsw i64 %354, %401
+// LLVM:   %403 = add nuw nsw i64 %402, %358
+// LLVM:   %404 = getelementptr inbounds nuw float, ptr %400, i64 %403
+// LLVM:   store float %397, ptr %404, align 4
+// LLVM:   %405 = add i64 %369, 1
+// LLVM:   br label %368
+// LLVM: 406:                                              ; preds = %368
+// LLVM:   %407 = add i64 %358, 1
+// LLVM:   br label %357
+// LLVM: 408:                                              ; preds = %357
+// LLVM:   %409 = add i64 %354, 1
+// LLVM:   br label %353
+// LLVM: 410:                                              ; preds = %353
+// LLVM:   br label %411
+// LLVM: 411:                                              ; preds = %444, %410
+// LLVM:   %412 = phi i64 [ %445, %444 ], [ 0, %410 ]
+// LLVM:   %413 = icmp slt i64 %412, 128
+// LLVM:   br i1 %413, label %414, label %446
+// LLVM: 414:                                              ; preds = %411
+// LLVM:   br label %415
+// LLVM: 415:                                              ; preds = %418, %414
+// LLVM:   %416 = phi i64 [ %443, %418 ], [ 0, %414 ]
+// LLVM:   %417 = icmp slt i64 %416, 128
+// LLVM:   br i1 %417, label %418, label %444
+// LLVM: 418:                                              ; preds = %415
+// LLVM:   %419 = extractvalue { ptr, ptr, i64 } %130, 1
+// LLVM:   %420 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %419, align 8
+// LLVM:   %421 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %420, 1
+// LLVM:   %422 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %420, 4, 0
+// LLVM:   %423 = mul nuw nsw i64 %412, %422
+// LLVM:   %424 = add nuw nsw i64 %423, %416
+// LLVM:   %425 = getelementptr inbounds nuw float, ptr %421, i64 %424
+// LLVM:   %426 = load float, ptr %425, align 4
+// LLVM:   %427 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   %428 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %427, align 8
+// LLVM:   %429 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %428, 1
+// LLVM:   %430 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %428, 4, 0
+// LLVM:   %431 = mul nuw nsw i64 %412, %430
+// LLVM:   %432 = add nuw nsw i64 %431, %416
+// LLVM:   %433 = getelementptr inbounds nuw float, ptr %429, i64 %432
+// LLVM:   %434 = load float, ptr %433, align 4
+// LLVM:   %435 = fadd float %426, %434
+// LLVM:   %436 = extractvalue { ptr, ptr, i64 } %143, 1
+// LLVM:   %437 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %436, align 8
+// LLVM:   %438 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %437, 1
+// LLVM:   %439 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %437, 4, 0
+// LLVM:   %440 = mul nuw nsw i64 %412, %439
+// LLVM:   %441 = add nuw nsw i64 %440, %416
+// LLVM:   %442 = getelementptr inbounds nuw float, ptr %438, i64 %441
+// LLVM:   store float %435, ptr %442, align 4
+// LLVM:   %443 = add i64 %416, 1
+// LLVM:   br label %415
+// LLVM: 444:                                              ; preds = %415
+// LLVM:   %445 = add i64 %412, 1
+// LLVM:   br label %411
+// LLVM: 446:                                              ; preds = %411
+// LLVM:   br label %447
+// LLVM: 447:                                              ; preds = %475, %446
+// LLVM:   %448 = phi i64 [ %476, %475 ], [ 0, %446 ]
+// LLVM:   %449 = icmp slt i64 %448, 128
+// LLVM:   br i1 %449, label %450, label %477
+// LLVM: 450:                                              ; preds = %447
+// LLVM:   br label %451
+// LLVM: 451:                                              ; preds = %473, %450
+// LLVM:   %452 = phi i64 [ %474, %473 ], [ 0, %450 ]
+// LLVM:   %453 = icmp slt i64 %452, 128
+// LLVM:   br i1 %453, label %454, label %475
+// LLVM: 454:                                              ; preds = %451
+// LLVM:   %455 = extractvalue { ptr, ptr, i64 } %143, 1
+// LLVM:   %456 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %455, align 8
+// LLVM:   %457 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %456, 1
+// LLVM:   %458 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %456, 4, 0
+// LLVM:   %459 = mul nuw nsw i64 %448, %458
+// LLVM:   %460 = add nuw nsw i64 %459, %452
+// LLVM:   %461 = getelementptr inbounds nuw float, ptr %457, i64 %460
+// LLVM:   %462 = load float, ptr %461, align 4
+// LLVM:   %463 = fcmp ogt float %462, 0.000000e+00
+// LLVM:   br i1 %463, label %464, label %576
+// LLVM: 464:                                              ; preds = %576, %454
+// LLVM:   %465 = phi float [ %577, %576 ], [ %462, %454 ]
+// LLVM:   %466 = extractvalue { ptr, ptr, i64 } %51, 1
+// LLVM:   %467 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %466, align 8
+// LLVM:   %468 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %467, 1
+// LLVM:   %469 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %467, 4, 0
+// LLVM:   %470 = mul nuw nsw i64 %448, %469
+// LLVM:   %471 = add nuw nsw i64 %470, %452
+// LLVM:   %472 = getelementptr inbounds nuw float, ptr %468, i64 %471
+// LLVM:   store float %465, ptr %472, align 4
+// LLVM:   br label %473
+// LLVM: 473:                                              ; preds = %464
+// LLVM:   %474 = add i64 %452, 1
+// LLVM:   br label %451
+// LLVM: 475:                                              ; preds = %451
+// LLVM:   %476 = add i64 %448, 1
+// LLVM:   br label %447
+// LLVM: 477:                                              ; preds = %447
+// LLVM:   %478 = add i64 %350, 1
+// LLVM:   br label %349
+// LLVM: 479:                                              ; preds = %349
+// LLVM:   %480 = call float @vx_get_time()
+// LLVM:   %481 = fsub float %480, %348
+// LLVM:   %482 = call float @vx_get_time()
+// LLVM:   br label %483
+// LLVM: 483:                                              ; preds = %564, %479
+// LLVM:   %484 = phi i64 [ %565, %564 ], [ 0, %479 ]
+// LLVM:   %485 = icmp slt i64 %484, 10
+// LLVM:   br i1 %485, label %486, label %566
+// LLVM: 486:                                              ; preds = %483
+// LLVM:   br label %487
+// LLVM: 487:                                              ; preds = %562, %486
+// LLVM:   %488 = phi i64 [ %563, %562 ], [ 0, %486 ]
+// LLVM:   %489 = icmp slt i64 %488, 128
+// LLVM:   br i1 %489, label %490, label %564
+// LLVM: 490:                                              ; preds = %487
+// LLVM:   br label %491
+// LLVM: 491:                                              ; preds = %560, %490
+// LLVM:   %492 = phi i64 [ %561, %560 ], [ 0, %490 ]
+// LLVM:   %493 = icmp slt i64 %492, 128
+// LLVM:   br i1 %493, label %494, label %562
+// LLVM: 494:                                              ; preds = %491
+// LLVM:   %495 = alloca float, i64 1, align 4
+// LLVM:   %496 = insertvalue { ptr, ptr, i64 } poison, ptr %495, 0
+// LLVM:   %497 = insertvalue { ptr, ptr, i64 } %496, ptr %495, 1
+// LLVM:   %498 = insertvalue { ptr, ptr, i64 } %497, i64 0, 2
+// LLVM:   %499 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   store float 0.000000e+00, ptr %499, align 4
+// LLVM:   br label %500
+// LLVM: 500:                                              ; preds = %503, %494
+// LLVM:   %501 = phi i64 [ %525, %503 ], [ 0, %494 ]
+// LLVM:   %502 = icmp slt i64 %501, 128
+// LLVM:   br i1 %502, label %503, label %526
+// LLVM: 503:                                              ; preds = %500
+// LLVM:   %504 = extractvalue { ptr, ptr, i64 } %12, 1
+// LLVM:   %505 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %504, align 8
+// LLVM:   %506 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %505, 1
+// LLVM:   %507 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %505, 4, 0
+// LLVM:   %508 = mul nuw nsw i64 %488, %507
+// LLVM:   %509 = add nuw nsw i64 %508, %501
+// LLVM:   %510 = getelementptr inbounds nuw float, ptr %506, i64 %509
+// LLVM:   %511 = load float, ptr %510, align 4
+// LLVM:   %512 = extractvalue { ptr, ptr, i64 } %25, 1
+// LLVM:   %513 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %512, align 8
+// LLVM:   %514 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %513, 1
+// LLVM:   %515 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %513, 4, 0
+// LLVM:   %516 = mul nuw nsw i64 %501, %515
+// LLVM:   %517 = add nuw nsw i64 %516, %492
+// LLVM:   %518 = getelementptr inbounds nuw float, ptr %514, i64 %517
+// LLVM:   %519 = load float, ptr %518, align 4
+// LLVM:   %520 = fmul float %511, %519
+// LLVM:   %521 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   %522 = load float, ptr %521, align 4
+// LLVM:   %523 = fadd float %522, %520
+// LLVM:   %524 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   store float %523, ptr %524, align 4
+// LLVM:   %525 = add i64 %501, 1
+// LLVM:   br label %500
+// LLVM: 526:                                              ; preds = %500
+// LLVM:   %527 = extractvalue { ptr, ptr, i64 } %38, 1
+// LLVM:   %528 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %527, align 8
+// LLVM:   %529 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %528, 1
+// LLVM:   %530 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %528, 4, 0
+// LLVM:   %531 = mul nuw nsw i64 %488, %530
+// LLVM:   %532 = add nuw nsw i64 %531, %492
+// LLVM:   %533 = getelementptr inbounds nuw float, ptr %529, i64 %532
+// LLVM:   %534 = load float, ptr %533, align 4
+// LLVM:   %535 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   %536 = load float, ptr %535, align 4
+// LLVM:   %537 = fadd float %536, %534
+// LLVM:   %538 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   store float %537, ptr %538, align 4
+// LLVM:   %539 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   %540 = load float, ptr %539, align 4
+// LLVM:   %541 = fcmp ogt float %540, 0.000000e+00
+// LLVM:   br i1 %541, label %542, label %552
+// LLVM: 542:                                              ; preds = %526
+// LLVM:   %543 = extractvalue { ptr, ptr, i64 } %498, 1
+// LLVM:   %544 = load float, ptr %543, align 4
+// LLVM:   %545 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   %546 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %545, align 8
+// LLVM:   %547 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %546, 1
+// LLVM:   %548 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %546, 4, 0
+// LLVM:   %549 = mul nuw nsw i64 %488, %548
+// LLVM:   %550 = add nuw nsw i64 %549, %492
+// LLVM:   %551 = getelementptr inbounds nuw float, ptr %547, i64 %550
+// LLVM:   store float %544, ptr %551, align 4
+// LLVM:   br label %560
+// LLVM: 552:                                              ; preds = %526
+// LLVM:   %553 = extractvalue { ptr, ptr, i64 } %64, 1
+// LLVM:   %554 = load { ptr, ptr, i64, [2 x i64], [2 x i64] }, ptr %553, align 8
+// LLVM:   %555 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %554, 1
+// LLVM:   %556 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %554, 4, 0
+// LLVM:   %557 = mul nuw nsw i64 %488, %556
+// LLVM:   %558 = add nuw nsw i64 %557, %492
+// LLVM:   %559 = getelementptr inbounds nuw float, ptr %555, i64 %558
+// LLVM:   store float 0.000000e+00, ptr %559, align 4
+// LLVM:   br label %560
+// LLVM: 560:                                              ; preds = %542, %552
+// LLVM:   %561 = add i64 %492, 1
+// LLVM:   br label %491
+// LLVM: 562:                                              ; preds = %491
+// LLVM:   %563 = add i64 %488, 1
+// LLVM:   br label %487
+// LLVM: 564:                                              ; preds = %487
+// LLVM:   %565 = add i64 %484, 1
+// LLVM:   br label %483
+// LLVM: 566:                                              ; preds = %483
+// LLVM:   %567 = call float @vx_get_time()
+// LLVM:   %568 = fsub float %567, %482
+// LLVM:   %569 = call i32 @print_f32(float %481)
+// LLVM:   %570 = call i32 @print_f32(float %568)
+// LLVM:   ret i32 0
+// LLVM: 571:                                              ; preds = %73
+// LLVM:   %572 = phi float [ -1.000000e+00, %73 ]
+// LLVM:   %573 = phi float [ 5.000000e+01, %73 ]
+// LLVM:   br label %76
+// LLVM: 574:                                              ; preds = %246
+// LLVM:   %575 = phi float [ 0.000000e+00, %246 ]
+// LLVM:   br label %256
+// LLVM: 576:                                              ; preds = %454
+// LLVM:   %577 = phi float [ 0.000000e+00, %454 ]
+// LLVM:   br label %464
+// LLVM: }
+// LLVM: define i32 @_mlir_ciface_main() {
+// LLVM:   %1 = call i32 @main()
+// LLVM:   ret i32 %1
+// LLVM: }
+// LLVM: !llvm.module.flags = !{!0}
+// LLVM: !0 = !{i32 2, !"Debug Info Version", i32 3}
