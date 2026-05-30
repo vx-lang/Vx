@@ -153,6 +153,46 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(crate) fn parse_pattern(&mut self) -> Result<Pattern, String> {
+        if self.match_token(&TokenType::Identifier("_".to_string())) {
+            return Ok(Pattern::Wildcard);
+        }
+        let token = self.peek().clone();
+        match token.kind {
+            TokenType::Number(_) | TokenType::StringLiteral(_) => {
+                let expr = self.parse_primary_expr()?; // parses number or string
+                Ok(Pattern::Literal(expr))
+            }
+            TokenType::Identifier(s) => {
+                self.advance();
+                if self.match_token(&TokenType::DoubleColon) {
+                    let variant_name = match &self.advance().kind {
+                        TokenType::Identifier(v) => v.clone(),
+                        _ => return Err("Expected variant name".to_string()),
+                    };
+                    let mut payload = None;
+                    if self.match_token(&TokenType::LeftParen) {
+                        let mut p = Vec::new();
+                        if !self.check(&TokenType::RightParen) {
+                            loop {
+                                p.push(self.parse_pattern()?);
+                                if !self.match_token(&TokenType::Comma) {
+                                    break;
+                                }
+                            }
+                        }
+                        self.consume(&TokenType::RightParen, "Expected ')'")?;
+                        payload = Some(p);
+                    }
+                    Ok(Pattern::EnumVariant(s, variant_name, payload))
+                } else {
+                    Ok(Pattern::Identifier(s))
+                }
+            }
+            _ => Err(format!("Unexpected token in pattern: {:?}", token.kind)),
+        }
+    }
+
     pub(crate) fn parse_primary_expr(&mut self) -> Result<Expr, String> {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
@@ -232,6 +272,32 @@ impl<'a> Parser<'a> {
                 cond: Box::new(cond),
                 then_block,
                 else_block,
+                span: Span::default(),
+            }));
+        } else if self.match_token(&TokenType::Match) {
+            let expr = self.parse_expr()?;
+            self.consume(&TokenType::LeftBrace, "Expected '{' after match expr")?;
+            let mut arms = Vec::new();
+            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                let pattern = self.parse_pattern()?;
+                self.consume(&TokenType::FatArrow, "Expected '=>' after pattern")?;
+                let mut body = Vec::new();
+                if self.match_token(&TokenType::LeftBrace) {
+                    while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                        body.push(self.parse_statement()?);
+                    }
+                    self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                    self.match_token(&TokenType::Comma); // optional comma
+                } else {
+                    body.push(self.parse_statement()?);
+                    self.match_token(&TokenType::Comma); // optional comma
+                }
+                arms.push(MatchArm { pattern, body });
+            }
+            self.consume(&TokenType::RightBrace, "Expected '}'")?;
+            return Ok(Expr::Match(MatchExpr {
+                expr: Box::new(expr),
+                arms,
                 span: Span::default(),
             }));
         }

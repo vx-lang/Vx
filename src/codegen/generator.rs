@@ -480,6 +480,9 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Assert(_) => {
                 // TODO: Lower to `scf.if` with panic/abort for runtime checks
             }
+            Statement::Loop(_) | Statement::Break(_) => {
+                todo!("Phase 2: MLIR Codegen for Loop and Break");
+            }
         }
     }
 

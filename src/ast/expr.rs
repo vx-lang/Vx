@@ -432,6 +432,32 @@ impl RangeExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum Pattern {
+    Wildcard,
+    Literal(Expr), // e.g. Number, StringLiteral
+    Identifier(String),
+    EnumVariant(String, String, Option<Vec<Pattern>>), // enum_name, variant_name, payload patterns
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchExpr {
+    pub expr: Box<Expr>,
+    pub arms: Vec<MatchArm>,
+    pub span: Span,
+}
+impl MatchExpr {
+    pub fn new(expr: Box<Expr>, arms: Vec<MatchArm>, span: Span) -> Self {
+        Self { expr, arms, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(IdentifierExpr),
     EnumVariant(EnumVariantExpr),
@@ -456,6 +482,7 @@ pub enum Expr {
     Topology(TopologyExpr),
     If(IfExpr),
     Range(RangeExpr),
+    Match(MatchExpr),
     Grad(GradExpr),
     Vjp(VjpExpr),
     Jvp(JvpExpr),
@@ -488,6 +515,7 @@ impl Expr {
             Expr::Topology(e) => e.span.clone(),
             Expr::If(e) => e.span.clone(),
             Expr::Range(e) => e.span.clone(),
+            Expr::Match(e) => e.span.clone(),
             Expr::Grad(e) => e.span.clone(),
             Expr::Vjp(e) => e.span.clone(),
             Expr::Jvp(e) => e.span.clone(),
@@ -627,6 +655,18 @@ impl Expr {
             Expr::Range(e) => Expr::Range(RangeExpr {
                 start: Box::new(e.start.substitute(mapping)),
                 end: Box::new(e.end.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::Match(e) => Expr::Match(MatchExpr {
+                expr: Box::new(e.expr.substitute(mapping)),
+                arms: e
+                    .arms
+                    .iter()
+                    .map(|arm| MatchArm {
+                        pattern: arm.pattern.clone(), // Patterns don't currently have types to substitute
+                        body: arm.body.iter().map(|s| s.substitute(mapping)).collect(),
+                    })
+                    .collect(),
                 span: e.span.clone(),
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {

@@ -1468,6 +1468,42 @@ impl<'a> TypeChecker<'a> {
                 }
                 start_ty
             }
+            Expr::Match(MatchExpr {
+                expr,
+                arms,
+                span: _,
+            }) => {
+                let _expr_ty = self.check_expr_type(expr);
+
+                let mut return_type: Option<Type> = None;
+                for arm in arms {
+                    self.push_scope();
+                    // Bind pattern variables
+                    match &arm.pattern {
+                        crate::ast::expr::Pattern::Identifier(name) => {
+                            self.insert(name.clone(), _expr_ty.clone());
+                        }
+                        crate::ast::expr::Pattern::EnumVariant(_, _, Some(payloads)) => {
+                            // Dummy bindings for enum payload variables
+                            for p in payloads {
+                                if let crate::ast::expr::Pattern::Identifier(name) = p {
+                                    self.insert(name.clone(), Type::Scalar(ElementType::I32));
+                                    // Dummy type for now
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    let arm_ty = Type::Tensor(ElementType::F32, vec![], None); // dummy
+                    for stmt in &mut arm.body {
+                        self.check_statement(stmt, &arm_ty);
+                    }
+                    self.pop_scope();
+                }
+
+                return_type.unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
+            }
         }
     }
 

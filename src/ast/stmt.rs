@@ -129,6 +129,27 @@ impl AssertStmt {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct LoopStmt {
+    pub body: Vec<Statement>,
+    pub span: Span,
+}
+impl LoopStmt {
+    pub fn new(body: Vec<Statement>, span: Span) -> Self {
+        Self { body, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct BreakStmt {
+    pub span: Span,
+}
+impl BreakStmt {
+    pub fn new(span: Span) -> Self {
+        Self { span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     LetDecl(LetDeclStmt),
     Return(ReturnStmt),
@@ -137,6 +158,8 @@ pub enum Statement {
     Assign(AssignStmt),
     CompoundAssign(CompoundAssignStmt),
     Assert(AssertStmt),
+    Loop(LoopStmt),
+    Break(BreakStmt),
 }
 
 impl Statement {
@@ -181,6 +204,11 @@ impl Statement {
                 msg: e.msg.clone(),
                 span: e.span.clone(),
             }),
+            Statement::Loop(e) => Statement::Loop(LoopStmt {
+                body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Statement::Break(e) => Statement::Break(e.clone()),
         }
     }
 }

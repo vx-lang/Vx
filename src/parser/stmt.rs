@@ -96,7 +96,26 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 }))
             }
-
+            TokenType::Loop => {
+                self.advance();
+                self.consume(&TokenType::LeftBrace, "Expected '{' after loop")?;
+                let mut body = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    body.push(self.parse_statement()?);
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                Ok(Statement::Loop(LoopStmt {
+                    body,
+                    span: Span::default(),
+                }))
+            }
+            TokenType::Break => {
+                self.advance();
+                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                Ok(Statement::Break(BreakStmt {
+                    span: Span::default(),
+                }))
+            }
             TokenType::For => {
                 self.advance();
                 let iter = match self.advance().kind.clone() {
@@ -146,7 +165,8 @@ impl<'a> Parser<'a> {
                         Expr::UnsafeBlock(UnsafeBlockExpr { .. })
                         | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
                         | Expr::SpawnOn(crate::ast::SpawnOnExpr { .. })
-                        | Expr::If(IfExpr { .. }) => {
+                        | Expr::If(IfExpr { .. })
+                        | Expr::Match(MatchExpr { .. }) => {
                             has_semicolon = self.match_token(&TokenType::Semicolon);
                         }
                         _ => {

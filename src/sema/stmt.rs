@@ -82,6 +82,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.pop_scope();
             }
+            Statement::Loop(LoopStmt { body, span: _ }) => {
+                self.push_scope();
+                for s in body {
+                    self.check_statement(s, return_type);
+                }
+                self.pop_scope();
+            }
+            Statement::Break(_) => {}
             Statement::Assign(AssignStmt { lhs, rhs, span: _ })
             | Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,

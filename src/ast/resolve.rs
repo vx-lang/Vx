@@ -161,6 +161,12 @@ impl Statement {
                 e.lhs.resolve_names(current_module, symbol_map);
                 e.rhs.resolve_names(current_module, symbol_map);
             }
+            Statement::Loop(e) => {
+                for s in &mut e.body {
+                    s.resolve_names(current_module, symbol_map);
+                }
+            }
+            Statement::Break(_) => {}
         }
     }
 }

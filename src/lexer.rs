@@ -22,6 +22,8 @@ pub enum TokenType {
     In,
     If,
     Else,
+    Loop,
+    Break,
     Return,
     Spawn,
     On,
@@ -72,6 +74,7 @@ pub enum TokenType {
     Equals,
     PlusEquals,
     Arrow,
+    FatArrow,
     Plus,
     Minus,
     Star,
@@ -107,6 +110,8 @@ impl std::fmt::Display for TokenType {
             TokenType::In => write!(f, "in"),
             TokenType::If => write!(f, "if"),
             TokenType::Else => write!(f, "else"),
+            TokenType::Loop => write!(f, "loop"),
+            TokenType::Break => write!(f, "break"),
             TokenType::Return => write!(f, "return"),
             TokenType::Spawn => write!(f, "spawn"),
             TokenType::On => write!(f, "on"),
@@ -154,6 +159,7 @@ impl std::fmt::Display for TokenType {
             TokenType::Equals => write!(f, "="),
             TokenType::PlusEquals => write!(f, "+="),
             TokenType::Arrow => write!(f, "->"),
+            TokenType::FatArrow => write!(f, "=>"),
             TokenType::Plus => write!(f, "+"),
             TokenType::Minus => write!(f, "-"),
             TokenType::Star => write!(f, "*"),
@@ -272,6 +278,8 @@ impl<'a> Lexer<'a> {
             "in" => TokenType::In,
             "if" => TokenType::If,
             "else" => TokenType::Else,
+            "loop" => TokenType::Loop,
+            "break" => TokenType::Break,
             "return" => TokenType::Return,
             "spawn" => TokenType::Spawn,
             "on" => TokenType::On,
@@ -475,6 +483,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some(&'=') {
                     self.advance();
                     TokenType::EqEq
+                } else if self.peek() == Some(&'>') {
+                    self.advance();
+                    TokenType::FatArrow
                 } else {
                     TokenType::Equals
                 }
