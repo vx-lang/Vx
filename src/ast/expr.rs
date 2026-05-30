@@ -1,0 +1,653 @@
+use super::*;
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    MatMul,
+    Div,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RelationalOp {
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum LogicalOp {
+    And,
+    Or,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum UnaryOp {
+    Not,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct IdentifierExpr {
+    pub name: String,
+    pub span: Span,
+}
+impl IdentifierExpr {
+    pub fn new(name: String, span: Span) -> Self {
+        Self { name, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct EnumVariantExpr {
+    pub enum_name: String,
+    pub variant_name: String,
+    pub span: Span,
+}
+impl EnumVariantExpr {
+    pub fn new(enum_name: String, variant_name: String, span: Span) -> Self {
+        Self {
+            enum_name,
+            variant_name,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct NumberExpr {
+    pub value: String,
+    pub ty: Option<ElementType>,
+    pub span: Span,
+}
+impl NumberExpr {
+    pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
+        Self { value, ty, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StringLiteralExpr {
+    pub value: String,
+    pub span: Span,
+}
+impl StringLiteralExpr {
+    pub fn new(value: String, span: Span) -> Self {
+        Self { value, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct TransferExpr {
+    pub expr: Box<Expr>,
+    pub space: MemorySpace,
+    pub span: Span,
+}
+impl TransferExpr {
+    pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self {
+        Self { expr, space, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct FunctionCallExpr {
+    pub name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl FunctionCallExpr {
+    pub fn new(name: String, args: Vec<Expr>, span: Span) -> Self {
+        Self { name, args, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ArrayExpr {
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+impl ArrayExpr {
+    pub fn new(elements: Vec<Expr>, span: Span) -> Self {
+        Self { elements, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MemberAccessExpr {
+    pub base: Box<Expr>,
+    pub member: String,
+    pub struct_name: Option<String>,
+    pub span: Span,
+}
+impl MemberAccessExpr {
+    pub fn new(base: Box<Expr>, member: String, span: Span) -> Self {
+        Self {
+            base,
+            member,
+            struct_name: None,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct IndexAccessExpr {
+    pub base: Box<Expr>,
+    pub index: Box<Expr>,
+    pub span: Span,
+}
+impl IndexAccessExpr {
+    pub fn new(base: Box<Expr>, index: Box<Expr>, span: Span) -> Self {
+        Self { base, index, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MethodCallExpr {
+    pub base: Box<Expr>,
+    pub method_name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl MethodCallExpr {
+    pub fn new(base: Box<Expr>, method_name: String, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            base,
+            method_name,
+            args,
+            span,
+        }
+    }
+}
+
+pub trait BinaryOperator {
+    fn lhs(&self) -> &Expr;
+    fn rhs(&self) -> &Expr;
+    fn span(&self) -> &Span;
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct BinaryOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: BinaryOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl BinaryOpExpr {
+    pub fn new(lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
+
+impl BinaryOperator for BinaryOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RelationalOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: RelationalOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl RelationalOpExpr {
+    pub fn new(lhs: Box<Expr>, op: RelationalOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
+
+impl BinaryOperator for RelationalOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct LogicalOpExpr {
+    pub lhs: Box<Expr>,
+    pub op: LogicalOp,
+    pub rhs: Box<Expr>,
+    pub span: Span,
+}
+impl LogicalOpExpr {
+    pub fn new(lhs: Box<Expr>, op: LogicalOp, rhs: Box<Expr>, span: Span) -> Self {
+        Self { lhs, op, rhs, span }
+    }
+}
+
+impl BinaryOperator for LogicalOpExpr {
+    fn lhs(&self) -> &Expr {
+        &self.lhs
+    }
+    fn rhs(&self) -> &Expr {
+        &self.rhs
+    }
+    fn span(&self) -> &Span {
+        &self.span
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct UnaryOpExpr {
+    pub op: UnaryOp,
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+impl UnaryOpExpr {
+    pub fn new(op: UnaryOp, expr: Box<Expr>, span: Span) -> Self {
+        Self { op, expr, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct BorrowExpr {
+    pub expr: Box<Expr>,
+    pub is_mut: bool,
+    pub span: Span,
+}
+impl BorrowExpr {
+    pub fn new(expr: Box<Expr>, is_mut: bool, span: Span) -> Self {
+        Self { expr, is_mut, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct DereferenceExpr {
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+impl DereferenceExpr {
+    pub fn new(expr: Box<Expr>, span: Span) -> Self {
+        Self { expr, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct UnsafeBlockExpr {
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+impl UnsafeBlockExpr {
+    pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self { stmts, ret, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ComptimeBlockExpr {
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+impl ComptimeBlockExpr {
+    pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self { stmts, ret, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StructInitExpr {
+    pub name: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+impl StructInitExpr {
+    pub fn new(name: String, fields: Vec<(String, Expr)>, span: Span) -> Self {
+        Self { name, fields, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MemorySpaceExpr {
+    pub space: MemorySpace,
+    pub span: Span,
+}
+impl MemorySpaceExpr {
+    pub fn new(space: MemorySpace, span: Span) -> Self {
+        Self { space, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct TopologyExpr {
+    pub top: Topology,
+    pub span: Span,
+}
+impl TopologyExpr {
+    pub fn new(top: Topology, span: Span) -> Self {
+        Self { top, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct GradExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl GradExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct VjpExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub cotangent: Box<Expr>,
+    pub span: Span,
+}
+impl VjpExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, cotangent: Box<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            cotangent,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct JvpExpr {
+    pub target_fn: String,
+    pub args: Vec<Expr>,
+    pub tangent: Box<Expr>,
+    pub span: Span,
+}
+impl JvpExpr {
+    pub fn new(target_fn: String, args: Vec<Expr>, tangent: Box<Expr>, span: Span) -> Self {
+        Self {
+            target_fn,
+            args,
+            tangent,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct IfExpr {
+    pub cond: Box<Expr>,
+    pub then_block: Vec<Statement>,
+    pub else_block: Option<Vec<Statement>>,
+    pub span: Span,
+}
+impl IfExpr {
+    pub fn new(
+        cond: Box<Expr>,
+        then_block: Vec<Statement>,
+        else_block: Option<Vec<Statement>>,
+        span: Span,
+    ) -> Self {
+        Self {
+            cond,
+            then_block,
+            else_block,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Expr {
+    Identifier(IdentifierExpr),
+    EnumVariant(EnumVariantExpr),
+    Number(NumberExpr),
+    StringLiteral(StringLiteralExpr),
+    Transfer(TransferExpr),
+    FunctionCall(FunctionCallExpr),
+    Array(ArrayExpr),
+    MemberAccess(MemberAccessExpr),
+    IndexAccess(IndexAccessExpr),
+    MethodCall(MethodCallExpr),
+    BinaryOp(BinaryOpExpr),
+    RelationalOp(RelationalOpExpr),
+    LogicalOp(LogicalOpExpr),
+    UnaryOp(UnaryOpExpr),
+    Borrow(BorrowExpr),
+    Dereference(DereferenceExpr),
+    UnsafeBlock(UnsafeBlockExpr),
+    ComptimeBlock(ComptimeBlockExpr),
+    StructInit(StructInitExpr),
+    MemorySpace(MemorySpaceExpr),
+    Topology(TopologyExpr),
+    If(IfExpr),
+    Grad(GradExpr),
+    Vjp(VjpExpr),
+    Jvp(JvpExpr),
+    SpawnOn(SpawnOnExpr),
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Identifier(e) => e.span.clone(),
+            Expr::EnumVariant(e) => e.span.clone(),
+            Expr::Number(e) => e.span.clone(),
+            Expr::StringLiteral(e) => e.span.clone(),
+            Expr::Transfer(e) => e.span.clone(),
+            Expr::FunctionCall(e) => e.span.clone(),
+            Expr::Array(e) => e.span.clone(),
+            Expr::MemberAccess(e) => e.span.clone(),
+            Expr::IndexAccess(e) => e.span.clone(),
+            Expr::MethodCall(e) => e.span.clone(),
+            Expr::BinaryOp(e) => e.span.clone(),
+            Expr::RelationalOp(e) => e.span.clone(),
+            Expr::LogicalOp(e) => e.span.clone(),
+            Expr::UnaryOp(e) => e.span.clone(),
+            Expr::Borrow(e) => e.span.clone(),
+            Expr::Dereference(e) => e.span.clone(),
+            Expr::UnsafeBlock(e) => e.span.clone(),
+            Expr::ComptimeBlock(e) => e.span.clone(),
+            Expr::StructInit(e) => e.span.clone(),
+            Expr::MemorySpace(e) => e.span.clone(),
+            Expr::Topology(e) => e.span.clone(),
+            Expr::If(e) => e.span.clone(),
+            Expr::Grad(e) => e.span.clone(),
+            Expr::Vjp(e) => e.span.clone(),
+            Expr::Jvp(e) => e.span.clone(),
+            Expr::SpawnOn(e) => e.span.clone(),
+        }
+    }
+
+    pub fn is_binary_operator(&self) -> bool {
+        matches!(
+            self,
+            Expr::BinaryOp(_) | Expr::RelationalOp(_) | Expr::LogicalOp(_)
+        )
+    }
+
+    pub fn get_binary_operands(&self) -> Option<(&Expr, &Expr)> {
+        match self {
+            Expr::BinaryOp(e) => Some((&e.lhs, &e.rhs)),
+            Expr::RelationalOp(e) => Some((&e.lhs, &e.rhs)),
+            Expr::LogicalOp(e) => Some((&e.lhs, &e.rhs)),
+            _ => None,
+        }
+    }
+
+    pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Expr {
+        match self {
+            Expr::Transfer(e) => Expr::Transfer(TransferExpr {
+                expr: Box::new(e.expr.substitute(mapping)),
+                space: e.space.clone(),
+                span: e.span.clone(),
+            }),
+            Expr::ComptimeBlock(e) => Expr::ComptimeBlock(ComptimeBlockExpr {
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span.clone(),
+            }),
+            Expr::FunctionCall(e) => {
+                let mut new_name = e.name.clone();
+                if new_name.starts_with("Tensor_") {
+                    let t_name = new_name.strip_prefix("Tensor_").unwrap();
+                    if let Some(Type::Scalar(concrete_el)) = mapping.get(t_name) {
+                        let concrete_name = match concrete_el {
+                            ElementType::F16 => "f16",
+                            ElementType::F32 => "f32",
+                            ElementType::F64 => "f64",
+                            ElementType::BF16 => "bf16",
+                            ElementType::I32 => "i32",
+                            ElementType::I64 => "i64",
+                            ElementType::Bool => "Bool",
+                            ElementType::Generic(g) => g,
+                            _ => "f32",
+                        };
+                        new_name = format!("Tensor_{}", concrete_name);
+                    }
+                }
+                Expr::FunctionCall(FunctionCallExpr {
+                    name: new_name,
+                    args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                    span: e.span.clone(),
+                })
+            }
+            Expr::Array(e) => Expr::Array(ArrayExpr {
+                elements: e.elements.iter().map(|a| a.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::MemberAccess(e) => Expr::MemberAccess(MemberAccessExpr {
+                base: Box::new(e.base.substitute(mapping)),
+                member: e.member.clone(),
+                struct_name: e.struct_name.clone(),
+                span: e.span.clone(),
+            }),
+            Expr::IndexAccess(e) => Expr::IndexAccess(IndexAccessExpr {
+                base: Box::new(e.base.substitute(mapping)),
+                index: Box::new(e.index.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::MethodCall(e) => Expr::MethodCall(MethodCallExpr {
+                base: Box::new(e.base.substitute(mapping)),
+                method_name: e.method_name.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::BinaryOp(e) => Expr::BinaryOp(BinaryOpExpr {
+                lhs: Box::new(e.lhs.substitute(mapping)),
+                op: e.op.clone(),
+                rhs: Box::new(e.rhs.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::RelationalOp(e) => Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(e.lhs.substitute(mapping)),
+                op: e.op.clone(),
+                rhs: Box::new(e.rhs.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::LogicalOp(e) => Expr::LogicalOp(LogicalOpExpr {
+                lhs: Box::new(e.lhs.substitute(mapping)),
+                op: e.op.clone(),
+                rhs: Box::new(e.rhs.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::UnaryOp(e) => Expr::UnaryOp(UnaryOpExpr {
+                op: e.op.clone(),
+                expr: Box::new(e.expr.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::Borrow(e) => Expr::Borrow(BorrowExpr {
+                expr: Box::new(e.expr.substitute(mapping)),
+                is_mut: e.is_mut,
+                span: e.span.clone(),
+            }),
+            Expr::Dereference(e) => Expr::Dereference(DereferenceExpr {
+                expr: Box::new(e.expr.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::UnsafeBlock(e) => Expr::UnsafeBlock(UnsafeBlockExpr {
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span.clone(),
+            }),
+            Expr::StructInit(e) => Expr::StructInit(StructInitExpr {
+                name: e.name.clone(),
+                fields: e
+                    .fields
+                    .iter()
+                    .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
+                    .collect(),
+                span: e.span.clone(),
+            }),
+            Expr::If(e) => Expr::If(IfExpr {
+                cond: Box::new(e.cond.substitute(mapping)),
+                then_block: e.then_block.iter().map(|s| s.substitute(mapping)).collect(),
+                else_block: e
+                    .else_block
+                    .as_ref()
+                    .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
+                span: e.span.clone(),
+            }),
+            Expr::Grad(e) => Expr::Grad(GradExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::Vjp(e) => Expr::Vjp(VjpExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                cotangent: Box::new(e.cotangent.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::Jvp(e) => Expr::Jvp(JvpExpr {
+                target_fn: e.target_fn.clone(),
+                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                tangent: Box::new(e.tangent.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::SpawnOn(e) => Expr::SpawnOn(SpawnOnExpr {
+                top: e.top.clone(),
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span.clone(),
+            }),
+            Expr::Identifier(id) => {
+                if let Some(Type::Generic(val_str, _)) = mapping.get(&id.name) {
+                    if val_str.parse::<f64>().is_ok() {
+                        return Expr::Number(crate::ast::NumberExpr {
+                            value: val_str.clone(),
+                            ty: None,
+                            span: id.span.clone(),
+                        });
+                    } else {
+                        return Expr::Identifier(crate::ast::IdentifierExpr {
+                            name: val_str.clone(),
+                            span: id.span.clone(),
+                        });
+                    }
+                }
+                self.clone()
+            }
+            Expr::EnumVariant(_)
+            | Expr::Number(_)
+            | Expr::StringLiteral(_)
+            | Expr::MemorySpace(_)
+            | Expr::Topology(_) => self.clone(),
+        }
+    }
+}
