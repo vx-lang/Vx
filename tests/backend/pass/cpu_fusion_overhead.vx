@@ -1,7 +1,4 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR-O0
-// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR-O3
-// RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 extern "C" {
   fn vx_get_time() -> f32;
@@ -145,9 +142,9 @@ fn main() -> i32 {
 }
 // NO_EXEC
 
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @main() -> i32
-// FRONTEND: memref.alloc
+// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefixes=MLIR,MLIR-O0
+// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefixes=MLIR,MLIR-O3
+// RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 // MLIR-LABEL: module {
 // MLIR: func.func @main() -> i32

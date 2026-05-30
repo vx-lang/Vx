@@ -22,7 +22,7 @@ pub fn expr_contains_break(expr: &Expr) -> bool {
                 || e.then_block.iter().any(contains_break)
                 || e.else_block
                     .as_ref()
-                    .map_or(false, |b| b.iter().any(contains_break))
+                    .is_some_and(|b| b.iter().any(contains_break))
         }
         Expr::Match(e) => {
             expr_contains_break(&e.expr) || e.arms.iter().any(|a| a.body.iter().any(contains_break))
@@ -45,7 +45,7 @@ pub fn expr_contains_break(expr: &Expr) -> bool {
         Expr::Dereference(e) => expr_contains_break(&e.expr),
         Expr::SpawnOn(e) => {
             e.stmts.iter().any(contains_break)
-                || e.ret.as_ref().map_or(false, |r| expr_contains_break(r))
+                || e.ret.as_ref().is_some_and(|r| expr_contains_break(r))
         }
         Expr::Transfer(e) => expr_contains_break(&e.expr),
         _ => false,

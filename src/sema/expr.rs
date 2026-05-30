@@ -1475,7 +1475,6 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let _expr_ty = self.check_expr_type(expr);
 
-                let mut return_type: Option<Type> = None;
                 for arm in arms {
                     self.push_scope();
                     // Bind pattern variables
@@ -1502,7 +1501,7 @@ impl<'a> TypeChecker<'a> {
                     self.pop_scope();
                 }
 
-                return_type.unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
+                Type::Tensor(ElementType::F32, vec![], None)
             }
         }
     }

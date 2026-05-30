@@ -2941,14 +2941,11 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
     }
 }
 
-use crate::ast::expr::*;
-use crate::ast::stmt::*;
-
 pub fn generate_match_chain<'c>(
     gen: &mut MeliorGenerator<'c>,
     arms: &[MatchArm],
     match_val: melior::ir::Value<'c, 'c>,
-    match_ty: melior::ir::Type<'c>,
+    _match_ty: melior::ir::Type<'c>,
     block: &melior::ir::Block<'c>,
 ) {
     if arms.is_empty() {
@@ -2979,7 +2976,7 @@ pub fn generate_match_chain<'c>(
             let mut tag_val = 0;
             // Hack: just parse the variant name if it's a number, or assume 0.
             // Real enums should look up the tag in `gen.enums`.
-            for (enum_name, enum_def) in &gen.enums {
+            for enum_def in gen.enums.values() {
                 for (i, v) in enum_def.iter().enumerate() {
                     if v.0 == *variant_name {
                         tag_val = i as i64;
@@ -3045,7 +3042,7 @@ pub fn generate_match_chain<'c>(
     let else_block = melior::ir::Block::new(&[]);
 
     // Recursively generate the rest of the arms inside the else block
-    generate_match_chain(gen, &arms[1..], match_val, match_ty, &else_block);
+    generate_match_chain(gen, &arms[1..], match_val, _match_ty, &else_block);
 
     else_block.append_operation(
         melior::ir::operation::OperationBuilder::new(
