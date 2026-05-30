@@ -3,6 +3,8 @@
 
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 def Vx_Dialect : Dialect {
     let name = "vx";
@@ -46,6 +48,39 @@ def Vx_DispatchOp : Vx_Op<"dispatch"> {
     let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
     let results = (outs Variadic<AnyType>:$results);
     let assemblyFormat = "$callee `(` $operands `)` attr-dict `:` functional-type($operands, results)";
+}
+
+// A launch operation to launch a hardware kernel
+def Vx_LaunchOp : Vx_Op<"launch"> {
+    let summary = "Launches an outlined hardware kernel.";
+    let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
+    let results = (outs Variadic<AnyType>:$results);
+    let assemblyFormat = "$callee `(` $operands `)` attr-dict `:` functional-type($operands, results)";
+}
+
+// A native kernel function operation
+def Vx_KernelOp : Vx_Op<"kernel", [IsolatedFromAbove, Symbol]> {
+    let summary = "A native hardware kernel function.";
+    let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$function_type, I32Attr:$topology);
+    let regions = (region AnyRegion:$body);
+    let assemblyFormat = "$sym_name `(` $topology `)` attr-dict `:` $function_type $body";
+}
+
+// Thread ID query
+def Vx_ThreadIdOp : Vx_Op<"thread_id", [Pure]> {
+    let summary = "Returns the thread ID for a given dimension.";
+    let arguments = (ins StrAttr:$dimension);
+    let results = (outs Index:$result);
+    let assemblyFormat = "$dimension attr-dict `:` type($result)";
+}
+
+
+// Block ID query
+def Vx_BlockIdOp : Vx_Op<"block_id", [Pure]> {
+    let summary = "Returns the block ID for a given dimension.";
+    let arguments = (ins StrAttr:$dimension);
+    let results = (outs Index:$result);
+    let assemblyFormat = "$dimension attr-dict `:` type($result)";
 }
 
 // A return operation to terminate vx.spawn regions from anywhere

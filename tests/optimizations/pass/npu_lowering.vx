@@ -55,12 +55,13 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // NPU:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
 // NPU:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
 // NPU:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// NPU:     %0 = vx.dispatch @vx_npu_kernel_0(%c0_i32) : (i32) -> i32
+// NPU:     %0 = vx.launch @vx_npu_kernel_0(%c0_i32) : (i32) -> i32
 // NPU:     return %arg0 : memref<?x?xf32>
 // NPU:   }
-// NPU:   func.func @vx_npu_kernel_0(%arg0: i32) -> i32 attributes {vx.kernel, vx.topology = 100 : i32} {
-// NPU:     %0 = call @dummy(%arg0) : (i32) -> i32
-// NPU:     return %0 : i32
+// NPU:   vx.kernel @vx_npu_kernel_0(100) : (i32) -> i32 {
+// NPU:   ^bb0(%arg0: i32):
+// NPU:     %0 = func.call @dummy(%arg0) : (i32) -> i32
+// NPU:     vx.return %0 : i32
 // NPU:   }
 // NPU: }
 
@@ -93,7 +94,7 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // VXLLVM:     %9 = llvm.mlir.constant(0 : i32) : i32
 // VXLLVM:     return %arg0 : memref<?x?xf32>
 // VXLLVM:   }
-// VXLLVM:   func.func @vx_npu_kernel_0(%arg0: i32) -> i32 attributes {vx.kernel, vx.topology = 100 : i32} {
+// VXLLVM:   func.func @vx_npu_kernel_0(%arg0: i32) -> i32 {
 // VXLLVM:     %0 = call @dummy(%arg0) : (i32) -> i32
 // VXLLVM:     return %0 : i32
 // VXLLVM:   }
