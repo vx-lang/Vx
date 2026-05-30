@@ -11,9 +11,9 @@
 // EXPECT:  [0,   0,   0,   0],
 // EXPECT:  [0,   0,   0,   0]]
 
-fn main() -> Pinned<Tensor<i32>, Topology::NPU[0]> {
-  let mut a = Tensor<i32>([2, 2]);
-  let mut b = Tensor<i32>([2, 2]);
+fn main() -> Pinned<Tensor<i32, [4, 4]>, Topology::NPU[0]> {
+  let mut a = Tensor<i32>([4, 4]);
+  let mut b = Tensor<i32>([4, 4]);
 
   a[0][0] = 1; a[0][1] = 2;
   a[1][0] = 3; a[1][1] = 4;

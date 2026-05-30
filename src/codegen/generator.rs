@@ -597,41 +597,13 @@ impl<'c> MeliorGenerator<'c> {
             }
             .to_string(),
             crate::ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
-            crate::ast::Type::Ref(inner, mem) => {
-                let addr_space = match mem {
-                    crate::ast::MemorySpace::NPUHBM => 1,
-                    crate::ast::MemorySpace::LocalSRAM => 2,
-                    crate::ast::MemorySpace::HostDRAM => 0,
-                };
-                let inner_ty_str = self.lower_type(inner).to_string();
-                if inner_ty_str.starts_with("memref<")
-                    && inner_ty_str.ends_with(">")
-                    && addr_space != 0
-                {
-                    let inner_str = &inner_ty_str[7..inner_ty_str.len() - 1];
-                    let ty_str = format!("memref<{}, {}>", inner_str, addr_space);
-                    return Type::parse(self.context, &ty_str).unwrap();
-                } else {
-                    return self.lower_type(inner);
-                }
+            crate::ast::Type::Ref(inner, _mem) => {
+                return self.lower_type(inner);
             }
             crate::ast::Type::Verified(inner) => return self.lower_type(inner),
-            crate::ast::Type::Pinned(inner, top) => {
-                let addr_space = match top {
-                    Topology::NPU(_) | Topology::Slice(_, _, _) | Topology::ANE => 1,
-                    Topology::AccCore(_) => 2,
-                    Topology::Host | Topology::AMX | Topology::GPU => 0,
-                };
+            crate::ast::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner).to_string();
-                if inner_ty_str.starts_with("memref<")
-                    && inner_ty_str.ends_with(">")
-                    && addr_space != 0
-                {
-                    let inner_str = &inner_ty_str[7..inner_ty_str.len() - 1];
-                    format!("memref<{}, {}>", inner_str, addr_space)
-                } else {
-                    inner_ty_str
-                }
+                inner_ty_str
             }
             crate::ast::Type::Borrow(_, mem, _, _) | crate::ast::Type::Pointer(_, mem, _) => {
                 let addr_space = match mem {

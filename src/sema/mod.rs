@@ -1,14 +1,10 @@
 use crate::ast::*;
-use std::collections::HashMap;
 
 pub mod env;
 pub mod expr;
 pub mod stmt;
 
 pub use env::*;
-pub use expr::*;
-pub use stmt::*;
-
 #[cfg(test)]
 mod tests {
     use super::*;

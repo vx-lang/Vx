@@ -1262,11 +1262,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::TransferExpr {
             } else {
                 src_ty_str[7..src_ty_str.len() - 1].to_string()
             };
-            let target_ty_str = if target_topology_id != 0 {
-                format!("memref<{}, {}>", inner_str, target_topology_id / 100) // 1 for NPUHBM, 2 for LocalSRAM
-            } else {
-                format!("memref<{}>", inner_str)
-            };
+            let target_ty_str = format!("memref<{}>", inner_str);
             target_ty = Type::parse(gen.context, &target_ty_str).unwrap_or(src_ty);
         }
 

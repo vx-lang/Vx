@@ -9,7 +9,7 @@
 // RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
 // RUN: %t | FileCheck %s
 
-fn main() -> Verified<Pinned<Tensor, Topology::NPU[0]>> {
+fn main() -> Verified<Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>> {
   let mut a_host = Tensor([4, 4]);
   let mut b_host = Tensor([4, 4]);
   let mut result_host = Tensor([4, 4]);

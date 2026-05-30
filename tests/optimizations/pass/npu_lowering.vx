@@ -7,7 +7,7 @@ fn dummy(x: i32) on Topology::NPU[0] -> i32 {
 }
 
 fn process(t: Tensor<f32>) -> Tensor<f32> {
-  let mut res = Tensor<i32>([1]).with_memory(Memory::NPU_HBM);
+  let mut res = Tensor<i32>([4, 4]).with_memory(Memory::NPU_HBM);
   let val = spawn on (Topology::NPU[0]) {
     dummy(0)
   };
@@ -24,14 +24,17 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // FRONTEND:     return %arg0 : i32
 // FRONTEND:   }
 // FRONTEND:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// FRONTEND:     %c4 = arith.constant 4 : index
-// FRONTEND:     %alloc = memref.alloc(%c4, %c4) : memref<?x?xi32>
+// FRONTEND:     %c4_i32 = arith.constant 4 : i32
+// FRONTEND:     %0 = arith.index_cast %c4_i32 : i32 to index
+// FRONTEND:     %c4_i32_0 = arith.constant 4 : i32
+// FRONTEND:     %1 = arith.index_cast %c4_i32_0 : i32 to index
+// FRONTEND:     %alloc = memref.alloc(%0, %1) : memref<?x?xi32>
 // FRONTEND:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
 // FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// FRONTEND:     %0 = vx.spawn topology(100) {
+// FRONTEND:     %2 = vx.spawn topology(100) {
 // FRONTEND:       %c0_i32 = arith.constant 0 : i32
-// FRONTEND:       %1 = func.call @dummy(%c0_i32) : (i32) -> i32
-// FRONTEND:       vx.yield %1 : i32
+// FRONTEND:       %3 = func.call @dummy(%c0_i32) : (i32) -> i32
+// FRONTEND:       vx.yield %3 : i32
 // FRONTEND:     } : i32
 // FRONTEND:     return %arg0 : memref<?x?xf32>
 // FRONTEND:   }
