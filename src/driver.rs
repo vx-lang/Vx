@@ -229,16 +229,16 @@ impl CompilerDriver {
                 let context = melior::Context::new();
                 context.append_dialect_registry(&registry);
                 context.load_all_available_dialects();
-                crate::melior_codegen::register_vx_dialect(&context);
+                crate::codegen::register_vx_dialect(&context);
 
-                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                let mut codegen = crate::codegen::MeliorGenerator::new(&context);
                 codegen.generate(&monomorphized_ast, &module_asts);
                 let mut module = codegen.into_module();
 
                 if !self.options.disable_optimizations {
                     let vx_pm = melior::pass::PassManager::new(&context);
                     unsafe {
-                        crate::melior_codegen::addVxLoweringPass(vx_pm.to_raw());
+                        crate::codegen::addVxLoweringPass(vx_pm.to_raw());
                     }
                     if let Err(e) = vx_pm.run(&mut module) {
                         eprintln!("Failed to lower Vx dialect: {}", e);
@@ -250,7 +250,7 @@ impl CompilerDriver {
                 }
 
                 if self.options.action == Action::EmitLlvm {
-                    if let Err(e) = crate::melior_codegen::lower_to_llvm(&context, &mut module) {
+                    if let Err(e) = crate::codegen::lower_to_llvm(&context, &mut module) {
                         eprintln!("Failed to lower to LLVM: {}", e);
                     }
                 }
@@ -271,9 +271,9 @@ impl CompilerDriver {
                 let context = melior::Context::new();
                 context.append_dialect_registry(&registry);
                 context.load_all_available_dialects();
-                crate::melior_codegen::register_vx_dialect(&context);
+                crate::codegen::register_vx_dialect(&context);
 
-                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                let mut codegen = crate::codegen::MeliorGenerator::new(&context);
                 codegen.generate(&monomorphized_ast, &module_asts);
                 let mut module = codegen.into_module();
 
@@ -281,7 +281,7 @@ impl CompilerDriver {
                     return Err("MLIR Module Verification Failed".to_string());
                 }
 
-                crate::melior_codegen::lower_to_llvm(&context, &mut module)
+                crate::codegen::lower_to_llvm(&context, &mut module)
                     .map_err(|e| format!("Failed to lower to LLVM: {}", e))?;
 
                 let mlir_str = format!("{}", module.as_operation());
@@ -294,9 +294,9 @@ impl CompilerDriver {
                 let context = melior::Context::new();
                 context.append_dialect_registry(&registry);
                 context.load_all_available_dialects();
-                crate::melior_codegen::register_vx_dialect(&context);
+                crate::codegen::register_vx_dialect(&context);
 
-                let mut codegen = crate::melior_codegen::MeliorGenerator::new(&context);
+                let mut codegen = crate::codegen::MeliorGenerator::new(&context);
                 codegen.generate(&monomorphized_ast, &module_asts);
                 let mut module = codegen.into_module();
 
@@ -307,7 +307,7 @@ impl CompilerDriver {
                     ));
                 }
 
-                crate::melior_codegen::lower_to_llvm(&context, &mut module)?;
+                crate::codegen::lower_to_llvm(&context, &mut module)?;
 
                 let current_dir = std::env::current_dir().unwrap();
                 let vx_std_core = format!(

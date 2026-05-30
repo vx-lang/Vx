@@ -125,12 +125,12 @@ fn main() -> i32 {
                         melior::utility::register_all_dialects(&registry);
                         context.append_dialect_registry(&registry);
                         context.load_all_available_dialects();
-                        vxc::melior_codegen::register_vx_dialect(&context);
+                        vxc::codegen::register_vx_dialect(&context);
 
-                        let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+                        let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
                         codegen.generate(&monomorphized_ast, &module_asts);
                         let mut module = codegen.into_module();
-                        vxc::melior_codegen::lower_to_llvm(&context, &mut module).unwrap();
+                        vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
                         let mlir_str = module.as_operation().to_string();
                         match vxc::jit::execute_mlir(&mlir_str, vec![]) {
                             Ok(output) => {

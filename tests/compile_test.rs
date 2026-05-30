@@ -122,11 +122,11 @@ fn run_middle_end_test(path: &Path) {
     melior::utility::register_all_dialects(&registry);
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
-    vxc::melior_codegen::register_vx_dialect(&context);
+    vxc::codegen::register_vx_dialect(&context);
 
     let module_asts = std::collections::HashMap::new();
 
-    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
     codegen.generate(&monomorphized_program, &module_asts);
     let mlir_str = codegen.into_module().as_operation().to_string();
 
@@ -216,12 +216,12 @@ fn run_backend_test(path: &Path) {
     melior::utility::register_all_dialects(&registry);
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
-    vxc::melior_codegen::register_vx_dialect(&context);
+    vxc::codegen::register_vx_dialect(&context);
 
-    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
     codegen.generate(&monomorphized_program, &module_asts);
     let mut module = codegen.into_module();
-    if let Err(e) = vxc::melior_codegen::lower_to_llvm(&context, &mut module) {
+    if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
         println!(
             "MLIR Before Lowering Error:\n{}",
             module.as_operation().to_string()
@@ -622,7 +622,7 @@ fn run_backend_autodiff_test(path: &Path) {
     }
 
     let context = melior::Context::new();
-    let mut codegen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
     if source.contains("// NO_EXEC") {
@@ -729,9 +729,9 @@ fn test_melior_matmul() {
     let context = melior::Context::new();
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
-    vxc::melior_codegen::register_vx_dialect(&context);
+    vxc::codegen::register_vx_dialect(&context);
 
-    let mut gen = vxc::melior_codegen::MeliorGenerator::new(&context);
+    let mut gen = vxc::codegen::MeliorGenerator::new(&context);
     let mlir_str = gen.generate(&checked_program, &std::collections::HashMap::new());
 
     let mut current_idx = 0;
