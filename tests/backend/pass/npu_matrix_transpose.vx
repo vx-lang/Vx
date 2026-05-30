@@ -22,9 +22,10 @@ fn test_f32() -> i32 {
     }
   }
 
-  assert(c[0][1] == 4.0, "f32 c[0][1] match");
-  assert(c[1][0] == 1.0, "f32 c[1][0] match");
-  assert(c[3][2] == 11.0, "f32 c[3][2] match");
+  let c_host = transfer(c, Memory::Host_DRAM);
+  assert(c_host[0][1] == 4.0, "f32 c[0][1] match");
+  assert(c_host[1][0] == 1.0, "f32 c[1][0] match");
+  assert(c_host[3][2] == 11.0, "f32 c[3][2] match");
   return 0;
 }
 
@@ -50,9 +51,10 @@ fn test_bf16() -> i32 {
     }
   }
 
-  assert(c[0][1] == 4.0, "bf16 c[0][1] match");
-  assert(c[1][0] == 1.0, "bf16 c[1][0] match");
-  assert(c[3][2] == 11.0, "bf16 c[3][2] match");
+  let c_host = transfer(c, Memory::Host_DRAM);
+  assert(c_host[0][1] == 4.0, "bf16 c[0][1] match");
+  assert(c_host[1][0] == 1.0, "bf16 c[1][0] match");
+  assert(c_host[3][2] == 11.0, "bf16 c[3][2] match");
   return 0;
 }
 

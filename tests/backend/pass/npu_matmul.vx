@@ -27,9 +27,10 @@ fn test_f32() -> i32 {
   }
 
   // 4 * (2.0 * 3.0) = 24.0
-  assert(c[0][0] == 24.0, "f32 matmul 0,0 match");
-  assert(c[2][3] == 24.0, "f32 matmul 2,3 match");
-  assert(c[3][3] == 24.0, "f32 matmul 3,3 match");
+  let c_host = transfer(c, Memory::Host_DRAM);
+  assert(c_host[0][0] == 24.0, "f32 matmul 0,0 match");
+  assert(c_host[2][3] == 24.0, "f32 matmul 2,3 match");
+  assert(c_host[3][3] == 24.0, "f32 matmul 3,3 match");
   return 0;
 }
 
@@ -59,9 +60,10 @@ fn test_bf16() -> i32 {
     }
   }
 
-  assert(c[0][0] == 24.0, "bf16 matmul 0,0 match");
-  assert(c[2][3] == 24.0, "bf16 matmul 2,3 match");
-  assert(c[3][3] == 24.0, "bf16 matmul 3,3 match");
+  let c_host = transfer(c, Memory::Host_DRAM);
+  assert(c_host[0][0] == 24.0, "bf16 matmul 0,0 match");
+  assert(c_host[2][3] == 24.0, "bf16 matmul 2,3 match");
+  assert(c_host[3][3] == 24.0, "bf16 matmul 3,3 match");
   return 0;
 }
 
