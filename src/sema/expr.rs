@@ -1,799 +1,10 @@
-//===- sema.rs - Vx Compiler -----------------------------------*- Rust -*-===//
-//
-// Part of the Vx Project, under the BSD 3-Clause License.
-// See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
-//
-//===----------------------------------------------------------------------===//
-//
-// This file implements the Semantic Analyzer for the Vx compiler.
-// It is responsible for type checking, resolving operator overloading (e.g., tensor
-// matrix multiplication), verifying memory topology constraints, and constructing
-// the global AST environment for subsequent lowering phases.
-//
-// The Semantic Analyzer also includes the Lexical Borrow Checker, which handles local variable
-// lifetimes and Strict Aliasing (Shared XOR Mutable).
-// For a comprehensive overview of the Borrow Checker architecture (and how it interacts with
-// the FastPath in borrow.rs), see: `docs/discussions/borrow_checker_architecture.md`.
-//
-// DESIGN NOTE: The `silent` parameter (used in `check_expr_type_flag` and others)
-// prevents duplicate compiler errors. Because AST nodes are often traversed multiple
-// times (once for initial type validation, and again later when lowering to HIR),
-// the `silent` flag is set to `true` on subsequent passes to suppress redundant
-// error emissions.
-//
-//===----------------------------------------------------------------------===//
 use crate::ast::*;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Bool(bool),
-    Number(f64),
-}
-
-pub struct GlobalAstEnv<'a> {
-    pub structs: HashMap<String, &'a StructDecl>,
-    pub enums: HashMap<String, &'a Vec<String>>,
-    pub traits: HashMap<String, &'a TraitDecl>,
-    pub impls: HashMap<String, Vec<&'a ImplBlock>>,
-    pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology)>,
-    pub ast_functions: HashMap<String, &'a Function>,
-    pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
-}
-
-impl<'a> GlobalAstEnv<'a> {
-    pub fn build(modules: &'a [Program]) -> Self {
-        let mut env = Self {
-            structs: HashMap::new(),
-            enums: HashMap::new(),
-            traits: HashMap::new(),
-            impls: HashMap::new(),
-            functions: HashMap::new(),
-            ast_functions: HashMap::new(),
-            generic_functions: HashMap::new(),
-        };
-
-        for module in modules {
-            for s in &module.structs {
-                env.structs.insert(s.name.clone(), s);
-            }
-            for e in &module.enums {
-                env.enums.insert(e.name.clone(), &e.variants);
-            }
-            for t in &module.traits {
-                env.traits.insert(t.name.clone(), t);
-            }
-            for i in &module.impls {
-                let trait_name = match &i.trait_name {
-                    Some(name) => name.clone(),
-                    None => "_inherent".to_string(),
-                };
-                env.impls.entry(trait_name).or_default().push(i);
-            }
-            for ext in &module.externs {
-                let param_types: Vec<Type> = ext.params.iter().map(|(_, t)| t.clone()).collect();
-                env.functions.insert(
-                    ext.name.clone(),
-                    (
-                        ext.return_type.clone(),
-                        !ext.is_safe,
-                        param_types,
-                        Topology::Host,
-                    ),
-                );
-            }
-            for func in &module.functions {
-                if !func.generics.is_empty() {
-                    let module_hash = crate::hash::compute_module_hash(&module.module_path);
-                    env.generic_functions
-                        .insert(func.name.clone(), (func, module_hash));
-                } else {
-                    let param_types: Vec<Type> =
-                        func.params.iter().map(|(_, t)| t.clone()).collect();
-                    env.functions.insert(
-                        func.name.clone(),
-                        (
-                            func.return_type.clone(),
-                            false, /* func.is_unsafe */
-                            param_types,
-                            func.topology.clone(),
-                        ),
-                    );
-                    env.ast_functions.insert(func.name.clone(), func);
-                }
-            }
-        }
-        env
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BorrowRecord {
-    pub is_mut: bool,
-    pub scope_depth: usize,
-    pub borrower_name: Option<String>,
-}
-
-pub struct TypeChecker<'a> {
-    pub worker: &'a mut crate::session::LocalWorkerState,
-    pub env: &'a GlobalAstEnv<'a>,
-    scopes: Vec<HashMap<String, (Type, Topology)>>,
-    pub monomorphized_functions: Vec<(Function, u64)>,
-    pub errors: Vec<String>,
-    in_unsafe_block: bool,
-    active_topology: Topology,
-    active_memory: MemorySpace,
-    pub hardware_graph: crate::arch::HardwareGraph,
-    pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
-    pub constraints: Vec<Expr>,
-    next_reg: u32,
-    var_regs: Vec<HashMap<String, u32>>,
-    moved_vars: Vec<std::collections::HashSet<String>>,
-    pub eval_env: Vec<HashMap<String, Value>>,
-    pub current_return_type: Option<Type>,
-}
+use super::*;
 
 impl<'a> TypeChecker<'a> {
-    pub fn new(
-        env: &'a GlobalAstEnv<'a>,
-        worker: &'a mut crate::session::LocalWorkerState,
-    ) -> Self {
-        Self {
-            env,
-            worker,
-            scopes: vec![HashMap::new()],
-            monomorphized_functions: Vec::new(),
-            errors: Vec::new(),
-            in_unsafe_block: false,
-            active_topology: Topology::Host,
-            active_memory: crate::arch::HardwareGraph::default_memory_for(&Topology::Host),
-            hardware_graph: crate::arch::HardwareGraph::default(),
-            active_borrows: HashMap::new(),
-            constraints: Vec::new(),
-            next_reg: 1,
-            var_regs: vec![HashMap::new()],
-            moved_vars: vec![std::collections::HashSet::new()],
-            eval_env: vec![HashMap::new()],
-            current_return_type: None,
-        }
-    }
-
-    pub fn emit_type(&mut self, _ty: &Type) -> u32 {
-        // Dummy conversion for now: Create a synthetic TypeId and push it.
-        // In reality, this would hash the struct name, etc.
-        let tid = crate::gid::TypeId::new(0, 0, 0, 0);
-        let idx = self.worker.local_type_stream.len() as u32;
-        self.worker.local_type_stream.push(tid);
-        idx
-    }
-
-    pub fn emit_inst(&mut self, opcode: u32, operand1: u32, operand2: u32, type_idx: u32) -> u32 {
-        let inst = crate::hir::HirInstruction::new(opcode, operand1, operand2, type_idx);
-        self.worker.local_hir_stream.push(inst);
-        let reg = self.next_reg;
-        self.next_reg += 1;
-        reg
-    }
-
-    pub fn push_reg_scope(&mut self) {
-        self.var_regs.push(HashMap::new());
-    }
-
-    pub fn pop_reg_scope(&mut self) {
-        self.var_regs.pop();
-    }
-    pub fn push_scope(&mut self) {
-        self.scopes.push(std::collections::HashMap::new());
-        self.moved_vars.push(std::collections::HashSet::new());
-        self.eval_env.push(std::collections::HashMap::new());
-    }
-
-    pub fn pop_scope(&mut self) {
-        let depth = self.scopes.len();
-        self.scopes.pop();
-        self.var_regs.pop();
-        self.moved_vars.pop();
-        self.eval_env.pop();
-
-        // Lexical Lifetime cleanup: Remove borrows originating in this scope
-        for (_, borrows) in self.active_borrows.iter_mut() {
-            borrows.retain(|b| b.scope_depth < depth);
-        }
-    }
-
-    pub fn insert(&mut self, name: String, ty: Type) {
-        let current_top = self.active_topology.clone();
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, (ty, current_top));
-        }
-    }
-
-    pub fn consume(&mut self, name: &str) {
-        // Find the most recent block where it's defined
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.remove(name);
-                self.moved_vars.last_mut().unwrap().insert(name.to_string());
-                return;
-            }
-        }
-    }
-
-    pub fn is_moved(&self, name: &str) -> bool {
-        for moved in self.moved_vars.iter().rev() {
-            if moved.contains(name) {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return Some(ty);
-            }
-        }
-        None
-    }
-
-    pub fn unify_types(
-        &mut self,
-        generic_ty: &Type,
-        concrete_ty: &Type,
-        mapping: &mut std::collections::HashMap<String, Type>,
-    ) -> bool {
-        match (generic_ty, concrete_ty) {
-            (Type::Generic(name, _), _) => {
-                if let Some(existing) = mapping.get(name) {
-                    existing == concrete_ty
-                } else {
-                    mapping.insert(name.clone(), concrete_ty.clone());
-                    true
-                }
-            }
-            (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                let e1_match = if let crate::ast::ElementType::Generic(ref name) = e1 {
-                    if let Some(existing) = mapping.get(name) {
-                        existing == &Type::Scalar(e2.clone())
-                    } else {
-                        mapping.insert(name.clone(), Type::Scalar(e2.clone()));
-                        true
-                    }
-                } else {
-                    e1 == e2
-                };
-                if !e1_match || d1.len() != d2.len() || t1 != t2 {
-                    return false;
-                }
-                for (dim1, dim2) in d1.iter().zip(d2.iter()) {
-                    if let crate::ast::Expr::Identifier(id) = dim1 {
-                        if let crate::ast::Expr::Number(n) = dim2 {
-                            mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
-                        } else if let crate::ast::Expr::Identifier(id2) = dim2 {
-                            mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
-                        } else if dim1 != dim2 {
-                            return false;
-                        }
-                    } else if dim1 != dim2 {
-                        return false;
-                    }
-                }
-                true
-            }
-            (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
-            }
-            (Type::Borrow(t1, m1, mut1, _r1), Type::Borrow(t2, m2, mut2, _r2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
-            }
-            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
-            (Type::GenericInstance(b1, args1), Type::GenericInstance(b2, args2)) => {
-                if args1.len() != args2.len() {
-                    return false;
-                }
-                if !self.unify_types(b1, b2, mapping) {
-                    return false;
-                }
-                for (a1, a2) in args1.iter().zip(args2.iter()) {
-                    if !self.unify_types(a1, a2, mapping) {
-                        return false;
-                    }
-                }
-                true
-            }
-            (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
-            (t1, t2) => t1 == t2,
-        }
-    }
-
-    pub fn instantiate_function(
-        &mut self,
-        generic_func: &Function,
-        mapping: &std::collections::HashMap<String, Type>,
-    ) -> Function {
-        let mut mangled_name = generic_func.name.clone();
-        for (g_name, _) in &generic_func.generics {
-            if let Some(ty) = mapping.get(g_name) {
-                let mut type_str = format!("_{:?}", ty)
-                    .replace("(", "")
-                    .replace(")", "")
-                    .replace(" ", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace(",", "_")
-                    .replace("_None", "")
-                    .replace("\"", "");
-                while type_str.contains("__") {
-                    type_str = type_str.replace("__", "_");
-                }
-                mangled_name.push_str(&type_str);
-            }
-        }
-
-        let new_params = generic_func
-            .params
-            .iter()
-            .map(|(n, t)| {
-                let substituted = t.substitute(mapping);
-
-                (n.clone(), substituted)
-            })
-            .collect();
-        let new_ret = generic_func.return_type.substitute(mapping);
-        let new_body = generic_func
-            .body
-            .iter()
-            .map(|s| s.substitute(mapping))
-            .collect();
-
-        Function {
-            name: mangled_name,
-            generics: Vec::new(),
-            params: new_params,
-            topology: generic_func.topology.clone(),
-            return_type: new_ret,
-            body: new_body,
-        }
-    }
-
-    pub fn mangle_path(path: &str) -> String {
-        path.replace("/", "_").replace(".", "_")
-    }
-
-    pub fn check_function(&mut self, func: &mut Function) {
-        if !func.generics.is_empty() {
-            return;
-        }
-
-        let prev_constraints = self.constraints.clone();
-        let prev_ret_ty = self.current_return_type.clone();
-        self.current_return_type = Some(func.return_type.clone());
-        self.push_scope();
-        for (name, ty) in &func.params {
-            self.insert(name.clone(), ty.clone());
-        }
-
-        for stmt in &mut func.body {
-            self.check_statement(stmt, &func.return_type.clone());
-        }
-
-        self.pop_scope();
-        self.current_return_type = prev_ret_ty;
-        self.constraints = prev_constraints;
-    }
-
-    fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
-        // Intercept for HIR lowering
-        match stmt {
-            Statement::Assign(AssignStmt {
-                lhs: _lhs,
-                rhs,
-                span: _,
-            }) => {
-                let (ty, rhs_reg) = self.check_expr(rhs);
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
-                // Fallthrough to standard semantic checks
-            }
-            Statement::Return(ReturnStmt { expr, span: _ }) => {
-                let (ty, ret_reg) = self.check_expr(expr);
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
-                // Fallthrough to standard semantic checks
-            }
-            Statement::LetDecl(LetDeclStmt {
-                name: _name,
-                is_mut: _,
-                ty_ann: _,
-                expr,
-                span: _,
-            }) => {
-                let (ty, val_reg) = self.check_expr(expr);
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_STORE, val_reg, 0, type_idx);
-            }
-            _ => {}
-        }
-
-        match stmt {
-            Statement::LetDecl(LetDeclStmt {
-                name,
-                is_mut: _is_mut,
-                ty_ann,
-                expr,
-                span: _,
-            }) => {
-                let ty = self.check_expr_type(expr);
-
-                let mut tmp_env = HashMap::new();
-                for env in &self.eval_env {
-                    for (k, v) in env {
-                        tmp_env.insert(k.clone(), v.clone());
-                    }
-                }
-                if let Some(val) = self.eval_expr(expr, &tmp_env) {
-                    self.eval_env.last_mut().unwrap().insert(name.clone(), val);
-                }
-
-                if let Some(ann) = ty_ann {
-                    if !self.is_assignable(ann, &ty) {
-                        self.errors
-                            .push(format!("Type mismatch in variable declaration '{}'", name));
-                    }
-                    self.insert(name.clone(), ann.clone());
-                } else {
-                    self.insert(name.clone(), ty);
-                }
-            }
-            Statement::ForLoop(ForLoopStmt {
-                iter,
-                start,
-                end,
-                body,
-                span: _,
-            }) => {
-                self.check_expr_type(start);
-                self.check_expr_type(end);
-                self.push_scope();
-                self.insert(iter.clone(), Type::Scalar(ElementType::I64));
-                for s in body {
-                    self.check_statement(s, return_type);
-                }
-                self.pop_scope();
-            }
-            Statement::Assign(AssignStmt { lhs, rhs, span: _ })
-            | Statement::CompoundAssign(CompoundAssignStmt {
-                lhs,
-                op: _,
-                rhs,
-                span: _,
-            }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false, false);
-                let rhs_ty = self.check_expr_type(rhs);
-                if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors.push("Type mismatch in assignment".to_string());
-                }
-
-                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-                    let mut tmp_env = HashMap::new();
-                    for env in &self.eval_env {
-                        for (k, v) in env {
-                            tmp_env.insert(k.clone(), v.clone());
-                        }
-                    }
-                    if let Some(val) = self.eval_expr(rhs, &tmp_env) {
-                        // find the scope that has the variable
-                        for env in self.eval_env.iter_mut().rev() {
-                            if env.contains_key(name) {
-                                env.insert(name.clone(), val);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Statement::Return(ReturnStmt { expr, span: _ }) => {
-                let ty = self.check_expr_type(expr);
-                if !self.is_assignable(return_type, &ty) {
-                    self.errors.push(format!(
-                        "Type mismatch on return. Expected {:?}, got {:?}",
-                        return_type, ty
-                    ));
-                }
-            }
-
-            Statement::ExprStmt(ExprStmtStmt {
-                expr,
-                has_semi: _,
-                span: _,
-            }) => {
-                self.check_expr_type(expr);
-            }
-            Statement::Assert(AssertStmt { expr, msg, span: _ }) => {
-                let ty = self.check_expr_type(expr);
-                if ty != Type::Scalar(ElementType::Bool) {
-                    self.errors
-                        .push("Assertion condition must be boolean".to_string());
-                }
-
-                let is_verified = matches!(return_type, Type::Verified(_));
-                let mut tmp_env = HashMap::new();
-                for env in &self.eval_env {
-                    for (k, v) in env {
-                        tmp_env.insert(k.clone(), v.clone());
-                    }
-                }
-                if let Some(Value::Bool(b)) = self.eval_expr(expr, &tmp_env) {
-                    if !b {
-                        let m = msg
-                            .clone()
-                            .unwrap_or_else(|| "Comptime assertion failed".to_string());
-                        if is_verified {
-                            self.errors
-                                .push(format!("Contract violated for Verified return type: {}", m));
-                        } else {
-                            self.errors.push(format!("Comptime assert failed: {}", m));
-                        }
-                    }
-                } else if is_verified {
-                    // Try to prove mathematically using our SMT constraints
-                    if !self.prove_expr(expr) {
-                        self.errors.push(
-                            "Cannot statically prove assertion for Verified return type"
-                                .to_string(),
-                        );
-                    }
-                } else {
-                    // It's a standard dynamic assert, add it to our mathematical constraints
-                    // so we can prove future Verified<T> return conditions!
-                    self.constraints.push(*expr.clone());
-                }
-            }
-        }
-    }
-
-    fn prove_expr(&self, expr: &Expr) -> bool {
-        // Simple structural matching for our lightweight SMT solver
-        for constraint in &self.constraints {
-            if expr == constraint {
-                return true;
-            }
-            // Basic commutativity for ==
-            if let Expr::RelationalOp(RelationalOpExpr {
-                lhs: l1,
-                op: RelationalOp::Eq,
-                rhs: r1,
-                ..
-            }) = expr
-            {
-                if let Expr::RelationalOp(RelationalOpExpr {
-                    lhs: l2,
-                    op: RelationalOp::Eq,
-                    rhs: r2,
-                    ..
-                }) = constraint
-                {
-                    if (l1 == l2 && r1 == r2) || (l1 == r2 && r1 == l2) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Lightweight transitive equality solver for Identifier == Identifier
-        if let Expr::RelationalOp(RelationalOpExpr {
-            lhs,
-            op: RelationalOp::Eq,
-            rhs,
-            ..
-        }) = expr
-        {
-            if let (Expr::Identifier(l_id), Expr::Identifier(r_id)) = (&**lhs, &**rhs) {
-                let mut adj: std::collections::HashMap<String, Vec<String>> =
-                    std::collections::HashMap::new();
-                for constraint in &self.constraints {
-                    if let Expr::RelationalOp(RelationalOpExpr {
-                        lhs: c_lhs,
-                        op: RelationalOp::Eq,
-                        rhs: c_rhs,
-                        ..
-                    }) = constraint
-                    {
-                        if let (Expr::Identifier(cl), Expr::Identifier(cr)) = (&**c_lhs, &**c_rhs) {
-                            adj.entry(cl.name.clone())
-                                .or_default()
-                                .push(cr.name.clone());
-                            adj.entry(cr.name.clone())
-                                .or_default()
-                                .push(cl.name.clone());
-                        }
-                    }
-                }
-
-                // BFS to find path from l_id.name to r_id.name
-                let mut visited = std::collections::HashSet::new();
-                let mut queue = std::collections::VecDeque::new();
-                queue.push_back(l_id.name.clone());
-                visited.insert(l_id.name.clone());
-
-                while let Some(curr) = queue.pop_front() {
-                    if curr == r_id.name {
-                        return true;
-                    }
-                    if let Some(neighbors) = adj.get(&curr) {
-                        for n in neighbors {
-                            if visited.insert(n.clone()) {
-                                queue.push_back(n.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
-        match expr {
-            Expr::Number(NumberExpr {
-                value: n_str,
-                ty: _,
-                span: _,
-            }) => {
-                if let Ok(n) = n_str.parse::<f64>() {
-                    Some(Value::Number(n))
-                } else {
-                    None
-                }
-            }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "true" => {
-                Some(Value::Bool(true))
-            }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => {
-                Some(Value::Bool(false))
-            }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
-            Expr::BinaryOp(BinaryOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
-                let l = self.eval_expr(lhs, env)?;
-                let r = self.eval_expr(rhs, env)?;
-                match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), BinaryOp::Add) => {
-                        Some(Value::Number(a + b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Sub) => {
-                        Some(Value::Number(a - b))
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Mul) => {
-                        Some(Value::Number(a * b))
-                    }
-                    (Value::Number(_), Value::Number(_), BinaryOp::MatMul) => {
-                        // MatMul not supported for pure numbers at compile time
-                        None
-                    }
-                    (Value::Number(a), Value::Number(b), BinaryOp::Div) => {
-                        Some(Value::Number(a / b))
-                    }
-                    _ => None,
-                }
-            }
-            Expr::RelationalOp(RelationalOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
-                let l = self.eval_expr(lhs, env)?;
-                let r = self.eval_expr(rhs, env)?;
-                match (l, r, op) {
-                    (Value::Number(a), Value::Number(b), RelationalOp::Eq) => {
-                        Some(Value::Bool(a == b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::NotEq) => {
-                        Some(Value::Bool(a != b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Lt) => {
-                        Some(Value::Bool(a < b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Gt) => {
-                        Some(Value::Bool(a > b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Le) => {
-                        Some(Value::Bool(a <= b))
-                    }
-                    (Value::Number(a), Value::Number(b), RelationalOp::Ge) => {
-                        Some(Value::Bool(a >= b))
-                    }
-                    (Value::Bool(a), Value::Bool(b), RelationalOp::Eq) => Some(Value::Bool(a == b)),
-                    (Value::Bool(a), Value::Bool(b), RelationalOp::NotEq) => {
-                        Some(Value::Bool(a != b))
-                    }
-                    _ => None,
-                }
-            }
-            Expr::LogicalOp(LogicalOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
-                let l = self.eval_expr(lhs, env)?;
-                let r = self.eval_expr(rhs, env)?;
-                match (l, r, op) {
-                    (Value::Bool(a), Value::Bool(b), LogicalOp::And) => Some(Value::Bool(a && b)),
-                    (Value::Bool(a), Value::Bool(b), LogicalOp::Or) => Some(Value::Bool(a || b)),
-                    _ => None,
-                }
-            }
-            Expr::UnaryOp(UnaryOpExpr {
-                op: UnaryOp::Not,
-                expr: inner,
-                span: _,
-            }) => {
-                if let Value::Bool(b) = self.eval_expr(inner, env)? {
-                    Some(Value::Bool(!b))
-                } else {
-                    None
-                }
-            }
-            Expr::FunctionCall(FunctionCallExpr {
-                name,
-                args,
-                span: _,
-            }) => {
-                let func = self.env.ast_functions.get(name)?;
-                let mut local_env = HashMap::new();
-                for (i, arg_expr) in args.iter().enumerate() {
-                    let arg_val = self.eval_expr(arg_expr, env)?;
-                    local_env.insert(func.params[i].0.clone(), arg_val);
-                }
-                for stmt in &func.body {
-                    if let Some(ret_val) = self.eval_statement(stmt, &mut local_env) {
-                        return Some(ret_val);
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn eval_statement(&self, stmt: &Statement, env: &mut HashMap<String, Value>) -> Option<Value> {
-        match stmt {
-            Statement::LetDecl(LetDeclStmt {
-                name,
-                is_mut: _,
-                ty_ann: _,
-                expr,
-                span: _,
-            }) => {
-                if let Some(val) = self.eval_expr(expr, env) {
-                    env.insert(name.clone(), val);
-                }
-                None
-            }
-            Statement::Assign(AssignStmt {
-                lhs: Expr::Identifier(IdentifierExpr { name, span: _ }),
-                rhs,
-                span: _,
-            }) => {
-                if let Some(val) = self.eval_expr(rhs, env) {
-                    env.insert(name.clone(), val);
-                }
-                None
-            }
-            Statement::Return(ReturnStmt { expr, span: _ }) => self.eval_expr(expr, env),
-            _ => None,
-        }
-    }
-
-    fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
+    pub(crate) fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
         // First perform semantic validation silently for HIR lowering
         let ty = self.check_expr_type_flag(expr, false, true);
 
@@ -892,9 +103,9 @@ impl<'a> TypeChecker<'a> {
                             if !is_pinned_on_host {
                                 if !silent {
                                     let msg = format!(
-                                        "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                        name, top, ty, self.active_topology
-                                    );
+                                            "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                            name, top, ty, self.active_topology
+                                        );
                                     self.errors.push(msg);
                                 }
                             }
@@ -1293,9 +504,9 @@ impl<'a> TypeChecker<'a> {
                     if *req_topology != self.active_topology {
                         if !silent {
                             self.errors.push(format!(
-                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                resolved_name, req_topology, self.active_topology
-                            ));
+                                    "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                    resolved_name, req_topology, self.active_topology
+                                ));
                         }
                     }
                     if *is_unsafe && !self.in_unsafe_block {
@@ -1318,9 +529,9 @@ impl<'a> TypeChecker<'a> {
                             if !self.is_assignable(param_ty, arg_ty) {
                                 if !silent {
                                     self.errors.push(format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
-                                    ));
+                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                            i + 1, resolved_name, param_ty, arg_ty
+                                        ));
                                 }
                             }
                         }
@@ -1334,9 +545,9 @@ impl<'a> TypeChecker<'a> {
                     if func.0.topology != self.active_topology {
                         if !silent {
                             self.errors.push(format!(
-                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                resolved_name, func.0.topology, self.active_topology
-                            ));
+                                    "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                    resolved_name, func.0.topology, self.active_topology
+                                ));
                         }
                     }
                     let param_types: Vec<Type> =
@@ -1356,9 +567,9 @@ impl<'a> TypeChecker<'a> {
                             if !self.is_assignable(param_ty, arg_ty) {
                                 if !silent {
                                     self.errors.push(format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
-                                    ));
+                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                            i + 1, resolved_name, param_ty, arg_ty
+                                        ));
                                 }
                             }
                         }
@@ -1414,9 +625,9 @@ impl<'a> TypeChecker<'a> {
                                     if !implements_trait {
                                         if !silent {
                                             self.errors.push(format!(
-                                                "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
-                                                concrete_ty, bound_name, g_name
-                                            ));
+                                                    "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                                    concrete_ty, bound_name, g_name
+                                                ));
                                         }
                                         success = false;
                                     }
@@ -2050,9 +1261,9 @@ impl<'a> TypeChecker<'a> {
                                 if !self.is_assignable(expected_type, &f_type) {
                                     if !silent {
                                         self.errors.push(format!(
-                                            "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
-                                            expected_name, expected_type, f_type
-                                        ));
+                                                "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                                expected_name, expected_type, f_type
+                                            ));
                                     }
                                 }
                                 break;
@@ -2119,9 +1330,9 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
-                                i + 1, target_fn, param_type, arg_type
-                            ));
+                                    "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
+                                    i + 1, target_fn, param_type, arg_type
+                                ));
                         }
                     }
                 }
@@ -2155,9 +1366,9 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
-                                i + 1, target_fn, param_type, arg_type
-                            ));
+                                    "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
+                                    i + 1, target_fn, param_type, arg_type
+                                ));
                         }
                     }
                 }
@@ -2192,9 +1403,9 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
-                                i + 1, target_fn, param_type, arg_type
-                            ));
+                                    "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
+                                    i + 1, target_fn, param_type, arg_type
+                                ));
                         }
                     }
                 }
@@ -2204,7 +1415,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_differentiability(&mut self, func: &crate::ast::Function) {
+    pub(crate) fn check_differentiability(&mut self, func: &crate::ast::Function) {
         match &func.return_type {
             Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
             _ => {
@@ -2250,7 +1461,7 @@ impl<'a> TypeChecker<'a> {
         id
     }
 
-    fn is_assignable(&self, target: &Type, source: &Type) -> bool {
+    pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
         println!("is_assignable(target: {:?}, source: {:?})", target, source);
         if target == source {
             return true;
@@ -2439,191 +1650,5 @@ impl<'a> TypeChecker<'a> {
         }
 
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lexer::Lexer;
-    use crate::parser::Parser;
-
-    #[test]
-    fn test_sema_distributed_matmul() {
-        let input = r#"
-fn custom_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
-    return a;
-}
-
-fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
-    let local_a = transfer(a, Memory::NPU_HBM);
-    let local_b = transfer(b, Memory::NPU_HBM);
-    spawn on(Topology::NPU[0]) {
-        let result = local_a; 
-        // In a real kernel, we would have explicit NPU intrinsics here.
-        // For this test, we verify the spawn and transfer syntax parses.
-    }
-    return a;
-}
-        "#;
-        let mut lexer = Lexer::new(input);
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
-        let mut program = parser.parse().unwrap();
-
-        let program_arr = [program.clone()];
-        let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
-        ));
-        let mut checker = TypeChecker::new(&env, &mut worker);
-        let success = {
-            for f in &mut program.functions {
-                checker.check_function(f);
-            }
-            checker.errors.is_empty()
-        };
-
-        for err in &checker.errors {
-            println!("Error: {}", err);
-        }
-        assert!(success);
-        assert!(checker.errors.is_empty());
-    }
-
-    #[test]
-    fn test_sema_type_mismatch() {
-        let input = r#"
-fn bad_matmul() -> Tensor {
-    return undefined_variable;
-}
-        "#;
-        let mut lexer = Lexer::new(input);
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
-        let mut program = parser.parse().unwrap();
-
-        let program_arr = [program.clone()];
-        let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
-        ));
-        let mut checker = TypeChecker::new(&env, &mut worker);
-        let success = {
-            for f in &mut program.functions {
-                checker.check_function(f);
-            }
-            checker.errors.is_empty()
-        };
-        assert!(!success);
-        assert!(!checker.errors.is_empty());
-    }
-
-    #[test]
-    fn test_sema_struct_and_pointers() {
-        let input = r#"
-        struct Config {
-            value: Tensor<f32>
-        }
-
-        fn test_pointers(c: &mut Config) -> Tensor<Bool> {
-            unsafe {
-                let ptr: *mut Config = c;
-                let val = *ptr;
-            }
-            return c.value < 20.0f32;
-        }
-        "#;
-        let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
-        let mut program = parser.parse().unwrap();
-        let program_arr = [program.clone()];
-        let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
-        ));
-        let mut checker = TypeChecker::new(&env, &mut worker);
-        assert!(
-            {
-                for f in &mut program.functions {
-                    checker.check_function(f);
-                }
-                checker.errors.is_empty()
-            },
-            "Semantic checking failed: {:?}",
-            checker.errors
-        );
-    }
-
-    #[test]
-    fn test_sema_extern_unsafe() {
-        let input = r#"
-        extern "C" {
-            fn malloc(size: Tensor<f32>) -> *mut Tensor<f32>;
-        }
-
-        fn safe_wrapper() -> *mut Tensor<f32> {
-            return malloc(1024); // ERROR: unsafe function call
-        }
-
-        fn safe_wrapper_fixed() -> *mut Tensor<f32> {
-            unsafe {
-                return malloc(1024);
-            }
-        }
-        "#;
-        let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
-        let mut program = parser.parse().unwrap();
-        let program_arr = [program.clone()];
-        let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
-        ));
-        let mut checker = TypeChecker::new(&env, &mut worker);
-
-        let success = {
-            for f in &mut program.functions {
-                checker.check_function(f);
-            }
-            checker.errors.is_empty()
-        };
-        assert!(!success);
-        assert!(checker
-            .errors
-            .iter()
-            .any(|e| e.contains("Call to unsafe function 'malloc' is unsafe")));
-    }
-
-    #[test]
-    fn test_sema_as_ptr_and_len() {
-        let input = r#"
-        fn test_methods(t: Tensor<f32>) -> Tensor<i64> {
-            let ptr: *const Tensor<f32> = t.as_ptr();
-            let mut_ptr: *mut Tensor<f32> = t.as_mut_ptr();
-            let length: Tensor<i64> = t.len();
-            return length;
-        }
-        "#;
-        let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
-        let mut program = parser.parse().unwrap();
-        let program_arr = [program.clone()];
-        let env = GlobalAstEnv::build(&program_arr);
-        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
-        ));
-        let mut checker = TypeChecker::new(&env, &mut worker);
-
-        assert!(
-            {
-                for f in &mut program.functions {
-                    checker.check_function(f);
-                }
-                checker.errors.is_empty()
-            },
-            "Semantic checking failed for methods: {:?}",
-            checker.errors
-        );
     }
 }
