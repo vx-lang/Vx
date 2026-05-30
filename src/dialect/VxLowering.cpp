@@ -23,6 +23,8 @@
 using namespace mlir;
 using namespace mlir::vx;
 
+#define DEBUG_TYPE "vx-lowering"
+
 namespace {
 
 // Lower `vx.spawn` to `async.execute` for CPU topologies, or a func call for
@@ -177,8 +179,8 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     }
 
     auto targetType = cast<MemRefType>(op.getResult().getType());
-    llvm::errs() << "[VxLowering] TransferOp lowering from " << srcType
-                 << " to " << targetType << "\n";
+    LLVM_DEBUG(llvm::errs() << "[VxLowering] TransferOp lowering from "
+                            << srcType << " to " << targetType << "\n");
 
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
