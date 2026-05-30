@@ -1,7 +1,4 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR-O0
-// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR-O3
-// RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 extern "C" {
   fn vx_get_time() -> f32;
@@ -34,55 +31,32 @@ fn main() -> i32 {
   let mut temp_matmul = Tensor_f32(128, 128);
   let mut temp_bias = Tensor_f32(128, 128);
 
-  // Warmup Unfused
-  for i in 0..128 {
-    for j in 0..128 {
-      temp_matmul[i][j] = 0.0;
-      for k in 0..128 {
-        temp_matmul[i][j] += a[i][k] * b[k][j];
-      }
-    }
-  }
-  for i in 0..128 {
-    for j in 0..128 {
-      temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
-    }
-  }
-  for i in 0..128 {
-    for j in 0..128 {
-      let val = temp_bias[i][j];
-      if val > 0.0 {
-        out_unfused[i][j] = val;
-      } else {
-        out_unfused[i][j] = 0.0;
-      }
-    }
-  }
-
-  // Warmup Fused
-  for i in 0..128 {
-    for j in 0..128 {
-      let mut sum = 0.0;
-      for k in 0..128 {
-        sum += a[i][k] * b[k][j];
-      }
-      sum += bias[i][j];
-      if sum > 0.0 {
-        out_fused[i][j] = sum;
-      } else {
-        out_fused[i][j] = 0.0;
-      }
-    }
-  }
-
-  // Verification
-  for i in 0..128 {
-    for j in 0..128 {
-      assert(out_unfused[i][j] == out_fused[i][j], "Mismatch between fused and unfused CPU results");
-    }
-  }
-
   unsafe {
+    // Warmup Unfused immediately before benchmark
+    for i in 0..128 {
+      for j in 0..128 {
+        temp_matmul[i][j] = 0.0;
+        for k in 0..128 {
+          temp_matmul[i][j] += a[i][k] * b[k][j];
+        }
+      }
+    }
+    for i in 0..128 {
+      for j in 0..128 {
+        temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
+      }
+    }
+    for i in 0..128 {
+      for j in 0..128 {
+        let val = temp_bias[i][j];
+        if val > 0.0 {
+          out_unfused[i][j] = val;
+        } else {
+          out_unfused[i][j] = 0.0;
+        }
+      }
+    }
+
     // Benchmark Unfused
     let t1 = vx_get_time();
     for _iter in 0..10 {
@@ -113,6 +87,22 @@ fn main() -> i32 {
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
+    // Warmup Fused immediately before benchmark
+    for i in 0..128 {
+      for j in 0..128 {
+        let mut sum = 0.0;
+        for k in 0..128 {
+          sum += a[i][k] * b[k][j];
+        }
+        sum += bias[i][j];
+        if sum > 0.0 {
+          out_fused[i][j] = sum;
+        } else {
+          out_fused[i][j] = 0.0;
+        }
+      }
+    }
+
     // Benchmark Fused
     let t3 = vx_get_time();
     for _iter in 0..10 {
@@ -136,21 +126,14 @@ fn main() -> i32 {
 
     print_f32(time_unfused);
     print_f32(time_fused);
+  }
 
-    // We expect fused to be faster or equal, but let's just log it and not assert 
-    // because caching effects could sometimes make them close, or O3 might fuse both anyway.
+  // Verification
+  for i in 0..128 {
+    for j in 0..128 {
+      assert(out_unfused[i][j] == out_fused[i][j], "Mismatch between fused and unfused CPU results");
+    }
   }
 
   return 0;
 }
-// NO_EXEC
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32

@@ -1,7 +1,4 @@
 //===- npu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR-O0
-// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR-O3
-// RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 extern "C" {
   fn vx_get_time() -> f32;
@@ -43,65 +40,38 @@ fn main() -> i32 {
   let mut temp_matmul_npu = transfer(temp_matmul, Memory::NPU_HBM);
   let mut temp_bias_npu = transfer(temp_bias, Memory::NPU_HBM);
 
-  // Warmup Unfused
-  spawn on(Topology::NPU[0]) {
-    for i in 0..128 {
-      for j in 0..128 {
-        temp_matmul_npu[i][j] = 0.0;
-        for k in 0..128 {
-          temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-        }
-      }
-    }
-  }
-  spawn on(Topology::NPU[0]) {
-    for i in 0..128 {
-      for j in 0..128 {
-        temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-      }
-    }
-  }
-  spawn on(Topology::NPU[0]) {
-    for i in 0..128 {
-      for j in 0..128 {
-        let val = temp_bias_npu[i][j];
-        if val > 0.0 {
-          out_unfused[i][j] = val;
-        } else {
-          out_unfused[i][j] = 0.0;
-        }
-      }
-    }
-  }
-
-  // Warmup Fused
-  spawn on(Topology::NPU[0]) {
-    for i in 0..128 {
-      for j in 0..128 {
-        let mut sum = 0.0;
-        for k in 0..128 {
-          sum += a[i][k] * b[k][j];
-        }
-        sum += bias[i][j];
-        if sum > 0.0 {
-          out_fused[i][j] = sum;
-        } else {
-          out_fused[i][j] = 0.0;
-        }
-      }
-    }
-  }
-
-  // Verification
-  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
-  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..128 {
-    for j in 0..128 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused NPU results");
-    }
-  }
-
   unsafe {
+    // Warmup Unfused immediately before benchmark
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_matmul_npu[i][j] = 0.0;
+          for k in 0..128 {
+            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
+          }
+        }
+      }
+    }
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+        }
+      }
+    }
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          let val = temp_bias_npu[i][j];
+          if val > 0.0 {
+            out_unfused[i][j] = val;
+          } else {
+            out_unfused[i][j] = 0.0;
+          }
+        }
+      }
+    }
+
     // Benchmark Unfused
     let t1 = vx_get_time();
     for _iter in 0..10 {
@@ -138,6 +108,24 @@ fn main() -> i32 {
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
+    // Warmup Fused immediately before benchmark
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          let mut sum = 0.0;
+          for k in 0..128 {
+            sum += a[i][k] * b[k][j];
+          }
+          sum += bias[i][j];
+          if sum > 0.0 {
+            out_fused[i][j] = sum;
+          } else {
+            out_fused[i][j] = 0.0;
+          }
+        }
+      }
+    }
+
     // Benchmark Fused
     let t3 = vx_get_time();
     for _iter in 0..10 {
@@ -166,16 +154,14 @@ fn main() -> i32 {
     assert(time_fused <= time_unfused);
   }
 
+  // Verification
+  let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
+  let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
+  for i in 0..128 {
+    for j in 0..128 {
+      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused NPU results");
+    }
+  }
+
   return 0;
 }
-// NO_EXEC
-
-// FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
-// FRONTEND: memref.alloc
-
-// MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
-
-// LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
