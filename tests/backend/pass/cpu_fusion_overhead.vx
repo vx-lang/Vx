@@ -146,11 +146,11 @@ fn main() -> i32 {
 // NO_EXEC
 
 // FRONTEND-LABEL: module {
-// FRONTEND: func.func @test_f32() -> i32
+// FRONTEND: func.func @main() -> i32
 // FRONTEND: memref.alloc
 
 // MLIR-LABEL: module {
-// MLIR: func.func @test_f32() -> i32
+// MLIR: func.func @main() -> i32
 
 // LLVM-LABEL: module {
-// LLVM: llvm.func @test_f32() -> i32
+// LLVM: llvm.func @main() -> i32

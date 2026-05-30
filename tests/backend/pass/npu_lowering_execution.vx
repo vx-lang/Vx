@@ -36,3 +36,13 @@ fn main() -> Pinned<Tensor<i32, [4, 4]>, Topology::NPU[0]> {
 
 
 
+
+// FRONTEND-LABEL: module {
+// FRONTEND: func.func @test_f32() -> i32
+// FRONTEND: memref.alloc
+
+// MLIR-LABEL: module {
+// MLIR: func.func @test_f32() -> i32
+
+// LLVM-LABEL: module {
+// LLVM: llvm.func @test_f32() -> i32

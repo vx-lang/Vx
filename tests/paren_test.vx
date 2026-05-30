@@ -2,3 +2,13 @@ fn main() -> i32 { let a = (1 + 2) * 3; return a; }
 
 
 
+
+// FRONTEND-LABEL: module {
+// FRONTEND: func.func @test_f32() -> i32
+// FRONTEND: memref.alloc
+
+// MLIR-LABEL: module {
+// MLIR: func.func @test_f32() -> i32
+
+// LLVM-LABEL: module {
+// LLVM: llvm.func @test_f32() -> i32

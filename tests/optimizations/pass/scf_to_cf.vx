@@ -10,3 +10,13 @@ fn test_scf_to_cf(a: Tensor<f32, [16]>, b: Tensor<f32, [16]>) -> Tensor<f32, [16
 
 
 
+
+// FRONTEND-LABEL: module {
+// FRONTEND: func.func @test_f32() -> i32
+// FRONTEND: memref.alloc
+
+// MLIR-LABEL: module {
+// MLIR: func.func @test_f32() -> i32
+
+// LLVM-LABEL: module {
+// LLVM: llvm.func @test_f32() -> i32

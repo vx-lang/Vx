@@ -136,8 +136,8 @@ impl CompilerDriver {
             }
 
             if self.options.action == Action::RunJit {
-                let out =
-                    crate::jit::execute_mlir(&mlir_src, mlir_args).map_err(|e| e.to_string())?;
+                let out = crate::jit::execute_mlir(&mlir_src, mlir_args, self.options.opt_level)
+                    .map_err(|e| e.to_string())?;
                 println!("{}", out);
                 return Ok(());
             }
@@ -277,7 +277,8 @@ impl CompilerDriver {
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());
-                let out = crate::jit::execute_mlir(&mlir_str, vec![]).map_err(|e| e.to_string())?;
+                let out = crate::jit::execute_mlir(&mlir_str, vec![], self.options.opt_level)
+                    .map_err(|e| e.to_string())?;
                 println!("{}", out);
             }
             Action::EmitObj => {

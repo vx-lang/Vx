@@ -21,12 +21,11 @@ echo ""
 
 # Loop through all benchmark files
 for file in benchmarks/*.vx; do
-    echo "▶ Benchmarking $file..."
-    
-    # Run and time the execution
-    time ./target/release/vxc --run "$file" > /dev/null
-    
-    echo "-------------------------------------"
+  echo "▶ Benchmarking $file..."
+  # Run and time the execution
+  # Suppress cargo output
+  cargo run --release --bin vxc -- "$file" -O3 --run > /dev/null
+  echo "-------------------------------------"
 done
 
 echo "Benchmarks completed!"

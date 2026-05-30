@@ -21,7 +21,11 @@ use std::sync::Once;
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static COMPILE_NPU_ONCE: Once = Once::new();
 
-pub fn execute_mlir(mlir_src: &str, _mlir_args: Vec<String>) -> Result<String, String> {
+pub fn execute_mlir(
+    mlir_src: &str,
+    _mlir_args: Vec<String>,
+    opt_level: u8,
+) -> Result<String, String> {
     // Ensure target/jit directory exists
     let jit_dir = std::path::Path::new("target/jit");
     if !jit_dir.exists() {
@@ -101,26 +105,26 @@ pub fn execute_mlir(mlir_src: &str, _mlir_args: Vec<String>) -> Result<String, S
         .map_err(|e| e.to_string())?;
 
     let temp_opt_ll = format!("target/jit/temp_opt_{}.ll", uid);
+    let mut opt_args = vec![];
     if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
-        println!("[JIT] Optimizing with Enzyme Pass...");
-        let opt_out = Command::new("/opt/homebrew/opt/llvm/bin/opt")
-            .args([
-                &format!("-load-pass-plugin={}", enzyme_lib),
-                "-passes=enzyme",
-                "-S",
-                &temp_ll,
-                "-o",
-                &temp_opt_ll,
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
+        opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
+        opt_args.push("-passes=enzyme".to_string());
+    }
+    opt_args.push(format!("-O{}", opt_level));
+    opt_args.push("-S".to_string());
+    opt_args.push(temp_ll.clone());
+    opt_args.push("-o".to_string());
+    opt_args.push(temp_opt_ll.clone());
 
-        if !opt_out.status.success() {
-            let err_str = String::from_utf8_lossy(&opt_out.stderr);
-            return Err(format!("opt (enzyme) failed:\n{}", err_str));
-        }
-    } else {
-        std::fs::copy(&temp_ll, &temp_opt_ll).map_err(|e| e.to_string())?;
+    println!("[JIT] Optimizing LLVM IR (-O{})...", opt_level);
+    let opt_out = Command::new("/opt/homebrew/opt/llvm/bin/opt")
+        .args(&opt_args)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !opt_out.status.success() {
+        let err_str = String::from_utf8_lossy(&opt_out.stderr);
+        return Err(format!("opt failed:\n{}", err_str));
     }
 
     println!("[JIT] Executing via LLI...");
