@@ -1,6 +1,8 @@
 //===- advanced_pass.vx ---------------------------------===//
+// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
 // RUN: vxc %s
-// RUN: vxc --emit-mlir %s | FileCheck %s
 
 fn check_complex_logic<A, B>(val: Tensor<f32, [A, B]>) -> Verified<Tensor<f32, [A, B]>> {
   assert(A == 10 || B == 20, "Logical OR constraint");
@@ -74,45 +76,262 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module {
-// CHECK:   func.func @check_complex_logic_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:     return %arg0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @test_inference_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:     return %arg0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @nested_verified_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:     %0 = call @test_inference_Genericsixteen_Genericsixteen(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     return %0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @compound_math_constraint_Generictwenty_Generictwenty(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:     return %arg0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @test_inference_Generica_Genericd(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// CHECK:     return %arg0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @multi_transitive_bounds_Generica_Genericd(%arg0: memref<?x?xf32>, %arg1: i32, %arg2: i32) -> memref<?x?xf32> {
-// CHECK:     %0 = call @test_inference_Generica_Genericd(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     return %0 : memref<?x?xf32>
-// CHECK:   }
-// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// CHECK:     %c10_i32 = arith.constant 10 : i32
-// CHECK:     %c20_i32 = arith.constant 20 : i32
-// CHECK:     %0 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %1 = call @check_complex_logic_Genericx_Genericy(%0) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     %c16_i32 = arith.constant 16 : i32
-// CHECK:     %2 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %3 = call @nested_verified_Genericsixteen_Genericsixteen(%2) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     %c20_i32_0 = arith.constant 20 : i32
-// CHECK:     %4 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %5 = call @compound_math_constraint_Generictwenty_Generictwenty(%4) : (memref<?x?xf32>) -> memref<?x?xf32>
-// CHECK:     %c5_i32 = arith.constant 5 : i32
-// CHECK:     %c5_i32_1 = arith.constant 5 : i32
-// CHECK:     %c5_i32_2 = arith.constant 5 : i32
-// CHECK:     %c5_i32_3 = arith.constant 5 : i32
-// CHECK:     %6 = builtin.unrealized_conversion_cast to memref<?x?xf32>
-// CHECK:     %7 = call @multi_transitive_bounds_Generica_Genericd(%6, %c5_i32_1, %c5_i32_2) : (memref<?x?xf32>, i32, i32) -> memref<?x?xf32>
-// CHECK:     %c0_i32 = arith.constant 0 : i32
-// CHECK:     return %c0_i32 : i32
-// CHECK:   }
-// CHECK: }
+// FRONTEND: module {
+// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
+// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
+// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
+// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
+// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
+// FRONTEND:   func.func @check_complex_logic_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     return %arg0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @test_inference_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     return %arg0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @nested_verified_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     %0 = call @test_inference_Genericsixteen_Genericsixteen(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// FRONTEND:     return %0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @compound_math_constraint_Generictwenty_Generictwenty(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     return %arg0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @test_inference_Generica_Genericd(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// FRONTEND:     return %arg0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @multi_transitive_bounds_Generica_Genericd(%arg0: memref<?x?xf32>, %arg1: i32, %arg2: i32) -> memref<?x?xf32> {
+// FRONTEND:     %0 = call @test_inference_Generica_Genericd(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// FRONTEND:     return %0 : memref<?x?xf32>
+// FRONTEND:   }
+// FRONTEND:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// FRONTEND:     %c10_i32 = arith.constant 10 : i32
+// FRONTEND:     %c20_i32 = arith.constant 20 : i32
+// FRONTEND:     %0 = arith.index_cast %c10_i32 : i32 to index
+// FRONTEND:     %1 = arith.index_cast %c20_i32 : i32 to index
+// FRONTEND:     %alloc = memref.alloc(%0, %1) : memref<?x?xf32>
+// FRONTEND:     %2 = call @check_complex_logic_Genericx_Genericy(%alloc) : (memref<?x?xf32>) -> memref<?x?xf32>
+// FRONTEND:     %c16_i32 = arith.constant 16 : i32
+// FRONTEND:     %3 = arith.index_cast %c16_i32 : i32 to index
+// FRONTEND:     %4 = arith.index_cast %c16_i32 : i32 to index
+// FRONTEND:     %alloc_0 = memref.alloc(%3, %4) : memref<?x?xf32>
+// FRONTEND:     %5 = call @nested_verified_Genericsixteen_Genericsixteen(%alloc_0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// FRONTEND:     %c20_i32_1 = arith.constant 20 : i32
+// FRONTEND:     %6 = arith.index_cast %c20_i32_1 : i32 to index
+// FRONTEND:     %7 = arith.index_cast %c20_i32_1 : i32 to index
+// FRONTEND:     %alloc_2 = memref.alloc(%6, %7) : memref<?x?xf32>
+// FRONTEND:     %8 = call @compound_math_constraint_Generictwenty_Generictwenty(%alloc_2) : (memref<?x?xf32>) -> memref<?x?xf32>
+// FRONTEND:     %c5_i32 = arith.constant 5 : i32
+// FRONTEND:     %c5_i32_3 = arith.constant 5 : i32
+// FRONTEND:     %c5_i32_4 = arith.constant 5 : i32
+// FRONTEND:     %c5_i32_5 = arith.constant 5 : i32
+// FRONTEND:     %9 = arith.index_cast %c5_i32 : i32 to index
+// FRONTEND:     %10 = arith.index_cast %c5_i32_5 : i32 to index
+// FRONTEND:     %alloc_6 = memref.alloc(%9, %10) : memref<?x?xf32>
+// FRONTEND:     %11 = call @multi_transitive_bounds_Generica_Genericd(%alloc_6, %c5_i32_3, %c5_i32_4) : (memref<?x?xf32>, i32, i32) -> memref<?x?xf32>
+// FRONTEND:     %c0_i32 = arith.constant 0 : i32
+// FRONTEND:     return %c0_i32 : i32
+// FRONTEND:   }
+// FRONTEND: }
+
+// MLIR: module {
+// MLIR:   func.func private @printMemrefF32(memref<*xf32>)
+// MLIR:   func.func private @printMemrefF64(memref<*xf64>)
+// MLIR:   func.func private @printMemrefI32(memref<*xi32>)
+// MLIR:   func.func private @printMemrefI64(memref<*xi64>)
+// MLIR:   func.func private @printMemrefBF16(memref<*xbf16>)
+// MLIR:   func.func @check_complex_logic_Genericx_Genericy(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// MLIR:     return %arg0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @test_inference_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// MLIR:     return %arg0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @nested_verified_Genericsixteen_Genericsixteen(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// MLIR:     %0 = call @test_inference_Genericsixteen_Genericsixteen(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// MLIR:     return %0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @compound_math_constraint_Generictwenty_Generictwenty(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// MLIR:     return %arg0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @test_inference_Generica_Genericd(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
+// MLIR:     return %arg0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @multi_transitive_bounds_Generica_Genericd(%arg0: memref<?x?xf32>, %arg1: i32, %arg2: i32) -> memref<?x?xf32> {
+// MLIR:     %0 = call @test_inference_Generica_Genericd(%arg0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// MLIR:     return %0 : memref<?x?xf32>
+// MLIR:   }
+// MLIR:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR:     %c5 = arith.constant 5 : index
+// MLIR:     %c16 = arith.constant 16 : index
+// MLIR:     %c0_i32 = arith.constant 0 : i32
+// MLIR:     %c5_i32 = arith.constant 5 : i32
+// MLIR:     %c10 = arith.constant 10 : index
+// MLIR:     %c20 = arith.constant 20 : index
+// MLIR:     %alloc = memref.alloc(%c10, %c20) : memref<?x?xf32>
+// MLIR:     %0 = call @check_complex_logic_Genericx_Genericy(%alloc) : (memref<?x?xf32>) -> memref<?x?xf32>
+// MLIR:     %alloc_0 = memref.alloc(%c16, %c16) : memref<?x?xf32>
+// MLIR:     %1 = call @nested_verified_Genericsixteen_Genericsixteen(%alloc_0) : (memref<?x?xf32>) -> memref<?x?xf32>
+// MLIR:     %alloc_1 = memref.alloc(%c20, %c20) : memref<?x?xf32>
+// MLIR:     %2 = call @compound_math_constraint_Generictwenty_Generictwenty(%alloc_1) : (memref<?x?xf32>) -> memref<?x?xf32>
+// MLIR:     %alloc_2 = memref.alloc(%c5, %c5) : memref<?x?xf32>
+// MLIR:     %3 = call @multi_transitive_bounds_Generica_Genericd(%alloc_2, %c5_i32, %c5_i32) : (memref<?x?xf32>, i32, i32) -> memref<?x?xf32>
+// MLIR:     return %c0_i32 : i32
+// MLIR:   }
+// MLIR: }
+
+// LLVM: ; ModuleID = 'LLVMDialectModule'
+// LLVM: source_filename = "LLVMDialectModule"
+// LLVM: declare ptr @malloc(i64)
+// LLVM: declare void @printMemrefF32(i64, ptr)
+// LLVM: declare void @printMemrefF64(i64, ptr)
+// LLVM: declare void @printMemrefI32(i64, ptr)
+// LLVM: declare void @printMemrefI64(i64, ptr)
+// LLVM: declare void @printMemrefBF16(i64, ptr)
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @check_complex_logic_Genericx_Genericy(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6) {
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %1, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %9, i64 %2, 2
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, i64 %3, 3, 0
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %5, 4, 0
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %4, 3, 1
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %6, 4, 1
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %14
+// LLVM: }
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @test_inference_Genericsixteen_Genericsixteen(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6) {
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %1, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %9, i64 %2, 2
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, i64 %3, 3, 0
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %5, 4, 0
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %4, 3, 1
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %6, 4, 1
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %14
+// LLVM: }
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @nested_verified_Genericsixteen_Genericsixteen(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6) {
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %1, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %9, i64 %2, 2
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, i64 %3, 3, 0
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %5, 4, 0
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %4, 3, 1
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %6, 4, 1
+// LLVM:   %15 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 0
+// LLVM:   %16 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 1
+// LLVM:   %17 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 2
+// LLVM:   %18 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 3, 0
+// LLVM:   %19 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 3, 1
+// LLVM:   %20 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 4, 0
+// LLVM:   %21 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, 4, 1
+// LLVM:   %22 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @test_inference_Genericsixteen_Genericsixteen(ptr %15, ptr %16, i64 %17, i64 %18, i64 %19, i64 %20, i64 %21)
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %22
+// LLVM: }
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @compound_math_constraint_Generictwenty_Generictwenty(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6) {
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %1, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %9, i64 %2, 2
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, i64 %3, 3, 0
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %5, 4, 0
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %4, 3, 1
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %6, 4, 1
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %14
+// LLVM: }
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @test_inference_Generica_Genericd(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6) {
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, ptr %1, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %9, i64 %2, 2
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, i64 %3, 3, 0
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %5, 4, 0
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %4, 3, 1
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %6, 4, 1
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %14
+// LLVM: }
+// LLVM: define { ptr, ptr, i64, [2 x i64], [2 x i64] } @multi_transitive_bounds_Generica_Genericd(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6, i32 %7, i32 %8) {
+// LLVM:   %10 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %0, 0
+// LLVM:   %11 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %10, ptr %1, 1
+// LLVM:   %12 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %11, i64 %2, 2
+// LLVM:   %13 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %12, i64 %3, 3, 0
+// LLVM:   %14 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %13, i64 %5, 4, 0
+// LLVM:   %15 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %14, i64 %4, 3, 1
+// LLVM:   %16 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %15, i64 %6, 4, 1
+// LLVM:   %17 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 0
+// LLVM:   %18 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 1
+// LLVM:   %19 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 2
+// LLVM:   %20 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 3, 0
+// LLVM:   %21 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 3, 1
+// LLVM:   %22 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 4, 0
+// LLVM:   %23 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %16, 4, 1
+// LLVM:   %24 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @test_inference_Generica_Genericd(ptr %17, ptr %18, i64 %19, i64 %20, i64 %21, i64 %22, i64 %23)
+// LLVM:   ret { ptr, ptr, i64, [2 x i64], [2 x i64] } %24
+// LLVM: }
+// LLVM: define i32 @main() {
+// LLVM:   %1 = call ptr @malloc(i64 800)
+// LLVM:   %2 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %1, 0
+// LLVM:   %3 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %2, ptr %1, 1
+// LLVM:   %4 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %3, i64 0, 2
+// LLVM:   %5 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %4, i64 10, 3, 0
+// LLVM:   %6 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %5, i64 20, 3, 1
+// LLVM:   %7 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %6, i64 20, 4, 0
+// LLVM:   %8 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %7, i64 1, 4, 1
+// LLVM:   %9 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 0
+// LLVM:   %10 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 1
+// LLVM:   %11 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 2
+// LLVM:   %12 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 3, 0
+// LLVM:   %13 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 3, 1
+// LLVM:   %14 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 4, 0
+// LLVM:   %15 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %8, 4, 1
+// LLVM:   %16 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @check_complex_logic_Genericx_Genericy(ptr %9, ptr %10, i64 %11, i64 %12, i64 %13, i64 %14, i64 %15)
+// LLVM:   %17 = call ptr @malloc(i64 1024)
+// LLVM:   %18 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %17, 0
+// LLVM:   %19 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %18, ptr %17, 1
+// LLVM:   %20 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %19, i64 0, 2
+// LLVM:   %21 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %20, i64 16, 3, 0
+// LLVM:   %22 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %21, i64 16, 3, 1
+// LLVM:   %23 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %22, i64 16, 4, 0
+// LLVM:   %24 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %23, i64 1, 4, 1
+// LLVM:   %25 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 0
+// LLVM:   %26 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 1
+// LLVM:   %27 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 2
+// LLVM:   %28 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 3, 0
+// LLVM:   %29 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 3, 1
+// LLVM:   %30 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 4, 0
+// LLVM:   %31 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %24, 4, 1
+// LLVM:   %32 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @nested_verified_Genericsixteen_Genericsixteen(ptr %25, ptr %26, i64 %27, i64 %28, i64 %29, i64 %30, i64 %31)
+// LLVM:   %33 = call ptr @malloc(i64 1600)
+// LLVM:   %34 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %33, 0
+// LLVM:   %35 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %34, ptr %33, 1
+// LLVM:   %36 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %35, i64 0, 2
+// LLVM:   %37 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %36, i64 20, 3, 0
+// LLVM:   %38 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %37, i64 20, 3, 1
+// LLVM:   %39 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %38, i64 20, 4, 0
+// LLVM:   %40 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %39, i64 1, 4, 1
+// LLVM:   %41 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 0
+// LLVM:   %42 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 1
+// LLVM:   %43 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 2
+// LLVM:   %44 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 3, 0
+// LLVM:   %45 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 3, 1
+// LLVM:   %46 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 4, 0
+// LLVM:   %47 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %40, 4, 1
+// LLVM:   %48 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @compound_math_constraint_Generictwenty_Generictwenty(ptr %41, ptr %42, i64 %43, i64 %44, i64 %45, i64 %46, i64 %47)
+// LLVM:   %49 = call ptr @malloc(i64 100)
+// LLVM:   %50 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } poison, ptr %49, 0
+// LLVM:   %51 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %50, ptr %49, 1
+// LLVM:   %52 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %51, i64 0, 2
+// LLVM:   %53 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %52, i64 5, 3, 0
+// LLVM:   %54 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %53, i64 5, 3, 1
+// LLVM:   %55 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %54, i64 5, 4, 0
+// LLVM:   %56 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %55, i64 1, 4, 1
+// LLVM:   %57 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 0
+// LLVM:   %58 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 1
+// LLVM:   %59 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 2
+// LLVM:   %60 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 3, 0
+// LLVM:   %61 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 3, 1
+// LLVM:   %62 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 4, 0
+// LLVM:   %63 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %56, 4, 1
+// LLVM:   %64 = call { ptr, ptr, i64, [2 x i64], [2 x i64] } @multi_transitive_bounds_Generica_Genericd(ptr %57, ptr %58, i64 %59, i64 %60, i64 %61, i64 %62, i64 %63, i32 5, i32 5)
+// LLVM:   ret i32 0
+// LLVM: }
+// LLVM: define i32 @_mlir_ciface_main() {
+// LLVM:   %1 = call i32 @main()
+// LLVM:   ret i32 %1
+// LLVM: }
+// LLVM: !llvm.module.flags = !{!0}
+// LLVM: !0 = !{i32 2, !"Debug Info Version", i32 3}
+

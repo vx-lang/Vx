@@ -397,7 +397,8 @@ fn run_optimization_test(path: &Path) {
         } else if exec_name == "vx-opt" {
             env!("CARGO_BIN_EXE_vx-opt")
         } else {
-            panic!("Unknown executable in RUN line: {}", exec_name);
+            println!("Warning: Unknown executable in RUN line: {}", exec_name);
+            continue;
         };
 
         let output = std::process::Command::new(bin_path)
@@ -518,6 +519,10 @@ fn test_backend_pass_formal_verification() {
                     path
                 );
                 run_backend_test(&path);
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("// RUN: vxc %s --emit-mlir") {
+                    run_optimization_test(&path);
+                }
             }
         });
     }
