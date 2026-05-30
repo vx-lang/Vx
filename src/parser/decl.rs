@@ -153,6 +153,8 @@ impl<'a> Parser<'a> {
             _ => return Err("Expected enum name".to_string()),
         };
 
+        let generics = self.parse_generic_params()?;
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut variants = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -160,7 +162,23 @@ impl<'a> Parser<'a> {
                 TokenType::Identifier(s) => s,
                 _ => return Err("Expected enum variant name".to_string()),
             };
-            variants.push(v_name);
+
+            let mut payload = None;
+            if self.match_token(&TokenType::LeftParen) {
+                let mut types = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    loop {
+                        types.push(self.parse_type()?);
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
+                payload = Some(types);
+            }
+
+            variants.push((v_name, payload));
 
             if !self.match_token(&TokenType::Comma) {
                 break;
@@ -168,7 +186,16 @@ impl<'a> Parser<'a> {
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
-        Ok(EnumDecl { name, variants })
+        // Remove generic params from scope
+        for _ in 0..generics.len() {
+            self.generic_params.pop();
+        }
+
+        Ok(EnumDecl {
+            name,
+            generics,
+            variants,
+        })
     }
 
     pub(crate) fn parse_extern_block(&mut self) -> Result<Vec<ExternDecl>, String> {

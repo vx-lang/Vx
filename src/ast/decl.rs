@@ -20,7 +20,8 @@ pub struct StructDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumDecl {
     pub name: String,
-    pub variants: Vec<String>,
+    pub generics: Vec<(String, Option<String>)>,
+    pub variants: Vec<(String, Option<Vec<Type>>)>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
