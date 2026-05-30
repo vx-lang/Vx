@@ -34,7 +34,8 @@ pub enum Value {
 
 pub struct GlobalAstEnv<'a> {
     pub structs: HashMap<String, &'a StructDecl>,
-    pub enums: HashMap<String, &'a Vec<String>>,
+    #[allow(clippy::type_complexity)]
+    pub enums: HashMap<String, &'a Vec<(String, Option<Vec<Type>>)>>,
     pub traits: HashMap<String, &'a TraitDecl>,
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
     pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology)>,

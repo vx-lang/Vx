@@ -1,0 +1,12 @@
+enum Option<T> {
+  Some(T),
+  None
+}
+
+fn main() -> i32 {
+  let a = Option::Some(10);
+  let b = Option::None;
+  let c = Option::Some(10, 20); // fail: expects 1 argument
+  let d = Option::None(10);     // fail: expects no argument
+  return 0;
+}

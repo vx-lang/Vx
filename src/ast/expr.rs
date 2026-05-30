@@ -45,13 +45,20 @@ impl IdentifierExpr {
 pub struct EnumVariantExpr {
     pub enum_name: String,
     pub variant_name: String,
+    pub payload: Option<Vec<Expr>>,
     pub span: Span,
 }
 impl EnumVariantExpr {
-    pub fn new(enum_name: String, variant_name: String, span: Span) -> Self {
+    pub fn new(
+        enum_name: String,
+        variant_name: String,
+        payload: Option<Vec<Expr>>,
+        span: Span,
+    ) -> Self {
         Self {
             enum_name,
             variant_name,
+            payload,
             span,
         }
     }
@@ -413,6 +420,18 @@ impl IfExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct RangeExpr {
+    pub start: Box<Expr>,
+    pub end: Box<Expr>,
+    pub span: Span,
+}
+impl RangeExpr {
+    pub fn new(start: Box<Expr>, end: Box<Expr>, span: Span) -> Self {
+        Self { start, end, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(IdentifierExpr),
     EnumVariant(EnumVariantExpr),
@@ -436,6 +455,7 @@ pub enum Expr {
     MemorySpace(MemorySpaceExpr),
     Topology(TopologyExpr),
     If(IfExpr),
+    Range(RangeExpr),
     Grad(GradExpr),
     Vjp(VjpExpr),
     Jvp(JvpExpr),
@@ -467,6 +487,7 @@ impl Expr {
             Expr::MemorySpace(e) => e.span.clone(),
             Expr::Topology(e) => e.span.clone(),
             Expr::If(e) => e.span.clone(),
+            Expr::Range(e) => e.span.clone(),
             Expr::Grad(e) => e.span.clone(),
             Expr::Vjp(e) => e.span.clone(),
             Expr::Jvp(e) => e.span.clone(),
@@ -603,6 +624,11 @@ impl Expr {
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
                 span: e.span.clone(),
             }),
+            Expr::Range(e) => Expr::Range(RangeExpr {
+                start: Box::new(e.start.substitute(mapping)),
+                end: Box::new(e.end.substitute(mapping)),
+                span: e.span.clone(),
+            }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
                 args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
@@ -643,11 +669,18 @@ impl Expr {
                 }
                 self.clone()
             }
-            Expr::EnumVariant(_)
-            | Expr::Number(_)
-            | Expr::StringLiteral(_)
-            | Expr::MemorySpace(_)
-            | Expr::Topology(_) => self.clone(),
+            Expr::EnumVariant(e) => Expr::EnumVariant(EnumVariantExpr {
+                enum_name: e.enum_name.clone(),
+                variant_name: e.variant_name.clone(),
+                payload: e
+                    .payload
+                    .as_ref()
+                    .map(|p| p.iter().map(|ex| ex.substitute(mapping)).collect()),
+                span: e.span.clone(),
+            }),
+            Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
+                self.clone()
+            }
         }
     }
 }

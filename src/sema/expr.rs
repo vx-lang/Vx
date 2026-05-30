@@ -48,6 +48,25 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        if let Expr::FunctionCall(fc) = expr {
+            if let Some((enum_name, variant)) = fc.name.split_once("::") {
+                if self.env.enums.contains_key(enum_name) {
+                    let mut payload = None;
+                    if !fc.args.is_empty() {
+                        let mut args = Vec::new();
+                        std::mem::swap(&mut args, &mut fc.args);
+                        payload = Some(args);
+                    }
+                    *expr = Expr::EnumVariant(EnumVariantExpr {
+                        enum_name: enum_name.to_string(),
+                        variant_name: variant.to_string(),
+                        payload,
+                        span: fc.span.clone(),
+                    });
+                }
+            }
+        }
+
         match expr {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 if name == "true" || name == "false" {
@@ -121,19 +140,46 @@ impl<'a> TypeChecker<'a> {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
                 variant_name: variant,
+                payload,
                 span: _,
             }) => {
                 if let Some(variants) = self.env.enums.get(enum_name) {
-                    if !variants.contains(variant) && !silent {
+                    if let Some((_, expected_payload)) = variants.iter().find(|(n, _)| n == variant)
+                    {
+                        if let Some(expr_payload) = payload {
+                            if let Some(exp_types) = expected_payload {
+                                if expr_payload.len() != exp_types.len() {
+                                    if !silent {
+                                        self.errors.push(format!("Enum variant {}::{} expects {} payload arguments, got {}", enum_name, variant, exp_types.len(), expr_payload.len()));
+                                    }
+                                } else {
+                                    for (i, expr) in expr_payload.iter_mut().enumerate() {
+                                        let expr_ty = self.check_expr_type(expr);
+                                        if !self.is_assignable(&exp_types[i], &expr_ty) && !silent {
+                                            self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, enum_name, variant, exp_types[i], expr_ty));
+                                        }
+                                    }
+                                }
+                            } else if !silent {
+                                self.errors.push(format!(
+                                    "Enum variant {}::{} does not take a payload",
+                                    enum_name, variant
+                                ));
+                            }
+                        } else if expected_payload.is_some() && !silent {
+                            self.errors.push(format!(
+                                "Enum variant {}::{} expects a payload",
+                                enum_name, variant
+                            ));
+                        }
+                    } else if !silent {
                         self.errors.push(format!(
                             "Enum {} does not have variant {}",
                             enum_name, variant
                         ));
                     }
-                } else {
-                    if !silent {
-                        self.errors.push(format!("Unknown enum {}", enum_name));
-                    }
+                } else if !silent {
+                    self.errors.push(format!("Unknown enum {}", enum_name));
                 }
                 Type::Enum(enum_name.clone(), None)
             }
@@ -782,6 +828,7 @@ impl<'a> TypeChecker<'a> {
                             if let Expr::EnumVariant(EnumVariantExpr {
                                 enum_name,
                                 variant_name: variant,
+                                payload: _,
                                 span: _,
                             }) = &args[1]
                             {
@@ -1405,6 +1452,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_expr_type(tangent);
                 func.return_type.clone()
+            }
+            Expr::Range(RangeExpr {
+                start,
+                end,
+                span: _,
+            }) => {
+                let start_ty = self.check_expr_type(start);
+                let end_ty = self.check_expr_type(end);
+                if start_ty != end_ty {
+                    self.errors.push(format!(
+                        "Range start and end types must match, got {:?} and {:?}",
+                        start_ty, end_ty
+                    ));
+                }
+                start_ty
             }
         }
     }

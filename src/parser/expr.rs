@@ -472,9 +472,27 @@ impl<'a> Parser<'a> {
                                 TokenType::Identifier(v) => v,
                                 _ => return Err("Expected enum variant after ::".to_string()),
                             };
+                            let mut payload = None;
+                            if self.match_token(&TokenType::LeftParen) {
+                                let mut args = Vec::new();
+                                if !self.check(&TokenType::RightParen) {
+                                    loop {
+                                        args.push(self.parse_expr()?);
+                                        if !self.match_token(&TokenType::Comma) {
+                                            break;
+                                        }
+                                    }
+                                }
+                                self.consume(
+                                    &TokenType::RightParen,
+                                    "Expected ')' after enum payload",
+                                )?;
+                                payload = Some(args);
+                            }
                             Expr::EnumVariant(EnumVariantExpr {
                                 enum_name: call_name,
                                 variant_name: variant,
+                                payload,
                                 span: Span::default(),
                             })
                         } else {
@@ -488,9 +506,27 @@ impl<'a> Parser<'a> {
                             TokenType::Identifier(v) => v,
                             _ => return Err("Expected enum variant after ::".to_string()),
                         };
+                        let mut payload = None;
+                        if self.match_token(&TokenType::LeftParen) {
+                            let mut args = Vec::new();
+                            if !self.check(&TokenType::RightParen) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if !self.match_token(&TokenType::Comma) {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.consume(
+                                &TokenType::RightParen,
+                                "Expected ')' after enum payload",
+                            )?;
+                            payload = Some(args);
+                        }
                         Expr::EnumVariant(EnumVariantExpr {
                             enum_name: call_name,
                             variant_name: variant,
+                            payload,
                             span: Span::default(),
                         })
                     } else {

@@ -185,6 +185,7 @@ impl AstPrinter {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
                 variant_name: variant,
+                payload: _,
                 span: _,
             }) => {
                 println!("{}{}Enum({}::{})", indent, prefix, enum_name, variant);

@@ -4,8 +4,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<String, (Value<'c, 'c>, Type<'c>)>,
-    pub(crate) structs: HashMap<String, StructDecl>,
-    pub(crate) enums: HashMap<String, Vec<String>>,
+    pub(crate) structs: HashMap<String, crate::ast::StructDecl>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) enums: HashMap<String, Vec<(String, Option<Vec<crate::ast::Type>>)>>,
     pub(crate) functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
