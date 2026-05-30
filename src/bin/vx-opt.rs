@@ -2,9 +2,10 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
 // Force Cargo to pull in melior's transitive dependencies (MLIR libraries)
-#[allow(unused_imports)]
+#[allow(unused_imports, clippy::single_component_path_imports)]
 use melior;
 
+#[allow(clippy::duplicated_attributes)]
 #[link(name = "vx_dialect", kind = "static")]
 #[link(name = "plugin_loader", kind = "static")]
 extern "C" {

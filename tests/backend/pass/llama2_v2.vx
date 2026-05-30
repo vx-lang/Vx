@@ -92,7 +92,7 @@ fn memory_map_weights(ptr: *mut f32, dim: i32, hidden_dim: i32, n_layers: i32, n
     let p10: *mut f32 = vx_advance_ptr(p9, n_layers * dim * hidden_dim);
     let p11: *mut f32 = vx_advance_ptr(p10, dim);
     let p12: *mut f32 = vx_advance_ptr(p11, seq_len * head_size);
-    let wcls_ptr: *mut f32 = p0; 
+    let wcls_ptr: *mut f32 = p0;
 
     TransformerWeights {
       token_embedding_table: p0,
@@ -213,14 +213,14 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
           let freq: f32 = safe_get_rope_freq(pos, head_dim, head_size);
           let fcr: f32 = safe_cosf(freq);
           let fci: f32 = safe_sinf(freq);
-          
+
           let rotn_q_r: i32 = i;
           let rotn_q_i: i32 = i + 1;
           let q0: f32 = s.q[rotn_q_r];
           let q1: f32 = s.q[rotn_q_i];
           s.q[rotn_q_r] = q0 * fcr - q1 * fci;
           s.q[rotn_q_i] = q0 * fci + q1 * fcr;
-          
+
           if i < kv_dim {
             let rotn_k_r: i32 = i;
             let rotn_k_i: i32 = i + 1;
@@ -245,7 +245,7 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
         let q_head: *mut f32 = vx_advance_ptr(s.q, q_offset);
         let att_offset: i32 = h * p.seq_len;
         let att_head: *mut f32 = vx_advance_ptr(s.att, att_offset);
-        
+
         for t in 0..(pos + 1) {
           let koff: i32 = loff + t * kv_dim + (h / kv_mul) * head_size;
           let k_head: *mut f32 = vx_advance_ptr(s.key_cache, koff);
@@ -316,10 +316,10 @@ fn transformer(token: i32, pos: i32, p: &Config, s: &RunState, w: &TransformerWe
 
       let w1_l: *mut f32 = vx_advance_ptr(w.w1, l * dim * hidden_dim);
       let w3_l: *mut f32 = vx_advance_ptr(w.w3, l * dim * hidden_dim);
-      
+
       let t_w1: Tensor<f32> = ptr_to_tensor_2d(w1_l, dim, hidden_dim);
       let t_w3: Tensor<f32> = ptr_to_tensor_2d(w3_l, dim, hidden_dim);
-      
+
       let t_hb: Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_w1;
       let t_hb2: Tensor<f32> = ptr_to_tensor_1d(s.xb, dim) @ t_w3;
       tensor_to_ptr_1d(t_hb, s.hb, hidden_dim);

@@ -99,14 +99,12 @@ impl<'a> TypeChecker<'a> {
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::Host);
-                            if !is_pinned_on_host {
-                                if !silent {
-                                    let msg = format!(
+                            if !is_pinned_on_host && !silent {
+                                let msg = format!(
                                             "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
                                             name, top, ty, self.active_topology
                                         );
-                                    self.errors.push(msg);
-                                }
+                                self.errors.push(msg);
                             }
                         }
                         ty.clone()
@@ -513,38 +511,30 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology)) =
                     self.env.functions.get(&resolved_name)
                 {
-                    if *req_topology != self.active_topology {
-                        if !silent {
-                            self.errors.push(format!(
+                    if (*req_topology != self.active_topology) && !silent {
+                        self.errors.push(format!(
                                     "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
                                     resolved_name, req_topology, self.active_topology
                                 ));
-                        }
                     }
-                    if *is_unsafe && !self.in_unsafe_block {
-                        if !silent {
-                            self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
-                        }
+                    if *is_unsafe && !self.in_unsafe_block && !silent {
+                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
                     }
-                    if args.len() != param_types.len() {
-                        if !silent {
-                            self.errors.push(format!(
-                                "Function '{}' expects {} arguments, got {}",
-                                resolved_name,
-                                param_types.len(),
-                                args.len()
-                            ));
-                        }
+                    if args.len() != param_types.len() && !silent {
+                        self.errors.push(format!(
+                            "Function '{}' expects {} arguments, got {}",
+                            resolved_name,
+                            param_types.len(),
+                            args.len()
+                        ));
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) {
-                                if !silent {
-                                    self.errors.push(format!(
-                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                            i + 1, resolved_name, param_ty, arg_ty
-                                        ));
-                                }
+                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
                             }
                         }
                     }
@@ -554,13 +544,11 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
-                    if func.0.topology != self.active_topology {
-                        if !silent {
-                            self.errors.push(format!(
-                                    "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                    resolved_name, func.0.topology, self.active_topology
-                                ));
-                        }
+                    if (func.0.topology != self.active_topology) && !silent {
+                        self.errors.push(format!(
+                            "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                            resolved_name, func.0.topology, self.active_topology
+                        ));
                     }
                     let param_types: Vec<Type> =
                         func.0.params.iter().map(|(_, t)| t.clone()).collect();
@@ -576,13 +564,11 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) {
-                                if !silent {
-                                    self.errors.push(format!(
-                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                            i + 1, resolved_name, param_ty, arg_ty
-                                        ));
-                                }
+                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
                             }
                         }
                     }
@@ -1270,24 +1256,20 @@ impl<'a> TypeChecker<'a> {
                             if f_name == expected_name {
                                 found = true;
                                 let f_type = self.check_expr_type_flag(f_expr, consume, silent);
-                                if !self.is_assignable(expected_type, &f_type) {
-                                    if !silent {
-                                        self.errors.push(format!(
-                                                "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
-                                                expected_name, expected_type, f_type
-                                            ));
-                                    }
+                                if !self.is_assignable(expected_type, &f_type) && !silent {
+                                    self.errors.push(format!(
+                                        "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                        expected_name, expected_type, f_type
+                                    ));
                                 }
                                 break;
                             }
                         }
-                        if !found {
-                            if !silent {
-                                self.errors.push(format!(
-                                    "Missing field '{}' in initialization of struct '{}'",
-                                    expected_name, resolved_name
-                                ));
-                            }
+                        if !found && !silent {
+                            self.errors.push(format!(
+                                "Missing field '{}' in initialization of struct '{}'",
+                                expected_name, resolved_name
+                            ));
                         }
                     }
                     // Check extra fields
