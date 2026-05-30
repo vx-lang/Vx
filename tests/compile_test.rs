@@ -493,6 +493,10 @@ fn test_backend() {
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 println!("Running test_backend on {:?}", path);
                 run_backend_test(&path);
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("// RUN: vxc %s --emit-mlir") {
+                    run_optimization_test(&path);
+                }
             }
         });
     }

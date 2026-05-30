@@ -1,4 +1,7 @@
 //===- npu_vector_transfer.vx ---------------------------------*- Vx -*-===//
+// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
 
 fn test_f32() -> i32 {
   let mut a = Tensor<f32>([4]);
@@ -31,3 +34,343 @@ fn main() -> i32 {
 }
 
 // NO_EXEC
+
+// FRONTEND: module {
+// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
+// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
+// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
+// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
+// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
+// FRONTEND:   func.func @test_f32() -> i32 {
+// FRONTEND:     %c4_i32 = arith.constant 4 : i32
+// FRONTEND:     %0 = arith.index_cast %c4_i32 : i32 to index
+// FRONTEND:     %alloc = memref.alloc(%0) : memref<?xf32>
+// FRONTEND:     %alloca = memref.alloca() : memref<memref<?xf32>>
+// FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %cst = arith.constant 1.000000e+00 : f32
+// FRONTEND:     %1 = memref.load %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %c0_i32 = arith.constant 0 : i32
+// FRONTEND:     %2 = arith.index_cast %c0_i32 : i32 to index
+// FRONTEND:     memref.store %cst, %1[%2] : memref<?xf32>
+// FRONTEND:     %cst_0 = arith.constant 2.000000e+00 : f32
+// FRONTEND:     %3 = memref.load %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %c1_i32 = arith.constant 1 : i32
+// FRONTEND:     %4 = arith.index_cast %c1_i32 : i32 to index
+// FRONTEND:     memref.store %cst_0, %3[%4] : memref<?xf32>
+// FRONTEND:     %cst_1 = arith.constant 3.000000e+00 : f32
+// FRONTEND:     %5 = memref.load %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %c2_i32 = arith.constant 2 : i32
+// FRONTEND:     %6 = arith.index_cast %c2_i32 : i32 to index
+// FRONTEND:     memref.store %cst_1, %5[%6] : memref<?xf32>
+// FRONTEND:     %cst_2 = arith.constant 4.000000e+00 : f32
+// FRONTEND:     %7 = memref.load %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %c3_i32 = arith.constant 3 : i32
+// FRONTEND:     %8 = arith.index_cast %c3_i32 : i32 to index
+// FRONTEND:     memref.store %cst_2, %7[%8] : memref<?xf32>
+// FRONTEND:     %9 = memref.load %alloca[] : memref<memref<?xf32>>
+// FRONTEND:     %10 = "vx.transfer"(%9) <{target_topology = 100 : i32}> : (memref<?xf32>) -> memref<?xf32>
+// FRONTEND:     %11 = "vx.transfer"(%10) <{target_topology = 0 : i32}> : (memref<?xf32>) -> memref<?xf32>
+// FRONTEND:     %c0_i32_3 = arith.constant 0 : i32
+// FRONTEND:     return %c0_i32_3 : i32
+// FRONTEND:   }
+// FRONTEND:   func.func @test_bf16() -> i32 {
+// FRONTEND:     %c4_i32 = arith.constant 4 : i32
+// FRONTEND:     %0 = arith.index_cast %c4_i32 : i32 to index
+// FRONTEND:     %alloc = memref.alloc(%0) : memref<?xbf16>
+// FRONTEND:     %alloca = memref.alloca() : memref<memref<?xbf16>>
+// FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %cst = arith.constant 1.000000e+00 : f32
+// FRONTEND:     %1 = memref.load %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %c0_i32 = arith.constant 0 : i32
+// FRONTEND:     %2 = arith.index_cast %c0_i32 : i32 to index
+// FRONTEND:     %3 = arith.truncf %cst : f32 to bf16
+// FRONTEND:     memref.store %3, %1[%2] : memref<?xbf16>
+// FRONTEND:     %cst_0 = arith.constant 2.000000e+00 : f32
+// FRONTEND:     %4 = memref.load %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %c1_i32 = arith.constant 1 : i32
+// FRONTEND:     %5 = arith.index_cast %c1_i32 : i32 to index
+// FRONTEND:     %6 = arith.truncf %cst_0 : f32 to bf16
+// FRONTEND:     memref.store %6, %4[%5] : memref<?xbf16>
+// FRONTEND:     %cst_1 = arith.constant 3.000000e+00 : f32
+// FRONTEND:     %7 = memref.load %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %c2_i32 = arith.constant 2 : i32
+// FRONTEND:     %8 = arith.index_cast %c2_i32 : i32 to index
+// FRONTEND:     %9 = arith.truncf %cst_1 : f32 to bf16
+// FRONTEND:     memref.store %9, %7[%8] : memref<?xbf16>
+// FRONTEND:     %cst_2 = arith.constant 4.000000e+00 : f32
+// FRONTEND:     %10 = memref.load %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %c3_i32 = arith.constant 3 : i32
+// FRONTEND:     %11 = arith.index_cast %c3_i32 : i32 to index
+// FRONTEND:     %12 = arith.truncf %cst_2 : f32 to bf16
+// FRONTEND:     memref.store %12, %10[%11] : memref<?xbf16>
+// FRONTEND:     %13 = memref.load %alloca[] : memref<memref<?xbf16>>
+// FRONTEND:     %14 = "vx.transfer"(%13) <{target_topology = 100 : i32}> : (memref<?xbf16>) -> memref<?xbf16>
+// FRONTEND:     %15 = "vx.transfer"(%14) <{target_topology = 0 : i32}> : (memref<?xbf16>) -> memref<?xbf16>
+// FRONTEND:     %c0_i32_3 = arith.constant 0 : i32
+// FRONTEND:     return %c0_i32_3 : i32
+// FRONTEND:   }
+// FRONTEND:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// FRONTEND:     %0 = call @test_f32() : () -> i32
+// FRONTEND:     %1 = call @test_bf16() : () -> i32
+// FRONTEND:     %c0_i32 = arith.constant 0 : i32
+// FRONTEND:     return %c0_i32 : i32
+// FRONTEND:   }
+// FRONTEND: }
+
+// MLIR: module {
+// MLIR:   func.func private @printMemrefF32(memref<*xf32>)
+// MLIR:   func.func private @printMemrefF64(memref<*xf64>)
+// MLIR:   func.func private @printMemrefI32(memref<*xi32>)
+// MLIR:   func.func private @printMemrefI64(memref<*xi64>)
+// MLIR:   func.func private @printMemrefBF16(memref<*xbf16>)
+// MLIR:   func.func @test_f32() -> i32 {
+// MLIR:     %c3 = arith.constant 3 : index
+// MLIR:     %c2 = arith.constant 2 : index
+// MLIR:     %c1 = arith.constant 1 : index
+// MLIR:     %c0 = arith.constant 0 : index
+// MLIR:     %cst = arith.constant 4.000000e+00 : f32
+// MLIR:     %cst_0 = arith.constant 3.000000e+00 : f32
+// MLIR:     %cst_1 = arith.constant 2.000000e+00 : f32
+// MLIR:     %c0_i32 = arith.constant 0 : i32
+// MLIR:     %cst_2 = arith.constant 1.000000e+00 : f32
+// MLIR:     %c4 = arith.constant 4 : index
+// MLIR:     %alloc = memref.alloc(%c4) : memref<?xf32>
+// MLIR:     %alloca = memref.alloca() : memref<memref<?xf32>>
+// MLIR:     memref.store %alloc, %alloca[] : memref<memref<?xf32>>
+// MLIR:     %0 = memref.load %alloca[] : memref<memref<?xf32>>
+// MLIR:     memref.store %cst_2, %0[%c0] : memref<?xf32>
+// MLIR:     %1 = memref.load %alloca[] : memref<memref<?xf32>>
+// MLIR:     memref.store %cst_1, %1[%c1] : memref<?xf32>
+// MLIR:     %2 = memref.load %alloca[] : memref<memref<?xf32>>
+// MLIR:     memref.store %cst_0, %2[%c2] : memref<?xf32>
+// MLIR:     %3 = memref.load %alloca[] : memref<memref<?xf32>>
+// MLIR:     memref.store %cst, %3[%c3] : memref<?xf32>
+// MLIR:     %4 = memref.load %alloca[] : memref<memref<?xf32>>
+// MLIR:     %dim = memref.dim %4, %c0 : memref<?xf32>
+// MLIR:     %alloc_3 = memref.alloc(%dim) : memref<?xf32>
+// MLIR:     memref.copy %4, %alloc_3 : memref<?xf32> to memref<?xf32>
+// MLIR:     %alloc_4 = memref.alloc(%dim) : memref<?xf32>
+// MLIR:     memref.copy %alloc_3, %alloc_4 : memref<?xf32> to memref<?xf32>
+// MLIR:     memref.dealloc %alloc_4 : memref<?xf32>
+// MLIR:     memref.dealloc %alloc_3 : memref<?xf32>
+// MLIR:     return %c0_i32 : i32
+// MLIR:   }
+// MLIR:   func.func @test_bf16() -> i32 {
+// MLIR:     %cst = arith.constant 4.000000e+00 : bf16
+// MLIR:     %c3 = arith.constant 3 : index
+// MLIR:     %cst_0 = arith.constant 3.000000e+00 : bf16
+// MLIR:     %c2 = arith.constant 2 : index
+// MLIR:     %cst_1 = arith.constant 2.000000e+00 : bf16
+// MLIR:     %c1 = arith.constant 1 : index
+// MLIR:     %cst_2 = arith.constant 1.000000e+00 : bf16
+// MLIR:     %c0 = arith.constant 0 : index
+// MLIR:     %c0_i32 = arith.constant 0 : i32
+// MLIR:     %c4 = arith.constant 4 : index
+// MLIR:     %alloc = memref.alloc(%c4) : memref<?xbf16>
+// MLIR:     %alloca = memref.alloca() : memref<memref<?xbf16>>
+// MLIR:     memref.store %alloc, %alloca[] : memref<memref<?xbf16>>
+// MLIR:     %0 = memref.load %alloca[] : memref<memref<?xbf16>>
+// MLIR:     memref.store %cst_2, %0[%c0] : memref<?xbf16>
+// MLIR:     %1 = memref.load %alloca[] : memref<memref<?xbf16>>
+// MLIR:     memref.store %cst_1, %1[%c1] : memref<?xbf16>
+// MLIR:     %2 = memref.load %alloca[] : memref<memref<?xbf16>>
+// MLIR:     memref.store %cst_0, %2[%c2] : memref<?xbf16>
+// MLIR:     %3 = memref.load %alloca[] : memref<memref<?xbf16>>
+// MLIR:     memref.store %cst, %3[%c3] : memref<?xbf16>
+// MLIR:     %4 = memref.load %alloca[] : memref<memref<?xbf16>>
+// MLIR:     %dim = memref.dim %4, %c0 : memref<?xbf16>
+// MLIR:     %alloc_3 = memref.alloc(%dim) : memref<?xbf16>
+// MLIR:     memref.copy %4, %alloc_3 : memref<?xbf16> to memref<?xbf16>
+// MLIR:     %alloc_4 = memref.alloc(%dim) : memref<?xbf16>
+// MLIR:     memref.copy %alloc_3, %alloc_4 : memref<?xbf16> to memref<?xbf16>
+// MLIR:     memref.dealloc %alloc_4 : memref<?xbf16>
+// MLIR:     memref.dealloc %alloc_3 : memref<?xbf16>
+// MLIR:     return %c0_i32 : i32
+// MLIR:   }
+// MLIR:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// MLIR:     %c0_i32 = arith.constant 0 : i32
+// MLIR:     %0 = call @test_f32() : () -> i32
+// MLIR:     %1 = call @test_bf16() : () -> i32
+// MLIR:     return %c0_i32 : i32
+// MLIR:   }
+// MLIR: }
+
+// LLVM: ; ModuleID = 'LLVMDialectModule'
+// LLVM: source_filename = "LLVMDialectModule"
+// LLVM: declare void @free(ptr)
+// LLVM: declare ptr @malloc(i64)
+// LLVM: declare void @printMemrefF32(i64, ptr)
+// LLVM: declare void @printMemrefF64(i64, ptr)
+// LLVM: declare void @printMemrefI32(i64, ptr)
+// LLVM: declare void @printMemrefI64(i64, ptr)
+// LLVM: declare void @printMemrefBF16(i64, ptr)
+// LLVM: define i32 @test_f32() {
+// LLVM:   %1 = call ptr @malloc(i64 16)
+// LLVM:   %2 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %1, 0
+// LLVM:   %3 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %2, ptr %1, 1
+// LLVM:   %4 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %3, i64 0, 2
+// LLVM:   %5 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %4, i64 4, 3, 0
+// LLVM:   %6 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %5, i64 1, 4, 0
+// LLVM:   %7 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+// LLVM:   %8 = insertvalue { ptr, ptr, i64 } poison, ptr %7, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64 } %8, ptr %7, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64 } %9, i64 0, 2
+// LLVM:   %11 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   store { ptr, ptr, i64, [1 x i64], [1 x i64] } %6, ptr %11, align 8
+// LLVM:   %12 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %13 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %12, align 8
+// LLVM:   %14 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %13, 1
+// LLVM:   %15 = getelementptr inbounds nuw float, ptr %14, i64 0
+// LLVM:   store float 1.000000e+00, ptr %15, align 4
+// LLVM:   %16 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %17 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %16, align 8
+// LLVM:   %18 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %17, 1
+// LLVM:   %19 = getelementptr inbounds nuw float, ptr %18, i64 1
+// LLVM:   store float 2.000000e+00, ptr %19, align 4
+// LLVM:   %20 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %21 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %20, align 8
+// LLVM:   %22 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %21, 1
+// LLVM:   %23 = getelementptr inbounds nuw float, ptr %22, i64 2
+// LLVM:   store float 3.000000e+00, ptr %23, align 4
+// LLVM:   %24 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %25 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %24, align 8
+// LLVM:   %26 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %25, 1
+// LLVM:   %27 = getelementptr inbounds nuw float, ptr %26, i64 3
+// LLVM:   store float 4.000000e+00, ptr %27, align 4
+// LLVM:   %28 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %29 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %28, align 8
+// LLVM:   %30 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 3, 0
+// LLVM:   %31 = getelementptr float, ptr null, i64 %30
+// LLVM:   %32 = ptrtoint ptr %31 to i64
+// LLVM:   %33 = call ptr @malloc(i64 %32)
+// LLVM:   %34 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %33, 0
+// LLVM:   %35 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %34, ptr %33, 1
+// LLVM:   %36 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %35, i64 0, 2
+// LLVM:   %37 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %36, i64 %30, 3, 0
+// LLVM:   %38 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, i64 1, 4, 0
+// LLVM:   %39 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 3, 0
+// LLVM:   %40 = mul i64 1, %39
+// LLVM:   %41 = mul i64 %40, 4
+// LLVM:   %42 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 1
+// LLVM:   %43 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 2
+// LLVM:   %44 = getelementptr float, ptr %42, i64 %43
+// LLVM:   %45 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 1
+// LLVM:   %46 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 2
+// LLVM:   %47 = getelementptr float, ptr %45, i64 %46
+// LLVM:   call void @llvm.memcpy.p0.p0.i64(ptr %47, ptr %44, i64 %41, i1 false)
+// LLVM:   %48 = getelementptr float, ptr null, i64 %30
+// LLVM:   %49 = ptrtoint ptr %48 to i64
+// LLVM:   %50 = call ptr @malloc(i64 %49)
+// LLVM:   %51 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %50, 0
+// LLVM:   %52 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %51, ptr %50, 1
+// LLVM:   %53 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %52, i64 0, 2
+// LLVM:   %54 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %53, i64 %30, 3, 0
+// LLVM:   %55 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %54, i64 1, 4, 0
+// LLVM:   %56 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 3, 0
+// LLVM:   %57 = mul i64 1, %56
+// LLVM:   %58 = mul i64 %57, 4
+// LLVM:   %59 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 1
+// LLVM:   %60 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 2
+// LLVM:   %61 = getelementptr float, ptr %59, i64 %60
+// LLVM:   %62 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 1
+// LLVM:   %63 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 2
+// LLVM:   %64 = getelementptr float, ptr %62, i64 %63
+// LLVM:   call void @llvm.memcpy.p0.p0.i64(ptr %64, ptr %61, i64 %58, i1 false)
+// LLVM:   %65 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 0
+// LLVM:   call void @free(ptr %65)
+// LLVM:   %66 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 0
+// LLVM:   call void @free(ptr %66)
+// LLVM:   ret i32 0
+// LLVM: }
+// LLVM: define i32 @test_bf16() {
+// LLVM:   %1 = call ptr @malloc(i64 8)
+// LLVM:   %2 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %1, 0
+// LLVM:   %3 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %2, ptr %1, 1
+// LLVM:   %4 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %3, i64 0, 2
+// LLVM:   %5 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %4, i64 4, 3, 0
+// LLVM:   %6 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %5, i64 1, 4, 0
+// LLVM:   %7 = alloca { ptr, ptr, i64, [1 x i64], [1 x i64] }, i64 1, align 8
+// LLVM:   %8 = insertvalue { ptr, ptr, i64 } poison, ptr %7, 0
+// LLVM:   %9 = insertvalue { ptr, ptr, i64 } %8, ptr %7, 1
+// LLVM:   %10 = insertvalue { ptr, ptr, i64 } %9, i64 0, 2
+// LLVM:   %11 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   store { ptr, ptr, i64, [1 x i64], [1 x i64] } %6, ptr %11, align 8
+// LLVM:   %12 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %13 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %12, align 8
+// LLVM:   %14 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %13, 1
+// LLVM:   %15 = getelementptr inbounds nuw bfloat, ptr %14, i64 0
+// LLVM:   store bfloat 0xR3F80, ptr %15, align 2
+// LLVM:   %16 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %17 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %16, align 8
+// LLVM:   %18 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %17, 1
+// LLVM:   %19 = getelementptr inbounds nuw bfloat, ptr %18, i64 1
+// LLVM:   store bfloat 0xR4000, ptr %19, align 2
+// LLVM:   %20 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %21 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %20, align 8
+// LLVM:   %22 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %21, 1
+// LLVM:   %23 = getelementptr inbounds nuw bfloat, ptr %22, i64 2
+// LLVM:   store bfloat 0xR4040, ptr %23, align 2
+// LLVM:   %24 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %25 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %24, align 8
+// LLVM:   %26 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %25, 1
+// LLVM:   %27 = getelementptr inbounds nuw bfloat, ptr %26, i64 3
+// LLVM:   store bfloat 0xR4080, ptr %27, align 2
+// LLVM:   %28 = extractvalue { ptr, ptr, i64 } %10, 1
+// LLVM:   %29 = load { ptr, ptr, i64, [1 x i64], [1 x i64] }, ptr %28, align 8
+// LLVM:   %30 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 3, 0
+// LLVM:   %31 = getelementptr bfloat, ptr null, i64 %30
+// LLVM:   %32 = ptrtoint ptr %31 to i64
+// LLVM:   %33 = call ptr @malloc(i64 %32)
+// LLVM:   %34 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %33, 0
+// LLVM:   %35 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %34, ptr %33, 1
+// LLVM:   %36 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %35, i64 0, 2
+// LLVM:   %37 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %36, i64 %30, 3, 0
+// LLVM:   %38 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %37, i64 1, 4, 0
+// LLVM:   %39 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 3, 0
+// LLVM:   %40 = mul i64 1, %39
+// LLVM:   %41 = mul i64 %40, 2
+// LLVM:   %42 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 1
+// LLVM:   %43 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %29, 2
+// LLVM:   %44 = getelementptr bfloat, ptr %42, i64 %43
+// LLVM:   %45 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 1
+// LLVM:   %46 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 2
+// LLVM:   %47 = getelementptr bfloat, ptr %45, i64 %46
+// LLVM:   call void @llvm.memcpy.p0.p0.i64(ptr %47, ptr %44, i64 %41, i1 false)
+// LLVM:   %48 = getelementptr bfloat, ptr null, i64 %30
+// LLVM:   %49 = ptrtoint ptr %48 to i64
+// LLVM:   %50 = call ptr @malloc(i64 %49)
+// LLVM:   %51 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } poison, ptr %50, 0
+// LLVM:   %52 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %51, ptr %50, 1
+// LLVM:   %53 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %52, i64 0, 2
+// LLVM:   %54 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %53, i64 %30, 3, 0
+// LLVM:   %55 = insertvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %54, i64 1, 4, 0
+// LLVM:   %56 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 3, 0
+// LLVM:   %57 = mul i64 1, %56
+// LLVM:   %58 = mul i64 %57, 2
+// LLVM:   %59 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 1
+// LLVM:   %60 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 2
+// LLVM:   %61 = getelementptr bfloat, ptr %59, i64 %60
+// LLVM:   %62 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 1
+// LLVM:   %63 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 2
+// LLVM:   %64 = getelementptr bfloat, ptr %62, i64 %63
+// LLVM:   call void @llvm.memcpy.p0.p0.i64(ptr %64, ptr %61, i64 %58, i1 false)
+// LLVM:   %65 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %55, 0
+// LLVM:   call void @free(ptr %65)
+// LLVM:   %66 = extractvalue { ptr, ptr, i64, [1 x i64], [1 x i64] } %38, 0
+// LLVM:   call void @free(ptr %66)
+// LLVM:   ret i32 0
+// LLVM: }
+// LLVM: define i32 @main() {
+// LLVM:   %1 = call i32 @test_f32()
+// LLVM:   %2 = call i32 @test_bf16()
+// LLVM:   ret i32 0
+// LLVM: }
+// LLVM: define i32 @_mlir_ciface_main() {
+// LLVM:   %1 = call i32 @main()
+// LLVM:   ret i32 %1
+// LLVM: }
+// LLVM: ; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
+// LLVM: declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #0
+// LLVM: attributes #0 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
+// LLVM: !llvm.module.flags = !{!0}
+// LLVM: !0 = !{i32 2, !"Debug Info Version", i32 3}
