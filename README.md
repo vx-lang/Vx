@@ -63,21 +63,19 @@ ______________________________________________________________________
 
 - **PyTorch/JAX:** Treat hardware as an *infrastructure problem*. Code is written, and a massive runtime environment tries to figure out how to ship it to the GPU/TPU.
 - **Mojo:** Treats hardware as a *systems programming problem*. It provides the pointers and SIMD registers to write fast code.
-- **Vx:** Treats hardware as a **Language Semantic**. By elevating `Topology` and `MemorySpace` into the type system (`Pinned<T, NPU_HBM>`), Vx mathematically guarantees that a host CPU cannot accidentally dereference an NPU pointer. Cluster-level routing bugs are caught at compile time. No other language does this cleanly.
+- **Vx:** Treats hardware as a **Language Semantic**. By elevating `Topology` and `MemorySpace` into the type system (`Pinned<T, NPU_HBM>`), Vx guarantees that a host CPU cannot accidentally dereference an NPU pointer. Cluster-level routing bugs are caught at compile time. No other language does this cleanly.
 
 #### 2. Where Vx Faces Friction: The Eager Penalty
 
-- **PyTorch** won because researchers could treat it like a giant NumPy calculator. They can write chaotic, dynamic `if/else` loops that change on every iteration.
-- **Vx** is strictly compiled and data-oriented. If a user wants to read a tensor shape, print it to the console, and dynamically alter the neural network architecture mid-step, Vx will inherently struggle more than PyTorch because Vx wants to build a static MLIR block to hand off to the NPU plugin. Significant investment in a JIT/REPL environment will be required to win over pure researchers.
+- **PyTorch** users can write dynamic `if/else` loops that change on every iteration.
+- **Vx** is compiled and data-oriented. If a user wants to read a tensor shape, print it to the console, and dynamically alter the neural network architecture mid-step. It requires more effort from the user.
 
 #### 3. The MLIR Synergy (Vx vs. Mojo)
 
 Mojo and Vx share the architectural decision: **Lowering directly to MLIR.** However, they take different paths:
 
 - **Mojo** is trying to be a superset of Python. It has to carry the baggage of Python's dynamic semantics, object models, and syntax to win over the existing ecosystem.
-- **Vx** (based on a DOD parallel compiler) drops the legacy baggage. By forcing a nominal type system and flat arrays, Vx's compiler frontend will likely be orders of magnitude faster at compiling massive codebases than Mojo's, because Vx doesn't have to negotiate with Python-style dynamic typing heuristics.
-
-Vx is a language that datacenter architects and systems engineers wish they had. PyTorch will always own the "hacky research" phase, but **Vx is positioned perfectly for the "production deployment and hardware scale-out" phase**, where memory determinism, zero-overhead dispatch, and MLIR hardware plugins are the difference between a profitable AI cluster and a bottlenecked one.
+- **Vx** (based on a DOD parallel compiler) drops the legacy baggage. By forcing a nominal type system and flat arrays, Vx's compiler frontend will likely be orders of magnitude faster at compiling massive codebases than Mojo's.
 
 ## Usage & Tooling
 
