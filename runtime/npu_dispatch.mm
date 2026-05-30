@@ -117,6 +117,7 @@ extern "C" int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d) {
 #include <cstdlib>
 
 extern "C" {
+#include <dlfcn.h>
 
 void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topology_id) {
     void* ptr = malloc(bytes);
@@ -138,43 +139,19 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t 
         }
     }
     
-    // We expect arg 0 and arg 2 to be 0D memrefs that contain 2D memrefs.
-    // The 0D memref is !llvm.struct<(ptr, ptr, i64)>.
-    // Its `aligned` pointer points to the 2D memref struct !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>.
-    if (num_args >= 3) {
-        typedef struct {
-            void *base;
-            void *aligned;
-            int64_t offset;
-            int64_t sizes[2];
-            int64_t strides[2];
-        } Memref_Dynamic_2D_i32;
-
-        typedef struct {
-            void *base;
-            Memref_Dynamic_2D_i32 *aligned;
-            int64_t offset;
-        } Memref_0D_i32;
-
-        Memref_0D_i32* var_a = (Memref_0D_i32*)device_args[0];
-        Memref_0D_i32* var_b = (Memref_0D_i32*)device_args[2];
-        
-        if (var_a && var_b && var_a->aligned && var_b->aligned) {
-            Memref_Dynamic_2D_i32* memref_a = var_a->aligned;
-            Memref_Dynamic_2D_i32* memref_b = var_b->aligned;
-            
-            int32_t* a_data = (int32_t*)memref_a->aligned;
-            int32_t* b_data = (int32_t*)memref_b->aligned;
-            
-            if (a_data && b_data) {
-                // b_npu[0][0] = a_npu[0][0] * 10
-                b_data[memref_b->offset + 0] = a_data[memref_a->offset + 0] * 10;
-                b_data[memref_b->offset + 1] = a_data[memref_a->offset + 1] * 10;
-                b_data[memref_b->offset + 4] = a_data[memref_a->offset + 4] * 10;
-                b_data[memref_b->offset + 5] = a_data[memref_a->offset + 5] * 10;
-            }
-        }
+    char ciface_name[256];
+    snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
+    
+    typedef void (*KernelFuncPtr)(void**);
+    KernelFuncPtr kernel = (KernelFuncPtr)dlsym(RTLD_DEFAULT, ciface_name);
+    
+    if (kernel) {
+        printf("DEBUG: Dispatching to JIT kernel %s\n", ciface_name);
+        kernel(device_args);
+    } else {
+        printf("DEBUG: Could not find JIT kernel %s, skipping execution\n", ciface_name);
     }
+    
     return 1;
 }
 

@@ -1,0 +1,30 @@
+//===- cpu_vector_transfer.vx ---------------------------------*- Vx -*-===//
+
+fn test_f32() -> i32 {
+  let mut a = Tensor<f32>([4]);
+  a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; a[3] = 4.0;
+  // Transfer to CPU (Host_DRAM is default CPU memory)
+  let a_cpu = transfer(a, Memory::Host_DRAM);
+  assert(a_cpu[0] == 1.0, "f32 index 0 match");
+  assert(a_cpu[1] == 2.0, "f32 index 1 match");
+  assert(a_cpu[2] == 3.0, "f32 index 2 match");
+  assert(a_cpu[3] == 4.0, "f32 index 3 match");
+  return 0;
+}
+
+fn test_bf16() -> i32 {
+  let mut a = Tensor<bf16>([4]);
+  a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; a[3] = 4.0;
+  let a_cpu = transfer(a, Memory::Host_DRAM);
+  assert(a_cpu[0] == 1.0, "bf16 index 0 match");
+  assert(a_cpu[1] == 2.0, "bf16 index 1 match");
+  assert(a_cpu[2] == 3.0, "bf16 index 2 match");
+  assert(a_cpu[3] == 4.0, "bf16 index 3 match");
+  return 0;
+}
+
+fn main() -> i32 {
+  test_f32();
+  test_bf16();
+  return 0;
+}

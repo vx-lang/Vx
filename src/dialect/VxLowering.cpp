@@ -389,6 +389,7 @@ struct KernelOpLowering : public OpRewritePattern<vx::KernelOp> {
                                 PatternRewriter &rewriter) const override {
     auto funcOp = rewriter.create<func::FuncOp>(
         op.getLoc(), op.getSymName(), cast<FunctionType>(op.getFunctionType()));
+    funcOp->setAttr("llvm.emit_c_interface", rewriter.getUnitAttr());
 
     // Move the region over
     rewriter.inlineRegionBefore(op.getBody(), funcOp.getBody(), funcOp.end());

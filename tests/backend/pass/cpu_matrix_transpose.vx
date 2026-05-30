@@ -1,0 +1,55 @@
+//===- cpu_matrix_transpose.vx ---------------------------------*- Vx -*-===//
+
+fn test_f32() -> i32 {
+  let mut a = Tensor<f32>([4, 4]);
+  let mut c = Tensor<f32>([4, 4]);
+
+  let mut counter: f32 = 0.0;
+  for i in 0..4 {
+    for j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
+    }
+  }
+
+  for i in 0..4 {
+    for j in 0..4 {
+      c[j][i] = a[i][j];
+    }
+  }
+
+  assert(c[0][1] == 4.0, "f32 c[0][1] match");
+  assert(c[1][0] == 1.0, "f32 c[1][0] match");
+  assert(c[3][2] == 11.0, "f32 c[3][2] match");
+  return 0;
+}
+
+fn test_bf16() -> i32 {
+  let mut a = Tensor<bf16>([4, 4]);
+  let mut c = Tensor<bf16>([4, 4]);
+
+  let mut counter: bf16 = 0.0;
+  for i in 0..4 {
+    for j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
+    }
+  }
+
+  for i in 0..4 {
+    for j in 0..4 {
+      c[j][i] = a[i][j];
+    }
+  }
+
+  assert(c[0][1] == 4.0, "bf16 c[0][1] match");
+  assert(c[1][0] == 1.0, "bf16 c[1][0] match");
+  assert(c[3][2] == 11.0, "bf16 c[3][2] match");
+  return 0;
+}
+
+fn main() -> i32 {
+  test_f32();
+  test_bf16();
+  return 0;
+}
