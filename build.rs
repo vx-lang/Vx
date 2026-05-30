@@ -252,6 +252,7 @@ fn main() {
         .expect("Failed to run mlir-tblgen for op defs");
     assert!(status.success(), "mlir-tblgen failed");
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/vx-opt.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");

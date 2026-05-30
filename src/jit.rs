@@ -12,7 +12,6 @@
 // requiring a separate ahead-of-time compilation step.
 //
 //===----------------------------------------------------------------------===//
-pub const OPTIMIZATION_PIPELINE: &str = "--pass-pipeline=builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}),func.func(affine-super-vectorize{virtual-vector-size=16}),lower-affine,convert-scf-to-cf,expand-strided-metadata,finalize-memref-to-llvm,convert-vector-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)";
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
@@ -22,7 +21,7 @@ use std::sync::Once;
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static COMPILE_NPU_ONCE: Once = Once::new();
 
-pub fn execute_mlir(mlir_src: &str, mlir_args: Vec<String>) -> Result<String, String> {
+pub fn execute_mlir(mlir_src: &str, _mlir_args: Vec<String>) -> Result<String, String> {
     // Ensure target/jit directory exists
     let jit_dir = std::path::Path::new("target/jit");
     if !jit_dir.exists() {
@@ -34,7 +33,6 @@ pub fn execute_mlir(mlir_src: &str, mlir_args: Vec<String>) -> Result<String, St
     let uid = format!("{}_{}", pid, counter);
 
     let temp_mlir = format!("target/jit/temp_{}.mlir", uid);
-    let temp_llvm = format!("target/jit/temp_llvm_{}.mlir", uid);
     let temp_ll = format!("target/jit/temp_{}.ll", uid);
 
     let lib_npu = "target/jit/libnpu_shared.dylib".to_string();
@@ -86,31 +84,9 @@ pub fn execute_mlir(mlir_src: &str, mlir_args: Vec<String>) -> Result<String, St
         );
     }
 
-    println!("[JIT] Lowering to LLVM Dialect...");
-    let mut cmd = Command::new("/opt/homebrew/opt/llvm/bin/mlir-opt");
-    if mlir_args.is_empty() {
-        cmd.arg(OPTIMIZATION_PIPELINE);
-    } else {
-        for arg in mlir_args {
-            cmd.arg(arg);
-        }
-    }
-
-    let mlir_opt_out = cmd.arg(&temp_mlir).output().map_err(|e| e.to_string())?;
-
-    if !mlir_opt_out.status.success() {
-        let err_str = String::from_utf8_lossy(&mlir_opt_out.stderr);
-        return Err(format!("mlir-opt failed:\n{}", err_str));
-    }
-
-    let mut lowered_mlir_file = File::create(&temp_llvm).map_err(|e| e.to_string())?;
-    lowered_mlir_file
-        .write_all(&mlir_opt_out.stdout)
-        .map_err(|e| e.to_string())?;
-
     println!("[JIT] Translating to LLVM IR...");
     let mlir_translate_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate")
-        .args(["--mlir-to-llvmir", &temp_llvm])
+        .args(["--mlir-to-llvmir", &temp_mlir])
         .output()
         .map_err(|e| e.to_string())?;
 

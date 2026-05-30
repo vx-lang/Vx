@@ -89,7 +89,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
         codegen.generate(&monomorphized_ast, &module_asts);
         let mut module = codegen.into_module();
         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
-        let _mlir_str = module.as_operation().to_string();
+        let _mlir_str = module.as_operation();
         Ok(monomorphized_ast)
     } else {
         for err in &checker.errors {
@@ -129,8 +129,8 @@ fn test_integration_loops() {
 #[test]
 fn test_integration_arrays_and_indexing() {
     let input = r#"
-    fn array_test(a: Tensor, b: Tensor) -> Tensor {
-        let mut arr = Tensor([a.shape[0], b.shape[1]]);
+    fn array_test(a: Tensor<f32, [2, 2]>, b: Tensor<f32, [2, 2]>) -> Tensor<f32, [2, 2]> {
+        let mut arr = Tensor_f32(2, 2);
         arr[0][0] = a[0][1] * b[1][0];
         return arr;
     }
@@ -141,7 +141,7 @@ fn test_integration_arrays_and_indexing() {
 #[test]
 fn test_integration_method_chaining() {
     let input = r#"
-    fn memory_test() -> Ref<Tensor, Memory::NPU_HBM> {
+    fn memory_test() -> Ref<Tensor<f32, [10]>, Memory::NPU_HBM> {
         let mut mem = Tensor([10]).with_memory(Memory::NPU_HBM);
         return mem;
     }

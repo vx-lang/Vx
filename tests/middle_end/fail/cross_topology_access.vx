@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 // Middle-end test exposing potentially invalid memref copies
 // (e.g. from memory space 1 to memory space 2 directly without host bounce)

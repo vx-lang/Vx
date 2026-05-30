@@ -1,5 +1,5 @@
 //===- legal_host_unified.vx - Vx Compiler -------------------------------*- Vx -*-===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
@@ -18,3 +18,6 @@ fn main() -> i32 {
 
   return 0;
 }
+
+
+

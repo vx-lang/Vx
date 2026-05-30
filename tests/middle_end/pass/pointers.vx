@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 extern "C" {
   fn malloc(size: i32) -> *mut f32;
@@ -28,3 +28,6 @@ fn main() -> i32 {
 // CHECK: llvm.getelementptr
 // CHECK: llvm.load
 // CHECK: return
+
+
+

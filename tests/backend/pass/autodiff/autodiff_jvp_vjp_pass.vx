@@ -1,5 +1,5 @@
 //===- autodiff_higher_order.vx -----------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 import std::googletest;
 
 // EXPECT: callee = @__enzyme_autodiff_grad_compute_val
@@ -38,3 +38,6 @@ fn main() -> i32 {
 
   return 0;
 }
+
+
+

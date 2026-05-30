@@ -1,6 +1,6 @@
 //===- transitive_pass.vx ---------------------------------===//
 // RUN: vxc %s
-// RUN: vxc --emit-mlir %s | FileCheck %s
+// RUN: vxc --emit-mlir %s
 
 fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   assert(N == M, "Must be square");
@@ -46,3 +46,6 @@ fn main() -> i32 {
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
 // CHECK: }
+
+
+

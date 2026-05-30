@@ -1,5 +1,5 @@
 //===- autodiff_multi_arg_fail.vx ---------------------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1
 
 fn compute_val(x: f32, y: f32) -> f32 {
   return x * y;

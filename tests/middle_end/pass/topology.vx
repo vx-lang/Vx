@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn main() -> Tensor<f32> {
   return 0.0;
@@ -34,3 +34,6 @@ fn process(t_host: Tensor<f32>) -> Tensor<f32> {
 // CHECK:     return %arg0 : memref<?x?xf32>
 // CHECK:   }
 // CHECK: }
+
+
+

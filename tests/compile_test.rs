@@ -222,10 +222,7 @@ fn run_backend_test(path: &Path) {
     codegen.generate(&monomorphized_program, &module_asts);
     let mut module = codegen.into_module();
     if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
-        println!(
-            "MLIR Before Lowering Error:\n{}",
-            module.as_operation().to_string()
-        );
+        println!("MLIR Before Lowering Error:\n{}", module.as_operation());
         panic!("Lowering to LLVM failed for {}: {:?}", path.display(), e);
     }
     let mlir_str = module.as_operation().to_string();

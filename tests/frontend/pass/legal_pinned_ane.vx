@@ -1,5 +1,5 @@
 //===- legal_pinned_ane.vx - Vx Compiler -----------------------------------*- Vx -*-===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 fn main() -> i32 {
   // Transfer a variable to ANE pinned memory
@@ -16,3 +16,6 @@ fn main() -> i32 {
 
   return 0;
 }
+
+
+

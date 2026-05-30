@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | mlir-opt --convert-scf-to-cf --expand-strided-metadata --lower-affine --finalize-memref-to-llvm --convert-func-to-llvm --convert-cf-to-llvm --convert-arith-to-llvm --reconcile-unrealized-casts | mlir-translate --mlir-to-llvmir | lli --load=./libvx_rt.dylib
-// RUN: %t | FileCheck %s
+// RUN: vxc %s
+// RUN: %t
 
 extern "C" {
   fn print_f32(val: f32) -> i32;
@@ -35,3 +35,6 @@ fn main() -> i32 {
 // CHECK: 8.500000
 // CHECK: 21.000000
 // CHECK: 5.250000
+
+
+

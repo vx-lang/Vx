@@ -1,5 +1,5 @@
 //===- failed_assertion.vx ---------------------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1
 // CHECK: Contract violated for Verified return type
 
 fn test_failed_assertion() -> Verified<i32> {

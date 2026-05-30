@@ -43,3 +43,6 @@ fn main() -> Verified<Ref<Tensor<i64, [4, 4]>, Memory::NPU_HBM>> {
   return result;
 }
 // NO_EXEC
+
+
+

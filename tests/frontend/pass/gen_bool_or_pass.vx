@@ -6,3 +6,6 @@ fn main() -> Bool {
   let b: Bool = false;
   return a || b;
 }
+
+
+

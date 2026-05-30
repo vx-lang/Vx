@@ -1,0 +1,7 @@
+write llama in pure Vx.
+we should also introduce disable_[vx|mlir|llvm]_optimizations flags
+spawn on syntax
+implement fusion in vx layer or mlir should also be able to do fusion
+vx-analyzer for use-def switching in vscode
+write papers for each major feature. docs/papers. paper written in md/tex and then converted to pdf.
+remove hardcoded /opt/homebrew paths from source code. put that in some config file or let cargo discover it.

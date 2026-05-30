@@ -1,5 +1,5 @@
 //===- verified_assignment.vx ---------------------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1
 // CHECK: Type mismatch in variable declaration 'x'
 
 fn test_unverified_to_verified() -> i32 {

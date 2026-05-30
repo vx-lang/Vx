@@ -3,6 +3,7 @@
 #include "VxDialect.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
+#include "mlir/InitAllPasses.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -479,3 +480,5 @@ void registerVxPasses() {
 }
 } // namespace vx
 } // namespace mlir
+
+

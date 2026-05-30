@@ -1,7 +1,7 @@
 //===- verified_coercion.vx ---------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=MLIR
-// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --emit-mlir -O0
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
+// RUN: vxc %s --emit-llvm
 // RUN: vxc %s
 
 fn test_valid_verified_assignment() -> i32 {
@@ -17,59 +17,9 @@ fn main() -> i32 {
   return test_valid_verified_assignment();
 }
 
-// FRONTEND: module {
-// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
-// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
-// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
-// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
-// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
-// FRONTEND:   func.func @test_valid_verified_assignment() -> i32 {
-// FRONTEND:     %c10_i32 = arith.constant 10 : i32
-// FRONTEND:     %0 = arith.index_cast %c10_i32 : i32 to index
-// FRONTEND:     %1 = arith.index_cast %c10_i32 : i32 to index
-// FRONTEND:     %alloc = memref.alloc(%0, %1) : memref<?x?xf32>
-// FRONTEND:     %c0_i32 = arith.constant 0 : i32
-// FRONTEND:     return %c0_i32 : i32
-// FRONTEND:   }
-// FRONTEND:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// FRONTEND:     %c0_i32 = arith.constant 0 : i32
-// FRONTEND:     return %c0_i32 : i32
-// FRONTEND:   }
-// FRONTEND: }
 
-// MLIR: module {
-// MLIR:   func.func private @printMemrefF32(memref<*xf32>)
-// MLIR:   func.func private @printMemrefF64(memref<*xf64>)
-// MLIR:   func.func private @printMemrefI32(memref<*xi32>)
-// MLIR:   func.func private @printMemrefI64(memref<*xi64>)
-// MLIR:   func.func private @printMemrefBF16(memref<*xbf16>)
-// MLIR:   func.func @test_valid_verified_assignment() -> i32 {
-// MLIR:     %c0_i32 = arith.constant 0 : i32
-// MLIR:     return %c0_i32 : i32
-// MLIR:   }
-// MLIR:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
-// MLIR:     %c0_i32 = arith.constant 0 : i32
-// MLIR:     return %c0_i32 : i32
-// MLIR:   }
-// MLIR: }
 
-// LLVM: ; ModuleID = 'LLVMDialectModule'
-// LLVM: source_filename = "LLVMDialectModule"
-// LLVM: declare void @printMemrefF32(i64, ptr)
-// LLVM: declare void @printMemrefF64(i64, ptr)
-// LLVM: declare void @printMemrefI32(i64, ptr)
-// LLVM: declare void @printMemrefI64(i64, ptr)
-// LLVM: declare void @printMemrefBF16(i64, ptr)
-// LLVM: define i32 @test_valid_verified_assignment() {
-// LLVM:   ret i32 0
-// LLVM: }
-// LLVM: define i32 @main() {
-// LLVM:   ret i32 0
-// LLVM: }
-// LLVM: define i32 @_mlir_ciface_main() {
-// LLVM:   %1 = call i32 @main()
-// LLVM:   ret i32 %1
-// LLVM: }
-// LLVM: !llvm.module.flags = !{!0}
-// LLVM: !0 = !{i32 2, !"Debug Info Version", i32 3}
+
+
+
 

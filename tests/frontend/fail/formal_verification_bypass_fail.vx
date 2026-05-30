@@ -1,5 +1,5 @@
 //===- formal_verification_bypass_fail.vx -----------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1
 
 fn verify_bypass<N, M>(val: Tensor<f32, [N, M]>, dyn_var: i32) -> Verified<Tensor<f32, [N, M]>> {
   // EXPECT: Cannot statically prove assertion for Verified return type

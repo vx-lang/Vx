@@ -34,4 +34,8 @@ int run_vx_opt(int argc, char **argv) {
   return result.succeeded() ? 0 : 1;
 }
 
+void registerVxPassesC() {
+  mlir::vx::registerVxPasses();
+}
+
 } // extern "C"

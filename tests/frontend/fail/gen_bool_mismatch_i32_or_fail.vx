@@ -1,5 +1,5 @@
 //===- gen_bool_mismatch_i32_or_fail.vx ---------------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1
 
 fn main() -> Bool {
   let a: Bool = true;

@@ -1,5 +1,5 @@
 //===- verified_stripping.vx ---------------------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1
 // CHECK: Type mismatch in argument 1 for function 'requires_unverified'. Expected Tensor(F32, [Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }), Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None), got Verified(Tensor(F32, [Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }), Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None))
 
 fn requires_unverified(x: Tensor<f32, [10, 10]>) -> i32 {

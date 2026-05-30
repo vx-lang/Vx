@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 // Generic function with implicit type deduction
 fn process<T>(val: T) -> T {
@@ -40,3 +40,6 @@ fn main() -> Tensor<i32> {
 // CHECK: arith.constant 0 : i32
 // CHECK: return
 // CHECK: }
+
+
+

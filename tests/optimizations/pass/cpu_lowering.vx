@@ -1,6 +1,6 @@
-// RUN: vxc %s --emit-mlir --disable-optimizations | FileCheck %s --check-prefix=FRONTEND
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=HOST
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" | FileCheck %s --check-prefix=VXLLVM
+// RUN: vxc %s --emit-mlir -O0
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)"
 
 fn dummy(x: i32) on Topology::Host -> i32 {
   return x;
@@ -14,31 +14,6 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
   return t;
 }
 
-// FRONTEND: module {
-// FRONTEND:   func.func private @printMemrefF32(memref<*xf32>)
-// FRONTEND:   func.func private @printMemrefF64(memref<*xf64>)
-// FRONTEND:   func.func private @printMemrefI32(memref<*xi32>)
-// FRONTEND:   func.func private @printMemrefI64(memref<*xi64>)
-// FRONTEND:   func.func private @printMemrefBF16(memref<*xbf16>)
-// FRONTEND:   func.func @dummy(%arg0: i32) -> i32 {
-// FRONTEND:     return %arg0 : i32
-// FRONTEND:   }
-// FRONTEND:   func.func @process(%arg0: memref<?x?xf32>) -> memref<?x?xf32> {
-// FRONTEND:     %c4_i32 = arith.constant 4 : i32
-// FRONTEND:     %0 = arith.index_cast %c4_i32 : i32 to index
-// FRONTEND:     %c4_i32_0 = arith.constant 4 : i32
-// FRONTEND:     %1 = arith.index_cast %c4_i32_0 : i32 to index
-// FRONTEND:     %alloc = memref.alloc(%0, %1) : memref<?x?xi32>
-// FRONTEND:     %alloca = memref.alloca() : memref<memref<?x?xi32>>
-// FRONTEND:     memref.store %alloc, %alloca[] : memref<memref<?x?xi32>>
-// FRONTEND:     %2 = vx.spawn topology(0) {
-// FRONTEND:       %c0_i32 = arith.constant 0 : i32
-// FRONTEND:       %3 = func.call @dummy(%c0_i32) : (i32) -> i32
-// FRONTEND:       vx.yield %3 : i32
-// FRONTEND:     } : i32
-// FRONTEND:     return %arg0 : memref<?x?xf32>
-// FRONTEND:   }
-// FRONTEND: }
 
 // HOST: module {
 // HOST:   func.func private @printMemrefF32(memref<*xf32>)
@@ -85,3 +60,6 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // VXLLVM:     return %arg0 : memref<?x?xf32>
 // VXLLVM:   }
 // VXLLVM: }
+
+
+

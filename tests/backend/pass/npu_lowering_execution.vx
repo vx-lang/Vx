@@ -33,3 +33,6 @@ fn main() -> Pinned<Tensor<i32, [4, 4]>, Topology::NPU[0]> {
   return b_npu;
 }
 // NO_EXEC
+
+
+

@@ -42,3 +42,6 @@ fn main() -> i32 {
 // CHECK: = llvm.mlir.addressof @str_2 : !llvm.ptr<0>
 // CHECK: = func.call @fputs(%
 // CHECK: = func.call @fclose(%
+
+
+

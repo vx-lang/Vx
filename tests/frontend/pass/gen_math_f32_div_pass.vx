@@ -6,3 +6,6 @@ fn main() -> f32 {
   let b: f32 = 5f32;
   return a / b;
 }
+
+
+

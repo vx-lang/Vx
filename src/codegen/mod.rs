@@ -30,6 +30,7 @@ use crate::ast::*;
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
+    fn registerVxPassesC();
     pub fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
     pub fn addVxToLLVMPass(pm: mlir_sys::MlirPassManager);
 }
@@ -37,6 +38,12 @@ extern "C" {
 pub fn register_vx_dialect(context: &Context) {
     unsafe {
         registerVxDialect(context.to_raw());
+    }
+}
+
+pub fn register_vx_passes() {
+    unsafe {
+        registerVxPassesC();
     }
 }
 

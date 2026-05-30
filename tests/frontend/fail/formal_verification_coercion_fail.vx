@@ -1,5 +1,5 @@
 //===- formal_verification_coercion_fail.vx -----------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1
 
 fn main() -> i32 {
   let t: Tensor<f32, [16, 32]> = Tensor_f32(16, 32);

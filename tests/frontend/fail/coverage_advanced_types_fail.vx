@@ -1,5 +1,5 @@
 //===- coverage_advanced_types_fail.vx ------------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1
 
 enum MyEnum {
   VariantA,

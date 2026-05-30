@@ -23,3 +23,6 @@ fn test_unroll(a: Tensor<f32, [16]>, b: Tensor<f32, [16]>) -> Tensor<f32, [16]> 
 // CHECK:   affine.load
 // CHECK:   arith.addf
 // CHECK:   affine.store
+
+
+

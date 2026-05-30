@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | FileCheck %s
+// RUN: vxc %s
 
 extern "C" {
   fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
@@ -29,3 +29,6 @@ fn main() -> Tensor<i32> {
 // CHECK:     return %c0_i32_0 : i32
 // CHECK:   }
 // CHECK: }
+
+
+

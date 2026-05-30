@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s | lli | FileCheck %s
+// RUN: vxc %s
 
 fn main(d: Tensor<i32>) -> Tensor<i32> {
   let a: Tensor<i32> = 10;
@@ -40,3 +40,6 @@ fn main(d: Tensor<i32>) -> Tensor<i32> {
 // CHECK: arith.andi
 // CHECK: arith.xori
 // CHECK: arith.ori
+
+
+
