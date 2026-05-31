@@ -89,7 +89,7 @@ pub fn execute_mlir(
     }
 
     println!("[JIT] Translating to LLVM IR...");
-    let mlir_translate_out = Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate")
+    let mlir_translate_out = Command::new("mlir-translate")
         .args(["--mlir-to-llvmir", &temp_mlir])
         .output()
         .map_err(|e| e.to_string())?;
@@ -117,7 +117,7 @@ pub fn execute_mlir(
     opt_args.push(temp_opt_ll.clone());
 
     println!("[JIT] Optimizing LLVM IR (-O{})...", opt_level);
-    let opt_out = Command::new("/opt/homebrew/opt/llvm/bin/opt")
+    let opt_out = Command::new("opt")
         .args(&opt_args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -129,11 +129,17 @@ pub fn execute_mlir(
 
     println!("[JIT] Executing via LLI...");
     let current_dir = std::env::current_dir().unwrap();
-    let lli_out = Command::new("/opt/homebrew/opt/llvm/bin/lli")
+    let lli_out = Command::new("lli")
         .args([
             &format!("--load={}", lib_npu),
-            "--load=/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
-            "--load=/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
+            &format!(
+                "--load=libmlir_c_runner_utils{}",
+                std::env::consts::DLL_SUFFIX
+            ),
+            &format!(
+                "--load=libmlir_runner_utils{}",
+                std::env::consts::DLL_SUFFIX
+            ),
             &format!(
                 "--load={}/target/debug/libvx_std_core.dylib",
                 current_dir.display()

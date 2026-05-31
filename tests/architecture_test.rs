@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 #[test]
 fn test_pipeline_architecture_hooks() {
-    let dir = PathBuf::from("tests/modules/architecture_test");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/modules/architecture_test");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("Failed to create test dir");
 

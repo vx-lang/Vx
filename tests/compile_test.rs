@@ -256,7 +256,7 @@ fn run_backend_test(path: &Path) {
 
 #[test]
 fn test_frontend_pass() {
-    let dir = Path::new("tests/frontend/pass");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -270,7 +270,7 @@ fn test_frontend_pass() {
 
 #[test]
 fn test_frontend_fail() {
-    let dir = Path::new("tests/frontend/fail");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -284,7 +284,7 @@ fn test_frontend_fail() {
 
 #[test]
 fn test_optimizations() {
-    let dir = Path::new("tests/optimizations/pass");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/optimizations/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -300,7 +300,7 @@ fn test_optimizations() {
 
 #[test]
 fn test_middle_end() {
-    let dir = Path::new("tests/middle_end/pass");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -469,7 +469,7 @@ fn run_optimization_test(path: &Path) {
 
 #[test]
 fn test_middle_end_fail() {
-    let dir = Path::new("tests/middle_end/fail");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -493,7 +493,7 @@ fn test_backend() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new("tests/backend/pass");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_iter().for_each(|entry| {
@@ -515,7 +515,7 @@ fn test_backend_pass_formal_verification() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new("tests/backend/pass/formal_verification");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/formal_verification");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -540,7 +540,7 @@ fn test_backend_fail_formal_verification() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new("tests/backend/fail/formal_verification");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail/formal_verification");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -568,7 +568,7 @@ fn test_backend_pass_autodiff() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new("tests/backend/pass/autodiff");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/autodiff");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -685,7 +685,7 @@ fn test_backend_fail() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new("tests/backend/fail");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         entries.into_par_iter().for_each(|entry| {
@@ -706,8 +706,8 @@ fn test_backend_fail() {
 
 #[test]
 fn test_melior_matmul() {
-    let path = Path::new("tests/middle_end/pass/matmul.mlr");
-    let source = fs::read_to_string(path).expect("Failed to read test file");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.mlr");
+    let source = fs::read_to_string(&path).expect("Failed to read test file");
 
     let check_lines: Vec<String> = source
         .lines()

@@ -305,9 +305,12 @@ impl CompilerDriver {
                 );
                 let libnpu = format!("{}/target/jit/libnpu_shared.dylib", current_dir.display());
 
+                let mlir_c_runner =
+                    format!("libmlir_c_runner_utils{}", std::env::consts::DLL_SUFFIX);
+                let mlir_runner = format!("libmlir_runner_utils{}", std::env::consts::DLL_SUFFIX);
                 let shared_libs = [
-                    "/opt/homebrew/opt/llvm/lib/libmlir_c_runner_utils.dylib",
-                    "/opt/homebrew/opt/llvm/lib/libmlir_runner_utils.dylib",
+                    mlir_c_runner.as_str(),
+                    mlir_runner.as_str(),
                     &vx_std_core,
                     &libnpu,
                 ];
@@ -431,7 +434,7 @@ pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Resu
     let mut file = std::fs::File::create(&temp_mlir).unwrap();
     std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
 
-    let mut cmd = std::process::Command::new("/opt/homebrew/opt/llvm/bin/mlir-translate");
+    let mut cmd = std::process::Command::new("mlir-translate");
     cmd.arg("--mlir-to-llvmir");
     let mlir_translate_out = cmd.arg(&temp_mlir).output().map_err(|e| e.to_string())?;
 
