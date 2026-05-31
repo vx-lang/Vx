@@ -96,7 +96,18 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         })
         .collect();
 
-    let total_errors: usize = check_results.iter().map(|(errs, _, _, _)| errs.len()).sum();
+    let mut total_errors = 0;
+    for (errs, _, _, _) in &check_results {
+        for diag in errs.iter() {
+            if diag.level == crate::diagnostic::DiagnosticLevel::Error {
+                total_errors += 1;
+                println!("Error: {}", diag.message);
+            } else if diag.level == crate::diagnostic::DiagnosticLevel::Warning {
+                println!("Warning: {}", diag.message);
+            }
+        }
+    }
+
     let total_monomorphized: usize = check_results
         .iter()
         .map(|(_, monos, _, _)| monos.len())
@@ -108,11 +119,6 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     );
 
     if total_errors > 0 {
-        for (errs, _, _, _) in &check_results {
-            for err in errs {
-                println!("Error: {}", err);
-            }
-        }
         return Err(format!(
             "Compilation failed with {} semantic errors",
             total_errors

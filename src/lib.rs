@@ -17,6 +17,7 @@ pub mod ast;
 pub mod ast_printer;
 pub mod borrow;
 pub mod codegen;
+pub mod diagnostic;
 pub mod driver;
 pub mod error;
 pub mod formatter;

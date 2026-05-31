@@ -34,7 +34,7 @@ void parseCommandLineOptions(int argc, const char *const *argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv);
 }
 
-void mlirEnableOptimizationRemarksForTesting(MlirContext ctx) {
+void mlirEnableOptimizationRemarks(MlirContext ctx) {
   mlir::MLIRContext *cppCtx = unwrap(ctx);
   mlir::remark::RemarkCategories cats{/*all=*/".*"};
   std::unique_ptr<mlir::remark::RemarkEmittingPolicyAll> policy =

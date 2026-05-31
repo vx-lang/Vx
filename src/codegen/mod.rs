@@ -36,7 +36,7 @@ extern "C" {
     pub fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
     pub fn addVxToLLVMPass(pm: mlir_sys::MlirPassManager);
     fn parseCommandLineOptions(argc: std::ffi::c_int, argv: *const *const std::ffi::c_char);
-    fn mlirEnableOptimizationRemarksForTesting(ctx: mlir_sys::MlirContext);
+    fn mlirEnableOptimizationRemarks(ctx: mlir_sys::MlirContext);
 }
 
 pub fn register_vx_dialect(context: &Context) {
@@ -45,9 +45,9 @@ pub fn register_vx_dialect(context: &Context) {
     }
 }
 
-pub fn enable_optimization_remarks_for_testing(context: &Context) {
+pub fn enable_optimization_remarks(context: &Context) {
     unsafe {
-        mlirEnableOptimizationRemarksForTesting(context.to_raw());
+        mlirEnableOptimizationRemarks(context.to_raw());
     }
 }
 
