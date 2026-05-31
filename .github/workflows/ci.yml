@@ -68,3 +68,12 @@ jobs:
           else
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
+
+      - name: Run benchmarks (Every 10th Commit, offset by 1)
+        run: |
+          if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
+            echo "Running benchmarks for run $GITHUB_RUN_NUMBER"
+            cargo bench --verbose
+          else
+            echo "Skipping benchmarks. They run every 10th commit offset by 1 (current run: $GITHUB_RUN_NUMBER)."
+          fi
