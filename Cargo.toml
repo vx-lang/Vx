@@ -44,3 +44,7 @@ members = [
 
 [lints.clippy]
 if_same_then_else = "allow"
+
+[[bin]]
+name = "vxc"
+path = "src/main.rs"
