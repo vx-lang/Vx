@@ -3,7 +3,6 @@
 #include "VxDialect.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
-#include "mlir/InitAllPasses.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -19,6 +18,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -256,6 +256,7 @@ struct ConvertVxToStandardPass
   }
 
   void runOnOperation() override {
+    getOperation()->emitRemark("Lowering Vx to Standard dialects");
     RewritePatternSet patterns(&getContext());
     patterns.add<SpawnOpLowering, TransferOpLowering>(&getContext());
 
@@ -480,5 +481,3 @@ void registerVxPasses() {
 }
 } // namespace vx
 } // namespace mlir
-
-

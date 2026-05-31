@@ -35,11 +35,30 @@ extern "C" {
     fn registerVxPassesC();
     pub fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
     pub fn addVxToLLVMPass(pm: mlir_sys::MlirPassManager);
+    fn parseCommandLineOptions(argc: std::ffi::c_int, argv: *const *const std::ffi::c_char);
+    fn mlirEnableOptimizationRemarksForTesting(ctx: mlir_sys::MlirContext);
 }
 
 pub fn register_vx_dialect(context: &Context) {
     unsafe {
         registerVxDialect(context.to_raw());
+    }
+}
+
+pub fn enable_optimization_remarks_for_testing(context: &Context) {
+    unsafe {
+        mlirEnableOptimizationRemarksForTesting(context.to_raw());
+    }
+}
+
+pub fn parse_command_line_options(args: &[String]) {
+    let c_args: Vec<std::ffi::CString> = args
+        .iter()
+        .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
+        .collect();
+    let c_args_ptrs: Vec<*const std::ffi::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
+    unsafe {
+        parseCommandLineOptions(c_args_ptrs.len() as std::ffi::c_int, c_args_ptrs.as_ptr());
     }
 }
 
