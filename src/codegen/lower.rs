@@ -3168,13 +3168,24 @@ fn generate_statements_with_break_guard<'c>(
             );
             if_region.append_block(if_block);
 
+            let else_region = melior::ir::Region::new();
+            let else_block = melior::ir::Block::new(&[]);
+            let yield_op = melior::ir::operation::OperationBuilder::new(
+                "scf.yield",
+                Location::unknown(gen.context),
+            )
+            .build()
+            .unwrap();
+            else_block.append_operation(yield_op);
+            else_region.append_block(else_block);
+
             block.append_operation(
                 melior::ir::operation::OperationBuilder::new(
                     "scf.if",
                     Location::unknown(gen.context),
                 )
                 .add_operands(&[not_break])
-                .add_regions([if_region])
+                .add_regions([if_region, else_region])
                 .build()
                 .unwrap(),
             );

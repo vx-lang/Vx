@@ -16,22 +16,9 @@ repository = "https://github.com/hiraditya/Vx"
 keywords = ["compiler", "heterogeneous", "mlir", "gpu", "npu"]
 categories = ["compilers", "development-tools"]
 
-[[bin]]
-name = "vxc"
-path = "src/main.rs"
-
 [lib]
 name = "vxc"
 path = "src/lib.rs"
-
-[[bin]]
-name = "cargo-vx-bench"
-path = "src/bin/cargo-vx-bench.rs"
-
-[[bin]]
-name = "update_mlir_test_checks"
-path = "utils/update_mlir_test_checks.rs"
-
 
 [dependencies]
 rayon = "1.10"
