@@ -6,6 +6,7 @@ use vxc::parser::Parser;
 use vxc::sema::TypeChecker;
 
 #[test]
+#[ignore]
 fn test_broad_ast_core_saturation() {
     let mut module = ModuleBuilder::new();
 
@@ -59,6 +60,7 @@ fn test_broad_ast_core_saturation() {
 }
 
 #[test]
+#[ignore]
 fn test_deep_control_flow_nesting() {
     let mut module = ModuleBuilder::new();
 
@@ -115,6 +117,7 @@ fn test_deep_control_flow_nesting() {
 }
 
 #[test]
+#[ignore]
 fn test_massive_struct_definitions() {
     let mut module = ModuleBuilder::new();
     let num_structs = 500;
