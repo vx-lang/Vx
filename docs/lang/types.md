@@ -155,3 +155,18 @@ When verifying `let target: TargetType = source_expression;`, the compiler permi
 1. **Safety Coercions:** A `Ref<T, HostDRAM>` can be coerced into a `Verified<T>` boundary type, signaling that host memory access requires no further spatial validation.
 
 If the types pass the `is_assignable` constraint matrix, the Semantic Analyzer accepts the program. Advanced lifecycle validation (like borrow constraints) operates entirely independently of this type-compatibility pass.
+
+## 8. Primitive Types and Arrays
+
+Vx provides a comprehensive set of primitive types:
+
+- **Signed Integers**: `i4`, `i8`, `i16`, `i32`, `i64`, `i128`
+- **Unsigned Integers**: `u4`, `u8`, `u16`, `u32`, `u64`, `u128`
+- **Floating Point**: `f16`, `bf16`, `f32`, `f64`
+- **Boolean**: `bool`
+
+### Arrays, Tensors, and Matrices
+
+- **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
+- **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
+- **SIMD Vectors**: Explicit SIMD types are available (e.g., `<4 x f32>`) for low-level vectorization control.

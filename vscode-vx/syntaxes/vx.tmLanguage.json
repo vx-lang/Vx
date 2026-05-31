@@ -26,7 +26,7 @@
       "patterns": [
         {
           "name": "keyword.control.vx",
-          "match": "\\b(import|fn|let|mut|for|in|if|else|return|spawn|on|transfer|unroll|across|match|unsafe|comptime|assert)\\b"
+          "match": "\\b(import|fn|let|mut|for|in|if|else|loop|break|continue|return|spawn|on|transfer|unroll|across|match|unsafe|safe|comptime|assert|grad|vjp|jvp)\\b"
         },
         {
           "name": "storage.type.vx",
@@ -38,7 +38,7 @@
       "patterns": [
         {
           "name": "entity.name.type.vx",
-          "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f16|bf16|f32|f64|bool|Topology|MemorySpace|Ref|Verified|Pinned|HardwareState)\\b"
+          "match": "\\b(i4|i8|i16|i32|i64|i128|u4|u8|u16|u32|u64|u128|f16|bf16|f32|f64|bool|Topology|MemorySpace|Ref|Verified|Pinned|HardwareState|Tensor|Matrix)\\b"
         },
         {
           "name": "constant.language.topology.vx",

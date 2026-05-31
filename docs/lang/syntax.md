@@ -81,7 +81,7 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
 
 ## 6. Control Flow
 
-Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `while`.
+Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `loop`, `break`, `continue`.
 Loops can be annotated for spatial unrolling.
 
 ```rust
@@ -111,3 +111,18 @@ extern {
 ```
 
 **Motivation**: The `safe` keyword delegates the safety assertion to the interface boundary. This prevents the codebase from being littered with repetitive `unsafe` blocks for functions that are already trusted, keeping your application logic clean and robust while maintaining strict boundaries for actual unsafe operations (like pointer arithmetic or arbitrary memory mapping).
+
+## 8. Automatic Differentiation (Autodiff)
+
+Vx provides first-class support for automatic differentiation via the `grad`, `vjp` (Vector-Jacobian Product), and `jvp` (Jacobian-Vector Product) keywords.
+
+```rust
+fn loss_function(weights: Tensor<f32, [128, 128]>) -> f32 {
+    // ...
+}
+
+fn optimize() {
+    // Computes the gradient of the loss function with respect to its inputs
+    let gradients = grad(loss_function)(current_weights);
+}
+```
