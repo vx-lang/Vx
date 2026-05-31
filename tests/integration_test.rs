@@ -188,3 +188,27 @@ fn test_integration_logical_ops() {
     "#;
     assert!(run_pipeline(input).is_ok());
 }
+
+#[test]
+fn test_integration_linear_variable_consumption() {
+    let input = r#"
+    fn helper(t: Tensor) -> Tensor {
+        return t;
+    }
+
+    fn main() -> Tensor {
+        let x = Tensor_f32(2, 2);
+        
+        let mut sum = 0;
+        for i in 0..10 {
+            sum += i;
+        }
+
+        // Use in function call. This is linear, so it consumes x.
+        let y = helper(x);
+
+        return y;
+    }
+    "#;
+    assert!(run_pipeline(input).is_ok());
+}
