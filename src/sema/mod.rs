@@ -152,10 +152,9 @@ fn bad_matmul() -> Tensor {
             checker.errors.is_empty()
         };
         assert!(!success);
-        assert!(checker
-            .errors
-            .iter()
-            .any(|e| e.contains("Call to unsafe function 'malloc' is unsafe")));
+        assert!(checker.errors.iter().any(|e| e
+            .message
+            .contains("Call to unsafe function 'malloc' is unsafe")));
     }
 
     #[test]

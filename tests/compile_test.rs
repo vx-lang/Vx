@@ -50,7 +50,10 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    let is_valid = checker.errors.is_empty();
+    let is_valid = !checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error);
 
     if expect_pass {
         assert!(
@@ -99,7 +102,10 @@ fn run_middle_end_test(path: &Path) {
         checker.check_function(f);
     }
     assert!(
-        checker.errors.is_empty(),
+        (!checker
+            .errors
+            .iter()
+            .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)),
         "Sema failed on {:?}: {:#?}",
         path,
         checker.errors
@@ -173,7 +179,11 @@ fn run_backend_test(path: &Path) {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    if !checker.errors.is_empty() {
+    if checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
+    {
         panic!(
             "Semantic check failed on '{}':\n{:?}",
             path.display(),
@@ -602,7 +612,11 @@ fn run_backend_autodiff_test(path: &Path) {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    if !checker.errors.is_empty() {
+    if checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
+    {
         panic!(
             "Semantic check failed on '{}':\n{:?}",
             path.display(),
@@ -723,7 +737,10 @@ fn test_melior_matmul() {
         checker.check_function(f);
     }
     assert!(
-        checker.errors.is_empty(),
+        (!checker
+            .errors
+            .iter()
+            .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)),
         "Sema failed on {:?}: {:#?}",
         path,
         checker.errors

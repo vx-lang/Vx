@@ -131,7 +131,7 @@ fn test_vx_valid_program_emits_remark() {
     vxc::codegen::register_vx_dialect(&context);
 
     // Enable optimization remarks directly on the context via our C++ wrapper
-    vxc::codegen::enable_optimization_remarks_for_testing(&context);
+    vxc::codegen::enable_optimization_remarks(&context);
 
     let captured = Arc::new(Mutex::new(String::new()));
     let captured_clone = captured.clone();
@@ -145,15 +145,35 @@ fn test_vx_valid_program_emits_remark() {
         true
     });
 
-    // 1. Load an MLIR string containing a vx operation (or just an empty module since our pass runs on ModuleOp)
-    let mlir_str = r#"
-module {
-  func.func @test() {
-    return
-  }
+    // 1. Compile a valid Vx program
+    let input = r#"
+fn test_remark() -> f32 {
+    return 1.0;
 }
 "#;
-    let mut module = melior::ir::Module::parse(&context, mlir_str).unwrap();
+    let mut lexer = vxc::lexer::Lexer::new(input);
+    let tokens = lexer.tokenize();
+    let mut parser = vxc::parser::Parser::new(tokens, input);
+    let mut ast = parser.parse().unwrap();
+
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let program_arr = [ast.clone()];
+    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
+    for f in &mut ast.functions {
+        checker.check_function(f);
+    }
+    assert!(!checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error));
+
+    // Generate MLIR
+    let module_asts = std::collections::HashMap::new();
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+    codegen.generate(&ast, &module_asts);
+    let mut module = codegen.into_module();
 
     // 2. Trigger an optimization remark using a pass that analyzes the IR and emits remarks
     let pass_manager = melior::pass::PassManager::new(&context);

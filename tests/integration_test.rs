@@ -62,11 +62,16 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     assert!(is_valid, "Semantic analysis failed on integration test");
 }
 
-fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
+fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::Diagnostic>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(tokens, input);
-    let mut program = parser.parse().map_err(|e| vec![e])?;
+    let mut program = parser.parse().map_err(|e| {
+        vec![vxc::diagnostic::Diagnostic {
+            level: vxc::diagnostic::DiagnosticLevel::Error,
+            message: e,
+        }]
+    })?;
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [program.clone()];
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
@@ -75,7 +80,13 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    if checker.errors.is_empty() {
+
+    let has_errors = checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error);
+
+    if !has_errors {
         let monomorphized_ast = program;
         let module_asts = std::collections::HashMap::new();
         let context = melior::Context::new();
@@ -95,7 +106,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<String>> {
         for err in &checker.errors {
             println!("run_pipeline semantic error: {}", err);
         }
-        Err(checker.errors)
+        Err(checker.errors.inner)
     }
 }
 

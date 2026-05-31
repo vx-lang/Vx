@@ -47,6 +47,48 @@ impl<'a> TypeChecker<'a> {
         self.check_expr_type_flag(expr, true, false)
     }
 
+    pub(crate) fn check_expr_block(
+        &mut self,
+        stmts: &mut [Statement],
+        consume: bool,
+        silent: bool,
+    ) -> Type {
+        let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+        let mut terminated = false;
+
+        for s in stmts.iter_mut() {
+            if terminated && !silent {
+                self.errors
+                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                break;
+            }
+
+            if let Statement::ExprStmt(ExprStmtStmt {
+                ref mut expr,
+                has_semi: _,
+                span: _,
+            }) = s
+            {
+                ret_ty = self.check_expr_type_flag(expr, consume, silent);
+            } else {
+                let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
+                    ElementType::F32,
+                    vec![],
+                    None,
+                ));
+                self.check_statement(s, &expected_ret, consume, silent);
+            }
+
+            match s {
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                    terminated = true;
+                }
+                _ => {}
+            }
+        }
+        ret_ty
+    }
+
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         if let Expr::FunctionCall(fc) = expr {
             if let Some((enum_name, variant)) = fc.name.split_once("::") {
@@ -286,42 +328,7 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 self.push_scope();
-                for stmt in stmts.iter_mut() {
-                    if let Statement::ExprStmt(ExprStmtStmt {
-                        ref mut expr,
-                        has_semi: _,
-                        span: _,
-                    }) = stmt
-                    {
-                        self.check_expr_type(expr);
-                    } else {
-                        let expected_ret = self
-                            .current_return_type
-                            .clone()
-                            .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                        self.check_statement(stmt, &expected_ret);
-                    }
-                    if let Statement::Assert(AssertStmt { expr, msg, span: _ }) = stmt {
-                        let ty = self.check_expr_type(expr);
-                        if ty != Type::Scalar(ElementType::Bool) {
-                            self.errors
-                                .push("Assertion condition must be boolean".to_string());
-                        }
-                        let empty_env = HashMap::new();
-                        if let Some(Value::Bool(b)) = self.eval_expr(expr, &empty_env) {
-                            if !b {
-                                let m = msg
-                                    .clone()
-                                    .unwrap_or_else(|| "Comptime assertion failed".to_string());
-                                self.errors.push(format!("Comptime assert failed: {}", m));
-                            }
-                        } else {
-                            self.errors
-                                .push("Could not evaluate comptime assertion".to_string());
-                        }
-                    }
-                }
-                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+                let mut ret_ty = self.check_expr_block(stmts, consume, silent);
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type(r);
                 }
@@ -354,24 +361,7 @@ impl<'a> TypeChecker<'a> {
                     Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
                 }
 
-                for stmt in stmts.iter_mut() {
-                    if !silent {
-                        if let Statement::ExprStmt(ExprStmtStmt {
-                            ref mut expr,
-                            has_semi: _,
-                            span: _,
-                        }) = stmt
-                        {
-                            self.check_expr_type_flag(expr, consume, silent);
-                        } else {
-                            let expected_ret = self
-                                .current_return_type
-                                .clone()
-                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                            self.check_statement(stmt, &expected_ret);
-                        }
-                    }
-                }
+                self.check_expr_block(stmts, consume, silent);
 
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
                 if let Some(r) = ret {
@@ -399,22 +389,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
                 if !silent {
-                    for s in then_block.iter_mut() {
-                        if let Statement::ExprStmt(ExprStmtStmt {
-                            ref mut expr,
-                            has_semi: _,
-                            span: _,
-                        }) = s
-                        {
-                            then_ty = self.check_expr_type_flag(expr, consume, silent);
-                        } else {
-                            let expected_ret = self
-                                .current_return_type
-                                .clone()
-                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                            self.check_statement(s, &expected_ret);
-                        }
-                    }
+                    then_ty = self.check_expr_block(then_block, consume, silent);
                 }
                 self.pop_scope();
 
@@ -422,22 +397,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some(else_b) = else_block.as_mut() {
                     self.push_scope();
                     if !silent {
-                        for s in else_b.iter_mut() {
-                            if let Statement::ExprStmt(ExprStmtStmt {
-                                ref mut expr,
-                                has_semi: _,
-                                span: _,
-                            }) = s
-                            {
-                                else_ty = self.check_expr_type_flag(expr, consume, silent);
-                            } else {
-                                let expected_ret = self
-                                    .current_return_type
-                                    .clone()
-                                    .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                                self.check_statement(s, &expected_ret);
-                            }
-                        }
+                        else_ty = self.check_expr_block(else_b, consume, silent);
                     }
                     self.pop_scope();
 
@@ -1258,25 +1218,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
-                if !silent {
-                    for s in stmts.iter_mut() {
-                        if let Statement::ExprStmt(ExprStmtStmt {
-                            ref mut expr,
-                            has_semi: _,
-                            span: _,
-                        }) = s
-                        {
-                            self.check_expr_type(expr);
-                        } else {
-                            let expected_ret = self
-                                .current_return_type
-                                .clone()
-                                .unwrap_or(Type::Tensor(ElementType::F32, vec![], None));
-                            self.check_statement(s, &expected_ret);
-                        }
-                    }
-                }
-                let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
+                let mut ret_ty = self.check_expr_block(stmts, consume, silent);
                 if let Some(r) = ret_expr {
                     ret_ty = self.check_expr_type_flag(r, consume, silent);
                 }
@@ -1494,10 +1436,11 @@ impl<'a> TypeChecker<'a> {
                         _ => {}
                     }
 
-                    let arm_ty = Type::Tensor(ElementType::F32, vec![], None); // dummy
-                    for stmt in &mut arm.body {
-                        self.check_statement(stmt, &arm_ty);
-                    }
+                    let _arm_ty = if !silent {
+                        self.check_expr_block(&mut arm.body, consume, silent)
+                    } else {
+                        Type::Tensor(ElementType::F32, vec![], None)
+                    };
                     self.pop_scope();
                 }
 

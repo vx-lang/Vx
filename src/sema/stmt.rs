@@ -3,7 +3,31 @@ use std::collections::HashMap;
 use super::*;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_statement(&mut self, stmt: &mut Statement, return_type: &Type) {
+    pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
+        let mut terminated = false;
+        for stmt in body {
+            if terminated {
+                self.errors
+                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                break; // Only warn once per block
+            }
+            self.check_statement(stmt, return_type, true, false);
+            match stmt {
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                    terminated = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn check_statement(
+        &mut self,
+        stmt: &mut Statement,
+        return_type: &Type,
+        consume: bool,
+        silent: bool,
+    ) {
         // Intercept for HIR lowering
         match stmt {
             Statement::Assign(AssignStmt {
@@ -44,7 +68,7 @@ impl<'a> TypeChecker<'a> {
                 expr,
                 span: _,
             }) => {
-                let ty = self.check_expr_type(expr);
+                let ty = self.check_expr_type_flag(expr, consume, silent);
 
                 let mut tmp_env = HashMap::new();
                 for env in &self.eval_env {
@@ -73,20 +97,16 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
             }) => {
-                self.check_expr_type(start);
-                self.check_expr_type(end);
+                self.check_expr_type_flag(start, consume, silent);
+                self.check_expr_type_flag(end, consume, silent);
                 self.push_scope();
                 self.insert(iter.clone(), Type::Scalar(ElementType::I64));
-                for s in body {
-                    self.check_statement(s, return_type);
-                }
+                self.check_block(body, return_type);
                 self.pop_scope();
             }
             Statement::Loop(LoopStmt { body, span: _ }) => {
                 self.push_scope();
-                for s in body {
-                    self.check_statement(s, return_type);
-                }
+                self.check_block(body, return_type);
                 self.pop_scope();
             }
             Statement::Break(_) => {}
@@ -98,8 +118,8 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false, false);
-                let rhs_ty = self.check_expr_type(rhs);
+                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
+                let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
@@ -123,7 +143,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::Return(ReturnStmt { expr, span: _ }) => {
-                let ty = self.check_expr_type(expr);
+                let ty = self.check_expr_type_flag(expr, consume, silent);
                 if !self.is_assignable(return_type, &ty) {
                     self.errors.push(format!(
                         "Type mismatch on return. Expected {:?}, got {:?}",
@@ -137,10 +157,10 @@ impl<'a> TypeChecker<'a> {
                 has_semi: _,
                 span: _,
             }) => {
-                self.check_expr_type(expr);
+                self.check_expr_type_flag(expr, consume, silent);
             }
             Statement::Assert(AssertStmt { expr, msg, span: _ }) => {
-                let ty = self.check_expr_type(expr);
+                let ty = self.check_expr_type_flag(expr, consume, silent);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());

@@ -188,18 +188,23 @@ impl CompilerDriver {
             checker.check_function(f);
         }
 
-        if !checker.errors.is_empty() {
-            let mut err_msg = format!(
-                "Semantic check failed on '{}':
-",
-                filename
-            );
-            for err in checker.errors {
-                err_msg.push_str(&format!(
-                    "  {:?}
-",
-                    err
-                ));
+        let has_errors = checker
+            .errors
+            .iter()
+            .any(|d| d.level == crate::diagnostic::DiagnosticLevel::Error);
+
+        for diag in checker.errors.iter() {
+            if diag.level == crate::diagnostic::DiagnosticLevel::Warning {
+                println!("Warning in {}: {}", filename, diag.message);
+            }
+        }
+
+        if has_errors {
+            let mut err_msg = format!("Semantic check failed on '{}':\n", filename);
+            for diag in checker.errors.iter() {
+                if diag.level == crate::diagnostic::DiagnosticLevel::Error {
+                    err_msg.push_str(&format!("  {}\n", diag.message));
+                }
             }
             return Err(err_msg);
         }

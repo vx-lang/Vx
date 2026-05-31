@@ -376,9 +376,7 @@ impl<'a> TypeChecker<'a> {
             self.insert(name.clone(), ty.clone());
         }
 
-        for stmt in &mut func.body {
-            self.check_statement(stmt, &func.return_type.clone());
-        }
+        self.check_block(&mut func.body, &func.return_type.clone());
 
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
