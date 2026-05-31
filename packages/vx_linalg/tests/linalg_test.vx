@@ -111,7 +111,7 @@ fn main() -> i32 {
   let F3: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let F4: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let I: Verified<Tensor<f32, [s, s]>> = add(F3, F4);
-  
+
   let F5: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let F6: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let J: Verified<Tensor<f32, [s, s]>> = sub(F5, F6);
@@ -128,7 +128,7 @@ fn main() -> i32 {
   let F7: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let F8: Tensor<f32, [s, s]> = Tensor<f32>(s, s);
   let K: Verified<Tensor<f32, [s, s]>> = hadamard_mul(F7, F8);
-  
+
   // NO_EXEC
   return 0;
 }

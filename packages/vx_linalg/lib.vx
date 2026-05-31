@@ -10,7 +10,7 @@ fn matmul<T, M, N, K>(A: Tensor<T, [M, K]>, B: Tensor<T, [K, N]>) -> Verified<Te
   // The generic type signature `[M, K]` and `[K, N]` inherently forces the inner dimensions to match.
   // We can add an explicit assert that the type-checker will trivially prove, for documentation.
   assert(K == K, "Inner dimensions must match");
-  
+
   // Construct the resulting tensor
   let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
   return Verified(out);
