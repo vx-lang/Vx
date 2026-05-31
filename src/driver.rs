@@ -228,6 +228,10 @@ impl CompilerDriver {
         melior::utility::register_all_dialects(&registry);
         melior::utility::register_all_passes();
         let context = melior::Context::new();
+        context.attach_diagnostic_handler(|diagnostic| {
+            eprintln!("{}", diagnostic);
+            true
+        });
         context.append_dialect_registry(&registry);
         context.load_all_available_dialects();
         crate::codegen::register_vx_dialect(&context);
