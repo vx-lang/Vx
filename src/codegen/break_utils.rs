@@ -4,6 +4,7 @@ use crate::ast::stmt::*;
 pub fn contains_break(stmt: &Statement) -> bool {
     match stmt {
         Statement::Break(_) => true,
+        Statement::Continue(_) => true,
         Statement::LetDecl(s) => expr_contains_break(&s.expr),
         Statement::Return(s) => expr_contains_break(&s.expr),
         Statement::ExprStmt(s) => expr_contains_break(&s.expr),

@@ -116,6 +116,13 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 }))
             }
+            TokenType::Continue => {
+                self.advance();
+                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                Ok(Statement::Continue(ContinueStmt {
+                    span: Span::default(),
+                }))
+            }
             TokenType::For => {
                 self.advance();
                 let iter = match self.advance().kind.clone() {

@@ -167,6 +167,7 @@ impl Statement {
                 }
             }
             Statement::Break(_) => {}
+            Statement::Continue(_) => {}
         }
     }
 }

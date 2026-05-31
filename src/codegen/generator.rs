@@ -14,6 +14,7 @@ pub struct MeliorGenerator<'c> {
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
     pub break_flags: Vec<melior::ir::Value<'c, 'c>>,
+    pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -188,6 +189,7 @@ impl<'c> MeliorGenerator<'c> {
             expected_type: None,
             in_spawn: false,
             break_flags: Vec::new(),
+            continue_flags: Vec::new(),
         }
     }
 
@@ -484,6 +486,7 @@ impl<'c> MeliorGenerator<'c> {
             }
             Statement::Loop(s) => s.lower(self, block),
             Statement::Break(s) => s.lower(self, block),
+            Statement::Continue(s) => s.lower(self, block),
         }
     }
 

@@ -90,6 +90,7 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
             }
             Statement::Break(_) => {}
+            Statement::Continue(_) => {}
             Statement::Assign(AssignStmt { lhs, rhs, span: _ })
             | Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,

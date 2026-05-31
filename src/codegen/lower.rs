@@ -2752,6 +2752,17 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         );
         let break_ptr = alloca_op.result(0).unwrap().into();
 
+        let continue_alloca = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "memref.alloca",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[memref_ty])
+            .build()
+            .unwrap(),
+        );
+        let continue_ptr = continue_alloca.result(0).unwrap().into();
+
         let false_op = block.append_operation(
             melior::ir::operation::OperationBuilder::new(
                 "arith.constant",
@@ -2797,9 +2808,20 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         );
 
         gen.break_flags.push(break_ptr);
+        gen.continue_flags.push(continue_ptr);
 
         let before_region = Region::new();
         let before_block = Block::new(&[]);
+
+        before_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "memref.store",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[false_val, continue_ptr, c0_idx])
+            .build()
+            .unwrap(),
+        );
 
         let load_op = before_block.append_operation(
             melior::ir::operation::OperationBuilder::new(
@@ -2859,6 +2881,7 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
             &self.body,
             &after_block,
             break_ptr,
+            continue_ptr,
             c0_idx,
             i1_ty,
         );
@@ -2883,6 +2906,7 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
             .unwrap(),
         );
 
+        gen.continue_flags.pop();
         gen.break_flags.pop();
     }
 }
@@ -2937,6 +2961,60 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
             );
         } else {
             panic!("break outside of a loop");
+        }
+    }
+}
+
+impl<'c> LowerToMelior<'c> for ContinueStmt {
+    type Output = ();
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        if let Some(&continue_ptr) = gen.continue_flags.last() {
+            let i1_ty = Type::parse(gen.context, "i1").unwrap();
+            let true_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let true_val = true_op.result(0).unwrap().into();
+
+            let c0_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(
+                        Type::parse(gen.context, "index").unwrap(),
+                        0,
+                    )
+                    .into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let c0_idx = c0_op.result(0).unwrap().into();
+
+            block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "memref.store",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[true_val, continue_ptr, c0_idx])
+                .build()
+                .unwrap(),
+            );
+        } else {
+            panic!("continue outside of a loop");
         }
     }
 }
@@ -3096,6 +3174,7 @@ fn generate_statements_with_break_guard<'c>(
     stmts: &[Statement],
     block: &melior::ir::Block<'c>,
     break_ptr: Value<'c, 'c>,
+    continue_ptr: Value<'c, 'c>,
     c0_idx: Value<'c, 'c>,
     i1_ty: Type<'c>,
 ) {
@@ -3107,44 +3186,83 @@ fn generate_statements_with_break_guard<'c>(
 
     if stmts.len() > 1 {
         if contains_break(&stmts[0]) {
-            let load_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.load",
-                    Location::unknown(gen.context),
+            let load_break = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "memref.load",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[break_ptr, c0_idx])
+                    .add_results(&[i1_ty])
+                    .build()
+                    .unwrap(),
                 )
-                .add_operands(&[break_ptr, c0_idx])
-                .add_results(&[i1_ty])
-                .build()
-                .unwrap(),
-            );
-            let is_break = load_op.result(0).unwrap().into();
+                .result(0)
+                .unwrap()
+                .into();
 
-            let true_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
+            let load_cont = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "memref.load",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[continue_ptr, c0_idx])
+                    .add_results(&[i1_ty])
+                    .build()
+                    .unwrap(),
                 )
-                .add_results(&[i1_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
-                )])
-                .build()
-                .unwrap(),
-            );
-            let true_val = true_op.result(0).unwrap().into();
+                .result(0)
+                .unwrap()
+                .into();
 
-            let not_break_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.xori",
-                    Location::unknown(gen.context),
+            let is_break_or_cont = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.ori",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[load_break, load_cont])
+                    .add_results(&[i1_ty])
+                    .build()
+                    .unwrap(),
                 )
-                .add_operands(&[is_break, true_val])
-                .add_results(&[i1_ty])
-                .build()
-                .unwrap(),
-            );
-            let not_break = not_break_op.result(0).unwrap().into();
+                .result(0)
+                .unwrap()
+                .into();
+
+            let true_val = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[i1_ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
+                    )])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)
+                .unwrap()
+                .into();
+
+            let not_break = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.xori",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[is_break_or_cont, true_val])
+                    .add_results(&[i1_ty])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)
+                .unwrap()
+                .into();
 
             let if_region = Region::new();
             let if_block = Block::new(&[]);
@@ -3154,6 +3272,7 @@ fn generate_statements_with_break_guard<'c>(
                 &stmts[1..],
                 &if_block,
                 break_ptr,
+                continue_ptr,
                 c0_idx,
                 i1_ty,
             );
@@ -3190,7 +3309,15 @@ fn generate_statements_with_break_guard<'c>(
                 .unwrap(),
             );
         } else {
-            generate_statements_with_break_guard(gen, &stmts[1..], block, break_ptr, c0_idx, i1_ty);
+            generate_statements_with_break_guard(
+                gen,
+                &stmts[1..],
+                block,
+                break_ptr,
+                continue_ptr,
+                c0_idx,
+                i1_ty,
+            );
         }
     }
 }

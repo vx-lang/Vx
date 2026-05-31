@@ -150,6 +150,16 @@ impl BreakStmt {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct ContinueStmt {
+    pub span: Span,
+}
+impl ContinueStmt {
+    pub fn new(span: Span) -> Self {
+        Self { span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     LetDecl(LetDeclStmt),
     Return(ReturnStmt),
@@ -160,6 +170,7 @@ pub enum Statement {
     Assert(AssertStmt),
     Loop(LoopStmt),
     Break(BreakStmt),
+    Continue(ContinueStmt),
 }
 
 impl Statement {
@@ -209,6 +220,7 @@ impl Statement {
                 span: e.span.clone(),
             }),
             Statement::Break(e) => Statement::Break(e.clone()),
+            Statement::Continue(e) => Statement::Continue(e.clone()),
         }
     }
 }
