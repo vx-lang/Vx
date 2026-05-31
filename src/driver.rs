@@ -57,6 +57,10 @@ pub struct DriverOptions {
     #[arg(long = "run")]
     pub run_jit: bool,
 
+    /// Emit MLIR/LLVM backend diagnostics
+    #[arg(long = "emit-backend-diagnostics")]
+    pub emit_backend_diagnostics: bool,
+
     /// Optimization level (-O0 to -O3)
     #[arg(short = 'O', num_args = 0..=1, default_missing_value = "3", default_value_t = 0)]
     pub opt_level: u8,
@@ -228,8 +232,11 @@ impl CompilerDriver {
         melior::utility::register_all_dialects(&registry);
         melior::utility::register_all_passes();
         let context = melior::Context::new();
-        context.attach_diagnostic_handler(|diagnostic| {
-            eprintln!("{}", diagnostic);
+        let emit_diagnostics = self.options.emit_backend_diagnostics;
+        context.attach_diagnostic_handler(move |diagnostic| {
+            if emit_diagnostics {
+                eprintln!("{}", diagnostic);
+            }
             true
         });
         context.append_dialect_registry(&registry);
