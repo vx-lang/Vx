@@ -7,7 +7,7 @@ use vxc::sema::TypeChecker;
 
 #[test]
 #[ignore]
-fn test_broad_ast_core_saturation() {
+fn test_stress_broad_ast_core_saturation() {
     let mut module = ModuleBuilder::new();
 
     // Generate a file containing 1,000 completely independent functions
@@ -61,7 +61,7 @@ fn test_broad_ast_core_saturation() {
 
 #[test]
 #[ignore]
-fn test_deep_control_flow_nesting() {
+fn test_stress_deep_control_flow_nesting() {
     let mut module = ModuleBuilder::new();
 
     let mut func = FunctionBuilder::new("deeply_nested");
@@ -118,7 +118,7 @@ fn test_deep_control_flow_nesting() {
 
 #[test]
 #[ignore]
-fn test_massive_struct_definitions() {
+fn test_stress_massive_struct_definitions() {
     let mut module = ModuleBuilder::new();
     let num_structs = 500;
 
