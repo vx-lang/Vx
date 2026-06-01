@@ -221,7 +221,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let BorrowExpr { expr, .. } = self;
         if let Expr::Identifier(id) = &**expr {
             if gen.allocs.contains(&id.name) {
-                if let Some((val, ty)) = gen.env.get(&id.name) {
+                if let Some((val, _ty)) = gen.env.get(&id.name) {
                     let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
                     return (*val, ptr_ty);
                 }
@@ -1111,20 +1111,32 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             })
             .clone();
 
+        let mut mapping = std::collections::HashMap::new();
         let struct_ty = if name.contains('<') && name.ends_with('>') {
             let inner_ty_str = &name[name.find('<').unwrap() + 1..name.len() - 1];
-            let inner_ty = if inner_ty_str == "i32" {
-                crate::ast::Type::Scalar(crate::ast::ElementType::I32)
-            } else if inner_ty_str == "f32" {
-                crate::ast::Type::Scalar(crate::ast::ElementType::F32)
-            } else if inner_ty_str == "i64" {
-                crate::ast::Type::Scalar(crate::ast::ElementType::I64)
-            } else {
-                crate::ast::Type::Struct(inner_ty_str.to_string(), None)
-            };
+            let mut inner_tys = Vec::new();
+            for ty_arg_raw in inner_ty_str.split(',') {
+                let ty_arg = ty_arg_raw.trim();
+                let inner_ty = if ty_arg == "i32" {
+                    crate::ast::Type::Scalar(crate::ast::ElementType::I32)
+                } else if ty_arg == "f32" {
+                    crate::ast::Type::Scalar(crate::ast::ElementType::F32)
+                } else if ty_arg == "i64" {
+                    crate::ast::Type::Scalar(crate::ast::ElementType::I64)
+                } else {
+                    crate::ast::Type::Struct(ty_arg.to_string(), None)
+                };
+                inner_tys.push(inner_ty);
+            }
+            for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+                if i < inner_tys.len() {
+                    mapping.insert(g_name.clone(), inner_tys[i].clone());
+                }
+            }
+            println!("StructInit {}: mapping = {:?}", name, mapping);
             gen.lower_type(&crate::ast::Type::GenericInstance(
                 Box::new(crate::ast::Type::Struct(base_name.clone(), None)),
-                vec![inner_ty],
+                inner_tys,
             ))
         } else {
             gen.lower_type(&crate::ast::Type::Struct(name.clone(), None))
@@ -1145,7 +1157,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 .iter()
                 .position(|(n, _)| n == field_name)
                 .unwrap();
-            let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1);
+            let sub_ty = struct_decl.fields[field_idx].1.substitute(&mapping);
+            println!(
+                "Struct {} field {} has type {:?}, mapped to {:?}",
+                name, field_name, struct_decl.fields[field_idx].1, sub_ty
+            );
+            let field_ty = gen.lower_type(&sub_ty);
             let prev_expected = gen.expected_type;
             gen.expected_type = Some(field_ty);
             let (mut field_val, expr_ty) = gen.generate_expr(f_expr, block);
@@ -1413,15 +1430,49 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
         let is_ptr = base_ty_str.starts_with("!llvm.ptr");
 
         if let Some(resolved_struct_name) = struct_name_opt {
-            if let Some(struct_decl) = gen.structs.get(&resolved_struct_name).cloned() {
+            let base_name = resolved_struct_name
+                .split('<')
+                .next()
+                .unwrap_or(&resolved_struct_name)
+                .to_string();
+            let mut mapping = std::collections::HashMap::new();
+            if resolved_struct_name.contains('<') && resolved_struct_name.ends_with('>') {
+                let inner_ty_str = &resolved_struct_name
+                    [resolved_struct_name.find('<').unwrap() + 1..resolved_struct_name.len() - 1];
+                let mut inner_tys = Vec::new();
+                for ty_arg_raw in inner_ty_str.split(',') {
+                    let ty_arg = ty_arg_raw.trim();
+                    let inner_ty = if ty_arg == "i32" {
+                        crate::ast::Type::Scalar(crate::ast::ElementType::I32)
+                    } else if ty_arg == "f32" {
+                        crate::ast::Type::Scalar(crate::ast::ElementType::F32)
+                    } else if ty_arg == "i64" {
+                        crate::ast::Type::Scalar(crate::ast::ElementType::I64)
+                    } else {
+                        crate::ast::Type::Struct(ty_arg.to_string(), None)
+                    };
+                    inner_tys.push(inner_ty);
+                }
+                if let Some(struct_decl) = gen.structs.get(&base_name) {
+                    for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+                        if i < inner_tys.len() {
+                            mapping.insert(g_name.clone(), inner_tys[i].clone());
+                        }
+                    }
+                }
+            }
+
+            if let Some(struct_decl) = gen.structs.get(&base_name).cloned() {
                 if let Some(field_idx) = struct_decl.fields.iter().position(|(n, _)| n == member) {
-                    let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1);
+                    let sub_ty = struct_decl.fields[field_idx].1.substitute(&mapping);
+                    let field_ty = gen.lower_type(&sub_ty);
 
                     if is_ptr {
                         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
                         let mut field_types = Vec::new();
                         for (_, ty) in &struct_decl.fields {
-                            let mut lowered = gen.lower_type_str(ty);
+                            let sub_ty2 = ty.substitute(&mapping);
+                            let mut lowered = gen.lower_type_str(&sub_ty2);
                             if lowered.starts_with("memref<") {
                                 lowered = "!llvm.ptr".to_string();
                             }
@@ -1429,7 +1480,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                         }
                         let struct_llvm_ty_str = format!(
                             "!llvm.struct<\"{}\", ({})>",
-                            resolved_struct_name,
+                            base_name,
                             field_types.join(", ")
                         );
                         let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str).unwrap();
@@ -1866,6 +1917,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut actual_func_ty = func_ty;
             if func_ty.to_string() == "!llvm.ptr" {
                 if let Some(crate::ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                    println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret);
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
                     actual_func_ty =
@@ -1942,8 +1994,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             } else {
                 panic!(
                     "Function pointer {} missing type info. func_ty={}",
-                    name,
-                    func_ty.to_string()
+                    name, func_ty
                 );
             }
         } else {
@@ -2981,7 +3032,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
         let mut actual_next_name = "next".to_string();
-        for (name, (_, args)) in &gen.functions {
+        for (name, (_, _args)) in &gen.functions {
             // Find the mangled next function that takes a pointer
             if name.contains("_next_") || name.ends_with("_next") {
                 actual_next_name = name.clone();
@@ -3123,7 +3174,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         );
         let cond_val = cmpi_op.result(0).unwrap().into();
 
-        let condition_op = before_block.append_operation(
+        let _condition_op = before_block.append_operation(
             melior::ir::operation::OperationBuilder::new(
                 "scf.condition",
                 Location::unknown(gen.context),
@@ -3855,15 +3906,27 @@ pub fn generate_match_chain<'c>(
         if payloads.len() == 1 {
             if let Pattern::Identifier(name) = &payloads[0] {
                 let opt_ty_str = _match_ty.to_string();
-                let payload_ty_str = if opt_ty_str.contains("(i32, ") {
+                let mut payload_ty_str = if opt_ty_str.contains("(i32, ") {
                     let start = opt_ty_str.find("(i32, ").unwrap() + 6;
                     let end = opt_ty_str.rfind(')').unwrap();
                     opt_ty_str[start..end].to_string()
                 } else {
                     "i32".to_string() // fallback
                 };
-                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).unwrap();
-
+                if payload_ty_str.starts_with("struct<")
+                    || payload_ty_str.starts_with("ptr")
+                    || payload_ty_str.starts_with("func")
+                    || payload_ty_str.starts_with("array")
+                {
+                    payload_ty_str = format!("!llvm.{}", payload_ty_str);
+                }
+                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Failed to parse payload_ty_str: {:?} from opt_ty_str: {:?}",
+                            payload_ty_str, opt_ty_str
+                        );
+                    });
                 let extract_payload_op = melior::ir::operation::OperationBuilder::new(
                     "llvm.extractvalue",
                     melior::ir::Location::unknown(gen.context),
@@ -4232,5 +4295,240 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         }
 
         (struct_val, struct_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for VecMacroExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let mut el_ty = crate::ast::ElementType::F32;
+        if !self.elements.is_empty() {
+            if let Some(crate::ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
+                el_ty = t;
+            } else if let Some(crate::ast::Type::Struct(s, _)) =
+                gen.infer_ast_type(&self.elements[0])
+            {
+                if s == "String" {
+                    // String is equivalent to pointer, but generic instantiation requires element type
+                }
+            }
+        }
+
+        let type_suffix = match el_ty {
+            crate::ast::ElementType::I32 => "i32",
+            crate::ast::ElementType::F32 => "f32",
+            crate::ast::ElementType::I64 => "i64",
+            crate::ast::ElementType::F64 => "f64",
+            crate::ast::ElementType::Bool => "Bool",
+            _ => {
+                if let Some(crate::ast::Type::Struct(s, _)) =
+                    gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
+                        value: "0".to_string(),
+                        ty: None,
+                        span: Span::default(),
+                    })))
+                {
+                    if s == "String" {
+                        "String"
+                    } else {
+                        "f32"
+                    }
+                } else {
+                    "f32"
+                }
+            }
+        };
+
+        let new_call = Expr::FunctionCall(FunctionCallExpr {
+            name: format!("Vec_{}::new", type_suffix),
+            args: vec![],
+            span: self.span.clone(),
+        });
+
+        let (vec_val, vec_ty) = gen.generate_expr(&new_call, block);
+
+        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let c1_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.mlir.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let c1 = c1_op.result(0).unwrap().into();
+
+        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let alloca_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.alloca",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[c1])
+            .add_results(&[ptr_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "elem_type"),
+                melior::ir::attribute::TypeAttribute::new(vec_ty).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let ptr_val = alloca_op.result(0).unwrap().into();
+
+        block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.store",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[vec_val, ptr_val])
+            .build()
+            .unwrap(),
+        );
+
+        let tmp_vec_name = format!("__vec_ptr_{}", gen.string_counter);
+        gen.string_counter += 1;
+        gen.env.insert(tmp_vec_name.clone(), (ptr_val, vec_ty));
+        gen.allocs.insert(tmp_vec_name.clone());
+
+        for el in &self.elements {
+            let push_call = Expr::FunctionCall(FunctionCallExpr {
+                name: format!("Vec_{}::push", type_suffix),
+                args: vec![
+                    Expr::Borrow(BorrowExpr {
+                        expr: Box::new(Expr::Identifier(IdentifierExpr {
+                            name: tmp_vec_name.clone(),
+                            span: Span::default(),
+                        })),
+                        is_mut: true,
+                        span: Span::default(),
+                    }),
+                    el.clone(),
+                ],
+                span: self.span.clone(),
+            });
+            gen.generate_expr(&push_call, block);
+        }
+
+        let load_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.load",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[ptr_val])
+            .add_results(&[vec_ty])
+            .build()
+            .unwrap(),
+        );
+        (load_op.result(0).unwrap().into(), vec_ty)
+    }
+}
+
+impl<'c> LowerToMelior<'c> for ClosureExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let func_name = format!("__closure_{}", gen.string_counter);
+        gen.string_counter += 1;
+
+        let mut arg_types = Vec::new();
+        for (_, ty) in &self.params {
+            arg_types.push(gen.lower_type(ty));
+        }
+
+        let ret_ast_ty = gen
+            .infer_ast_type(&self.body)
+            .unwrap_or(crate::ast::Type::Scalar(crate::ast::ElementType::F32));
+        let ret_ty = gen.lower_type(&ret_ast_ty);
+
+        let func_type = melior::ir::r#type::FunctionType::new(gen.context, &arg_types, &[ret_ty]);
+
+        let region = melior::ir::Region::new();
+        let mut block_args = Vec::new();
+        for t in &arg_types {
+            block_args.push((*t, melior::ir::Location::unknown(gen.context)));
+        }
+        let func_block = melior::ir::Block::new(&block_args);
+
+        let mut saved_env = Vec::new();
+        for (i, (name, ast_ty)) in self.params.iter().enumerate() {
+            let arg_val = func_block.argument(i).unwrap().into();
+            let mlir_ty = gen.lower_type(ast_ty);
+            let old = gen.env.insert(name.clone(), (arg_val, mlir_ty));
+            saved_env.push((name.clone(), old));
+        }
+
+        let (ret_val, _) = gen.generate_expr(&self.body, &func_block);
+
+        let yield_op = melior::ir::operation::OperationBuilder::new(
+            "func.return",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_operands(&[ret_val])
+        .build()
+        .unwrap();
+        func_block.append_operation(yield_op);
+        region.append_block(func_block);
+
+        for (name, old) in saved_env {
+            if let Some(o) = old {
+                gen.env.insert(name, o);
+            } else {
+                gen.env.remove(&name);
+            }
+        }
+
+        let func_op = melior::ir::operation::OperationBuilder::new(
+            "func.func",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_attributes(&[
+            (
+                melior::ir::Identifier::new(gen.context, "sym_name"),
+                melior::ir::attribute::StringAttribute::new(gen.context, &func_name).into(),
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "function_type"),
+                melior::ir::attribute::TypeAttribute::new(func_type.into()).into(),
+            ),
+            (
+                melior::ir::Identifier::new(gen.context, "sym_visibility"),
+                melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
+            ),
+        ])
+        .add_regions([region])
+        .build()
+        .unwrap();
+
+        gen.module.body().append_operation(func_op);
+
+        let const_op = melior::ir::operation::OperationBuilder::new(
+            "func.constant",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &func_name).into(),
+        )])
+        .add_results(&[func_type.into()])
+        .build()
+        .unwrap();
+
+        let const_ref = block.append_operation(const_op);
+        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let cast_op = melior::ir::operation::OperationBuilder::new(
+            "builtin.unrealized_conversion_cast",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&[const_ref.result(0).unwrap().into()])
+        .add_results(&[ptr_ty])
+        .build()
+        .unwrap();
+
+        let cast_ref = block.append_operation(cast_op);
+        (cast_ref.result(0).unwrap().into(), ptr_ty)
     }
 }

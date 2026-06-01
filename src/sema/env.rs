@@ -35,7 +35,7 @@ pub enum Value {
 pub struct GlobalAstEnv<'a> {
     pub structs: HashMap<String, &'a StructDecl>,
     #[allow(clippy::type_complexity)]
-    pub enums: HashMap<String, &'a Vec<(String, Option<Vec<Type>>)>>,
+    pub enums: HashMap<String, &'a EnumDecl>,
     pub traits: HashMap<String, &'a TraitDecl>,
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
     pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology)>,
@@ -60,7 +60,7 @@ impl<'a> GlobalAstEnv<'a> {
                 env.structs.insert(s.name.clone(), s);
             }
             for e in &module.enums {
-                env.enums.insert(e.name.clone(), &e.variants);
+                env.enums.insert(e.name.clone(), e);
             }
             for t in &module.traits {
                 env.traits.insert(t.name.clone(), t);
@@ -233,6 +233,9 @@ impl<'a> TypeChecker<'a> {
     pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
+                if name == "iter" {
+                    println!("lookup('{}') = {:?}", name, ty);
+                }
                 return Some(ty);
             }
         }
@@ -359,6 +362,11 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         let new_ret = generic_func.return_type.substitute(mapping);
+        // Add a print to see the substituted return type!
+        println!(
+            "instantiate_function: func={}, new_ret={:?}",
+            mangled_name, new_ret
+        );
         let new_body = generic_func
             .body
             .iter()
@@ -380,6 +388,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_function(&mut self, func: &mut Function) {
+        println!("check_function({})", func.name);
         if !func.generics.is_empty() {
             return;
         }

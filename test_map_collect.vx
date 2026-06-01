@@ -1,0 +1,19 @@
+import std::vec;
+import std::string;
+import std::iter;
+
+fn main() -> i32 {
+    let mut list_of_numbers = vec![1, 2, 3];
+    let f = |i: i32| i.to_string();
+    
+    // We might need to specify type params for map if type inference doesn't figure it out
+    let mut iter = list_of_numbers.iter();
+    let mut mapped = iter.map(f);
+    let mut list_of_strings: Vec<String> = mapped.collect();
+    
+    let mut exit_code = 1;
+    if list_of_strings.len() == 3 {
+        exit_code = 0;
+    }
+    return exit_code;
+}

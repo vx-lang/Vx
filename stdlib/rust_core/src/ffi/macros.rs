@@ -253,6 +253,12 @@ macro_rules! instantiate_string_ffi {
         }
 
         #[no_mangle]
+        pub extern "C" fn vx_i32_to_string(val: i32) -> *mut std::ffi::c_void {
+            let s: Box<String> = Box::new(val.to_string());
+            Box::into_raw(s) as *mut std::ffi::c_void
+        }
+
+        #[no_mangle]
         pub extern "C" fn vx_string_from_c_str(
             c_str: *const std::ffi::c_char,
         ) -> *mut std::ffi::c_void {

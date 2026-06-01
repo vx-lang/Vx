@@ -93,6 +93,7 @@ pub enum TokenType {
     AndAnd,
     OrOr,
     Bang,
+    Pipe,
 
     // Special
     Eof,
@@ -178,6 +179,7 @@ impl std::fmt::Display for TokenType {
             TokenType::AndAnd => write!(f, "&&"),
             TokenType::OrOr => write!(f, "||"),
             TokenType::Bang => write!(f, "!"),
+            TokenType::Pipe => write!(f, "|"),
 
             TokenType::Comment(s) => write!(f, "{}", s),
             TokenType::Whitespace(s) => write!(f, "{}", s),
@@ -530,7 +532,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     TokenType::OrOr
                 } else {
-                    TokenType::Unknown('|')
+                    TokenType::Pipe
                 }
             }
             '.' => {

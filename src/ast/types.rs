@@ -78,6 +78,7 @@ pub enum Type {
     Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
+    Unknown,
 }
 
 impl Type {
@@ -152,6 +153,7 @@ impl Type {
                 let new_ret = Box::new(ret.substitute(mapping));
                 Type::Function(new_params, new_ret)
             }
+            Type::Unknown => Type::Unknown,
             _ => self.clone(),
         }
     }

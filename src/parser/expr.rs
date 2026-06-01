@@ -255,20 +255,38 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> Result<Expr, String> {
-        if matches!(self.peek().kind, TokenType::LeftAngle)
-            && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
-            && matches!(self.peek_n(2).kind, TokenType::RightAngle)
-        {
-            self.advance(); // consume '<'
-            let ty_ident = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s,
-                _ => unreachable!(),
-            };
-            self.advance(); // consume '>'
-            if call_name == "Tensor" {
-                call_name = format!("Tensor_{}", ty_ident);
-            } else {
-                call_name = format!("{}<{}>", call_name, ty_ident);
+        if matches!(self.peek().kind, TokenType::LeftAngle) {
+            let mut is_generic = true;
+            let mut type_args = Vec::new();
+            let mut j = 1;
+            while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
+                && !matches!(self.peek_n(j).kind, TokenType::Eof)
+            {
+                if let TokenType::Identifier(ref s) = self.peek_n(j).kind {
+                    type_args.push(s.clone());
+                    j += 1;
+                    if matches!(self.peek_n(j).kind, TokenType::Comma) {
+                        j += 1;
+                    }
+                } else {
+                    is_generic = false;
+                    break;
+                }
+            }
+            if is_generic
+                && matches!(self.peek_n(j).kind, TokenType::RightAngle)
+                && !type_args.is_empty()
+            {
+                self.advance(); // consume '<'
+                for _ in 0..j {
+                    self.advance();
+                }
+                let ty_args_str = type_args.join(", ");
+                if call_name == "Tensor" {
+                    call_name = format!("Tensor_{}", type_args[0]);
+                } else {
+                    call_name = format!("{}<{}>", call_name, ty_args_str);
+                }
             }
         }
         if self.check(&TokenType::DoubleColon) {
@@ -286,17 +304,35 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume method name
                     call_name = format!("{}::{}", call_name, method_name);
 
-                    if matches!(self.peek().kind, TokenType::LeftAngle)
-                        && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
-                        && matches!(self.peek_n(2).kind, TokenType::RightAngle)
-                    {
-                        self.advance(); // consume '<'
-                        let ty_ident = match self.advance().kind.clone() {
-                            TokenType::Identifier(s) => s,
-                            _ => unreachable!(),
-                        };
-                        self.advance(); // consume '>'
-                        call_name = format!("{}<{}>", call_name, ty_ident);
+                    if matches!(self.peek().kind, TokenType::LeftAngle) {
+                        let mut is_generic = true;
+                        let mut type_args = Vec::new();
+                        let mut j = 1;
+                        while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
+                            && !matches!(self.peek_n(j).kind, TokenType::Eof)
+                        {
+                            if let TokenType::Identifier(ref s) = self.peek_n(j).kind {
+                                type_args.push(s.clone());
+                                j += 1;
+                                if matches!(self.peek_n(j).kind, TokenType::Comma) {
+                                    j += 1;
+                                }
+                            } else {
+                                is_generic = false;
+                                break;
+                            }
+                        }
+                        if is_generic
+                            && matches!(self.peek_n(j).kind, TokenType::RightAngle)
+                            && !type_args.is_empty()
+                        {
+                            self.advance(); // consume '<'
+                            for _ in 0..j {
+                                self.advance();
+                            }
+                            let ty_args_str = type_args.join(", ");
+                            call_name = format!("{}<{}>", call_name, ty_args_str);
+                        }
                     }
                 }
             }
@@ -685,7 +721,27 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')' after expression")?;
                         expr
                     }
-                    TokenType::Identifier(s) => self.parse_identifier_expr(s)?,
+                    TokenType::Identifier(s) => {
+                        if s == "vec" && self.match_token(&TokenType::Bang) {
+                            self.consume(&TokenType::LeftBracket, "Expected '[' for vec!")?;
+                            let mut elements = Vec::new();
+                            if !self.check(&TokenType::RightBracket) {
+                                loop {
+                                    elements.push(self.parse_expr()?);
+                                    if !self.match_token(&TokenType::Comma) {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.consume(&TokenType::RightBracket, "Expected ']' for vec!")?;
+                            Expr::VecMacro(VecMacroExpr {
+                                elements,
+                                span: Span::default(),
+                            })
+                        } else {
+                            self.parse_identifier_expr(s)?
+                        }
+                    }
                     TokenType::Number(s) => {
                         let (num_str, el_ty) = infer_number_literal(&s)?;
 
@@ -725,6 +781,39 @@ impl<'a> Parser<'a> {
                         Expr::ComptimeBlock(ComptimeBlockExpr {
                             stmts,
                             ret: ret_expr,
+                            span: Span::default(),
+                        })
+                    }
+                    TokenType::Pipe | TokenType::OrOr => {
+                        let mut params = Vec::new();
+                        if token.kind == TokenType::Pipe {
+                            if !self.check(&TokenType::Pipe) {
+                                loop {
+                                    let name = match self.advance().kind.clone() {
+                                        TokenType::Identifier(s) => s,
+                                        _ => {
+                                            return Err(
+                                                "Expected identifier in closure params".to_string()
+                                            )
+                                        }
+                                    };
+                                    let ty = if self.match_token(&TokenType::Colon) {
+                                        self.parse_type()?
+                                    } else {
+                                        Type::Unknown
+                                    };
+                                    params.push((name, ty));
+                                    if !self.match_token(&TokenType::Comma) {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.consume(&TokenType::Pipe, "Expected '|' after closure params")?;
+                        }
+                        let body = Box::new(self.parse_expr()?);
+                        Expr::Closure(ClosureExpr {
+                            params,
+                            body,
                             span: Span::default(),
                         })
                     }

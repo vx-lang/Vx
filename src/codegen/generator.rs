@@ -233,7 +233,7 @@ impl<'c> MeliorGenerator<'c> {
         for e in &program.enums {
             self.enums.insert(e.name.clone(), e.variants.clone());
         }
-        for (_, module) in modules {
+        for module in modules.values() {
             for s in &module.structs {
                 self.structs.insert(s.name.clone(), s.clone());
             }
@@ -559,6 +559,7 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     pub(crate) fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
+        println!("lower_type: {:?}", ty);
         let ty_str = match ty {
             crate::ast::Type::Tensor(el_ty, dims, top) => {
                 let ty_str = match el_ty {
@@ -701,6 +702,9 @@ impl<'c> MeliorGenerator<'c> {
                         let mut field_types = Vec::new();
                         let mut mapping = std::collections::HashMap::new();
                         for (i, param) in decl.generics.iter().enumerate() {
+                            if i >= args.len() {
+                                panic!("Not enough arguments for generic instance {} (expected {}, got {})", name, decl.generics.len(), args.len());
+                            }
                             mapping.insert(param.0.clone(), args[i].clone());
                         }
                         for (_, ty) in &decl.fields {
@@ -721,6 +725,10 @@ impl<'c> MeliorGenerator<'c> {
                                     .replace(">", "_")
                                     .replace(" ", "_")
                                     .replace(",", "_")
+                                    .replace("\"", "")
+                                    .replace("(", "_")
+                                    .replace(")", "_")
+                                    .replace(".", "_")
                             })
                             .collect();
                         format!(
@@ -759,6 +767,10 @@ impl<'c> MeliorGenerator<'c> {
                                     .replace(">", "_")
                                     .replace(" ", "_")
                                     .replace(",", "_")
+                                    .replace("\"", "")
+                                    .replace("(", "_")
+                                    .replace(")", "_")
+                                    .replace(".", "_")
                             })
                             .collect();
 
@@ -832,6 +844,7 @@ impl<'c> MeliorGenerator<'c> {
                 return Type::parse(self.context, "!llvm.ptr").unwrap();
             }
             crate::ast::Type::Module(..) => "none".to_string(),
+            crate::ast::Type::Unknown => "unknown".to_string(),
         };
 
         Type::parse(self.context, &ty_str)
@@ -854,27 +867,36 @@ impl<'c> MeliorGenerator<'c> {
                 if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
                     base_ty = *inner;
                 }
-                if let crate::ast::Type::GenericInstance(inner, _) = base_ty {
+                let mut generic_args = None;
+                if let crate::ast::Type::GenericInstance(inner, args) = base_ty {
                     base_ty = *inner;
+                    generic_args = Some(args);
                 }
                 if let crate::ast::Type::Struct(s_name, _) = base_ty {
                     if let Some(decl) = self.structs.get(&s_name) {
                         for (n, t) in &decl.fields {
                             if n == &ma.member {
-                                return Some(t.clone());
+                                let mut resolved_ty = t.clone();
+                                if let Some(args) = generic_args {
+                                    let mut mapping = std::collections::HashMap::new();
+                                    for (i, param) in decl.generics.iter().enumerate() {
+                                        if i < args.len() {
+                                            mapping.insert(param.0.clone(), args[i].clone());
+                                        }
+                                    }
+                                    resolved_ty = resolved_ty.substitute(&mapping);
+                                }
+                                return Some(resolved_ty);
                             }
                         }
                     }
                 }
                 None
             }
-            Expr::FunctionCall(fc) => {
-                if let Some(decl) = self.ast_functions.get(&fc.name) {
-                    Some(decl.return_type.clone())
-                } else {
-                    None
-                }
-            }
+            Expr::FunctionCall(fc) => self
+                .ast_functions
+                .get(&fc.name)
+                .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
                 if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
@@ -885,11 +907,9 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 if let crate::ast::Type::Struct(s_name, _) = base_ty {
                     let mangled = format!("{}_{}", s_name, mc.method_name);
-                    if let Some(decl) = self.ast_functions.get(&mangled) {
-                        Some(decl.return_type.clone())
-                    } else {
-                        None
-                    }
+                    self.ast_functions
+                        .get(&mangled)
+                        .map(|decl| decl.return_type.clone())
                 } else {
                     None
                 }

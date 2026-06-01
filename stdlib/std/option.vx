@@ -13,22 +13,32 @@ enum Option<T> {
 
 impl<T> Option<T> {
   fn is_some(self: &Option<T>) -> Bool {
+    let mut ret = false;
     match *self {
-      Option<T>::Some(v) => { return true; }
-      Option<T>::None() => { return false; }
+      Option<T>::Some(v) => { ret = true; }
+      Option<T>::None() => { ret = false; }
     }
-    return false;
+    return ret;
+  }
+
+  fn is_none(self: &Option<T>) -> Bool {
+    let mut ret = true;
+    match *self {
+      Option<T>::Some(v) => { ret = false; }
+      Option<T>::None() => { ret = true; }
+    }
+    return ret;
   }
 
   fn unwrap(self: Option<T>) -> T {
+    let ptr: *mut T = unsafe { malloc(0) };
+    let mut ret: T = unsafe { *ptr };
     match self {
-      Option<T>::Some(v) => { return v; }
+      Option<T>::Some(v) => { ret = v; }
       Option<T>::None() => {
-        let ptr: *mut T = unsafe { malloc(0) };
-        return unsafe { *ptr };
       }
     }
-    let ptr: *mut T = unsafe { malloc(0) };
-    return unsafe { *ptr };
+    return ret;
   }
 }
+

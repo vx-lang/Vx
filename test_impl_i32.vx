@@ -1,0 +1,11 @@
+struct String {}
+impl i32 {
+    fn to_string(self: i32) -> String {
+        return String {};
+    }
+}
+fn main() -> i32 {
+    let i = 42;
+    let s = i.to_string();
+    return 0;
+}

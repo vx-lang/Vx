@@ -463,6 +463,29 @@ impl MatchExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct VecMacroExpr {
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+impl VecMacroExpr {
+    pub fn new(elements: Vec<Expr>, span: Span) -> Self {
+        Self { elements, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ClosureExpr {
+    pub params: Vec<(String, Type)>,
+    pub body: Box<Expr>,
+    pub span: Span,
+}
+impl ClosureExpr {
+    pub fn new(params: Vec<(String, Type)>, body: Box<Expr>, span: Span) -> Self {
+        Self { params, body, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(IdentifierExpr),
     EnumVariant(EnumVariantExpr),
@@ -492,6 +515,8 @@ pub enum Expr {
     Vjp(VjpExpr),
     Jvp(JvpExpr),
     SpawnOn(SpawnOnExpr),
+    VecMacro(VecMacroExpr),
+    Closure(ClosureExpr),
 }
 
 impl Expr {
@@ -525,6 +550,8 @@ impl Expr {
             Expr::Vjp(e) => e.span.clone(),
             Expr::Jvp(e) => e.span.clone(),
             Expr::SpawnOn(e) => e.span.clone(),
+            Expr::VecMacro(e) => e.span.clone(),
+            Expr::Closure(e) => e.span.clone(),
         }
     }
 
@@ -568,9 +595,17 @@ impl Expr {
                         let base = &new_name[..idx];
                         let ty_arg = &new_name[idx + 1..end_idx];
                         let remainder = &new_name[end_idx + 1..];
-                        if let Some(mapped_ty) = mapping.get(ty_arg) {
-                            new_name = format!("{}<{}>{}", base, mapped_ty, remainder);
+                        let mut substituted_args = Vec::new();
+                        for t in ty_arg.split(',') {
+                            let t = t.trim();
+                            if let Some(mapped_ty) = mapping.get(t) {
+                                substituted_args.push(mapped_ty.to_string());
+                            } else {
+                                substituted_args.push(t.to_string());
+                            }
                         }
+                        new_name =
+                            format!("{}<{}>{}", base, substituted_args.join(", "), remainder);
                     }
                 }
                 Expr::FunctionCall(FunctionCallExpr {
@@ -642,11 +677,17 @@ impl Expr {
                 let mut new_name = e.name.clone();
                 if let Some(idx) = new_name.find('<') {
                     let base = &new_name[..idx];
-                    let ty_arg = &new_name[idx + 1..new_name.len() - 1];
-                    if let Some(mapped_ty) = mapping.get(ty_arg) {
-                        let ty_str = mapped_ty.to_string();
-                        new_name = format!("{}<{}>", base, ty_str);
+                    let ty_args_str = &new_name[idx + 1..new_name.len() - 1];
+                    let mut substituted_args = Vec::new();
+                    for ty_arg in ty_args_str.split(',') {
+                        let ty_arg = ty_arg.trim();
+                        if let Some(mapped_ty) = mapping.get(ty_arg) {
+                            substituted_args.push(mapped_ty.to_string());
+                        } else {
+                            substituted_args.push(ty_arg.to_string());
+                        }
                     }
+                    new_name = format!("{}<{}>", base, substituted_args.join(", "));
                 }
                 Expr::StructInit(StructInitExpr {
                     name: new_name,
@@ -724,13 +765,43 @@ impl Expr {
                 }
                 self.clone()
             }
-            Expr::EnumVariant(e) => Expr::EnumVariant(EnumVariantExpr {
-                enum_name: e.enum_name.clone(),
-                variant_name: e.variant_name.clone(),
-                payload: e
-                    .payload
-                    .as_ref()
-                    .map(|p| p.iter().map(|ex| ex.substitute(mapping)).collect()),
+            Expr::EnumVariant(e) => {
+                let mut new_name = e.enum_name.clone();
+                if let Some(idx) = new_name.find('<') {
+                    let base = &new_name[..idx];
+                    let ty_args_str = &new_name[idx + 1..new_name.len() - 1];
+                    let mut substituted_args = Vec::new();
+                    for ty_arg in ty_args_str.split(',') {
+                        let ty_arg = ty_arg.trim();
+                        if let Some(mapped_ty) = mapping.get(ty_arg) {
+                            substituted_args.push(mapped_ty.to_string());
+                        } else {
+                            substituted_args.push(ty_arg.to_string());
+                        }
+                    }
+                    new_name = format!("{}<{}>", base, substituted_args.join(", "));
+                }
+                Expr::EnumVariant(EnumVariantExpr {
+                    enum_name: new_name,
+                    variant_name: e.variant_name.clone(),
+                    payload: e
+                        .payload
+                        .as_ref()
+                        .map(|p| p.iter().map(|ex| ex.substitute(mapping)).collect()),
+                    span: e.span.clone(),
+                })
+            }
+            Expr::VecMacro(e) => Expr::VecMacro(VecMacroExpr {
+                elements: e.elements.iter().map(|ex| ex.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::Closure(e) => Expr::Closure(ClosureExpr {
+                params: e
+                    .params
+                    .iter()
+                    .map(|(n, t)| (n.clone(), t.substitute(mapping)))
+                    .collect(),
+                body: Box::new(e.body.substitute(mapping)),
                 span: e.span.clone(),
             }),
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {

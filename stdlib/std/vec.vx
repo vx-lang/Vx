@@ -48,6 +48,10 @@ impl<T> Vec<T> {
     return 0;
   }
 
+  fn len(self: &Vec<T>) -> i32 {
+    return self.len;
+  }
+
   fn iter(self: &Vec<T>) -> VecIter<T> {
     return VecIter<T> {
       vec: self,
@@ -71,5 +75,44 @@ impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
       ret = Option<T>::Some(val);
     }
     return ret;
+  }
+}
+
+impl<T> VecIter<T> {
+  fn map<NewItem>(self: VecIter<T>, f: fn(T) -> NewItem) -> VecMap<T, NewItem> {
+    return VecMap<T, NewItem> { iter: self, f: f };
+  }
+}
+
+struct VecMap<T, NewItem> {
+  iter: VecIter<T>,
+  f: fn(T) -> NewItem,
+}
+
+impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
+  fn next(self: &mut VecMap<T, NewItem>) -> Option<NewItem> {
+    let mut ret = Option<NewItem>::None();
+    let mut opt = self.iter.next();
+    loop {
+      if opt.is_none() { break; }
+      let item = opt.unwrap();
+      let f_closure = self.f;
+      let new_item = f_closure(item);
+      ret = Option<NewItem>::Some(new_item);
+      break;
+    }
+    return ret;
+  }
+}
+
+impl<T, NewItem> VecMap<T, NewItem> {
+  fn collect(self: &mut VecMap<T, NewItem>) -> Vec<NewItem> {
+    let mut result = Vec<NewItem>::new();
+    loop {
+      let mut opt = self.next();
+      if opt.is_none() { break; }
+      result.push(opt.unwrap());
+    }
+    return result;
   }
 }

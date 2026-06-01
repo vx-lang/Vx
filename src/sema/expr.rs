@@ -69,7 +69,9 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) = s
             {
+                let saved_borrows = self.active_borrows.clone();
                 ret_ty = self.check_expr_type_flag(expr, consume, silent);
+                self.active_borrows = saved_borrows;
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
                     ElementType::F32,
@@ -90,14 +92,23 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        let mut is_enum_variant = false;
         if let Expr::FunctionCall(fc) = expr {
-            if let Some((enum_name, variant)) = fc.name.split_once("::") {
+            if let Some((enum_name, _)) = fc.name.split_once("::") {
                 let actual_enum_name = if let Some(idx) = enum_name.find('<') {
                     &enum_name[0..idx]
                 } else {
                     enum_name
                 };
                 if self.env.enums.contains_key(actual_enum_name) {
+                    is_enum_variant = true;
+                }
+            }
+        }
+
+        if is_enum_variant {
+            if let Expr::FunctionCall(fc) = expr {
+                if let Some((enum_name, variant)) = fc.name.split_once("::") {
                     let mut payload = None;
                     if !fc.args.is_empty() {
                         let mut args = Vec::new();
@@ -133,6 +144,19 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let lookup_res = self.lookup(name).cloned();
+
+                if name == "new_item" {
+                    println!(
+                        "lookup('new_item') = {:?}, is_moved = {}, consume = {}",
+                        lookup_res,
+                        self.is_moved(name),
+                        consume
+                    );
+                    println!("scopes = {:?}", self.scopes.last());
+                    println!("Backtrace:");
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    println!("{}", bt);
+                }
 
                 if lookup_res.is_none() && self.is_moved(name) {
                     if !silent {
@@ -206,8 +230,9 @@ impl<'a> TypeChecker<'a> {
                     enum_name.as_str()
                 };
 
-                if let Some(variants) = self.env.enums.get(actual_enum_name) {
-                    if let Some((_, expected_payload)) = variants.iter().find(|(n, _)| n == variant)
+                if let Some(enum_decl) = self.env.enums.get(actual_enum_name) {
+                    if let Some((_, expected_payload)) =
+                        enum_decl.variants.iter().find(|(n, _)| n == variant)
                     {
                         if let Some(expr_payload) = payload {
                             if let Some(exp_types) = expected_payload {
@@ -216,19 +241,37 @@ impl<'a> TypeChecker<'a> {
                                         self.errors.push(format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()));
                                     }
                                 } else {
-                                    for (i, expr) in expr_payload.iter_mut().enumerate() {
-                                        let expr_ty = self.check_expr_type(expr);
-                                        // TODO: Substitute generic args in exp_types!
-                                        // For now, since Enum variant payload checking doesn't have the T mapped,
-                                        // we might need to skip strict checking if expected type is Generic,
-                                        // or substitute it. Since it's Option<T>, expected is `Generic("T")`.
-                                        // We will just allow it if expected is Generic!
-                                        if !self.is_assignable(&exp_types[i], &expr_ty) {
-                                            if !matches!(&exp_types[i], Type::Generic(_, _)) {
-                                                if !silent {
-                                                    self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, exp_types[i], expr_ty));
-                                                }
+                                    let mut mapping = HashMap::new();
+                                    if let Some(idx) = enum_name.find('<') {
+                                        let ty_args_str = &enum_name[idx + 1..enum_name.len() - 1];
+                                        let ty_args: Vec<&str> = ty_args_str.split(',').collect();
+                                        for (i, (g_name, _)) in
+                                            enum_decl.generics.iter().enumerate()
+                                        {
+                                            if i < ty_args.len() {
+                                                let ty_arg = ty_args[i].trim();
+                                                let parsed_ty = match ty_arg {
+                                                    "i32" => Type::Scalar(ElementType::I32),
+                                                    "f32" => Type::Scalar(ElementType::F32),
+                                                    "f64" => Type::Scalar(ElementType::F64),
+                                                    "i64" => Type::Scalar(ElementType::I64),
+                                                    "Bool" => Type::Scalar(ElementType::Bool),
+                                                    _ => Type::Struct(ty_arg.to_string(), None),
+                                                };
+                                                mapping.insert(g_name.clone(), parsed_ty);
                                             }
+                                        }
+                                    }
+
+                                    for (i, expr) in expr_payload.iter_mut().enumerate() {
+                                        let expr_ty =
+                                            self.check_expr_type_flag(expr, consume, silent);
+                                        let expected_ty = exp_types[i].substitute(&mapping);
+                                        if !self.is_assignable(&expected_ty, &expr_ty)
+                                            && !matches!(&expected_ty, Type::Generic(_, _))
+                                            && !silent
+                                        {
+                                            self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, expected_ty, expr_ty));
                                         }
                                     }
                                 }
@@ -737,14 +780,27 @@ impl<'a> TypeChecker<'a> {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else if let Some(idx) = resolved_name.find("::") {
-                    let struct_name = resolved_name[..idx].to_string();
+                    let mut struct_name = resolved_name[..idx].to_string();
                     let mut method_name = resolved_name[idx + 2..].to_string();
                     let mut explicit_ty_str = String::new();
 
+                    if let Some(lt) = struct_name.find('<') {
+                        if struct_name.ends_with('>') {
+                            explicit_ty_str =
+                                struct_name[lt + 1..struct_name.len() - 1].to_string();
+                            struct_name = struct_name[..lt].to_string();
+                        }
+                    }
+
                     if let Some(lt) = method_name.find('<') {
                         if method_name.ends_with('>') {
-                            explicit_ty_str =
+                            let method_ty_str =
                                 method_name[lt + 1..method_name.len() - 1].to_string();
+                            if explicit_ty_str.is_empty() {
+                                explicit_ty_str = method_ty_str;
+                            } else {
+                                explicit_ty_str = format!("{}, {}", explicit_ty_str, method_ty_str);
+                            }
                             method_name = method_name[..lt].to_string();
                         }
                     }
@@ -783,17 +839,38 @@ impl<'a> TypeChecker<'a> {
                                 for m in &ib.methods {
                                     if m.name == method_name {
                                         found_generic_func = Some(m.clone());
-                                        if !explicit_ty_str.is_empty() && ib.generics.len() == 1 {
-                                            let parsed_ty = match explicit_ty_str.as_str() {
-                                                "i32" => Type::Scalar(ElementType::I32),
-                                                "i64" => Type::Scalar(ElementType::I64),
-                                                "f32" => Type::Scalar(ElementType::F32),
-                                                "f64" => Type::Scalar(ElementType::F64),
-                                                "Bool" => Type::Scalar(ElementType::Bool),
-                                                _ => Type::Struct(explicit_ty_str.clone(), None),
-                                            };
-                                            found_mapping
-                                                .insert(ib.generics[0].0.clone(), parsed_ty);
+                                        if !explicit_ty_str.is_empty() {
+                                            for (i, ty_raw) in
+                                                explicit_ty_str.split(',').enumerate()
+                                            {
+                                                if i < ib.generics.len() {
+                                                    let parsed_ty = match ty_raw.trim() {
+                                                        "i32" => Type::Scalar(ElementType::I32),
+                                                        "i64" => Type::Scalar(ElementType::I64),
+                                                        "f32" => Type::Scalar(ElementType::F32),
+                                                        "f64" => Type::Scalar(ElementType::F64),
+                                                        "Bool" => Type::Scalar(ElementType::Bool),
+                                                        other => {
+                                                            if self.env.structs.contains_key(other)
+                                                            {
+                                                                Type::Struct(
+                                                                    other.to_string(),
+                                                                    None,
+                                                                )
+                                                            } else {
+                                                                Type::Generic(
+                                                                    other.to_string(),
+                                                                    None,
+                                                                )
+                                                            }
+                                                        }
+                                                    };
+                                                    found_mapping.insert(
+                                                        ib.generics[i].0.clone(),
+                                                        parsed_ty,
+                                                    );
+                                                }
+                                            }
                                         }
                                         break;
                                     }
@@ -891,7 +968,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some(decl) = struct_decl_opt {
-                    *struct_name_field = Some(actual_struct_name.clone());
+                    *struct_name_field = Some(base_ty.to_string());
                     for (f_name, f_type) in &decl.fields {
                         if f_name == member {
                             return f_type.substitute(&mapping);
@@ -1129,7 +1206,15 @@ impl<'a> TypeChecker<'a> {
                 for impl_blocks in self.env.impls.values() {
                     for ib in impl_blocks {
                         mapping.clear();
-                        if self.unify_types(&ib.target_type, &base_ty, &mut mapping) {
+                        let mut check_ty = base_ty.clone();
+                        while let Type::Borrow(inner, _, _, _)
+                        | Type::Pointer(inner, _, _)
+                        | Type::Ref(inner, _) = &check_ty
+                        {
+                            check_ty = *inner.clone();
+                        }
+
+                        if self.unify_types(&ib.target_type, &check_ty, &mut mapping) {
                             for m in &ib.methods {
                                 if m.name == *_method {
                                     found_method = Some((m.clone(), (*ib).clone()));
@@ -1146,14 +1231,23 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                if let Some((generic_method, ib)) = found_method {
+                if let Some((generic_method, _ib)) = found_method {
+                    // Infer method-level generics from argument types
+                    for (i, arg) in args.iter_mut().enumerate() {
+                        let arg_ty = self.check_expr_type_flag(arg, false, true); // silent = true
+                        if i + 1 < generic_method.params.len() {
+                            let expected_param = &generic_method.params[i + 1].1;
+                            self.unify_types(expected_param, &arg_ty, &mut mapping);
+                        }
+                    }
+
                     // Provide generic mapping to the method itself by copying impl block generics
                     let mut modified_func = generic_method.clone();
                     modified_func.generics = mapping.keys().map(|k| (k.clone(), None)).collect();
                     let mut method_func = self.instantiate_function(&modified_func, &mapping);
 
                     // Create a unique mangled name for the method based on the target type
-                    let mut mangled_name = format!("{:?}_{}", base_ty, method_func.name)
+                    let mangled_name = format!("{:?}_{}", base_ty, method_func.name)
                         .replace("(", "_")
                         .replace(")", "")
                         .replace(" ", "")
@@ -1166,6 +1260,11 @@ impl<'a> TypeChecker<'a> {
                         .replace("GenericInstance_", "")
                         .replace("Struct_", "")
                         .replace("Scalar_", "");
+
+                    println!(
+                        "MethodCall: method={} base_ty={:?} mangled_name={}",
+                        _method, base_ty, mangled_name
+                    );
 
                     method_func.name = mangled_name.clone();
 
@@ -1184,7 +1283,7 @@ impl<'a> TypeChecker<'a> {
                     // Rewrite AST from MethodCall to FunctionCall
                     let mut call_args = vec![];
                     if let Some(first_param) = method_func.params.first() {
-                        let needs_borrow = matches!(
+                        let param_is_ref = matches!(
                             first_param.1,
                             Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _)
                         );
@@ -1193,7 +1292,11 @@ impl<'a> TypeChecker<'a> {
                             Type::Pointer(_, _, m) => *m,
                             _ => false,
                         };
-                        if needs_borrow {
+
+                        let obj_is_ref =
+                            matches!(base_ty, Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _));
+
+                        if param_is_ref && !obj_is_ref {
                             call_args.push(Expr::Borrow(BorrowExpr {
                                 expr: Box::new((**obj).clone()),
                                 is_mut,
@@ -1411,13 +1514,20 @@ impl<'a> TypeChecker<'a> {
                 Type::Borrow(Box::new(inner_ty), None, *is_mut, self.scopes.len())
             }
             Expr::Dereference(e) => {
-                if !self.in_unsafe_block {
-                    self.errors
-                        .push("Dereference of raw pointer outside of unsafe block!".to_string());
-                }
-                let inner_ty = self.check_expr_type(&mut e.expr);
-                let resolved_ty = match inner_ty {
-                    Type::Pointer(t, _, _) | Type::Borrow(t, _, _, _) => *t,
+                let inner_ty = self.check_expr_type_flag(&mut e.expr, consume, silent);
+                let resolved_ty = match inner_ty.clone() {
+                    Type::Pointer(t, _, _) => {
+                        if !self.in_unsafe_block && !silent {
+                            println!("DEREF ERROR! inner_ty is {:?}", inner_ty);
+                            let bt = std::backtrace::Backtrace::force_capture();
+                            println!("{}", bt);
+                            self.errors.push(
+                                "Dereference of raw pointer outside of unsafe block!".to_string(),
+                            );
+                        }
+                        *t
+                    }
+                    Type::Borrow(t, _, _, _) => *t,
                     _ => {
                         self.errors
                             .push("Cannot dereference non-pointer type".to_string());
@@ -1454,16 +1564,25 @@ impl<'a> TypeChecker<'a> {
 
                 if let Some(idx) = resolved_name.find('<') {
                     base_name = resolved_name[..idx].to_string();
-                    let ty_arg = &resolved_name[idx + 1..resolved_name.len() - 1];
-                    let ty = match ty_arg {
-                        "i32" => Type::Scalar(ElementType::I32),
-                        "f32" => Type::Scalar(ElementType::F32),
-                        "f64" => Type::Scalar(ElementType::F64),
-                        "i64" => Type::Scalar(ElementType::I64),
-                        "Bool" => Type::Scalar(ElementType::Bool),
-                        other => Type::Generic(other.to_string(), None),
-                    };
-                    generic_args.push(ty);
+                    let ty_args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
+                    for ty_arg_raw in ty_args_str.split(',') {
+                        let ty_arg = ty_arg_raw.trim();
+                        let ty = match ty_arg {
+                            "i32" => Type::Scalar(ElementType::I32),
+                            "f32" => Type::Scalar(ElementType::F32),
+                            "f64" => Type::Scalar(ElementType::F64),
+                            "i64" => Type::Scalar(ElementType::I64),
+                            "Bool" => Type::Scalar(ElementType::Bool),
+                            other => {
+                                if self.env.structs.contains_key(other) {
+                                    Type::Struct(other.to_string(), None)
+                                } else {
+                                    Type::Generic(other.to_string(), None)
+                                }
+                            }
+                        };
+                        generic_args.push(ty);
+                    }
                 }
 
                 if let Some(struct_decl) = self.env.structs.get(&base_name) {
@@ -1666,12 +1785,48 @@ impl<'a> TypeChecker<'a> {
                         crate::ast::expr::Pattern::Identifier(name) => {
                             self.insert(name.clone(), _expr_ty.clone());
                         }
-                        crate::ast::expr::Pattern::EnumVariant(_, _, Some(payloads)) => {
-                            // Dummy bindings for enum payload variables
-                            for p in payloads {
-                                if let crate::ast::expr::Pattern::Identifier(name) = p {
-                                    self.insert(name.clone(), Type::Scalar(ElementType::I32));
-                                    // Dummy type for now
+                        crate::ast::expr::Pattern::EnumVariant(
+                            enum_name,
+                            variant_name,
+                            Some(payloads),
+                        ) => {
+                            let mut base_name = enum_name.clone();
+                            if let Some(idx) = enum_name.find('<') {
+                                base_name = enum_name[..idx].to_string();
+                            }
+                            if let Some(enum_decl) = self.env.enums.get(&base_name) {
+                                if let Some(variant) =
+                                    enum_decl.variants.iter().find(|v| v.0 == *variant_name)
+                                {
+                                    if let Some(payload_types) = &variant.1 {
+                                        let mut mapping = HashMap::new();
+                                        if let Type::GenericInstance(_, args) = &_expr_ty {
+                                            for (i, (g_name, _)) in
+                                                enum_decl.generics.iter().enumerate()
+                                            {
+                                                if i < args.len() {
+                                                    mapping.insert(g_name.clone(), args[i].clone());
+                                                }
+                                            }
+                                        }
+                                        for (i, p) in payloads.iter().enumerate() {
+                                            if let crate::ast::expr::Pattern::Identifier(name) = p {
+                                                if i < payload_types.len() {
+                                                    let p_ty =
+                                                        payload_types[i].substitute(&mapping);
+                                                    self.insert(name.clone(), p_ty);
+                                                } else {
+                                                    self.insert(name.clone(), Type::Unknown);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                for p in payloads {
+                                    if let crate::ast::expr::Pattern::Identifier(name) = p {
+                                        self.insert(name.clone(), Type::Unknown);
+                                    }
                                 }
                             }
                         }
@@ -1687,6 +1842,95 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 Type::Tensor(ElementType::F32, vec![], None)
+            }
+            Expr::VecMacro(VecMacroExpr { elements, span }) => {
+                let mut element_type = Type::Scalar(ElementType::I32); // Default
+                if !elements.is_empty() {
+                    let mut first = elements[0].clone();
+                    element_type = self.check_expr_type(&mut first);
+                }
+
+                let var_name = format!("_vec_macro_tmp_{}", self.next_reg);
+                self.next_reg += 1;
+
+                let new_call = Expr::FunctionCall(FunctionCallExpr::new(
+                    format!("Vec<{}>::new", element_type),
+                    vec![],
+                    span.clone(),
+                ));
+
+                let decl = Statement::LetDecl(LetDeclStmt::new(
+                    var_name.clone(),
+                    true,
+                    None,
+                    new_call,
+                    span.clone(),
+                ));
+
+                let mut stmts = vec![decl];
+
+                for el in elements.clone() {
+                    let push_call = Expr::MethodCall(MethodCallExpr::new(
+                        Box::new(Expr::Identifier(IdentifierExpr::new(
+                            var_name.clone(),
+                            span.clone(),
+                        ))),
+                        "push".to_string(),
+                        vec![el],
+                        span.clone(),
+                    ));
+                    stmts.push(Statement::ExprStmt(ExprStmtStmt::new(
+                        push_call,
+                        true,
+                        span.clone(),
+                    )));
+                }
+
+                let ret_expr =
+                    Expr::Identifier(IdentifierExpr::new(var_name.clone(), span.clone()));
+
+                let block = Expr::UnsafeBlock(UnsafeBlockExpr::new(
+                    stmts,
+                    Some(Box::new(ret_expr)),
+                    span.clone(),
+                ));
+
+                *expr = block;
+                self.check_expr_type(expr)
+            }
+            Expr::Closure(ClosureExpr { params, body, span }) => {
+                let func_name = format!("_closure_{}", self.next_reg);
+                self.next_reg += 1;
+
+                let cloned_params = params.clone();
+                let cloned_span = span.clone();
+
+                self.push_scope();
+                for (name, ty) in &cloned_params {
+                    self.insert(name.clone(), ty.clone());
+                }
+                let mut b = body.clone();
+                let ret_ty = self.check_expr_type(&mut b);
+                self.pop_scope();
+
+                let mut new_func = crate::ast::Function {
+                    name: func_name.clone(),
+                    generics: vec![],
+                    params: cloned_params.clone(),
+                    topology: self.active_topology.clone(),
+                    return_type: ret_ty.clone(),
+                    body: vec![Statement::Return(ReturnStmt::new(*b, cloned_span.clone()))],
+                };
+
+                self.check_function(&mut new_func);
+                self.monomorphized_functions.push((new_func, 0));
+
+                *expr = Expr::Identifier(IdentifierExpr::new(func_name, cloned_span));
+
+                Type::Function(
+                    cloned_params.into_iter().map(|(_, t)| t).collect(),
+                    Box::new(ret_ty),
+                )
             }
         }
     }
@@ -1787,7 +2031,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::GenericInstance(inner_target, args_target) = target {
+        if let Type::GenericInstance(inner_target, _args_target) = target {
             if let Type::Enum(n_source, _) = source {
                 if let Type::Struct(n_target, _) = &**inner_target {
                     if n_source.starts_with(n_target) && n_source.contains('<') {
@@ -1797,7 +2041,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::GenericInstance(inner_source, args_source) = source {
+        if let Type::GenericInstance(inner_source, _args_source) = source {
             if let Type::Enum(n_target, _) = target {
                 if let Type::Struct(n_source, _) = &**inner_source {
                     if n_target.starts_with(n_source) && n_target.contains('<') {
@@ -1936,11 +2180,16 @@ impl<'a> TypeChecker<'a> {
 
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Pointer(source_inner, source_mem, source_mut) = source {
-                if target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                    && self.is_assignable(target_inner, source_inner)
-                {
-                    return true;
+                if target_mem == source_mem && (!*target_mut || *source_mut) {
+                    if let Type::Scalar(ElementType::I8) = &**source_inner {
+                        return true; // allow casting *mut i8 (void*) to any pointer
+                    }
+                    if let Type::Scalar(ElementType::I8) = &**target_inner {
+                        return true; // allow casting any pointer to *mut i8 (void*)
+                    }
+                    if self.is_assignable(target_inner, source_inner) {
+                        return true;
+                    }
                 }
             }
         }

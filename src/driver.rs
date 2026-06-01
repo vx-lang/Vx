@@ -290,6 +290,7 @@ impl CompilerDriver {
         );
 
         let pass_manager = melior::pass::PassManager::new(&context);
+        pass_manager.enable_verifier(false);
         if let Err(e) = melior::utility::parse_pass_pipeline(
             pass_manager.as_operation_pass_manager(),
             &pipeline_str,

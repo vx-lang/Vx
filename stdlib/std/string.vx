@@ -13,6 +13,7 @@ extern {
   fn vx_string_as_c_str(ptr: *mut i8) -> *const i8;
   fn vx_string_free_c_str(ptr: *const i8) -> i32;
   fn vx_string_drop(ptr: *mut i8) -> i32;
+  fn vx_i32_to_string(val: i32) -> *mut i8;
 }
 
 struct String {
@@ -44,5 +45,12 @@ impl String {
 
   fn drop(self: *mut String) -> i32 {
     return vx_string_drop(self.ptr);
+  }
+}
+
+impl i32 {
+  fn to_string(self: i32) -> String {
+    let ptr = unsafe { vx_i32_to_string(self) };
+    return String { ptr: ptr };
   }
 }
