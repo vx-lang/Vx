@@ -88,6 +88,10 @@ pub struct DriverOptions {
     /// Pass an argument to a specific backend tool (e.g., -X mlir=--pass-pipeline=...)
     #[arg(short = 'X')]
     pub tool_args: Vec<String>,
+
+    /// Arguments to pass to the running program
+    #[arg(last = true)]
+    pub program_args: Vec<String>,
 }
 
 pub struct CompilerDriver {
@@ -152,9 +156,11 @@ impl CompilerDriver {
             }
 
             if self.options.action == Action::RunJit {
+                let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
+                args.extend(self.options.program_args.clone());
                 let out = crate::jit::execute_mlir(
                     &mlir_src,
-                    mlir_args,
+                    args,
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                 )
@@ -314,9 +320,11 @@ impl CompilerDriver {
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());
+                let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
+                args.extend(self.options.program_args.clone());
                 let out = crate::jit::execute_mlir(
                     &mlir_str,
-                    vec![],
+                    args,
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                 )

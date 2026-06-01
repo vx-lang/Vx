@@ -23,7 +23,7 @@ static COMPILE_NPU_ONCE: Once = Once::new();
 
 pub fn execute_mlir(
     mlir_src: &str,
-    _mlir_args: Vec<String>,
+    program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
@@ -135,25 +135,27 @@ pub fn execute_mlir(
 
     println!("[JIT] Executing via LLI...");
     let current_dir = std::env::current_dir().unwrap();
-    let lli_out = Command::new("lli")
-        .args([
-            &format!("--load={}", lib_npu),
-            &format!(
-                "--load=libmlir_c_runner_utils{}",
-                std::env::consts::DLL_SUFFIX
-            ),
-            &format!(
-                "--load=libmlir_runner_utils{}",
-                std::env::consts::DLL_SUFFIX
-            ),
-            &format!(
-                "--load={}/target/debug/libvx_std_core.dylib",
-                current_dir.display()
-            ),
-            &temp_opt_ll,
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut lli_cmd = Command::new("lli");
+    lli_cmd.args([
+        &format!("--load={}", lib_npu),
+        &format!(
+            "--load=libmlir_c_runner_utils{}",
+            std::env::consts::DLL_SUFFIX
+        ),
+        &format!(
+            "--load=libmlir_runner_utils{}",
+            std::env::consts::DLL_SUFFIX
+        ),
+        &format!(
+            "--load={}/target/debug/libvx_std_core.dylib",
+            current_dir.display()
+        ),
+        &temp_opt_ll,
+    ]);
+
+    lli_cmd.args(program_args);
+
+    let lli_out = lli_cmd.output().map_err(|e| e.to_string())?;
 
     if !lli_out.status.success() {
         let err_str = String::from_utf8_lossy(&lli_out.stderr);

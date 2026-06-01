@@ -15,6 +15,7 @@
 #![allow(clippy::box_default)]
 
 pub mod collections;
+pub mod env;
 pub mod ffi;
 pub mod googletest;
 pub mod io;

@@ -1,0 +1,22 @@
+import tests::modules::env;
+
+extern {
+    fn printf(format: *const i8, val: i32) -> i32;
+    fn vx_safe_printf(val: *mut i8) -> i32;
+}
+
+fn main() -> i32 {
+    let count: i32 = args_count();
+    unsafe {
+        printf("argc = %d\n", count);
+    }
+    
+    for i in 0..count {
+        let arg: *mut i8 = arg(i);
+        unsafe {
+            vx_safe_printf(arg);
+            printf("\n", 0);
+        }
+    }
+    return 0;
+}
