@@ -1,5 +1,47 @@
 use super::*;
 
+pub(crate) fn infer_number_literal(
+    s: &str,
+) -> Result<(String, Option<crate::ast::ElementType>), String> {
+    let mut num_str = s.to_string();
+    let mut suffix_str = String::new();
+
+    if let Some(idx) = s.find(|c: char| c.is_alphabetic() || c == '_') {
+        num_str = s[..idx].to_string();
+        suffix_str = s[idx..].to_string();
+    }
+
+    let el_ty = if !suffix_str.is_empty() {
+        match suffix_str.parse::<crate::ast::ElementType>() {
+            Ok(el) => Some(el),
+            Err(e) => return Err(e),
+        }
+    } else {
+        if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
+            if let Ok(f32_val) = num_str.parse::<f32>() {
+                if f32_val.is_infinite() {
+                    if let Ok(f64_val) = num_str.parse::<f64>() {
+                        if f64_val.is_finite() {
+                            return Ok((num_str, Some(crate::ast::ElementType::F64)));
+                        }
+                    }
+                }
+            }
+            Some(crate::ast::ElementType::F32)
+        } else {
+            if num_str.parse::<i32>().is_err() {
+                if num_str.parse::<i64>().is_ok() {
+                    Some(crate::ast::ElementType::I64)
+                } else {
+                    Some(crate::ast::ElementType::I128)
+                }
+            } else {
+                Some(crate::ast::ElementType::I32)
+            }
+        }
+    };
+    Ok((num_str, el_ty))
+}
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, String> {
         self.parse_binary_expr(0)
@@ -638,27 +680,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenType::Number(s) => {
-                    let mut num_str = s.clone();
-                    let mut suffix_str = String::new();
-
-                    if let Some(idx) = s.find(|c: char| c.is_alphabetic() || c == '_') {
-                        num_str = s[..idx].to_string();
-                        suffix_str = s[idx..].to_string();
-                    }
-
-                    let el_ty = if !suffix_str.is_empty() {
-                        match suffix_str.parse::<crate::ast::ElementType>() {
-                            Ok(el) => Some(el),
-                            Err(e) => return Err(e),
-                        }
-                    } else {
-                        // Rust-like defaults: i32 for integers, f32 for floats in ML context
-                        if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-                            Some(crate::ast::ElementType::F32)
-                        } else {
-                            Some(crate::ast::ElementType::I32)
-                        }
-                    };
+                    let (num_str, el_ty) = infer_number_literal(&s)?;
 
                     Expr::Number(NumberExpr {
                         value: num_str,
