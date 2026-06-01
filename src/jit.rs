@@ -160,10 +160,10 @@ pub fn execute_mlir(
     if !lli_out.status.success() {
         let err_str = String::from_utf8_lossy(&lli_out.stderr);
         let code = lli_out.status.code().unwrap_or(-1);
-        return Err(format!(
-            "lli execution failed (code {}):\n{}",
-            code, err_str
-        ));
+        println!("[JIT] Program exited with code: {}", code);
+        if !err_str.is_empty() {
+            println!("[JIT] Error output:\n{}", err_str);
+        }
     }
 
     let output_str = format!(

@@ -36,7 +36,7 @@ impl<T> Vec<T> {
         new_cap = self.capacity * 2;
       }
       let size_bytes: i32 = new_cap * sizeof<T>();
-      
+
       let ptr: *mut i8 = self.data;
       self.data = unsafe { realloc(ptr, size_bytes) };
       self.capacity = new_cap;

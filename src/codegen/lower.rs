@@ -181,6 +181,34 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             } else {
                 (*val, *ty)
             }
+        } else if gen.functions.contains_key(name) {
+            let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
+            let func_ty = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[*ret_ty]);
+            let const_op = melior::ir::operation::OperationBuilder::new(
+                "func.constant",
+                Location::unknown(gen.context),
+            )
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, name).into(),
+            )])
+            .add_results(&[func_ty.into()])
+            .build()
+            .unwrap();
+            let const_ref = block.append_operation(const_op);
+
+            let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+            let cast_op = melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[const_ref.result(0).unwrap().into()])
+            .add_results(&[ptr_ty])
+            .build()
+            .unwrap();
+            let cast_ref = block.append_operation(cast_op);
+
+            (cast_ref.result(0).unwrap().into(), ptr_ty)
         } else {
             panic!("Undefined variable: {}", name);
         }
@@ -1834,6 +1862,90 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     none_ty,
                 )
             }
+        } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
+            let mut actual_func_ty = func_ty;
+            if func_ty.to_string() == "!llvm.ptr" {
+                if let Some(crate::ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                    let r = gen.lower_type(ret);
+                    let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
+                    actual_func_ty =
+                        melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
+                } else {
+                    panic!("Missing signature for function pointer '{}'", name);
+                }
+            }
+            if let Ok(mlir_func_ty) = melior::ir::r#type::FunctionType::try_from(actual_func_ty) {
+                let ret_ty = mlir_func_ty.result(0).unwrap();
+                let mut arg_vals = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let (mut arg_val, expr_ty) = gen.generate_expr(arg, block);
+                    let field_ty = mlir_func_ty.input(i).unwrap();
+                    if expr_ty != field_ty {
+                        arg_val = gen.coerce_type(block, arg_val, expr_ty, field_ty);
+                    }
+                    arg_vals.push(arg_val);
+                }
+
+                let mut actual_ptr_val = ptr_val;
+                if func_ty.to_string() == "!llvm.ptr" {
+                    let cast_op = melior::ir::operation::OperationBuilder::new(
+                        "builtin.unrealized_conversion_cast",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[ptr_val])
+                    .add_results(&[actual_func_ty])
+                    .build()
+                    .unwrap();
+                    let cast_ref = block.append_operation(cast_op);
+                    actual_ptr_val = cast_ref.result(0).unwrap().into();
+                }
+
+                let mut builder = melior::ir::operation::OperationBuilder::new(
+                    "func.call_indirect",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[actual_ptr_val]);
+
+                for a in &arg_vals {
+                    builder = builder.add_operands(&[*a]);
+                }
+
+                if ret_ty.to_string() != "none" {
+                    builder = builder.add_results(&[ret_ty]);
+                    let call_op = builder.build().unwrap();
+                    let call_ref = block.append_operation(call_op);
+                    (call_ref.result(0).unwrap().into(), ret_ty)
+                } else {
+                    let call_op = builder.build().unwrap();
+                    block.append_operation(call_op);
+                    let none_ty = Type::parse(gen.context, "none").unwrap();
+                    let dummy_op = melior::ir::operation::OperationBuilder::new(
+                        "llvm.mlir.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(
+                            Type::parse(gen.context, "i32").unwrap(),
+                            0,
+                        )
+                        .into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    (
+                        block.append_operation(dummy_op).result(0).unwrap().into(),
+                        none_ty,
+                    )
+                }
+            } else {
+                panic!(
+                    "Function pointer {} missing type info. func_ty={}",
+                    name,
+                    func_ty.to_string()
+                );
+            }
         } else {
             panic!("Function {} not found", name);
         }
@@ -2190,6 +2302,10 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.clone());
             }
         } else {
+            let ast_ty = ty_ann.clone().or_else(|| gen.infer_ast_type(expr));
+            if let Some(t) = ast_ty {
+                gen.ast_env.insert(name.clone(), t);
+            }
             gen.env.insert(name.clone(), (val, ty));
         }
     }
@@ -3693,12 +3809,28 @@ pub fn generate_match_chain<'c>(
             );
             let tag = tag_op.result(0).unwrap().into();
 
+            let extract_tag_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.extractvalue",
+                    melior::ir::Location::unknown(gen.context),
+                )
+                .add_operands(&[match_val])
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            let actual_tag = extract_tag_op.result(0).unwrap().into();
+
             let cmp_op = block.append_operation(
                 melior::ir::operation::OperationBuilder::new(
                     "arith.cmpi",
                     melior::ir::Location::unknown(gen.context),
                 )
-                .add_operands(&[match_val, tag])
+                .add_operands(&[actual_tag, tag])
                 .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
                 .add_attributes(&[(
                     melior::ir::Identifier::new(gen.context, "predicate"),
@@ -3718,6 +3850,42 @@ pub fn generate_match_chain<'c>(
 
     let then_region = melior::ir::Region::new();
     let then_block = melior::ir::Block::new(&[]);
+
+    if let Pattern::EnumVariant(_, _, Some(payloads)) = &arm.pattern {
+        if payloads.len() == 1 {
+            if let Pattern::Identifier(name) = &payloads[0] {
+                let opt_ty_str = _match_ty.to_string();
+                let payload_ty_str = if opt_ty_str.contains("(i32, ") {
+                    let start = opt_ty_str.find("(i32, ").unwrap() + 6;
+                    let end = opt_ty_str.rfind(')').unwrap();
+                    opt_ty_str[start..end].to_string()
+                } else {
+                    "i32".to_string() // fallback
+                };
+                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).unwrap();
+
+                let extract_payload_op = melior::ir::operation::OperationBuilder::new(
+                    "llvm.extractvalue",
+                    melior::ir::Location::unknown(gen.context),
+                )
+                .add_operands(&[match_val])
+                .add_results(&[payload_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+                )])
+                .build()
+                .unwrap();
+                let payload_val = then_block
+                    .append_operation(extract_payload_op)
+                    .result(0)
+                    .unwrap()
+                    .into();
+                gen.env.insert(name.clone(), (payload_val, payload_ty));
+            }
+        }
+    }
+
     for stmt in &arm.body {
         gen.generate_statement(stmt, &then_block);
     }

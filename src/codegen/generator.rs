@@ -4,10 +4,12 @@ pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<String, (Value<'c, 'c>, Type<'c>)>,
+    pub(crate) ast_env: HashMap<String, crate::ast::Type>,
     pub(crate) structs: HashMap<String, crate::ast::StructDecl>,
     #[allow(clippy::type_complexity)]
     pub(crate) enums: HashMap<String, Vec<(String, Option<Vec<crate::ast::Type>>)>>,
     pub(crate) functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
+    pub(crate) ast_functions: HashMap<String, crate::ast::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     pub current_return_type: Option<Type<'c>>,
@@ -185,9 +187,11 @@ impl<'c> MeliorGenerator<'c> {
             context,
             module,
             env: HashMap::new(),
+            ast_env: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
+            ast_functions: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
             current_return_type: None,
@@ -303,6 +307,7 @@ impl<'c> MeliorGenerator<'c> {
                     arg_tys.push(self.lower_type(ty));
                 }
                 self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
+                self.ast_functions.insert(func.name.clone(), func.clone());
             }
         }
 
@@ -313,6 +318,7 @@ impl<'c> MeliorGenerator<'c> {
                 arg_tys.push(self.lower_type(ty));
             }
             self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
+            self.ast_functions.insert(func.name.clone(), func.clone());
         }
 
         // Emit module functions
@@ -354,7 +360,7 @@ impl<'c> MeliorGenerator<'c> {
             let name_attr = melior::ir::attribute::StringAttribute::new(self.context, name);
             let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
-            let mut builder = melior::ir::operation::OperationBuilder::new(
+            let builder = melior::ir::operation::OperationBuilder::new(
                 "func.func",
                 melior::ir::Location::unknown(self.context),
             )
@@ -423,9 +429,10 @@ impl<'c> MeliorGenerator<'c> {
         let block = Block::new(&block_args);
 
         // Map arguments into the environment
-        for (i, (name, _)) in func.params.iter().enumerate() {
+        for (i, (name, ast_ty)) in func.params.iter().enumerate() {
             let arg_val = block.argument(i).unwrap().into();
             self.env.insert(name.clone(), (arg_val, arg_tys[i]));
+            self.ast_env.insert(name.clone(), ast_ty.clone());
         }
 
         self.current_return_type = Some(ret_ty);
@@ -821,6 +828,9 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 "i32".to_string()
             }
+            crate::ast::Type::Function(_, _) => {
+                return Type::parse(self.context, "!llvm.ptr").unwrap();
+            }
             crate::ast::Type::Module(..) => "none".to_string(),
         };
 
@@ -829,8 +839,63 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     pub(crate) fn lower_type_str(&self, ty: &crate::ast::Type) -> String {
+        if let crate::ast::Type::Function(_, _) = ty {
+            return "!llvm.ptr".to_string();
+        }
         let t = self.lower_type(ty);
         t.to_string()
+    }
+
+    pub fn infer_ast_type(&self, expr: &Expr) -> Option<crate::ast::Type> {
+        match expr {
+            Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
+            Expr::MemberAccess(ma) => {
+                let mut base_ty = self.infer_ast_type(&ma.base)?;
+                if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
+                    base_ty = *inner;
+                }
+                if let crate::ast::Type::GenericInstance(inner, _) = base_ty {
+                    base_ty = *inner;
+                }
+                if let crate::ast::Type::Struct(s_name, _) = base_ty {
+                    if let Some(decl) = self.structs.get(&s_name) {
+                        for (n, t) in &decl.fields {
+                            if n == &ma.member {
+                                return Some(t.clone());
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Expr::FunctionCall(fc) => {
+                if let Some(decl) = self.ast_functions.get(&fc.name) {
+                    Some(decl.return_type.clone())
+                } else {
+                    None
+                }
+            }
+            Expr::MethodCall(mc) => {
+                let mut base_ty = self.infer_ast_type(&mc.base)?;
+                if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
+                    base_ty = *inner;
+                }
+                if let crate::ast::Type::GenericInstance(inner, _) = base_ty {
+                    base_ty = *inner;
+                }
+                if let crate::ast::Type::Struct(s_name, _) = base_ty {
+                    let mangled = format!("{}_{}", s_name, mc.method_name);
+                    if let Some(decl) = self.ast_functions.get(&mangled) {
+                        Some(decl.return_type.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     pub fn flatten_indices(
