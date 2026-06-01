@@ -254,6 +254,175 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> Result<Expr, String> {
+        if matches!(self.peek().kind, TokenType::LeftAngle)
+            && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+            && matches!(self.peek_n(2).kind, TokenType::RightAngle)
+        {
+            self.advance(); // consume '<'
+            let ty_ident = match self.advance().kind.clone() {
+                TokenType::Identifier(s) => s,
+                _ => unreachable!(),
+            };
+            self.advance(); // consume '>'
+            if call_name == "Tensor" {
+                call_name = format!("Tensor_{}", ty_ident);
+            } else {
+                call_name = format!("{}<{}>", call_name, ty_ident);
+            }
+        }
+        if self.check(&TokenType::DoubleColon) {
+            let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+            let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
+            let has_paren = matches!(
+                (t1, t2),
+                (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen))
+                    | (Some(TokenType::Identifier(_)), Some(TokenType::LeftAngle))
+            );
+
+            if has_paren {
+                self.advance(); // consume '::'
+                if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
+                    self.advance(); // consume method name
+                    call_name = format!("{}::{}", call_name, method_name);
+
+                    if matches!(self.peek().kind, TokenType::LeftAngle)
+                        && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+                        && matches!(self.peek_n(2).kind, TokenType::RightAngle)
+                    {
+                        self.advance(); // consume '<'
+                        let ty_ident = match self.advance().kind.clone() {
+                            TokenType::Identifier(s) => s,
+                            _ => unreachable!(),
+                        };
+                        self.advance(); // consume '>'
+                        call_name = format!("{}<{}>", call_name, ty_ident);
+                    }
+                }
+            }
+        }
+        if self.match_token(&TokenType::LeftParen) {
+            let mut args = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')'")?;
+            Ok(Expr::FunctionCall(FunctionCallExpr {
+                name: call_name,
+                args,
+                span: Span::default(),
+            }))
+        } else if self.check(&TokenType::LeftBrace) {
+            let is_struct_init = matches!(
+                (
+                    self.tokens.get(self.pos).map(|t| &t.kind),
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                ),
+                (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
+                    | (
+                        Some(TokenType::LeftBrace),
+                        Some(TokenType::Identifier(_)),
+                        Some(TokenType::Colon),
+                    )
+            );
+
+            if is_struct_init {
+                self.advance(); // consume '{'
+                let mut fields = Vec::new();
+                while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                    let token_kind = self.advance().kind.clone();
+                    let f_name = match token_kind {
+                        TokenType::Identifier(f) => f,
+                        _ => {
+                            return Err(format!(
+                                "Expected field name in struct init, found {:?}",
+                                token_kind
+                            ))
+                        }
+                    };
+                    self.consume(&TokenType::Colon, "Expected ':'")?;
+                    let f_expr = self.parse_expr()?;
+                    fields.push((f_name, f_expr));
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+                self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                Ok(Expr::StructInit(StructInitExpr {
+                    name: call_name,
+                    fields,
+                    span: Span::default(),
+                }))
+            } else if self.match_token(&TokenType::DoubleColon) {
+                let variant = match self.advance().kind.clone() {
+                    TokenType::Identifier(v) => v,
+                    _ => return Err("Expected enum variant after ::".to_string()),
+                };
+                let mut payload = None;
+                if self.match_token(&TokenType::LeftParen) {
+                    let mut args = Vec::new();
+                    if !self.check(&TokenType::RightParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if !self.match_token(&TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
+                    payload = Some(args);
+                }
+                Ok(Expr::EnumVariant(EnumVariantExpr {
+                    enum_name: call_name,
+                    variant_name: variant,
+                    payload,
+                    span: Span::default(),
+                }))
+            } else {
+                Ok(Expr::Identifier(IdentifierExpr {
+                    name: call_name,
+                    span: Span::default(),
+                }))
+            }
+        } else if self.match_token(&TokenType::DoubleColon) {
+            let variant = match self.advance().kind.clone() {
+                TokenType::Identifier(v) => v,
+                _ => return Err("Expected enum variant after ::".to_string()),
+            };
+            let mut payload = None;
+            if self.match_token(&TokenType::LeftParen) {
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
+                payload = Some(args);
+            }
+            Ok(Expr::EnumVariant(EnumVariantExpr {
+                enum_name: call_name,
+                variant_name: variant,
+                payload,
+                span: Span::default(),
+            }))
+        } else {
+            Ok(Expr::Identifier(IdentifierExpr {
+                name: call_name,
+                span: Span::default(),
+            }))
+        }
+    }
+
     pub(crate) fn parse_primary_expr(&mut self) -> Result<Expr, String> {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
@@ -516,184 +685,7 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')' after expression")?;
                         expr
                     }
-                    TokenType::Identifier(s) => {
-                        let mut call_name = s;
-                        if matches!(self.peek().kind, TokenType::LeftAngle)
-                            && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
-                            && matches!(self.peek_n(2).kind, TokenType::RightAngle)
-                        {
-                            self.advance(); // consume '<'
-                            let ty_ident = match self.advance().kind.clone() {
-                                TokenType::Identifier(s) => s,
-                                _ => unreachable!(),
-                            };
-                            self.advance(); // consume '>'
-                            if call_name == "Tensor" {
-                                call_name = format!("Tensor_{}", ty_ident);
-                            } else {
-                                call_name = format!("{}<{}>", call_name, ty_ident);
-                            }
-                        }
-                        if self.check(&TokenType::DoubleColon) {
-                            let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
-                            let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
-                            let has_paren = matches!(
-                                (t1, t2),
-                                (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen))
-                                    | (Some(TokenType::Identifier(_)), Some(TokenType::LeftAngle))
-                            );
-
-                            if has_paren {
-                                self.advance(); // consume '::'
-                                if let TokenType::Identifier(method_name) = self.peek().kind.clone()
-                                {
-                                    self.advance(); // consume method name
-                                    call_name = format!("{}::{}", call_name, method_name);
-
-                                    if matches!(self.peek().kind, TokenType::LeftAngle)
-                                        && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
-                                        && matches!(self.peek_n(2).kind, TokenType::RightAngle)
-                                    {
-                                        self.advance(); // consume '<'
-                                        let ty_ident = match self.advance().kind.clone() {
-                                            TokenType::Identifier(s) => s,
-                                            _ => unreachable!(),
-                                        };
-                                        self.advance(); // consume '>'
-                                        call_name = format!("{}<{}>", call_name, ty_ident);
-                                    }
-                                }
-                            }
-                        }
-                        if self.match_token(&TokenType::LeftParen) {
-                            let mut args = Vec::new();
-                            if !self.check(&TokenType::RightParen) {
-                                loop {
-                                    args.push(self.parse_expr()?);
-                                    if !self.match_token(&TokenType::Comma) {
-                                        break;
-                                    }
-                                }
-                            }
-                            self.consume(&TokenType::RightParen, "Expected ')'")?;
-                            Expr::FunctionCall(FunctionCallExpr {
-                                name: call_name,
-                                args,
-                                span: Span::default(),
-                            })
-                        } else if self.check(&TokenType::LeftBrace) {
-                            let is_struct_init = matches!(
-                                (
-                                    self.tokens.get(self.pos).map(|t| &t.kind),
-                                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                                ),
-                                (Some(TokenType::LeftBrace), Some(TokenType::RightBrace), _)
-                                    | (
-                                        Some(TokenType::LeftBrace),
-                                        Some(TokenType::Identifier(_)),
-                                        Some(TokenType::Colon),
-                                    )
-                            );
-
-                            if is_struct_init {
-                                self.advance(); // consume '{'
-                                let mut fields = Vec::new();
-                                while !self.check(&TokenType::RightBrace)
-                                    && !self.check(&TokenType::Eof)
-                                {
-                                    let token_kind = self.advance().kind.clone();
-                                    let f_name = match token_kind {
-                                        TokenType::Identifier(f) => f,
-                                        _ => {
-                                            return Err(format!(
-                                                "Expected field name in struct init, found {:?}",
-                                                token_kind
-                                            ))
-                                        }
-                                    };
-                                    self.consume(&TokenType::Colon, "Expected ':'")?;
-                                    let f_expr = self.parse_expr()?;
-                                    fields.push((f_name, f_expr));
-                                    if !self.match_token(&TokenType::Comma) {
-                                        break;
-                                    }
-                                }
-                                self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                                Expr::StructInit(StructInitExpr {
-                                    name: call_name,
-                                    fields,
-                                    span: Span::default(),
-                                })
-                            } else if self.match_token(&TokenType::DoubleColon) {
-                                let variant = match self.advance().kind.clone() {
-                                    TokenType::Identifier(v) => v,
-                                    _ => return Err("Expected enum variant after ::".to_string()),
-                                };
-                                let mut payload = None;
-                                if self.match_token(&TokenType::LeftParen) {
-                                    let mut args = Vec::new();
-                                    if !self.check(&TokenType::RightParen) {
-                                        loop {
-                                            args.push(self.parse_expr()?);
-                                            if !self.match_token(&TokenType::Comma) {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    self.consume(
-                                        &TokenType::RightParen,
-                                        "Expected ')' after enum payload",
-                                    )?;
-                                    payload = Some(args);
-                                }
-                                Expr::EnumVariant(EnumVariantExpr {
-                                    enum_name: call_name,
-                                    variant_name: variant,
-                                    payload,
-                                    span: Span::default(),
-                                })
-                            } else {
-                                Expr::Identifier(IdentifierExpr {
-                                    name: call_name,
-                                    span: Span::default(),
-                                })
-                            }
-                        } else if self.match_token(&TokenType::DoubleColon) {
-                            let variant = match self.advance().kind.clone() {
-                                TokenType::Identifier(v) => v,
-                                _ => return Err("Expected enum variant after ::".to_string()),
-                            };
-                            let mut payload = None;
-                            if self.match_token(&TokenType::LeftParen) {
-                                let mut args = Vec::new();
-                                if !self.check(&TokenType::RightParen) {
-                                    loop {
-                                        args.push(self.parse_expr()?);
-                                        if !self.match_token(&TokenType::Comma) {
-                                            break;
-                                        }
-                                    }
-                                }
-                                self.consume(
-                                    &TokenType::RightParen,
-                                    "Expected ')' after enum payload",
-                                )?;
-                                payload = Some(args);
-                            }
-                            Expr::EnumVariant(EnumVariantExpr {
-                                enum_name: call_name,
-                                variant_name: variant,
-                                payload,
-                                span: Span::default(),
-                            })
-                        } else {
-                            Expr::Identifier(IdentifierExpr {
-                                name: call_name,
-                                span: Span::default(),
-                            })
-                        }
-                    }
+                    TokenType::Identifier(s) => self.parse_identifier_expr(s)?,
                     TokenType::Number(s) => {
                         let (num_str, el_ty) = infer_number_literal(&s)?;
 
