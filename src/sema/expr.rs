@@ -143,6 +143,16 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
                 } else if lookup_res.is_none() {
+                    if let Some((ret_ty, _, params, _)) = self.env.functions.get(name) {
+                        return Type::Function(params.clone(), Box::new(ret_ty.clone()));
+                    }
+                    for (func, _) in &self.monomorphized_functions {
+                        if &func.name == name {
+                            let params = func.params.iter().map(|(_, t)| t.clone()).collect();
+                            return Type::Function(params, Box::new(func.return_type.clone()));
+                        }
+                    }
+
                     if !silent {
                         self.errors.push(format!("Undefined variable '{}'", name));
                     }
@@ -555,6 +565,28 @@ impl<'a> TypeChecker<'a> {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
+                } else if let Some((Type::Function(param_types, ret_ty), _)) =
+                    self.lookup(&resolved_name).cloned()
+                {
+                    if args.len() != param_types.len() && !silent {
+                        self.errors.push(format!(
+                            "Function pointer '{}' expects {} arguments, got {}",
+                            resolved_name,
+                            param_types.len(),
+                            args.len()
+                        ));
+                    } else {
+                        for (i, param_ty) in param_types.iter().enumerate() {
+                            let arg_ty = &arg_types[i];
+                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
+                            }
+                        }
+                    }
+                    *ret_ty
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology)) =
                     self.env.functions.get(&resolved_name)
                 {

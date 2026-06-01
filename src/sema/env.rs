@@ -304,6 +304,20 @@ impl<'a> TypeChecker<'a> {
                 }
                 true
             }
+            (Type::Function(p1, r1), Type::Function(p2, r2)) => {
+                if p1.len() != p2.len() {
+                    return false;
+                }
+                if !self.unify_types(r1, r2, mapping) {
+                    return false;
+                }
+                for (a1, a2) in p1.iter().zip(p2.iter()) {
+                    if !self.unify_types(a1, a2, mapping) {
+                        return false;
+                    }
+                }
+                true
+            }
             (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
             (t1, t2) => t1 == t2,
         }

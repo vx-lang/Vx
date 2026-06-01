@@ -77,6 +77,7 @@ pub enum Type {
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
     Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
     Simd(ElementType, usize),                    // e.g. <4 x f32>
+    Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
 }
 
 impl Type {
@@ -145,6 +146,11 @@ impl Type {
                     el_ty.clone()
                 };
                 Type::Simd(new_el_ty, *n)
+            }
+            Type::Function(params, ret) => {
+                let new_params = params.iter().map(|p| p.substitute(mapping)).collect();
+                let new_ret = Box::new(ret.substitute(mapping));
+                Type::Function(new_params, new_ret)
             }
             _ => self.clone(),
         }
@@ -234,6 +240,16 @@ impl std::fmt::Display for Type {
                 write!(f, ">")
             }
             Type::Generic(name, _) => write!(f, "{}", name),
+            Type::Function(params, ret) => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
             _ => write!(f, "{:?}", self), // Fallback for complex types
         }
     }

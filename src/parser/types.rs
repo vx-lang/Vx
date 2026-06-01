@@ -123,6 +123,22 @@ impl<'a> Parser<'a> {
                 "Expected '>' after SIMD element type",
             )?;
             Ok(Type::Simd(el_ty, n))
+        } else if self.match_token(&TokenType::Fn) {
+            self.consume(&TokenType::LeftParen, "Expected '(' after 'fn'")?;
+            let mut params = Vec::new();
+            while !self.check(&TokenType::RightParen) && !self.check(&TokenType::Eof) {
+                params.push(self.parse_type()?);
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+            self.consume(
+                &TokenType::RightParen,
+                "Expected ')' after function parameters",
+            )?;
+            self.consume(&TokenType::Arrow, "Expected '->' after function parameters")?;
+            let ret = self.parse_type()?;
+            Ok(Type::Function(params, Box::new(ret)))
         } else {
             let token = self.peek().clone();
             if let TokenType::Identifier(ref s) = token.kind {
