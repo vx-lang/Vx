@@ -101,18 +101,42 @@ impl<'a> TypeChecker<'a> {
 
                 // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
                 // If it's Tensor, we extract the ElementType
-                let iter_ty = match iterable_ty {
-                    Type::Enum(name, _) if name.starts_with("Option<") => {
-                        // Hack for Option<T> in sema: just parse the T part
-                        let start = name.find('<').unwrap() + 1;
-                        let end = name.rfind('>').unwrap();
-                        let _inner_ty_str = &name[start..end];
-                        // fallback to i64 if parsing fails? We don't have parse_type here easily.
-                        Type::Scalar(ElementType::I64)
+                let mut iter_ty = Type::Scalar(ElementType::I64); // fallback
+
+                // Check if it's a generic iterator by synthesizing a `.next()` call
+                if matches!(iterable_ty, Type::GenericInstance(..))
+                    || matches!(iterable_ty, Type::Struct(..))
+                {
+                    use crate::ast::expr::{Expr, MethodCallExpr};
+                    use crate::ast::Span;
+                    let mut next_call = Expr::MethodCall(MethodCallExpr {
+                        base: (*iterable).clone(),
+                        method_name: "next".to_string(),
+                        args: vec![],
+                        span: Span::default(),
+                    });
+                    // This will resolve and monomorphize `next`!
+                    let opt_ty = self.check_expr_type_flag(&mut next_call, consume, silent);
+                    if let Type::Enum(ref name, _) = opt_ty {
+                        if name.starts_with("Option<") {
+                            // The Option enum is generic, we can get T from its arguments!
+                            // Wait, if it's a GenericInstance(Enum("Option"), [T]), we can extract it!
+                        }
                     }
-                    Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
-                    _ => Type::Scalar(ElementType::I64),
-                };
+                    if let Type::GenericInstance(_, args) = opt_ty {
+                        if args.len() == 1 {
+                            iter_ty = args[0].clone();
+                        }
+                    }
+                } else {
+                    iter_ty = match iterable_ty {
+                        Type::Enum(name, _) if name.starts_with("Option<") => {
+                            Type::Scalar(ElementType::I64)
+                        }
+                        Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
+                        _ => Type::Scalar(ElementType::I64),
+                    };
+                }
 
                 self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
                 self.check_block(body, return_type);
@@ -171,7 +195,9 @@ impl<'a> TypeChecker<'a> {
                 has_semi: _,
                 span: _,
             }) => {
+                let saved_borrows = self.active_borrows.clone();
                 self.check_expr_type_flag(expr, consume, silent);
+                self.active_borrows = saved_borrows;
             }
             Statement::Assert(AssertStmt { expr, msg, span: _ }) => {
                 let ty = self.check_expr_type_flag(expr, consume, silent);

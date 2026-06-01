@@ -324,6 +324,12 @@ impl<'a> Parser<'a> {
             self.advance(); // consume 'for'
             if let Type::Struct(name, _) = parsed_type {
                 trait_name = Some(name);
+            } else if let Type::GenericInstance(inner, _) = parsed_type {
+                if let Type::Struct(name, _) = *inner {
+                    trait_name = Some(name);
+                } else {
+                    return Err("Expected trait name before 'for'".to_string());
+                }
             } else {
                 return Err("Expected trait name before 'for'".to_string());
             }

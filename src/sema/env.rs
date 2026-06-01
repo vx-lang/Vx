@@ -315,7 +315,9 @@ impl<'a> TypeChecker<'a> {
         mapping: &std::collections::HashMap<String, Type>,
     ) -> Function {
         let mut mangled_name = generic_func.name.clone();
-        for (g_name, _) in &generic_func.generics {
+        let mut sorted_keys: Vec<&String> = mapping.keys().collect();
+        sorted_keys.sort();
+        for g_name in sorted_keys {
             if let Some(ty) = mapping.get(g_name) {
                 let mut type_str = format!("_{:?}", ty)
                     .replace("(", "")

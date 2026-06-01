@@ -2,13 +2,33 @@
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
-//
-//===----------------------------------------------------------------------===//
-extern {
-  fn vx_option_new_some_i32(val: i32) -> *mut i8;
-  fn vx_option_new_none_i32() -> *mut i8;
-  fn vx_option_is_some_i32(ptr: *mut i8) -> Bool;
-  fn vx_option_unwrap_i32(ptr: *mut i8) -> i32;
-  fn vx_option_drop_i32(ptr: *mut i8) -> i32;
+extern "C" {
+  fn malloc(size: i32) -> *mut i8;
+}
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+
+impl<T> Option<T> {
+  fn is_some(self: &Option<T>) -> Bool {
+    match *self {
+      Option<T>::Some(v) => { return true; }
+      Option<T>::None() => { return false; }
+    }
+    return false;
+  }
+
+  fn unwrap(self: Option<T>) -> T {
+    match self {
+      Option<T>::Some(v) => { return v; }
+      Option<T>::None() => {
+        let ptr: *mut T = unsafe { malloc(0) };
+        return unsafe { *ptr };
+      }
+    }
+    let ptr: *mut T = unsafe { malloc(0) };
+    return unsafe { *ptr };
+  }
 }

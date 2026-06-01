@@ -173,7 +173,17 @@ impl<'a> Parser<'a> {
                 Ok(Pattern::Literal(expr))
             }
             TokenType::Identifier(s) => {
+                let mut enum_name = s.clone();
                 self.advance();
+                if self.check(&TokenType::LeftAngle) {
+                    self.advance(); // consume '<'
+                    let ty_ident = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.clone(),
+                        _ => return Err("Expected type identifier in generic pattern".to_string()),
+                    };
+                    self.consume(&TokenType::RightAngle, "Expected '>' in generic pattern")?;
+                    enum_name = format!("{}<{}>", enum_name, ty_ident);
+                }
                 if self.match_token(&TokenType::DoubleColon) {
                     let variant_name = match &self.advance().kind {
                         TokenType::Identifier(v) => v.clone(),
@@ -193,9 +203,9 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         payload = Some(p);
                     }
-                    Ok(Pattern::EnumVariant(s, variant_name, payload))
+                    Ok(Pattern::EnumVariant(enum_name, variant_name, payload))
                 } else {
-                    Ok(Pattern::Identifier(s))
+                    Ok(Pattern::Identifier(enum_name))
                 }
             }
             _ => Err(format!("Unexpected token in pattern: {:?}", token.kind)),
@@ -222,6 +232,7 @@ impl<'a> Parser<'a> {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Dereference(DereferenceExpr {
                 expr: Box::new(inner),
+                ty: None,
                 span: Span::default(),
             }));
         } else if self.match_token(&TokenType::Unsafe) {
@@ -451,27 +462,29 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::Identifier(s) => {
                     let mut call_name = s;
-                    if call_name == "Tensor" {
-                        if let TokenType::LeftAngle = &self.peek().kind {
-                            self.advance(); // consume '<'
-                            let ty_ident = match self.advance().kind.clone() {
-                                TokenType::Identifier(s) => s,
-                                _ => return Err("Expected element type after '<'".to_string()),
-                            };
-                            match self.advance().kind {
-                                TokenType::RightAngle => {}
-                                _ => return Err("Expected '>' after element type".to_string()),
-                            }
+                    if let TokenType::LeftAngle = &self.peek().kind {
+                        self.advance(); // consume '<'
+                        let ty_ident = match self.advance().kind.clone() {
+                            TokenType::Identifier(s) => s,
+                            _ => return Err("Expected element type after '<'".to_string()),
+                        };
+                        match self.advance().kind {
+                            TokenType::RightAngle => {}
+                            _ => return Err("Expected '>' after element type".to_string()),
+                        }
+                        if call_name == "Tensor" {
                             call_name = format!("Tensor_{}", ty_ident);
+                        } else {
+                            call_name = format!("{}<{}>", call_name, ty_ident);
                         }
                     }
                     if self.check(&TokenType::DoubleColon) {
+                        let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                        let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
                         let has_paren = matches!(
-                            (
-                                self.tokens.get(self.pos + 1).map(|t| &t.kind),
-                                self.tokens.get(self.pos + 2).map(|t| &t.kind),
-                            ),
+                            (t1, t2),
                             (Some(TokenType::Identifier(_)), Some(TokenType::LeftParen))
+                                | (Some(TokenType::Identifier(_)), Some(TokenType::LeftAngle))
                         );
 
                         if has_paren {
@@ -479,6 +492,27 @@ impl<'a> Parser<'a> {
                             if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
                                 self.advance(); // consume method name
                                 call_name = format!("{}::{}", call_name, method_name);
+
+                                if let TokenType::LeftAngle = &self.peek().kind {
+                                    self.advance(); // consume '<'
+                                    let ty_ident = match self.advance().kind.clone() {
+                                        TokenType::Identifier(s) => s,
+                                        _ => {
+                                            return Err(
+                                                "Expected element type after '<'".to_string()
+                                            )
+                                        }
+                                    };
+                                    match self.advance().kind {
+                                        TokenType::RightAngle => {}
+                                        _ => {
+                                            return Err(
+                                                "Expected '>' after element type".to_string()
+                                            )
+                                        }
+                                    }
+                                    call_name = format!("{}<{}>", call_name, ty_ident);
+                                }
                             }
                         }
                     }

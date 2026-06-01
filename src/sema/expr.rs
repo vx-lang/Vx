@@ -92,7 +92,12 @@ impl<'a> TypeChecker<'a> {
     pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         if let Expr::FunctionCall(fc) = expr {
             if let Some((enum_name, variant)) = fc.name.split_once("::") {
-                if self.env.enums.contains_key(enum_name) {
+                let actual_enum_name = if let Some(idx) = enum_name.find('<') {
+                    &enum_name[0..idx]
+                } else {
+                    enum_name
+                };
+                if self.env.enums.contains_key(actual_enum_name) {
                     let mut payload = None;
                     if !fc.args.is_empty() {
                         let mut args = Vec::new();
@@ -185,43 +190,77 @@ impl<'a> TypeChecker<'a> {
                 payload,
                 span: _,
             }) => {
-                if let Some(variants) = self.env.enums.get(enum_name) {
+                let actual_enum_name = if let Some(idx) = enum_name.find('<') {
+                    &enum_name[..idx]
+                } else {
+                    enum_name.as_str()
+                };
+
+                if let Some(variants) = self.env.enums.get(actual_enum_name) {
                     if let Some((_, expected_payload)) = variants.iter().find(|(n, _)| n == variant)
                     {
                         if let Some(expr_payload) = payload {
                             if let Some(exp_types) = expected_payload {
                                 if expr_payload.len() != exp_types.len() {
                                     if !silent {
-                                        self.errors.push(format!("Enum variant {}::{} expects {} payload arguments, got {}", enum_name, variant, exp_types.len(), expr_payload.len()));
+                                        self.errors.push(format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()));
                                     }
                                 } else {
                                     for (i, expr) in expr_payload.iter_mut().enumerate() {
                                         let expr_ty = self.check_expr_type(expr);
-                                        if !self.is_assignable(&exp_types[i], &expr_ty) && !silent {
-                                            self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, enum_name, variant, exp_types[i], expr_ty));
+                                        // TODO: Substitute generic args in exp_types!
+                                        // For now, since Enum variant payload checking doesn't have the T mapped,
+                                        // we might need to skip strict checking if expected type is Generic,
+                                        // or substitute it. Since it's Option<T>, expected is `Generic("T")`.
+                                        // We will just allow it if expected is Generic!
+                                        if !self.is_assignable(&exp_types[i], &expr_ty) {
+                                            if !matches!(&exp_types[i], Type::Generic(_, _)) {
+                                                if !silent {
+                                                    self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, exp_types[i], expr_ty));
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             } else if !silent {
                                 self.errors.push(format!(
                                     "Enum variant {}::{} does not take a payload",
-                                    enum_name, variant
+                                    actual_enum_name, variant
                                 ));
                             }
                         } else if expected_payload.is_some() && !silent {
                             self.errors.push(format!(
                                 "Enum variant {}::{} expects a payload",
-                                enum_name, variant
+                                actual_enum_name, variant
                             ));
                         }
                     } else if !silent {
                         self.errors.push(format!(
                             "Enum {} does not have variant {}",
-                            enum_name, variant
+                            actual_enum_name, variant
                         ));
                     }
                 } else if !silent {
                     self.errors.push(format!("Unknown enum {}", enum_name));
+                }
+
+                if let Some(idx) = enum_name.find('<') {
+                    if let Some(end_idx) = enum_name.find('>') {
+                        let base = &enum_name[..idx];
+                        let ty_arg = &enum_name[idx + 1..end_idx];
+                        let parsed_ty = match ty_arg {
+                            "i32" => Type::Scalar(ElementType::I32),
+                            "f32" => Type::Scalar(ElementType::F32),
+                            "f64" => Type::Scalar(ElementType::F64),
+                            "i64" => Type::Scalar(ElementType::I64),
+                            "Bool" => Type::Scalar(ElementType::Bool),
+                            _ => Type::Struct(ty_arg.to_string(), None),
+                        };
+                        return Type::GenericInstance(
+                            Box::new(Type::Struct(base.to_string(), None)),
+                            vec![parsed_ty],
+                        );
+                    }
                 }
                 Type::Enum(enum_name.clone(), None)
             }
@@ -508,6 +547,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                     Type::Scalar(ElementType::F32)
+                } else if resolved_name.starts_with("sizeof<") {
+                    Type::Scalar(ElementType::I32)
                 } else if resolved_name == "print" {
                     if args.len() != 1 {
                         self.errors
@@ -663,6 +704,106 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
+                } else if let Some(idx) = resolved_name.find("::") {
+                    let struct_name = resolved_name[..idx].to_string();
+                    let mut method_name = resolved_name[idx + 2..].to_string();
+                    let mut explicit_ty_str = String::new();
+
+                    if let Some(lt) = method_name.find('<') {
+                        if method_name.ends_with('>') {
+                            explicit_ty_str =
+                                method_name[lt + 1..method_name.len() - 1].to_string();
+                            method_name = method_name[..lt].to_string();
+                        }
+                    }
+
+                    let mut found_generic_func = None;
+                    let mut found_mapping = HashMap::new();
+
+                    if let Some(impl_blocks) = self.env.impls.get("_inherent") {
+                        for ib in impl_blocks {
+                            let mut matches = false;
+                            if let Type::Struct(n, _) = &ib.target_type {
+                                if &struct_name == n {
+                                    matches = true;
+                                }
+                            } else if let Type::Enum(n, _) = &ib.target_type {
+                                if &struct_name == n {
+                                    matches = true;
+                                }
+                            } else if let Type::Generic(n, _) = &ib.target_type {
+                                if &struct_name == n {
+                                    matches = true;
+                                }
+                            } else if let Type::GenericInstance(inner, _) = &ib.target_type {
+                                if let Type::Struct(n, _) = &**inner {
+                                    if &struct_name == n {
+                                        matches = true;
+                                    }
+                                } else if let Type::Enum(n, _) = &**inner {
+                                    if &struct_name == n {
+                                        matches = true;
+                                    }
+                                }
+                            }
+
+                            if matches {
+                                for m in &ib.methods {
+                                    if m.name == method_name {
+                                        found_generic_func = Some(m.clone());
+                                        if !explicit_ty_str.is_empty() && ib.generics.len() == 1 {
+                                            let parsed_ty = match explicit_ty_str.as_str() {
+                                                "i32" => Type::Scalar(ElementType::I32),
+                                                "i64" => Type::Scalar(ElementType::I64),
+                                                "f32" => Type::Scalar(ElementType::F32),
+                                                "f64" => Type::Scalar(ElementType::F64),
+                                                "Bool" => Type::Scalar(ElementType::Bool),
+                                                _ => Type::Struct(explicit_ty_str.clone(), None),
+                                            };
+                                            found_mapping
+                                                .insert(ib.generics[0].0.clone(), parsed_ty);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            if found_generic_func.is_some() {
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(generic_func) = found_generic_func {
+                        let mut modified_func = generic_func.clone();
+                        modified_func.name = format!("{}::{}", struct_name, method_name);
+                        modified_func.generics =
+                            found_mapping.keys().map(|k| (k.clone(), None)).collect();
+
+                        let mut inst_func =
+                            self.instantiate_function(&modified_func, &found_mapping);
+                        let inst_ret = inst_func.return_type.clone();
+                        let inst_name = inst_func.name.clone();
+
+                        *name = inst_name.clone();
+
+                        if !self.env.functions.contains_key(&inst_name)
+                            && !self
+                                .monomorphized_functions
+                                .iter()
+                                .any(|(f, _)| f.name == inst_name)
+                        {
+                            self.check_function(&mut inst_func);
+                            self.monomorphized_functions.push((inst_func, 0));
+                        }
+
+                        inst_ret
+                    } else {
+                        if !silent {
+                            self.errors
+                                .push(format!("Undefined static method '{}'.", resolved_name));
+                        }
+                        Type::Tensor(ElementType::F32, vec![], None)
+                    }
                 } else {
                     let mono_names: Vec<String> = self
                         .monomorphized_functions
@@ -696,19 +837,43 @@ impl<'a> TypeChecker<'a> {
                     base_ty = *t;
                 }
 
+                let mut actual_struct_name = String::new();
+                let mut struct_decl_opt = None;
+                let mut mapping = HashMap::new();
+
                 if let Type::Struct(struct_name, _) = &base_ty {
-                    *struct_name_field = Some(struct_name.clone());
-                    if let Some(decl) = self.env.structs.get(struct_name).cloned() {
-                        for (f_name, f_type) in &decl.fields {
-                            if f_name == member {
-                                return f_type.clone();
+                    actual_struct_name = struct_name.clone();
+                    struct_decl_opt = self.env.structs.get(struct_name).cloned();
+                } else if let Type::GenericInstance(inner, args) = &base_ty {
+                    if let Type::Struct(struct_name, _) = &**inner {
+                        actual_struct_name = struct_name.clone();
+                        struct_decl_opt = self.env.structs.get(struct_name).cloned();
+                        if let Some(decl) = &struct_decl_opt {
+                            for (i, (g_name, _)) in decl.generics.iter().enumerate() {
+                                if i < args.len() {
+                                    mapping.insert(g_name.clone(), args[i].clone());
+                                }
                             }
                         }
-                        self.errors.push(format!(
-                            "Struct '{}' has no field '{}'",
-                            struct_name, member
-                        ));
-                    } else {
+                    }
+                }
+
+                if let Some(decl) = struct_decl_opt {
+                    *struct_name_field = Some(actual_struct_name.clone());
+                    for (f_name, f_type) in &decl.fields {
+                        if f_name == member {
+                            return f_type.substitute(&mapping);
+                        }
+                    }
+                    self.errors.push(format!(
+                        "Struct '{}' has no field '{}'",
+                        actual_struct_name, member
+                    ));
+                } else if let Type::Struct(struct_name, _) = &base_ty {
+                    self.errors
+                        .push(format!("Unknown struct '{}'", struct_name));
+                } else if let Type::GenericInstance(inner, _) = &base_ty {
+                    if let Type::Struct(struct_name, _) = &**inner {
                         self.errors
                             .push(format!("Unknown struct '{}'", struct_name));
                     }
@@ -928,9 +1093,11 @@ impl<'a> TypeChecker<'a> {
 
                 // Dynamic Method Resolution
                 let mut found_method = None;
+                let mut mapping = HashMap::new();
                 for impl_blocks in self.env.impls.values() {
                     for ib in impl_blocks {
-                        if self.unify_types(&ib.target_type, &base_ty, &mut HashMap::new()) {
+                        mapping.clear();
+                        if self.unify_types(&ib.target_type, &base_ty, &mut mapping) {
                             for m in &ib.methods {
                                 if m.name == *_method {
                                     found_method = Some((m.clone(), (*ib).clone()));
@@ -938,40 +1105,49 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                         }
+                        if found_method.is_some() {
+                            break;
+                        }
+                    }
+                    if found_method.is_some() {
+                        break;
                     }
                 }
 
-                if let Some((mut method_func, ib)) = found_method {
+                if let Some((generic_method, ib)) = found_method {
+                    // Provide generic mapping to the method itself by copying impl block generics
+                    let mut modified_func = generic_method.clone();
+                    modified_func.generics = mapping.keys().map(|k| (k.clone(), None)).collect();
+                    let mut method_func = self.instantiate_function(&modified_func, &mapping);
+
                     // Create a unique mangled name for the method based on the target type
-                    let mut mangled_name = format!("{:?}_{}", ib.target_type, _method)
+                    let mut mangled_name = format!("{:?}_{}", base_ty, method_func.name)
                         .replace("(", "_")
                         .replace(")", "")
                         .replace(" ", "")
                         .replace("[", "")
                         .replace("]", "")
                         .replace(",", "_")
-                        .replace("_None", "");
+                        .replace("_None", "")
+                        .replace("\"", "")
+                        .replace("Tensor", "Tensor_")
+                        .replace("GenericInstance_", "")
+                        .replace("Struct_", "")
+                        .replace("Scalar_", "");
                     // Clean up multiple underscores
                     while mangled_name.contains("__") {
                         mangled_name = mangled_name.replace("__", "_");
                     }
-                    mangled_name = mangled_name
-                        .replace("\"", "")
-                        .replace("Tensor", "Tensor_")
-                        .replace("Generic", "Gen_");
 
                     method_func.name = mangled_name.clone();
 
-                    // Register the method if it doesn't exist
-                    if !method_func.generics.is_empty() {
-                        /* self.env.generic_functions.insert is mock */
-                    } else if !self.env.functions.contains_key(&mangled_name)
+                    if !self.env.functions.contains_key(&mangled_name)
                         && !self
                             .monomorphized_functions
                             .iter()
                             .any(|(f, _)| f.name == mangled_name)
                     {
-                        // Since it's not generic, we must type check it once!
+                        // Type check the instantiated method
                         let mut func_to_check = method_func.clone();
                         self.check_function(&mut func_to_check);
                         self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
@@ -984,10 +1160,15 @@ impl<'a> TypeChecker<'a> {
                             first_param.1,
                             Type::Borrow(_, _, _, _) | Type::Pointer(_, _, _)
                         );
+                        let is_mut = match &first_param.1 {
+                            Type::Borrow(_, _, m, _) => *m,
+                            Type::Pointer(_, _, m) => *m,
+                            _ => false,
+                        };
                         if needs_borrow {
                             call_args.push(Expr::Borrow(BorrowExpr {
                                 expr: Box::new((**obj).clone()),
-                                is_mut: false,
+                                is_mut,
                                 span: Span::default(),
                             }));
                         } else {
@@ -1201,23 +1382,22 @@ impl<'a> TypeChecker<'a> {
 
                 Type::Borrow(Box::new(inner_ty), None, *is_mut, self.scopes.len())
             }
-            Expr::Dereference(DereferenceExpr {
-                expr: inner,
-                span: _,
-            }) => {
+            Expr::Dereference(e) => {
                 if !self.in_unsafe_block {
                     self.errors
                         .push("Dereference of raw pointer outside of unsafe block!".to_string());
                 }
-                let inner_ty = self.check_expr_type(inner);
-                match inner_ty {
+                let inner_ty = self.check_expr_type(&mut e.expr);
+                let resolved_ty = match inner_ty {
                     Type::Pointer(t, _, _) | Type::Borrow(t, _, _, _) => *t,
                     _ => {
                         self.errors
                             .push("Cannot dereference non-pointer type".to_string());
                         inner_ty
                     }
-                }
+                };
+                e.ty = Some(resolved_ty.clone());
+                resolved_ty
             }
             Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
@@ -1241,14 +1421,34 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let resolved_name = name.clone();
-                if false {
-                    /* resolved_name = mangled.clone(); */
-                    *name = resolved_name.clone();
+                let mut base_name = resolved_name.clone();
+                let mut generic_args = Vec::new();
+
+                if let Some(idx) = resolved_name.find('<') {
+                    base_name = resolved_name[..idx].to_string();
+                    let ty_arg = &resolved_name[idx + 1..resolved_name.len() - 1];
+                    let ty = match ty_arg {
+                        "i32" => Type::Scalar(ElementType::I32),
+                        "f32" => Type::Scalar(ElementType::F32),
+                        "f64" => Type::Scalar(ElementType::F64),
+                        "i64" => Type::Scalar(ElementType::I64),
+                        "Bool" => Type::Scalar(ElementType::Bool),
+                        other => Type::Generic(other.to_string(), None),
+                    };
+                    generic_args.push(ty);
                 }
 
-                if let Some(struct_decl) = self.env.structs.get(&resolved_name) {
+                if let Some(struct_decl) = self.env.structs.get(&base_name) {
+                    let mut mapping = std::collections::HashMap::new();
+                    for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+                        if i < generic_args.len() {
+                            mapping.insert(g_name.clone(), generic_args[i].clone());
+                        }
+                    }
+
                     // Check missing fields and type mismatch
-                    for (expected_name, expected_type) in &struct_decl.fields {
+                    for (expected_name, raw_expected_type) in &struct_decl.fields {
+                        let expected_type = &raw_expected_type.substitute(&mapping);
                         let mut found = false;
                         for (f_name, f_expr) in fields.iter_mut() {
                             if f_name == expected_name {
@@ -1291,7 +1491,12 @@ impl<'a> TypeChecker<'a> {
                         self.check_expr_type_flag(f_expr, consume, silent);
                     }
                 }
-                Type::Struct(resolved_name, None)
+
+                if !generic_args.is_empty() {
+                    Type::GenericInstance(Box::new(Type::Struct(base_name, None)), generic_args)
+                } else {
+                    Type::Struct(resolved_name, None)
+                }
             }
             Expr::Grad(GradExpr {
                 target_fn,
@@ -1550,6 +1755,26 @@ impl<'a> TypeChecker<'a> {
                         return id_target == id_source;
                     }
                     return true;
+                }
+            }
+        }
+
+        if let Type::GenericInstance(inner_target, args_target) = target {
+            if let Type::Enum(n_source, _) = source {
+                if let Type::Struct(n_target, _) = &**inner_target {
+                    if n_source.starts_with(n_target) && n_source.contains('<') {
+                        return true; // Weak check for Option<T>
+                    }
+                }
+            }
+        }
+
+        if let Type::GenericInstance(inner_source, args_source) = source {
+            if let Type::Enum(n_target, _) = target {
+                if let Type::Struct(n_source, _) = &**inner_source {
+                    if n_target.starts_with(n_source) && n_target.contains('<') {
+                        return true; // Weak check for Option<T>
+                    }
                 }
             }
         }

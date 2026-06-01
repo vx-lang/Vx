@@ -278,11 +278,16 @@ impl BorrowExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct DereferenceExpr {
     pub expr: Box<Expr>,
+    pub ty: Option<crate::ast::Type>,
     pub span: Span,
 }
 impl DereferenceExpr {
     pub fn new(expr: Box<Expr>, span: Span) -> Self {
-        Self { expr, span }
+        Self {
+            expr,
+            ty: None,
+            span,
+        }
     }
 }
 
@@ -567,7 +572,31 @@ impl Expr {
                             ElementType::Generic(g) => g,
                             _ => "f32",
                         };
-                        new_name = format!("Tensor_{}", concrete_name);
+                    }
+                } else if let Some(idx) = new_name.find('<') {
+                    if let Some(end_idx) = new_name.find('>') {
+                        let base = &new_name[..idx];
+                        let ty_arg = &new_name[idx + 1..end_idx];
+                        let remainder = &new_name[end_idx + 1..];
+                        if let Some(mapped_ty) = mapping.get(ty_arg) {
+                            let ty_str = match mapped_ty {
+                                Type::Scalar(ElementType::I32) => "i32",
+                                Type::Scalar(ElementType::F32) => "f32",
+                                Type::Scalar(ElementType::F64) => "f64",
+                                Type::Scalar(ElementType::I64) => "i64",
+                                Type::Scalar(ElementType::Bool) => "Bool",
+                                Type::Struct(name, _) => name.as_str(),
+                                Type::GenericInstance(inner, _) => {
+                                    if let Type::Struct(name, _) = &**inner {
+                                        name.as_str()
+                                    } else {
+                                        "unknown"
+                                    }
+                                }
+                                _ => "unknown",
+                            };
+                            new_name = format!("{}<{}>{}", base, ty_str, remainder);
+                        }
                     }
                 }
                 Expr::FunctionCall(FunctionCallExpr {
@@ -627,6 +656,7 @@ impl Expr {
             }),
             Expr::Dereference(e) => Expr::Dereference(DereferenceExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
+                ty: e.ty.as_ref().map(|t| t.substitute(mapping)),
                 span: e.span.clone(),
             }),
             Expr::UnsafeBlock(e) => Expr::UnsafeBlock(UnsafeBlockExpr {
@@ -634,15 +664,34 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span.clone(),
             }),
-            Expr::StructInit(e) => Expr::StructInit(StructInitExpr {
-                name: e.name.clone(),
-                fields: e
-                    .fields
-                    .iter()
-                    .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
-                    .collect(),
-                span: e.span.clone(),
-            }),
+            Expr::StructInit(e) => {
+                let mut new_name = e.name.clone();
+                if let Some(idx) = new_name.find('<') {
+                    let base = &new_name[..idx];
+                    let ty_arg = &new_name[idx + 1..new_name.len() - 1];
+                    if let Some(mapped_ty) = mapping.get(ty_arg) {
+                        let ty_str = match mapped_ty {
+                            Type::Scalar(ElementType::I32) => "i32",
+                            Type::Scalar(ElementType::F32) => "f32",
+                            Type::Scalar(ElementType::F64) => "f64",
+                            Type::Scalar(ElementType::I64) => "i64",
+                            Type::Scalar(ElementType::Bool) => "Bool",
+                            Type::Struct(name, _) => name,
+                            _ => "f32",
+                        };
+                        new_name = format!("{}<{}>", base, ty_str);
+                    }
+                }
+                Expr::StructInit(StructInitExpr {
+                    name: new_name,
+                    fields: e
+                        .fields
+                        .iter()
+                        .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
+                        .collect(),
+                    span: e.span.clone(),
+                })
+            }
             Expr::If(e) => Expr::If(IfExpr {
                 cond: Box::new(e.cond.substitute(mapping)),
                 then_block: e.then_block.iter().map(|s| s.substitute(mapping)).collect(),
