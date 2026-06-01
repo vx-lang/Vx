@@ -814,3 +814,157 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_expr(input: &str) -> Expr {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens, input);
+        parser.parse_expr().expect("Failed to parse expression")
+    }
+
+    #[test]
+    fn test_parse_enum_variant_no_payload() {
+        let input = "Option::None";
+        let expr = parse_expr(input);
+        if let Expr::EnumVariant(EnumVariantExpr {
+            enum_name,
+            variant_name,
+            payload,
+            span: _,
+        }) = expr
+        {
+            assert_eq!(enum_name, "Option");
+            assert_eq!(variant_name, "None");
+            assert!(payload.is_none());
+        } else {
+            panic!("Expected EnumVariant, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_enum_variant_with_payload() {
+        let input = "Option::Some(x)";
+        let expr = parse_expr(input);
+        // Enum variants with payloads are parsed as FunctionCall in the parser phase.
+        // They are later rewritten to EnumVariant by Sema.
+        if let Expr::FunctionCall(FunctionCallExpr {
+            name,
+            args,
+            span: _,
+        }) = expr
+        {
+            assert_eq!(name, "Option::Some");
+            assert_eq!(args.len(), 1);
+            if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &args[0] {
+                assert_eq!(name, "x");
+            } else {
+                panic!("Expected Identifier payload");
+            }
+        } else {
+            panic!("Expected FunctionCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_enum_variant() {
+        let input = "Option<i32>::Some(x)";
+        let expr = parse_expr(input);
+        // Similarly, generic enum variants with payloads are FunctionCalls initially.
+        if let Expr::FunctionCall(FunctionCallExpr {
+            name,
+            args,
+            span: _,
+        }) = expr
+        {
+            assert_eq!(name, "Option<i32>::Some");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("Expected FunctionCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_vector() {
+        let input = "Vec<i32>::new()";
+        let expr = parse_expr(input);
+        if let Expr::FunctionCall(FunctionCallExpr {
+            name,
+            args,
+            span: _,
+        }) = expr
+        {
+            assert_eq!(name, "Vec<i32>::new");
+            assert_eq!(args.len(), 0);
+        } else {
+            panic!("Expected FunctionCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_vector_push() {
+        let input = "vec.push(10)";
+        let expr = parse_expr(input);
+        if let Expr::MethodCall(MethodCallExpr {
+            base,
+            method_name,
+            args,
+            span: _,
+        }) = expr
+        {
+            if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &*base {
+                assert_eq!(name, "vec");
+            } else {
+                panic!("Expected Identifier base");
+            }
+            assert_eq!(method_name, "push");
+            assert_eq!(args.len(), 1);
+            if let Expr::Number(NumberExpr { value, .. }) = &args[0] {
+                assert_eq!(value, "10");
+            } else {
+                panic!("Expected Number payload");
+            }
+        } else {
+            panic!("Expected MethodCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_iterators() {
+        let input = "vec.iter().map(f)";
+        let expr = parse_expr(input);
+        if let Expr::MethodCall(MethodCallExpr {
+            base,
+            method_name,
+            args,
+            span: _,
+        }) = expr
+        {
+            assert_eq!(method_name, "map");
+            assert_eq!(args.len(), 1);
+            if let Expr::MethodCall(MethodCallExpr {
+                base: inner_base,
+                method_name: inner_method_name,
+                args: inner_args,
+                span: _,
+            }) = &*base
+            {
+                assert_eq!(inner_method_name, "iter");
+                assert_eq!(inner_args.len(), 0);
+                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**inner_base {
+                    assert_eq!(name, "vec");
+                } else {
+                    panic!("Expected Identifier inner_base");
+                }
+            } else {
+                panic!("Expected inner MethodCall");
+            }
+        } else {
+            panic!("Expected MethodCall, got {:?}", expr);
+        }
+    }
+}
