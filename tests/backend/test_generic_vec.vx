@@ -1,0 +1,30 @@
+import std::vec;
+
+extern "C" {
+    fn vx_printf_i32(fmt: *const i8, v: i32) -> i32;
+}
+
+fn main() -> i32 {
+    let mut v = Vec::new<i32>();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+
+    let mut sum: i32 = 0;
+    
+    unsafe {
+        vx_printf_i32("sizeof i32 is: %d\n", sizeof<i32>());
+    }
+    
+    for x in v.iter() {
+        unsafe {
+            vx_printf_i32("x is: %d\n", x);
+        }
+        sum = sum + x;
+    }
+    
+    unsafe {
+        vx_printf_i32("Sum is: %d\n", sum);
+    }
+    return sum;
+}

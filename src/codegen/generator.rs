@@ -15,6 +15,7 @@ pub struct MeliorGenerator<'c> {
     pub in_spawn: bool,
     pub break_flags: Vec<melior::ir::Value<'c, 'c>>,
     pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
+    pub allocs: std::collections::HashSet<String>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -150,6 +151,10 @@ impl<'c> MeliorGenerator<'c> {
             return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
+        if val.r#type() == to_ty {
+            return val;
+        }
+
         println!(
             "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",
             from_str,
@@ -190,6 +195,7 @@ impl<'c> MeliorGenerator<'c> {
             in_spawn: false,
             break_flags: Vec::new(),
             continue_flags: Vec::new(),
+            allocs: std::collections::HashSet::new(),
         }
     }
 
@@ -207,7 +213,8 @@ impl<'c> MeliorGenerator<'c> {
         println!("[CODEGEN] Finished generating modules.");
         let op = self.module.as_operation();
         let s = format!("{}", op);
-        println!("[CODEGEN] Formatted MLIR string.");
+        std::fs::write("mlir_dump.mlir", &s).unwrap();
+        println!("[CODEGEN] Formatted MLIR string to mlir_dump.mlir.");
         s
     }
 
@@ -221,6 +228,14 @@ impl<'c> MeliorGenerator<'c> {
         }
         for e in &program.enums {
             self.enums.insert(e.name.clone(), e.variants.clone());
+        }
+        for (_, module) in modules {
+            for s in &module.structs {
+                self.structs.insert(s.name.clone(), s.clone());
+            }
+            for e in &module.enums {
+                self.enums.insert(e.name.clone(), e.variants.clone());
+            }
         }
         for ext in &program.externs {
             let ret_ty = self.lower_type(&ext.return_type);
@@ -318,9 +333,19 @@ impl<'c> MeliorGenerator<'c> {
             all_externs.extend(module_prog.externs.clone());
         }
 
-        for ext in &all_externs {
+        let mut seen_externs = std::collections::HashSet::new();
+        let mut unique_externs = Vec::new();
+        for ext in all_externs {
+            let sig = format!("{}: {:?}", ext.name, ext.params);
+            if seen_externs.insert(sig) {
+                unique_externs.push(ext);
+            }
+        }
+
+        for ext in &unique_externs {
             let name = &ext.name;
             let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
+
             // FunctionType::new takes arg_tys and ret_tys
             let func_type =
                 melior::ir::r#type::FunctionType::new(self.context, arg_tys, &[*ret_ty]);
@@ -329,8 +354,7 @@ impl<'c> MeliorGenerator<'c> {
             let name_attr = melior::ir::attribute::StringAttribute::new(self.context, name);
             let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
-            let region = melior::ir::Region::new();
-            let func_op = melior::ir::operation::OperationBuilder::new(
+            let mut builder = melior::ir::operation::OperationBuilder::new(
                 "func.func",
                 melior::ir::Location::unknown(self.context),
             )
@@ -347,10 +371,10 @@ impl<'c> MeliorGenerator<'c> {
                     melior::ir::Identifier::new(self.context, "sym_visibility"),
                     melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
                 ),
-            ])
-            .add_regions([region])
-            .build()
-            .unwrap();
+            ]);
+
+            let region = melior::ir::Region::new();
+            let func_op = builder.add_regions([region]).build().unwrap();
 
             body.append_operation(func_op);
         }
@@ -662,7 +686,89 @@ impl<'c> MeliorGenerator<'c> {
                     format!("!llvm.struct<\"{}\">", name)
                 }
             }
-            crate::ast::Type::Generic(_, _) | crate::ast::Type::GenericInstance(_, _) => {
+            crate::ast::Type::GenericInstance(base, args) => {
+                if let crate::ast::Type::Struct(name, _) = &**base {
+                    if let Some(decl) = self.structs.get(name).cloned() {
+                        let mut field_types = Vec::new();
+                        let mut mapping = std::collections::HashMap::new();
+                        for (i, param) in decl.generics.iter().enumerate() {
+                            mapping.insert(param.0.clone(), args[i].clone());
+                        }
+                        for (_, ty) in &decl.fields {
+                            let sub_ty = ty.substitute(&mapping);
+                            let mut lowered = self.lower_type_str(&sub_ty);
+                            if lowered.starts_with("memref<") {
+                                lowered = "!llvm.ptr".to_string();
+                            }
+                            field_types.push(lowered);
+                        }
+                        let args_str: Vec<String> = args
+                            .iter()
+                            .map(|a| {
+                                let lowered = self.lower_type_str(a);
+                                lowered
+                                    .replace("!", "")
+                                    .replace("<", "_")
+                                    .replace(">", "_")
+                                    .replace(" ", "_")
+                                    .replace(",", "_")
+                            })
+                            .collect();
+                        format!(
+                            "!llvm.struct<\"{}_{}\", ({})>",
+                            name,
+                            args_str.join("_"),
+                            field_types.join(", ")
+                        )
+                    } else if let Some(enum_def) = self.enums.get(name).cloned() {
+                        let ty_arg = args.first().unwrap();
+                        let mut payload_ty_str = "none".to_string();
+                        for (v_name, payload) in enum_def {
+                            if v_name == "Some" {
+                                if let Some(types) = payload {
+                                    if !types.is_empty() {
+                                        let mut mapping = std::collections::HashMap::new();
+                                        mapping.insert("T".to_string(), ty_arg.clone());
+                                        let sub_ty = types[0].substitute(&mapping);
+                                        let mut lowered = self.lower_type_str(&sub_ty);
+                                        if lowered.starts_with("memref<") {
+                                            lowered = "!llvm.ptr".to_string();
+                                        }
+                                        payload_ty_str = lowered;
+                                    }
+                                }
+                            }
+                        }
+
+                        let args_str: Vec<String> = args
+                            .iter()
+                            .map(|a| {
+                                let lowered = self.lower_type_str(a);
+                                lowered
+                                    .replace("!", "")
+                                    .replace("<", "_")
+                                    .replace(">", "_")
+                                    .replace(" ", "_")
+                                    .replace(",", "_")
+                            })
+                            .collect();
+
+                        format!(
+                            "!llvm.struct<\"{}_{}\", (i32, {})>",
+                            name,
+                            args_str.join("_"),
+                            payload_ty_str
+                        )
+                    } else {
+                        println!("Keys in structs: {:?}", self.structs.keys());
+                        println!("Keys in enums: {:?}", self.enums.keys());
+                        panic!("Generic struct/enum {} not found", name);
+                    }
+                } else {
+                    panic!("GenericInstance base is not a Struct!");
+                }
+            }
+            crate::ast::Type::Generic(_, _) => {
                 panic!(
                     "Generic types should have been monomorphized before codegen! Got type: {:?}",
                     ty
