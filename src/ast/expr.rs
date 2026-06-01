@@ -560,18 +560,8 @@ impl Expr {
                 let mut new_name = e.name.clone();
                 if new_name.starts_with("Tensor_") {
                     let t_name = new_name.strip_prefix("Tensor_").unwrap();
-                    if let Some(Type::Scalar(concrete_el)) = mapping.get(t_name) {
-                        let concrete_name = match concrete_el {
-                            ElementType::F16 => "f16",
-                            ElementType::F32 => "f32",
-                            ElementType::F64 => "f64",
-                            ElementType::BF16 => "bf16",
-                            ElementType::I32 => "i32",
-                            ElementType::I64 => "i64",
-                            ElementType::Bool => "Bool",
-                            ElementType::Generic(g) => g,
-                            _ => "f32",
-                        };
+                    if let Some(concrete_el) = mapping.get(t_name) {
+                        new_name = format!("Tensor_{}", concrete_el);
                     }
                 } else if let Some(idx) = new_name.find('<') {
                     if let Some(end_idx) = new_name.find('>') {
@@ -579,23 +569,7 @@ impl Expr {
                         let ty_arg = &new_name[idx + 1..end_idx];
                         let remainder = &new_name[end_idx + 1..];
                         if let Some(mapped_ty) = mapping.get(ty_arg) {
-                            let ty_str = match mapped_ty {
-                                Type::Scalar(ElementType::I32) => "i32",
-                                Type::Scalar(ElementType::F32) => "f32",
-                                Type::Scalar(ElementType::F64) => "f64",
-                                Type::Scalar(ElementType::I64) => "i64",
-                                Type::Scalar(ElementType::Bool) => "Bool",
-                                Type::Struct(name, _) => name.as_str(),
-                                Type::GenericInstance(inner, _) => {
-                                    if let Type::Struct(name, _) = &**inner {
-                                        name.as_str()
-                                    } else {
-                                        "unknown"
-                                    }
-                                }
-                                _ => "unknown",
-                            };
-                            new_name = format!("{}<{}>{}", base, ty_str, remainder);
+                            new_name = format!("{}<{}>{}", base, mapped_ty, remainder);
                         }
                     }
                 }

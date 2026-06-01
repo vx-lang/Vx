@@ -150,3 +150,64 @@ impl Type {
         }
     }
 }
+
+impl std::fmt::Display for ElementType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ElementType::F16 => write!(f, "f16"),
+            ElementType::F32 => write!(f, "f32"),
+            ElementType::F64 => write!(f, "f64"),
+            ElementType::BF16 => write!(f, "bf16"),
+            ElementType::I4 => write!(f, "i4"),
+            ElementType::U4 => write!(f, "u4"),
+            ElementType::I8 => write!(f, "i8"),
+            ElementType::U8 => write!(f, "u8"),
+            ElementType::I16 => write!(f, "i16"),
+            ElementType::U16 => write!(f, "u16"),
+            ElementType::I32 => write!(f, "i32"),
+            ElementType::U32 => write!(f, "u32"),
+            ElementType::I64 => write!(f, "i64"),
+            ElementType::U64 => write!(f, "u64"),
+            ElementType::I128 => write!(f, "i128"),
+            ElementType::U128 => write!(f, "u128"),
+            ElementType::Bool => write!(f, "Bool"),
+            ElementType::Generic(g) => write!(f, "{}", g),
+        }
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Scalar(el) => write!(f, "{}", el),
+            Type::Struct(name, _) => write!(f, "{}", name),
+            Type::Enum(name, _) => write!(f, "{}", name),
+            Type::Pointer(inner, _, is_mut) => {
+                if *is_mut {
+                    write!(f, "*mut {}", inner)
+                } else {
+                    write!(f, "*const {}", inner)
+                }
+            }
+            Type::Borrow(inner, _, is_mut, _) => {
+                if *is_mut {
+                    write!(f, "&mut {}", inner)
+                } else {
+                    write!(f, "&{}", inner)
+                }
+            }
+            Type::GenericInstance(base, args) => {
+                write!(f, "{}<", base)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
+            Type::Generic(name, _) => write!(f, "{}", name),
+            _ => write!(f, "{:?}", self), // Fallback for complex types
+        }
+    }
+}
