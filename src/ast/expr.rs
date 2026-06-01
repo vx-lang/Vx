@@ -644,15 +644,7 @@ impl Expr {
                     let base = &new_name[..idx];
                     let ty_arg = &new_name[idx + 1..new_name.len() - 1];
                     if let Some(mapped_ty) = mapping.get(ty_arg) {
-                        let ty_str = match mapped_ty {
-                            Type::Scalar(ElementType::I32) => "i32",
-                            Type::Scalar(ElementType::F32) => "f32",
-                            Type::Scalar(ElementType::F64) => "f64",
-                            Type::Scalar(ElementType::I64) => "i64",
-                            Type::Scalar(ElementType::Bool) => "Bool",
-                            Type::Struct(name, _) => name,
-                            _ => "f32",
-                        };
+                        let ty_str = mapped_ty.to_string();
                         new_name = format!("{}<{}>", base, ty_str);
                     }
                 }
