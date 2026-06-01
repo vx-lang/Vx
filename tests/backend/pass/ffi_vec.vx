@@ -5,9 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-import std::vec;
+extern "C" {
+  fn vx_vec_new_i32() -> *mut i8;
+  fn vx_vec_push_i32(vec: *mut i8, val: i32) -> i32;
+  fn vx_vec_len_i32(vec: *mut i8) -> i32;
+  fn vx_vec_drop_i32(vec: *mut i8) -> i32;
+}
 import std::io;
-
 fn main() -> i32 {
   unsafe {
     let vec = vx_vec_new_i32();

@@ -385,6 +385,8 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     pub(crate) fn generate_function(&mut self, func: &Function) -> melior::ir::Operation<'c> {
+        self.env.clear();
+        self.allocs.clear();
         let is_main = func.name == "main";
         let true_ret_ty = self.lower_type(&func.return_type);
         let ret_ty = if is_main {

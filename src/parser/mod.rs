@@ -53,7 +53,15 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn peek(&self) -> &Token {
-        &self.tokens[self.pos]
+        self.peek_n(0)
+    }
+
+    pub(crate) fn peek_n(&self, offset: usize) -> &Token {
+        if self.pos + offset < self.tokens.len() {
+            &self.tokens[self.pos + offset]
+        } else {
+            &self.tokens[self.tokens.len() - 1] // return EOF
+        }
     }
 
     pub(crate) fn advance(&mut self) -> &Token {

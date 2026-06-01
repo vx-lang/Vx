@@ -462,16 +462,16 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::Identifier(s) => {
                     let mut call_name = s;
-                    if let TokenType::LeftAngle = &self.peek().kind {
+                    if matches!(self.peek().kind, TokenType::LeftAngle)
+                        && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+                        && matches!(self.peek_n(2).kind, TokenType::RightAngle)
+                    {
                         self.advance(); // consume '<'
                         let ty_ident = match self.advance().kind.clone() {
                             TokenType::Identifier(s) => s,
-                            _ => return Err("Expected element type after '<'".to_string()),
+                            _ => unreachable!(),
                         };
-                        match self.advance().kind {
-                            TokenType::RightAngle => {}
-                            _ => return Err("Expected '>' after element type".to_string()),
-                        }
+                        self.advance(); // consume '>'
                         if call_name == "Tensor" {
                             call_name = format!("Tensor_{}", ty_ident);
                         } else {
@@ -493,24 +493,16 @@ impl<'a> Parser<'a> {
                                 self.advance(); // consume method name
                                 call_name = format!("{}::{}", call_name, method_name);
 
-                                if let TokenType::LeftAngle = &self.peek().kind {
+                                if matches!(self.peek().kind, TokenType::LeftAngle)
+                                    && matches!(self.peek_n(1).kind, TokenType::Identifier(_))
+                                    && matches!(self.peek_n(2).kind, TokenType::RightAngle)
+                                {
                                     self.advance(); // consume '<'
                                     let ty_ident = match self.advance().kind.clone() {
                                         TokenType::Identifier(s) => s,
-                                        _ => {
-                                            return Err(
-                                                "Expected element type after '<'".to_string()
-                                            )
-                                        }
+                                        _ => unreachable!(),
                                     };
-                                    match self.advance().kind {
-                                        TokenType::RightAngle => {}
-                                        _ => {
-                                            return Err(
-                                                "Expected '>' after element type".to_string()
-                                            )
-                                        }
-                                    }
+                                    self.advance(); // consume '>'
                                     call_name = format!("{}<{}>", call_name, ty_ident);
                                 }
                             }

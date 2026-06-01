@@ -120,7 +120,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             if gen.allocs.contains(name) {
                 if ty_str.starts_with("memref<") {
                     let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                    let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                    let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap_or_else(|| {
+                        panic!("failed to parse {:?} for variable {:?}", inner_ty_str, name)
+                    });
                     let load_op = melior::ir::operation::OperationBuilder::new(
                         "memref.load",
                         Location::unknown(gen.context),

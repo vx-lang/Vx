@@ -29,11 +29,11 @@ fn main() -> Tensor<i32> {
 }
 
 // CHECK: module {
-// CHECK:   func.func @Tensor__F32_dim(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
+// CHECK:   func.func @Tensor__F32__dim(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
 // CHECK:     arith.constant 2 : i32
 // CHECK:     return
 // CHECK:   func.func @process_TensorF32_(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK:     call @Tensor__F32_dim(%
+// CHECK:     call @Tensor__F32__dim(%
 // CHECK:     return
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 // CHECK:     arith.constant 1.000000e+00 : f32

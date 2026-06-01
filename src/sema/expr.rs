@@ -1134,10 +1134,6 @@ impl<'a> TypeChecker<'a> {
                         .replace("GenericInstance_", "")
                         .replace("Struct_", "")
                         .replace("Scalar_", "");
-                    // Clean up multiple underscores
-                    while mangled_name.contains("__") {
-                        mangled_name = mangled_name.replace("__", "_");
-                    }
 
                     method_func.name = mangled_name.clone();
 
