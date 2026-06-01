@@ -61,6 +61,18 @@ pub struct DriverOptions {
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
 
+    /// Disable Vx optimizations
+    #[arg(long = "disable-vx-optimizations")]
+    pub disable_vx_optimizations: bool,
+
+    /// Disable MLIR optimizations
+    #[arg(long = "disable-mlir-optimizations")]
+    pub disable_mlir_optimizations: bool,
+
+    /// Disable LLVM optimizations
+    #[arg(long = "disable-llvm-optimizations")]
+    pub disable_llvm_optimizations: bool,
+
     /// Optimization level (-O0 to -O3)
     #[arg(short = 'O', num_args = 0..=1, default_missing_value = "3", default_value_t = 0)]
     pub opt_level: u8,
@@ -140,8 +152,13 @@ impl CompilerDriver {
             }
 
             if self.options.action == Action::RunJit {
-                let out = crate::jit::execute_mlir(&mlir_src, mlir_args, self.options.opt_level)
-                    .map_err(|e| e.to_string())?;
+                let out = crate::jit::execute_mlir(
+                    &mlir_src,
+                    mlir_args,
+                    self.options.opt_level,
+                    self.options.disable_llvm_optimizations,
+                )
+                .map_err(|e| e.to_string())?;
                 println!("{}", out);
                 return Ok(());
             }
@@ -260,7 +277,11 @@ impl CompilerDriver {
             self.options.action,
             Action::EmitLlvm | Action::RunJit | Action::EmitObj
         );
-        let pipeline_str = get_optimization_pipeline(self.options.opt_level, llvm_lower);
+        let pipeline_str = get_optimization_pipeline(
+            self.options.opt_level,
+            llvm_lower,
+            self.options.disable_mlir_optimizations,
+        );
 
         let pass_manager = melior::pass::PassManager::new(&context);
         if let Err(e) = melior::utility::parse_pass_pipeline(
@@ -293,8 +314,13 @@ impl CompilerDriver {
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());
-                let out = crate::jit::execute_mlir(&mlir_str, vec![], self.options.opt_level)
-                    .map_err(|e| e.to_string())?;
+                let out = crate::jit::execute_mlir(
+                    &mlir_str,
+                    vec![],
+                    self.options.opt_level,
+                    self.options.disable_llvm_optimizations,
+                )
+                .map_err(|e| e.to_string())?;
                 println!("{}", out);
             }
             Action::EmitObj => {
@@ -338,14 +364,18 @@ impl CompilerDriver {
     }
 }
 
-fn get_optimization_pipeline(opt_level: u8, llvm_lower: bool) -> String {
+fn get_optimization_pipeline(
+    opt_level: u8,
+    llvm_lower: bool,
+    disable_mlir_optimizations: bool,
+) -> String {
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
         passes.push("convert-vx-to-standard".to_string());
     }
 
-    if opt_level > 0 {
+    if opt_level > 0 && !disable_mlir_optimizations {
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(

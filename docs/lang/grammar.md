@@ -5,15 +5,16 @@ This document provides a formal Extended Backus-Naur Form (EBNF) specification f
 ## 1. Notation
 
 The grammar is specified using the following notation:
-* `...` : Literal text
-* `Capitalized` : Lexical token or terminal rule
-* `lowercase_with_underscores` : Syntactic non-terminal rule
-* `[ x ]` : Optional item `x`
-* `{ x }` : Zero or more repetitions of `x`
-* `x | y` : Alternation (either `x` or `y`)
-* `( x )` : Grouping
 
----
+- `...` : Literal text
+- `Capitalized` : Lexical token or terminal rule
+- `lowercase_with_underscores` : Syntactic non-terminal rule
+- `[ x ]` : Optional item `x`
+- `{ x }` : Zero or more repetitions of `x`
+- `x | y` : Alternation (either `x` or `y`)
+- `( x )` : Grouping
+
+______________________________________________________________________
 
 ## 2. Lexical Elements
 
@@ -41,7 +42,7 @@ BooleanLiteral ::= `true` | `false`
 StringLiteral  ::= `"` { StringCharacter } `"`
 ```
 
----
+______________________________________________________________________
 
 ## 3. Types
 
@@ -81,7 +82,7 @@ Topology ::= `Topology` `::` Identifier [ `[` expression `]` | `[` expression `.
 MemorySpace ::= `Memory` `::` Identifier
 ```
 
----
+______________________________________________________________________
 
 ## 4. Expressions
 
@@ -122,7 +123,7 @@ spawn_expression ::= `spawn` `on` `(` Topology `)` block_expression
 autodiff_expression ::= ( `grad` | `vjp` | `jvp` ) `(` expression `)`
 ```
 
----
+______________________________________________________________________
 
 ## 5. Statements
 
@@ -157,7 +158,7 @@ transfer_statement ::= `let` Identifier `=` `transfer` `(` expression `,` Memory
 block_expression ::= `{` { statement } [ expression ] `}`
 ```
 
----
+______________________________________________________________________
 
 ## 6. Declarations
 

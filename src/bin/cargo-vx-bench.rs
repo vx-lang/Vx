@@ -132,7 +132,7 @@ fn main() -> i32 {
                         let mut module = codegen.into_module();
                         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
                         let mlir_str = format!("{}", module.as_operation());
-                        match vxc::jit::execute_mlir(&mlir_str, vec![], 3) {
+                        match vxc::jit::execute_mlir(&mlir_str, vec![], 3, false) {
                             Ok(output) => {
                                 // Parse the output to find the float time like [0.125]
                                 if let Some(last_match) = re_time.captures_iter(&output).last() {

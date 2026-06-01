@@ -25,6 +25,7 @@ pub fn execute_mlir(
     mlir_src: &str,
     _mlir_args: Vec<String>,
     opt_level: u8,
+    disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
     // Ensure target/jit directory exists
     let jit_dir = std::path::Path::new("target/jit");
@@ -110,13 +111,18 @@ pub fn execute_mlir(
         opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
         opt_args.push("-passes=enzyme".to_string());
     }
-    opt_args.push(format!("-O{}", opt_level));
+    let actual_opt_level = if disable_llvm_optimizations {
+        0
+    } else {
+        opt_level
+    };
+    opt_args.push(format!("-O{}", actual_opt_level));
     opt_args.push("-S".to_string());
     opt_args.push(temp_ll.clone());
     opt_args.push("-o".to_string());
     opt_args.push(temp_opt_ll.clone());
 
-    println!("[JIT] Optimizing LLVM IR (-O{})...", opt_level);
+    println!("[JIT] Optimizing LLVM IR (-O{})...", actual_opt_level);
     let opt_out = Command::new("opt")
         .args(&opt_args)
         .output()

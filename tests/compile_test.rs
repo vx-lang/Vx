@@ -241,7 +241,7 @@ fn run_backend_test(path: &Path) {
         return;
     }
 
-    let out = execute_mlir(&mlir_str, vec![], 0).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
         assert!(
@@ -666,7 +666,7 @@ fn run_backend_autodiff_test(path: &Path) {
         return;
     }
 
-    let out = execute_mlir(&mlir_str, vec![], 0).expect("JIT execution failed");
+    let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
         assert!(
