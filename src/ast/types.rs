@@ -176,6 +176,33 @@ impl std::fmt::Display for ElementType {
     }
 }
 
+impl std::str::FromStr for ElementType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "f16" => Ok(ElementType::F16),
+            "f32" => Ok(ElementType::F32),
+            "f64" => Ok(ElementType::F64),
+            "bf16" => Ok(ElementType::BF16),
+            "i4" => Ok(ElementType::I4),
+            "u4" => Ok(ElementType::U4),
+            "i8" => Ok(ElementType::I8),
+            "u8" => Ok(ElementType::U8),
+            "i16" => Ok(ElementType::I16),
+            "u16" => Ok(ElementType::U16),
+            "i32" => Ok(ElementType::I32),
+            "u32" => Ok(ElementType::U32),
+            "i64" => Ok(ElementType::I64),
+            "u64" => Ok(ElementType::U64),
+            "i128" => Ok(ElementType::I128),
+            "u128" => Ok(ElementType::U128),
+            "Bool" => Ok(ElementType::Bool),
+            _ => Err(format!("Unknown element type '{}'", s)),
+        }
+    }
+}
+
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

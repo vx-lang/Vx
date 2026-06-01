@@ -647,22 +647,9 @@ impl<'a> Parser<'a> {
                     }
 
                     let el_ty = if !suffix_str.is_empty() {
-                        match suffix_str.as_str() {
-                            "f16" => Some(crate::ast::ElementType::F16),
-                            "f32" => Some(crate::ast::ElementType::F32),
-                            "f64" => Some(crate::ast::ElementType::F64),
-                            "bf16" => Some(crate::ast::ElementType::BF16),
-                            "i8" => Some(crate::ast::ElementType::I8),
-                            "i16" => Some(crate::ast::ElementType::I16),
-                            "i32" => Some(crate::ast::ElementType::I32),
-                            "i64" => Some(crate::ast::ElementType::I64),
-                            "i128" => Some(crate::ast::ElementType::I128),
-                            "u8" => Some(crate::ast::ElementType::U8),
-                            "u16" => Some(crate::ast::ElementType::U16),
-                            "u32" => Some(crate::ast::ElementType::U32),
-                            "u64" => Some(crate::ast::ElementType::U64),
-                            "u128" => Some(crate::ast::ElementType::U128),
-                            _ => return Err(format!("Unknown number suffix '{}'", suffix_str)),
+                        match suffix_str.parse::<crate::ast::ElementType>() {
+                            Ok(el) => Some(el),
+                            Err(e) => return Err(e),
                         }
                     } else {
                         // Rust-like defaults: i32 for integers, f32 for floats in ML context
