@@ -1749,10 +1749,38 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(
         &self,
-        _gen: &mut MeliorGenerator<'c>,
-        _block: &melior::ir::Block<'c>,
+        gen: &mut MeliorGenerator<'c>,
+        block: &melior::ir::Block<'c>,
     ) -> Self::Output {
-        panic!("Should not be evaluated directly")
+        let ArrayExpr { elements, span: _ } = self;
+        if elements.is_empty() {
+            panic!("Empty arrays not supported yet");
+        }
+        let mut vals = Vec::new();
+        let mut el_ty = None;
+        for el in elements {
+            let (v, t) = gen.generate_expr(el, block);
+            vals.push(v);
+            if el_ty.is_none() {
+                el_ty = Some(t);
+            }
+        }
+        let el_ty = el_ty.unwrap();
+        let num_elements = elements.len();
+        
+        let tensor_ty = Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty)).unwrap();
+        
+        let op = melior::ir::operation::OperationBuilder::new(
+            "tensor.from_elements",
+            Location::unknown(gen.context),
+        )
+        .add_operands(&vals)
+        .add_results(&[tensor_ty])
+        .build()
+        .unwrap();
+        
+        let val = block.append_operation(op).result(0).unwrap().into();
+        (val, tensor_ty)
     }
 }
 
@@ -2471,8 +2499,82 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             return;
         }
 
-        // Generic Iterator loop via scf.while
+        // Generic Iterator loop via scf.while or tensor iteration
         let (iter_val, iter_ty) = gen.generate_expr(iterable, block);
+        let iter_ty_str = iter_ty.to_string();
+
+        if iter_ty_str.starts_with("tensor<") {
+            let ty_index = Type::parse(gen.context, "index").unwrap();
+            let start_idx = block.append_operation(
+                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[ty_index])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty_index, 0).into(),
+                )])
+                .build().unwrap()
+            ).result(0).unwrap().into();
+
+            let len_str = iter_ty_str.split('x').next().unwrap().split('<').nth(1).unwrap();
+            let len: i64 = len_str.parse().unwrap();
+            
+            let end_idx = block.append_operation(
+                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[ty_index])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty_index, len).into(),
+                )])
+                .build().unwrap()
+            ).result(0).unwrap().into();
+            
+            let step_idx = block.append_operation(
+                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[ty_index])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
+                )])
+                .build().unwrap()
+            ).result(0).unwrap().into();
+            
+            let for_region = Region::new();
+            let for_block = Block::new(&[(ty_index, Location::unknown(gen.context))]);
+            let i_arg = for_block.argument(0).unwrap().into();
+            
+            let el_ty_str = iter_ty_str.split('x').nth(1).unwrap().trim_end_matches('>');
+            let el_ty = Type::parse(gen.context, el_ty_str).unwrap();
+            
+            let extract_op = melior::ir::operation::OperationBuilder::new(
+                "tensor.extract",
+                Location::unknown(gen.context)
+            )
+            .add_operands(&[iter_val, i_arg])
+            .add_results(&[el_ty])
+            .build().unwrap();
+            
+            let el_val = for_block.append_operation(extract_op).result(0).unwrap().into();
+            
+            gen.env.insert(iter.clone(), (el_val, el_ty));
+            
+            for stmt in body {
+                gen.generate_statement(stmt, &for_block);
+            }
+            
+            for_block.append_operation(
+                melior::ir::operation::OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                .build().unwrap()
+            );
+            for_region.append_block(for_block);
+            
+            block.append_operation(
+                melior::ir::operation::OperationBuilder::new("scf.for", Location::unknown(gen.context))
+                .add_operands(&[start_idx, end_idx, step_idx])
+                .add_regions([for_region])
+                .build().unwrap()
+            );
+            return;
+        }
         
         let before_region = Region::new();
         let before_block = Block::new(&[(iter_ty, Location::unknown(gen.context))]);

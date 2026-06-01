@@ -100,15 +100,17 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 
                 // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
+                // If it's Tensor, we extract the ElementType
                 let iter_ty = match iterable_ty {
                     Type::Enum(name, _) if name.starts_with("Option<") => {
                         // Hack for Option<T> in sema: just parse the T part
                         let start = name.find('<').unwrap() + 1;
                         let end = name.rfind('>').unwrap();
-                        let inner_ty_str = &name[start..end];
+                        let _inner_ty_str = &name[start..end];
                         // fallback to i64 if parsing fails? We don't have parse_type here easily.
                         Type::Scalar(ElementType::I64)
                     }
+                    Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                     _ => Type::Scalar(ElementType::I64)
                 };
                 

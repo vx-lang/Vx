@@ -1,0 +1,47 @@
+import tests::modules::iter;
+
+extern {
+    fn printf(format: *const i8, val: i32) -> i32;
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct PointVec {
+    len: i32,
+}
+
+struct PointVecIter {
+    len: i32,
+    current: i32,
+}
+
+impl PointVec {
+    fn iter(self: PointVec) -> PointVecIter {
+        return PointVecIter { len: self.len, current: 0 };
+    }
+}
+
+impl Iterator<PointVecIter, Point> for PointVecIter {
+    fn next(self: PointVecIter) -> Option<Point> {
+        if self.current < self.len {
+            let p: Point = Point { x: self.current, y: self.current * 10 };
+            self.current = self.current + 1;
+            return Option::Some(Point)(p);
+        }
+        return Option::None(Point)();
+    }
+}
+
+fn main() -> i32 {
+    let vec: PointVec = PointVec { len: 3 };
+    for p in vec.iter() {
+        unsafe {
+            printf("Point x: %d\n", p.x);
+            printf("Point y: %d\n", p.y);
+        }
+    }
+    return 0;
+}

@@ -855,6 +855,14 @@ impl<'a> TypeChecker<'a> {
                             );
                             return base_ty;
                         }
+                    } else if _method == "iter" {
+                        if !args.is_empty() {
+                            self.errors.push("iter requires 0 arguments".to_string());
+                        }
+                        // We lower .iter() on Tensors to just evaluate to the tensor itself
+                        // so the ForLoopStmt can catch it and emit a native scf.for loop
+                        *expr = *obj.clone();
+                        return base_ty;
                     } else if _method == "transpose" {
                         if args.len() != 1 {
                             self.errors.push("transpose requires exactly 1 argument (an array of permutation indices)".to_string());
