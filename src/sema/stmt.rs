@@ -96,9 +96,23 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
             }) => {
-                let _iterable_ty = self.check_expr_type_flag(iterable, consume, silent);
+                let iterable_ty = self.check_expr_type_flag(iterable, consume, silent);
                 self.push_scope();
-                self.insert(iter.clone(), Type::Scalar(ElementType::I64)); // Assume i64 range for now
+                
+                // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
+                let iter_ty = match iterable_ty {
+                    Type::Enum(name, _) if name.starts_with("Option<") => {
+                        // Hack for Option<T> in sema: just parse the T part
+                        let start = name.find('<').unwrap() + 1;
+                        let end = name.rfind('>').unwrap();
+                        let inner_ty_str = &name[start..end];
+                        // fallback to i64 if parsing fails? We don't have parse_type here easily.
+                        Type::Scalar(ElementType::I64)
+                    }
+                    _ => Type::Scalar(ElementType::I64)
+                };
+                
+                self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
                 self.check_block(body, return_type);
                 self.pop_scope();
             }

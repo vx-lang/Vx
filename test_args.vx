@@ -11,8 +11,7 @@ fn main() -> i32 {
         printf("argc = %d\n", count);
     }
     
-    for i in 0..count {
-        let arg: *mut i8 = arg(i);
+    for arg in args() {
         unsafe {
             vx_safe_printf(arg);
             printf("\n", 0);

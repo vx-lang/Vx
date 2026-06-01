@@ -624,7 +624,24 @@ impl<'c> MeliorGenerator<'c> {
                 format!("!llvm.ptr<{}>", addr_space)
             }
             crate::ast::Type::Struct(name, _) => {
-                if self.enums.contains_key(name) {
+                if let Some(enum_def) = self.enums.get(name) {
+                    if name.starts_with("Option<") {
+                        let mut payload_ty_str = "none".to_string();
+                        for (v_name, payload) in enum_def {
+                            if v_name == "Some" {
+                                if let Some(types) = payload {
+                                    if !types.is_empty() {
+                                        let mut lowered = self.lower_type_str(&types[0]);
+                                        if lowered.starts_with("memref<") {
+                                            lowered = "!llvm.ptr".to_string();
+                                        }
+                                        payload_ty_str = lowered;
+                                    }
+                                }
+                            }
+                        }
+                        return Type::parse(self.context, &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str)).unwrap();
+                    }
                     return Type::parse(self.context, "i32").unwrap();
                 }
                 if let Some(decl) = self.structs.get(name).cloned() {
@@ -666,7 +683,28 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 format!("vector<{}x{}>", n, ty_str)
             }
-            crate::ast::Type::Enum(_, _) => "i32".to_string(),
+            crate::ast::Type::Enum(name, _) => {
+                if let Some(enum_def) = self.enums.get(name) {
+                    if name.starts_with("Option<") {
+                        let mut payload_ty_str = "none".to_string();
+                        for (v_name, payload) in enum_def {
+                            if v_name == "Some" {
+                                if let Some(types) = payload {
+                                    if !types.is_empty() {
+                                        let mut lowered = self.lower_type_str(&types[0]);
+                                        if lowered.starts_with("memref<") {
+                                            lowered = "!llvm.ptr".to_string();
+                                        }
+                                        payload_ty_str = lowered;
+                                    }
+                                }
+                            }
+                        }
+                        return Type::parse(self.context, &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str)).unwrap();
+                    }
+                }
+                "i32".to_string()
+            },
             crate::ast::Type::Module(..) => "none".to_string(),
         };
 
