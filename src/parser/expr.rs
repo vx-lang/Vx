@@ -131,6 +131,14 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
+                TokenType::DoubleDot => {
+                    let right = self.parse_binary_expr(op_prec + 1)?;
+                    left = Expr::Range(RangeExpr {
+                        start: Box::new(left),
+                        end: Box::new(right),
+                        span: Span::default(),
+                    });
+                }
                 _ => return Err("Unknown binary operator".to_string()),
             };
         }
@@ -147,6 +155,7 @@ impl<'a> Parser<'a> {
             | TokenType::GreaterEq
             | TokenType::LeftAngle
             | TokenType::RightAngle => Some(40),
+            TokenType::DoubleDot => Some(45),
             TokenType::Plus | TokenType::Minus => Some(50),
             TokenType::Star | TokenType::Slash | TokenType::At => Some(60),
             _ => None,

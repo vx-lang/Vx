@@ -92,15 +92,13 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::ForLoop(ForLoopStmt {
                 iter,
-                start,
-                end,
+                iterable,
                 body,
                 span: _,
             }) => {
-                self.check_expr_type_flag(start, consume, silent);
-                self.check_expr_type_flag(end, consume, silent);
+                let _iterable_ty = self.check_expr_type_flag(iterable, consume, silent);
                 self.push_scope();
-                self.insert(iter.clone(), Type::Scalar(ElementType::I64));
+                self.insert(iter.clone(), Type::Scalar(ElementType::I64)); // Assume i64 range for now
                 self.check_block(body, return_type);
                 self.pop_scope();
             }

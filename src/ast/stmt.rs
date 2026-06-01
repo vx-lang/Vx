@@ -68,23 +68,20 @@ impl ExprStmtStmt {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ForLoopStmt {
     pub iter: String,
-    pub start: Box<Expr>,
-    pub end: Box<Expr>,
+    pub iterable: Box<Expr>,
     pub body: Vec<Statement>,
     pub span: Span,
 }
 impl ForLoopStmt {
     pub fn new(
         iter: String,
-        start: Box<Expr>,
-        end: Box<Expr>,
+        iterable: Box<Expr>,
         body: Vec<Statement>,
         span: Span,
     ) -> Self {
         Self {
             iter,
-            start,
-            end,
+            iterable,
             body,
             span,
         }
@@ -194,8 +191,7 @@ impl Statement {
             }),
             Statement::ForLoop(e) => Statement::ForLoop(ForLoopStmt {
                 iter: e.iter.clone(),
-                start: Box::new(e.start.substitute(mapping)),
-                end: Box::new(e.end.substitute(mapping)),
+                iterable: Box::new(e.iterable.substitute(mapping)),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),

@@ -130,9 +130,7 @@ impl<'a> Parser<'a> {
                     _ => return Err("Expected identifier after 'for'".to_string()),
                 };
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
-                let start = self.parse_expr()?;
-                self.consume(&TokenType::DoubleDot, "Expected '..' in range")?;
-                let end = self.parse_expr()?;
+                let iterable = self.parse_expr()?;
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut stmts = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -141,8 +139,7 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::ForLoop(ForLoopStmt {
                     iter,
-                    start: Box::new(start),
-                    end: Box::new(end),
+                    iterable: Box::new(iterable),
                     body: stmts,
                     span: Span::default(),
                 }))

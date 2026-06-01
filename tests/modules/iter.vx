@@ -1,0 +1,27 @@
+//===- iter.vx - Vx Standard Library ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Core iterator interfaces and types.
+//
+//===----------------------------------------------------------------------===//
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+trait Iterator<Iter, Item> {
+    fn next(self: Iter) -> Option<Item>;
+}
+
+struct Range {
+    start: i64,
+    end: i64,
+}
+
+// Iterator implementation will be provided natively or via bootstrapping.

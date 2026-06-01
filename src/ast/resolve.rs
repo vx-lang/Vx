@@ -147,8 +147,7 @@ impl Statement {
             Statement::ExprStmt(e) => e.expr.resolve_names(current_module, symbol_map),
             Statement::Assert(e) => e.expr.resolve_names(current_module, symbol_map),
             Statement::ForLoop(e) => {
-                e.start.resolve_names(current_module, symbol_map);
-                e.end.resolve_names(current_module, symbol_map);
+                e.iterable.resolve_names(current_module, symbol_map);
                 for s in &mut e.body {
                     s.resolve_names(current_module, symbol_map);
                 }

@@ -1,0 +1,21 @@
+// RUN: vxc %s
+
+import tests::modules::iter;
+
+fn test_for_loop() -> i64 {
+    let mut sum: i64 = 0;
+    for i in 0..10 {
+        sum += i;
+    }
+    return sum;
+}
+
+fn main() -> i64 {
+    return test_for_loop();
+}
+
+// CHECK: module {
+// CHECK:   func.func @test_for_loop() -> i64
+// CHECK:     scf.for
+// CHECK:   }
+// CHECK: }

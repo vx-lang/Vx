@@ -2375,13 +2375,16 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let ForLoopStmt {
             iter,
-            start,
-            end,
+            iterable,
             body,
             span: _,
         } = self;
-        let (start_val, start_ty) = gen.generate_expr(start, block);
-        let (end_val, end_ty) = gen.generate_expr(end, block);
+        let (start, end) = match &**iterable {
+            Expr::Range(crate::ast::expr::RangeExpr { start, end, span: _ }) => (start.clone(), end.clone()),
+            _ => panic!("Currently only Range expressions (start..end) are supported in for loops for MLIR codegen."),
+        };
+        let (start_val, start_ty) = gen.generate_expr(&start, block);
+        let (end_val, end_ty) = gen.generate_expr(&end, block);
 
         let ty_index = Type::parse(gen.context, "index").unwrap();
 

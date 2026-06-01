@@ -719,8 +719,9 @@ impl<'a> TypeChecker<'a> {
                         self.errors
                             .push(format!("Module '{}' does not export '{}'", path, member));
                     }
-                } else if member != "shape" {
-                    // default behavior for Tensor.shape
+                } else if member == "shape" {
+                    return Type::Tensor(ElementType::I32, vec![], None);
+                } else {
                     self.errors
                         .push("Member access on non-struct type".to_string());
                 }

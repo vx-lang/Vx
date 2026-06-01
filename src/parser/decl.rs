@@ -260,6 +260,7 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s,
             _ => return Err("Expected trait name".to_string()),
         };
+        let generics = self.parse_generic_params()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
 
         let mut methods = Vec::new();
@@ -293,11 +294,18 @@ impl<'a> Parser<'a> {
             methods.push((method_name, params, return_type));
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-        Ok(TraitDecl { name, methods })
+
+        for _ in 0..generics.len() {
+            self.generic_params.pop();
+        }
+
+        Ok(TraitDecl { name, generics, methods })
     }
 
     pub(crate) fn parse_impl_block(&mut self) -> Result<ImplBlock, String> {
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
+
+        let generics = self.parse_generic_params()?;
 
         // Either `impl Trait for Type` or `impl Type`
         let mut trait_name = None;
@@ -326,7 +334,13 @@ impl<'a> Parser<'a> {
             methods.push(self.parse_function()?);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+
+        for _ in 0..generics.len() {
+            self.generic_params.pop();
+        }
+
         Ok(ImplBlock {
+            generics,
             trait_name,
             target_type,
             methods,
@@ -512,29 +526,32 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(ForLoopStmt {
             iter,
-            start,
-            end,
+            iterable,
             body,
             span: _,
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");
-            assert_eq!(
-                **start,
-                Expr::Number(NumberExpr {
-                    value: "0".to_string(),
-                    ty: Some(crate::ast::ElementType::I32),
-                    span: Span::default()
-                })
-            );
-            assert_eq!(
-                **end,
-                Expr::Number(NumberExpr {
-                    value: "10".to_string(),
-                    ty: Some(crate::ast::ElementType::I32),
-                    span: Span::default()
-                })
-            );
+            if let Expr::Range(crate::ast::expr::RangeExpr { start, end, span: _ }) = &**iterable {
+                assert_eq!(
+                    **start,
+                    Expr::Number(NumberExpr {
+                        value: "0".to_string(),
+                        ty: Some(crate::ast::ElementType::I32),
+                        span: Span::default()
+                    })
+                );
+                assert_eq!(
+                    **end,
+                    Expr::Number(NumberExpr {
+                        value: "10".to_string(),
+                        ty: Some(crate::ast::ElementType::I32),
+                        span: Span::default()
+                    })
+                );
+            } else {
+                panic!("Expected Range expression for iterable");
+            }
             assert_eq!(body.len(), 1);
             if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
                 assert_eq!(
