@@ -73,12 +73,7 @@ pub struct ForLoopStmt {
     pub span: Span,
 }
 impl ForLoopStmt {
-    pub fn new(
-        iter: String,
-        iterable: Box<Expr>,
-        body: Vec<Statement>,
-        span: Span,
-    ) -> Self {
+    pub fn new(iter: String, iterable: Box<Expr>, body: Vec<Statement>, span: Span) -> Self {
         Self {
             iter,
             iterable,

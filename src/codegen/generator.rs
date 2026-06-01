@@ -640,7 +640,11 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Type::parse(self.context, &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str)).unwrap();
+                        return Type::parse(
+                            self.context,
+                            &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
+                        )
+                        .unwrap();
                     }
                     return Type::parse(self.context, "i32").unwrap();
                 }
@@ -700,11 +704,15 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Type::parse(self.context, &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str)).unwrap();
+                        return Type::parse(
+                            self.context,
+                            &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
+                        )
+                        .unwrap();
                     }
                 }
                 "i32".to_string()
-            },
+            }
             crate::ast::Type::Module(..) => "none".to_string(),
         };
 

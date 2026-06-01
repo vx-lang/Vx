@@ -11,17 +11,17 @@
 //===----------------------------------------------------------------------===//
 
 enum Option<T> {
-    Some(T),
-    None,
+  Some(T),
+  None,
 }
 
 trait Iterator<Iter, Item> {
-    fn next(self: Iter) -> Option<Item>;
+  fn next(self: Iter) -> Option<Item>;
 }
 
 struct Range {
-    start: i64,
-    end: i64,
+  start: i64,
+  end: i64,
 }
 
 // Iterator implementation will be provided natively or via bootstrapping.

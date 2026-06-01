@@ -299,7 +299,11 @@ impl<'a> Parser<'a> {
             self.generic_params.pop();
         }
 
-        Ok(TraitDecl { name, generics, methods })
+        Ok(TraitDecl {
+            name,
+            generics,
+            methods,
+        })
     }
 
     pub(crate) fn parse_impl_block(&mut self) -> Result<ImplBlock, String> {
@@ -532,7 +536,12 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");
-            if let Expr::Range(crate::ast::expr::RangeExpr { start, end, span: _ }) = &**iterable {
+            if let Expr::Range(crate::ast::expr::RangeExpr {
+                start,
+                end,
+                span: _,
+            }) = &**iterable
+            {
                 assert_eq!(
                     **start,
                     Expr::Number(NumberExpr {

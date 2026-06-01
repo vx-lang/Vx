@@ -1,41 +1,42 @@
 import tests::modules::iter;
 
 extern {
-    fn printf(format: *const i8, val: i32) -> i32;
+  fn printf(format: *const i8, val: i32) -> i32;
 }
 
 struct MyList {
-    len: i32,
+  len: i32,
 }
 
 struct MyListIter {
-    len: i32,
-    current: i32,
+  len: i32,
+  current: i32,
 }
 
 impl MyList {
-    fn iter(self: MyList) -> MyListIter {
-        return MyListIter { len: self.len, current: 0 };
-    }
+  fn iter(self: MyList) -> MyListIter {
+    return MyListIter { len: self.len, current: 0 };
+  }
 }
 
 impl Iterator<MyListIter, i32> for MyListIter {
-    fn next(self: MyListIter) -> Option<i32> {
-        if self.current < self.len {
-            let val: i32 = self.current * 2;
-            self.current = self.current + 1;
-            return Option::Some(i32)(val);
-        }
-        return Option::None(i32)();
+  fn next(self: MyListIter) -> Option<i32> {
+    if self.current < self.len {
+      let val: i32 = self.current * 2;
+      self.current = self.current + 1;
+      return Option::Some(i32)(val);
     }
+    return Option::None(i32)();
+  }
 }
 
 fn main() -> i32 {
-    let list: MyList = MyList { len: 5 };
-    for item in list.iter() {
-        unsafe {
-            printf("Custom Struct Item: %d\n", item);
-        }
+  let list: MyList = MyList { len: 5 };
+  for item in list.iter() {
+    unsafe {
+      printf("Custom Struct Item: %d
+", item);
     }
-    return 0;
+  }
+  return 0;
 }

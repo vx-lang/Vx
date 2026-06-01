@@ -1,16 +1,17 @@
 extern {
-    fn printf(format: *const i8, val: i32) -> i32;
-    fn vx_safe_printf(val: *mut i8) -> i32;
+  fn printf(format: *const i8, val: i32) -> i32;
+  fn vx_safe_printf(val: *mut i8) -> i32;
 }
 
 fn main() -> i32 {
-    let strs = ["red", "green", "blue"];
+  let strs = ["red", "green", "blue"];
 
-    for sptr in strs.iter() {
-        unsafe {
-            vx_safe_printf(sptr);
-            printf("\n", 0);
-        }
+  for sptr in strs.iter() {
+    unsafe {
+      vx_safe_printf(sptr);
+      printf("
+", 0);
     }
-    return 0;
+  }
+  return 0;
 }

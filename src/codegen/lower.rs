@@ -1747,11 +1747,7 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
 
 impl<'c> LowerToMelior<'c> for ArrayExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
-    fn lower(
-        &self,
-        gen: &mut MeliorGenerator<'c>,
-        block: &melior::ir::Block<'c>,
-    ) -> Self::Output {
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let ArrayExpr { elements, span: _ } = self;
         if elements.is_empty() {
             panic!("Empty arrays not supported yet");
@@ -1767,9 +1763,10 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         }
         let el_ty = el_ty.unwrap();
         let num_elements = elements.len();
-        
-        let tensor_ty = Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty)).unwrap();
-        
+
+        let tensor_ty =
+            Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty)).unwrap();
+
         let op = melior::ir::operation::OperationBuilder::new(
             "tensor.from_elements",
             Location::unknown(gen.context),
@@ -1778,7 +1775,7 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         .add_results(&[tensor_ty])
         .build()
         .unwrap();
-        
+
         let val = block.append_operation(op).result(0).unwrap().into();
         (val, tensor_ty)
     }
@@ -2408,9 +2405,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             span: _,
         } = self;
 
-        if let Expr::Range(crate::ast::expr::RangeExpr { start, end, span: _ }) = &**iterable {
-            let (start_val, start_ty) = gen.generate_expr(&start, block);
-            let (end_val, end_ty) = gen.generate_expr(&end, block);
+        if let Expr::Range(crate::ast::expr::RangeExpr {
+            start,
+            end,
+            span: _,
+        }) = &**iterable
+        {
+            let (start_val, start_ty) = gen.generate_expr(start, block);
+            let (end_val, end_ty) = gen.generate_expr(end, block);
 
             let ty_index = Type::parse(gen.context, "index").unwrap();
 
@@ -2505,77 +2507,120 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         if iter_ty_str.starts_with("tensor<") {
             let ty_index = Type::parse(gen.context, "index").unwrap();
-            let start_idx = block.append_operation(
-                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
-                .add_results(&[ty_index])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty_index, 0).into(),
-                )])
-                .build().unwrap()
-            ).result(0).unwrap().into();
+            let start_idx = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty_index])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(ty_index, 0).into(),
+                    )])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)
+                .unwrap()
+                .into();
 
-            let len_str = iter_ty_str.split('x').next().unwrap().split('<').nth(1).unwrap();
+            let len_str = iter_ty_str
+                .split('x')
+                .next()
+                .unwrap()
+                .split('<')
+                .nth(1)
+                .unwrap();
             let len: i64 = len_str.parse().unwrap();
-            
-            let end_idx = block.append_operation(
-                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
-                .add_results(&[ty_index])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty_index, len).into(),
-                )])
-                .build().unwrap()
-            ).result(0).unwrap().into();
-            
-            let step_idx = block.append_operation(
-                melior::ir::operation::OperationBuilder::new("arith.constant", Location::unknown(gen.context))
-                .add_results(&[ty_index])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
-                )])
-                .build().unwrap()
-            ).result(0).unwrap().into();
-            
+
+            let end_idx = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty_index])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(ty_index, len).into(),
+                    )])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)
+                .unwrap()
+                .into();
+
+            let step_idx = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty_index])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
+                    )])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)
+                .unwrap()
+                .into();
+
             let for_region = Region::new();
             let for_block = Block::new(&[(ty_index, Location::unknown(gen.context))]);
             let i_arg = for_block.argument(0).unwrap().into();
-            
+
             let el_ty_str = iter_ty_str.split('x').nth(1).unwrap().trim_end_matches('>');
             let el_ty = Type::parse(gen.context, el_ty_str).unwrap();
-            
+
             let extract_op = melior::ir::operation::OperationBuilder::new(
                 "tensor.extract",
-                Location::unknown(gen.context)
+                Location::unknown(gen.context),
             )
             .add_operands(&[iter_val, i_arg])
             .add_results(&[el_ty])
-            .build().unwrap();
-            
-            let el_val = for_block.append_operation(extract_op).result(0).unwrap().into();
-            
+            .build()
+            .unwrap();
+
+            let el_val = for_block
+                .append_operation(extract_op)
+                .result(0)
+                .unwrap()
+                .into();
+
             gen.env.insert(iter.clone(), (el_val, el_ty));
-            
+
             for stmt in body {
                 gen.generate_statement(stmt, &for_block);
             }
-            
+
             for_block.append_operation(
-                melior::ir::operation::OperationBuilder::new("scf.yield", Location::unknown(gen.context))
-                .build().unwrap()
+                melior::ir::operation::OperationBuilder::new(
+                    "scf.yield",
+                    Location::unknown(gen.context),
+                )
+                .build()
+                .unwrap(),
             );
             for_region.append_block(for_block);
-            
+
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new("scf.for", Location::unknown(gen.context))
+                melior::ir::operation::OperationBuilder::new(
+                    "scf.for",
+                    Location::unknown(gen.context),
+                )
                 .add_operands(&[start_idx, end_idx, step_idx])
                 .add_regions([for_region])
-                .build().unwrap()
+                .build()
+                .unwrap(),
             );
             return;
         }
-        
+
         let before_region = Region::new();
         let before_block = Block::new(&[(iter_ty, Location::unknown(gen.context))]);
         let iter_arg = before_block.argument(0).unwrap().into();
@@ -2585,11 +2630,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         gen.env.insert(iter_name.clone(), (iter_arg, iter_ty));
 
         // Call `next`
-        use crate::ast::expr::{FunctionCallExpr, IdentifierExpr, Expr};
+        use crate::ast::expr::{Expr, FunctionCallExpr, IdentifierExpr};
         use crate::ast::Span;
         let next_call = Expr::FunctionCall(FunctionCallExpr {
             name: "next".to_string(),
-            args: vec![Expr::Identifier(IdentifierExpr { name: iter_name.clone(), span: Span::default() })],
+            args: vec![Expr::Identifier(IdentifierExpr {
+                name: iter_name.clone(),
+                span: Span::default(),
+            })],
             span: Span::default(),
         });
 
@@ -2608,7 +2656,11 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         )])
         .build()
         .unwrap();
-        let tag_val = before_block.append_operation(extract_tag_op).result(0).unwrap().into();
+        let tag_val = before_block
+            .append_operation(extract_tag_op)
+            .result(0)
+            .unwrap()
+            .into();
 
         let c1_op = before_block.append_operation(
             melior::ir::operation::OperationBuilder::new(
@@ -2637,7 +2689,8 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 melior::ir::attribute::IntegerAttribute::new(
                     Type::parse(gen.context, "i64").unwrap(),
                     0, // eq
-                ).into(),
+                )
+                .into(),
             )])
             .build()
             .unwrap(),
@@ -2685,14 +2738,18 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         )])
         .build()
         .unwrap();
-        let payload_val = after_block.append_operation(extract_payload_op).result(0).unwrap().into();
+        let payload_val = after_block
+            .append_operation(extract_payload_op)
+            .result(0)
+            .unwrap()
+            .into();
 
         gen.env.insert(iter.clone(), (payload_val, payload_ty));
 
         // execute body
         gen.break_flags.push(cond_val); // dummy value just to enable breaks?
-        // Wait, break guard logic requires `generate_statements_with_break_guard`? 
-        // For simplicity, just generate body:
+                                        // Wait, break guard logic requires `generate_statements_with_break_guard`?
+                                        // For simplicity, just generate body:
         for stmt in body {
             gen.generate_statement(stmt, &after_block);
         }
@@ -2721,7 +2778,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             .unwrap(),
         );
     }
-    }
+}
 
 fn emit_enzyme_decl<'c>(
     gen: &mut MeliorGenerator<'c>,
@@ -3583,7 +3640,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         let mut tag_val = 0;
         let mut enum_ty_str = "i32".to_string();
         let mut has_payload = false;
-        
+
         if let Some(enum_def) = gen.enums.get(enum_name) {
             for (i, v) in enum_def.iter().enumerate() {
                 if v.0 == *variant_name {
@@ -3638,11 +3695,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         )])
         .build()
         .unwrap();
-        let mut struct_val = block.append_operation(insert_tag_op).result(0).unwrap().into();
+        let mut struct_val = block
+            .append_operation(insert_tag_op)
+            .result(0)
+            .unwrap()
+            .into();
 
         if let Some(payload_exprs) = payload {
             if !payload_exprs.is_empty() {
-                let (payload_val, payload_ty) = gen.generate_expr(&payload_exprs[0], block);
+                let (payload_val, _payload_ty) = gen.generate_expr(&payload_exprs[0], block);
                 let insert_payload_op = melior::ir::operation::OperationBuilder::new(
                     "llvm.insertvalue",
                     Location::unknown(gen.context),
@@ -3655,7 +3716,11 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 )])
                 .build()
                 .unwrap();
-                struct_val = block.append_operation(insert_payload_op).result(0).unwrap().into();
+                struct_val = block
+                    .append_operation(insert_payload_op)
+                    .result(0)
+                    .unwrap()
+                    .into();
             }
         }
 
