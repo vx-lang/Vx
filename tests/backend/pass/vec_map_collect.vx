@@ -8,11 +8,13 @@ fn main() -> i32 {
     
     // We might need to specify type params for map if type inference doesn't figure it out
     let mut iter = list_of_numbers.iter();
-    let mut mapped = iter.map(f);
-    let mut list_of_strings: Vec<String> = mapped.collect();
+    let mut mapped1 = iter.map(f);
+    let mut list_of_strings1: Vec<String> = mapped1.collect();
+    let mut mapped2 = iter.map(|i: i32| i.to_string());
+    let mut list_of_strings2: Vec<String> = mapped2.collect();
     
     let mut exit_code = 1;
-    if list_of_strings.len() == 3 {
+    if list_of_strings1.len() == 3 && list_of_strings2.len() == 3 {
         exit_code = 0;
     }
     return exit_code;

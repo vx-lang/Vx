@@ -7,3 +7,8 @@ scratch/
 *.so
 *.o
 *.log
+
+*.ll
+*.mlir
+test_log.txt
+ast.txt
