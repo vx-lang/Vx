@@ -7,6 +7,10 @@ fn apply_lambda<F>(f: F, val: i32) -> i32 {
   return f(val);
 }
 
+struct Captures {
+  i: i32,
+}
+
 fn main() -> i32 {
   // closure_basic
   let x1 = 40;
@@ -48,10 +52,13 @@ fn main() -> i32 {
   assert(get_base() == 42);
 
   // closure_passed
-  let cp_base = 10;
-  let cp_lambda = |x: i32| x + cp_base;
-  assert(apply_lambda(cp_lambda, 32) == 42);
+  let i = 10;
+  let cap = Captures { i: 10 };
+  let cp_lambda = |x: i32| x + cap.i + i;
+  // x(32) + cap.i(10) + i(10) = 52
+  assert(apply_lambda(cp_lambda, 32) == 52);
 
+  assert(cap.i == 10);
   unsafe {
     vx_printf_i32("%d
 ", 1);
