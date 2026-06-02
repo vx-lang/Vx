@@ -1,0 +1,38 @@
+// RUN: not vxc %s | FileCheck %s
+
+struct Captures {
+  i: i32,
+}
+
+fn apply_lambda_ok<F>(f: F, val: i32) -> i32 {
+  return f(val);
+}
+
+fn apply_lambda_bad_args<F>(f: F) -> i32 {
+  return f(10, 20);
+}
+
+fn main() -> i32 {
+  // Test 1: Move closures
+  let i = 10;
+  let cap = Captures { i: 10 };
+  let cp_lambda = |x: i32| x + cap.i + i;
+  assert(apply_lambda_ok(cp_lambda, 32) == 52);
+
+  // cap has been moved into the closure, so this should fail
+  assert(cap.i == 10);
+
+  // Test 2: Argument Mismatch
+  let my_closure_args = |x: i32| x + 1;
+  apply_lambda_bad_args(my_closure_args);
+
+  // Test 3: Type Mismatch
+  let my_closure_type: i32 = |x: i32| 1.0;
+
+  return 0;
+}
+
+// CHECK-DAG: Use of moved or consumed linear variable: cap
+// CHECK-DAG: Member access on non-struct type
+// CHECK-DAG: Closure 'f' expects 1 arguments, got 2
+// CHECK-DAG: Type mismatch in variable declaration 'my_closure_type'
