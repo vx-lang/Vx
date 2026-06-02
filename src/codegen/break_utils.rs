@@ -13,6 +13,7 @@ pub fn contains_break(stmt: &Statement) -> bool {
         Statement::Assert(s) => expr_contains_break(&s.expr),
         Statement::Loop(_) => false, // inner loop handles its own breaks
         Statement::ForLoop(_) => false, // inner loop
+        Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
     }
 }
 

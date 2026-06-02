@@ -41,6 +41,18 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    if let Err(e) = expander.expand_module(&mut program) {
+        if !expect_pass {
+            return;
+        }
+        panic!("Macro expansion failed on {:?}: {}", path, e);
+    }
+
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -91,6 +103,15 @@ fn run_middle_end_test(path: &Path) {
         .position(|p| p.module_path == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
+
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    if let Err(e) = expander.expand_module(&mut program) {
+        panic!("Macro expansion failed on {:?}: {}", path, e);
+    }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -169,6 +190,15 @@ fn run_backend_test(path: &Path) {
         .position(|p| p.module_path == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
+
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    if let Err(e) = expander.expand_module(&mut program) {
+        panic!("Macro expansion failed on {:?}: {}", path, e);
+    }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -603,6 +633,15 @@ fn run_backend_autodiff_test(path: &Path) {
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    if let Err(e) = expander.expand_module(&mut program) {
+        panic!("Macro expansion failed on {:?}: {}", path, e);
+    }
+
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
@@ -724,7 +763,16 @@ fn test_melior_matmul() {
         .iter()
         .position(|p| p.module_path == path.to_str().unwrap())
         .unwrap();
-    let program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(ast_idx);
+
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    if let Err(e) = expander.expand_module(&mut program) {
+        panic!("Macro expansion failed on {:?}: {}", path, e);
+    }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();

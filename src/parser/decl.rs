@@ -376,6 +376,63 @@ impl<'a> Parser<'a> {
         Ok(ImportDecl { path })
     }
 
+    pub(crate) fn parse_macro_def(&mut self) -> Result<MacroDefDecl, String> {
+        let span_start = self.peek().clone();
+        self.consume(&TokenType::MacroRules, "Expected 'macro_rules!'")?;
+
+        let name = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s,
+            _ => return Err("Expected macro name".to_string()),
+        };
+
+        self.consume(&TokenType::LeftBrace, "Expected '{' for macro rules body")?;
+
+        let mut rules = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // Matcher: ( ... )
+            self.consume(&TokenType::LeftParen, "Expected '(' for macro matcher")?;
+            let mut matcher = Vec::new();
+            while !self.check(&TokenType::RightParen) && !self.check(&TokenType::Eof) {
+                matcher.push(self.parse_token_tree()?);
+            }
+            self.consume(&TokenType::RightParen, "Expected ')' for macro matcher")?;
+
+            self.consume(&TokenType::FatArrow, "Expected '=>' after macro matcher")?;
+
+            // Transcriber: { ... }
+            self.consume(&TokenType::LeftBrace, "Expected '{' for macro transcriber")?;
+            let mut transcriber = Vec::new();
+            while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+                transcriber.push(self.parse_token_tree()?);
+            }
+            self.consume(&TokenType::RightBrace, "Expected '}' for macro transcriber")?;
+
+            // Optional semicolon after a rule
+            if self.check(&TokenType::Semicolon) {
+                self.advance();
+            }
+
+            rules.push(MacroRule {
+                matcher,
+                transcriber,
+            });
+        }
+        self.consume(
+            &TokenType::RightBrace,
+            "Expected '}' after macro rules body",
+        )?;
+
+        Ok(MacroDefDecl {
+            name,
+            rules,
+            span: Span {
+                line: span_start.line,
+                column: span_start.column,
+                length: 0,
+            },
+        })
+    }
+
     pub fn parse(&mut self) -> Result<Program, String> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
@@ -384,9 +441,12 @@ impl<'a> Parser<'a> {
         let mut traits = Vec::new();
         let mut impls = Vec::new();
         let mut functions = Vec::new();
+        let mut macros = Vec::new();
         while !self.check(&TokenType::Eof) {
             if self.check(&TokenType::Import) {
                 imports.push(self.parse_import_decl()?);
+            } else if self.check(&TokenType::MacroRules) {
+                macros.push(self.parse_macro_def()?);
             } else if self.check(&TokenType::Extern) {
                 externs.extend(self.parse_extern_block()?);
             } else if self.check(&TokenType::Trait) {
@@ -409,6 +469,7 @@ impl<'a> Parser<'a> {
         Ok(Program {
             module_path: self.source.to_string(), // Default fallback, should be overridden by pipeline
             imports,
+            macros,
             externs,
             structs,
             enums,

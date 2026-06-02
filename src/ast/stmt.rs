@@ -152,6 +152,22 @@ impl ContinueStmt {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct MacroCallStmt {
+    pub name: String,
+    pub token_tree: TokenTree,
+    pub span: Span,
+}
+impl MacroCallStmt {
+    pub fn new(name: String, token_tree: TokenTree, span: Span) -> Self {
+        Self {
+            name,
+            token_tree,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     LetDecl(LetDeclStmt),
     Return(ReturnStmt),
@@ -163,6 +179,7 @@ pub enum Statement {
     Loop(LoopStmt),
     Break(BreakStmt),
     Continue(ContinueStmt),
+    MacroCall(MacroCallStmt),
 }
 
 impl Statement {
@@ -212,6 +229,11 @@ impl Statement {
             }),
             Statement::Break(e) => Statement::Break(e.clone()),
             Statement::Continue(e) => Statement::Continue(e.clone()),
+            Statement::MacroCall(e) => Statement::MacroCall(MacroCallStmt {
+                name: e.name.clone(),
+                token_tree: e.token_tree.clone(),
+                span: e.span.clone(),
+            }),
         }
     }
 }

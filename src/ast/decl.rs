@@ -55,9 +55,23 @@ pub struct ImportDecl {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct MacroDefDecl {
+    pub name: String,
+    pub rules: Vec<MacroRule>,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct MacroRule {
+    pub matcher: Vec<TokenTree>,
+    pub transcriber: Vec<TokenTree>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Program {
     pub module_path: String,
     pub imports: Vec<ImportDecl>,
+    pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,

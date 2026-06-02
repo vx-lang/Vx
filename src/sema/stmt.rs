@@ -239,6 +239,7 @@ impl<'a> TypeChecker<'a> {
                     self.constraints.push(*expr.clone());
                 }
             }
+            Statement::MacroCall(_) => panic!("Macros should be expanded before type checking"),
         }
     }
 

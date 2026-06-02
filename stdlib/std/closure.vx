@@ -1,0 +1,26 @@
+//===- closure.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+
+struct Closure0<Ret> {
+    env: *mut i8,
+    func: fn(*mut i8) -> Ret,
+}
+
+struct Closure1<Arg, Ret> {
+    env: *mut i8,
+    func: fn(*mut i8, Arg) -> Ret,
+}
+
+struct Closure2<Arg1, Arg2, Ret> {
+    env: *mut i8,
+    func: fn(*mut i8, Arg1, Arg2) -> Ret,
+}
+
+struct Closure3<Arg1, Arg2, Arg3, Ret> {
+    env: *mut i8,
+    func: fn(*mut i8, Arg1, Arg2, Arg3) -> Ret,
+}

@@ -133,6 +133,11 @@ pub struct TypeChecker<'a> {
     pub(crate) moved_vars: Vec<std::collections::HashSet<String>>,
     pub eval_env: Vec<HashMap<String, Value>>,
     pub current_return_type: Option<Type>,
+    #[allow(dead_code)]
+    pub(crate) closure_depths: Vec<usize>,
+    #[allow(dead_code)]
+    pub(crate) closure_captures_stack: Vec<HashMap<String, Type>>,
+    pub generated_structs: Vec<crate::ast::StructDecl>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -157,6 +162,9 @@ impl<'a> TypeChecker<'a> {
             moved_vars: vec![std::collections::HashSet::new()],
             eval_env: vec![HashMap::new()],
             current_return_type: None,
+            closure_depths: Vec::new(),
+            closure_captures_stack: Vec::new(),
+            generated_structs: Vec::new(),
         }
     }
 
@@ -233,10 +241,16 @@ impl<'a> TypeChecker<'a> {
     pub fn lookup(&self, name: &str) -> Option<&(Type, Topology)> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
-                if name == "iter" {
-                    println!("lookup('{}') = {:?}", name, ty);
-                }
                 return Some(ty);
+            }
+        }
+        None
+    }
+
+    pub fn lookup_with_depth(&self, name: &str) -> Option<(&Type, &Topology, usize)> {
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            if let Some((ty, top)) = scope.get(name) {
+                return Some((ty, top, i));
             }
         }
         None

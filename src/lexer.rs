@@ -45,6 +45,7 @@ pub enum TokenType {
     Grad,
     Vjp,
     Jvp,
+    MacroRules,
 
     // Types & Topology
     Topology,
@@ -84,6 +85,7 @@ pub enum TokenType {
     DoubleDot,
     Ampersand,
     At,
+    Dollar,
 
     // Logical & Relational
     EqEq,
@@ -143,6 +145,8 @@ impl std::fmt::Display for TokenType {
             TokenType::Pinned => write!(f, "Pinned"),
             TokenType::HardwareState => write!(f, "HardwareState"),
 
+            TokenType::MacroRules => write!(f, "macro_rules"),
+
             TokenType::Identifier(s) => write!(f, "{}", s),
             TokenType::Number(s) => write!(f, "{}", s),
             TokenType::StringLiteral(s) => write!(f, "\"{}\"", s),
@@ -171,6 +175,7 @@ impl std::fmt::Display for TokenType {
             TokenType::DoubleDot => write!(f, ".."),
             TokenType::Ampersand => write!(f, "&"),
             TokenType::At => write!(f, "@"),
+            TokenType::Dollar => write!(f, "$"),
 
             TokenType::EqEq => write!(f, "=="),
             TokenType::NotEq => write!(f, "!="),
@@ -189,7 +194,7 @@ impl std::fmt::Display for TokenType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenType,
     pub line: usize,
@@ -311,6 +316,14 @@ impl<'a> Lexer<'a> {
             "grad" => TokenType::Grad,
             "vjp" => TokenType::Vjp,
             "jvp" => TokenType::Jvp,
+            "macro_rules" => {
+                if self.peek() == Some(&'!') {
+                    self.advance(); // consume '!'
+                    TokenType::MacroRules
+                } else {
+                    TokenType::Identifier(text.clone())
+                }
+            }
             _ => TokenType::Identifier(text.clone()),
         };
 
@@ -483,6 +496,7 @@ impl<'a> Lexer<'a> {
             }
             '*' => TokenType::Star,
             '@' => TokenType::At,
+            '$' => TokenType::Dollar,
             '/' => TokenType::Slash,
             '=' => {
                 if self.peek() == Some(&'=') {

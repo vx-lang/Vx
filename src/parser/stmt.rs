@@ -144,6 +144,63 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 }))
             }
+            TokenType::Identifier(ref s) => {
+                if self.peek_n(1).kind == TokenType::Bang {
+                    let name = s.clone();
+                    self.advance(); // consume identifier
+                    self.advance(); // consume '!'
+                    let token_tree = self.parse_token_tree()?;
+                    self.match_token(&TokenType::Semicolon); // optional semicolon for statement macros
+                    return Ok(Statement::MacroCall(MacroCallStmt {
+                        name,
+                        token_tree,
+                        span: Span::default(),
+                    }));
+                }
+                // fallback to expression parsing
+                let expr = self.parse_expr()?;
+                if self.match_token(&TokenType::Equals) {
+                    let rhs = self.parse_expr()?;
+                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    Ok(Statement::Assign(AssignStmt {
+                        lhs: expr,
+                        rhs,
+                        span: Span::default(),
+                    }))
+                } else if self.match_token(&TokenType::PlusEquals) {
+                    let rhs = self.parse_expr()?;
+                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    Ok(Statement::CompoundAssign(CompoundAssignStmt {
+                        lhs: expr,
+                        op: BinaryOp::Add,
+                        rhs,
+                        span: Span::default(),
+                    }))
+                } else {
+                    let mut has_semicolon = true;
+                    match &expr {
+                        Expr::UnsafeBlock(UnsafeBlockExpr { .. })
+                        | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
+                        | Expr::SpawnOn(crate::ast::SpawnOnExpr { .. })
+                        | Expr::If(IfExpr { .. })
+                        | Expr::Match(MatchExpr { .. }) => {
+                            has_semicolon = self.match_token(&TokenType::Semicolon);
+                        }
+                        _ => {
+                            if self.check(&TokenType::RightBrace) {
+                                has_semicolon = false; // Optional at end of block
+                            } else {
+                                self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                            }
+                        }
+                    }
+                    Ok(Statement::ExprStmt(ExprStmtStmt {
+                        expr,
+                        has_semi: has_semicolon,
+                        span: Span::default(),
+                    }))
+                }
+            }
             _ => {
                 let expr = self.parse_expr()?;
                 if self.match_token(&TokenType::Equals) {

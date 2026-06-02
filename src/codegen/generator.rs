@@ -520,6 +520,7 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Loop(s) => s.lower(self, block),
             Statement::Break(s) => s.lower(self, block),
             Statement::Continue(s) => s.lower(self, block),
+            Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
         }
     }
 

@@ -101,4 +101,46 @@ impl<'a> Parser<'a> {
             ))
         }
     }
+
+    pub(crate) fn parse_token_tree(&mut self) -> Result<TokenTree, String> {
+        let peek = self.peek();
+        match &peek.kind {
+            TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
+                let delim_kind = peek.kind.clone();
+                let delim = match delim_kind {
+                    TokenType::LeftParen => Delimiter::Parenthesis,
+                    TokenType::LeftBrace => Delimiter::Brace,
+                    TokenType::LeftBracket => Delimiter::Bracket,
+                    _ => unreachable!(),
+                };
+                let closing_delim = match delim_kind {
+                    TokenType::LeftParen => TokenType::RightParen,
+                    TokenType::LeftBrace => TokenType::RightBrace,
+                    TokenType::LeftBracket => TokenType::RightBracket,
+                    _ => unreachable!(),
+                };
+                self.advance(); // consume opening delimiter
+                let mut inner = Vec::new();
+                while !self.check(&closing_delim) && !self.check(&TokenType::Eof) {
+                    inner.push(self.parse_token_tree()?);
+                }
+                self.consume(&closing_delim, "Expected closing delimiter")?;
+                Ok(TokenTree::Delimited(delim, inner))
+            }
+            TokenType::Eof => {
+                let token = self.peek();
+                Err(crate::error::format_compiler_error(
+                    self.source,
+                    token.line,
+                    token.column,
+                    token.length.max(1),
+                    "Unexpected EOF while parsing token tree",
+                ))
+            }
+            _ => {
+                let token = self.advance().clone();
+                Ok(TokenTree::Token(token))
+            }
+        }
+    }
 }

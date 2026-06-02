@@ -722,20 +722,11 @@ impl<'a> Parser<'a> {
                         expr
                     }
                     TokenType::Identifier(s) => {
-                        if s == "vec" && self.match_token(&TokenType::Bang) {
-                            self.consume(&TokenType::LeftBracket, "Expected '[' for vec!")?;
-                            let mut elements = Vec::new();
-                            if !self.check(&TokenType::RightBracket) {
-                                loop {
-                                    elements.push(self.parse_expr()?);
-                                    if !self.match_token(&TokenType::Comma) {
-                                        break;
-                                    }
-                                }
-                            }
-                            self.consume(&TokenType::RightBracket, "Expected ']' for vec!")?;
-                            Expr::VecMacro(VecMacroExpr {
-                                elements,
+                        if self.match_token(&TokenType::Bang) {
+                            let token_tree = self.parse_token_tree()?;
+                            Expr::MacroCall(MacroCallExpr {
+                                name: s,
+                                token_tree,
                                 span: Span::default(),
                             })
                         } else {

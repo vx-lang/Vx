@@ -486,6 +486,22 @@ impl ClosureExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct MacroCallExpr {
+    pub name: String,
+    pub token_tree: TokenTree,
+    pub span: Span,
+}
+impl MacroCallExpr {
+    pub fn new(name: String, token_tree: TokenTree, span: Span) -> Self {
+        Self {
+            name,
+            token_tree,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(IdentifierExpr),
     EnumVariant(EnumVariantExpr),
@@ -517,6 +533,7 @@ pub enum Expr {
     SpawnOn(SpawnOnExpr),
     VecMacro(VecMacroExpr),
     Closure(ClosureExpr),
+    MacroCall(MacroCallExpr),
 }
 
 impl Expr {
@@ -552,6 +569,7 @@ impl Expr {
             Expr::SpawnOn(e) => e.span.clone(),
             Expr::VecMacro(e) => e.span.clone(),
             Expr::Closure(e) => e.span.clone(),
+            Expr::MacroCall(e) => e.span.clone(),
         }
     }
 
@@ -802,6 +820,11 @@ impl Expr {
                     .map(|(n, t)| (n.clone(), t.substitute(mapping)))
                     .collect(),
                 body: Box::new(e.body.substitute(mapping)),
+                span: e.span.clone(),
+            }),
+            Expr::MacroCall(e) => Expr::MacroCall(MacroCallExpr {
+                name: e.name.clone(),
+                token_tree: e.token_tree.clone(),
                 span: e.span.clone(),
             }),
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {

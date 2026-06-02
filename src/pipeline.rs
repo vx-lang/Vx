@@ -44,6 +44,18 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         &parsed_modules,
     );
 
+    // Phase 1.1: Sequential Macro Collection & Expansion
+    let mut global_macros = std::collections::HashMap::new();
+    for m in &parsed_modules {
+        for mac in &m.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
+    let mut expander = crate::ast::MacroExpander::new(&global_macros);
+    for m in &mut parsed_modules {
+        expander.expand_module(m)?;
+    }
+
     // Phase 1.5: Parallel Name Resolution
     // Resolve String lookups into 256-bit TypeIds
 

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+import std::closure;
 import std::iter;
 
 extern "C" {
@@ -79,14 +80,14 @@ impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
 }
 
 impl<T> VecIter<T> {
-  fn map<NewItem>(self: VecIter<T>, f: fn(T) -> NewItem) -> VecMap<T, NewItem> {
+  fn map<NewItem>(self: VecIter<T>, f: Closure1<T, NewItem>) -> VecMap<T, NewItem> {
     return VecMap<T, NewItem> { iter: self, f: f };
   }
 }
 
 struct VecMap<T, NewItem> {
   iter: VecIter<T>,
-  f: fn(T) -> NewItem,
+  f: Closure1<T, NewItem>,
 }
 
 impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
@@ -97,7 +98,8 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
       if opt.is_none() { break; }
       let item = opt.unwrap();
       let f_closure = self.f;
-      let new_item = f_closure(item);
+      let f_ptr = f_closure.func;
+      let new_item = f_ptr(f_closure.env, item);
       ret = Option<NewItem>::Some(new_item);
       break;
     }

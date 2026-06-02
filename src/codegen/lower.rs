@@ -1429,7 +1429,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
 
         let is_ptr = base_ty_str.starts_with("!llvm.ptr");
 
-        if let Some(resolved_struct_name) = struct_name_opt {
+        if let Some(ref resolved_struct_name) = struct_name_opt {
             let base_name = resolved_struct_name
                 .split('<')
                 .next()
@@ -1544,6 +1544,18 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                 }
             }
         }
+        println!(
+            "DEBUG PANIC: member={}, struct_name_opt={:?}, base_ty_str={}, base_val={:?}",
+            member, struct_name_opt, base_ty_str, base_val
+        );
+        if let Some(name) = &struct_name_opt {
+            let base_name = name.split('<').next().unwrap_or(name);
+            println!(
+                "DEBUG PANIC: gen.structs.get({:?}) = {:?}",
+                base_name,
+                gen.structs.get(base_name)
+            );
+        }
         panic!("Cannot resolve member access {}", member);
     }
 }
@@ -1565,8 +1577,25 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 "i8" | "u8" => 1,
                 "i16" | "u16" => 2,
                 _ => {
-                    // Default to 8 for pointers/structs for now until DataLayout is supported
-                    if ty_str.starts_with("*") {
+                    if let Some(struct_decl) = gen.structs.get(ty_str) {
+                        let mut size = 0;
+                        for (_, field_ty) in &struct_decl.fields {
+                            size += match field_ty {
+                                crate::ast::Type::Scalar(crate::ast::ElementType::F32)
+                                | crate::ast::Type::Scalar(crate::ast::ElementType::I32) => 4,
+                                crate::ast::Type::Scalar(crate::ast::ElementType::F64)
+                                | crate::ast::Type::Scalar(crate::ast::ElementType::I64) => 8,
+                                crate::ast::Type::Scalar(crate::ast::ElementType::I8)
+                                | crate::ast::Type::Scalar(crate::ast::ElementType::Bool) => 1,
+                                _ => 8, // pointers, nested structs, etc default to 8
+                            };
+                        }
+                        if size == 0 {
+                            8
+                        } else {
+                            size
+                        }
+                    } else if ty_str.starts_with("*") {
                         8
                     } else {
                         8

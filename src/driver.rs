@@ -180,6 +180,19 @@ impl CompilerDriver {
             .load_main(&filename)
             .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
 
+        let mut global_macros = std::collections::HashMap::new();
+        for m in &program_arr {
+            for mac in &m.macros {
+                global_macros.insert(mac.name.clone(), mac.rules.clone());
+            }
+        }
+        let mut expander = crate::ast::MacroExpander::new(&global_macros);
+        for m in &mut program_arr {
+            if let Err(e) = expander.expand_module(m) {
+                return Err(format!("Macro expansion failed: {}", e));
+            }
+        }
+
         if self.options.action == Action::ParseOnly {
             let ast = program_arr
                 .iter()
@@ -247,6 +260,7 @@ impl CompilerDriver {
             .collect();
         new_functions.extend(orig_functions);
         monomorphized_ast.functions = new_functions;
+        monomorphized_ast.structs.extend(checker.generated_structs);
 
         let mut module_asts = std::collections::HashMap::new();
         for mut p in program_arr {
