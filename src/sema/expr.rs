@@ -1932,6 +1932,10 @@ impl<'a> TypeChecker<'a> {
                     Box::new(ret_ty),
                 )
             }
+            Expr::MacroCall(m) => panic!(
+                "Macros should be expanded before type checking: macro `{}` at {:?}",
+                m.name, m.span
+            ),
         }
     }
 

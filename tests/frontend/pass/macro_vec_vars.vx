@@ -1,0 +1,8 @@
+import std::vec;
+import std::closure;
+fn main() -> i32 {
+    let x = 10;
+    let y = 20;
+    let mut v = vec![x, y, x + y];
+    return 0;
+}

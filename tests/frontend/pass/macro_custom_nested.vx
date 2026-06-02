@@ -1,0 +1,13 @@
+import std::vec;
+import std::closure;
+
+macro_rules! add_one {
+    ($x:expr) => { $x + 1 };
+}
+macro_rules! add_two {
+    ($x:expr) => { add_one!(add_one!($x)) };
+}
+fn main() -> i32 {
+    let a = add_two!(10);
+    return a;
+}

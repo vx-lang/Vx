@@ -1,0 +1,9 @@
+import std::vec;
+import std::closure;
+macro_rules! double {
+    ($x:expr) => { $x * 2 };
+}
+fn main() -> i32 {
+    let a = double!(10);
+    return a;
+}

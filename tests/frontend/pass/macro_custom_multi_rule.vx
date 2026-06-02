@@ -1,0 +1,10 @@
+import std::vec;
+import std::closure;
+
+macro_rules! do_thing {
+    ($x:expr) => { $x + 1 };
+}
+fn main() -> i32 {
+    let a = do_thing!(5);
+    return a;
+}

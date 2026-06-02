@@ -1,0 +1,6 @@
+import std::vec;
+import std::closure;
+fn main() -> i32 {
+    let mut v = vec![1.0, 2.5, 3.14];
+    return 0;
+}
