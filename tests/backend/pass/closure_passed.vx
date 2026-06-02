@@ -1,0 +1,21 @@
+// EXPECT: 42
+extern {
+  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn apply_lambda<F>(f: F, val: i32) -> i32 {
+  return f(val);
+}
+
+fn main() -> i32 {
+  let base = 10;
+  let my_lambda = |x: i32| x + base;
+  let res = apply_lambda(my_lambda, 32);
+
+  unsafe {
+    vx_printf_i32("%d
+", res);
+  }
+  assert(res == 42);
+  return res;
+}
