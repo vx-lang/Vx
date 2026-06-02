@@ -149,6 +149,7 @@ fn run_middle_end_test(path: &Path) {
     melior::utility::register_all_dialects(&registry);
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
+    melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
     let module_asts = std::collections::HashMap::new();
@@ -256,6 +257,7 @@ fn run_backend_test(path: &Path) {
     melior::utility::register_all_dialects(&registry);
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
+    melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
@@ -529,7 +531,13 @@ fn test_backend() {
         entries.into_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!("Running test_backend on {:?}", path);
+                let mut f = fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("test_backend_log.txt")
+                    .unwrap();
+                use std::io::Write;
+                writeln!(f, "Running test_backend on {:?}", path).unwrap();
                 run_backend_test(&path);
                 let source = std::fs::read_to_string(&path).unwrap_or_default();
                 if source.contains("// RUN: vxc %s --emit-mlir") {
@@ -681,6 +689,13 @@ fn run_backend_autodiff_test(path: &Path) {
     }
 
     let context = melior::Context::new();
+    let registry = melior::dialect::DialectRegistry::new();
+    melior::utility::register_all_dialects(&registry);
+    context.append_dialect_registry(&registry);
+    context.load_all_available_dialects();
+    melior::utility::register_all_llvm_translations(&context);
+    vxc::codegen::register_vx_dialect(&context);
+
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
     let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
 
@@ -800,6 +815,7 @@ fn test_melior_matmul() {
     let context = melior::Context::new();
     context.append_dialect_registry(&registry);
     context.load_all_available_dialects();
+    melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
     let mut gen = vxc::codegen::MeliorGenerator::new(&context);

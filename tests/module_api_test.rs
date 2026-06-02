@@ -40,6 +40,7 @@ fn test_ak_module_add_function() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        macros: vec![],
         functions: vec![],
     };
 

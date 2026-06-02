@@ -139,6 +139,10 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     || ty_str.starts_with("u")
                     || ty_str.starts_with("f")
                 {
+                    if gen.is_lvalue_context {
+                        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                        return (*val, ptr_ty);
+                    }
                     let elem_ty = *ty;
                     let load_op = melior::ir::operation::OperationBuilder::new(
                         "llvm.load",
@@ -227,7 +231,14 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                 }
             }
         }
+        let prev_lvalue = gen.is_lvalue_context;
+        gen.is_lvalue_context = true;
         let (val, ty) = gen.generate_expr(expr, block);
+        gen.is_lvalue_context = prev_lvalue;
+        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        if ty == ptr_ty {
+            return (val, ptr_ty);
+        }
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
         let c1_op = block.append_operation(
@@ -379,6 +390,10 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             Type::parse(gen.context, &inner_ty_str).unwrap()
         };
 
+        if gen.is_lvalue_context {
+            return (ptr_val, ptr_ty);
+        }
+
         let load_op = melior::ir::operation::OperationBuilder::new(
             "llvm.load",
             Location::unknown(gen.context),
@@ -446,6 +461,11 @@ impl<'c> LowerToMelior<'c> for crate::ast::IndexAccessExpr {
 
             let gep_ref = block.append_operation(gep_op);
             let ptr_val = gep_ref.result(0).unwrap().into();
+
+            if gen.is_lvalue_context {
+                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                return (ptr_val, ptr_ty);
+            }
 
             let load_op = melior::ir::operation::OperationBuilder::new(
                 "llvm.load",
@@ -1510,6 +1530,10 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                         let gep_ref = block.append_operation(gep_op);
                         let field_ptr = gep_ref.result(0).unwrap().into();
 
+                        if gen.is_lvalue_context {
+                            return (field_ptr, ptr_ty);
+                        }
+
                         let load_op = melior::ir::operation::OperationBuilder::new(
                             "llvm.load",
                             Location::unknown(gen.context),
@@ -1873,6 +1897,97 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return (
                 cast_val, // Dummy return value, caller ignores it
                 Type::parse(gen.context, "none").unwrap(),
+            );
+        }
+
+        if name == "vx_internal_printf" {
+            let mut arg_vals = Vec::new();
+            for arg in args {
+                let (arg_val, _arg_ty) = gen.generate_expr(arg, block);
+                arg_vals.push(arg_val);
+            }
+
+            let printf_func_ty = melior::ir::attribute::TypeAttribute::new(
+                Type::parse(gen.context, "!llvm.func<i32 (!llvm.ptr, ...)>").unwrap(),
+            );
+
+            if !gen.functions.contains_key("vx_internal_printf") {
+                let printf_decl = melior::ir::operation::OperationBuilder::new(
+                    "llvm.func",
+                    Location::unknown(gen.context),
+                )
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(gen.context, "sym_name"),
+                        melior::ir::attribute::StringAttribute::new(
+                            gen.context,
+                            "vx_internal_printf",
+                        )
+                        .into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "linkage_name"),
+                        melior::ir::attribute::StringAttribute::new(gen.context, "printf").into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "function_type"),
+                        printf_func_ty.into(),
+                    ),
+                ])
+                .add_regions([melior::ir::Region::new()])
+                .build()
+                .unwrap();
+
+                gen.module.body().append_operation(printf_decl);
+                gen.functions.insert(
+                    "vx_internal_printf".to_string(),
+                    (
+                        Type::parse(gen.context, "i32").unwrap(),
+                        vec![Type::parse(gen.context, "!llvm.ptr").unwrap()],
+                    ),
+                );
+            }
+
+            let call_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.call",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&arg_vals)
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(gen.context, "callee"),
+                        melior::ir::attribute::FlatSymbolRefAttribute::new(
+                            gen.context,
+                            "vx_internal_printf",
+                        )
+                        .into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "var_callee_type"),
+                        printf_func_ty.into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                        melior::ir::attribute::DenseI32ArrayAttribute::new(
+                            gen.context,
+                            &[arg_vals.len() as i32, 0],
+                        )
+                        .into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "op_bundle_sizes"),
+                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[]).into(),
+                    ),
+                ])
+                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                .build()
+                .unwrap(),
+            );
+
+            return (
+                call_op.result(0).unwrap().into(),
+                Type::parse(gen.context, "i32").unwrap(),
             );
         }
 

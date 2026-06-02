@@ -1,0 +1,5 @@
+fn main() -> i32 {
+  println!("Hello Vx!");
+  println!("Printing a number: %d", 42);
+  return 0;
+}

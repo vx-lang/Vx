@@ -1,8 +1,8 @@
 import std::vec;
 import std::closure;
-macro_rules! square {
-    ($x:expr) => { $x * $x };
+macro_rules square {
+  ($x:expr) => { $x * $x };
 }
 fn main() -> i32 {
-    return square!(5);
+  return square!(5);
 }

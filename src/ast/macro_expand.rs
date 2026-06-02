@@ -272,6 +272,9 @@ impl<'a> MacroExpander<'a> {
         if name == "vec" {
             return self.expand_vec_macro(tt);
         }
+        if name == "println" {
+            return self.expand_println_macro(tt);
+        }
 
         let rules = self
             .macros
@@ -491,6 +494,54 @@ impl<'a> MacroExpander<'a> {
 
         Ok(expr::Expr::VecMacro(expr::VecMacroExpr {
             elements: exprs,
+            span: crate::ast::Span::default(),
+        }))
+    }
+
+    fn expand_println_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
+        let elements = match tt {
+            TokenTree::Delimited(_, inner) => inner,
+            _ => return Err("Expected delimited token tree for println!".to_string()),
+        };
+
+        // Extract tokens
+        let mut tokens = Vec::new();
+        for t in elements {
+            tokens.extend(self.flatten_tt(t));
+        }
+
+        // Append EOF token
+        tokens.push(crate::lexer::Token {
+            kind: crate::lexer::TokenType::Eof,
+            line: 0,
+            column: 0,
+            length: 0,
+        });
+
+        let mut parser = crate::parser::Parser::new(tokens, "");
+        let mut exprs = Vec::new();
+        while !parser.check(&crate::lexer::TokenType::Eof) {
+            exprs.push(parser.parse_expr()?);
+            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                break;
+            }
+        }
+
+        if exprs.is_empty() {
+            return Err(
+                "println! macro requires at least one argument (the format string)".to_string(),
+            );
+        }
+
+        if let expr::Expr::StringLiteral(s) = &mut exprs[0] {
+            s.value = format!("{}\\n", s.value);
+        } else {
+            return Err("First argument to println! must be a string literal".to_string());
+        }
+
+        Ok(expr::Expr::FunctionCall(expr::FunctionCallExpr {
+            name: "vx_internal_printf".to_string(),
+            args: exprs,
             span: crate::ast::Span::default(),
         }))
     }

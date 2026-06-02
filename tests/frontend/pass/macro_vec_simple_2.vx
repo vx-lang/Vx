@@ -1,7 +1,7 @@
 import std::vec;
 import std::closure;
 fn main() -> i32 {
-    let mut v = vec![42];
-    v.push(24);
-    return v.len();
+  let mut v = vec![42];
+  v.push(24);
+  return v.len();
 }

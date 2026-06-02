@@ -28,6 +28,7 @@ fn test_local_name_resolution() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        macros: vec![],
         functions: vec![Function {
             name: "get_vector".to_string(),
             generics: vec![],
@@ -70,6 +71,7 @@ fn test_unresolved_symbol_remains_none() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        macros: vec![],
         functions: vec![Function {
             name: "get_vector".to_string(),
             generics: vec![],
@@ -105,6 +107,7 @@ fn test_nested_type_resolution() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        macros: vec![],
         functions: vec![Function {
             name: "compute".to_string(),
             generics: vec![],
@@ -153,6 +156,7 @@ fn test_expr_and_stmt_resolution() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        macros: vec![],
         functions: vec![Function {
             name: "setup".to_string(),
             generics: vec![],

@@ -18,6 +18,7 @@ pub struct MeliorGenerator<'c> {
     pub break_flags: Vec<melior::ir::Value<'c, 'c>>,
     pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
     pub allocs: std::collections::HashSet<String>,
+    pub is_lvalue_context: bool,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -200,6 +201,7 @@ impl<'c> MeliorGenerator<'c> {
             break_flags: Vec::new(),
             continue_flags: Vec::new(),
             allocs: std::collections::HashSet::new(),
+            is_lvalue_context: false,
         }
     }
 

@@ -1,10 +1,10 @@
 import std::vec;
 import std::closure;
 
-macro_rules! identity {
-    ($x:expr) => { $x };
+macro_rules identity {
+  ($x:expr) => { $x };
 }
 fn main() -> i32 {
-    let a = identity!(42);
-    return a;
+  let a = identity!(42);
+  return a;
 }

@@ -1,10 +1,10 @@
 import std::vec;
 import std::closure;
 
-macro_rules! get_val {
-    ($v:expr) => { $v + 10 };
+macro_rules get_val {
+  ($v:expr) => { $v + 10 };
 }
 fn main() -> i32 {
-    let mut v = vec![get_val!(5), get_val!(10)];
-    return 0;
+  let mut v = vec![get_val!(5), get_val!(10)];
+  return 0;
 }

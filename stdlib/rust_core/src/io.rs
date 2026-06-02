@@ -17,3 +17,9 @@ use crate::{instantiate_file_ffi, instantiate_stdio_ffi};
 
 instantiate_file_ffi!();
 instantiate_stdio_ffi!();
+
+#[no_mangle]
+pub extern "C" fn print_i32(v: i32) -> i32 {
+    println!("{}", v);
+    0
+}
