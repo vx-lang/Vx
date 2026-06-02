@@ -154,7 +154,12 @@ impl<'a> TypeChecker<'a> {
                     // we must capture it in all closures between the definition and usage.
                     for (i, closure_depth) in self.closure_depths.iter().enumerate() {
                         if depth < closure_depth {
-                            self.closure_captures_stack[i].insert(name.clone(), ty.clone());
+                            let capture_ty = if matches!(ty, Type::Struct(_, _)) {
+                                Type::Borrow(Box::new(ty.clone()), None, false, 0)
+                            } else {
+                                ty.clone()
+                            };
+                            self.closure_captures_stack[i].insert(name.clone(), capture_ty);
                         }
                     }
                 }

@@ -1,0 +1,12 @@
+fn apply_lambda<F>(f: F, val: i32) -> i32 {
+  return f(val);
+}
+
+fn main() -> i32 {
+  let x1 = 40;
+  let cp_lambda = |y: i32, z: i32| x1 + y + z;
+  // This should fail because apply_lambda only passes one argument,
+  // but cp_lambda expects two arguments!
+  let result = apply_lambda(cp_lambda, 10);
+  return result;
+}

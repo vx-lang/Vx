@@ -4714,12 +4714,31 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
         .unwrap();
         let mut env_struct_val = block.append_operation(undef_op).result(0).unwrap().into();
 
-        for (i, (name, _)) in self.captures.iter().enumerate() {
-            let (val, _) = gen
-                .env
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| panic!("Captured variable {} not found", name));
+        for (i, (name, capture_ty)) in self.captures.iter().enumerate() {
+            let is_borrow = matches!(
+                capture_ty,
+                crate::ast::Type::Borrow(_, _, _, _) | crate::ast::Type::Pointer(_, _, _)
+            );
+
+            let val = if is_borrow {
+                let borrow_expr = crate::ast::Expr::Borrow(crate::ast::BorrowExpr {
+                    expr: Box::new(crate::ast::Expr::Identifier(crate::ast::IdentifierExpr {
+                        name: name.clone(),
+                        span: crate::ast::Span::default(),
+                    })),
+                    is_mut: false,
+                    span: crate::ast::Span::default(),
+                });
+                let (borrow_val, _) = gen.generate_expr(&borrow_expr, block);
+                borrow_val
+            } else {
+                gen.env
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("Captured variable {} not found", name))
+                    .0
+            };
+
             let pos_attr =
                 melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[i as i64]);
             let insert_op = melior::ir::operation::OperationBuilder::new(

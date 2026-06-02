@@ -1,0 +1,16 @@
+struct Captures {
+  i: i32,
+}
+
+fn apply_raw_fn(f: fn(i32) -> i32, x: i32) -> i32 {
+  return f(x);
+}
+
+fn main() -> i32 {
+  let cap = Captures { i: 10 };
+  let cp_lambda = |x: i32| x + cap.i;
+  // This should fail type checking because closures with captures 
+  // cannot be coerced to raw function pointers.
+  let result = apply_raw_fn(cp_lambda, 10);
+  return result;
+}

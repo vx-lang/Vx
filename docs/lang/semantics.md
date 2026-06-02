@@ -89,3 +89,31 @@ Vx provides semantic primitives for program transformations related to calculus.
 
 **Operational Rule:**
 When $g = \\text{grad}(f)$ is evaluated, the compiler generates an adjoint computation graph for $f$, tracing linear data consumption (as verified by the borrow checker). Linear variables are consumed exactly once in the forward pass and uniquely referenced in the reverse pass.
+
+______________________________________________________________________
+
+## 6. Closure and Lambda Semantics
+
+Vx closures (lambdas) support capturing variables from their enclosing environment. The semantics of lambda capture are heavily influenced by the type being captured, enforcing memory safety and borrow-checking rules at compile time.
+
+### 6.1 Implicit Borrow for Struct Captures
+
+When a struct is captured within a lambda, Vx implicitly captures it by reference (`Type::Borrow`) rather than copying it by value.
+
+**Operational Rule:**
+
+1. Let $S$ be a variable of struct type residing in the outer scope.
+1. When evaluating a lambda `|args| -> ret { ... S ... }` that captures $S$, the semantic analyzer automatically coerces the capture type to a borrow reference.
+1. During code generation, a `BorrowExpr` is evaluated to retrieve the pointer to $S$, and this pointer is stored within the closure's internal environment structure.
+1. Any member access (`S.x`) within the closure automatically dereferences the pointer, maintaining syntactic transparency.
+
+### 6.2 By-Value Capture for Scalar Types
+
+Primitive and scalar types (e.g., integers, floats) are captured by value (copied) into the closure environment, since they are inherently `Copy`.
+
+### 6.3 Lifetime, Mutability, and Coercion Constraints
+
+Because structs are implicitly borrowed:
+
+- **Immutability:** Borrowed captures are immutable by default. Modifying them within the closure will trigger a mutability error.
+- **Function Pointer Coercion:** A closure that actively captures environment variables has an internal state. Thus, it cannot be coerced into a raw function pointer (`fn(...) -> ...`). Raw function pointers strictly represent stateless code, and any coercion attempt will result in a static type mismatch error.
