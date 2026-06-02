@@ -58,7 +58,7 @@ fn main() -> i32 {
   // x(32) + cap.i(10) + i(10) = 52
   assert(apply_lambda(cp_lambda, 32) == 52);
 
-  assert(cap.i == 10);
+
   unsafe {
     vx_printf_i32("%d
 ", 1);

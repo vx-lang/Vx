@@ -154,12 +154,7 @@ impl<'a> TypeChecker<'a> {
                     // we must capture it in all closures between the definition and usage.
                     for (i, closure_depth) in self.closure_depths.iter().enumerate() {
                         if depth < closure_depth {
-                            let capture_ty = if matches!(ty, Type::Struct(_, _)) {
-                                Type::Borrow(Box::new(ty.clone()), None, false, 0)
-                            } else {
-                                ty.clone()
-                            };
-                            self.closure_captures_stack[i].insert(name.clone(), capture_ty);
+                            self.closure_captures_stack[i].insert(name.clone(), ty.clone());
                         }
                     }
                 }
@@ -203,7 +198,7 @@ impl<'a> TypeChecker<'a> {
 
                 match lookup_res {
                     Some((ty, top)) => {
-                        if consume && ty.is_linear() {
+                        if consume && ty.is_linear() && !silent {
                             self.consume(name);
                         }
 
@@ -1961,6 +1956,15 @@ impl<'a> TypeChecker<'a> {
 
                 let captured_vars = self.closure_captures_stack.pop().unwrap();
                 self.closure_depths.pop();
+
+                if !silent {
+                    // Consume captured variables in the outer scope if they are linear
+                    for (name, ty) in &captured_vars {
+                        if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)) {
+                            self.consume(name);
+                        }
+                    }
+                }
 
                 e.captures = captured_vars.into_iter().collect();
                 e.body = b;

@@ -1,0 +1,17 @@
+struct Captures {
+  i: i32,
+}
+
+fn apply_lambda<F>(f: F, val: i32) -> i32 {
+  return f(val);
+}
+
+fn main() {
+  let i = 10;
+  let cap = Captures { i: 10 };
+  let cp_lambda = |x: i32| x + cap.i + i;
+  assert(apply_lambda(cp_lambda, 32) == 52);
+
+  // cap has been moved into the closure, so this should fail
+  assert(cap.i == 10);
+}
