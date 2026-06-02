@@ -1,0 +1,60 @@
+// EXPECT: 1
+extern {
+  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn apply_lambda<F>(f: F, val: i32) -> i32 {
+  return f(val);
+}
+
+fn main() -> i32 {
+  // closure_basic
+  let x1 = 40;
+  let closure_basic = |y: i32| x1 + y;
+  assert(closure_basic(2) == 42);
+
+  // closure_multi_arg
+  let base2 = 50;
+  let adder2 = |a: i32, b: i32| a + b + base2;
+  let adder3 = |a: i32, b: i32, c: i32| a + b + c + base2;
+  assert(adder2(20, 30) + adder3(1, 2, 3) == 156);
+
+  // closure_multi_capture
+  let mc_base1 = 50;
+  let mc_base2 = 40;
+  let mc_adder = |a: i32, b: i32| a + b + mc_base1 + mc_base2;
+  assert(mc_adder(20, 30) == 140);
+
+  // closure_multi_param
+  let mp_x = 10;
+  let mp_closure = |y: i32, z: i32| mp_x + y + z;
+  assert(mp_closure(12, 20) == 42);
+
+  // closure_nested
+  let cn_x = 10;
+  let outer = || comptime {
+    let cn_y = 20;
+    let inner = || comptime {
+      let cn_z = 30;
+      return cn_x + cn_y + cn_z;
+    };
+    return inner() + 40;
+  };
+  assert(outer() == 100);
+
+  // closure_no_args
+  let cna_base = 42;
+  let get_base = || cna_base;
+  assert(get_base() == 42);
+
+  // closure_passed
+  let cp_base = 10;
+  let cp_lambda = |x: i32| x + cp_base;
+  assert(apply_lambda(cp_lambda, 32) == 42);
+
+  unsafe {
+    vx_printf_i32("%d
+", 1);
+  }
+  return 1;
+}
