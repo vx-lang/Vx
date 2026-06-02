@@ -19,6 +19,7 @@ pub struct MeliorGenerator<'c> {
     pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
     pub allocs: std::collections::HashSet<String>,
     pub is_lvalue_context: bool,
+    pub has_returned: bool,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -202,6 +203,7 @@ impl<'c> MeliorGenerator<'c> {
             continue_flags: Vec::new(),
             allocs: std::collections::HashSet::new(),
             is_lvalue_context: false,
+            has_returned: false,
         }
     }
 
@@ -558,6 +560,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Transfer(e) => e.lower(self, block),
             Expr::Borrow(e) => e.lower(self, block),
             Expr::StringLiteral(e) => e.lower(self, block),
+            Expr::Closure(e) => e.lower(self, block),
             Expr::ComptimeBlock(e) => e.lower(self, block),
             Expr::Dereference(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
@@ -848,6 +851,9 @@ impl<'c> MeliorGenerator<'c> {
             }
             crate::ast::Type::Function(_, _) => {
                 return Type::parse(self.context, "!llvm.ptr").unwrap();
+            }
+            crate::ast::Type::Closure(_, _) => {
+                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             }
             crate::ast::Type::Module(..) => "none".to_string(),
             crate::ast::Type::Unknown => "unknown".to_string(),

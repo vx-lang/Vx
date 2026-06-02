@@ -1,12 +1,12 @@
 import std::vec;
 
 fn main() -> i32 {
-    let a = 5;
-    let b = 10;
-    let mut v: Vec<i32> = vec![a + b, a * b, a - b];
-    assert(v.len == 3);
-    assert(v[0] == 15);
-    assert(v[1] == 50);
-    assert(v[2] == -5);
-    return 0;
+  let a = 5;
+  let b = 10;
+  let mut v: Vec<i32> = vec![a + b, a * b, a - b];
+  assert(v.len == 3);
+  assert(v[0] == 15);
+  assert(v[1] == 50);
+  assert(v[2] == -5);
+  return 0;
 }

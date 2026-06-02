@@ -182,10 +182,17 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Return(ReturnStmt { expr, span: _ }) => {
                 let ty = self.check_expr_type_flag(expr, consume, silent);
-                if !self.is_assignable(return_type, &ty) {
+
+                let mut expected_ty = return_type.clone();
+                if let Some(Type::Unknown) = self.current_return_type {
+                    self.current_return_type = Some(ty.clone());
+                    expected_ty = ty.clone();
+                }
+
+                if !self.is_assignable(&expected_ty, &ty) {
                     self.errors.push(format!(
                         "Type mismatch on return. Expected {:?}, got {:?}",
-                        return_type, ty
+                        expected_ty, ty
                     ));
                 }
             }

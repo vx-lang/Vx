@@ -78,6 +78,7 @@ pub enum Type {
     Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
+    Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
     Unknown,
 }
 
@@ -152,6 +153,11 @@ impl Type {
                 let new_params = params.iter().map(|p| p.substitute(mapping)).collect();
                 let new_ret = Box::new(ret.substitute(mapping));
                 Type::Function(new_params, new_ret)
+            }
+            Type::Closure(params, ret) => {
+                let new_params = params.iter().map(|p| p.substitute(mapping)).collect();
+                let new_ret = Box::new(ret.substitute(mapping));
+                Type::Closure(new_params, new_ret)
             }
             Type::Unknown => Type::Unknown,
             _ => self.clone(),
@@ -251,6 +257,16 @@ impl std::fmt::Display for Type {
                     write!(f, "{}", p)?;
                 }
                 write!(f, ") -> {}", ret)
+            }
+            Type::Closure(params, ret) => {
+                write!(f, "|")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, "| -> {}", ret)
             }
             _ => write!(f, "{:?}", self), // Fallback for complex types
         }

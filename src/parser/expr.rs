@@ -812,6 +812,8 @@ impl<'a> Parser<'a> {
                         Expr::Closure(ClosureExpr {
                             params,
                             body,
+                            ret_ty: None,
+                            captures: vec![],
                             span: Span::default(),
                         })
                     }

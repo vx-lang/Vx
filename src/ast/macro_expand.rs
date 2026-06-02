@@ -67,7 +67,7 @@ impl<'a> MacroExpander<'a> {
                 r.expr = self.expand_expr(r.expr.clone())?;
             }
             stmt::Statement::Assert(a) => {
-                a.expr = Box::new(self.expand_expr(*a.expr.clone())?);
+                *a.expr = self.expand_expr(*a.expr.clone())?;
             }
             stmt::Statement::Loop(l) => {
                 let mut i = 0;
@@ -81,7 +81,7 @@ impl<'a> MacroExpander<'a> {
                 }
             }
             stmt::Statement::ForLoop(f) => {
-                f.iterable = Box::new(self.expand_expr(*f.iterable.clone())?);
+                *f.iterable = self.expand_expr(*f.iterable.clone())?;
                 let mut i = 0;
                 while i < f.body.len() {
                     let s = f.body.remove(i);
@@ -105,39 +105,39 @@ impl<'a> MacroExpander<'a> {
         // Traverse and expand
         match &mut expr {
             expr::Expr::BinaryOp(b) => {
-                b.lhs = Box::new(self.expand_expr(*b.lhs.clone())?);
-                b.rhs = Box::new(self.expand_expr(*b.rhs.clone())?);
+                *b.lhs = self.expand_expr(*b.lhs.clone())?;
+                *b.rhs = self.expand_expr(*b.rhs.clone())?;
             }
             expr::Expr::RelationalOp(b) => {
-                b.lhs = Box::new(self.expand_expr(*b.lhs.clone())?);
-                b.rhs = Box::new(self.expand_expr(*b.rhs.clone())?);
+                *b.lhs = self.expand_expr(*b.lhs.clone())?;
+                *b.rhs = self.expand_expr(*b.rhs.clone())?;
             }
             expr::Expr::LogicalOp(b) => {
-                b.lhs = Box::new(self.expand_expr(*b.lhs.clone())?);
-                b.rhs = Box::new(self.expand_expr(*b.rhs.clone())?);
+                *b.lhs = self.expand_expr(*b.lhs.clone())?;
+                *b.rhs = self.expand_expr(*b.rhs.clone())?;
             }
             expr::Expr::Range(b) => {
-                b.start = Box::new(self.expand_expr(*b.start.clone())?);
-                b.end = Box::new(self.expand_expr(*b.end.clone())?);
+                *b.start = self.expand_expr(*b.start.clone())?;
+                *b.end = self.expand_expr(*b.end.clone())?;
             }
             expr::Expr::UnaryOp(u) => {
-                u.expr = Box::new(self.expand_expr(*u.expr.clone())?);
+                *u.expr = self.expand_expr(*u.expr.clone())?;
             }
             expr::Expr::Borrow(u) => {
-                u.expr = Box::new(self.expand_expr(*u.expr.clone())?);
+                *u.expr = self.expand_expr(*u.expr.clone())?;
             }
             expr::Expr::Dereference(u) => {
-                u.expr = Box::new(self.expand_expr(*u.expr.clone())?);
+                *u.expr = self.expand_expr(*u.expr.clone())?;
             }
             expr::Expr::MemberAccess(m) => {
-                m.base = Box::new(self.expand_expr(*m.base.clone())?);
+                *m.base = self.expand_expr(*m.base.clone())?;
             }
             expr::Expr::IndexAccess(m) => {
-                m.base = Box::new(self.expand_expr(*m.base.clone())?);
-                m.index = Box::new(self.expand_expr(*m.index.clone())?);
+                *m.base = self.expand_expr(*m.base.clone())?;
+                *m.index = self.expand_expr(*m.index.clone())?;
             }
             expr::Expr::Match(m) => {
-                m.expr = Box::new(self.expand_expr(*m.expr.clone())?);
+                *m.expr = self.expand_expr(*m.expr.clone())?;
                 for arm in &mut m.arms {
                     let mut i = 0;
                     while i < arm.body.len() {
@@ -156,7 +156,7 @@ impl<'a> MacroExpander<'a> {
                 }
             }
             expr::Expr::MethodCall(m) => {
-                m.base = Box::new(self.expand_expr(*m.base.clone())?);
+                *m.base = self.expand_expr(*m.base.clone())?;
                 for arg in &mut m.args {
                     *arg = self.expand_expr(arg.clone())?;
                 }
@@ -177,7 +177,7 @@ impl<'a> MacroExpander<'a> {
                 }
             }
             expr::Expr::If(i) => {
-                i.cond = Box::new(self.expand_expr(*i.cond.clone())?);
+                *i.cond = self.expand_expr(*i.cond.clone())?;
                 let mut j = 0;
                 while j < i.then_block.len() {
                     let s = i.then_block.remove(j);
@@ -201,7 +201,7 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::UnsafeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
-                    *ret = Box::new(self.expand_expr(*ret.clone())?);
+                    **ret = self.expand_expr(*ret.clone())?;
                 }
                 let mut j = 0;
                 while j < u.stmts.len() {
@@ -215,7 +215,7 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
-                    *ret = Box::new(self.expand_expr(*ret.clone())?);
+                    **ret = self.expand_expr(*ret.clone())?;
                 }
                 let mut j = 0;
                 while j < u.stmts.len() {
@@ -228,11 +228,11 @@ impl<'a> MacroExpander<'a> {
                 }
             }
             expr::Expr::Closure(c) => {
-                c.body = Box::new(self.expand_expr(*c.body.clone())?);
+                *c.body = self.expand_expr(*c.body.clone())?;
             }
             expr::Expr::SpawnOn(s) => {
                 if let Some(ret) = &mut s.ret {
-                    *ret = Box::new(self.expand_expr(*ret.clone())?);
+                    **ret = self.expand_expr(*ret.clone())?;
                 }
                 let mut j = 0;
                 while j < s.stmts.len() {
@@ -253,13 +253,13 @@ impl<'a> MacroExpander<'a> {
                 for arg in &mut v.args {
                     *arg = self.expand_expr(arg.clone())?;
                 }
-                v.cotangent = Box::new(self.expand_expr(*v.cotangent.clone())?);
+                *v.cotangent = self.expand_expr(*v.cotangent.clone())?;
             }
             expr::Expr::Jvp(j_expr) => {
                 for arg in &mut j_expr.args {
                     *arg = self.expand_expr(arg.clone())?;
                 }
-                j_expr.tangent = Box::new(self.expand_expr(*j_expr.tangent.clone())?);
+                *j_expr.tangent = self.expand_expr(*j_expr.tangent.clone())?;
             }
             _ => {}
         }
@@ -371,39 +371,35 @@ impl<'a> MacroExpander<'a> {
         while j < matcher_tokens.len() {
             let m_tok = &matcher_tokens[j];
 
-            if m_tok.kind == crate::lexer::TokenType::Dollar {
-                if j + 2 < matcher_tokens.len() {
-                    let name_tok = &matcher_tokens[j + 1];
-                    let colon_tok = &matcher_tokens[j + 2];
+            if m_tok.kind == crate::lexer::TokenType::Dollar && j + 2 < matcher_tokens.len() {
+                let name_tok = &matcher_tokens[j + 1];
+                let colon_tok = &matcher_tokens[j + 2];
 
-                    if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
-                        if colon_tok.kind == crate::lexer::TokenType::Colon {
-                            if j + 3 < matcher_tokens.len() {
-                                let kind_tok = &matcher_tokens[j + 3];
-                                if let crate::lexer::TokenType::Identifier(kind) = &kind_tok.kind {
-                                    // Match a meta-variable
-                                    if kind == "expr" {
-                                        // Simplified: just grab tokens until the next matcher token is found or EOF
-                                        let mut captured = Vec::new();
-                                        if j + 4 < matcher_tokens.len() {
-                                            let next_m_tok = &matcher_tokens[j + 4];
-                                            while i < input.len()
-                                                && input[i].kind != next_m_tok.kind
-                                            {
-                                                captured.push(input[i].clone());
-                                                i += 1;
-                                            }
-                                        } else {
-                                            while i < input.len() {
-                                                captured.push(input[i].clone());
-                                                i += 1;
-                                            }
-                                        }
-                                        captures.insert(name.clone(), captured);
-                                        j += 4;
-                                        continue;
+                if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
+                    if colon_tok.kind == crate::lexer::TokenType::Colon
+                        && j + 3 < matcher_tokens.len()
+                    {
+                        let kind_tok = &matcher_tokens[j + 3];
+                        if let crate::lexer::TokenType::Identifier(kind) = &kind_tok.kind {
+                            // Match a meta-variable
+                            if kind == "expr" {
+                                // Simplified: just grab tokens until the next matcher token is found or EOF
+                                let mut captured = Vec::new();
+                                if j + 4 < matcher_tokens.len() {
+                                    let next_m_tok = &matcher_tokens[j + 4];
+                                    while i < input.len() && input[i].kind != next_m_tok.kind {
+                                        captured.push(input[i].clone());
+                                        i += 1;
+                                    }
+                                } else {
+                                    while i < input.len() {
+                                        captured.push(input[i].clone());
+                                        i += 1;
                                     }
                                 }
+                                captures.insert(name.clone(), captured);
+                                j += 4;
+                                continue;
                             }
                         }
                     }
@@ -445,15 +441,13 @@ impl<'a> MacroExpander<'a> {
         let mut j = 0;
         while j < transcriber_tokens.len() {
             let m_tok = &transcriber_tokens[j];
-            if m_tok.kind == crate::lexer::TokenType::Dollar {
-                if j + 1 < transcriber_tokens.len() {
-                    let name_tok = &transcriber_tokens[j + 1];
-                    if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
-                        if let Some(captured) = captures.get(name) {
-                            tokens.extend(captured.clone());
-                            j += 2;
-                            continue;
-                        }
+            if m_tok.kind == crate::lexer::TokenType::Dollar && j + 1 < transcriber_tokens.len() {
+                let name_tok = &transcriber_tokens[j + 1];
+                if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
+                    if let Some(captured) = captures.get(name) {
+                        tokens.extend(captured.clone());
+                        j += 2;
+                        continue;
                     }
                 }
             }

@@ -142,9 +142,22 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                let lookup_depth_res = self
+                    .lookup_with_depth(name)
+                    .map(|(ty, top, d)| (ty.clone(), top.clone(), d));
+                let lookup_res = lookup_depth_res
+                    .as_ref()
+                    .map(|(ty, top, _)| (ty.clone(), top.clone()));
 
-                let lookup_res = self.lookup(name).cloned();
-
+                if let Some((ty, _, depth)) = &lookup_depth_res {
+                    // If we are inside a closure and the variable is defined outside of it,
+                    // we must capture it in all closures between the definition and usage.
+                    for (i, closure_depth) in self.closure_depths.iter().enumerate() {
+                        if depth < closure_depth {
+                            self.closure_captures_stack[i].insert(name.clone(), ty.clone());
+                        }
+                    }
+                }
                 if name == "new_item" {
                     println!(
                         "lookup('new_item') = {:?}, is_moved = {}, consume = {}",
@@ -630,6 +643,28 @@ impl<'a> TypeChecker<'a> {
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
                                 self.errors.push(format!(
                                     "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
+                                    i + 1, resolved_name, param_ty, arg_ty
+                                ));
+                            }
+                        }
+                    }
+                    *ret_ty
+                } else if let Some((Type::Closure(param_types, ret_ty), _)) =
+                    self.lookup(&resolved_name).cloned()
+                {
+                    if args.len() != param_types.len() && !silent {
+                        self.errors.push(format!(
+                            "Closure '{}' expects {} arguments, got {}",
+                            resolved_name,
+                            param_types.len(),
+                            args.len()
+                        ));
+                    } else {
+                        for (i, param_ty) in param_types.iter().enumerate() {
+                            let arg_ty = &arg_types[i];
+                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
                                     i + 1, resolved_name, param_ty, arg_ty
                                 ));
                             }
@@ -1889,36 +1924,46 @@ impl<'a> TypeChecker<'a> {
                 *expr = block;
                 self.check_expr_type(expr)
             }
-            Expr::Closure(ClosureExpr { params, body, span }) => {
-                let func_name = format!("_closure_{}", self.next_reg);
+            Expr::Closure(e) => {
+                let _func_name = format!("_closure_{}", self.next_reg);
                 self.next_reg += 1;
 
-                let cloned_params = params.clone();
-                let cloned_span = span.clone();
+                let cloned_params = e.params.clone();
+
+                let closure_depth = self.scopes.len();
+                self.closure_depths.push(closure_depth);
+                self.closure_captures_stack.push(HashMap::new());
+
+                let old_ret = self.current_return_type.take();
+                self.current_return_type = Some(Type::Unknown);
 
                 self.push_scope();
                 for (name, ty) in &cloned_params {
                     self.insert(name.clone(), ty.clone());
                 }
-                let mut b = body.clone();
-                let ret_ty = self.check_expr_type(&mut b);
+                let mut b = e.body.clone();
+                let expr_ret_ty = self.check_expr_type(&mut b);
+
+                let mut ret_ty = expr_ret_ty;
+                if let Some(inferred) = &self.current_return_type {
+                    if *inferred != Type::Unknown {
+                        ret_ty = inferred.clone();
+                    }
+                }
+
                 self.pop_scope();
+                self.current_return_type = old_ret;
 
-                let mut new_func = crate::ast::Function {
-                    name: func_name.clone(),
-                    generics: vec![],
-                    params: cloned_params.clone(),
-                    topology: self.active_topology.clone(),
-                    return_type: ret_ty.clone(),
-                    body: vec![Statement::Return(ReturnStmt::new(*b, cloned_span.clone()))],
-                };
+                let captured_vars = self.closure_captures_stack.pop().unwrap();
+                self.closure_depths.pop();
 
-                self.check_function(&mut new_func);
-                self.monomorphized_functions.push((new_func, 0));
+                e.captures = captured_vars.into_iter().collect();
+                e.body = b;
+                e.ret_ty = Some(ret_ty.clone());
 
-                *expr = Expr::Identifier(IdentifierExpr::new(func_name, cloned_span));
-
-                Type::Function(
+                // We do NOT hoist it here! Codegen will allocate environment and hoist the function.
+                // However, we still need to provide the type.
+                Type::Closure(
                     cloned_params.into_iter().map(|(_, t)| t).collect(),
                     Box::new(ret_ty),
                 )
@@ -2106,6 +2151,62 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 return true;
+            }
+        }
+
+        if let Type::Function(p_target, r_target) = target {
+            if let Type::Function(p_source, r_source) = source {
+                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
+                    let mut all_match = true;
+                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
+                        if !self.is_assignable(pt, ps) {
+                            all_match = false;
+                        }
+                    }
+                    if all_match {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Type::Closure(p_target, r_target) = target {
+            if let Type::Closure(p_source, r_source) = source {
+                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
+                    let mut all_match = true;
+                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
+                        if !self.is_assignable(pt, ps) {
+                            all_match = false;
+                        }
+                    }
+                    if all_match {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Allow Closure to map to ClosureN struct (if tests use it)
+        if let Type::GenericInstance(inner, args) = target {
+            if let Type::Struct(name, _) = &**inner {
+                if name.starts_with("Closure") {
+                    if let Type::Closure(p_source, r_source) = source {
+                        if args.len() == p_source.len() + 1 {
+                            let mut all_match = true;
+                            for (i, ps) in p_source.iter().enumerate() {
+                                if !self.is_assignable(&args[i], ps) {
+                                    all_match = false;
+                                }
+                            }
+                            if !self.is_assignable(&args[args.len() - 1], r_source) {
+                                all_match = false;
+                            }
+                            if all_match {
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
 

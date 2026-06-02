@@ -1495,7 +1495,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
             let base_name = resolved_struct_name
                 .split('<')
                 .next()
-                .unwrap_or(&resolved_struct_name)
+                .unwrap_or(resolved_struct_name.as_str())
                 .to_string();
             let mut mapping = std::collections::HashMap::new();
             if resolved_struct_name.contains('<') && resolved_struct_name.ends_with('>') {
@@ -2099,6 +2099,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             }
         } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
             let mut actual_func_ty = func_ty;
+            let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
                 if let Some(crate::ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
@@ -2109,26 +2110,77 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 } else {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
+            } else if is_closure {
+                if let Some(crate::ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
+                    let r = gen.lower_type(ret);
+                    let mut a: Vec<_> = vec![Type::parse(gen.context, "!llvm.ptr").unwrap()];
+                    a.extend(func_args.iter().map(|t| gen.lower_type(t)));
+                    actual_func_ty =
+                        melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
+                } else {
+                    panic!("Missing signature for closure '{}'", name);
+                }
             }
             if let Ok(mlir_func_ty) = melior::ir::r#type::FunctionType::try_from(actual_func_ty) {
                 let ret_ty = mlir_func_ty.result(0).unwrap();
                 let mut arg_vals = Vec::new();
+
+                let mut arg_offset = 0;
+                let mut env_ptr = None;
+                let mut actual_ptr_val = ptr_val;
+
+                if is_closure {
+                    arg_offset = 1;
+                    // Extract env_ptr
+                    let extract_env_op = melior::ir::operation::OperationBuilder::new(
+                        "llvm.extractvalue",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[ptr_val])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
+                            .into(),
+                    )])
+                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                    .build()
+                    .unwrap();
+                    let extract_env_ref = block.append_operation(extract_env_op);
+                    env_ptr = Some(extract_env_ref.result(0).unwrap().into());
+
+                    // Extract func_ptr
+                    let extract_func_op = melior::ir::operation::OperationBuilder::new(
+                        "llvm.extractvalue",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[ptr_val])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
+                            .into(),
+                    )])
+                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                    .build()
+                    .unwrap();
+                    let extract_func_ref = block.append_operation(extract_func_op);
+                    actual_ptr_val = extract_func_ref.result(0).unwrap().into();
+                }
+
                 for (i, arg) in args.iter().enumerate() {
                     let (mut arg_val, expr_ty) = gen.generate_expr(arg, block);
-                    let field_ty = mlir_func_ty.input(i).unwrap();
+                    let field_ty = mlir_func_ty.input(i + arg_offset).unwrap();
                     if expr_ty != field_ty {
                         arg_val = gen.coerce_type(block, arg_val, expr_ty, field_ty);
                     }
                     arg_vals.push(arg_val);
                 }
 
-                let mut actual_ptr_val = ptr_val;
-                if func_ty.to_string() == "!llvm.ptr" {
+                if func_ty.to_string() == "!llvm.ptr" || is_closure {
                     let cast_op = melior::ir::operation::OperationBuilder::new(
                         "builtin.unrealized_conversion_cast",
                         Location::unknown(gen.context),
                     )
-                    .add_operands(&[ptr_val])
+                    .add_operands(&[actual_ptr_val])
                     .add_results(&[actual_func_ty])
                     .build()
                     .unwrap();
@@ -2141,6 +2193,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     Location::unknown(gen.context),
                 )
                 .add_operands(&[actual_ptr_val]);
+
+                if let Some(ep) = env_ptr {
+                    builder = builder.add_operands(&[ep]);
+                }
 
                 for a in &arg_vals {
                     builder = builder.add_operands(&[*a]);
@@ -2451,6 +2507,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                 .build()
                 .unwrap();
         block.append_operation(ret_op);
+        gen.has_returned = true;
     }
 }
 
@@ -2469,6 +2526,17 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             gen.expected_type = Some(gen.lower_type(ann));
         }
         let (val, ty) = gen.generate_expr(expr, block);
+        if let Expr::Closure(c) = expr {
+            let func_args = c.params.iter().map(|(_, t)| t.clone()).collect();
+            let ret_ty = c
+                .ret_ty
+                .clone()
+                .unwrap_or(crate::ast::Type::Scalar(crate::ast::ElementType::I32));
+            gen.ast_env.insert(
+                name.clone(),
+                crate::ast::Type::Closure(func_args, Box::new(ret_ty)),
+            );
+        }
         gen.expected_type = prev_expected;
         if *is_mut {
             let ty_str = ty.to_string();
@@ -4619,60 +4687,218 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
 
 impl<'c> LowerToMelior<'c> for ClosureExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
+
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let func_name = format!("__closure_{}", gen.string_counter);
-        gen.string_counter += 1;
-
-        let mut arg_types = Vec::new();
-        for (_, ty) in &self.params {
-            arg_types.push(gen.lower_type(ty));
+        // 1. Create env struct type
+        let mut env_field_tys = Vec::new();
+        for (_, ty) in &self.captures {
+            env_field_tys.push(gen.lower_type(ty).to_string());
         }
+        let env_struct_ty = if env_field_tys.is_empty() {
+            Type::parse(gen.context, "!llvm.struct<()>").unwrap()
+        } else {
+            Type::parse(
+                gen.context,
+                &format!("!llvm.struct<({})>", env_field_tys.join(", ")),
+            )
+            .unwrap()
+        };
 
-        let ret_ast_ty = gen
-            .infer_ast_type(&self.body)
-            .unwrap_or(crate::ast::Type::Scalar(crate::ast::ElementType::F32));
-        let ret_ty = gen.lower_type(&ret_ast_ty);
-
-        let func_type = melior::ir::r#type::FunctionType::new(gen.context, &arg_types, &[ret_ty]);
-
-        let region = melior::ir::Region::new();
-        let mut block_args = Vec::new();
-        for t in &arg_types {
-            block_args.push((*t, melior::ir::Location::unknown(gen.context)));
-        }
-        let func_block = melior::ir::Block::new(&block_args);
-
-        let mut saved_env = Vec::new();
-        for (i, (name, ast_ty)) in self.params.iter().enumerate() {
-            let arg_val = func_block.argument(i).unwrap().into();
-            let mlir_ty = gen.lower_type(ast_ty);
-            let old = gen.env.insert(name.clone(), (arg_val, mlir_ty));
-            saved_env.push((name.clone(), old));
-        }
-
-        let (ret_val, _) = gen.generate_expr(&self.body, &func_block);
-
-        let yield_op = melior::ir::operation::OperationBuilder::new(
-            "func.return",
-            melior::ir::Location::unknown(gen.context),
+        // 2. Build env struct value
+        let undef_op = melior::ir::operation::OperationBuilder::new(
+            "llvm.mlir.undef",
+            Location::unknown(gen.context),
         )
-        .add_operands(&[ret_val])
+        .add_results(&[env_struct_ty])
         .build()
         .unwrap();
-        func_block.append_operation(yield_op);
-        region.append_block(func_block);
+        let mut env_struct_val = block.append_operation(undef_op).result(0).unwrap().into();
 
-        for (name, old) in saved_env {
-            if let Some(o) = old {
-                gen.env.insert(name, o);
+        for (i, (name, _)) in self.captures.iter().enumerate() {
+            let (val, _) = gen
+                .env
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("Captured variable {} not found", name));
+            let pos_attr =
+                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[i as i64]);
+            let insert_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.insertvalue",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[env_struct_val, val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "position"),
+                pos_attr.into(),
+            )])
+            .add_results(&[env_struct_ty])
+            .build()
+            .unwrap();
+            env_struct_val = block.append_operation(insert_op).result(0).unwrap().into();
+        }
+
+        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+
+        let c1_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let c1 = c1_op.result(0).unwrap().into();
+
+        let alloca_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.alloca",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[c1])
+            .add_results(&[ptr_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "elem_type"),
+                melior::ir::attribute::TypeAttribute::new(env_struct_ty).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let env_ptr = alloca_op.result(0).unwrap().into();
+
+        block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.store",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[env_struct_val, env_ptr])
+            .build()
+            .unwrap(),
+        );
+
+        // 3. Generate closure func
+        gen.string_counter += 1;
+        let func_name = format!("_closure_{}", gen.string_counter);
+
+        let mut func_arg_tys = vec![ptr_ty]; // env_ptr is the first argument
+        for (_, ty) in &self.params {
+            func_arg_tys.push(gen.lower_type(ty));
+        }
+
+        let func_block = melior::ir::Block::new(
+            &func_arg_tys
+                .iter()
+                .map(|t| (*t, Location::unknown(gen.context)))
+                .collect::<Vec<_>>(),
+        );
+
+        let saved_env = gen.env.clone();
+
+        let func_env_ptr = func_block.argument(0).unwrap().into();
+        let load_op = func_block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.load",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[func_env_ptr])
+            .add_results(&[env_struct_ty])
+            .build()
+            .unwrap(),
+        );
+        let loaded_env = load_op.result(0).unwrap().into();
+
+        for (i, (name, _)) in self.captures.iter().enumerate() {
+            let field_ty = Type::parse(gen.context, &env_field_tys[i]).unwrap();
+            let extract_op = func_block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.extractvalue",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[loaded_env])
+                .add_results(&[field_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[i as i64])
+                        .into(),
+                )])
+                .build()
+                .unwrap(),
+            );
+            gen.env.insert(
+                name.clone(),
+                (extract_op.result(0).unwrap().into(), field_ty),
+            );
+        }
+
+        for (i, (name, _)) in self.params.iter().enumerate() {
+            gen.env.insert(
+                name.clone(),
+                (
+                    func_block.argument(i + 1).unwrap().into(),
+                    func_arg_tys[i + 1],
+                ),
+            );
+        }
+
+        let old_has_returned = gen.has_returned;
+        gen.has_returned = false;
+
+        let (body_val, body_ty) = gen.generate_expr(&self.body, &func_block);
+
+        if !gen.has_returned {
+            if body_ty.to_string() != "none" {
+                func_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "func.return",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[body_val])
+                    .build()
+                    .unwrap(),
+                );
             } else {
-                gen.env.remove(&name);
+                func_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "func.return",
+                        Location::unknown(gen.context),
+                    )
+                    .build()
+                    .unwrap(),
+                );
             }
         }
 
+        gen.has_returned = old_has_returned;
+
+        let region = melior::ir::Region::new();
+        region.append_block(func_block);
+
+        let results = if let Some(rt) = &self.ret_ty {
+            let m_ty = gen.lower_type(rt);
+            if m_ty.to_string() != "none" {
+                vec![m_ty]
+            } else {
+                vec![]
+            }
+        } else {
+            if body_ty.to_string() != "none" {
+                vec![body_ty]
+            } else {
+                vec![]
+            }
+        };
+
+        let mlir_func_ty =
+            melior::ir::r#type::FunctionType::new(gen.context, &func_arg_tys, &results);
+
         let func_op = melior::ir::operation::OperationBuilder::new(
             "func.func",
-            melior::ir::Location::unknown(gen.context),
+            Location::unknown(gen.context),
         )
         .add_attributes(&[
             (
@@ -4681,7 +4907,7 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
             ),
             (
                 melior::ir::Identifier::new(gen.context, "function_type"),
-                melior::ir::attribute::TypeAttribute::new(func_type.into()).into(),
+                melior::ir::attribute::TypeAttribute::new(mlir_func_ty.into()).into(),
             ),
             (
                 melior::ir::Identifier::new(gen.context, "sym_visibility"),
@@ -4694,30 +4920,88 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
 
         gen.module.body().append_operation(func_op);
 
-        let const_op = melior::ir::operation::OperationBuilder::new(
-            "func.constant",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &func_name).into(),
-        )])
-        .add_results(&[func_type.into()])
-        .build()
-        .unwrap();
+        gen.env = saved_env; // restore env
 
-        let const_ref = block.append_operation(const_op);
-        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-        let cast_op = melior::ir::operation::OperationBuilder::new(
-            "builtin.unrealized_conversion_cast",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[const_ref.result(0).unwrap().into()])
-        .add_results(&[ptr_ty])
-        .build()
-        .unwrap();
+        let const_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "func.constant",
+                Location::unknown(gen.context),
+            )
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &func_name).into(),
+            )])
+            .add_results(&[mlir_func_ty.into()])
+            .build()
+            .unwrap(),
+        );
+        let const_func_val = const_op.result(0).unwrap().into();
 
-        let cast_ref = block.append_operation(cast_op);
-        (cast_ref.result(0).unwrap().into(), ptr_ty)
+        let cast_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[const_func_val])
+            .add_results(&[ptr_ty])
+            .build()
+            .unwrap(),
+        );
+        let func_ptr = cast_op.result(0).unwrap().into();
+
+        let closure_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr)>").unwrap();
+        let undef_closure = block
+            .append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.mlir.undef",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[closure_ty])
+                .build()
+                .unwrap(),
+            )
+            .result(0)
+            .unwrap()
+            .into();
+
+        let insert_env = block
+            .append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.insertvalue",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[undef_closure, env_ptr])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                )])
+                .add_results(&[closure_ty])
+                .build()
+                .unwrap(),
+            )
+            .result(0)
+            .unwrap()
+            .into();
+
+        let insert_func = block
+            .append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "llvm.insertvalue",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[insert_env, func_ptr])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+                )])
+                .add_results(&[closure_ty])
+                .build()
+                .unwrap(),
+            )
+            .result(0)
+            .unwrap()
+            .into();
+
+        (insert_func, closure_ty)
     }
 }

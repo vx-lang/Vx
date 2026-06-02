@@ -1,8 +1,8 @@
-macro_rules! get_str {
-    () => { "hello from macro!" };
+macro_rules get_str {
+  () => { "hello from macro!" };
 }
 
 fn main() -> i32 {
-    let s = get_str!();
-    return 0;
+  let s = get_str!();
+  return 0;
 }

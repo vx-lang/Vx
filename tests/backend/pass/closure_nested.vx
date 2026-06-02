@@ -1,0 +1,24 @@
+// EXPECT: 100
+extern {
+  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
+}
+
+fn main() -> i32 {
+  let x = 10;
+  let outer = || comptime {
+    let y = 20;
+    let inner = || comptime {
+      let z = 30;
+      return x + y + z;
+    };
+    return inner() + 40;
+  };
+
+  let res = outer();
+  unsafe {
+    vx_printf_i32("%d
+", res);
+  }
+  assert(res == 100);
+  return res;
+}

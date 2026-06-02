@@ -42,6 +42,12 @@ impl Type {
                 }
                 ret_ty.resolve_names(current_module, symbol_map);
             }
+            Type::Closure(arg_tys, ret_ty) => {
+                for t in arg_tys {
+                    t.resolve_names(current_module, symbol_map);
+                }
+                ret_ty.resolve_names(current_module, symbol_map);
+            }
             Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
         }

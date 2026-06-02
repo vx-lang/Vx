@@ -478,11 +478,19 @@ impl VecMacroExpr {
 pub struct ClosureExpr {
     pub params: Vec<(String, Type)>,
     pub body: Box<Expr>,
+    pub captures: Vec<(String, Type)>,
+    pub ret_ty: Option<Type>,
     pub span: Span,
 }
 impl ClosureExpr {
     pub fn new(params: Vec<(String, Type)>, body: Box<Expr>, span: Span) -> Self {
-        Self { params, body, span }
+        Self {
+            params,
+            body,
+            captures: Vec::new(),
+            ret_ty: None,
+            span,
+        }
     }
 }
 
@@ -821,6 +829,12 @@ impl Expr {
                     .map(|(n, t)| (n.clone(), t.substitute(mapping)))
                     .collect(),
                 body: Box::new(e.body.substitute(mapping)),
+                captures: e
+                    .captures
+                    .iter()
+                    .map(|(n, t)| (n.clone(), t.substitute(mapping)))
+                    .collect(),
+                ret_ty: e.ret_ty.as_ref().map(|t| t.substitute(mapping)),
                 span: e.span.clone(),
             }),
             Expr::MacroCall(e) => Expr::MacroCall(MacroCallExpr {
