@@ -27,11 +27,11 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     let mut loader = vxc::module_loader::ModuleLoader::new();
     let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
-        Err(_) => {
+        Err(e) => {
             if !expect_pass {
                 return;
             }
-            panic!("Parse failed on {:?}", path);
+            panic!("Parse failed on {:?}: {}", path, e);
         }
     };
 

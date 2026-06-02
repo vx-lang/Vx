@@ -1,8 +1,13 @@
 import std::vec;
-import std::closure;
 
-fn get_num() -> i32 { return 42; }
+fn get_val(x: i32) -> i32 {
+    return x * 2;
+}
+
 fn main() -> i32 {
-  let mut v = vec![get_num(), get_num() * 2];
-  return 0;
+    let mut v: Vec<i32> = vec![get_val(10), get_val(20)];
+    assert(v.len == 2);
+    assert(v[0] == 20);
+    assert(v[1] == 40);
+    return 0;
 }

@@ -1106,6 +1106,48 @@ impl<'c> LowerToMelior<'c> for crate::ast::UnaryOpExpr {
                 let not_ref = block.append_operation(not_op);
                 (not_ref.result(0).unwrap().into(), ty)
             }
+            crate::ast::UnaryOp::Neg => {
+                let is_float = ty.to_string().contains("f32")
+                    || ty.to_string().contains("f64")
+                    || ty.to_string().contains("f16")
+                    || ty.to_string().contains("bf16");
+                if is_float {
+                    let neg_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.negf",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[val])
+                    .add_results(&[ty])
+                    .build()
+                    .unwrap();
+                    let neg_ref = block.append_operation(neg_op);
+                    (neg_ref.result(0).unwrap().into(), ty)
+                } else {
+                    let zero_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.constant",
+                        Location::unknown(gen.context),
+                    )
+                    .add_results(&[ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "value"),
+                        melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
+                    )])
+                    .build()
+                    .unwrap();
+                    let zero_ref = block.append_operation(zero_op);
+
+                    let neg_op = melior::ir::operation::OperationBuilder::new(
+                        "arith.subi",
+                        Location::unknown(gen.context),
+                    )
+                    .add_operands(&[zero_ref.result(0).unwrap().into(), val])
+                    .add_results(&[ty])
+                    .build()
+                    .unwrap();
+                    let neg_ref = block.append_operation(neg_op);
+                    (neg_ref.result(0).unwrap().into(), ty)
+                }
+            }
         }
     }
 }
@@ -1900,7 +1942,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             );
         }
 
-        if name == "vx_internal_printf" {
+        if name == "printf" || name == "vx_internal_printf" {
             let mut arg_vals = Vec::new();
             for arg in args {
                 let (arg_val, _arg_ty) = gen.generate_expr(arg, block);
@@ -1911,7 +1953,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 Type::parse(gen.context, "!llvm.func<i32 (!llvm.ptr, ...)>").unwrap(),
             );
 
-            if !gen.functions.contains_key("vx_internal_printf") {
+            // Iterate over operations to check if printf is already declared
+            // We can't iterate easily over body in melior, but we can just use a separate set for llvm_funcs.
+            // Wait, we can just check a boolean in gen or insert "llvm_printf" into gen.functions.
+            // Let's just forcefully insert it if we haven't seen it in gen.functions, BUT wait,
+            // gen.functions has "printf" from the AST extern. So let's use a unique key for the llvm decl.
+            if !gen.functions.contains_key("llvm_printf_decl") {
                 let printf_decl = melior::ir::operation::OperationBuilder::new(
                     "llvm.func",
                     Location::unknown(gen.context),
@@ -1919,11 +1966,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .add_attributes(&[
                     (
                         melior::ir::Identifier::new(gen.context, "sym_name"),
-                        melior::ir::attribute::StringAttribute::new(
-                            gen.context,
-                            "vx_internal_printf",
-                        )
-                        .into(),
+                        melior::ir::attribute::StringAttribute::new(gen.context, "printf").into(),
                     ),
                     (
                         melior::ir::Identifier::new(gen.context, "linkage_name"),
@@ -1940,7 +1983,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
                 gen.module.body().append_operation(printf_decl);
                 gen.functions.insert(
-                    "vx_internal_printf".to_string(),
+                    "llvm_printf_decl".to_string(),
                     (
                         Type::parse(gen.context, "i32").unwrap(),
                         vec![Type::parse(gen.context, "!llvm.ptr").unwrap()],
@@ -1957,11 +2000,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .add_attributes(&[
                     (
                         melior::ir::Identifier::new(gen.context, "callee"),
-                        melior::ir::attribute::FlatSymbolRefAttribute::new(
-                            gen.context,
-                            "vx_internal_printf",
-                        )
-                        .into(),
+                        melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, "printf")
+                            .into(),
                     ),
                     (
                         melior::ir::Identifier::new(gen.context, "var_callee_type"),
@@ -4004,21 +4044,26 @@ pub fn generate_match_chain<'c>(
             );
             let tag = tag_op.result(0).unwrap().into();
 
-            let extract_tag_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "llvm.extractvalue",
-                    melior::ir::Location::unknown(gen.context),
-                )
-                .add_operands(&[match_val])
-                .add_results(&[i32_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
-                )])
-                .build()
-                .unwrap(),
-            );
-            let actual_tag = extract_tag_op.result(0).unwrap().into();
+            let actual_tag = if _match_ty.to_string() == "i32" {
+                match_val
+            } else {
+                let extract_tag_op = block.append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "llvm.extractvalue",
+                        melior::ir::Location::unknown(gen.context),
+                    )
+                    .add_operands(&[match_val])
+                    .add_results(&[i32_ty])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
+                            .into(),
+                    )])
+                    .build()
+                    .unwrap(),
+                );
+                extract_tag_op.result(0).unwrap().into()
+            };
 
             let cmp_op = block.append_operation(
                 melior::ir::operation::OperationBuilder::new(

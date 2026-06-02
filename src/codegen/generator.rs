@@ -352,6 +352,9 @@ impl<'c> MeliorGenerator<'c> {
 
         for ext in &unique_externs {
             let name = &ext.name;
+            if name == "printf" || name == "vx_internal_printf" {
+                continue;
+            }
             let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
 
             // FunctionType::new takes arg_tys and ret_tys

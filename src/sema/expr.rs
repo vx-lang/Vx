@@ -608,6 +608,12 @@ impl<'a> TypeChecker<'a> {
                             .push("Function 'print' expects 1 argument".to_string());
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
+                } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
+                    if args.is_empty() {
+                        self.errors
+                            .push("Function 'printf' expects at least 1 argument".to_string());
+                    }
+                    Type::Scalar(ElementType::I32)
                 } else if let Some((Type::Function(param_types, ret_ty), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
@@ -840,31 +846,31 @@ impl<'a> TypeChecker<'a> {
                                     if m.name == method_name {
                                         found_generic_func = Some(m.clone());
                                         if !explicit_ty_str.is_empty() {
-                                            for (i, ty_raw) in
-                                                explicit_ty_str.split(',').enumerate()
+                                            let mut explicit_args = Vec::new();
+                                            let mut depth = 0;
+                                            let mut current = String::new();
+                                            for c in explicit_ty_str.chars() {
+                                                if c == '<' {
+                                                    depth += 1;
+                                                    current.push(c);
+                                                } else if c == '>' {
+                                                    depth -= 1;
+                                                    current.push(c);
+                                                } else if c == ',' && depth == 0 {
+                                                    explicit_args.push(self.parse_ty_str(&current));
+                                                    current.clear();
+                                                } else {
+                                                    current.push(c);
+                                                }
+                                            }
+                                            if !current.trim().is_empty() {
+                                                explicit_args.push(self.parse_ty_str(&current));
+                                            }
+
+                                            for (i, parsed_ty) in
+                                                explicit_args.into_iter().enumerate()
                                             {
                                                 if i < ib.generics.len() {
-                                                    let parsed_ty = match ty_raw.trim() {
-                                                        "i32" => Type::Scalar(ElementType::I32),
-                                                        "i64" => Type::Scalar(ElementType::I64),
-                                                        "f32" => Type::Scalar(ElementType::F32),
-                                                        "f64" => Type::Scalar(ElementType::F64),
-                                                        "Bool" => Type::Scalar(ElementType::Bool),
-                                                        other => {
-                                                            if self.env.structs.contains_key(other)
-                                                            {
-                                                                Type::Struct(
-                                                                    other.to_string(),
-                                                                    None,
-                                                                )
-                                                            } else {
-                                                                Type::Generic(
-                                                                    other.to_string(),
-                                                                    None,
-                                                                )
-                                                            }
-                                                        }
-                                                    };
                                                     found_mapping.insert(
                                                         ib.generics[i].0.clone(),
                                                         parsed_ty,
@@ -1474,9 +1480,10 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span: _,
             }) => {
-                self.check_expr_type(inner);
+                let inner_ty = self.check_expr_type(inner);
                 match op {
                     UnaryOp::Not => Type::Scalar(ElementType::Bool),
+                    UnaryOp::Neg => inner_ty,
                 }
             }
             Expr::Borrow(BorrowExpr {
@@ -1562,27 +1569,11 @@ impl<'a> TypeChecker<'a> {
                 let mut base_name = resolved_name.clone();
                 let mut generic_args = Vec::new();
 
-                if let Some(idx) = resolved_name.find('<') {
-                    base_name = resolved_name[..idx].to_string();
-                    let ty_args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
-                    for ty_arg_raw in ty_args_str.split(',') {
-                        let ty_arg = ty_arg_raw.trim();
-                        let ty = match ty_arg {
-                            "i32" => Type::Scalar(ElementType::I32),
-                            "f32" => Type::Scalar(ElementType::F32),
-                            "f64" => Type::Scalar(ElementType::F64),
-                            "i64" => Type::Scalar(ElementType::I64),
-                            "Bool" => Type::Scalar(ElementType::Bool),
-                            other => {
-                                if self.env.structs.contains_key(other) {
-                                    Type::Struct(other.to_string(), None)
-                                } else {
-                                    Type::Generic(other.to_string(), None)
-                                }
-                            }
-                        };
-                        generic_args.push(ty);
+                if let Type::GenericInstance(inner, args) = self.parse_ty_str(&resolved_name) {
+                    if let Type::Struct(s, _) = *inner {
+                        base_name = s;
                     }
+                    generic_args = args;
                 }
 
                 if let Some(struct_decl) = self.env.structs.get(&base_name) {

@@ -421,4 +421,56 @@ impl<'a> TypeChecker<'a> {
         self.current_return_type = prev_ret_ty;
         self.constraints = prev_constraints;
     }
+
+    pub fn parse_ty_str(&self, s: &str) -> Type {
+        let s = s.trim();
+        match s {
+            "i32" => Type::Scalar(ElementType::I32),
+            "i64" => Type::Scalar(ElementType::I64),
+            "f32" => Type::Scalar(ElementType::F32),
+            "f64" => Type::Scalar(ElementType::F64),
+            "Bool" => Type::Scalar(ElementType::Bool),
+            other => {
+                if let Some(lt) = other.find('<') {
+                    if other.ends_with('>') {
+                        let base_name = other[..lt].trim().to_string();
+                        let args_str = &other[lt + 1..other.len() - 1];
+                        let mut args = Vec::new();
+                        let mut depth = 0;
+                        let mut current = String::new();
+                        for c in args_str.chars() {
+                            if c == '<' {
+                                depth += 1;
+                                current.push(c);
+                            } else if c == '>' {
+                                depth -= 1;
+                                current.push(c);
+                            } else if c == ',' && depth == 0 {
+                                args.push(self.parse_ty_str(&current));
+                                current.clear();
+                            } else {
+                                current.push(c);
+                            }
+                        }
+                        if !current.trim().is_empty() {
+                            args.push(self.parse_ty_str(&current));
+                        }
+
+                        let base_ty = if self.env.structs.contains_key(&base_name) {
+                            Type::Struct(base_name, None)
+                        } else {
+                            Type::Generic(base_name, None)
+                        };
+                        return Type::GenericInstance(Box::new(base_ty), args);
+                    }
+                }
+
+                if self.env.structs.contains_key(other) {
+                    Type::Struct(other.to_string(), None)
+                } else {
+                    Type::Generic(other.to_string(), None)
+                }
+            }
+        }
+    }
 }

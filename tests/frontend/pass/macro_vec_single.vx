@@ -1,6 +1,8 @@
 import std::vec;
-import std::closure;
+
 fn main() -> i32 {
-  let mut v = vec![42];
-  return 0;
+    let mut v: Vec<i32> = vec![42];
+    assert(v.len == 1);
+    assert(v[0] == 42);
+    return 0;
 }

@@ -1,0 +1,10 @@
+macro_rules! create_arr {
+    ($x:expr, $y:expr) => { [$x, $y] };
+}
+
+fn main() -> i32 {
+    let arr = create_arr!(1, 2);
+    assert(arr[0] == 1);
+    assert(arr[1] == 2);
+    return 0;
+}

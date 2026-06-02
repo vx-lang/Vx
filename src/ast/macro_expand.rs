@@ -281,7 +281,16 @@ impl<'a> MacroExpander<'a> {
             .get(name)
             .ok_or_else(|| format!("Macro {} not found", name))?;
 
-        let input_tokens = self.flatten_tt(tt);
+        let input_tokens = match tt {
+            TokenTree::Delimited(_, inner) => {
+                let mut tokens = Vec::new();
+                for i in inner {
+                    tokens.extend(self.flatten_tt(i));
+                }
+                tokens
+            }
+            _ => self.flatten_tt(tt),
+        };
 
         for rule in rules {
             if let Ok(captures) = self.match_rule(&rule.matcher, &input_tokens) {
@@ -534,13 +543,13 @@ impl<'a> MacroExpander<'a> {
         }
 
         if let expr::Expr::StringLiteral(s) = &mut exprs[0] {
-            s.value = format!("{}\\n", s.value);
+            s.value = format!("{}\n", s.value);
         } else {
             return Err("First argument to println! must be a string literal".to_string());
         }
 
         Ok(expr::Expr::FunctionCall(expr::FunctionCallExpr {
-            name: "vx_internal_printf".to_string(),
+            name: "printf".to_string(),
             args: exprs,
             span: crate::ast::Span::default(),
         }))

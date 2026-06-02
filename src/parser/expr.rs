@@ -467,6 +467,13 @@ impl<'a> Parser<'a> {
                 expr: Box::new(inner),
                 span: Span::default(),
             }));
+        } else if self.match_token(&TokenType::Minus) {
+            let inner = self.parse_primary_expr()?;
+            return Ok(Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: Box::new(inner),
+                span: Span::default(),
+            }));
         } else if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_primary_expr()?;

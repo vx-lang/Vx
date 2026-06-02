@@ -319,10 +319,8 @@ impl<'a> Lexer<'a> {
             "macro_rules" => {
                 if self.peek() == Some(&'!') {
                     self.advance(); // consume '!'
-                    TokenType::MacroRules
-                } else {
-                    TokenType::Identifier(text.clone())
                 }
+                TokenType::MacroRules
             }
             _ => TokenType::Identifier(text.clone()),
         };
