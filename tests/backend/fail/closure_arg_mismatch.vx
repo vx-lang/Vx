@@ -1,0 +1,13 @@
+// RUN: not vxc %s | FileCheck %s
+
+fn apply_lambda<F>(f: F) -> i32 {
+  return f(10, 20);
+}
+
+fn main() -> i32 {
+  let my_closure = |x: i32| x + 1;
+  return apply_lambda(my_closure);
+}
+
+// CHECK: Semantic check failed
+// CHECK: Closure 'f' expects 1 arguments, got 2

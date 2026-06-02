@@ -1,0 +1,9 @@
+// RUN: not vxc %s | FileCheck %s
+
+fn main() -> i32 {
+  let my_closure: i32 = |x: i32| 1.0;
+  return 0;
+}
+
+// CHECK: Semantic check failed
+// CHECK: Type mismatch in variable declaration 'my_closure'

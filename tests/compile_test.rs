@@ -352,6 +352,7 @@ fn run_optimization_test(path: &Path) {
         .lines()
         .filter(|line| {
             line.trim().starts_with("// RUN: vxc %s")
+                || line.trim().starts_with("// RUN: not vxc %s")
                 || line.trim().starts_with("// RUN: vx-opt %s")
         })
         .collect();
@@ -739,14 +740,19 @@ fn test_backend_fail() {
         entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                let result = std::panic::catch_unwind(|| {
-                    run_backend_test(&path);
-                });
-                assert!(
-                    result.is_err(),
-                    "Expected {} to fail, but it succeeded!",
-                    path.display()
-                );
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("FileCheck") {
+                    run_optimization_test(&path);
+                } else {
+                    let result = std::panic::catch_unwind(|| {
+                        run_backend_test(&path);
+                    });
+                    assert!(
+                        result.is_err(),
+                        "Expected {} to fail, but it succeeded!",
+                        path.display()
+                    );
+                }
             }
         });
     }
