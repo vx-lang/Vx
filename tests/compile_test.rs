@@ -528,16 +528,10 @@ fn test_backend() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_iter().for_each(|entry| {
+        entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open("test_backend_log.txt")
-                    .unwrap();
-                use std::io::Write;
-                writeln!(f, "Running test_backend on {:?}", path).unwrap();
+                println!("Running test_backend on {:?}", path);
                 run_backend_test(&path);
                 let source = std::fs::read_to_string(&path).unwrap_or_default();
                 if source.contains("// RUN: vxc %s --emit-mlir") {
