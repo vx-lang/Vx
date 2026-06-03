@@ -113,11 +113,11 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::UnaryOp(u) => {
-                if let crate::ast::UnaryOp::Not = u.op {
-                    let inner = self.lower_expr(&u.expr)?;
-                    Ok(format!("(not {})", inner))
-                } else {
-                    Err(format!("Unsupported unary op in SMT solver: {:?}", u.op))
+                let inner = self.lower_expr(&u.expr)?;
+                match u.op {
+                    crate::ast::UnaryOp::Not => Ok(format!("(not {})", inner)),
+                    crate::ast::UnaryOp::Neg => Ok(format!("(- {})", inner)),
+                    _ => Err(format!("Unsupported unary op in SMT solver: {:?}", u.op)),
                 }
             }
             Expr::MemberAccess(m) => {

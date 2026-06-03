@@ -9,49 +9,49 @@ ensures return == 1
 }
 
 fn test_topology_npu_1(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[1] == Topology::NPU[1]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_2(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[2] == Topology::NPU[2]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_3(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[3] == Topology::NPU[3]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_4(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[4] == Topology::NPU[4]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_5(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[5] == Topology::NPU[5]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_6(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[6] == Topology::NPU[6]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_7(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[7] == Topology::NPU[7]
 ensures return == 1
 {
     return 1;
@@ -65,42 +65,42 @@ ensures return == 1
 }
 
 fn test_topology_npu_9(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[1] == Topology::NPU[1]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_10(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[2] == Topology::NPU[2]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_11(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[3] == Topology::NPU[3]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_12(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[4] == Topology::NPU[4]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_13(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[5] == Topology::NPU[5]
 ensures return == 1
 {
     return 1;
 }
 
 fn test_topology_npu_14(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[6] == Topology::NPU[6]
 ensures return == 1
 {
     return 1;

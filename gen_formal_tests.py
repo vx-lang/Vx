@@ -63,19 +63,21 @@ print("Generating Logic tests...")
 logic_pass_funcs = []
 logic_fail_funcs = []
 for i in range(30):
+    v1 = random.randint(1, 100)
+    v2 = random.randint(1, 100)
     logic_pass_funcs.append(f"""fn test_logic_and_{i}(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > {v1} && B > {v2}
+ensures return > {v1 + v2}
 {{
     let sum = A + B;
     return sum;
 }}
 """)
     logic_fail_funcs.append(f"""fn test_logic_or_fail_{i}(A: i32, B: i32) -> i32
-requires A > 0 || B > 0
-ensures return > 0
+requires A > {v1} || B > {v2}
+ensures return > {v1 + v2}
 {{
-    // FAILS because one of them could be negative
+    // FAILS because one of them could be negative or less than the required amount
     let sum = A + B;
     return sum;
 }}
@@ -88,17 +90,18 @@ print("Generating Complex Logic & Inequalities tests...")
 complex_pass_funcs = []
 complex_fail_funcs = []
 for i in range(25):
+    offset = random.randint(0, 20)
     complex_pass_funcs.append(f"""fn test_complex_{i}(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + {offset}
+ensures return >= {offset}
 {{
     let diff = X - Z;
     return diff;
 }}
 """)
     complex_fail_funcs.append(f"""fn test_complex_fail_{i}(X: i32, Y: i32, Z: i32) -> i32
-requires X > Y && Y > Z
-ensures return < 0
+requires X > Y && Y > Z + {offset}
+ensures return < {offset}
 {{
     let diff = X - Z;
     return diff;
@@ -112,22 +115,23 @@ print("Generating Loop Invariant tests...")
 loop_pass_funcs = []
 loop_fail_funcs = []
 for i in range(20):
+    bound = random.randint(1, 100)
     loop_pass_funcs.append(f"""fn test_loop_{i}(N: i32) -> i32
-requires N > 5
-ensures return > 0
+requires N > {bound}
+ensures return > {bound - 5}
 {{
-    for i in 0..10 invariant(N > 5) {{
+    for j in 0..10 invariant(N > {bound}) {{
         let dummy = N;
     }}
     return N;
 }}
 """)
     loop_fail_funcs.append(f"""fn test_loop_fail_{i}(N: i32) -> i32
-requires N > 5
-ensures return > 0
+requires N > {bound}
+ensures return > {bound}
 {{
-    // FAILS because invariant N > 10 is not guaranteed by N > 5
-    for i in 0..10 invariant(N > 10) {{
+    // FAILS because invariant requires more than N provides
+    for j in 0..10 invariant(N > {bound + 10}) {{
         let dummy = N;
     }}
     return N;
@@ -141,15 +145,16 @@ print("Generating Topology tests...")
 top_pass_funcs = []
 top_fail_funcs = []
 for i in range(15):
+    idx = i % 8
     top_pass_funcs.append(f"""fn test_topology_npu_{i}(T: i32) -> i32
-requires Topology::NPU[0] == Topology::NPU[0]
+requires Topology::NPU[{idx}] == Topology::NPU[{idx}]
 ensures return == 1
 {{
     return 1;
 }}
 """)
     top_fail_funcs.append(f"""fn test_topology_host_fail_{i}(T: i32) -> i32
-requires Topology::Host == Topology::NPU[0]
+requires Topology::Host == Topology::NPU[{idx}]
 ensures return == 1
 {{
     return 1;

@@ -2,200 +2,200 @@
 // RUN: vxc %s
 
 fn test_complex_0(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 20
+ensures return >= 20
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_1(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 15
+ensures return >= 15
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_2(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 5
+ensures return >= 5
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_3(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 5
+ensures return >= 5
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_4(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 2
+ensures return >= 2
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_5(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 14
+ensures return >= 14
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_6(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 1
+ensures return >= 1
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_7(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 2
+ensures return >= 2
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_8(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 8
+ensures return >= 8
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_9(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 15
+ensures return >= 15
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_10(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 14
+ensures return >= 14
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_11(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 13
+ensures return >= 13
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_12(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 5
+ensures return >= 5
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_13(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 2
+ensures return >= 2
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_14(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 1
+ensures return >= 1
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_15(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 20
+ensures return >= 20
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_16(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 5
+ensures return >= 5
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_17(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 8
+ensures return >= 8
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_18(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 12
+ensures return >= 12
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_19(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 15
+ensures return >= 15
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_20(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 16
+ensures return >= 16
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_21(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 7
+ensures return >= 7
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_22(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 8
+ensures return >= 8
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_23(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 9
+ensures return >= 9
 {
     let diff = X - Z;
     return diff;
 }
 
 fn test_complex_24(X: i32, Y: i32, Z: i32) -> i32
-requires X >= Y && Y >= Z
-ensures return >= 0
+requires X >= Y && Y >= Z + 18
+ensures return >= 18
 {
     let diff = X - Z;
     return diff;

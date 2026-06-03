@@ -38,7 +38,7 @@ proptest = "1.4"
 rstest = "0.19"
 
 [workspace]
-members = [
+members = ["refactor_tool",
     "stdlib/rust_core"
 ]
 

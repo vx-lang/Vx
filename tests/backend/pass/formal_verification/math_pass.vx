@@ -2,6 +2,126 @@
 // RUN: vxc %s
 
 fn test_math_0(N: i32) -> i32
+requires N > 83
+ensures return > 121
+{
+    let x = N + 38 + 1;
+    return x;
+}
+
+fn test_math_1(N: i32) -> i32
+requires N > 19
+ensures return > 53
+{
+    let x = N + 34 + 1;
+    return x;
+}
+
+fn test_math_2(N: i32) -> i32
+requires N > 35
+ensures return > 63
+{
+    let x = N + 28 + 1;
+    return x;
+}
+
+fn test_math_3(N: i32) -> i32
+requires N > 62
+ensures return > 76
+{
+    let x = N + 14 + 1;
+    return x;
+}
+
+fn test_math_4(N: i32) -> i32
+requires N > 94
+ensures return > 144
+{
+    let x = N + 50 + 1;
+    return x;
+}
+
+fn test_math_5(N: i32) -> i32
+requires N > 87
+ensures return > 90
+{
+    let x = N + 3 + 1;
+    return x;
+}
+
+fn test_math_6(N: i32) -> i32
+requires N > 17
+ensures return > 55
+{
+    let x = N + 38 + 1;
+    return x;
+}
+
+fn test_math_7(N: i32) -> i32
+requires N > 41
+ensures return > 50
+{
+    let x = N + 9 + 1;
+    return x;
+}
+
+fn test_math_8(N: i32) -> i32
+requires N > 80
+ensures return > 91
+{
+    let x = N + 11 + 1;
+    return x;
+}
+
+fn test_math_9(N: i32) -> i32
+requires N > 73
+ensures return > 84
+{
+    let x = N + 11 + 1;
+    return x;
+}
+
+fn test_math_10(N: i32) -> i32
+requires N > 66
+ensures return > 98
+{
+    let x = N + 32 + 1;
+    return x;
+}
+
+fn test_math_11(N: i32) -> i32
+requires N > 82
+ensures return > 87
+{
+    let x = N + 5 + 1;
+    return x;
+}
+
+fn test_math_12(N: i32) -> i32
+requires N > 16
+ensures return > 37
+{
+    let x = N + 21 + 1;
+    return x;
+}
+
+fn test_math_13(N: i32) -> i32
+requires N > 52
+ensures return > 80
+{
+    let x = N + 28 + 1;
+    return x;
+}
+
+fn test_math_14(N: i32) -> i32
+requires N > 48
+ensures return > 51
+{
+    let x = N + 3 + 1;
+    return x;
+}
+
+fn test_math_15(N: i32) -> i32
 requires N > 69
 ensures return > 70
 {
@@ -9,395 +129,275 @@ ensures return > 70
     return x;
 }
 
-fn test_math_1(N: i32) -> i32
-requires N > 47
-ensures return > 58
-{
-    let x = N + 11 + 1;
-    return x;
-}
-
-fn test_math_2(N: i32) -> i32
-requires N > 23
-ensures return > 60
-{
-    let x = N + 37 + 1;
-    return x;
-}
-
-fn test_math_3(N: i32) -> i32
-requires N > 54
-ensures return > 104
-{
-    let x = N + 50 + 1;
-    return x;
-}
-
-fn test_math_4(N: i32) -> i32
-requires N > 78
-ensures return > 119
-{
-    let x = N + 41 + 1;
-    return x;
-}
-
-fn test_math_5(N: i32) -> i32
-requires N > 38
-ensures return > 83
-{
-    let x = N + 45 + 1;
-    return x;
-}
-
-fn test_math_6(N: i32) -> i32
-requires N > 25
-ensures return > 48
-{
-    let x = N + 23 + 1;
-    return x;
-}
-
-fn test_math_7(N: i32) -> i32
-requires N > 24
-ensures return > 25
-{
-    let x = N + 1 + 1;
-    return x;
-}
-
-fn test_math_8(N: i32) -> i32
-requires N > 87
-ensures return > 126
-{
-    let x = N + 39 + 1;
-    return x;
-}
-
-fn test_math_9(N: i32) -> i32
-requires N > 10
-ensures return > 15
-{
-    let x = N + 5 + 1;
-    return x;
-}
-
-fn test_math_10(N: i32) -> i32
-requires N > 61
-ensures return > 93
-{
-    let x = N + 32 + 1;
-    return x;
-}
-
-fn test_math_11(N: i32) -> i32
-requires N > 12
-ensures return > 59
-{
-    let x = N + 47 + 1;
-    return x;
-}
-
-fn test_math_12(N: i32) -> i32
-requires N > 65
-ensures return > 77
-{
-    let x = N + 12 + 1;
-    return x;
-}
-
-fn test_math_13(N: i32) -> i32
-requires N > 64
-ensures return > 82
-{
-    let x = N + 18 + 1;
-    return x;
-}
-
-fn test_math_14(N: i32) -> i32
-requires N > 74
-ensures return > 107
-{
-    let x = N + 33 + 1;
-    return x;
-}
-
-fn test_math_15(N: i32) -> i32
-requires N > 94
-ensures return > 128
-{
-    let x = N + 34 + 1;
-    return x;
-}
-
 fn test_math_16(N: i32) -> i32
-requires N > 87
-ensures return > 97
-{
-    let x = N + 10 + 1;
-    return x;
-}
-
-fn test_math_17(N: i32) -> i32
-requires N > 10
-ensures return > 44
-{
-    let x = N + 34 + 1;
-    return x;
-}
-
-fn test_math_18(N: i32) -> i32
-requires N > 61
-ensures return > 83
-{
-    let x = N + 22 + 1;
-    return x;
-}
-
-fn test_math_19(N: i32) -> i32
-requires N > 17
-ensures return > 41
-{
-    let x = N + 24 + 1;
-    return x;
-}
-
-fn test_math_20(N: i32) -> i32
-requires N > 23
-ensures return > 72
-{
-    let x = N + 49 + 1;
-    return x;
-}
-
-fn test_math_21(N: i32) -> i32
-requires N > 72
-ensures return > 109
-{
-    let x = N + 37 + 1;
-    return x;
-}
-
-fn test_math_22(N: i32) -> i32
-requires N > 81
-ensures return > 131
-{
-    let x = N + 50 + 1;
-    return x;
-}
-
-fn test_math_23(N: i32) -> i32
-requires N > 85
-ensures return > 87
-{
-    let x = N + 2 + 1;
-    return x;
-}
-
-fn test_math_24(N: i32) -> i32
-requires N > 48
-ensures return > 97
-{
-    let x = N + 49 + 1;
-    return x;
-}
-
-fn test_math_25(N: i32) -> i32
-requires N > 27
-ensures return > 49
-{
-    let x = N + 22 + 1;
-    return x;
-}
-
-fn test_math_26(N: i32) -> i32
-requires N > 16
-ensures return > 27
-{
-    let x = N + 11 + 1;
-    return x;
-}
-
-fn test_math_27(N: i32) -> i32
-requires N > 14
-ensures return > 18
-{
-    let x = N + 4 + 1;
-    return x;
-}
-
-fn test_math_28(N: i32) -> i32
-requires N > 34
-ensures return > 70
-{
-    let x = N + 36 + 1;
-    return x;
-}
-
-fn test_math_29(N: i32) -> i32
-requires N > 49
-ensures return > 90
-{
-    let x = N + 41 + 1;
-    return x;
-}
-
-fn test_math_30(N: i32) -> i32
-requires N > 96
-ensures return > 115
-{
-    let x = N + 19 + 1;
-    return x;
-}
-
-fn test_math_31(N: i32) -> i32
-requires N > 97
-ensures return > 146
-{
-    let x = N + 49 + 1;
-    return x;
-}
-
-fn test_math_32(N: i32) -> i32
-requires N > 63
-ensures return > 91
-{
-    let x = N + 28 + 1;
-    return x;
-}
-
-fn test_math_33(N: i32) -> i32
-requires N > 39
-ensures return > 81
-{
-    let x = N + 42 + 1;
-    return x;
-}
-
-fn test_math_34(N: i32) -> i32
-requires N > 28
-ensures return > 75
-{
-    let x = N + 47 + 1;
-    return x;
-}
-
-fn test_math_35(N: i32) -> i32
-requires N > 59
-ensures return > 84
-{
-    let x = N + 25 + 1;
-    return x;
-}
-
-fn test_math_36(N: i32) -> i32
-requires N > 12
-ensures return > 34
-{
-    let x = N + 22 + 1;
-    return x;
-}
-
-fn test_math_37(N: i32) -> i32
-requires N > 17
-ensures return > 19
-{
-    let x = N + 2 + 1;
-    return x;
-}
-
-fn test_math_38(N: i32) -> i32
-requires N > 46
-ensures return > 58
-{
-    let x = N + 12 + 1;
-    return x;
-}
-
-fn test_math_39(N: i32) -> i32
-requires N > 54
-ensures return > 79
-{
-    let x = N + 25 + 1;
-    return x;
-}
-
-fn test_math_40(N: i32) -> i32
-requires N > 25
-ensures return > 44
-{
-    let x = N + 19 + 1;
-    return x;
-}
-
-fn test_math_41(N: i32) -> i32
-requires N > 14
-ensures return > 40
-{
-    let x = N + 26 + 1;
-    return x;
-}
-
-fn test_math_42(N: i32) -> i32
-requires N > 84
-ensures return > 128
-{
-    let x = N + 44 + 1;
-    return x;
-}
-
-fn test_math_43(N: i32) -> i32
-requires N > 82
-ensures return > 125
-{
-    let x = N + 43 + 1;
-    return x;
-}
-
-fn test_math_44(N: i32) -> i32
-requires N > 31
-ensures return > 79
-{
-    let x = N + 48 + 1;
-    return x;
-}
-
-fn test_math_45(N: i32) -> i32
-requires N > 92
-ensures return > 124
-{
-    let x = N + 32 + 1;
-    return x;
-}
-
-fn test_math_46(N: i32) -> i32
-requires N > 51
-ensures return > 61
-{
-    let x = N + 10 + 1;
-    return x;
-}
-
-fn test_math_47(N: i32) -> i32
-requires N > 28
-ensures return > 78
-{
-    let x = N + 50 + 1;
-    return x;
-}
-
-fn test_math_48(N: i32) -> i32
-requires N > 30
-ensures return > 47
+requires N > 90
+ensures return > 107
 {
     let x = N + 17 + 1;
     return x;
 }
 
-fn test_math_49(N: i32) -> i32
-requires N > 97
-ensures return > 125
+fn test_math_17(N: i32) -> i32
+requires N > 36
+ensures return > 81
 {
-    let x = N + 28 + 1;
+    let x = N + 45 + 1;
+    return x;
+}
+
+fn test_math_18(N: i32) -> i32
+requires N > 77
+ensures return > 102
+{
+    let x = N + 25 + 1;
+    return x;
+}
+
+fn test_math_19(N: i32) -> i32
+requires N > 24
+ensures return > 66
+{
+    let x = N + 42 + 1;
+    return x;
+}
+
+fn test_math_20(N: i32) -> i32
+requires N > 36
+ensures return > 69
+{
+    let x = N + 33 + 1;
+    return x;
+}
+
+fn test_math_21(N: i32) -> i32
+requires N > 11
+ensures return > 36
+{
+    let x = N + 25 + 1;
+    return x;
+}
+
+fn test_math_22(N: i32) -> i32
+requires N > 40
+ensures return > 59
+{
+    let x = N + 19 + 1;
+    return x;
+}
+
+fn test_math_23(N: i32) -> i32
+requires N > 17
+ensures return > 62
+{
+    let x = N + 45 + 1;
+    return x;
+}
+
+fn test_math_24(N: i32) -> i32
+requires N > 99
+ensures return > 134
+{
+    let x = N + 35 + 1;
+    return x;
+}
+
+fn test_math_25(N: i32) -> i32
+requires N > 88
+ensures return > 93
+{
+    let x = N + 5 + 1;
+    return x;
+}
+
+fn test_math_26(N: i32) -> i32
+requires N > 71
+ensures return > 85
+{
+    let x = N + 14 + 1;
+    return x;
+}
+
+fn test_math_27(N: i32) -> i32
+requires N > 36
+ensures return > 86
+{
+    let x = N + 50 + 1;
+    return x;
+}
+
+fn test_math_28(N: i32) -> i32
+requires N > 73
+ensures return > 86
+{
+    let x = N + 13 + 1;
+    return x;
+}
+
+fn test_math_29(N: i32) -> i32
+requires N > 41
+ensures return > 80
+{
+    let x = N + 39 + 1;
+    return x;
+}
+
+fn test_math_30(N: i32) -> i32
+requires N > 60
+ensures return > 107
+{
+    let x = N + 47 + 1;
+    return x;
+}
+
+fn test_math_31(N: i32) -> i32
+requires N > 30
+ensures return > 48
+{
+    let x = N + 18 + 1;
+    return x;
+}
+
+fn test_math_32(N: i32) -> i32
+requires N > 17
+ensures return > 23
+{
+    let x = N + 6 + 1;
+    return x;
+}
+
+fn test_math_33(N: i32) -> i32
+requires N > 72
+ensures return > 104
+{
+    let x = N + 32 + 1;
+    return x;
+}
+
+fn test_math_34(N: i32) -> i32
+requires N > 89
+ensures return > 90
+{
+    let x = N + 1 + 1;
+    return x;
+}
+
+fn test_math_35(N: i32) -> i32
+requires N > 13
+ensures return > 27
+{
+    let x = N + 14 + 1;
+    return x;
+}
+
+fn test_math_36(N: i32) -> i32
+requires N > 42
+ensures return > 50
+{
+    let x = N + 8 + 1;
+    return x;
+}
+
+fn test_math_37(N: i32) -> i32
+requires N > 73
+ensures return > 90
+{
+    let x = N + 17 + 1;
+    return x;
+}
+
+fn test_math_38(N: i32) -> i32
+requires N > 87
+ensures return > 124
+{
+    let x = N + 37 + 1;
+    return x;
+}
+
+fn test_math_39(N: i32) -> i32
+requires N > 36
+ensures return > 49
+{
+    let x = N + 13 + 1;
+    return x;
+}
+
+fn test_math_40(N: i32) -> i32
+requires N > 49
+ensures return > 89
+{
+    let x = N + 40 + 1;
+    return x;
+}
+
+fn test_math_41(N: i32) -> i32
+requires N > 19
+ensures return > 68
+{
+    let x = N + 49 + 1;
+    return x;
+}
+
+fn test_math_42(N: i32) -> i32
+requires N > 51
+ensures return > 99
+{
+    let x = N + 48 + 1;
+    return x;
+}
+
+fn test_math_43(N: i32) -> i32
+requires N > 46
+ensures return > 77
+{
+    let x = N + 31 + 1;
+    return x;
+}
+
+fn test_math_44(N: i32) -> i32
+requires N > 99
+ensures return > 117
+{
+    let x = N + 18 + 1;
+    return x;
+}
+
+fn test_math_45(N: i32) -> i32
+requires N > 17
+ensures return > 42
+{
+    let x = N + 25 + 1;
+    return x;
+}
+
+fn test_math_46(N: i32) -> i32
+requires N > 75
+ensures return > 113
+{
+    let x = N + 38 + 1;
+    return x;
+}
+
+fn test_math_47(N: i32) -> i32
+requires N > 32
+ensures return > 40
+{
+    let x = N + 8 + 1;
+    return x;
+}
+
+fn test_math_48(N: i32) -> i32
+requires N > 59
+ensures return > 80
+{
+    let x = N + 21 + 1;
+    return x;
+}
+
+fn test_math_49(N: i32) -> i32
+requires N > 66
+ensures return > 101
+{
+    let x = N + 35 + 1;
     return x;
 }
 

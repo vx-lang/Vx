@@ -2,240 +2,240 @@
 // RUN: vxc %s
 
 fn test_logic_and_0(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 49 && B > 58
+ensures return > 107
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_1(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 22 && B > 19
+ensures return > 41
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_2(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 92 && B > 41
+ensures return > 133
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_3(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 89 && B > 68
+ensures return > 157
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_4(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 78 && B > 95
+ensures return > 173
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_5(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 62 && B > 71
+ensures return > 133
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_6(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 73 && B > 89
+ensures return > 162
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_7(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 62 && B > 88
+ensures return > 150
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_8(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 63 && B > 3
+ensures return > 66
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_9(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 5 && B > 35
+ensures return > 40
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_10(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 37 && B > 49
+ensures return > 86
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_11(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 11 && B > 10
+ensures return > 21
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_12(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 92 && B > 53
+ensures return > 145
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_13(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 29 && B > 62
+ensures return > 91
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_14(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 55 && B > 8
+ensures return > 63
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_15(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 76 && B > 40
+ensures return > 116
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_16(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 30 && B > 72
+ensures return > 102
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_17(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 85 && B > 46
+ensures return > 131
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_18(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 46 && B > 84
+ensures return > 130
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_19(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 25 && B > 79
+ensures return > 104
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_20(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 54 && B > 61
+ensures return > 115
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_21(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 85 && B > 29
+ensures return > 114
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_22(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 40 && B > 23
+ensures return > 63
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_23(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 76 && B > 91
+ensures return > 167
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_24(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 17 && B > 75
+ensures return > 92
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_25(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 83 && B > 62
+ensures return > 145
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_26(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 28 && B > 80
+ensures return > 108
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_27(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 36 && B > 72
+ensures return > 108
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_28(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 86 && B > 62
+ensures return > 148
 {
     let sum = A + B;
     return sum;
 }
 
 fn test_logic_and_29(A: i32, B: i32) -> i32
-requires A > 0 && B > 0
-ensures return > 0
+requires A > 74 && B > 82
+ensures return > 156
 {
     let sum = A + B;
     return sum;
