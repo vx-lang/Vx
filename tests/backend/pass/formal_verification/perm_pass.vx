@@ -1,0 +1,382 @@
+// RUN: vxc %s
+
+
+fn test_group1_0(X: i32) -> i32
+requires Topology::NPU[0] == Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_1(X: i32) -> i32
+requires Topology::NPU[0] == Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_2(X: i32) -> i32
+requires Topology::NPU[0] == Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_3(X: i32) -> i32
+requires Topology::NPU[0] != Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_4(X: i32) -> i32
+requires Topology::NPU[0] != Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_5(X: i32) -> i32
+requires Topology::NPU[0] != Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_6(X: i32) -> i32
+requires Topology::NPU[0] < Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_7(X: i32) -> i32
+requires Topology::NPU[0] < Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_8(X: i32) -> i32
+requires Topology::NPU[0] < Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_9(X: i32) -> i32
+requires Topology::NPU[0] <= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_10(X: i32) -> i32
+requires Topology::NPU[0] <= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_11(X: i32) -> i32
+requires Topology::NPU[0] <= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_12(X: i32) -> i32
+requires Topology::NPU[0] > Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_13(X: i32) -> i32
+requires Topology::NPU[0] > Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_14(X: i32) -> i32
+requires Topology::NPU[0] > Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_15(X: i32) -> i32
+requires Topology::NPU[0] >= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_16(X: i32) -> i32
+requires Topology::NPU[0] >= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_17(X: i32) -> i32
+requires Topology::NPU[0] >= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_18(X: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_19(X: i32) -> i32
+requires Topology::Host == Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_20(X: i32) -> i32
+requires Topology::Host == Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_21(X: i32) -> i32
+requires Topology::Host != Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_22(X: i32) -> i32
+requires Topology::Host != Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_23(X: i32) -> i32
+requires Topology::Host != Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_24(X: i32) -> i32
+requires Topology::Host < Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_25(X: i32) -> i32
+requires Topology::Host < Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_26(X: i32) -> i32
+requires Topology::Host < Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_27(X: i32) -> i32
+requires Topology::Host <= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_28(X: i32) -> i32
+requires Topology::Host <= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_29(X: i32) -> i32
+requires Topology::Host <= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_30(X: i32) -> i32
+requires Topology::Host > Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_31(X: i32) -> i32
+requires Topology::Host > Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_32(X: i32) -> i32
+requires Topology::Host > Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_33(X: i32) -> i32
+requires Topology::Host >= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_34(X: i32) -> i32
+requires Topology::Host >= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_35(X: i32) -> i32
+requires Topology::Host >= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_36(X: i32) -> i32
+requires Topology::GPU == Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_37(X: i32) -> i32
+requires Topology::GPU == Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_38(X: i32) -> i32
+requires Topology::GPU == Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_39(X: i32) -> i32
+requires Topology::GPU != Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_40(X: i32) -> i32
+requires Topology::GPU != Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_41(X: i32) -> i32
+requires Topology::GPU != Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_42(X: i32) -> i32
+requires Topology::GPU < Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_43(X: i32) -> i32
+requires Topology::GPU < Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_44(X: i32) -> i32
+requires Topology::GPU < Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_45(X: i32) -> i32
+requires Topology::GPU <= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_46(X: i32) -> i32
+requires Topology::GPU <= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_47(X: i32) -> i32
+requires Topology::GPU <= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_48(X: i32) -> i32
+requires Topology::GPU > Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_49(X: i32) -> i32
+requires Topology::GPU > Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_50(X: i32) -> i32
+requires Topology::GPU > Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_51(X: i32) -> i32
+requires Topology::GPU >= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_52(X: i32) -> i32
+requires Topology::GPU >= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group1_53(X: i32) -> i32
+requires Topology::GPU >= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn main() -> i32 { return 0; }

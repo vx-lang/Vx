@@ -1,0 +1,634 @@
+// EXPECTED TO FAIL due to Unsupported expression in SMT solver
+
+
+fn test_group2_54(X: i32) -> i32
+requires sin(0) == 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_55(X: i32) -> i32
+requires sin(0) == 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_56(X: i32) -> i32
+requires sin(0) == -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_57(X: i32) -> i32
+requires sin(0) != 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_58(X: i32) -> i32
+requires sin(0) != 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_59(X: i32) -> i32
+requires sin(0) != -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_60(X: i32) -> i32
+requires sin(0) < 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_61(X: i32) -> i32
+requires sin(0) < 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_62(X: i32) -> i32
+requires sin(0) < -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_63(X: i32) -> i32
+requires sin(0) <= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_64(X: i32) -> i32
+requires sin(0) <= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_65(X: i32) -> i32
+requires sin(0) <= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_66(X: i32) -> i32
+requires sin(0) > 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_67(X: i32) -> i32
+requires sin(0) > 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_68(X: i32) -> i32
+requires sin(0) > -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_69(X: i32) -> i32
+requires sin(0) >= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_70(X: i32) -> i32
+requires sin(0) >= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_71(X: i32) -> i32
+requires sin(0) >= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_72(X: i32) -> i32
+requires cos(1) == 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_73(X: i32) -> i32
+requires cos(1) == 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_74(X: i32) -> i32
+requires cos(1) == -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_75(X: i32) -> i32
+requires cos(1) != 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_76(X: i32) -> i32
+requires cos(1) != 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_77(X: i32) -> i32
+requires cos(1) != -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_78(X: i32) -> i32
+requires cos(1) < 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_79(X: i32) -> i32
+requires cos(1) < 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_80(X: i32) -> i32
+requires cos(1) < -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_81(X: i32) -> i32
+requires cos(1) <= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_82(X: i32) -> i32
+requires cos(1) <= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_83(X: i32) -> i32
+requires cos(1) <= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_84(X: i32) -> i32
+requires cos(1) > 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_85(X: i32) -> i32
+requires cos(1) > 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_86(X: i32) -> i32
+requires cos(1) > -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_87(X: i32) -> i32
+requires cos(1) >= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_88(X: i32) -> i32
+requires cos(1) >= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_89(X: i32) -> i32
+requires cos(1) >= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_90(X: i32) -> i32
+requires abs(-5) == 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_91(X: i32) -> i32
+requires abs(-5) == 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_92(X: i32) -> i32
+requires abs(-5) == -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_93(X: i32) -> i32
+requires abs(-5) != 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_94(X: i32) -> i32
+requires abs(-5) != 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_95(X: i32) -> i32
+requires abs(-5) != -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_96(X: i32) -> i32
+requires abs(-5) < 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_97(X: i32) -> i32
+requires abs(-5) < 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_98(X: i32) -> i32
+requires abs(-5) < -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_99(X: i32) -> i32
+requires abs(-5) <= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_100(X: i32) -> i32
+requires abs(-5) <= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_101(X: i32) -> i32
+requires abs(-5) <= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_102(X: i32) -> i32
+requires abs(-5) > 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_103(X: i32) -> i32
+requires abs(-5) > 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_104(X: i32) -> i32
+requires abs(-5) > -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_105(X: i32) -> i32
+requires abs(-5) >= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_106(X: i32) -> i32
+requires abs(-5) >= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_107(X: i32) -> i32
+requires abs(-5) >= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_108(X: i32) -> i32
+requires max(10, 20) == 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_109(X: i32) -> i32
+requires max(10, 20) == 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_110(X: i32) -> i32
+requires max(10, 20) == -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_111(X: i32) -> i32
+requires max(10, 20) != 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_112(X: i32) -> i32
+requires max(10, 20) != 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_113(X: i32) -> i32
+requires max(10, 20) != -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_114(X: i32) -> i32
+requires max(10, 20) < 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_115(X: i32) -> i32
+requires max(10, 20) < 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_116(X: i32) -> i32
+requires max(10, 20) < -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_117(X: i32) -> i32
+requires max(10, 20) <= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_118(X: i32) -> i32
+requires max(10, 20) <= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_119(X: i32) -> i32
+requires max(10, 20) <= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_120(X: i32) -> i32
+requires max(10, 20) > 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_121(X: i32) -> i32
+requires max(10, 20) > 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_122(X: i32) -> i32
+requires max(10, 20) > -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_123(X: i32) -> i32
+requires max(10, 20) >= 0
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_124(X: i32) -> i32
+requires max(10, 20) >= 1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group2_125(X: i32) -> i32
+requires max(10, 20) >= -1
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_126(X: i32) -> i32
+requires grad(f) == Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_127(X: i32) -> i32
+requires grad(f) == Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_128(X: i32) -> i32
+requires grad(f) == Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_129(X: i32) -> i32
+requires grad(f) != Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_130(X: i32) -> i32
+requires grad(f) != Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_131(X: i32) -> i32
+requires grad(f) != Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_132(X: i32) -> i32
+requires grad(f) < Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_133(X: i32) -> i32
+requires grad(f) < Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_134(X: i32) -> i32
+requires grad(f) < Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_135(X: i32) -> i32
+requires grad(f) <= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_136(X: i32) -> i32
+requires grad(f) <= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_137(X: i32) -> i32
+requires grad(f) <= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_138(X: i32) -> i32
+requires grad(f) > Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_139(X: i32) -> i32
+requires grad(f) > Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_140(X: i32) -> i32
+requires grad(f) > Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_141(X: i32) -> i32
+requires grad(f) >= Topology::NPU[0]
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_142(X: i32) -> i32
+requires grad(f) >= Topology::Host
+ensures return == X
+{
+    return X;
+}
+
+fn test_group3_143(X: i32) -> i32
+requires grad(f) >= Topology::GPU
+ensures return == X
+{
+    return X;
+}
+
+fn main() -> i32 { return 0; }
