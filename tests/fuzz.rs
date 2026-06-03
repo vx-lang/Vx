@@ -28,4 +28,14 @@ proptest! {
     fn test_parser_autodiff(s in "(grad|vjp|jvp) *\\( *[a-zA-Z_][a-zA-Z0-9_]* *(, *[a-zA-Z_][a-zA-Z0-9_]*)* *\\) *") {
         fuzz_parser(&s);
     }
+
+    #[test]
+    fn test_parser_control_flow(s in "(if|while|for) *\\( *[a-zA-Z0-9_]+ *(==|<|>|<=|>=) *[a-zA-Z0-9_]+ *\\) *\\{ *[a-zA-Z_]* *\\}") {
+        fuzz_parser(&s);
+    }
+
+    #[test]
+    fn test_parser_structs(s in "struct *[a-zA-Z_][a-zA-Z0-9_]* *\\{ *([a-zA-Z_]+ *: *[a-zA-Z_]+ *,?)* *\\}") {
+        fuzz_parser(&s);
+    }
 }
