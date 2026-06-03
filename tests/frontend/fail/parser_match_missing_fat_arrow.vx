@@ -1,0 +1,15 @@
+//===- parser_match_missing_fat_arrow.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+
+fn main() -> i32 {
+  let x = 1;
+  match x {
+    1  10,
+    _  0,
+  }
+}
