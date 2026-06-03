@@ -1,0 +1,19 @@
+//===- autodiff_math_abs_pos.vx - Vx Compiler -------------------*- Vx -*-===//
+import std::math;
+
+fn test_func(x: f32) -> f32 {
+  return x.abs();
+}
+
+fn main() -> i32 {
+  let x: f32 = 2.0;
+  let dx: f32 = grad(test_func, x);
+  let expected: f32 = 1.0;
+
+  let diff: f32 = (dx - expected).abs();
+  let mut ret: i32 = 1;
+  if diff < 0.001 {
+    ret = 0;
+  }
+  return ret;
+}

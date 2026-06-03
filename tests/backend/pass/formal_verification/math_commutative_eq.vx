@@ -1,0 +1,19 @@
+//===- math_commutative_eq.vx ---------------------------------===//
+// RUN: vxc %s --emit-mlir -O0
+// RUN: vxc %s
+
+
+fn verify_commutativity<X, Y>(val: Tensor<f32, [X, Y]>) -> Verified<Tensor<f32, [X, Y]>> {
+  assert(X * Y + 5 == 100, "X*Y + 5 = 100");
+
+  // structural match
+  assert(X * Y + 5 == 100, "Match constraint");
+  return Verified(val);
+}
+
+fn main() -> i32 {
+  let t: Tensor<f32, [5, 19]> = Tensor_f32(5, 19);
+  let v: Verified<Tensor<f32, [5, 19]>> = verify_commutativity(t);
+  return 0;
+}
+
