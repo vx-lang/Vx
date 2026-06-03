@@ -1,201 +1,22 @@
 //===- loop_inv_pass.vx ---------------------------------===//
 // RUN: vxc %s
 
-fn test_loop_0(N: i32) -> i32
-requires N > 73
-ensures return > 68
+fn test_loop_increment(N: i32) -> i32
+requires N == 0
+ensures return == 0
 {
-    for j in 0..10 invariant(N > 73) {
-        let dummy = N;
+    // The invariant must be true before the loop and after the loop body.
+    for i in 0..10 invariant(N == 0) {
+        let x = N;
     }
     return N;
 }
 
-fn test_loop_1(N: i32) -> i32
-requires N > 42
-ensures return > 37
+fn test_loop_range(N: i32) -> i32
+requires N > 5 && N < 15
+ensures return > 5
 {
-    for j in 0..10 invariant(N > 42) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_2(N: i32) -> i32
-requires N > 65
-ensures return > 60
-{
-    for j in 0..10 invariant(N > 65) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_3(N: i32) -> i32
-requires N > 52
-ensures return > 47
-{
-    for j in 0..10 invariant(N > 52) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_4(N: i32) -> i32
-requires N > 1
-ensures return > -4
-{
-    for j in 0..10 invariant(N > 1) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_5(N: i32) -> i32
-requires N > 89
-ensures return > 84
-{
-    for j in 0..10 invariant(N > 89) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_6(N: i32) -> i32
-requires N > 60
-ensures return > 55
-{
-    for j in 0..10 invariant(N > 60) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_7(N: i32) -> i32
-requires N > 97
-ensures return > 92
-{
-    for j in 0..10 invariant(N > 97) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_8(N: i32) -> i32
-requires N > 33
-ensures return > 28
-{
-    for j in 0..10 invariant(N > 33) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_9(N: i32) -> i32
-requires N > 55
-ensures return > 50
-{
-    for j in 0..10 invariant(N > 55) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_10(N: i32) -> i32
-requires N > 49
-ensures return > 44
-{
-    for j in 0..10 invariant(N > 49) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_11(N: i32) -> i32
-requires N > 86
-ensures return > 81
-{
-    for j in 0..10 invariant(N > 86) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_12(N: i32) -> i32
-requires N > 50
-ensures return > 45
-{
-    for j in 0..10 invariant(N > 50) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_13(N: i32) -> i32
-requires N > 54
-ensures return > 49
-{
-    for j in 0..10 invariant(N > 54) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_14(N: i32) -> i32
-requires N > 63
-ensures return > 58
-{
-    for j in 0..10 invariant(N > 63) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_15(N: i32) -> i32
-requires N > 47
-ensures return > 42
-{
-    for j in 0..10 invariant(N > 47) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_16(N: i32) -> i32
-requires N > 48
-ensures return > 43
-{
-    for j in 0..10 invariant(N > 48) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_17(N: i32) -> i32
-requires N > 12
-ensures return > 7
-{
-    for j in 0..10 invariant(N > 12) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_18(N: i32) -> i32
-requires N > 17
-ensures return > 12
-{
-    for j in 0..10 invariant(N > 17) {
-        let dummy = N;
-    }
-    return N;
-}
-
-fn test_loop_19(N: i32) -> i32
-requires N > 26
-ensures return > 21
-{
-    for j in 0..10 invariant(N > 26) {
+    for i in 0..5 invariant(N > 5) {
         let dummy = N;
     }
     return N;
