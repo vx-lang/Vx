@@ -1,0 +1,204 @@
+//===- loop_inv_pass.vx ---------------------------------===//
+// RUN: vxc %s
+
+fn test_loop_0(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_1(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_2(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_3(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_4(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_5(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_6(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_7(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_8(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_9(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_10(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_11(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_12(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_13(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_14(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_15(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_16(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_17(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_18(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_19(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    for i in 0..10 invariant(N > 5) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn main() -> i32 { return 0; }

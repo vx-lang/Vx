@@ -1,0 +1,244 @@
+//===- logic_and_pass.vx ---------------------------------===//
+// RUN: vxc %s
+
+fn test_logic_and_0(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_1(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_2(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_3(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_4(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_5(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_6(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_7(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_8(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_9(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_10(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_11(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_12(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_13(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_14(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_15(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_16(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_17(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_18(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_19(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_20(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_21(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_22(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_23(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_24(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_25(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_26(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_27(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_28(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn test_logic_and_29(A: i32, B: i32) -> i32
+requires A > 0 && B > 0
+ensures return > 0
+{
+    let sum = A + B;
+    return sum;
+}
+
+fn main() -> i32 { return 0; }

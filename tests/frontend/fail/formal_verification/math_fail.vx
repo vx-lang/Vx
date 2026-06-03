@@ -1,0 +1,452 @@
+//===- math_fail.vx ---------------------------------===//
+fn test_math_fail_0(N: i32) -> i32
+requires N > 69
+ensures return > 70
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 1 - 1;
+    return x;
+}
+
+fn test_math_fail_1(N: i32) -> i32
+requires N > 47
+ensures return > 58
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 11 - 1;
+    return x;
+}
+
+fn test_math_fail_2(N: i32) -> i32
+requires N > 23
+ensures return > 60
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 37 - 1;
+    return x;
+}
+
+fn test_math_fail_3(N: i32) -> i32
+requires N > 54
+ensures return > 104
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 50 - 1;
+    return x;
+}
+
+fn test_math_fail_4(N: i32) -> i32
+requires N > 78
+ensures return > 119
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 41 - 1;
+    return x;
+}
+
+fn test_math_fail_5(N: i32) -> i32
+requires N > 38
+ensures return > 83
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 45 - 1;
+    return x;
+}
+
+fn test_math_fail_6(N: i32) -> i32
+requires N > 25
+ensures return > 48
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 23 - 1;
+    return x;
+}
+
+fn test_math_fail_7(N: i32) -> i32
+requires N > 24
+ensures return > 25
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 1 - 1;
+    return x;
+}
+
+fn test_math_fail_8(N: i32) -> i32
+requires N > 87
+ensures return > 126
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 39 - 1;
+    return x;
+}
+
+fn test_math_fail_9(N: i32) -> i32
+requires N > 10
+ensures return > 15
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 5 - 1;
+    return x;
+}
+
+fn test_math_fail_10(N: i32) -> i32
+requires N > 61
+ensures return > 93
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 32 - 1;
+    return x;
+}
+
+fn test_math_fail_11(N: i32) -> i32
+requires N > 12
+ensures return > 59
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 47 - 1;
+    return x;
+}
+
+fn test_math_fail_12(N: i32) -> i32
+requires N > 65
+ensures return > 77
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 12 - 1;
+    return x;
+}
+
+fn test_math_fail_13(N: i32) -> i32
+requires N > 64
+ensures return > 82
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 18 - 1;
+    return x;
+}
+
+fn test_math_fail_14(N: i32) -> i32
+requires N > 74
+ensures return > 107
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 33 - 1;
+    return x;
+}
+
+fn test_math_fail_15(N: i32) -> i32
+requires N > 94
+ensures return > 128
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 34 - 1;
+    return x;
+}
+
+fn test_math_fail_16(N: i32) -> i32
+requires N > 87
+ensures return > 97
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 10 - 1;
+    return x;
+}
+
+fn test_math_fail_17(N: i32) -> i32
+requires N > 10
+ensures return > 44
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 34 - 1;
+    return x;
+}
+
+fn test_math_fail_18(N: i32) -> i32
+requires N > 61
+ensures return > 83
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 22 - 1;
+    return x;
+}
+
+fn test_math_fail_19(N: i32) -> i32
+requires N > 17
+ensures return > 41
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 24 - 1;
+    return x;
+}
+
+fn test_math_fail_20(N: i32) -> i32
+requires N > 23
+ensures return > 72
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 49 - 1;
+    return x;
+}
+
+fn test_math_fail_21(N: i32) -> i32
+requires N > 72
+ensures return > 109
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 37 - 1;
+    return x;
+}
+
+fn test_math_fail_22(N: i32) -> i32
+requires N > 81
+ensures return > 131
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 50 - 1;
+    return x;
+}
+
+fn test_math_fail_23(N: i32) -> i32
+requires N > 85
+ensures return > 87
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 2 - 1;
+    return x;
+}
+
+fn test_math_fail_24(N: i32) -> i32
+requires N > 48
+ensures return > 97
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 49 - 1;
+    return x;
+}
+
+fn test_math_fail_25(N: i32) -> i32
+requires N > 27
+ensures return > 49
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 22 - 1;
+    return x;
+}
+
+fn test_math_fail_26(N: i32) -> i32
+requires N > 16
+ensures return > 27
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 11 - 1;
+    return x;
+}
+
+fn test_math_fail_27(N: i32) -> i32
+requires N > 14
+ensures return > 18
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 4 - 1;
+    return x;
+}
+
+fn test_math_fail_28(N: i32) -> i32
+requires N > 34
+ensures return > 70
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 36 - 1;
+    return x;
+}
+
+fn test_math_fail_29(N: i32) -> i32
+requires N > 49
+ensures return > 90
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 41 - 1;
+    return x;
+}
+
+fn test_math_fail_30(N: i32) -> i32
+requires N > 96
+ensures return > 115
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 19 - 1;
+    return x;
+}
+
+fn test_math_fail_31(N: i32) -> i32
+requires N > 97
+ensures return > 146
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 49 - 1;
+    return x;
+}
+
+fn test_math_fail_32(N: i32) -> i32
+requires N > 63
+ensures return > 91
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 28 - 1;
+    return x;
+}
+
+fn test_math_fail_33(N: i32) -> i32
+requires N > 39
+ensures return > 81
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 42 - 1;
+    return x;
+}
+
+fn test_math_fail_34(N: i32) -> i32
+requires N > 28
+ensures return > 75
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 47 - 1;
+    return x;
+}
+
+fn test_math_fail_35(N: i32) -> i32
+requires N > 59
+ensures return > 84
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 25 - 1;
+    return x;
+}
+
+fn test_math_fail_36(N: i32) -> i32
+requires N > 12
+ensures return > 34
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 22 - 1;
+    return x;
+}
+
+fn test_math_fail_37(N: i32) -> i32
+requires N > 17
+ensures return > 19
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 2 - 1;
+    return x;
+}
+
+fn test_math_fail_38(N: i32) -> i32
+requires N > 46
+ensures return > 58
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 12 - 1;
+    return x;
+}
+
+fn test_math_fail_39(N: i32) -> i32
+requires N > 54
+ensures return > 79
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 25 - 1;
+    return x;
+}
+
+fn test_math_fail_40(N: i32) -> i32
+requires N > 25
+ensures return > 44
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 19 - 1;
+    return x;
+}
+
+fn test_math_fail_41(N: i32) -> i32
+requires N > 14
+ensures return > 40
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 26 - 1;
+    return x;
+}
+
+fn test_math_fail_42(N: i32) -> i32
+requires N > 84
+ensures return > 128
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 44 - 1;
+    return x;
+}
+
+fn test_math_fail_43(N: i32) -> i32
+requires N > 82
+ensures return > 125
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 43 - 1;
+    return x;
+}
+
+fn test_math_fail_44(N: i32) -> i32
+requires N > 31
+ensures return > 79
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 48 - 1;
+    return x;
+}
+
+fn test_math_fail_45(N: i32) -> i32
+requires N > 92
+ensures return > 124
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 32 - 1;
+    return x;
+}
+
+fn test_math_fail_46(N: i32) -> i32
+requires N > 51
+ensures return > 61
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 10 - 1;
+    return x;
+}
+
+fn test_math_fail_47(N: i32) -> i32
+requires N > 28
+ensures return > 78
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 50 - 1;
+    return x;
+}
+
+fn test_math_fail_48(N: i32) -> i32
+requires N > 30
+ensures return > 47
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 17 - 1;
+    return x;
+}
+
+fn test_math_fail_49(N: i32) -> i32
+requires N > 97
+ensures return > 125
+{
+    // FAILS because x might be less than val + add_val if N is exactly val+1
+    let x = N + 28 - 1;
+    return x;
+}
+
+fn main() -> i32 { return 0; }

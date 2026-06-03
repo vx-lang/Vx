@@ -1,0 +1,107 @@
+//===- topology_fail.vx ---------------------------------===//
+fn test_topology_host_fail_0(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_1(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_2(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_3(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_4(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_5(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_6(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_7(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_8(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_9(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_10(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_11(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_12(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_13(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn test_topology_host_fail_14(T: i32) -> i32
+requires Topology::Host == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+
+fn main() -> i32 { return 0; }

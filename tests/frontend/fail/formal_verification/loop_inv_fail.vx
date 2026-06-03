@@ -1,0 +1,222 @@
+//===- loop_inv_fail.vx ---------------------------------===//
+fn test_loop_fail_0(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_1(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_2(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_3(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_4(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_5(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_6(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_7(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_8(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_9(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_10(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_11(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_12(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_13(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_14(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_15(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_16(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_17(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_18(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn test_loop_fail_19(N: i32) -> i32
+requires N > 5
+ensures return > 0
+{
+    // FAILS because invariant N > 10 is not guaranteed by N > 5
+    for i in 0..10 invariant(N > 10) {
+        let dummy = N;
+    }
+    return N;
+}
+
+fn main() -> i32 { return 0; }

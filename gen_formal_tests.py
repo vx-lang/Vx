@@ -16,47 +16,37 @@ os.makedirs(FAIL_DIR, exist_ok=True)
 
 test_count = 0
 
-def generate_file(dir_path, name, code, is_pass):
+def generate_file(dir_path, name, functions, is_pass):
     global test_count
-    test_count += 1
+    test_count += len(functions)
     content = f"//===- {name}.vx ---------------------------------===//\n"
     if is_pass:
         content += "// RUN: vxc %s\n\n"
-    else:
-        # Failing tests don't have RUN lines usually, the test harness checks them.
-        # But we'll add a RUN line with a 'fail' prefix just in case the harness needs it.
-        # Vx test harness automatically runs tests in fail/ expecting failure.
-        pass
     
-    content += code + "\n"
+    for func in functions:
+        content += func + "\n"
+        
+    content += "fn main() -> i32 { return 0; }\n"
+    
     path = os.path.join(dir_path, f"{name}.vx")
     with open(path, "w") as f:
         f.write(content)
 
 print("Generating Math tests...")
+math_pass_funcs = []
+math_fail_funcs = []
 for i in range(50):
     val = random.randint(10, 100)
     add_val = random.randint(1, 50)
-    code = f"""
-fn test_math_{i}(N: i32) -> i32
+    math_pass_funcs.append(f"""fn test_math_{i}(N: i32) -> i32
 requires N > {val}
 ensures return > {val + add_val}
 {{
     let x = N + {add_val} + 1;
     return x;
 }}
-
-fn main() -> i32 {{
-    return 0;
-}}
-"""
-    generate_file(PASS_DIR, f"math_pass_{i}", code, True)
-
-for i in range(50):
-    val = random.randint(10, 100)
-    add_val = random.randint(1, 50)
-    code = f"""
-fn test_math_fail_{i}(N: i32) -> i32
+""")
+    math_fail_funcs.append(f"""fn test_math_fail_{i}(N: i32) -> i32
 requires N > {val}
 ensures return > {val + add_val}
 {{
@@ -64,32 +54,24 @@ ensures return > {val + add_val}
     let x = N + {add_val} - 1;
     return x;
 }}
+""")
 
-fn main() -> i32 {{
-    return 0;
-}}
-"""
-    generate_file(FAIL_DIR, f"math_fail_{i}", code, False)
-
+generate_file(PASS_DIR, "math_pass", math_pass_funcs, True)
+generate_file(FAIL_DIR, "math_fail", math_fail_funcs, False)
 
 print("Generating Logic tests...")
+logic_pass_funcs = []
+logic_fail_funcs = []
 for i in range(30):
-    code = f"""
-fn test_logic_and_{i}(A: i32, B: i32) -> i32
+    logic_pass_funcs.append(f"""fn test_logic_and_{i}(A: i32, B: i32) -> i32
 requires A > 0 && B > 0
 ensures return > 0
 {{
     let sum = A + B;
     return sum;
 }}
-
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(PASS_DIR, f"logic_and_pass_{i}", code, True)
-
-for i in range(30):
-    code = f"""
-fn test_logic_or_fail_{i}(A: i32, B: i32) -> i32
+""")
+    logic_fail_funcs.append(f"""fn test_logic_or_fail_{i}(A: i32, B: i32) -> i32
 requires A > 0 || B > 0
 ensures return > 0
 {{
@@ -97,45 +79,40 @@ ensures return > 0
     let sum = A + B;
     return sum;
 }}
+""")
 
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(FAIL_DIR, f"logic_or_fail_{i}", code, False)
-
+generate_file(PASS_DIR, "logic_and_pass", logic_pass_funcs, True)
+generate_file(FAIL_DIR, "logic_or_fail", logic_fail_funcs, False)
 
 print("Generating Complex Logic & Inequalities tests...")
+complex_pass_funcs = []
+complex_fail_funcs = []
 for i in range(25):
-    code = f"""
-fn test_complex_{i}(X: i32, Y: i32, Z: i32) -> i32
+    complex_pass_funcs.append(f"""fn test_complex_{i}(X: i32, Y: i32, Z: i32) -> i32
 requires X >= Y && Y >= Z
 ensures return >= 0
 {{
     let diff = X - Z;
     return diff;
 }}
-
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(PASS_DIR, f"complex_ineq_pass_{i}", code, True)
-
-for i in range(25):
-    code = f"""
-fn test_complex_fail_{i}(X: i32, Y: i32, Z: i32) -> i32
+""")
+    complex_fail_funcs.append(f"""fn test_complex_fail_{i}(X: i32, Y: i32, Z: i32) -> i32
 requires X > Y && Y > Z
 ensures return < 0
 {{
     let diff = X - Z;
     return diff;
 }}
+""")
 
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(FAIL_DIR, f"complex_ineq_fail_{i}", code, False)
+generate_file(PASS_DIR, "complex_ineq_pass", complex_pass_funcs, True)
+generate_file(FAIL_DIR, "complex_ineq_fail", complex_fail_funcs, False)
 
 print("Generating Loop Invariant tests...")
+loop_pass_funcs = []
+loop_fail_funcs = []
 for i in range(20):
-    code = f"""
-fn test_loop_{i}(N: i32) -> i32
+    loop_pass_funcs.append(f"""fn test_loop_{i}(N: i32) -> i32
 requires N > 5
 ensures return > 0
 {{
@@ -144,13 +121,8 @@ ensures return > 0
     }}
     return N;
 }}
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(PASS_DIR, f"loop_inv_pass_{i}", code, True)
-
-for i in range(20):
-    code = f"""
-fn test_loop_fail_{i}(N: i32) -> i32
+""")
+    loop_fail_funcs.append(f"""fn test_loop_fail_{i}(N: i32) -> i32
 requires N > 5
 ensures return > 0
 {{
@@ -160,34 +132,31 @@ ensures return > 0
     }}
     return N;
 }}
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(FAIL_DIR, f"loop_inv_fail_{i}", code, False)
+""")
+
+generate_file(PASS_DIR, "loop_inv_pass", loop_pass_funcs, True)
+generate_file(FAIL_DIR, "loop_inv_fail", loop_fail_funcs, False)
 
 print("Generating Topology tests...")
+top_pass_funcs = []
+top_fail_funcs = []
 for i in range(15):
-    code = f"""
-fn test_topology_npu_{i}(T: i32) -> i32
+    top_pass_funcs.append(f"""fn test_topology_npu_{i}(T: i32) -> i32
 requires Topology::NPU[0] == Topology::NPU[0]
 ensures return == 1
 {{
     return 1;
 }}
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(PASS_DIR, f"topology_pass_{i}", code, True)
-
-for i in range(15):
-    code = f"""
-fn test_topology_host_fail_{i}(T: i32) -> i32
+""")
+    top_fail_funcs.append(f"""fn test_topology_host_fail_{i}(T: i32) -> i32
 requires Topology::Host == Topology::NPU[0]
 ensures return == 1
 {{
     return 1;
 }}
-fn main() -> i32 {{ return 0; }}
-"""
-    generate_file(FAIL_DIR, f"topology_fail_{i}", code, False)
+""")
 
+generate_file(PASS_DIR, "topology_pass", top_pass_funcs, True)
+generate_file(FAIL_DIR, "topology_fail", top_fail_funcs, False)
 
 print(f"Generated {test_count} formal verification tests.")
