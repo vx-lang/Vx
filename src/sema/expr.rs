@@ -126,6 +126,376 @@ impl<'a> TypeChecker<'a> {
         }
 
         match expr {
+            Expr::Identifier(..) => self.check_identifier_expr(expr, consume, silent),
+            Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume, silent),
+            Expr::Number(NumberExpr {
+                value: _,
+                ty: Some(el_ty),
+                span: _,
+            }) => Type::Scalar(el_ty.clone()),
+            Expr::Number(NumberExpr {
+                value: _,
+                ty: None,
+                span: _,
+            }) => Type::Scalar(ElementType::F32),
+            Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
+                Box::new(Type::Scalar(ElementType::I8)),
+                None,
+                false, // const
+            ),
+            Expr::Transfer(..) => self.check_transfer_expr(expr, consume, silent),
+            Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume, silent),
+            Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume, silent),
+            Expr::If(..) => self.check_if_expr(expr, consume, silent),
+            Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume, silent),
+            Expr::Array(..) => self.check_array_expr(expr, silent),
+            Expr::MemberAccess(..) => self.check_memberaccess_expr(expr, silent),
+            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, silent),
+            Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume, silent),
+            Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume, silent),
+            Expr::RelationalOp(..) => self.check_relationalop_expr(expr, silent),
+            Expr::LogicalOp(..) => self.check_logicalop_expr(expr, silent),
+            Expr::MemorySpace(MemorySpaceExpr { .. }) | Expr::Topology(TopologyExpr { .. }) => {
+                Type::Tensor(ElementType::F32, vec![], None)
+            }
+            Expr::UnaryOp(..) => self.check_unaryop_expr(expr, silent),
+            Expr::Borrow(..) => self.check_borrow_expr(expr, silent),
+            Expr::Dereference(..) => self.check_dereference_expr(expr, consume, silent),
+            Expr::UnsafeBlock(..) => self.check_unsafeblock_expr(expr, consume, silent),
+            Expr::StructInit(..) => self.check_structinit_expr(expr, consume, silent),
+            Expr::Grad(..) => self.check_grad_expr(expr, silent),
+            Expr::Vjp(..) => self.check_vjp_expr(expr, silent),
+            Expr::Jvp(..) => self.check_jvp_expr(expr, silent),
+            Expr::Range(..) => self.check_range_expr(expr, silent),
+            Expr::Match(..) => self.check_match_expr(expr, consume, silent),
+            Expr::VecMacro(..) => self.check_vecmacro_expr(expr, silent),
+            Expr::Closure(..) => self.check_closure_expr(expr, consume, silent),
+            Expr::MacroCall(m) => panic!(
+                "Macros should be expanded before type checking: macro `{}` at {:?}",
+                m.name, m.span
+            ),
+        }
+    }
+
+    pub(crate) fn check_differentiability(&mut self, func: &crate::ast::Function) {
+        match &func.return_type {
+            Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
+            _ => {
+                self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {:?}", func.name, func.return_type));
+            }
+        }
+    }
+
+    /// Lowers an AST `Type` to a globally resolved `TypeId` structure.
+    /// This integrates the AST semantic boundary with the hardware-level
+    /// 256-bit FastPath borrow checking rules.
+    pub fn lower_to_type_id(&self, ty: &Type) -> crate::gid::TypeId {
+        // We use a dummy symbol_hash for local types, as we are only concerned
+        // with the Lifetime Signature (Word 2) for borrow checking right now.
+        let mut id = crate::gid::TypeId::new(0, 0, 0, 0);
+
+        match ty {
+            Type::Borrow(_inner, _mem, _is_mut, region) => {
+                // The lifetime of the borrow itself is Covariant (even for mutable borrows,
+                // which allows reborrowing for shorter lifetimes during function calls).
+                // (The inner type T would be invariant for mutable borrows, but we are
+                // only hashing the outer lifetime here).
+                let variance: u8 = 0x1;
+
+                // Pack the region and variance directly into Param 0 of the FastPath hash!
+                // We use standard try_set_fast_param to pack the 16 bits.
+                if let Err(e) = id.try_set_fast_param(0, *region as u16, variance) {
+                    // If we exceed 4095 lexical scopes, we log but continue safely with max
+                    // In a production compiler, this would trigger the SlowPath allocation.
+                    println!("Warning: Region overflow during lowering: {}", e);
+                    let _ = id.try_set_fast_param(0, 4095, variance);
+                }
+            }
+            Type::Pointer(_inner, _mem, is_mut) => {
+                let variance: u8 = if *is_mut { 0x0 } else { 0x1 };
+                // Pointers don't have safe lifetimes, so we assign 'static (0)
+                // which represents the unconstrained lifetime.
+                let _ = id.try_set_fast_param(0, 0, variance);
+            }
+            // For other types, we just return the raw un-initialized hash
+            _ => {}
+        }
+        id
+    }
+
+    pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
+        println!("is_assignable(target: {:?}, source: {:?})", target, source);
+        if target == source {
+            return true;
+        }
+
+        if let Type::Struct(n_target, id_target) = target {
+            if let Type::Struct(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Enum(n_target, id_target) = target {
+            if let Type::Enum(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Struct(n_target, id_target) = target {
+            if let Type::Enum(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Enum(n_target, id_target) = target {
+            if let Type::Struct(n_source, id_source) = source {
+                if n_target == n_source {
+                    if id_target.is_some() && id_source.is_some() {
+                        return id_target == id_source;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Type::GenericInstance(inner_target, _args_target) = target {
+            if let Type::Enum(n_source, _) = source {
+                if let Type::Struct(n_target, _) = &**inner_target {
+                    if n_source.starts_with(n_target) && n_source.contains('<') {
+                        return true; // Weak check for Option<T>
+                    }
+                }
+            }
+        }
+
+        if let Type::GenericInstance(inner_source, _args_source) = source {
+            if let Type::Enum(n_target, _) = target {
+                if let Type::Struct(n_source, _) = &**inner_source {
+                    if n_target.starts_with(n_source) && n_target.contains('<') {
+                        return true; // Weak check for Option<T>
+                    }
+                }
+            }
+        }
+
+        // Allow assigning a scalar ElementType to a Simd type (for loading from pointer)
+        if let Type::Simd(el_target, _) = target {
+            if let Type::Scalar(el_source) = source {
+                if el_target == el_source {
+                    return true;
+                }
+            }
+        }
+
+        // Allow assigning a Simd type to a scalar ElementType (for storing to pointer)
+        if let Type::Scalar(el_target) = target {
+            if let Type::Simd(el_source, _) = source {
+                if el_target == el_source {
+                    return true;
+                }
+            }
+        }
+
+        // Explicit Memory transfer enforcement:
+        // We no longer allow implicit unwrapping of Ref<T> or Pinned<T> to T.
+        // Users must use `transfer(expr, Memory::Space)` or `.to_host()` / `.to_device()`
+        // to move data across memory boundaries.
+
+        // Allow numeric coercions for scalar literals (mock behavior for now)
+        if let Type::Tensor(t_target, dims_target, top_target) = target {
+            if let Type::Tensor(t_source, dims_source, top_source) = &source {
+                let mut el_match = false;
+                if *t_target == *t_source {
+                    el_match = true;
+                } else if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
+                    // Literals currently parse as f32, so we allow f32 to coerce
+                    el_match = true;
+                }
+
+                if !el_match {
+                    return false;
+                }
+
+                if top_target.is_some() && top_target != top_source {
+                    return false;
+                }
+
+                if !dims_target.is_empty() && !dims_source.is_empty() {
+                    if dims_target.len() != dims_source.len() {
+                        return false;
+                    }
+                    let empty_env = std::collections::HashMap::new();
+                    for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
+                        let vt = self.eval_expr(dt, &empty_env);
+                        let vs = self.eval_expr(ds, &empty_env);
+                        if vt.is_some() && vs.is_some() {
+                            if vt != vs {
+                                return false;
+                            }
+                        } else if dt != ds {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
+        if let Type::Function(p_target, r_target) = target {
+            if let Type::Function(p_source, r_source) = source {
+                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
+                    let mut all_match = true;
+                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
+                        if !self.is_assignable(pt, ps) {
+                            all_match = false;
+                        }
+                    }
+                    if all_match {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Type::Closure(p_target, r_target) = target {
+            if let Type::Closure(p_source, r_source) = source {
+                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
+                    let mut all_match = true;
+                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
+                        if !self.is_assignable(pt, ps) {
+                            all_match = false;
+                        }
+                    }
+                    if all_match {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Allow Closure to map to ClosureN struct (if tests use it)
+        if let Type::GenericInstance(inner, args) = target {
+            if let Type::Struct(name, _) = &**inner {
+                if name.starts_with("Closure") {
+                    if let Type::Closure(p_source, r_source) = source {
+                        if args.len() == p_source.len() + 1 {
+                            let mut all_match = true;
+                            for (i, ps) in p_source.iter().enumerate() {
+                                if !self.is_assignable(&args[i], ps) {
+                                    all_match = false;
+                                }
+                            }
+                            if !self.is_assignable(&args[args.len() - 1], r_source) {
+                                all_match = false;
+                            }
+                            if all_match {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Type::Scalar(t_target) = target {
+            if let Type::Scalar(t_source) = &source {
+                if *t_target == *t_source {
+                    return true;
+                }
+                // Allow numeric coercions
+                if *t_target != ElementType::Bool && t_source != &ElementType::Bool {
+                    return true;
+                }
+            }
+        }
+
+        // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
+        if let Type::Tensor(t_target, _, _) = target {
+            if let Type::Scalar(t_source) = &source {
+                if *t_target == *t_source {
+                    return true;
+                }
+                if *t_source != ElementType::Bool && t_target != &ElementType::Bool {
+                    return true;
+                }
+            }
+        }
+
+        // Semantic coercion rule: Verified<T> can only be assigned from another Verified<U> where is_assignable(T, U)
+        if let Type::Verified(inner_target) = target {
+            if let Type::Verified(inner_source) = source {
+                if self.is_assignable(inner_target, inner_source) {
+                    return true;
+                }
+            }
+        }
+
+        // Note: Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
+        // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
+
+        // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
+        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
+            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
+                if target_mem == source_mem
+                    && (!*target_mut || *source_mut)
+                    && self.is_assignable(target_inner, source_inner)
+                {
+                    return true;
+                }
+            }
+        }
+
+        if let Type::Borrow(target_inner, target_mem, target_mut, _target_region) = target {
+            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
+                if target_mem == source_mem
+                    && (!*target_mut || *source_mut)
+                    && self.is_assignable(target_inner, source_inner)
+                {
+                    // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
+                    let id_target = self.lower_to_type_id(target);
+                    let id_source = self.lower_to_type_id(source);
+                    if crate::borrow::verify_subtyping_bounds(&id_source, &id_target, self.worker) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
+            if let Type::Pointer(source_inner, source_mem, source_mut) = source {
+                if target_mem == source_mem && (!*target_mut || *source_mut) {
+                    if let Type::Scalar(ElementType::I8) = &**source_inner {
+                        return true; // allow casting *mut i8 (void*) to any pointer
+                    }
+                    if let Type::Scalar(ElementType::I8) = &**target_inner {
+                        return true; // allow casting any pointer to *mut i8 (void*)
+                    }
+                    if self.is_assignable(target_inner, source_inner) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+    fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
@@ -214,9 +584,9 @@ impl<'a> TypeChecker<'a> {
                                 && matches!(self.active_topology, Topology::Host);
                             if !is_pinned_on_host && !silent {
                                 let msg = format!(
-                                            "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                            name, top, ty, self.active_topology
-                                        );
+                                                "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                                name, top, ty, self.active_topology
+                                            );
                                 self.errors.push(msg);
                             }
                         }
@@ -231,6 +601,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_enumvariant_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
                 variant_name: variant,
@@ -330,21 +706,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Enum(enum_name.clone(), None)
             }
-            Expr::Number(NumberExpr {
-                value: _,
-                ty: Some(el_ty),
-                span: _,
-            }) => Type::Scalar(el_ty.clone()),
-            Expr::Number(NumberExpr {
-                value: _,
-                ty: None,
-                span: _,
-            }) => Type::Scalar(ElementType::F32),
-            Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
-                Box::new(Type::Scalar(ElementType::I8)),
-                None,
-                false, // const
-            ),
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::Transfer(TransferExpr {
                 expr: inner_expr,
                 space: target_mem,
@@ -427,6 +794,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_comptimeblock_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts,
                 ret,
@@ -441,6 +814,12 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             }
 
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::SpawnOn(crate::ast::SpawnOnExpr {
                 top,
                 stmts,
@@ -480,6 +859,12 @@ impl<'a> TypeChecker<'a> {
 
                 ret_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_if_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::If(IfExpr {
                 cond,
                 then_block,
@@ -518,6 +903,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 then_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,
                 args,
@@ -642,9 +1033,9 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
                                 self.errors.push(format!(
-                                    "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                        "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
                             }
                         }
                     }
@@ -664,9 +1055,9 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
                                 self.errors.push(format!(
-                                    "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                        "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
                             }
                         }
                     }
@@ -676,9 +1067,9 @@ impl<'a> TypeChecker<'a> {
                 {
                     if (*req_topology != self.active_topology) && !silent {
                         self.errors.push(format!(
-                                    "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                    resolved_name, req_topology, self.active_topology
-                                ));
+                                        "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                        resolved_name, req_topology, self.active_topology
+                                    ));
                     }
                     if *is_unsafe && !self.in_unsafe_block && !silent {
                         self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
@@ -695,9 +1086,9 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
                                 self.errors.push(format!(
-                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
                             }
                         }
                     }
@@ -709,9 +1100,9 @@ impl<'a> TypeChecker<'a> {
                 {
                     if (func.0.topology != self.active_topology) && !silent {
                         self.errors.push(format!(
-                            "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                            resolved_name, func.0.topology, self.active_topology
-                        ));
+                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                resolved_name, func.0.topology, self.active_topology
+                            ));
                     }
                     let param_types: Vec<Type> =
                         func.0.params.iter().map(|(_, t)| t.clone()).collect();
@@ -729,9 +1120,9 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
                                 self.errors.push(format!(
-                                    "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                    i + 1, resolved_name, param_ty, arg_ty
-                                ));
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ));
                             }
                         }
                     }
@@ -786,9 +1177,9 @@ impl<'a> TypeChecker<'a> {
                                     if !implements_trait {
                                         if !silent {
                                             self.errors.push(format!(
-                                                    "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
-                                                    concrete_ty, bound_name, g_name
-                                                ));
+                                                        "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                                        concrete_ty, bound_name, g_name
+                                                    ));
                                         }
                                         success = false;
                                     }
@@ -969,12 +1360,24 @@ impl<'a> TypeChecker<'a> {
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_array_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::Array(ArrayExpr { elements, span: _ }) => {
                 for el in elements {
                     self.check_expr_type(el);
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_memberaccess_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+        match expr {
             Expr::MemberAccess(MemberAccessExpr {
                 base: obj,
                 member,
@@ -1042,6 +1445,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_indexaccess_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+        match expr {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,
                 index: idx,
@@ -1059,6 +1468,12 @@ impl<'a> TypeChecker<'a> {
                     Type::Scalar(ElementType::F32)
                 }
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_methodcall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::MethodCall(MethodCallExpr {
                 base: obj,
                 method_name: _method,
@@ -1438,6 +1853,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 base_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::BinaryOp(BinaryOpExpr {
                 lhs,
                 op,
@@ -1475,6 +1896,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 lhs_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_relationalop_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+        match expr {
             Expr::RelationalOp(RelationalOpExpr {
                 lhs,
                 op: _,
@@ -1491,6 +1918,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Scalar(ElementType::Bool)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_logicalop_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+        match expr {
             Expr::LogicalOp(LogicalOpExpr {
                 lhs,
                 op: _,
@@ -1507,9 +1940,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Scalar(ElementType::Bool)
             }
-            Expr::MemorySpace(MemorySpaceExpr { .. }) | Expr::Topology(TopologyExpr { .. }) => {
-                Type::Tensor(ElementType::F32, vec![], None)
-            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_unaryop_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::UnaryOp(UnaryOpExpr {
                 op,
                 expr: inner,
@@ -1521,6 +1957,12 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::Neg => inner_ty,
                 }
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_borrow_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+        match expr {
             Expr::Borrow(BorrowExpr {
                 expr: inner,
                 is_mut,
@@ -1555,6 +1997,12 @@ impl<'a> TypeChecker<'a> {
 
                 Type::Borrow(Box::new(inner_ty), None, *is_mut, self.scopes.len())
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_dereference_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::Dereference(e) => {
                 let inner_ty = self.check_expr_type_flag(&mut e.expr, consume, silent);
                 let resolved_ty = match inner_ty.clone() {
@@ -1579,6 +2027,12 @@ impl<'a> TypeChecker<'a> {
                 e.ty = Some(resolved_ty.clone());
                 resolved_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_unsafeblock_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret: ret_expr,
@@ -1595,6 +2049,12 @@ impl<'a> TypeChecker<'a> {
                 self.in_unsafe_block = prev_unsafe;
                 ret_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_structinit_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::StructInit(StructInitExpr {
                 name,
                 fields,
@@ -1629,9 +2089,9 @@ impl<'a> TypeChecker<'a> {
                                 let f_type = self.check_expr_type_flag(f_expr, consume, silent);
                                 if !self.is_assignable(expected_type, &f_type) && !silent {
                                     self.errors.push(format!(
-                                        "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
-                                        expected_name, expected_type, f_type
-                                    ));
+                                            "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
+                                            expected_name, expected_type, f_type
+                                        ));
                                 }
                                 break;
                             }
@@ -1671,6 +2131,12 @@ impl<'a> TypeChecker<'a> {
                     Type::Struct(resolved_name, None)
                 }
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_grad_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::Grad(GradExpr {
                 target_fn,
                 args,
@@ -1700,14 +2166,20 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                    "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
-                                    i + 1, target_fn, param_type, arg_type
-                                ));
+                                        "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
+                                        i + 1, target_fn, param_type, arg_type
+                                    ));
                         }
                     }
                 }
                 func.return_type.clone()
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_vjp_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::Vjp(VjpExpr {
                 target_fn,
                 args,
@@ -1736,15 +2208,21 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                    "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
-                                    i + 1, target_fn, param_type, arg_type
-                                ));
+                                        "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
+                                        i + 1, target_fn, param_type, arg_type
+                                    ));
                         }
                     }
                 }
                 self.check_expr_type(cotangent);
                 func.return_type.clone()
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_jvp_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::Jvp(JvpExpr {
                 target_fn,
                 args,
@@ -1773,15 +2251,21 @@ impl<'a> TypeChecker<'a> {
                         let param_type = &func.params[i].1;
                         if !self.is_assignable(param_type, &arg_type) {
                             self.errors.push(format!(
-                                    "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
-                                    i + 1, target_fn, param_type, arg_type
-                                ));
+                                        "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
+                                        i + 1, target_fn, param_type, arg_type
+                                    ));
                         }
                     }
                 }
                 self.check_expr_type(tangent);
                 func.return_type.clone()
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_range_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::Range(RangeExpr {
                 start,
                 end,
@@ -1797,6 +2281,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 start_ty
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_match_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::Match(MatchExpr {
                 expr,
                 arms,
@@ -1869,6 +2359,12 @@ impl<'a> TypeChecker<'a> {
 
                 Type::Tensor(ElementType::F32, vec![], None)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_vecmacro_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+        match expr {
             Expr::VecMacro(VecMacroExpr { elements, span }) => {
                 let mut element_type = Type::Scalar(ElementType::I32); // Default
                 if !elements.is_empty() {
@@ -1924,6 +2420,12 @@ impl<'a> TypeChecker<'a> {
                 *expr = block;
                 self.check_expr_type(expr)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool, silent: bool) -> Type {
+        match expr {
             Expr::Closure(e) => {
                 let _func_name = format!("_closure_{}", self.next_reg);
                 self.next_reg += 1;
@@ -1977,328 +2479,7 @@ impl<'a> TypeChecker<'a> {
                     Box::new(ret_ty),
                 )
             }
-            Expr::MacroCall(m) => panic!(
-                "Macros should be expanded before type checking: macro `{}` at {:?}",
-                m.name, m.span
-            ),
+            _ => unreachable!(),
         }
-    }
-
-    pub(crate) fn check_differentiability(&mut self, func: &crate::ast::Function) {
-        match &func.return_type {
-            Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
-            _ => {
-                self.errors.push(format!("Function '{}' cannot be differentiated because it returns a non-continuous type: {:?}", func.name, func.return_type));
-            }
-        }
-    }
-
-    /// Lowers an AST `Type` to a globally resolved `TypeId` structure.
-    /// This integrates the AST semantic boundary with the hardware-level
-    /// 256-bit FastPath borrow checking rules.
-    pub fn lower_to_type_id(&self, ty: &Type) -> crate::gid::TypeId {
-        // We use a dummy symbol_hash for local types, as we are only concerned
-        // with the Lifetime Signature (Word 2) for borrow checking right now.
-        let mut id = crate::gid::TypeId::new(0, 0, 0, 0);
-
-        match ty {
-            Type::Borrow(_inner, _mem, _is_mut, region) => {
-                // The lifetime of the borrow itself is Covariant (even for mutable borrows,
-                // which allows reborrowing for shorter lifetimes during function calls).
-                // (The inner type T would be invariant for mutable borrows, but we are
-                // only hashing the outer lifetime here).
-                let variance: u8 = 0x1;
-
-                // Pack the region and variance directly into Param 0 of the FastPath hash!
-                // We use standard try_set_fast_param to pack the 16 bits.
-                if let Err(e) = id.try_set_fast_param(0, *region as u16, variance) {
-                    // If we exceed 4095 lexical scopes, we log but continue safely with max
-                    // In a production compiler, this would trigger the SlowPath allocation.
-                    println!("Warning: Region overflow during lowering: {}", e);
-                    let _ = id.try_set_fast_param(0, 4095, variance);
-                }
-            }
-            Type::Pointer(_inner, _mem, is_mut) => {
-                let variance: u8 = if *is_mut { 0x0 } else { 0x1 };
-                // Pointers don't have safe lifetimes, so we assign 'static (0)
-                // which represents the unconstrained lifetime.
-                let _ = id.try_set_fast_param(0, 0, variance);
-            }
-            // For other types, we just return the raw un-initialized hash
-            _ => {}
-        }
-        id
-    }
-
-    pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
-        println!("is_assignable(target: {:?}, source: {:?})", target, source);
-        if target == source {
-            return true;
-        }
-
-        if let Type::Struct(n_target, id_target) = target {
-            if let Type::Struct(n_source, id_source) = source {
-                if n_target == n_source {
-                    if id_target.is_some() && id_source.is_some() {
-                        return id_target == id_source;
-                    }
-                    return true;
-                }
-            }
-        }
-
-        if let Type::Enum(n_target, id_target) = target {
-            if let Type::Enum(n_source, id_source) = source {
-                if n_target == n_source {
-                    if id_target.is_some() && id_source.is_some() {
-                        return id_target == id_source;
-                    }
-                    return true;
-                }
-            }
-        }
-
-        if let Type::Struct(n_target, id_target) = target {
-            if let Type::Enum(n_source, id_source) = source {
-                if n_target == n_source {
-                    if id_target.is_some() && id_source.is_some() {
-                        return id_target == id_source;
-                    }
-                    return true;
-                }
-            }
-        }
-
-        if let Type::Enum(n_target, id_target) = target {
-            if let Type::Struct(n_source, id_source) = source {
-                if n_target == n_source {
-                    if id_target.is_some() && id_source.is_some() {
-                        return id_target == id_source;
-                    }
-                    return true;
-                }
-            }
-        }
-
-        if let Type::GenericInstance(inner_target, _args_target) = target {
-            if let Type::Enum(n_source, _) = source {
-                if let Type::Struct(n_target, _) = &**inner_target {
-                    if n_source.starts_with(n_target) && n_source.contains('<') {
-                        return true; // Weak check for Option<T>
-                    }
-                }
-            }
-        }
-
-        if let Type::GenericInstance(inner_source, _args_source) = source {
-            if let Type::Enum(n_target, _) = target {
-                if let Type::Struct(n_source, _) = &**inner_source {
-                    if n_target.starts_with(n_source) && n_target.contains('<') {
-                        return true; // Weak check for Option<T>
-                    }
-                }
-            }
-        }
-
-        // Allow assigning a scalar ElementType to a Simd type (for loading from pointer)
-        if let Type::Simd(el_target, _) = target {
-            if let Type::Scalar(el_source) = source {
-                if el_target == el_source {
-                    return true;
-                }
-            }
-        }
-
-        // Allow assigning a Simd type to a scalar ElementType (for storing to pointer)
-        if let Type::Scalar(el_target) = target {
-            if let Type::Simd(el_source, _) = source {
-                if el_target == el_source {
-                    return true;
-                }
-            }
-        }
-
-        // Explicit Memory transfer enforcement:
-        // We no longer allow implicit unwrapping of Ref<T> or Pinned<T> to T.
-        // Users must use `transfer(expr, Memory::Space)` or `.to_host()` / `.to_device()`
-        // to move data across memory boundaries.
-
-        // Allow numeric coercions for scalar literals (mock behavior for now)
-        if let Type::Tensor(t_target, dims_target, top_target) = target {
-            if let Type::Tensor(t_source, dims_source, top_source) = &source {
-                let mut el_match = false;
-                if *t_target == *t_source {
-                    el_match = true;
-                } else if *t_source == ElementType::F32 && t_target != &ElementType::Bool {
-                    // Literals currently parse as f32, so we allow f32 to coerce
-                    el_match = true;
-                }
-
-                if !el_match {
-                    return false;
-                }
-
-                if top_target.is_some() && top_target != top_source {
-                    return false;
-                }
-
-                if !dims_target.is_empty() && !dims_source.is_empty() {
-                    if dims_target.len() != dims_source.len() {
-                        return false;
-                    }
-                    let empty_env = std::collections::HashMap::new();
-                    for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
-                        let vt = self.eval_expr(dt, &empty_env);
-                        let vs = self.eval_expr(ds, &empty_env);
-                        if vt.is_some() && vs.is_some() {
-                            if vt != vs {
-                                return false;
-                            }
-                        } else if dt != ds {
-                            return false;
-                        }
-                    }
-                }
-                return true;
-            }
-        }
-
-        if let Type::Function(p_target, r_target) = target {
-            if let Type::Function(p_source, r_source) = source {
-                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
-                    let mut all_match = true;
-                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
-                        if !self.is_assignable(pt, ps) {
-                            all_match = false;
-                        }
-                    }
-                    if all_match {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        if let Type::Closure(p_target, r_target) = target {
-            if let Type::Closure(p_source, r_source) = source {
-                if p_target.len() == p_source.len() && self.is_assignable(r_target, r_source) {
-                    let mut all_match = true;
-                    for (pt, ps) in p_target.iter().zip(p_source.iter()) {
-                        if !self.is_assignable(pt, ps) {
-                            all_match = false;
-                        }
-                    }
-                    if all_match {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Allow Closure to map to ClosureN struct (if tests use it)
-        if let Type::GenericInstance(inner, args) = target {
-            if let Type::Struct(name, _) = &**inner {
-                if name.starts_with("Closure") {
-                    if let Type::Closure(p_source, r_source) = source {
-                        if args.len() == p_source.len() + 1 {
-                            let mut all_match = true;
-                            for (i, ps) in p_source.iter().enumerate() {
-                                if !self.is_assignable(&args[i], ps) {
-                                    all_match = false;
-                                }
-                            }
-                            if !self.is_assignable(&args[args.len() - 1], r_source) {
-                                all_match = false;
-                            }
-                            if all_match {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Type::Scalar(t_target) = target {
-            if let Type::Scalar(t_source) = &source {
-                if *t_target == *t_source {
-                    return true;
-                }
-                // Allow numeric coercions
-                if *t_target != ElementType::Bool && t_source != &ElementType::Bool {
-                    return true;
-                }
-            }
-        }
-
-        // Allow coercing Scalar to Tensor (e.g. 0.0 to Tensor<f32>) for backwards compatibility with tests
-        if let Type::Tensor(t_target, _, _) = target {
-            if let Type::Scalar(t_source) = &source {
-                if *t_target == *t_source {
-                    return true;
-                }
-                if *t_source != ElementType::Bool && t_target != &ElementType::Bool {
-                    return true;
-                }
-            }
-        }
-
-        // Semantic coercion rule: Verified<T> can only be assigned from another Verified<U> where is_assignable(T, U)
-        if let Type::Verified(inner_target) = target {
-            if let Type::Verified(inner_source) = source {
-                if self.is_assignable(inner_target, inner_source) {
-                    return true;
-                }
-            }
-        }
-
-        // Note: Verified<T> should NOT implicitly coerce to T if the user strictly expected T in tests,
-        // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
-
-        // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
-        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
-            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
-                if target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                    && self.is_assignable(target_inner, source_inner)
-                {
-                    return true;
-                }
-            }
-        }
-
-        if let Type::Borrow(target_inner, target_mem, target_mut, _target_region) = target {
-            if let Type::Borrow(source_inner, source_mem, source_mut, _source_region) = source {
-                if target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                    && self.is_assignable(target_inner, source_inner)
-                {
-                    // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
-                    let id_target = self.lower_to_type_id(target);
-                    let id_source = self.lower_to_type_id(source);
-                    if crate::borrow::verify_subtyping_bounds(&id_source, &id_target, self.worker) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        if let Type::Pointer(target_inner, target_mem, target_mut) = target {
-            if let Type::Pointer(source_inner, source_mem, source_mut) = source {
-                if target_mem == source_mem && (!*target_mut || *source_mut) {
-                    if let Type::Scalar(ElementType::I8) = &**source_inner {
-                        return true; // allow casting *mut i8 (void*) to any pointer
-                    }
-                    if let Type::Scalar(ElementType::I8) = &**target_inner {
-                        return true; // allow casting any pointer to *mut i8 (void*)
-                    }
-                    if self.is_assignable(target_inner, source_inner) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
     }
 }
