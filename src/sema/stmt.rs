@@ -89,6 +89,20 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.insert(name.clone(), ty);
                 }
+
+                if !*_is_mut {
+                    let id_expr = Expr::Identifier(crate::ast::IdentifierExpr {
+                        name: name.clone(),
+                        span: crate::ast::Span::default(),
+                    });
+                    let eq_expr = Expr::RelationalOp(crate::ast::RelationalOpExpr {
+                        lhs: Box::new(id_expr),
+                        op: crate::ast::RelationalOp::Eq,
+                        rhs: Box::new(expr.clone()),
+                        span: crate::ast::Span::default(),
+                    });
+                    self.constraints.push(eq_expr);
+                }
             }
             Statement::ForLoop(ForLoopStmt {
                 iter,

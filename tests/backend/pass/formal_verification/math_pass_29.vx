@@ -1,0 +1,16 @@
+//===- math_pass_29.vx ---------------------------------===//
+// RUN: vxc %s
+
+
+fn test_math_29(N: i32) -> i32
+requires N > 73
+ensures return > 105
+{
+    let x = N + 32 + 1;
+    return x;
+}
+
+fn main() -> i32 {
+    return 0;
+}
+

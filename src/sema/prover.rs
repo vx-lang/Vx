@@ -103,6 +103,15 @@ impl SmtProver {
                 };
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
+            Expr::LogicalOp(l) => {
+                let lhs = self.lower_expr(&l.lhs)?;
+                let rhs = self.lower_expr(&l.rhs)?;
+                let op = match l.op {
+                    crate::ast::LogicalOp::And => "and",
+                    crate::ast::LogicalOp::Or => "or",
+                };
+                Ok(format!("({} {} {})", op, lhs, rhs))
+            }
             Expr::UnaryOp(u) => {
                 if let crate::ast::UnaryOp::Not = u.op {
                     let inner = self.lower_expr(&u.expr)?;
@@ -124,6 +133,36 @@ impl SmtProver {
                 // For now, treat array indexing as a flattened variable (e.g. a_0).
                 // Full theory of arrays would require (select a 0).
                 let name = format!("{}_{}", base, index);
+                self.declarations.insert(name.clone());
+                Ok(name)
+            }
+            Expr::Topology(t) => {
+                let name = match &t.top {
+                    crate::ast::Topology::Host => "Topology_Host".to_string(),
+                    crate::ast::Topology::NPU(e) => {
+                        if let Expr::Number(n) = &**e {
+                            format!("Topology_NPU_{}", n.value)
+                        } else {
+                            "Topology_NPU".to_string()
+                        }
+                    }
+                    crate::ast::Topology::AccCore(e) => {
+                        if let Expr::Number(n) = &**e {
+                            format!("Topology_AccCore_{}", n.value)
+                        } else {
+                            "Topology_AccCore".to_string()
+                        }
+                    }
+                    crate::ast::Topology::AMX => "Topology_AMX".to_string(),
+                    crate::ast::Topology::ANE => "Topology_ANE".to_string(),
+                    crate::ast::Topology::GPU => "Topology_GPU".to_string(),
+                    _ => "Topology_Complex".to_string(),
+                };
+                self.declarations.insert(name.clone());
+                Ok(name)
+            }
+            Expr::EnumVariant(e) => {
+                let name = format!("{}_{}", e.enum_name, e.variant_name);
                 self.declarations.insert(name.clone());
                 Ok(name)
             }

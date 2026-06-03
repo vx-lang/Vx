@@ -1,0 +1,12 @@
+//===- topology_pass_13.vx ---------------------------------===//
+// RUN: vxc %s
+
+
+fn test_topology_npu_13(T: i32) -> i32
+requires Topology::NPU[0] == Topology::NPU[0]
+ensures return == 1
+{
+    return 1;
+}
+fn main() -> i32 { return 0; }
+
