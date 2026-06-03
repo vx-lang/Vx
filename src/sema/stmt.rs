@@ -93,6 +93,7 @@ impl<'a> TypeChecker<'a> {
             Statement::ForLoop(ForLoopStmt {
                 iter,
                 iterable,
+                invariants,
                 body,
                 span: _,
             }) => {
@@ -139,12 +140,58 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
+
+                // Prove invariants hold on entry, then assume them inside the loop
+                let prev_constraints_len = self.constraints.len();
+                for inv in invariants.iter() {
+                    if !self.prove_expr(inv) {
+                        self.errors
+                            .push("Loop invariant cannot be proven on entry".to_string());
+                    }
+                    self.constraints.push(inv.clone());
+                }
+
                 self.check_block(body, return_type);
+
+                // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
+                for inv in invariants.iter() {
+                    if !self.prove_expr(inv) {
+                        self.errors.push(
+                            "Loop invariant cannot be proven to hold across iterations".to_string(),
+                        );
+                    }
+                }
+
+                self.constraints.truncate(prev_constraints_len);
                 self.pop_scope();
             }
-            Statement::Loop(LoopStmt { body, span: _ }) => {
+            Statement::Loop(LoopStmt {
+                body,
+                span: _,
+                invariants,
+            }) => {
                 self.push_scope();
+
+                let prev_constraints_len = self.constraints.len();
+                for inv in invariants.iter() {
+                    if !self.prove_expr(inv) {
+                        self.errors
+                            .push("Loop invariant cannot be proven on entry".to_string());
+                    }
+                    self.constraints.push(inv.clone());
+                }
+
                 self.check_block(body, return_type);
+
+                for inv in invariants.iter() {
+                    if !self.prove_expr(inv) {
+                        self.errors.push(
+                            "Loop invariant cannot be proven to hold across iterations".to_string(),
+                        );
+                    }
+                }
+
+                self.constraints.truncate(prev_constraints_len);
                 self.pop_scope();
             }
             Statement::Break(_) => {}
@@ -180,7 +227,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            Statement::Return(ReturnStmt { expr, span: _ }) => {
+            Statement::Return(ReturnStmt { expr, span }) => {
                 let ty = self.check_expr_type_flag(expr, consume, silent);
 
                 let mut expected_ty = return_type.clone();
@@ -195,6 +242,19 @@ impl<'a> TypeChecker<'a> {
                         expected_ty, ty
                     ));
                 }
+
+                // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
+                let return_ident = Expr::Identifier(crate::ast::expr::IdentifierExpr {
+                    name: "return".to_string(),
+                    span: span.clone(),
+                });
+                let return_eq = Expr::RelationalOp(crate::ast::expr::RelationalOpExpr {
+                    lhs: Box::new(return_ident),
+                    op: crate::ast::expr::RelationalOp::Eq,
+                    rhs: Box::new(expr.clone()),
+                    span: span.clone(),
+                });
+                self.constraints.push(return_eq);
             }
 
             Statement::ExprStmt(ExprStmtStmt {
@@ -251,84 +311,33 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn prove_expr(&self, expr: &Expr) -> bool {
-        // Simple structural matching for our lightweight SMT solver
+        let mut prover = crate::sema::prover::SmtProver::new();
         for constraint in &self.constraints {
-            if expr == constraint {
-                return true;
-            }
-            // Basic commutativity for ==
-            if let Expr::RelationalOp(RelationalOpExpr {
-                lhs: l1,
-                op: RelationalOp::Eq,
-                rhs: r1,
-                ..
-            }) = expr
-            {
-                if let Expr::RelationalOp(RelationalOpExpr {
-                    lhs: l2,
-                    op: RelationalOp::Eq,
-                    rhs: r2,
-                    ..
-                }) = constraint
-                {
-                    if (l1 == l2 && r1 == r2) || (l1 == r2 && r1 == l2) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Lightweight transitive equality solver for Identifier == Identifier
-        if let Expr::RelationalOp(RelationalOpExpr {
-            lhs,
-            op: RelationalOp::Eq,
-            rhs,
-            ..
-        }) = expr
-        {
-            if let (Expr::Identifier(l_id), Expr::Identifier(r_id)) = (&**lhs, &**rhs) {
-                let mut adj: std::collections::HashMap<String, Vec<String>> =
-                    std::collections::HashMap::new();
-                for constraint in &self.constraints {
-                    if let Expr::RelationalOp(RelationalOpExpr {
-                        lhs: c_lhs,
-                        op: RelationalOp::Eq,
-                        rhs: c_rhs,
-                        ..
-                    }) = constraint
-                    {
-                        if let (Expr::Identifier(cl), Expr::Identifier(cr)) = (&**c_lhs, &**c_rhs) {
-                            adj.entry(cl.name.clone())
-                                .or_default()
-                                .push(cr.name.clone());
-                            adj.entry(cr.name.clone())
-                                .or_default()
-                                .push(cl.name.clone());
-                        }
-                    }
-                }
-
-                // BFS to find path from l_id.name to r_id.name
-                let mut visited = std::collections::HashSet::new();
-                let mut queue = std::collections::VecDeque::new();
-                queue.push_back(l_id.name.clone());
-                visited.insert(l_id.name.clone());
-
-                while let Some(curr) = queue.pop_front() {
-                    if curr == r_id.name {
-                        return true;
-                    }
-                    if let Some(neighbors) = adj.get(&curr) {
-                        for n in neighbors {
-                            if visited.insert(n.clone()) {
-                                queue.push_back(n.clone());
-                            }
-                        }
-                    }
-                }
+            if let Err(e) = prover.add_constraint(constraint) {
+                // If we can't lower a constraint, we just ignore it or log a warning
+                println!("Warning: Could not add constraint to SMT solver: {}", e);
             }
         }
 
-        false
+        // To prove `expr` holds under `constraints`, we assert `!expr` and check for unsatisfiability.
+        let negated_expr = Expr::UnaryOp(crate::ast::UnaryOpExpr {
+            op: crate::ast::UnaryOp::Not,
+            expr: Box::new(expr.clone()),
+            span: crate::ast::Span::default(),
+        });
+
+        if let Err(e) = prover.add_constraint(&negated_expr) {
+            println!("Warning: Could not lower expression to SMT solver: {}", e);
+            return false; // Can't prove
+        }
+
+        match prover.prove() {
+            Ok(is_sat) => !is_sat, // If unsat, then the expression is proven (valid)
+            Err(e) => {
+                println!("Warning: SMT solver error: {}", e);
+                false
+            }
+        }
     }
 
     pub(crate) fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {

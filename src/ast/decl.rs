@@ -7,6 +7,8 @@ pub struct Function {
     pub params: Vec<(String, Type)>,
     pub topology: Topology,
     pub return_type: Type,
+    pub requires: Vec<Expr>,
+    pub ensures: Vec<Expr>,
     pub body: Vec<Statement>,
 }
 

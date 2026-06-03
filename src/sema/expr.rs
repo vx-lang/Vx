@@ -550,7 +550,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
                 } else if lookup_res.is_none() {
-                    if let Some((ret_ty, _, params, _)) = self.env.functions.get(name) {
+                    if let Some((ret_ty, _, params, _, _, _)) = self.env.functions.get(name) {
                         return Type::Function(params.clone(), Box::new(ret_ty.clone()));
                     }
                     for (func, _) in &self.monomorphized_functions {
@@ -1062,7 +1062,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     *ret_ty
-                } else if let Some((ret_ty, is_unsafe, param_types, req_topology)) =
+                } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(&resolved_name)
                 {
                     if (*req_topology != self.active_topology) && !silent {

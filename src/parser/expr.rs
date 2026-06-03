@@ -740,6 +740,7 @@ impl<'a> Parser<'a> {
                             self.parse_identifier_expr(s)?
                         }
                     }
+                    TokenType::Return => self.parse_identifier_expr("return".to_string())?,
                     TokenType::Number(s) => {
                         let (num_str, el_ty) = infer_number_literal(&s)?;
 

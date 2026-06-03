@@ -69,14 +69,22 @@ impl ExprStmtStmt {
 pub struct ForLoopStmt {
     pub iter: String,
     pub iterable: Box<Expr>,
+    pub invariants: Vec<Expr>,
     pub body: Vec<Statement>,
     pub span: Span,
 }
 impl ForLoopStmt {
-    pub fn new(iter: String, iterable: Box<Expr>, body: Vec<Statement>, span: Span) -> Self {
+    pub fn new(
+        iter: String,
+        iterable: Box<Expr>,
+        invariants: Vec<Expr>,
+        body: Vec<Statement>,
+        span: Span,
+    ) -> Self {
         Self {
             iter,
             iterable,
+            invariants,
             body,
             span,
         }
@@ -122,12 +130,17 @@ impl AssertStmt {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LoopStmt {
+    pub invariants: Vec<Expr>,
     pub body: Vec<Statement>,
     pub span: Span,
 }
 impl LoopStmt {
-    pub fn new(body: Vec<Statement>, span: Span) -> Self {
-        Self { body, span }
+    pub fn new(invariants: Vec<Expr>, body: Vec<Statement>, span: Span) -> Self {
+        Self {
+            invariants,
+            body,
+            span,
+        }
     }
 }
 
@@ -204,6 +217,11 @@ impl Statement {
             Statement::ForLoop(e) => Statement::ForLoop(ForLoopStmt {
                 iter: e.iter.clone(),
                 iterable: Box::new(e.iterable.substitute(mapping)),
+                invariants: e
+                    .invariants
+                    .iter()
+                    .map(|expr| expr.substitute(mapping))
+                    .collect(),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),
@@ -224,6 +242,11 @@ impl Statement {
                 span: e.span.clone(),
             }),
             Statement::Loop(e) => Statement::Loop(LoopStmt {
+                invariants: e
+                    .invariants
+                    .iter()
+                    .map(|expr| expr.substitute(mapping))
+                    .collect(),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),

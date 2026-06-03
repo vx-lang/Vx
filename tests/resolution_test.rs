@@ -35,6 +35,8 @@ fn test_local_name_resolution() {
             params: vec![],
             topology: vxc::ast::Topology::Host,
             return_type: Type::Struct("Vector".to_string(), None),
+            requires: Vec::new(),
+            ensures: Vec::new(),
             body: vec![],
         }],
     };
@@ -78,6 +80,8 @@ fn test_unresolved_symbol_remains_none() {
             params: vec![],
             topology: vxc::ast::Topology::Host,
             return_type: Type::Struct("Vector".to_string(), None),
+            requires: Vec::new(),
+            ensures: Vec::new(),
             body: vec![],
         }],
     };
@@ -123,6 +127,8 @@ fn test_nested_type_resolution() {
                 ),
             )],
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
+            requires: Vec::new(),
+            ensures: Vec::new(),
             body: vec![],
         }],
     };
@@ -163,6 +169,8 @@ fn test_expr_and_stmt_resolution() {
             params: vec![],
             topology: vxc::ast::Topology::Host,
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
+            requires: Vec::new(),
+            ensures: Vec::new(),
             // let c: Config = ...;
             body: vec![Statement::LetDecl(LetDeclStmt {
                 name: "c".to_string(),

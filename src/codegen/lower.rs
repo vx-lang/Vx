@@ -3054,6 +3054,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         let ForLoopStmt {
             iter,
             iterable,
+            invariants: _,
             body,
             span: _,
         } = self;

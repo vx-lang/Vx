@@ -70,6 +70,16 @@ impl<'a> Parser<'a> {
         }
         let return_type = self.parse_type()?;
 
+        let mut requires = Vec::new();
+        while self.match_token(&TokenType::Requires) {
+            requires.push(self.parse_expr()?);
+        }
+
+        let mut ensures = Vec::new();
+        while self.match_token(&TokenType::Ensures) {
+            ensures.push(self.parse_expr()?);
+        }
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -102,6 +112,8 @@ impl<'a> Parser<'a> {
             params,
             topology,
             return_type,
+            requires,
+            ensures,
             body,
         })
     }
@@ -599,6 +611,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
             iter,
             iterable,
             body,
+            invariants: _,
             span: _,
         }) = &program.functions[0].body[0]
         {

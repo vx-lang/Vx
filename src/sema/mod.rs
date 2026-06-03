@@ -2,6 +2,7 @@ use crate::ast::*;
 
 pub mod env;
 pub mod expr;
+pub mod prover;
 pub mod stmt;
 
 pub use env::*;

@@ -45,6 +45,9 @@ pub enum TokenType {
     Grad,
     Vjp,
     Jvp,
+    Requires,
+    Ensures,
+    Invariant,
     MacroRules,
 
     // Types & Topology
@@ -137,6 +140,9 @@ impl std::fmt::Display for TokenType {
             TokenType::Grad => write!(f, "grad"),
             TokenType::Vjp => write!(f, "vjp"),
             TokenType::Jvp => write!(f, "jvp"),
+            TokenType::Requires => write!(f, "requires"),
+            TokenType::Ensures => write!(f, "ensures"),
+            TokenType::Invariant => write!(f, "invariant"),
 
             TokenType::Topology => write!(f, "Topology"),
             TokenType::Memory => write!(f, "Memory"),
@@ -316,6 +322,9 @@ impl<'a> Lexer<'a> {
             "grad" => TokenType::Grad,
             "vjp" => TokenType::Vjp,
             "jvp" => TokenType::Jvp,
+            "requires" => TokenType::Requires,
+            "ensures" => TokenType::Ensures,
+            "invariant" => TokenType::Invariant,
             "macro_rules" => {
                 if self.peek() == Some(&'!') {
                     self.advance(); // consume '!'

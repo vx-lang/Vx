@@ -98,6 +98,15 @@ impl<'a> Parser<'a> {
             }
             TokenType::Loop => {
                 self.advance();
+                let mut invariants = Vec::new();
+                while self.match_token(&TokenType::Invariant) {
+                    self.consume(&TokenType::LeftParen, "Expected '(' after 'invariant'")?;
+                    invariants.push(self.parse_expr()?);
+                    self.consume(
+                        &TokenType::RightParen,
+                        "Expected ')' after invariant expression",
+                    )?;
+                }
                 self.consume(&TokenType::LeftBrace, "Expected '{' after loop")?;
                 let mut body = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -105,6 +114,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
                 Ok(Statement::Loop(LoopStmt {
+                    invariants,
                     body,
                     span: Span::default(),
                 }))
@@ -131,6 +141,15 @@ impl<'a> Parser<'a> {
                 };
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr()?;
+                let mut invariants = Vec::new();
+                while self.match_token(&TokenType::Invariant) {
+                    self.consume(&TokenType::LeftParen, "Expected '(' after 'invariant'")?;
+                    invariants.push(self.parse_expr()?);
+                    self.consume(
+                        &TokenType::RightParen,
+                        "Expected ')' after invariant expression",
+                    )?;
+                }
                 self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                 let mut stmts = Vec::new();
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -140,6 +159,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::ForLoop(ForLoopStmt {
                     iter,
                     iterable: Box::new(iterable),
+                    invariants,
                     body: stmts,
                     span: Span::default(),
                 }))

@@ -38,7 +38,8 @@ pub struct GlobalAstEnv<'a> {
     pub enums: HashMap<String, &'a EnumDecl>,
     pub traits: HashMap<String, &'a TraitDecl>,
     pub impls: HashMap<String, Vec<&'a ImplBlock>>,
-    pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology)>,
+    #[allow(clippy::type_complexity)]
+    pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub ast_functions: HashMap<String, &'a Function>,
     pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
 }
@@ -81,6 +82,8 @@ impl<'a> GlobalAstEnv<'a> {
                         !ext.is_safe,
                         param_types,
                         Topology::Host,
+                        Vec::new(),
+                        Vec::new(),
                     ),
                 );
             }
@@ -99,6 +102,8 @@ impl<'a> GlobalAstEnv<'a> {
                             false, /* func.is_unsafe */
                             param_types,
                             func.topology.clone(),
+                            func.requires.clone(),
+                            func.ensures.clone(),
                         ),
                     );
                     env.ast_functions.insert(func.name.clone(), func);
@@ -393,6 +398,16 @@ impl<'a> TypeChecker<'a> {
             params: new_params,
             topology: generic_func.topology.clone(),
             return_type: new_ret,
+            requires: generic_func
+                .requires
+                .iter()
+                .map(|e| e.substitute(mapping))
+                .collect(),
+            ensures: generic_func
+                .ensures
+                .iter()
+                .map(|e| e.substitute(mapping))
+                .collect(),
             body: new_body,
         }
     }
@@ -415,7 +430,22 @@ impl<'a> TypeChecker<'a> {
             self.insert(name.clone(), ty.clone());
         }
 
+        // Add preconditions (requires) to our constraints
+        for req in &func.requires {
+            self.constraints.push(req.clone());
+        }
+
         self.check_block(&mut func.body, &func.return_type.clone());
+
+        // Verify postconditions (ensures)
+        for ens in &func.ensures {
+            if !self.prove_expr(ens) {
+                self.errors.push(format!(
+                    "Function '{}' cannot prove postcondition (ensures) at compile time",
+                    func.name
+                ));
+            }
+        }
 
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
