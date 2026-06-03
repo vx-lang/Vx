@@ -2285,69 +2285,64 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_match_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
-        match expr {
-            Expr::Match(MatchExpr {
-                expr,
-                arms,
-                span: _,
-            }) => {
-                let _expr_ty = self.check_expr_type(expr);
-
-                for arm in arms {
-                    self.push_scope();
-                    // Bind pattern variables
-                    match &arm.pattern {
-                        crate::ast::expr::Pattern::Identifier(name) => {
-                            self.insert(name.clone(), _expr_ty.clone());
-                        }
-                        crate::ast::expr::Pattern::EnumVariant(
-                            enum_name,
-                            variant_name,
-                            Some(payloads),
-                        ) => {
-                            let mut base_name = enum_name.clone();
-                            if let Some(idx) = enum_name.find('<') {
-                                base_name = enum_name[..idx].to_string();
-                            }
-                            if let Some(enum_decl) = self.env.enums.get(&base_name) {
-                                if let Some(variant) =
-                                    enum_decl.variants.iter().find(|v| v.0 == *variant_name)
-                                {
-                                    if let Some(payload_types) = &variant.1 {
-                                        let mut mapping = HashMap::new();
-                                        if let Type::GenericInstance(_, args) = &_expr_ty {
-                                            for (i, (g_name, _)) in
-                                                enum_decl.generics.iter().enumerate()
-                                            {
-                                                if i < args.len() {
-                                                    mapping.insert(g_name.clone(), args[i].clone());
-                                                }
-                                            }
-                                        }
-                                        for (i, p) in payloads.iter().enumerate() {
-                                            if let crate::ast::expr::Pattern::Identifier(name) = p {
-                                                if i < payload_types.len() {
-                                                    let p_ty =
-                                                        payload_types[i].substitute(&mapping);
-                                                    self.insert(name.clone(), p_ty);
-                                                } else {
-                                                    self.insert(name.clone(), Type::Unknown);
-                                                }
-                                            }
-                                        }
+    fn bind_pattern_variables(&mut self, pattern: &crate::ast::expr::Pattern, expr_ty: &Type) {
+        match pattern {
+            crate::ast::expr::Pattern::Identifier(name) => {
+                self.insert(name.clone(), expr_ty.clone());
+            }
+            crate::ast::expr::Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
+                let mut base_name = enum_name.clone();
+                if let Some(idx) = enum_name.find('<') {
+                    base_name = enum_name[..idx].to_string();
+                }
+                if let Some(enum_decl) = self.env.enums.get(&base_name) {
+                    if let Some(variant) = enum_decl.variants.iter().find(|v| v.0 == *variant_name)
+                    {
+                        if let Some(payload_types) = &variant.1 {
+                            let mut mapping = std::collections::HashMap::new();
+                            if let Type::GenericInstance(_, args) = expr_ty {
+                                for (i, (g_name, _)) in enum_decl.generics.iter().enumerate() {
+                                    if i < args.len() {
+                                        mapping.insert(g_name.clone(), args[i].clone());
                                     }
                                 }
-                            } else {
-                                for p in payloads {
-                                    if let crate::ast::expr::Pattern::Identifier(name) = p {
+                            }
+                            for (i, p) in payloads.iter().enumerate() {
+                                if let crate::ast::expr::Pattern::Identifier(name) = p {
+                                    if i < payload_types.len() {
+                                        let p_ty = payload_types[i].substitute(&mapping);
+                                        self.insert(name.clone(), p_ty);
+                                    } else {
                                         self.insert(name.clone(), Type::Unknown);
                                     }
                                 }
                             }
                         }
-                        _ => {}
                     }
+                } else {
+                    for p in payloads {
+                        if let crate::ast::expr::Pattern::Identifier(name) = p {
+                            self.insert(name.clone(), Type::Unknown);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_match_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        match expr {
+            Expr::Match(MatchExpr {
+                expr: match_expr,
+                arms,
+                span: _,
+            }) => {
+                let expr_ty = self.check_expr_type(match_expr);
+
+                for arm in arms {
+                    self.push_scope();
+                    self.bind_pattern_variables(&arm.pattern, &expr_ty);
 
                     let _arm_ty = if !silent {
                         self.check_expr_block(&mut arm.body, consume, silent)
