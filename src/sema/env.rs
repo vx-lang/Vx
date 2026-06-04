@@ -486,7 +486,9 @@ impl<'a> TypeChecker<'a> {
                             args.push(self.parse_ty_str(&current));
                         }
 
-                        let base_ty = if self.env.structs.contains_key(&base_name) {
+                        let base_ty = if self.env.structs.contains_key(&base_name)
+                            || self.generated_structs.iter().any(|s| s.name == base_name)
+                        {
                             Type::Struct(base_name, None)
                         } else {
                             Type::Generic(base_name, None)
@@ -495,7 +497,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                if self.env.structs.contains_key(other) {
+                if self.env.structs.contains_key(other)
+                    || self.generated_structs.iter().any(|s| s.name == other)
+                {
                     Type::Struct(other.to_string(), None)
                 } else {
                     Type::Generic(other.to_string(), None)

@@ -1062,6 +1062,79 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     *ret_ty
+                } else if let Some((Type::Struct(struct_name, _), _)) =
+                    self.lookup(&resolved_name).cloned()
+                {
+                    if struct_name.starts_with("Closure_") {
+                        let call_name = format!("{}_call", struct_name);
+                        if let Some(func) = self
+                            .monomorphized_functions
+                            .iter()
+                            .find(|f| f.0.name == call_name)
+                        {
+                            let param_types: Vec<Type> = func
+                                .0
+                                .params
+                                .iter()
+                                .skip(1)
+                                .map(|(_, t)| t.clone())
+                                .collect();
+                            if args.len() != param_types.len() {
+                                if !silent {
+                                    self.errors.push(format!(
+                                        "Closure '{}' expects {} arguments, got {}",
+                                        resolved_name,
+                                        param_types.len(),
+                                        args.len()
+                                    ));
+                                }
+                            } else {
+                                for (i, param_ty) in param_types.iter().enumerate() {
+                                    let arg_ty = &arg_types[i];
+                                    if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                        self.errors.push(format!(
+                                                "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
+                                                i + 1, resolved_name, param_ty, arg_ty
+                                            ));
+                                    }
+                                }
+                            }
+
+                            let mut new_args = vec![Expr::Borrow(BorrowExpr {
+                                expr: Box::new(Expr::Identifier(IdentifierExpr::new(
+                                    resolved_name.clone(),
+                                    Span::default(),
+                                ))),
+                                is_mut: true,
+                                span: Span::default(),
+                            })];
+                            new_args.extend(args.clone());
+
+                            *expr = Expr::FunctionCall(FunctionCallExpr {
+                                name: call_name,
+                                args: new_args,
+                                span: Span::default(),
+                            });
+
+                            func.0.return_type.clone()
+                        } else {
+                            if !silent {
+                                self.errors.push(format!(
+                                    "Missing call method for closure struct '{}'",
+                                    struct_name
+                                ));
+                            }
+                            Type::Tensor(ElementType::F32, vec![], None)
+                        }
+                    } else {
+                        if !silent {
+                            self.errors.push(format!(
+                                "Cannot call non-closure struct '{}'",
+                                resolved_name
+                            ));
+                        }
+                        Type::Tensor(ElementType::F32, vec![], None)
+                    }
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(&resolved_name)
                 {
@@ -1396,11 +1469,31 @@ impl<'a> TypeChecker<'a> {
 
                 if let Type::Struct(struct_name, _) = &base_ty {
                     actual_struct_name = struct_name.clone();
-                    struct_decl_opt = self.env.structs.get(struct_name).cloned();
+                    struct_decl_opt = self
+                        .env
+                        .structs
+                        .get(struct_name)
+                        .map(|s| (*s).clone())
+                        .or_else(|| {
+                            self.generated_structs
+                                .iter()
+                                .find(|s| s.name == *struct_name)
+                                .cloned()
+                        });
                 } else if let Type::GenericInstance(inner, args) = &base_ty {
                     if let Type::Struct(struct_name, _) = &**inner {
                         actual_struct_name = struct_name.clone();
-                        struct_decl_opt = self.env.structs.get(struct_name).cloned();
+                        struct_decl_opt = self
+                            .env
+                            .structs
+                            .get(struct_name)
+                            .map(|s| (*s).clone())
+                            .or_else(|| {
+                                self.generated_structs
+                                    .iter()
+                                    .find(|s| s.name == *struct_name)
+                                    .cloned()
+                            });
                         if let Some(decl) = &struct_decl_opt {
                             for (i, (g_name, _)) in decl.generics.iter().enumerate() {
                                 if i < args.len() {
@@ -1424,11 +1517,11 @@ impl<'a> TypeChecker<'a> {
                     ));
                 } else if let Type::Struct(struct_name, _) = &base_ty {
                     self.errors
-                        .push(format!("Unknown struct '{}'", struct_name));
+                        .push(format!("Unknown struct '{}' (expr.rs:1481)", struct_name));
                 } else if let Type::GenericInstance(inner, _) = &base_ty {
                     if let Type::Struct(struct_name, _) = &**inner {
                         self.errors
-                            .push(format!("Unknown struct '{}'", struct_name));
+                            .push(format!("Unknown struct '{}' (expr.rs:1485)", struct_name));
                     }
                 } else if let Type::Module(ref path, ref exports) = base_ty {
                     if let Some(exported_ty) = exports.get(member) {
@@ -2071,7 +2164,18 @@ impl<'a> TypeChecker<'a> {
                     generic_args = args;
                 }
 
-                if let Some(struct_decl) = self.env.structs.get(&base_name) {
+                if let Some(struct_decl) = self
+                    .env
+                    .structs
+                    .get(&base_name)
+                    .map(|s| (*s).clone())
+                    .or_else(|| {
+                        self.generated_structs
+                            .iter()
+                            .find(|s| s.name == base_name)
+                            .cloned()
+                    })
+                {
                     let mut mapping = std::collections::HashMap::new();
                     for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
                         if i < generic_args.len() {
@@ -2118,7 +2222,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     if !silent {
                         self.errors
-                            .push(format!("Unknown struct {}", resolved_name));
+                            .push(format!("Unknown struct {} (expr.rs:2175)", resolved_name));
                     }
                     for (_, f_expr) in fields.iter_mut() {
                         self.check_expr_type_flag(f_expr, consume, silent);
@@ -2422,7 +2526,8 @@ impl<'a> TypeChecker<'a> {
     fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool, silent: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
-                let _func_name = format!("_closure_{}", self.next_reg);
+                let struct_name = format!("Closure_{}", self.next_reg);
+                let func_name = format!("{}_call", struct_name);
                 self.next_reg += 1;
 
                 let cloned_params = e.params.clone();
@@ -2451,8 +2556,12 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 self.current_return_type = old_ret;
 
-                let captured_vars = self.closure_captures_stack.pop().unwrap();
+                let captured_vars_map = self.closure_captures_stack.pop().unwrap();
                 self.closure_depths.pop();
+
+                let mut captured_vars: Vec<(String, Type)> =
+                    captured_vars_map.into_iter().collect();
+                captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
                 if !silent {
                     // Consume captured variables in the outer scope if they are linear
@@ -2463,16 +2572,84 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                e.captures = captured_vars.into_iter().collect();
-                e.body = b;
-                e.ret_ty = Some(ret_ty.clone());
+                // Create StructDecl for the environment
+                let struct_decl = crate::ast::decl::StructDecl {
+                    name: struct_name.clone(),
+                    generics: vec![],
+                    fields: captured_vars.clone(),
+                };
+                self.generated_structs.push(struct_decl);
 
-                // We do NOT hoist it here! Codegen will allocate environment and hoist the function.
-                // However, we still need to provide the type.
-                Type::Closure(
-                    cloned_params.into_iter().map(|(_, t)| t).collect(),
-                    Box::new(ret_ty),
-                )
+                // Create the Function for calling the closure
+                let mut env_params = vec![(
+                    "_env".to_string(),
+                    Type::Pointer(
+                        Box::new(Type::Struct(struct_name.clone(), None)),
+                        None,
+                        true,
+                    ), // &mut env
+                )];
+
+                for (name, ty) in &cloned_params {
+                    env_params.push((name.clone(), ty.clone()));
+                }
+
+                let mut body_stmts = Vec::new();
+                for (cap_name, cap_ty) in &captured_vars {
+                    let env_access = Expr::MemberAccess(crate::ast::expr::MemberAccessExpr {
+                        base: Box::new(Expr::Identifier(crate::ast::expr::IdentifierExpr::new(
+                            "_env".to_string(),
+                            e.span.clone(),
+                        ))),
+                        member: cap_name.clone(),
+                        struct_name: Some(struct_name.clone()),
+                        span: e.span.clone(),
+                    });
+                    body_stmts.push(Statement::LetDecl(crate::ast::stmt::LetDeclStmt {
+                        name: cap_name.clone(),
+                        is_mut: true,
+                        ty_ann: Some(cap_ty.clone()),
+                        expr: env_access,
+                        span: e.span.clone(),
+                    }));
+                }
+
+                body_stmts.push(Statement::Return(crate::ast::stmt::ReturnStmt {
+                    expr: *b,
+                    span: e.span.clone(),
+                }));
+
+                let call_func = crate::ast::decl::Function {
+                    name: func_name.clone(),
+                    generics: vec![],
+                    params: env_params,
+                    topology: self.active_topology.clone(),
+                    return_type: ret_ty.clone(),
+                    requires: vec![],
+                    ensures: vec![],
+                    body: body_stmts,
+                };
+
+                self.monomorphized_functions.push((call_func, 0));
+
+                let mut fields = Vec::new();
+                for (cap_name, _) in &captured_vars {
+                    fields.push((
+                        cap_name.clone(),
+                        Expr::Identifier(crate::ast::expr::IdentifierExpr::new(
+                            cap_name.clone(),
+                            e.span.clone(),
+                        )),
+                    ));
+                }
+
+                *expr = Expr::StructInit(crate::ast::expr::StructInitExpr {
+                    name: struct_name.clone(),
+                    fields,
+                    span: e.span.clone(),
+                });
+
+                Type::Struct(struct_name, None)
             }
             _ => unreachable!(),
         }

@@ -97,11 +97,15 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                         crate::session::LocalWorkerState::new(global_session_ref.clone());
                     let mut checker = crate::sema::TypeChecker::new(global_env_ref, &mut worker);
                     checker.check_function(func);
+                    let errors = checker.errors;
+                    let monomorphized_functions = checker.monomorphized_functions;
+                    let generated_structs = checker.generated_structs;
                     (
-                        checker.errors,
-                        checker.monomorphized_functions,
+                        errors,
+                        monomorphized_functions,
                         worker,
                         module_idx,
+                        generated_structs,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -109,7 +113,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .collect();
 
     let mut total_errors = 0;
-    for (errs, _, _, _) in &check_results {
+    for (errs, _, _, _, _) in &check_results {
         for diag in errs.iter() {
             if diag.level == crate::diagnostic::DiagnosticLevel::Error {
                 total_errors += 1;
@@ -122,7 +126,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     let total_monomorphized: usize = check_results
         .iter()
-        .map(|(_, monos, _, _)| monos.len())
+        .map(|(_, monos, _, _, _)| monos.len())
         .sum();
 
     println!(
@@ -141,7 +145,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     {
         let workers: Vec<&crate::session::LocalWorkerState> = check_results
             .iter()
-            .map(|(_, _, worker, _)| worker)
+            .map(|(_, _, worker, _, _)| worker)
             .collect();
         crate::parallel_architecture_verifier::verify_arch::verify_phase_3_isolation(
             &workers,
@@ -169,7 +173,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         dedup_map_generics.insert(gen.clone(), i as u64);
     }
 
-    for (_, _, worker, _) in &check_results {
+    for (_, _, worker, _, _) in &check_results {
         // Slow Path Deduplication
         let mut local_mapping_slow = Vec::new();
         for meta in &worker.local_slow_path_arena {
@@ -223,7 +227,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)> = check_results
         .iter_mut()
         .enumerate()
-        .map(|(thread_idx, (_, _, worker, _))| {
+        .map(|(thread_idx, (_, _, worker, _, _))| {
             (thread_idx, std::mem::take(&mut worker.local_type_stream))
         })
         .collect();
@@ -278,6 +282,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // Phase 7: Parallel Module Deduplication & Codegen
     let num_modules = parsed_modules.len();
     let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
+    let mut module_struct_buckets: Vec<Vec<crate::ast::StructDecl>> = vec![Vec::new(); num_modules];
 
     // Build the Module Hash to Index map for origin-preserving routing
     let mut module_hash_to_index: std::collections::HashMap<u64, usize> =
@@ -288,7 +293,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     }
 
     // Collect all monomorphized functions into their correct origin module bucket
-    for (_, monos, _, caller_module_idx) in check_results {
+    for (_, monos, _, caller_module_idx, gen_structs) in check_results {
+        module_struct_buckets[caller_module_idx].extend(gen_structs);
         for (func, origin_hash) in monos {
             // Origin-Preserving Routing Fix:
             // If the target module hash is NOT in our local module_hash_to_index map,
@@ -312,15 +318,23 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     parsed_modules
         .par_iter_mut()
         .zip(module_buckets.into_par_iter())
-        .for_each(|(module, mut bucket)| {
+        .zip(module_struct_buckets.into_par_iter())
+        .for_each(|((module, mut bucket), mut struct_bucket)| {
             // Dedup based on function name (mangled signature is unique)
             bucket.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             bucket.dedup_by(|a, b| a.name == b.name);
+
+            struct_bucket.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+            struct_bucket.dedup_by(|a, b| a.name == b.name);
 
             // Prepend to the module's AST to ensure correct register allocation ordering
             let mut new_functions = bucket;
             new_functions.extend(std::mem::take(&mut module.functions));
             module.functions = new_functions;
+
+            let mut new_structs = struct_bucket;
+            new_structs.extend(std::mem::take(&mut module.structs));
+            module.structs = new_structs;
         });
 
     println!("Monomorphized generics deduplicated and appended to modules in parallel");
