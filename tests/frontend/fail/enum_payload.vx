@@ -1,3 +1,5 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Enum variant Option::Some expects 1 payload arguments, got 2
 enum Option<T> {
   Some(T),
   None

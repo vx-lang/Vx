@@ -1,5 +1,6 @@
 //===- autodiff_bool_fail.vx --------------------------------------------===//
-// RUN: vxc %s 2>&1
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch in variable declaration 'df'
 
 fn compute_val(x: f32) -> bool {
   return x > 0.0;

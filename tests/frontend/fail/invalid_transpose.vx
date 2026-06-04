@@ -1,11 +1,12 @@
 //===- invalid_transpose.vx - Vx Compiler ------------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Expected '->'
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: ! vxc %s
 
 fn main() {
   let a: Tensor<f32, [128, 128]> = 1.0;

@@ -1,5 +1,6 @@
 //===- coverage_advanced_types_fail.vx ------------------------------===//
-// RUN: vxc %s 2>&1
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Enum MyEnum does not have variant VariantB
 
 enum MyEnum {
   VariantA,

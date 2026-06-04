@@ -1,4 +1,6 @@
 //===- parser_invalid_for_loop.vx - Vx Compiler -------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Expected expression, found LeftBrace
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

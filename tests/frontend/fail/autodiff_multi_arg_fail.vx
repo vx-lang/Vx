@@ -1,5 +1,6 @@
 //===- autodiff_multi_arg_fail.vx ---------------------------------------===//
-// RUN: vxc %s 2>&1
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Function compute_val expects 2 arguments, but 1 were provided
 
 fn compute_val(x: f32, y: f32) -> f32 {
   return x * y;

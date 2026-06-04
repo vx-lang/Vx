@@ -1,5 +1,6 @@
 //===- gen_bool_mismatch_f32_and_fail.vx ---------------------------------===//
-// RUN: vxc %s 2>&1
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch in logical operation: Scalar(Bool) vs Scalar(F32)
 
 fn main() -> Bool {
   let a: Bool = true;

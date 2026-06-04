@@ -1,4 +1,6 @@
 //===- parser_missing_fn_name.vx - Vx Compiler -------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Expected function name
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

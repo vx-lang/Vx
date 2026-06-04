@@ -309,8 +309,21 @@ fn test_frontend_fail() {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let source = std::fs::read_to_string(&path).unwrap_or_default();
-                if source.contains("FileCheck") {
-                    run_optimization_test(&path);
+                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
+                if !run_lines.is_empty() {
+                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
+                    for run_line in run_lines {
+                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
+                        let status = std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .env("PATH", &new_path)
+                            .status()
+                            .expect("Failed to execute shell command");
+                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
+                    }
                 } else {
                     run_frontend_test(&path, false);
                 }
@@ -783,8 +796,21 @@ fn test_backend_fail() {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
                 let source = std::fs::read_to_string(&path).unwrap_or_default();
-                if source.contains("FileCheck") {
-                    run_optimization_test(&path);
+                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
+                if !run_lines.is_empty() {
+                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
+                    for run_line in run_lines {
+                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
+                        let status = std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .env("PATH", &new_path)
+                            .status()
+                            .expect("Failed to execute shell command");
+                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
+                    }
                 } else {
                     let result = std::panic::catch_unwind(|| {
                         run_backend_test(&path);

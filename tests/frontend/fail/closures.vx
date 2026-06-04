@@ -1,5 +1,4 @@
-// RUN: not vxc %s | FileCheck %s
-
+// RUN: not vxc %s 2>&1 | FileCheck %s
 struct Captures {
   i: i32,
 }

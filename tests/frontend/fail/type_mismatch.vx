@@ -1,4 +1,6 @@
 //===- type_mismatch.vx - Vx Compiler ----------------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch on return. Expected Tensor(F32, [], None), got Verified(Tensor(F32, [Number(NumberExpr { value: "10", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None))
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

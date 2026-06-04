@@ -1,4 +1,6 @@
 //===- method_invalid.vx - Vx Compiler ---------------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Cannot call as_ptr on Struct("Dummy", None)
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

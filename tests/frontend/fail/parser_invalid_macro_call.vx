@@ -1,4 +1,6 @@
 //===- parser_invalid_macro_call.vx - Vx Compiler -------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Undefined static method 'Vec<i32>::new'.
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

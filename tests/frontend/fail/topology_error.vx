@@ -1,11 +1,12 @@
 //===- topology_error.vx - Vx Compiler ---------------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Cross-topology access error: Variable 't_host' belongs to Host (type: Tensor(F32, [], None)), but accessed from NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } }))
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s
 
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
