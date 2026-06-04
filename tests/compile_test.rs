@@ -223,11 +223,11 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .iter()
         .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
     {
-        panic!(
-            "Semantic check failed on '{}':\n{:?}",
+        return Err(format!(
+            "Semantic check failed on '{}':\n{:#?}",
             path.display(),
             checker.errors
-        );
+        ));
     }
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
@@ -299,7 +299,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
 }
 
 #[test]
-fn test_frontend_pass() {
+fn test_frontend_pass() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -316,21 +316,26 @@ fn test_frontend_pass() {
             })
             .collect();
         if !errors.is_empty() {
-            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+            return Err(format!(
+                "The following tests failed:\n\n{}",
+                errors.join("\n\n")
+            ));
         }
     }
+    Ok(())
 }
 
 #[test]
-fn test_frontend_fail() {
+fn test_frontend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
         |path| run_shell_tests(path),
     );
+    Ok(())
 }
 
 #[test]
-fn test_optimizations() {
+fn test_optimizations() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/optimizations/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -349,13 +354,17 @@ fn test_optimizations() {
             })
             .collect();
         if !errors.is_empty() {
-            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+            return Err(format!(
+                "The following tests failed:\n\n{}",
+                errors.join("\n\n")
+            ));
         }
     }
+    Ok(())
 }
 
 #[test]
-fn test_middle_end() {
+fn test_middle_end() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -372,9 +381,13 @@ fn test_middle_end() {
             })
             .collect();
         if !errors.is_empty() {
-            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+            return Err(format!(
+                "The following tests failed:\n\n{}",
+                errors.join("\n\n")
+            ));
         }
     }
+    Ok(())
 }
 
 // Optimization Test Runner
@@ -536,7 +549,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 }
 
 #[test]
-fn test_middle_end_fail() {
+fn test_middle_end_fail() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -551,10 +564,11 @@ fn test_middle_end_fail() {
             }
         });
     }
+    Ok(())
 }
 
 #[test]
-fn test_backend() {
+fn test_backend() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
@@ -567,10 +581,11 @@ fn test_backend() {
             Ok(())
         },
     );
+    Ok(())
 }
 
 #[test]
-fn test_frontend_pass_formal_verification() {
+fn test_frontend_pass_formal_verification() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass/formal_verification"),
         |path| {
@@ -581,10 +596,11 @@ fn test_frontend_pass_formal_verification() {
             run_frontend_test(path, true)
         },
     );
+    Ok(())
 }
 
 #[test]
-fn test_frontend_fail_formal_verification() {
+fn test_frontend_fail_formal_verification() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/formal_verification"),
         |path| {
@@ -595,10 +611,11 @@ fn test_frontend_fail_formal_verification() {
             run_shell_tests(path)
         },
     );
+    Ok(())
 }
 
 #[test]
-fn test_frontend_fail_unimplemented_smt() {
+fn test_frontend_fail_unimplemented_smt() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/unimplemented_smt"),
         |path| {
@@ -606,10 +623,11 @@ fn test_frontend_fail_unimplemented_smt() {
             run_shell_tests(path)
         },
     );
+    Ok(())
 }
 
 #[test]
-fn test_backend_pass_autodiff() {
+fn test_backend_pass_autodiff() -> Result<(), String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/autodiff");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -621,6 +639,7 @@ fn test_backend_pass_autodiff() {
             }
         });
     }
+    Ok(())
 }
 
 // Backend Autodiff Runner
@@ -674,11 +693,11 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .iter()
         .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
     {
-        panic!(
-            "Semantic check failed on '{}':\n{:?}",
+        return Err(format!(
+            "Semantic check failed on '{}':\n{:#?}",
             path.display(),
             checker.errors
-        );
+        ));
     }
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
@@ -743,15 +762,16 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
 }
 
 #[test]
-fn test_backend_fail() {
+fn test_backend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
         |path| run_shell_tests(path),
     );
+    Ok(())
 }
 
 // --- Test Runners ---
-fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F)
+fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F) -> Result<(), String>
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
@@ -783,9 +803,13 @@ where
             })
             .collect();
         if !errors.is_empty() {
-            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+            return Err(format!(
+                "The following tests failed:\n\n{}",
+                errors.join("\n\n")
+            ));
         }
     }
+    Ok(())
 }
 
 fn run_shell_tests(path: &Path) -> Result<(), String> {
@@ -904,7 +928,7 @@ extern "C" {
 }
 
 #[test]
-fn test_vx_dialect_registration() {
+fn test_vx_dialect_registration() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     let context = melior::Context::new();
 
@@ -926,8 +950,11 @@ fn test_vx_dialect_registration() {
 
     // If the dialect wasn't registered, parsing this would fail.
     let module = melior::ir::Module::parse(&context, mlir_source);
-    assert!(
-        module.is_some(),
-        "Failed to parse module containing vx.spawn. Dialect may not be registered!"
-    );
+    if module.is_none() {
+        return Err(
+            "Failed to parse module containing vx.spawn. Dialect may not be registered!"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
