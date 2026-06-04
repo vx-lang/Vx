@@ -28,7 +28,7 @@ def generate_tests():
     init_dirs()
     
     pass_content = "// RUN: vxc %s\n\n"
-    unsupported_content = "// EXPECTED TO FAIL due to Unsupported expression in SMT solver\n\n"
+    unsupported_content = "// RUN: vxc %s 2>&1 | FileCheck %s\n// CHECK: Unsupported\n\n"
     
     func_idx = 0
     

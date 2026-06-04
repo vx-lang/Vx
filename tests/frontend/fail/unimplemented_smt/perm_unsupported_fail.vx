@@ -1,4 +1,5 @@
-// EXPECTED TO FAIL due to Unsupported expression in SMT solver
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: Unsupported
 
 
 fn test_group2_2(X: i32) -> i32

@@ -1,4 +1,6 @@
 //===- topology_fail.vx ---------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: cannot prove postcondition (ensures) at compile time
 
 fn test_topology_npu_fail(T: i32) -> i32
 ensures Topology::NPU[0] == Topology::NPU[1]

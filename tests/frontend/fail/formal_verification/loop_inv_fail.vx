@@ -1,4 +1,6 @@
 //===- loop_inv_fail.vx ---------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Loop invariant cannot be proven on entry
 
 fn test_loop_increment_fail(N: i32) -> i32
 requires N == 0

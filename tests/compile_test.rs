@@ -308,7 +308,12 @@ fn test_frontend_fail() {
         entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                run_frontend_test(&path, false);
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("FileCheck") {
+                    run_optimization_test(&path);
+                } else {
+                    run_frontend_test(&path, false);
+                }
             }
         });
     }
@@ -573,7 +578,35 @@ fn test_frontend_fail_formal_verification() {
                     "Running test_frontend_fail_formal_verification on {:?}",
                     path
                 );
-                run_frontend_test(&path, false);
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("FileCheck") {
+                    run_optimization_test(&path);
+                } else {
+                    run_frontend_test(&path, false);
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn test_frontend_fail_unimplemented_smt() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/unimplemented_smt");
+    if dir.exists() {
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        entries.into_par_iter().for_each(|entry| {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                println!(
+                    "Running test_frontend_fail_unimplemented_smt on {:?}",
+                    path
+                );
+                let source = std::fs::read_to_string(&path).unwrap_or_default();
+                if source.contains("FileCheck") {
+                    run_optimization_test(&path);
+                } else {
+                    run_frontend_test(&path, false);
+                }
             }
         });
     }

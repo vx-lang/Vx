@@ -1,4 +1,6 @@
 //===- logic_or_fail.vx ---------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: cannot prove postcondition (ensures) at compile time
 
 fn test_or_logic_fail(A: i32) -> i32
 requires A == 10 || A == 20
