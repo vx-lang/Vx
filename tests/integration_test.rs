@@ -35,7 +35,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     // 1. Lexing
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
-    if !(!tokens.is_empty()) {
+    if tokens.is_empty() {
         return Err("Assertion failed: !tokens.is_empty()".to_string());
     }
 
@@ -132,7 +132,7 @@ fn test_integration_operators() -> Result<(), String> {
         return x;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -150,7 +150,7 @@ fn test_integration_loops() -> Result<(), String> {
         return sum;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -166,7 +166,7 @@ fn test_integration_arrays_and_indexing() -> Result<(), String> {
         return arr;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -181,7 +181,7 @@ fn test_integration_method_chaining() -> Result<(), String> {
         return mem;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -201,7 +201,7 @@ fn test_integration_function_calls() -> Result<(), String> {
         return z;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -218,7 +218,7 @@ fn test_integration_logical_ops() -> Result<(), String> {
         return a;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 
@@ -246,7 +246,7 @@ fn test_integration_linear_variable_consumption() -> Result<(), String> {
         return y;
     }
     "#;
-    if !(run_pipeline(input).is_ok()) {
+    if run_pipeline(input).is_err() {
         return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
     }
 

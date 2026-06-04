@@ -52,7 +52,7 @@ fn test_zero_copy_metadata_serialization() -> Result<(), String> {
     }
 
     // Verify AST bytes are empty since we didn't add any
-    if loaded_metadata.ast_data.len() != 0 {
+    if !loaded_metadata.ast_data.is_empty() {
         return Err(format!(
             "Assertion failed: {} != {}",
             loaded_metadata.ast_data.len(),

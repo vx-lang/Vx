@@ -329,7 +329,7 @@ fn test_frontend_pass() -> Result<(), String> {
 fn test_frontend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
-        |path| run_shell_tests(path),
+        run_shell_tests,
     )
 }
 
@@ -403,7 +403,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
         .collect();
 
     if run_lines.is_empty() {
-        return Err(format!("Missing // RUN: line"));
+        return Err("Missing // RUN: line".to_string());
     }
 
     for run_line in run_lines {
@@ -752,7 +752,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
 fn test_backend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
-        |path| run_shell_tests(path),
+        run_shell_tests,
     )
 }
 

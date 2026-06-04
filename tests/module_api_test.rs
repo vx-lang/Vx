@@ -22,7 +22,7 @@ fn test_parse_module_api() -> Result<(), String> {
         }
     ";
     let module = parse_module(source);
-    if !module.is_ok() {
+    if module.is_err() {
         return Err(format!("Parse failed: {:?}", module.err()));
     }
     let module = module.unwrap();

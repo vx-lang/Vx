@@ -42,7 +42,7 @@ fn test_valid_acyclic_registry() -> Result<(), String> {
     };
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
-    if !(result.is_ok()) {
+    if result.is_err() {
         return Err("Assertion failed: result.is_ok()".to_string());
     }
     let registry = result.unwrap();
@@ -93,7 +93,7 @@ fn test_invalid_cyclic_registry() -> Result<(), String> {
     };
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
-    if !(result.is_err()) {
+    if result.is_ok() {
         return Err("Assertion failed: result.is_err()".to_string());
     }
     let err = match result {

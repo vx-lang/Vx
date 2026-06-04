@@ -34,7 +34,7 @@ fn test_mlir_diagnostic_suppressed_by_default() -> Result<(), String> {
     module.body().append_operation(invalid_op);
 
     let is_valid = module.as_operation().verify();
-    if !(!is_valid) {
+    if is_valid {
         return Err("Module should be invalid due to malformed operation".to_string());
     }
     if !(captured.lock().unwrap().is_empty()) {
@@ -74,7 +74,7 @@ fn test_mlir_diagnostic_emitted() -> Result<(), String> {
     module.body().append_operation(invalid_op);
 
     let is_valid = module.as_operation().verify();
-    if !(!is_valid) {
+    if is_valid {
         return Err("Module should be invalid due to malformed operation".to_string());
     }
     if !(captured.lock().unwrap().contains("requires one result")) {
@@ -164,10 +164,10 @@ fn test_remark() -> f32 {
     for f in &mut ast.functions {
         checker.check_function(f);
     }
-    if !(!checker
+    if checker
         .errors
         .iter()
-        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error))
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
     {
         return Err("Assertion failed: !checker
         .errors

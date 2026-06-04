@@ -80,7 +80,7 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
     // Execute pipeline. This will run through the Verification Engine hooks.
     // We expect it to succeed, which means all invariants (Phase 1-8) held true.
     let result = vxc::pipeline::compile_pipeline(&paths);
-    if !result.is_ok() {
+    if result.is_err() {
         return Err(format!("Pipeline failed: {:?}", result.err()));
     }
 

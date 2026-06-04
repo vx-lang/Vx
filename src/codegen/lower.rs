@@ -4739,99 +4739,37 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
         }
 
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-        let i64_ty = Type::parse(gen.context, "i64").unwrap();
-
-        let null_op = block.append_operation(
+        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let one_op = block.append_operation(
             melior::ir::operation::OperationBuilder::new(
-                "llvm.mlir.null",
+                "llvm.mlir.constant",
                 Location::unknown(gen.context),
             )
-            .add_results(&[ptr_ty])
-            .build()
-            .unwrap(),
-        );
-        let null_ptr = null_op.result(0).unwrap().into();
-
-        let gep_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.getelementptr",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[null_ptr])
-            .add_results(&[ptr_ty])
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(gen.context, "elem_type"),
-                    melior::ir::attribute::TypeAttribute::new(env_struct_ty).into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "rawConstantIndices"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1]).into(),
-                ),
-            ])
-            .build()
-            .unwrap(),
-        );
-        let gep_ptr = gep_op.result(0).unwrap().into();
-
-        let size_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.ptrtoint",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[gep_ptr])
-            .add_results(&[i64_ty])
-            .build()
-            .unwrap(),
-        );
-        let size_val = size_op.result(0).unwrap().into();
-
-        if !gen.functions.contains_key("malloc") && !gen.functions.contains_key("llvm_malloc_decl")
-        {
-            let malloc_func_ty = melior::ir::attribute::TypeAttribute::new(
-                Type::parse(gen.context, "(i64) -> !llvm.ptr").unwrap(),
-            );
-            let malloc_decl = melior::ir::operation::OperationBuilder::new(
-                "func.func",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(gen.context, "sym_name"),
-                    melior::ir::attribute::StringAttribute::new(gen.context, "malloc").into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "function_type"),
-                    malloc_func_ty.into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "sym_visibility"),
-                    melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
-                ),
-            ])
-            .add_regions([melior::ir::Region::new()])
-            .build()
-            .unwrap();
-            gen.module.body().append_operation(malloc_decl);
-            gen.functions
-                .insert("llvm_malloc_decl".to_string(), (ptr_ty, vec![i64_ty]));
-        }
-
-        let call_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "func.call",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[size_val])
-            .add_results(&[ptr_ty])
+            .add_results(&[i32_ty])
             .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "callee"),
-                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, "malloc").into(),
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
             )])
             .build()
             .unwrap(),
         );
-        let env_ptr = call_op.result(0).unwrap().into();
+        let one_val = one_op.result(0).unwrap().into();
+
+        let alloca_op = block.append_operation(
+            melior::ir::operation::OperationBuilder::new(
+                "llvm.alloca",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[one_val])
+            .add_results(&[ptr_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "elem_type"),
+                melior::ir::attribute::TypeAttribute::new(env_struct_ty).into(),
+            )])
+            .build()
+            .unwrap(),
+        );
+        let env_ptr = alloca_op.result(0).unwrap().into();
 
         block.append_operation(
             melior::ir::operation::OperationBuilder::new(

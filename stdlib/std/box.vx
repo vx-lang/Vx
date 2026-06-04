@@ -1,0 +1,37 @@
+//===- box.vx - Vx Compiler --------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+
+extern "C" {
+  fn malloc(size: i32) -> *mut i8;
+  fn free(ptr: *mut i8) -> i32;
+}
+
+struct Box<T> {
+  ptr: *mut T,
+}
+
+impl<T> Box<T> {
+  fn new(val: T) -> Box<T> {
+    let size_bytes: i32 = sizeof<T>();
+    let p: *mut T = unsafe { malloc(size_bytes) };
+    unsafe {
+      *p = val;
+    }
+    return Box<T> { ptr: p };
+  }
+
+
+
+  fn free(self: &mut Box<T>) -> i32 {
+    unsafe {
+      let ptr_i8: *mut i8 = self.ptr;
+      free(ptr_i8);
+    }
+    return 0;
+  }
+}
