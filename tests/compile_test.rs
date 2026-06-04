@@ -495,10 +495,10 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 
         if expect_failure {
             if output.status.success() {
-                panic!(
+                return Err(format!(
                     "Command succeeded but was expected to fail:\n{}",
                     String::from_utf8_lossy(&output.stdout)
-                );
+                ));
             }
             let out = format!(
                 "{}{}",
@@ -511,7 +511,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
                 if let Some(pos) = out[current_idx..].find(&check) {
                     current_idx += pos + check.len();
                 } else {
-                    panic!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out);
+                    return Err(format!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out));
                 }
             }
             continue;
@@ -531,7 +531,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
             if let Some(pos) = out[current_idx..].find(&check) {
                 current_idx += pos + check.len();
             } else {
-                panic!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out);
+                return Err(format!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out));
             }
         }
 
