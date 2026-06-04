@@ -330,8 +330,7 @@ fn test_frontend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
         |path| run_shell_tests(path),
-    );
-    Ok(())
+    )
 }
 
 #[test]
@@ -550,21 +549,18 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 
 #[test]
 fn test_middle_end_fail() -> Result<(), String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                assert!(
-                    run_middle_end_test(&path).is_err(),
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/fail"),
+        |path| {
+            if run_middle_end_test(path).is_ok() {
+                return Err(format!(
                     "Expected {} to fail, but it succeeded!",
                     path.display()
-                );
+                ));
             }
-        });
-    }
-    Ok(())
+            Ok(())
+        },
+    )
 }
 
 #[test]
@@ -580,8 +576,7 @@ fn test_backend() -> Result<(), String> {
             }
             Ok(())
         },
-    );
-    Ok(())
+    )
 }
 
 #[test]
@@ -595,8 +590,7 @@ fn test_frontend_pass_formal_verification() -> Result<(), String> {
             );
             run_frontend_test(path, true)
         },
-    );
-    Ok(())
+    )
 }
 
 #[test]
@@ -610,8 +604,7 @@ fn test_frontend_fail_formal_verification() -> Result<(), String> {
             );
             run_shell_tests(path)
         },
-    );
-    Ok(())
+    )
 }
 
 #[test]
@@ -622,24 +615,18 @@ fn test_frontend_fail_unimplemented_smt() -> Result<(), String> {
             println!("Running test_frontend_fail_unimplemented_smt on {:?}", path);
             run_shell_tests(path)
         },
-    );
-    Ok(())
+    )
 }
 
 #[test]
 fn test_backend_pass_autodiff() -> Result<(), String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/autodiff");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!("Running test_backend_pass_autodiff on {:?}", path);
-                run_backend_autodiff_test(&path);
-            }
-        });
-    }
-    Ok(())
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/autodiff"),
+        |path| {
+            println!("Running test_backend_pass_autodiff on {:?}", path);
+            run_backend_autodiff_test(path)
+        },
+    )
 }
 
 // Backend Autodiff Runner
@@ -766,8 +753,7 @@ fn test_backend_fail() -> Result<(), String> {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
         |path| run_shell_tests(path),
-    );
-    Ok(())
+    )
 }
 
 // --- Test Runners ---
