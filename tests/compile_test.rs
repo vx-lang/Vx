@@ -325,7 +325,7 @@ fn test_frontend_fail() {
                         assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
                     }
                 } else {
-                    run_frontend_test(&path, false);
+                    panic!("Test with no RUN line: {:?}", path);
                 }
             }
         });
@@ -608,7 +608,7 @@ fn test_frontend_fail_formal_verification() {
                         assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
                     }
                 } else {
-                    run_frontend_test(&path, false);
+                    panic!("Test with no RUN line: {:?}", path);
                 }
             }
         });
@@ -644,7 +644,7 @@ fn test_frontend_fail_unimplemented_smt() {
                         assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
                     }
                 } else {
-                    run_frontend_test(&path, false);
+                    panic!("Test with no RUN line: {:?}", path);
                 }
             }
         });
@@ -812,14 +812,7 @@ fn test_backend_fail() {
                         assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
                     }
                 } else {
-                    let result = std::panic::catch_unwind(|| {
-                        run_backend_test(&path);
-                    });
-                    assert!(
-                        result.is_err(),
-                        "Expected {} to fail, but it succeeded!",
-                        path.display()
-                    );
+                    panic!("Test with no RUN line: {:?}", path);
                 }
             }
         });
