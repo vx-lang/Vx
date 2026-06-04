@@ -46,11 +46,23 @@ fn test_valid_acyclic_registry() -> Result<(), String> {
         return Err("Assertion failed: result.is_ok()".to_string());
     }
     let registry = result.unwrap();
-    assert_eq!(registry.layouts.len(), 2);
+    if registry.layouts.len() != 2 {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            registry.layouts.len(),
+            2
+        ));
+    }
 
     // Check that module index works
     let mod_index = registry.module_indices.get(&mod_hash).unwrap();
-    assert_eq!(mod_index.get("A"), Some(&id_a));
+    if mod_index.get("A") != Some(&id_a) {
+        return Err(format!(
+            "Assertion failed: {:?} != {:?}",
+            mod_index.get("A"),
+            Some(&id_a)
+        ));
+    }
 
     Ok(())
 }

@@ -26,8 +26,19 @@ fn test_parse_module_api() -> Result<(), String> {
         return Err(format!("Parse failed: {:?}", module.err()));
     }
     let module = module.unwrap();
-    assert_eq!(module.functions.len(), 1);
-    assert_eq!(module.functions[0].name, "hello_world");
+    if module.functions.len() != 1 {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            module.functions.len(),
+            1
+        ));
+    }
+    if module.functions[0].name != "hello_world" {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            module.functions[0].name, "hello_world"
+        ));
+    }
 
     Ok(())
 }
@@ -51,8 +62,19 @@ fn test_ak_module_add_function() -> Result<(), String> {
     // The 'pub' keyword is automatically stripped by our From<&str> implementation
     module.add(VxFunction::from("pub fn foo() -> i64 { return 10; }"));
 
-    assert_eq!(module.functions.len(), 1);
-    assert_eq!(module.functions[0].name, "foo");
+    if module.functions.len() != 1 {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            module.functions.len(),
+            1
+        ));
+    }
+    if module.functions[0].name != "foo" {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            module.functions[0].name, "foo"
+        ));
+    }
 
     Ok(())
 }

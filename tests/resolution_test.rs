@@ -49,15 +49,21 @@ fn test_local_name_resolution() -> Result<(), String> {
 
     // Verify that `Vector` was mapped to a deterministic `TypeId`
     if let Type::Struct(name, id) = &module.functions[0].return_type {
-        assert_eq!(name, "Vector");
+        if name != "Vector" {
+            return Err(format!("Assertion failed: {} != {}", name, "Vector"));
+        }
         if !(id.is_some()) {
             return Err("Assertion failed: id.is_some()".to_string());
         } // Successfully resolved to a TypeId!
 
         let tid = id.unwrap();
         // The Module Hash and Symbol Hash should be populated
-        assert_ne!(tid.module_id(), 0);
-        assert_ne!(tid.symbol_id(), 0);
+        if tid.module_id() == 0 {
+            return Err(format!("Assertion failed: {} == {}", tid.module_id(), 0));
+        }
+        if tid.symbol_id() == 0 {
+            return Err(format!("Assertion failed: {} == {}", tid.symbol_id(), 0));
+        }
     } else {
         return Err("Expected Struct type".to_string());
     }
@@ -94,7 +100,9 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     module.resolve_names(&symbol_map);
 
     if let Type::Struct(name, id) = &module.functions[0].return_type {
-        assert_eq!(name, "Vector");
+        if name != "Vector" {
+            return Err(format!("Assertion failed: {} != {}", name, "Vector"));
+        }
         if !(id.is_none()) {
             return Err("Assertion failed: id.is_none()".to_string());
         } // Should remain unresolved!
@@ -146,7 +154,9 @@ fn test_nested_type_resolution() -> Result<(), String> {
 
     if let Type::Borrow(inner, _, _, _) = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
-            assert_eq!(name, "Matrix");
+            if name != "Matrix" {
+                return Err(format!("Assertion failed: {} != {}", name, "Matrix"));
+            }
             if !(id.is_some()) {
                 return Err("Assertion failed: id.is_some()".to_string());
             } // Deeply nested type must be resolved!
@@ -206,7 +216,9 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         ..
     }) = &module.functions[0].body[0]
     {
-        assert_eq!(name, "Config");
+        if name != "Config" {
+            return Err(format!("Assertion failed: {} != {}", name, "Config"));
+        }
         if !(id.is_some()) {
             return Err("Assertion failed: id.is_some()".to_string());
         } // The Type annotation deep within the LetDecl Statement was resolved!

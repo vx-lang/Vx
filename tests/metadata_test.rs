@@ -17,7 +17,7 @@ use vxc::gid::TypeId;
 use vxc::metadata::VxMetadata;
 
 #[test]
-fn test_zero_copy_metadata_serialization() {
+fn test_zero_copy_metadata_serialization() -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_module.vxm");
 
@@ -35,19 +35,32 @@ fn test_zero_copy_metadata_serialization() {
     // 3. Ensure file exists and has the exact size
     // 8 bytes (len) + 10000 * 32 bytes (TypeId) = 320,008 bytes
     let metadata_len = fs::metadata(&file_path).unwrap().len();
-    assert_eq!(metadata_len, 320_008);
+    if metadata_len != 320_008 {
+        return Err(format!("Assertion failed: {} != {}", metadata_len, 320_008));
+    }
 
     // 4. Load from file (Zero Copy)
     let buffer = fs::read(&file_path).expect("Failed to read metadata");
     let loaded_metadata = VxMetadata::load_from_buffer(&buffer);
 
     // 5. Verify integrity
-    assert_eq!(loaded_metadata.type_dictionary.len(), original_dict.len());
-    assert_eq!(loaded_metadata.type_dictionary, original_dict.as_slice());
+    if loaded_metadata.type_dictionary.len() != original_dict.len() {
+        return Err("Assertion failed: lengths do not match".into());
+    }
+    if loaded_metadata.type_dictionary != original_dict.as_slice() {
+        return Err("Assertion failed: content does not match".into());
+    }
 
     // Verify AST bytes are empty since we didn't add any
-    assert_eq!(loaded_metadata.ast_data.len(), 0);
+    if loaded_metadata.ast_data.len() != 0 {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            loaded_metadata.ast_data.len(),
+            0
+        ));
+    }
 
     // 6. Cleanup
     let _ = fs::remove_file(&file_path);
+    Ok(())
 }

@@ -42,7 +42,13 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     // 2. Parsing
     let mut parser = Parser::new(tokens, input);
     let mut ast = parser.parse().expect("Failed to parse AST");
-    assert_eq!(ast.functions.len(), 2);
+    if ast.functions.len() != 2 {
+        return Err(format!(
+            "Assertion failed: {} != {}",
+            ast.functions.len(),
+            2
+        ));
+    }
 
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
