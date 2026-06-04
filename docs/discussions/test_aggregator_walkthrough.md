@@ -18,13 +18,18 @@ The test runner execution loop in `tests/compile_test.rs` has been refactored to
 
    - Refactored duplicate FileCheck `sh -c` test logic into `run_shell_tests`.
    - Now, `test_frontend_fail`, `test_frontend_fail_formal_verification`, `test_frontend_fail_unimplemented_smt`, and `test_backend_fail` all share the exact same closure for `RUN:` lines.
+   - `run_shell_tests` now uses `.output()` instead of `.status()`. If the shell command fails, it captures standard output and standard error and incorporates it into the failure message for easier debugging.
 
 1. **Compiler Warnings Fix (`prover.rs`):**
 
    - Clippy failed the pre-commit because `src/sema/prover.rs` contained an unreachable catch-all (`_`) pattern. This was safely removed.
 
+1. **Test Restrictions Removal:**
+
+   - Removed macOS specific execution gates (`!cfg!(target_os = "macos")`) from multiple tests to ensure they execute natively on any platform.
+
 ## Validation Details
 
 - Successfully tested intentionally corrupting two syntax errors in `tests/frontend/fail`. Output correctly aggregated the panics per file instead of short-circuiting after the first.
 - Pre-commit passed locally with Markdown formatters, Rust Formatters, Clippy Linters, and the full `cargo test` suite running successfully.
-- Pushed changes locally to Git via commit `d41c2dc`.
+- Pushed changes locally to Git via commit `b0efab7`.

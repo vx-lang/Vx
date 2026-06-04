@@ -21,7 +21,7 @@ use vxc::jit::execute_mlir;
 use vxc::sema::TypeChecker;
 
 // Frontend Runner
-fn run_frontend_test(path: &Path, expect_pass: bool) {
+fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let _source = fs::read_to_string(path).expect("Failed to read test file");
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
@@ -29,9 +29,9 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
         Ok(p) => p,
         Err(e) => {
             if !expect_pass {
-                return;
+                return Ok(());
             }
-            panic!("Parse failed on {:?}: {}", path, e);
+            return Err(format!("Parse failed on {:?}: {}", path, e));
         }
     };
 
@@ -48,9 +48,9 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
         if !expect_pass {
-            return;
+            return Ok(());
         }
-        panic!("Macro expansion failed on {:?}: {}", path, e);
+        return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -68,22 +68,25 @@ fn run_frontend_test(path: &Path, expect_pass: bool) {
         .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error);
 
     if expect_pass {
-        assert!(
-            is_valid,
-            "Semantic analysis failed on {:?}:\n{:?}",
-            path, checker.errors
-        );
+        if !is_valid {
+            return Err(format!(
+                "Semantic analysis failed on {:?}:\n{:#?}",
+                path, checker.errors
+            ));
+        }
     } else {
-        assert!(
-            !is_valid,
-            "Expected semantic failure on {:?}, but it passed",
-            path
-        );
+        if is_valid {
+            return Err(format!(
+                "Expected semantic failure on {:?}, but it passed",
+                path
+            ));
+        }
     }
+    Ok(())
 }
 
 // Middle-End Runner
-fn run_middle_end_test(path: &Path) {
+fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Extract // CHECK: lines
@@ -110,7 +113,7 @@ fn run_middle_end_test(path: &Path) {
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
-        panic!("Macro expansion failed on {:?}: {}", path, e);
+        return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -122,15 +125,13 @@ fn run_middle_end_test(path: &Path) {
     for f in &mut program.functions {
         checker.check_function(f);
     }
-    assert!(
-        (!checker
-            .errors
-            .iter()
-            .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)),
-        "Sema failed on {:?}: {:#?}",
-        path,
-        checker.errors
-    );
+    if checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
+    {
+        return Err(format!("Sema failed on {:?}: {:#?}", path, checker.errors));
+    }
 
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
@@ -164,13 +165,14 @@ fn run_middle_end_test(path: &Path) {
         if let Some(pos) = mlir_str[current_idx..].find(&check) {
             current_idx += pos + check.len();
         } else {
-            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str);
+            return Err(format!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str));
         }
     }
+    Ok(())
 }
 
 // Backend Runner
-fn run_backend_test(path: &Path) {
+fn run_backend_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Extract // EXPECT: lines (assuming just one for simplicity right now)
@@ -183,7 +185,13 @@ fn run_backend_test(path: &Path) {
     let mut loader = vxc::module_loader::ModuleLoader::new();
     let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
-        Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
+        Err(e) => {
+            return Err(format!(
+                "Frontend failed to parse '{}': {}",
+                path.display(),
+                e
+            ))
+        }
     };
 
     let ast_idx = program_arr
@@ -198,7 +206,7 @@ fn run_backend_test(path: &Path) {
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
-        panic!("Macro expansion failed on {:?}: {}", path, e);
+        return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -265,25 +273,29 @@ fn run_backend_test(path: &Path) {
     let mut module = codegen.into_module();
     if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
         println!("MLIR Before Lowering Error:\n{}", module.as_operation());
-        panic!("Lowering to LLVM failed for {}: {:?}", path.display(), e);
+        return Err(format!(
+            "Lowering to LLVM failed for {}: {:?}",
+            path.display(),
+            e
+        ));
     }
     let mlir_str = module.as_operation().to_string();
 
     if source.contains("// NO_EXEC") {
-        return;
+        return Ok(());
     }
 
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
-        assert!(
-            out.contains(&expect),
-            "Backend output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}",
-            path,
-            expect,
-            out
-        );
+        if !out.contains(&expect) {
+            return Err(format!(
+                "Backend output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}",
+                path, expect, out
+            ));
+        }
     }
+    Ok(())
 }
 
 #[test]
@@ -291,12 +303,21 @@ fn test_frontend_pass() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                run_frontend_test(&path, true);
-            }
-        });
+        let errors: Vec<String> = entries
+            .into_par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                    if let Err(e) = run_frontend_test(&path, true) {
+                        return Some(e);
+                    }
+                }
+                None
+            })
+            .collect();
+        if !errors.is_empty() {
+            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+        }
     }
 }
 
@@ -304,7 +325,7 @@ fn test_frontend_pass() {
 fn test_frontend_fail() {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
-        run_shell_tests,
+        |path| run_shell_tests(path),
     );
 }
 
@@ -313,14 +334,23 @@ fn test_optimizations() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/optimizations/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str());
-            if path.is_file() && (ext == Some("mlr") || ext == Some("vx")) {
-                println!("Running test_optimizations on {:?}", path);
-                run_optimization_test(&path);
-            }
-        });
+        let errors: Vec<String> = entries
+            .into_par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let ext = path.extension().and_then(|s| s.to_str());
+                if path.is_file() && (ext == Some("mlr") || ext == Some("vx")) {
+                    println!("Running test_optimizations on {:?}", path);
+                    if let Err(e) = run_optimization_test(&path) {
+                        return Some(e);
+                    }
+                }
+                None
+            })
+            .collect();
+        if !errors.is_empty() {
+            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+        }
     }
 }
 
@@ -329,17 +359,26 @@ fn test_middle_end() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                run_middle_end_test(&path);
-            }
-        });
+        let errors: Vec<String> = entries
+            .into_par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                    if let Err(e) = run_middle_end_test(&path) {
+                        return Some(e);
+                    }
+                }
+                None
+            })
+            .collect();
+        if !errors.is_empty() {
+            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+        }
     }
 }
 
 // Optimization Test Runner
-fn run_optimization_test(path: &Path) {
+fn run_optimization_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     let run_lines: Vec<_> = source
@@ -351,7 +390,9 @@ fn run_optimization_test(path: &Path) {
         })
         .collect();
 
-    assert!(!run_lines.is_empty(), "Missing // RUN: line");
+    if run_lines.is_empty() {
+        return Err(format!("Missing // RUN: line"));
+    }
 
     for run_line in run_lines {
         let run_cmd = run_line.split_once("RUN:").unwrap().1.trim();
@@ -447,10 +488,6 @@ fn run_optimization_test(path: &Path) {
                     String::from_utf8_lossy(&output.stdout)
                 );
             }
-            // If it failed as expected, we probably still want to check the error message
-            // or maybe we shouldn't run FileCheck if it's expected to fail?
-            // The user expects to use `not` and probably FileCheck the error message!
-            // We should combine stdout and stderr so FileCheck can match the error message.
             let out = format!(
                 "{}{}",
                 String::from_utf8_lossy(&output.stdout),
@@ -465,11 +502,14 @@ fn run_optimization_test(path: &Path) {
                     panic!("FileCheck failed on {:?} for prefix {}: Could not find `{}` after previous checks.\nOutput:\n{}", path, prefix, check, out);
                 }
             }
-            return; // Skip negative checks for expected failures? No, let's keep them if needed, but return here because that's usually how it works.
+            continue;
         }
 
         if !output.status.success() {
-            panic!("vxc failed:\n{}", String::from_utf8_lossy(&output.stderr));
+            return Err(format!(
+                "vxc failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         let out = String::from_utf8_lossy(&output.stdout);
@@ -485,13 +525,14 @@ fn run_optimization_test(path: &Path) {
 
         for not_check in check_not_lines {
             if out.contains(&not_check) {
-                panic!(
+                return Err(format!(
                     "FileCheck failed on {:?} for prefix {}: Found forbidden `{}`.\nOutput:\n{}",
                     path, prefix, not_check, out
-                );
+                ));
             }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -502,11 +543,8 @@ fn test_middle_end_fail() {
         entries.into_par_iter().for_each(|entry| {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                let result = std::panic::catch_unwind(|| {
-                    run_middle_end_test(&path);
-                });
                 assert!(
-                    result.is_err(),
+                    run_middle_end_test(&path).is_err(),
                     "Expected {} to fail, but it succeeded!",
                     path.display()
                 );
@@ -521,11 +559,12 @@ fn test_backend() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
             println!("Running test_backend on {:?}", path);
-            run_backend_test(path);
+            run_backend_test(path)?;
             let source = std::fs::read_to_string(path).unwrap_or_default();
             if source.contains("// RUN: vxc %s --emit-mlir") {
-                run_optimization_test(path);
+                run_optimization_test(path)?;
             }
+            Ok(())
         },
     );
 }
@@ -539,7 +578,7 @@ fn test_frontend_pass_formal_verification() {
                 "Running test_frontend_pass_formal_verification on {:?}",
                 path
             );
-            run_frontend_test(path, true);
+            run_frontend_test(path, true)
         },
     );
 }
@@ -553,7 +592,7 @@ fn test_frontend_fail_formal_verification() {
                 "Running test_frontend_fail_formal_verification on {:?}",
                 path
             );
-            run_shell_tests(path);
+            run_shell_tests(path)
         },
     );
 }
@@ -564,7 +603,7 @@ fn test_frontend_fail_unimplemented_smt() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/unimplemented_smt"),
         |path| {
             println!("Running test_frontend_fail_unimplemented_smt on {:?}", path);
-            run_shell_tests(path);
+            run_shell_tests(path)
         },
     );
 }
@@ -585,7 +624,7 @@ fn test_backend_pass_autodiff() {
 }
 
 // Backend Autodiff Runner
-fn run_backend_autodiff_test(path: &Path) {
+fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     let expect_lines: Vec<String> = source
@@ -597,7 +636,13 @@ fn run_backend_autodiff_test(path: &Path) {
     let mut loader = vxc::module_loader::ModuleLoader::new();
     let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
-        Err(e) => panic!("Frontend failed to parse '{}': {}", path.display(), e),
+        Err(e) => {
+            return Err(format!(
+                "Frontend failed to parse '{}': {}",
+                path.display(),
+                e
+            ))
+        }
     };
 
     let ast_idx = program_arr
@@ -612,7 +657,7 @@ fn run_backend_autodiff_test(path: &Path) {
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
-        panic!("Macro expansion failed on {:?}: {}", path, e);
+        return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -666,15 +711,14 @@ fn run_backend_autodiff_test(path: &Path) {
 
     if source.contains("// NO_EXEC") {
         for expect in expect_lines {
-            assert!(
-                mlir_str.contains(&expect),
-                "MLIR Output mismatch on {:?}.\nExpected to find: `{}`\nActual MLIR:\n{}",
-                path,
-                expect,
-                mlir_str
-            );
+            if !mlir_str.contains(&expect) {
+                return Err(format!(
+                    "MLIR Output mismatch on {:?}.\nExpected to find: `{}`\nActual MLIR:\n{}",
+                    path, expect, mlir_str
+                ));
+            }
         }
-        return;
+        return Ok(());
     }
 
     if std::env::var("ENZYME_LIB").is_err() {
@@ -682,35 +726,34 @@ fn run_backend_autodiff_test(path: &Path) {
             "Skipping JIT execution for {} because ENZYME_LIB is not set.",
             path.display()
         );
-        return;
+        return Ok(());
     }
 
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
-        assert!(
-            mlir_str.contains(&expect) || out.contains(&expect),
-            "Output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}\nMLIR:\n{}",
-            path,
-            expect,
-            out,
-            mlir_str
-        );
+        if !mlir_str.contains(&expect) && !out.contains(&expect) {
+            return Err(format!(
+                "Output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}\nMLIR:\n{}",
+                path, expect, out, mlir_str
+            ));
+        }
     }
+    Ok(())
 }
 
 #[test]
 fn test_backend_fail() {
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
-        run_shell_tests,
+        |path| run_shell_tests(path),
     );
 }
 
 // --- Test Runners ---
 fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F)
 where
-    F: Fn(&std::path::Path) + Sync + Send,
+    F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -719,18 +762,21 @@ where
             .filter_map(|entry| {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        test_fn(&path);
-                    }));
-                    if let Err(e) = result {
-                        let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = e.downcast_ref::<String>() {
-                            s.to_string()
-                        } else {
-                            "Unknown panic".to_string()
-                        };
-                        return Some(format!("Test {:?} failed: {}", path, msg));
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test_fn(&path)));
+                    match result {
+                        Ok(Err(msg)) => return Some(format!("Test {:?} failed: {}", path, msg)),
+                        Err(e) => {
+                            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = e.downcast_ref::<String>() {
+                                s.to_string()
+                            } else {
+                                "Unknown panic".to_string()
+                            };
+                            return Some(format!("Test {:?} panicked: {}", path, msg));
+                        }
+                        Ok(Ok(())) => {}
                     }
                 }
                 None
@@ -742,7 +788,7 @@ where
     }
 }
 
-fn run_shell_tests(path: &Path) {
+fn run_shell_tests(path: &Path) -> Result<(), String> {
     let source = std::fs::read_to_string(path).unwrap_or_default();
     let run_lines: Vec<_> = source
         .lines()
@@ -766,22 +812,23 @@ fn run_shell_tests(path: &Path) {
                 .output()
                 .expect("Failed to execute shell command");
             if !output.status.success() {
-                panic!(
+                return Err(format!(
                     "Command '{}' failed for test {:?}\nStdout:\n{}\nStderr:\n{}",
                     cmd,
                     path,
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
-                );
+                ));
             }
         }
     } else {
-        panic!("Test with no RUN line: {:?}", path);
+        return Err(format!("Test with no RUN line: {:?}", path));
     }
+    Ok(())
 }
 
 #[test]
-fn test_melior_matmul() {
+fn test_melior_matmul() -> Result<(), String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.mlr");
     let source = fs::read_to_string(&path).expect("Failed to read test file");
 
@@ -808,7 +855,7 @@ fn test_melior_matmul() {
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
-        panic!("Macro expansion failed on {:?}: {}", path, e);
+        return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -821,15 +868,13 @@ fn test_melior_matmul() {
     for f in &mut checked_program.functions {
         checker.check_function(f);
     }
-    assert!(
-        (!checker
-            .errors
-            .iter()
-            .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)),
-        "Sema failed on {:?}: {:#?}",
-        path,
-        checker.errors
-    );
+    if checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
+    {
+        return Err(format!("Sema failed on {:?}: {:#?}", path, checker.errors));
+    }
 
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
@@ -848,9 +893,10 @@ fn test_melior_matmul() {
         if let Some(pos) = mlir_str[current_idx..].find(&check) {
             current_idx += pos + check.len();
         } else {
-            panic!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str);
+            return Err(format!("FileCheck failed on {:?}: Could not find `{}` after previous checks.\nMLIR Output:\n{}", path, check, mlir_str));
         }
     }
+    Ok(())
 }
 
 extern "C" {
