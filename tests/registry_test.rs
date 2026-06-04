@@ -17,7 +17,7 @@ use vxc::hash::{compute_module_hash, DefPath};
 use vxc::registry::{ImmutableGlobalRegistry, TypeDefinition};
 
 #[test]
-fn test_valid_acyclic_registry() {
+fn test_valid_acyclic_registry() -> Result<(), String> {
     let mod_hash = compute_module_hash("core::test");
     let struct_a_hash = DefPath::Named("A".to_string()).compute_symbol_hash();
     let struct_b_hash = DefPath::Named("B".to_string()).compute_symbol_hash();
@@ -42,17 +42,21 @@ fn test_valid_acyclic_registry() {
     };
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
-    assert!(result.is_ok());
+    if !(result.is_ok()) {
+        return Err("Assertion failed: result.is_ok()".to_string());
+    }
     let registry = result.unwrap();
     assert_eq!(registry.layouts.len(), 2);
 
     // Check that module index works
     let mod_index = registry.module_indices.get(&mod_hash).unwrap();
     assert_eq!(mod_index.get("A"), Some(&id_a));
+
+    Ok(())
 }
 
 #[test]
-fn test_invalid_cyclic_registry() {
+fn test_invalid_cyclic_registry() -> Result<(), String> {
     let mod_hash = compute_module_hash("core::test");
     let struct_a_hash = DefPath::Named("A".to_string()).compute_symbol_hash();
     let struct_b_hash = DefPath::Named("B".to_string()).compute_symbol_hash();
@@ -77,10 +81,19 @@ fn test_invalid_cyclic_registry() {
     };
 
     let result = ImmutableGlobalRegistry::build_and_validate(vec![def_a, def_b]);
-    assert!(result.is_err());
+    if !(result.is_err()) {
+        return Err("Assertion failed: result.is_err()".to_string());
+    }
     let err = match result {
         Err(e) => e,
-        _ => panic!(),
+        _ => return Err("Unexpected match".to_string()),
     };
-    assert!(err.contains("Infinite-sized recursive layout detected"));
+    if !(err.contains("Infinite-sized recursive layout detected")) {
+        return Err(
+            "Assertion failed: err.contains(\"Infinite-sized recursive layout detected\")"
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }

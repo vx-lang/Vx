@@ -16,7 +16,7 @@ use vxc::borrow::verify_subtyping_bounds;
 use vxc::gid::TypeId;
 
 #[test]
-fn test_fast_path_variance_checks() {
+fn test_fast_path_variance_checks() -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let worker = vxc::session::LocalWorkerState::new(global_session.clone());
 
@@ -29,10 +29,14 @@ fn test_fast_path_variance_checks() {
     type_b.try_set_fast_param(0, 1, 1).unwrap();
 
     // 'static (0) can be coerced to 'a (1) for Covariant types
-    assert!(verify_subtyping_bounds(&type_a, &type_b, &worker));
+    if !verify_subtyping_bounds(&type_a, &type_b, &worker) {
+        return Err("Subtyping bound failed".into());
+    }
 
     // 'a (1) cannot be coerced to 'static (0)
-    assert!(!verify_subtyping_bounds(&type_b, &type_a, &worker));
+    if verify_subtyping_bounds(&type_b, &type_a, &worker) {
+        return Err("Subtyping bound failed".into());
+    }
 
     // Type C: Variance = 0 (Invariant), Region = 0
     let mut type_c = TypeId::new(0, 0, 0, 0);
@@ -41,6 +45,12 @@ fn test_fast_path_variance_checks() {
     type_d.try_set_fast_param(0, 1, 0).unwrap();
 
     // Invariant requires EXACT match
-    assert!(verify_subtyping_bounds(&type_c, &type_c, &worker));
-    assert!(!verify_subtyping_bounds(&type_c, &type_d, &worker));
+    if !verify_subtyping_bounds(&type_c, &type_c, &worker) {
+        return Err("Subtyping bound failed".into());
+    }
+    if verify_subtyping_bounds(&type_c, &type_d, &worker) {
+        return Err("Subtyping bound failed".into());
+    }
+
+    Ok(())
 }

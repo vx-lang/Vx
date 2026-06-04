@@ -17,7 +17,7 @@ use vxc::parser::Parser;
 use vxc::sema::TypeChecker;
 
 #[test]
-fn test_distributed_matmul_integration() {
+fn test_distributed_matmul_integration() -> Result<(), String> {
     let input = r#"fn custom_matmul(a: Pinned<Tensor<f32>, Topology::NPU[0]>, b: Pinned<Tensor<f32>, Topology::NPU[0]>) on Topology::NPU[0] -> Pinned<Tensor<f32>, Topology::NPU[0]> {
     return a;
 }
@@ -35,7 +35,9 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     // 1. Lexing
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
-    assert!(!tokens.is_empty());
+    if !(!tokens.is_empty()) {
+        return Err("Assertion failed: !tokens.is_empty()".to_string());
+    }
 
     // 2. Parsing
     let mut parser = Parser::new(tokens, input);
@@ -59,7 +61,11 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
         }
     }
 
-    assert!(is_valid, "Semantic analysis failed on integration test");
+    if !(is_valid) {
+        return Err("Semantic analysis failed on integration test".to_string());
+    }
+
+    Ok(())
 }
 
 fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::Diagnostic>> {
@@ -111,7 +117,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
 }
 
 #[test]
-fn test_integration_operators() {
+fn test_integration_operators() -> Result<(), String> {
     let input = r#"
     fn math_ops() -> Tensor {
         let mut x = 10;
@@ -120,11 +126,15 @@ fn test_integration_operators() {
         return x;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_loops() {
+fn test_integration_loops() -> Result<(), String> {
     let input = r#"
     fn loop_test() -> Tensor {
         let mut sum = 0;
@@ -134,11 +144,15 @@ fn test_integration_loops() {
         return sum;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_arrays_and_indexing() {
+fn test_integration_arrays_and_indexing() -> Result<(), String> {
     let input = r#"
     fn array_test(a: Tensor<f32, [2, 2]>, b: Tensor<f32, [2, 2]>) -> Tensor<f32, [2, 2]> {
         let mut arr = Tensor_f32(2, 2);
@@ -146,22 +160,30 @@ fn test_integration_arrays_and_indexing() {
         return arr;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_method_chaining() {
+fn test_integration_method_chaining() -> Result<(), String> {
     let input = r#"
     fn memory_test() -> Ref<Tensor<f32, [10]>, Memory::NPU_HBM> {
         let mut mem = Tensor([10]).with_memory(Memory::NPU_HBM);
         return mem;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_function_calls() {
+fn test_integration_function_calls() -> Result<(), String> {
     let input = r#"
     fn helper(x: Tensor) -> Tensor {
         return x + 1;
@@ -173,11 +195,15 @@ fn test_integration_function_calls() {
         return z;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_logical_ops() {
+fn test_integration_logical_ops() -> Result<(), String> {
     let input = r#"
     fn logic_test(a: Tensor, b: Tensor) -> Tensor {
         let is_less = a < b;
@@ -186,11 +212,15 @@ fn test_integration_logical_ops() {
         return a;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_integration_linear_variable_consumption() {
+fn test_integration_linear_variable_consumption() -> Result<(), String> {
     let input = r#"
     fn helper(t: Tensor) -> Tensor {
         return t;
@@ -210,5 +240,9 @@ fn test_integration_linear_variable_consumption() {
         return y;
     }
     "#;
-    assert!(run_pipeline(input).is_ok());
+    if !(run_pipeline(input).is_ok()) {
+        return Err("Assertion failed: run_pipeline(input).is_ok()".to_string());
+    }
+
+    Ok(())
 }

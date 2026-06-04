@@ -15,7 +15,7 @@ use vxc::ast::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
 
 #[test]
-fn test_local_name_resolution() {
+fn test_local_name_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
         module_path: "core::math".to_string(),
@@ -50,21 +50,25 @@ fn test_local_name_resolution() {
     // Verify that `Vector` was mapped to a deterministic `TypeId`
     if let Type::Struct(name, id) = &module.functions[0].return_type {
         assert_eq!(name, "Vector");
-        assert!(id.is_some()); // Successfully resolved to a TypeId!
+        if !(id.is_some()) {
+            return Err("Assertion failed: id.is_some()".to_string());
+        } // Successfully resolved to a TypeId!
 
         let tid = id.unwrap();
         // The Module Hash and Symbol Hash should be populated
         assert_ne!(tid.module_id(), 0);
         assert_ne!(tid.symbol_id(), 0);
     } else {
-        panic!("Expected Struct type");
+        return Err("Expected Struct type".to_string());
     }
+
+    Ok(())
 }
 
 use vxc::ast::{Expr, LetDeclStmt, MemorySpace, NumberExpr, Statement};
 
 #[test]
-fn test_unresolved_symbol_remains_none() {
+fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
         module_path: "core::bad".to_string(),
@@ -91,14 +95,18 @@ fn test_unresolved_symbol_remains_none() {
 
     if let Type::Struct(name, id) = &module.functions[0].return_type {
         assert_eq!(name, "Vector");
-        assert!(id.is_none()); // Should remain unresolved!
+        if !(id.is_none()) {
+            return Err("Assertion failed: id.is_none()".to_string());
+        } // Should remain unresolved!
     } else {
-        panic!("Expected Struct type");
+        return Err("Expected Struct type".to_string());
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_nested_type_resolution() {
+fn test_nested_type_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
         module_path: "core::math".to_string(),
@@ -139,17 +147,21 @@ fn test_nested_type_resolution() {
     if let Type::Borrow(inner, _, _, _) = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
             assert_eq!(name, "Matrix");
-            assert!(id.is_some()); // Deeply nested type must be resolved!
+            if !(id.is_some()) {
+                return Err("Assertion failed: id.is_some()".to_string());
+            } // Deeply nested type must be resolved!
         } else {
-            panic!("Expected inner Struct type");
+            return Err("Expected inner Struct type".to_string());
         }
     } else {
-        panic!("Expected Borrow type");
+        return Err("Expected Borrow type".to_string());
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_expr_and_stmt_resolution() {
+fn test_expr_and_stmt_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
         module_path: "core::app".to_string(),
@@ -195,8 +207,12 @@ fn test_expr_and_stmt_resolution() {
     }) = &module.functions[0].body[0]
     {
         assert_eq!(name, "Config");
-        assert!(id.is_some()); // The Type annotation deep within the LetDecl Statement was resolved!
+        if !(id.is_some()) {
+            return Err("Assertion failed: id.is_some()".to_string());
+        } // The Type annotation deep within the LetDecl Statement was resolved!
     } else {
-        panic!("Expected LetDecl with Config Struct type");
+        return Err("Expected LetDecl with Config Struct type".to_string());
     }
+
+    Ok(())
 }

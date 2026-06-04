@@ -5,7 +5,7 @@ use melior::{
 use std::sync::{Arc, Mutex};
 
 #[test]
-fn test_mlir_diagnostic_suppressed_by_default() {
+fn test_mlir_diagnostic_suppressed_by_default() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
     let context = Context::new();
@@ -34,18 +34,18 @@ fn test_mlir_diagnostic_suppressed_by_default() {
     module.body().append_operation(invalid_op);
 
     let is_valid = module.as_operation().verify();
-    assert!(
-        !is_valid,
-        "Module should be invalid due to malformed operation"
-    );
-    assert!(
-        captured.lock().unwrap().is_empty(),
-        "Diagnostic should have been suppressed"
-    );
+    if !(!is_valid) {
+        return Err("Module should be invalid due to malformed operation".to_string());
+    }
+    if !(captured.lock().unwrap().is_empty()) {
+        return Err("Diagnostic should have been suppressed".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_mlir_diagnostic_emitted() {
+fn test_mlir_diagnostic_emitted() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
     let context = Context::new();
@@ -74,18 +74,18 @@ fn test_mlir_diagnostic_emitted() {
     module.body().append_operation(invalid_op);
 
     let is_valid = module.as_operation().verify();
-    assert!(
-        !is_valid,
-        "Module should be invalid due to malformed operation"
-    );
-    assert!(
-        captured.lock().unwrap().contains("requires one result"),
-        "Diagnostic was not captured properly"
-    );
+    if !(!is_valid) {
+        return Err("Module should be invalid due to malformed operation".to_string());
+    }
+    if !(captured.lock().unwrap().contains("requires one result")) {
+        return Err("Diagnostic was not captured properly".to_string());
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_mlir_diagnostic_parse_error() {
+fn test_mlir_diagnostic_parse_error() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
     melior::utility::register_all_passes();
@@ -111,15 +111,15 @@ fn test_mlir_diagnostic_parse_error() {
     let _ = melior::ir::Module::parse(&context, mlir_str);
 
     let diag = captured.lock().unwrap();
-    assert!(
-        diag.contains("custom op 'func.invalid_op' is unknown"),
-        "Expected parse diagnostic, got: {}",
-        diag
-    );
+    if !(diag.contains("custom op 'func.invalid_op' is unknown")) {
+        return Err(format!("Expected parse diagnostic, got: {}", diag));
+    }
+
+    Ok(())
 }
 
 #[test]
-fn test_vx_valid_program_emits_remark() {
+fn test_vx_valid_program_emits_remark() -> Result<(), String> {
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
     melior::utility::register_all_passes();
@@ -164,10 +164,17 @@ fn test_remark() -> f32 {
     for f in &mut ast.functions {
         checker.check_function(f);
     }
-    assert!(!checker
+    if !(!checker
         .errors
         .iter()
-        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error));
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error))
+    {
+        return Err("Assertion failed: !checker
+        .errors
+        .iter()
+        .any(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)"
+            .to_string());
+    }
 
     // Generate MLIR
     let module_asts = std::collections::HashMap::new();
@@ -185,9 +192,9 @@ fn test_remark() -> f32 {
     let _ = pass_manager.run(&mut module);
 
     let diag = captured.lock().unwrap();
-    assert!(
-        diag.contains("Lowering Vx to Standard dialects"),
-        "Expected Vx lowering remark, got: {}",
-        diag
-    );
+    if !(diag.contains("Lowering Vx to Standard dialects")) {
+        return Err(format!("Expected Vx lowering remark, got: {}", diag));
+    }
+
+    Ok(())
 }

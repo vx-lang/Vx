@@ -15,23 +15,27 @@
 use vxc::parse_module;
 
 #[test]
-fn test_parse_module_api() {
+fn test_parse_module_api() -> Result<(), String> {
     let source = "
         fn hello_world() -> Tensor {
             let x = 42;
         }
     ";
     let module = parse_module(source);
-    assert!(module.is_ok(), "Parse failed: {:?}", module.err());
+    if !module.is_ok() {
+        return Err(format!("Parse failed: {:?}", module.err()));
+    }
     let module = module.unwrap();
     assert_eq!(module.functions.len(), 1);
     assert_eq!(module.functions[0].name, "hello_world");
+
+    Ok(())
 }
 
 use vxc::ast::{VxFunction, VxModule};
 
 #[test]
-fn test_ak_module_add_function() {
+fn test_ak_module_add_function() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
         module_path: "core::test".to_string(),
@@ -49,4 +53,6 @@ fn test_ak_module_add_function() {
 
     assert_eq!(module.functions.len(), 1);
     assert_eq!(module.functions[0].name, "foo");
+
+    Ok(())
 }

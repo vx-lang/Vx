@@ -16,7 +16,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[test]
-fn test_pipeline_architecture_hooks() {
+fn test_pipeline_architecture_hooks() -> Result<(), String> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/modules/architecture_test");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("Failed to create test dir");
@@ -80,7 +80,11 @@ fn test_pipeline_architecture_hooks() {
     // Execute pipeline. This will run through the Verification Engine hooks.
     // We expect it to succeed, which means all invariants (Phase 1-8) held true.
     let result = vxc::pipeline::compile_pipeline(&paths);
-    assert!(result.is_ok(), "Pipeline failed: {:?}", result.err());
+    if !result.is_ok() {
+        return Err(format!("Pipeline failed: {:?}", result.err()));
+    }
 
     let _ = fs::remove_dir_all(&dir);
+
+    Ok(())
 }

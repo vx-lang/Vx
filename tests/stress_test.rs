@@ -7,7 +7,7 @@ use vxc::sema::TypeChecker;
 
 #[test]
 #[ignore]
-fn test_stress_broad_ast_core_saturation() {
+fn test_stress_broad_ast_core_saturation() -> Result<(), String> {
     let mut module = ModuleBuilder::new();
 
     // Generate a file containing 1,000 completely independent functions
@@ -32,16 +32,18 @@ fn test_stress_broad_ast_core_saturation() {
     // 1. Lexing
     let mut lexer = Lexer::new(&input);
     let tokens = lexer.tokenize();
-    assert!(!tokens.is_empty(), "Tokens should not be empty");
+    if tokens.is_empty() {
+        return Err("Tokens should not be empty".into());
+    }
 
     // 2. Parsing
     let mut parser = Parser::new(tokens, &input);
-    let mut ast = parser.parse().expect("Failed to parse the massive AST");
-    assert_eq!(
-        ast.functions.len(),
-        num_functions,
-        "Should have parsed 1000 functions"
-    );
+    let mut ast = parser
+        .parse()
+        .map_err(|e| format!("Failed to parse the massive AST: {:?}", e))?;
+    if ast.functions.len() != num_functions {
+        return Err("Should have parsed 1000 functions".into());
+    }
 
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -52,16 +54,18 @@ fn test_stress_broad_ast_core_saturation() {
     for f in &mut ast.functions {
         type_checker.check_function(f);
     }
-    assert!(
-        type_checker.errors.is_empty(),
-        "Semantic analysis failed on broad AST: {:?}",
-        type_checker.errors
-    );
+    if !type_checker.errors.is_empty() {
+        return Err(format!(
+            "Semantic analysis failed on broad AST: {:?}",
+            type_checker.errors
+        ));
+    }
+    Ok(())
 }
 
 #[test]
 #[ignore]
-fn test_stress_deep_control_flow_nesting() {
+fn test_stress_deep_control_flow_nesting() -> Result<(), String> {
     let mut module = ModuleBuilder::new();
 
     let mut func = FunctionBuilder::new("deeply_nested");
@@ -98,7 +102,7 @@ fn test_stress_deep_control_flow_nesting() {
     let mut parser = Parser::new(tokens, &input);
     let mut ast = parser
         .parse()
-        .expect("Failed to parse deeply nested control flow");
+        .map_err(|e| format!("Failed to parse deeply nested control flow: {:?}", e))?;
 
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
@@ -109,16 +113,18 @@ fn test_stress_deep_control_flow_nesting() {
     for f in &mut ast.functions {
         type_checker.check_function(f);
     }
-    assert!(
-        type_checker.errors.is_empty(),
-        "Semantic analysis failed on deeply nested AST: {:?}",
-        type_checker.errors
-    );
+    if !type_checker.errors.is_empty() {
+        return Err(format!(
+            "Semantic analysis failed on deeply nested AST: {:?}",
+            type_checker.errors
+        ));
+    }
+    Ok(())
 }
 
 #[test]
 #[ignore]
-fn test_stress_massive_struct_definitions() {
+fn test_stress_massive_struct_definitions() -> Result<(), String> {
     let mut module = ModuleBuilder::new();
     let num_structs = 500;
 
@@ -135,11 +141,9 @@ fn test_stress_massive_struct_definitions() {
     let mut parser = Parser::new(tokens, &input);
     let ast = parser
         .parse()
-        .expect("Failed to parse massive struct definitions");
-    assert_eq!(
-        ast.structs.len(),
-        num_structs,
-        "Should have parsed {} structs",
-        num_structs
-    );
+        .map_err(|e| format!("Failed to parse massive struct definitions: {:?}", e))?;
+    if ast.structs.len() != num_structs {
+        return Err(format!("Should have parsed {} structs", num_structs));
+    }
+    Ok(())
 }
