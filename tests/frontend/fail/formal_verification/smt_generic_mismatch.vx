@@ -1,6 +1,6 @@
 //===- smt_generic_mismatch.vx ---------------------------------*- Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Contract violated for Verified return type
+// CHECK: Contract violated for Verified return type: Must be square
 
 fn wrap<N, M>(val: Tensor<f32, [N, M]>) -> Verified<Tensor<f32, [N, M]>> {
   assert(N == M, "Must be square");

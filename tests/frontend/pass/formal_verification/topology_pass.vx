@@ -5,42 +5,42 @@ fn test_topology_npu(T: i32) -> i32
 requires Topology::NPU[0] == Topology::NPU[0]
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn test_topology_host(T: i32) -> i32
 requires Topology::Host == Topology::Host
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn test_topology_acc_core(T: i32) -> i32
 requires Topology::AccCore[3] == Topology::AccCore[3]
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn test_topology_gpu(T: i32) -> i32
 requires Topology::GPU == Topology::GPU
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn test_topology_amx(T: i32) -> i32
 requires Topology::AMX == Topology::AMX
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn test_topology_ane(T: i32) -> i32
 requires Topology::ANE == Topology::ANE
 ensures return == 1
 {
-    return 1;
+  return 1;
 }
 
 fn main() -> i32 { return 0; }

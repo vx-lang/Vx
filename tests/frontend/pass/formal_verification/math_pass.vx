@@ -5,34 +5,34 @@ fn test_linear_scaling(N: i32) -> i32
 requires N > 5 && N < 20
 ensures return > 15 && return < 60
 {
-    let x = N * 3;
-    return x;
+  let x = N * 3;
+  return x;
 }
 
 fn test_distributive_property(A: i32, B: i32) -> i32
 requires A > 0 && B > 0
 ensures return > 0
 {
-    let sum = A + B;
-    let res = sum * 2;
-    return res;
+  let sum = A + B;
+  let res = sum * 2;
+  return res;
 }
 
 fn test_cancellation(X: i32, Y: i32) -> i32
 requires X > 0 && Y > 0
 ensures return == X
 {
-    let a = X + Y;
-    let b = a - Y;
-    return b;
+  let a = X + Y;
+  let b = a - Y;
+  return b;
 }
 
 fn test_unary_negation(A: i32) -> i32
 requires A < 0
 ensures return > 0
 {
-    let neg = -A;
-    return neg;
+  let neg = -A;
+  return neg;
 }
 
 fn main() -> i32 { return 0; }

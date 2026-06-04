@@ -1,6 +1,6 @@
 //===- failed_assertion.vx ---------------------------------*- Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Contract violated for Verified return type
+// CHECK: Contract violated for Verified return type: Comptime assertion failed
 
 fn test_failed_assertion() -> Verified<i32> {
   let x: i32 = 5;

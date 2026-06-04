@@ -302,34 +302,10 @@ fn test_frontend_pass() {
 
 #[test]
 fn test_frontend_fail() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                let source = std::fs::read_to_string(&path).unwrap_or_default();
-                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
-                if !run_lines.is_empty() {
-                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
-                    let current_path = std::env::var("PATH").unwrap_or_default();
-                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
-                    for run_line in run_lines {
-                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
-                        let status = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .env("PATH", &new_path)
-                            .status()
-                            .expect("Failed to execute shell command");
-                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
-                    }
-                } else {
-                    panic!("Test with no RUN line: {:?}", path);
-                }
-            }
-        });
-    }
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail"),
+        run_shell_tests,
+    );
 }
 
 #[test]
@@ -544,111 +520,56 @@ fn test_backend() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!("Running test_backend on {:?}", path);
-                run_backend_test(&path);
-                let source = std::fs::read_to_string(&path).unwrap_or_default();
-                if source.contains("// RUN: vxc %s --emit-mlir") {
-                    run_optimization_test(&path);
-                }
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
+        |path| {
+            println!("Running test_backend on {:?}", path);
+            run_backend_test(path);
+            let source = std::fs::read_to_string(path).unwrap_or_default();
+            if source.contains("// RUN: vxc %s --emit-mlir") {
+                run_optimization_test(path);
             }
-        });
-    }
+        },
+    );
 }
 
 #[test]
 fn test_frontend_pass_formal_verification() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass/formal_verification");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!(
-                    "Running test_frontend_pass_formal_verification on {:?}",
-                    path
-                );
-                run_frontend_test(&path, true);
-            }
-        });
-    }
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass/formal_verification"),
+        |path| {
+            println!(
+                "Running test_frontend_pass_formal_verification on {:?}",
+                path
+            );
+            run_frontend_test(path, true);
+        },
+    );
 }
 
 #[test]
 fn test_frontend_fail_formal_verification() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/formal_verification");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!(
-                    "Running test_frontend_fail_formal_verification on {:?}",
-                    path
-                );
-                let source = std::fs::read_to_string(&path).unwrap_or_default();
-                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
-                if !run_lines.is_empty() {
-                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
-                    let current_path = std::env::var("PATH").unwrap_or_default();
-                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
-                    for run_line in run_lines {
-                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
-                        let status = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .env("PATH", &new_path)
-                            .status()
-                            .expect("Failed to execute shell command");
-                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
-                    }
-                } else {
-                    panic!("Test with no RUN line: {:?}", path);
-                }
-            }
-        });
-    }
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/formal_verification"),
+        |path| {
+            println!(
+                "Running test_frontend_fail_formal_verification on {:?}",
+                path
+            );
+            run_shell_tests(path);
+        },
+    );
 }
 
 #[test]
 fn test_frontend_fail_unimplemented_smt() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/unimplemented_smt");
-    if dir.exists() {
-        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                println!(
-                    "Running test_frontend_fail_unimplemented_smt on {:?}",
-                    path
-                );
-                let source = std::fs::read_to_string(&path).unwrap_or_default();
-                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
-                if !run_lines.is_empty() {
-                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
-                    let current_path = std::env::var("PATH").unwrap_or_default();
-                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
-                    for run_line in run_lines {
-                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
-                        let status = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .env("PATH", &new_path)
-                            .status()
-                            .expect("Failed to execute shell command");
-                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
-                    }
-                } else {
-                    panic!("Test with no RUN line: {:?}", path);
-                }
-            }
-        });
-    }
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/unimplemented_smt"),
+        |path| {
+            println!("Running test_frontend_fail_unimplemented_smt on {:?}", path);
+            run_shell_tests(path);
+        },
+    );
 }
 
 #[test]
@@ -789,33 +710,79 @@ fn test_backend_fail() {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail");
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
+        run_shell_tests,
+    );
+}
+
+// --- Test Runners ---
+fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F)
+where
+    F: Fn(&std::path::Path) + Sync + Send,
+{
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
-        entries.into_par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
-                let source = std::fs::read_to_string(&path).unwrap_or_default();
-                let run_lines: Vec<_> = source.lines().filter(|l| l.trim_start().starts_with("// RUN:")).collect();
-                if !run_lines.is_empty() {
-                    let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
-                    let current_path = std::env::var("PATH").unwrap_or_default();
-                    let new_path = format!("{}:{}", vxc_dir.display(), current_path);
-                    for run_line in run_lines {
-                        let cmd = run_line.split_once("RUN:").unwrap().1.trim().replace("%s", path.to_str().unwrap());
-                        let status = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .env("PATH", &new_path)
-                            .status()
-                            .expect("Failed to execute shell command");
-                        assert!(status.success(), "Command '{}' failed for test {:?}", cmd, path);
+        let errors: Vec<String> = entries
+            .into_par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        test_fn(&path);
+                    }));
+                    if let Err(e) = result {
+                        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = e.downcast_ref::<String>() {
+                            s.to_string()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+                        return Some(format!("Test {:?} failed: {}", path, msg));
                     }
-                } else {
-                    panic!("Test with no RUN line: {:?}", path);
                 }
-            }
-        });
+                None
+            })
+            .collect();
+        if !errors.is_empty() {
+            panic!("The following tests failed:\n\n{}", errors.join("\n\n"));
+        }
+    }
+}
+
+fn run_shell_tests(path: &Path) {
+    let source = std::fs::read_to_string(path).unwrap_or_default();
+    let run_lines: Vec<_> = source
+        .lines()
+        .filter(|l| l.trim_start().starts_with("// RUN:"))
+        .collect();
+    if !run_lines.is_empty() {
+        let vxc_dir = Path::new(env!("CARGO_BIN_EXE_vxc")).parent().unwrap();
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", vxc_dir.display(), current_path);
+        for run_line in run_lines {
+            let cmd = run_line
+                .split_once("RUN:")
+                .unwrap()
+                .1
+                .trim()
+                .replace("%s", path.to_str().unwrap());
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .env("PATH", &new_path)
+                .status()
+                .expect("Failed to execute shell command");
+            assert!(
+                status.success(),
+                "Command '{}' failed for test {:?}",
+                cmd,
+                path
+            );
+        }
+    } else {
+        panic!("Test with no RUN line: {:?}", path);
     }
 }
 

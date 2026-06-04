@@ -5,22 +5,22 @@ fn test_complex_bounds(A: i32, B: i32) -> i32
 requires A > 10 && A < 20 && B > 5 && B < 10
 ensures return > 15 && return < 30
 {
-    let sum = A + B;
-    return sum;
+  let sum = A + B;
+  return sum;
 }
 
 fn test_or_logic(A: i32) -> i32
 requires A == 10 || A == 20
 ensures return >= 10 && return <= 20
 {
-    return A;
+  return A;
 }
 
 fn test_negated_logic(A: i32) -> i32
 requires !(A < 10)
 ensures return >= 10
 {
-    return A;
+  return A;
 }
 
 fn main() -> i32 { return 0; }

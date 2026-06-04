@@ -6,21 +6,21 @@ fn test_group2_2(X: i32) -> i32
 requires cos(1) == 0
 ensures return == X
 {
-    return X;
+  return X;
 }
 
 fn test_group2_3(X: i32) -> i32
 requires abs(-5) <= 0
 ensures return == X
 {
-    return X;
+  return X;
 }
 
 fn test_group3_4(X: i32) -> i32
 requires grad(f) == Topology::NPU[0]
 ensures return == X
 {
-    return X;
+  return X;
 }
 
 fn main() -> i32 { return 0; }

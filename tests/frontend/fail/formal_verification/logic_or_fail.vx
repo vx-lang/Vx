@@ -1,21 +1,21 @@
 //===- logic_or_fail.vx ---------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: cannot prove postcondition (ensures) at compile time
+// CHECK: Function 'test_or_logic_fail' cannot prove postcondition (ensures) at compile time
 
 fn test_or_logic_fail(A: i32) -> i32
 requires A == 10 || A == 20
 ensures return == 10
 {
-    // FAILS because A could be 20, making return 20, which is not 10.
-    return A;
+  // FAILS because A could be 20, making return 20, which is not 10.
+  return A;
 }
 
 fn test_negated_logic_fail(A: i32) -> i32
 requires !(A < 10)
 ensures return > 10
 {
-    // FAILS because A could be exactly 10, which is >= 10, but not > 10.
-    return A;
+  // FAILS because A could be exactly 10, which is >= 10, but not > 10.
+  return A;
 }
 
 fn main() -> i32 { return 0; }
