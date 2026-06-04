@@ -517,9 +517,6 @@ fn test_middle_end_fail() {
 
 #[test]
 fn test_backend() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
@@ -574,9 +571,6 @@ fn test_frontend_fail_unimplemented_smt() {
 
 #[test]
 fn test_backend_pass_autodiff() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass/autodiff");
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
@@ -707,9 +701,6 @@ fn run_backend_autodiff_test(path: &Path) {
 
 #[test]
 fn test_backend_fail() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/fail"),
         run_shell_tests,
@@ -768,18 +759,21 @@ fn run_shell_tests(path: &Path) {
                 .1
                 .trim()
                 .replace("%s", path.to_str().unwrap());
-            let status = std::process::Command::new("sh")
+            let output = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&cmd)
                 .env("PATH", &new_path)
-                .status()
+                .output()
                 .expect("Failed to execute shell command");
-            assert!(
-                status.success(),
-                "Command '{}' failed for test {:?}",
-                cmd,
-                path
-            );
+            if !output.status.success() {
+                panic!(
+                    "Command '{}' failed for test {:?}\nStdout:\n{}\nStderr:\n{}",
+                    cmd,
+                    path,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
     } else {
         panic!("Test with no RUN line: {:?}", path);
