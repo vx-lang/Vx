@@ -888,6 +888,22 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
+            } else if self.match_token(&TokenType::LeftParen) {
+                let mut args = Vec::new();
+                if !self.check(&TokenType::RightParen) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.consume(&TokenType::RightParen, "Expected ')'")?;
+                expr = Expr::IndirectCall(IndirectCallExpr {
+                    callee: Box::new(expr),
+                    args,
+                    span: Span::default(),
+                });
             } else if self.match_token(&TokenType::LeftBracket) {
                 let index = self.parse_expr()?;
                 self.consume(&TokenType::RightBracket, "Expected ']'")?;

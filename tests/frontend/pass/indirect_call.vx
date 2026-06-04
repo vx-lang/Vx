@@ -1,0 +1,16 @@
+fn main() -> i32 {
+    let get_closure = || || 42;
+
+    // Calling the closure returned by another closure directly!
+    let a = (get_closure())();
+
+    let my_closure = |x: i32| x + 10;
+
+    // Indirect call on variable holding closure
+    let b = my_closure(5);
+
+    // Immediate invocation
+    let c = (|y: i32| y * 2)(3);
+
+    return a + b + c;
+}

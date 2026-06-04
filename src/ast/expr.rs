@@ -113,6 +113,18 @@ impl FunctionCallExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct IndirectCallExpr {
+    pub callee: Box<Expr>,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl IndirectCallExpr {
+    pub fn new(callee: Box<Expr>, args: Vec<Expr>, span: Span) -> Self {
+        Self { callee, args, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct ArrayExpr {
     pub elements: Vec<Expr>,
     pub span: Span,
@@ -518,6 +530,7 @@ pub enum Expr {
     StringLiteral(StringLiteralExpr),
     Transfer(TransferExpr),
     FunctionCall(FunctionCallExpr),
+    IndirectCall(IndirectCallExpr),
     Array(ArrayExpr),
     MemberAccess(MemberAccessExpr),
     IndexAccess(IndexAccessExpr),
@@ -554,6 +567,7 @@ impl Expr {
             Expr::StringLiteral(e) => e.span.clone(),
             Expr::Transfer(e) => e.span.clone(),
             Expr::FunctionCall(e) => e.span.clone(),
+            Expr::IndirectCall(e) => e.span.clone(),
             Expr::Array(e) => e.span.clone(),
             Expr::MemberAccess(e) => e.span.clone(),
             Expr::IndexAccess(e) => e.span.clone(),
@@ -641,6 +655,11 @@ impl Expr {
                     span: e.span.clone(),
                 })
             }
+            Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {
+                callee: Box::new(e.callee.substitute(mapping)),
+                args: e.args.iter().map(|arg| arg.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
             Expr::Array(e) => Expr::Array(ArrayExpr {
                 elements: e.elements.iter().map(|a| a.substitute(mapping)).collect(),
                 span: e.span.clone(),

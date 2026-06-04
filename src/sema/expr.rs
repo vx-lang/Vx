@@ -148,6 +148,7 @@ impl<'a> TypeChecker<'a> {
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume, silent),
             Expr::If(..) => self.check_if_expr(expr, consume, silent),
             Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume, silent),
+            Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume, silent),
             Expr::Array(..) => self.check_array_expr(expr, silent),
             Expr::MemberAccess(..) => self.check_memberaccess_expr(expr, silent),
             Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, silent),
@@ -905,6 +906,95 @@ impl<'a> TypeChecker<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+        let (callee, args) = match expr {
+            Expr::IndirectCall(c) => (&mut c.callee, &mut c.args),
+            _ => unreachable!(),
+        };
+        let callee_ty = self.check_expr_type_flag(callee, consume, silent);
+        let mut arg_types = Vec::new();
+        for arg in args.iter_mut() {
+            arg_types.push(self.check_expr_type_flag(arg, consume, silent));
+        }
+
+        if let Type::Struct(struct_name, _) = callee_ty {
+            if struct_name.starts_with("Closure_") {
+                let call_name = format!("{}_call", struct_name);
+                if let Some(func) = self
+                    .monomorphized_functions
+                    .iter()
+                    .find(|f| f.0.name == call_name)
+                {
+                    let param_types: Vec<Type> = func
+                        .0
+                        .params
+                        .iter()
+                        .skip(1)
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    if args.len() != param_types.len() {
+                        if !silent {
+                            self.errors.push(format!(
+                                "Closure expects {} arguments, got {}",
+                                param_types.len(),
+                                args.len()
+                            ));
+                        }
+                    } else {
+                        for (i, param_ty) in param_types.iter().enumerate() {
+                            let arg_ty = &arg_types[i];
+                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                self.errors.push(format!(
+                                    "Type mismatch in argument {} for closure. Expected {:?}, got {:?}",
+                                    i + 1, param_ty, arg_ty
+                                ));
+                            }
+                        }
+                    }
+
+                    let mut new_args = vec![Expr::Borrow(BorrowExpr {
+                        expr: callee.clone(),
+                        is_mut: true,
+                        span: Span::default(),
+                    })];
+                    new_args.extend(args.clone());
+
+                    *expr = Expr::FunctionCall(FunctionCallExpr {
+                        name: call_name,
+                        args: new_args,
+                        span: Span::default(),
+                    });
+
+                    return func.0.return_type.clone();
+                } else {
+                    if !silent {
+                        self.errors.push(format!(
+                            "Missing call method for closure struct '{}'",
+                            struct_name
+                        ));
+                    }
+                }
+            } else {
+                if !silent {
+                    self.errors.push(format!(
+                        "Cannot call non-closure struct '{}'",
+                        struct_name
+                    ));
+                }
+            }
+        } else if let Type::Function(_, _) = callee_ty {
+            if !silent {
+                self.errors.push("Function pointers are not natively callable yet; use closure interfaces.".to_string());
+            }
+        } else {
+            if !silent {
+                self.errors.push(format!("Cannot call expression of type {:?}", callee_ty));
+            }
+        }
+
+        Type::Tensor(ElementType::F32, vec![], None)
     }
 
     fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
