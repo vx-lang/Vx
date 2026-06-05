@@ -343,8 +343,7 @@ fn test_frontend_fail() -> Result<(), String> {
                 && (path_str.contains("formal_verification")
                     || path_str.contains("unimplemented_smt"))
             {
-                println!("Skipping {:?} because z3 is not installed", path);
-                return Ok(());
+                return Err("z3 is not installed".to_string());
             }
             run_shell_tests(path)
         },
@@ -604,8 +603,7 @@ fn test_frontend_pass_formal_verification() -> Result<(), String> {
         .output()
         .is_err()
     {
-        println!("Skipping formal verification pass tests because z3 is not installed.");
-        return Ok(());
+        return Err("z3 is not installed".to_string());
     }
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass/formal_verification"),
@@ -626,8 +624,7 @@ fn test_frontend_fail_formal_verification() -> Result<(), String> {
         .output()
         .is_err()
     {
-        println!("Skipping formal verification fail tests because z3 is not installed.");
-        return Ok(());
+        return Err("z3 is not installed".to_string());
     }
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/fail/formal_verification"),
