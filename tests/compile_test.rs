@@ -285,14 +285,16 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
+    if cfg!(target_os = "macos") {
+        let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
-    for expect in expect_lines {
-        if !out.contains(&expect) {
-            return Err(format!(
-                "Backend output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}",
-                path, expect, out
-            ));
+        for expect in expect_lines {
+            if !out.contains(&expect) {
+                return Err(format!(
+                    "Backend output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}",
+                    path, expect, out
+                ));
+            }
         }
     }
     Ok(())

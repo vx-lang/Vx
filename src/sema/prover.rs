@@ -55,10 +55,12 @@ impl SmtProver {
 
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
         let result_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let has_sat = result_str.lines().any(|l| l.trim() == "sat");
+        let has_unsat = result_str.lines().any(|l| l.trim() == "unsat");
 
-        if result_str == "sat" {
+        if has_sat {
             Ok(true)
-        } else if result_str == "unsat" {
+        } else if has_unsat {
             Ok(false)
         } else {
             Err(format!("Unexpected z3 output: {}", result_str))
