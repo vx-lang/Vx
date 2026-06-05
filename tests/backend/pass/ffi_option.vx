@@ -18,8 +18,8 @@ fn main() -> i32 {
     let opt1 = vx_option_new_some_i32(42);
     if vx_option_is_some_i32(opt1) {
       let val = vx_option_unwrap_i32(opt1);
-      vx_printf_i32("Some: %d
-", val);
+      print_str("Some: ");
+      print_i32(val);
     }
     vx_option_drop_i32(opt1);
   }

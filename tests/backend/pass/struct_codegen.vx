@@ -8,10 +8,9 @@
 // RUN: vxc %s
 // RUN: %t
 
-extern "C" {
-  fn print_f32(val: f32) -> i32;
-}
 
+
+import std::io;
 struct Config {
   dim: i32,
   hidden_dim: i32,

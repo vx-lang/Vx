@@ -8,9 +8,9 @@
 // RUN: vxc %s
 // RUN: %t
 
+import std::io;
 extern "C" {
   fn malloc(size: i32) -> *mut f32;
-  fn print_f32(val: f32) -> i32;
 }
 
 fn main() -> i32 {

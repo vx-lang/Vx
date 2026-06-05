@@ -458,7 +458,7 @@ fn main() -> i32 {
       }
 
       let piece: *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
-      let print_status: i32 = vx_safe_printf(piece);
+      let print_status: i32 = print_str(piece);
 
       token = next;
       pos += steps;

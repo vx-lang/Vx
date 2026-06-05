@@ -1,9 +1,8 @@
 import tests::modules::iter;
 
-extern {
-  fn printf(format: *const i8, val: i32) -> i32;
-}
 
+
+import std::io;
 struct Point {
   x: i32,
   y: i32,
@@ -39,10 +38,10 @@ fn main() -> i32 {
   let vec: PointVec = PointVec { len: 3 };
   for p in vec.iter() {
     unsafe {
-      printf("Point x: %d
-", p.x);
-      printf("Point y: %d
-", p.y);
+      print_str("Point x: ");
+      print_i32(p.x);
+      print_str("Point y: ");
+      print_i32(p.y);
     }
   }
   return 0;

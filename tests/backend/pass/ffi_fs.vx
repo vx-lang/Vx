@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+import std::io;
 extern {
   fn vx_file_open(c_path: *const i8, mode: i32) -> *mut i8;
   fn vx_file_read(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
@@ -13,7 +14,6 @@ extern {
   fn vx_file_drop(ptr: *mut i8) -> i32;
   fn malloc(size: i64) -> *mut u8;
   fn free(ptr: *mut u8) -> i32;
-  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
   fn remove(filename: *const i8) -> i32;
   fn vx_get_temp_file(filename: *const i8) -> *mut i8;
   fn vx_free_temp_file(ptr: *mut i8) -> i32;
@@ -45,8 +45,8 @@ fn main() -> i32 {
     if bytes_read != 5 {
       success = 2;
     }
-    vx_printf_i32("Success: %d
-", success);
+    print_str("Success: ");
+    print_i32(success);
   }
   return 0;
 }

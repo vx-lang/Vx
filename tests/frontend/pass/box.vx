@@ -11,13 +11,13 @@ import std::io;
 fn main() -> i32 {
   let mut b = Box<i32>::new(42);
 
-  unsafe { vx_printf_i32("Value: %d
-", *b.ptr); }
+  unsafe { print_str("Value: ");
+    print_i32(*b.ptr); }
 
   unsafe { *b.ptr = 100; }
 
-  unsafe { vx_printf_i32("Updated: %d
-", *b.ptr); }
+  unsafe { print_str("Updated: ");
+    print_i32(*b.ptr); }
 
   b.free();
   return 0;

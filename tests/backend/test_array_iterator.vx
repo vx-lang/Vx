@@ -1,16 +1,13 @@
-extern {
-  fn printf(format: *const i8, val: i32) -> i32;
-  fn vx_safe_printf(val: *mut i8) -> i32;
-}
 
+
+import std::io;
 fn main() -> i32 {
   let strs = ["red", "green", "blue"];
 
   for sptr in strs.iter() {
     unsafe {
-      vx_safe_printf(sptr);
-      printf("
-", 0);
+      print_str(sptr);
+      print_i32(0);
     }
   }
   return 0;

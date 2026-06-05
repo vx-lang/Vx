@@ -18,8 +18,8 @@ fn main() -> i32 {
     let res = vx_result_new_ok_i32_i32(99);
     if vx_result_is_ok_i32_i32(res) {
       let val = vx_result_unwrap_i32_i32(res);
-      vx_printf_i32("Ok: %d
-", val);
+      print_str("Ok: ");
+      print_i32(val);
     }
     vx_result_drop_i32_i32(res);
   }

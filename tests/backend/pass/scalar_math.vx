@@ -8,10 +8,9 @@
 // RUN: vxc %s
 // RUN: %t
 
-extern "C" {
-  fn print_f32(val: f32) -> i32;
-}
 
+
+import std::io;
 fn main() -> i32 {
   let a: f32 = 10.5;
   let b: f32 = 2.0;

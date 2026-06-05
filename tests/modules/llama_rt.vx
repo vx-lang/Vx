@@ -9,10 +9,10 @@
 // These functions are implemented natively in Rust inside `rt.rs` and
 // exposed as C-compatible symbols.
 
+import std::io;
 extern {
   fn vx_malloc_f32(num_elements: i32) -> *mut f32;
   fn free(ptr: *mut f32) -> i32;
-  fn printf(format: *const i8, val: f32) -> i32;
   fn putchar(char: i32) -> i32;
 
   fn vx_sqrtf(x: f32) -> f32;
@@ -31,13 +31,11 @@ extern {
   fn vx_advance_ptr(ptr: *mut f32, offset: i32) -> *mut f32;
   fn vx_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
-  fn vx_safe_printf(piece: *mut i8) -> i32;
   fn vx_print_int(val: i32) -> i32;
   fn vx_print_float(val: f32) -> i32;
   fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
   fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
   fn vx_get_time() -> f32;
-  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
   fn vx_get_env_int(name: *const i8, default_val: i32) -> i32;
   fn vx_get_llama_config() -> *mut i32;
 }

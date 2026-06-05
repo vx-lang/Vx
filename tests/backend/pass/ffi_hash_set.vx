@@ -21,13 +21,13 @@ fn main() -> i32 {
     vx_hash_set_insert_i32(set, 42);
 
     let len = vx_hash_set_len_i32(set);
-    vx_printf_i32("Len: %d
-", len);
+    print_str("Len: ");
+    print_i32(len);
 
     let has_42 = vx_hash_set_contains_i32(set, 42);
     if has_42 {
-      vx_printf_i32("Has 42: %d
-", 1);
+      print_str("Has 42: ");
+      print_i32(1);
     }
 
     vx_hash_set_drop_i32(set);

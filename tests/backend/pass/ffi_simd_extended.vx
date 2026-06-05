@@ -7,9 +7,8 @@
 //===----------------------------------------------------------------------===//
 import std::simd;
 
+import std::io;
 extern {
-  fn print_f32(val: f32) -> i32;
-  fn vx_printf_i32(format: *const i8, val: i32) -> i32;
   fn vx_malloc_f32(num_elements: i32) -> *mut f32;
 }
 

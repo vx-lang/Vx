@@ -8,10 +8,10 @@
 // RUN: vxc %s
 // RUN: %t
 
+import std::io;
 extern "C" {
   fn vx_sqrtf(x: f32) -> f32;
   fn vx_expf(x: f32) -> f32;
-  fn print_f32(val: f32) -> i32;
 }
 
 fn main() -> i32 {

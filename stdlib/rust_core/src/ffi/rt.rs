@@ -438,3 +438,33 @@ pub extern "C" fn vx_read_prompt_file(filepath: *const c_char) -> *mut c_char {
     }
     ptr::null_mut()
 }
+
+#[no_mangle]
+pub extern "C" fn vx_printf_f32(format: *const c_char, val: f32) -> i32 {
+    if format.is_null() {
+        return 0;
+    }
+    let c_str = unsafe { CStr::from_ptr(format) };
+    if let Ok(s) = c_str.to_str() {
+        let out = s.replace("%f", &val.to_string());
+        use std::io::{self, Write};
+        print!("{}", out);
+        let _ = io::stdout().flush();
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn vx_printf_f64(format: *const c_char, val: f64) -> i32 {
+    if format.is_null() {
+        return 0;
+    }
+    let c_str = unsafe { CStr::from_ptr(format) };
+    if let Ok(s) = c_str.to_str() {
+        let out = s.replace("%f", &val.to_string());
+        use std::io::{self, Write};
+        print!("{}", out);
+        let _ = io::stdout().flush();
+    }
+    0
+}

@@ -5,11 +5,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+import std::io;
 extern {
   fn fopen(filename: *const i8, mode: *const i8) -> *mut i8;
   fn fputs(s: *const i8, stream: *mut i8) -> i32;
   fn fclose(stream: *mut i8) -> i32;
-  fn printf(format: *const i8, val: i32) -> i32;
   fn remove(filename: *const i8) -> i32;
   fn vx_get_temp_file(filename: *const i8) -> *mut i8;
   fn vx_free_temp_file(ptr: *mut i8) -> i32;
@@ -27,8 +27,8 @@ fn main() -> i32 {
 
     vx_free_temp_file(path_buf);
 
-    printf("Done: %d
-", 0);
+    print_str("Done: ");
+    print_i32(0);
   }
   return 0;
 }

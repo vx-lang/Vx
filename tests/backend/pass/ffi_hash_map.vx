@@ -26,20 +26,20 @@ fn main() -> i32 {
     vx_hash_map_insert_i32_i32(map, 20, 200);
 
     let len = vx_hash_map_len_i32_i32(map);
-    vx_printf_i32("Len: %d
-", len);
+    print_str("Len: ");
+    print_i32(len);
 
     let has_10 = vx_hash_map_contains_key_i32_i32(map, 10);
     if has_10 {
-      vx_printf_i32("Has 10: %d
-", 1);
+      print_str("Has 10: ");
+      print_i32(1);
     }
 
     let opt = vx_hash_map_get_i32_i32(map, 20);
     if vx_option_is_some_i32(opt) {
       let val = vx_option_unwrap_i32(opt);
-      vx_printf_i32("Val 20: %d
-", val);
+      print_str("Val 20: ");
+      print_i32(val);
     }
     vx_option_drop_i32(opt);
 

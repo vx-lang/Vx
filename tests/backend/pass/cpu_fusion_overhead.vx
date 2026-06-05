@@ -1,8 +1,8 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
 
+import std::io;
 extern "C" {
   fn vx_get_time() -> f32;
-  fn print_f32(val: f32) -> i32;
 }
 
 fn main() -> i32 {

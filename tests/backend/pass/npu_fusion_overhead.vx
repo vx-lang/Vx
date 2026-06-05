@@ -3,9 +3,9 @@
 // RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR-O3
 // RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
+import std::io;
 extern "C" {
   fn vx_get_time() -> f32;
-  fn print_f32(val: f32) -> i32;
 }
 
 fn main() -> i32 {

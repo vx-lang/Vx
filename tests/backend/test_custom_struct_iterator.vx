@@ -1,9 +1,8 @@
 import tests::modules::iter;
 
-extern {
-  fn printf(format: *const i8, val: i32) -> i32;
-}
 
+
+import std::io;
 struct MyList {
   len: i32,
 }
@@ -34,8 +33,8 @@ fn main() -> i32 {
   let list: MyList = MyList { len: 5 };
   for item in list.iter() {
     unsafe {
-      printf("Custom Struct Item: %d
-", item);
+      print_str("Custom Struct Item: ");
+      print_i32(item);
     }
   }
   return 0;
