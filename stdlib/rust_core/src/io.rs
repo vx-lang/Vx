@@ -19,7 +19,38 @@ instantiate_file_ffi!();
 instantiate_stdio_ffi!();
 
 #[no_mangle]
-pub extern "C" fn print_i32(v: i32) -> i32 {
-    println!("{}", v);
+pub extern "C" fn print_i32(val: i32) -> i32 {
+    print!("{}", val);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn print_f32(val: f32) -> i32 {
+    print!("{}", val);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn print_f64(val: f64) -> i32 {
+    print!("{}", val);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn print_str(piece: *const libc::c_char) -> i32 {
+    if piece.is_null() { return 0; }
+    if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(piece) }.to_str() {
+        print!("{}", s);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn println() -> i32 {
+    println!();
     0
 }

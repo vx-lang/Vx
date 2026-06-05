@@ -117,10 +117,6 @@ pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> 
     0
 }
 
-#[no_mangle]
-pub extern "C" fn print_f32(val: f32) {
-    println!("{}", val);
-}
 
 #[no_mangle]
 pub extern "C" fn vx_print(tensor_id: i64) {
@@ -137,54 +133,14 @@ pub extern "C" fn printMemrefBF16(_rank: *mut c_void, _ptr: *mut c_void) {
     println!(" [24.0,   24.0,   24.0,   24.0]]");
 }
 
-#[no_mangle]
-pub extern "C" fn vx_safe_printf(piece: *const c_char) {
-    if piece.is_null() {
-        return;
-    }
-    let c_str = unsafe { CStr::from_ptr(piece) };
-    if let Ok(s) = c_str.to_str() {
-        use std::io::{self, Write};
-        print!("{}", s);
-        let _ = io::stdout().flush();
-    }
-}
 
-#[no_mangle]
-pub extern "C" fn vx_print_int(val: i32) -> i32 {
-    use std::io::{self, Write};
-    print!("[{}] ", val);
-    let _ = io::stdout().flush();
-    0
-}
 
-#[no_mangle]
-pub extern "C" fn vx_print_float(val: f32) -> i32 {
-    use std::io::{self, Write};
-    print!("[{:.6}] ", val);
-    let _ = io::stdout().flush();
-    0
-}
 
-#[no_mangle]
-pub extern "C" fn vx_printf_i32(format: *const c_char, val: i32) -> i32 {
-    if format.is_null() {
-        return 0;
-    }
-    let c_str = unsafe { CStr::from_ptr(format) };
-    if let Ok(s) = c_str.to_str() {
-        // Minimal support for %d replacement
-        let out = s.replace("%d", &val.to_string());
-        use std::io::{self, Write};
-        print!("{}", out);
-        let _ = io::stdout().flush();
-    }
-    0
-}
 
 // ============================================================================
 // Llama2 Model Loading Helpers
 // ============================================================================
+
 
 #[no_mangle]
 pub extern "C" fn vx_load_config(filepath: *const c_char) -> *mut i32 {
@@ -439,32 +395,4 @@ pub extern "C" fn vx_read_prompt_file(filepath: *const c_char) -> *mut c_char {
     ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn vx_printf_f32(format: *const c_char, val: f32) -> i32 {
-    if format.is_null() {
-        return 0;
-    }
-    let c_str = unsafe { CStr::from_ptr(format) };
-    if let Ok(s) = c_str.to_str() {
-        let out = s.replace("%f", &val.to_string());
-        use std::io::{self, Write};
-        print!("{}", out);
-        let _ = io::stdout().flush();
-    }
-    0
-}
 
-#[no_mangle]
-pub extern "C" fn vx_printf_f64(format: *const c_char, val: f64) -> i32 {
-    if format.is_null() {
-        return 0;
-    }
-    let c_str = unsafe { CStr::from_ptr(format) };
-    if let Ok(s) = c_str.to_str() {
-        let out = s.replace("%f", &val.to_string());
-        use std::io::{self, Write};
-        print!("{}", out);
-        let _ = io::stdout().flush();
-    }
-    0
-}

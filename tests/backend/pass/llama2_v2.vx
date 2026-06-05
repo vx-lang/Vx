@@ -428,7 +428,7 @@ fn main() -> i32 {
     unsafe { print_str(piece); }
     token = next;
   }
-  unsafe { vx_print_float(0.0); }
+  unsafe { print_f32(0.0); }
   return 0;
 }
 
