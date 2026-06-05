@@ -102,16 +102,20 @@ pub fn execute_mlir(
 
     let temp_opt_ll = format!("target/jit/temp_opt_{}.ll", uid);
     let mut opt_args = vec![];
-    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
-        opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
-        opt_args.push("-passes=enzyme".to_string());
-    }
     let actual_opt_level = if disable_llvm_optimizations {
         0
     } else {
         opt_level
     };
-    opt_args.push(format!("-O{}", actual_opt_level));
+
+    let mut passes = format!("default<O{}>", actual_opt_level);
+
+    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
+        opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
+        passes.push_str(",enzyme");
+    }
+
+    opt_args.push(format!("-passes={}", passes));
     opt_args.push("-S".to_string());
     opt_args.push(temp_ll.clone());
     opt_args.push("-o".to_string());
