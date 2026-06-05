@@ -1,4 +1,5 @@
 //===- llama2.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+// REQUIRES: macos
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.

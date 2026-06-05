@@ -1,4 +1,5 @@
 //===- npu_vector_add.vx ---------------------------------*- Vx -*-===//
+// REQUIRES: macos
 // RUN: vxc %s --emit-mlir -O0
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)"
 // RUN: vxc %s --emit-llvm

@@ -82,11 +82,6 @@ pub fn execute_mlir(
                 panic!("Failed to compile Objective-C++ NPU Dispatcher");
             }
         });
-    } else {
-        return Err(
-            "Vx JIT execution currently requires macOS Apple Silicon for hardware dispatch."
-                .to_string(),
-        );
     }
 
     println!("[JIT] Translating to LLVM IR...");
@@ -136,8 +131,12 @@ pub fn execute_mlir(
     println!("[JIT] Executing via LLI...");
     let current_dir = std::env::current_dir().unwrap();
     let mut lli_cmd = Command::new("lli");
+
+    if cfg!(target_os = "macos") {
+        lli_cmd.arg(format!("--load={}", lib_npu));
+    }
+
     lli_cmd.args([
-        &format!("--load={}", lib_npu),
         &format!(
             "--load=libmlir_c_runner_utils{}",
             std::env::consts::DLL_SUFFIX
@@ -147,8 +146,10 @@ pub fn execute_mlir(
             std::env::consts::DLL_SUFFIX
         ),
         &format!(
-            "--load={}/target/debug/libvx_std_core.dylib",
-            current_dir.display()
+            "--load={}/target/debug/{}vx_std_core{}",
+            current_dir.display(),
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
         ),
         &temp_opt_ll,
     ]);

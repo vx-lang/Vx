@@ -1,4 +1,5 @@
 // EXPECT: Unranked Memref base@ =
+// REQUIRES: macos
 // EXPECT: rank = 2 offset = 0 sizes = [4, 4] strides = [4, 1] data =
 // EXPECT: [[1,   2,   0,   0],
 // EXPECT:  [3,   4,   0,   0],
