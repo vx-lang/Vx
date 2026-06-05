@@ -1049,6 +1049,32 @@ impl<'a> TypeChecker<'a> {
                         .push(format!("Cannot call non-closure struct '{}'", struct_name));
                 }
             }
+        } else if let Type::Closure(param_types, ret_ty) = &callee_ty {
+            if args.len() != param_types.len() {
+                if !silent {
+                    self.errors.push(format!(
+                        "Closure fat pointer expects {} arguments, got {}",
+                        param_types.len(),
+                        args.len()
+                    ));
+                }
+            } else {
+                for (i, param_ty) in param_types.iter().enumerate() {
+                    let arg_ty = &arg_types[i];
+                    if !self.is_assignable(param_ty, arg_ty) && !silent {
+                        self.errors.push(format!(
+                            "Type mismatch in argument {} for closure fat pointer. Expected {:?}, got {:?}",
+                            i + 1, param_ty, arg_ty
+                        ));
+                    }
+                }
+            }
+
+            if let Expr::IndirectCall(ref mut ic) = expr {
+                ic.target_func_ty = Some(callee_ty.clone());
+            }
+
+            return *ret_ty.clone();
         } else if let Type::Function(_, _) = callee_ty {
             if !silent {
                 self.errors.push(

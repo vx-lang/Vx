@@ -124,11 +124,17 @@ pub struct AsCastExpr {
 pub struct IndirectCallExpr {
     pub callee: Box<Expr>,
     pub args: Vec<Expr>,
+    pub target_func_ty: Option<crate::ast::Type>,
     pub span: Span,
 }
 impl IndirectCallExpr {
     pub fn new(callee: Box<Expr>, args: Vec<Expr>, span: Span) -> Self {
-        Self { callee, args, span }
+        Self {
+            callee,
+            args,
+            target_func_ty: None,
+            span,
+        }
     }
 }
 
@@ -668,6 +674,7 @@ impl Expr {
             Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {
                 callee: Box::new(e.callee.substitute(mapping)),
                 args: e.args.iter().map(|arg| arg.substitute(mapping)).collect(),
+                target_func_ty: e.target_func_ty.clone(),
                 span: e.span.clone(),
             }),
             Expr::Array(e) => Expr::Array(ArrayExpr {

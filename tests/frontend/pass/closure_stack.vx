@@ -1,11 +1,11 @@
 // RUN: vxc %s --emit-mlir | FileCheck %s
 
 fn main() -> i32 {
-    let captured = 42;
-    // The closure should be lowered to an anonymous struct allocated on the stack (alloca)
-    let my_closure = |x: i32| x + captured;
-    
-    return 0;
+  let captured = 42;
+  // The closure should be lowered to an anonymous struct allocated on the stack (alloca)
+  let my_closure = |x: i32| x + captured;
+
+  return 0;
 }
 
 // CHECK: func.func @main

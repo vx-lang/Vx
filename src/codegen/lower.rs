@@ -2243,6 +2243,136 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
     }
 }
 
+impl<'c> LowerToMelior<'c> for IndirectCallExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let IndirectCallExpr {
+            callee,
+            args,
+            target_func_ty,
+            span: _,
+        } = self;
+
+        let (callee_val, callee_ty) = gen.generate_expr(callee, block);
+
+        if callee_ty.to_string() == "!llvm.struct<(ptr, ptr)>" {
+            // Extract env_ptr
+            let extract_env_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.extractvalue",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[callee_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "position"),
+                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+            )])
+            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+            .build()
+            .unwrap();
+            let extract_env_ref = block.append_operation(extract_env_op);
+            let env_ptr = extract_env_ref.result(0).unwrap().into();
+
+            // Extract func_ptr
+            let extract_func_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.extractvalue",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[callee_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "position"),
+                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+            )])
+            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+            .build()
+            .unwrap();
+            let extract_func_ref = block.append_operation(extract_func_op);
+            let mut actual_ptr_val = extract_func_ref.result(0).unwrap().into();
+
+            let mut arg_vals = Vec::new();
+            for arg in args {
+                let (arg_val, _) = gen.generate_expr(arg, block);
+                arg_vals.push(arg_val);
+            }
+
+            // In our current implementation we assume all functions taking closure
+            // arguments are dynamically typed correctly via Sema. We don't have
+            // the exact MLIR FunctionType statically available here without
+            // looking it up, but `func.call_indirect` requires the operand to
+            // match the callee type exactly. Since we don't have the explicit
+            // func signature here, we construct it from the generated arg types!
+            // To figure out the return type, we use `target_func_ty` from Sema.
+            let target_func_ty = target_func_ty
+                .as_ref()
+                .expect("IndirectCallExpr MLIR lowering needs explicit target_func_ty from Sema");
+            let crate::ast::Type::Closure(func_args, ret) = target_func_ty else {
+                panic!("Expected Type::Closure for indirect call fat pointer target");
+            };
+
+            let r = gen.lower_type(ret);
+            let mut a: Vec<_> = vec![Type::parse(gen.context, "!llvm.ptr").unwrap()];
+            a.extend(func_args.iter().map(|t| gen.lower_type(t)));
+            let actual_mlir_func_ty = melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]);
+            let actual_func_ty: melior::ir::Type = actual_mlir_func_ty.into();
+
+            let ret_ty = actual_mlir_func_ty.result(0).unwrap();
+
+            // Cast the raw func ptr to the actual function signature
+            let cast_op = melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[actual_ptr_val])
+            .add_results(&[actual_func_ty])
+            .build()
+            .unwrap();
+            let cast_ref = block.append_operation(cast_op);
+            actual_ptr_val = cast_ref.result(0).unwrap().into();
+
+            let mut builder = melior::ir::operation::OperationBuilder::new(
+                "func.call_indirect",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[actual_ptr_val, env_ptr]);
+
+            for a_val in &arg_vals {
+                builder = builder.add_operands(&[*a_val]);
+            }
+
+            if ret_ty.to_string() != "none" {
+                builder = builder.add_results(&[ret_ty]);
+                let call_op = builder.build().unwrap();
+                let call_ref = block.append_operation(call_op);
+                (call_ref.result(0).unwrap().into(), ret_ty)
+            } else {
+                let call_op = builder.build().unwrap();
+                block.append_operation(call_op);
+                let none_ty = Type::parse(gen.context, "none").unwrap();
+                let dummy_op = melior::ir::operation::OperationBuilder::new(
+                    "llvm.mlir.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(
+                        Type::parse(gen.context, "i32").unwrap(),
+                        0,
+                    )
+                    .into(),
+                )])
+                .build()
+                .unwrap();
+                (
+                    block.append_operation(dummy_op).result(0).unwrap().into(),
+                    none_ty,
+                )
+            }
+        } else {
+            panic!("Unsupported callee type for indirect call: {}", callee_ty);
+        }
+    }
+}
+
 impl<'c> LowerToMelior<'c> for MethodCallExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {

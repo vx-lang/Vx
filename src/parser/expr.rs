@@ -902,6 +902,7 @@ impl<'a> Parser<'a> {
                 expr = Expr::IndirectCall(IndirectCallExpr {
                     callee: Box::new(expr),
                     args,
+                    target_func_ty: None,
                     span: Span::default(),
                 });
             } else if self.match_token(&TokenType::LeftBracket) {
