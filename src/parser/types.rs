@@ -139,6 +139,27 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Arrow, "Expected '->' after function parameters")?;
             let ret = self.parse_type()?;
             Ok(Type::Function(params, Box::new(ret)))
+        } else if self.match_token(&TokenType::OrOr) {
+            self.consume(&TokenType::Arrow, "Expected '->' after closure parameters")?;
+            let ret = self.parse_type()?;
+            Ok(Type::Closure(Vec::new(), Box::new(ret)))
+        } else if self.match_token(&TokenType::Pipe) {
+            let mut params = Vec::new();
+            if !self.check(&TokenType::Pipe) {
+                while !self.check(&TokenType::Pipe) && !self.check(&TokenType::Eof) {
+                    params.push(self.parse_type()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(
+                &TokenType::Pipe,
+                "Expected '|' after closure type parameters",
+            )?;
+            self.consume(&TokenType::Arrow, "Expected '->' after closure parameters")?;
+            let ret = self.parse_type()?;
+            Ok(Type::Closure(params, Box::new(ret)))
         } else {
             let token = self.peek().clone();
             if let TokenType::Identifier(ref s) = token.kind {

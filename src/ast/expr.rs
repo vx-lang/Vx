@@ -113,6 +113,14 @@ impl FunctionCallExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct AsCastExpr {
+    pub expr: Box<Expr>,
+    pub target_ty: Type,
+    pub source_ty: Option<Type>, // Added by sema
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct IndirectCallExpr {
     pub callee: Box<Expr>,
     pub args: Vec<Expr>,
@@ -556,6 +564,7 @@ pub enum Expr {
     VecMacro(VecMacroExpr),
     Closure(ClosureExpr),
     MacroCall(MacroCallExpr),
+    AsCast(AsCastExpr),
 }
 
 impl Expr {
@@ -593,6 +602,7 @@ impl Expr {
             Expr::VecMacro(e) => e.span.clone(),
             Expr::Closure(e) => e.span.clone(),
             Expr::MacroCall(e) => e.span.clone(),
+            Expr::AsCast(e) => e.span.clone(),
         }
     }
 
@@ -745,6 +755,12 @@ impl Expr {
                     span: e.span.clone(),
                 })
             }
+            Expr::AsCast(e) => Expr::AsCast(AsCastExpr {
+                expr: Box::new(e.expr.substitute(mapping)),
+                target_ty: e.target_ty.substitute(mapping),
+                source_ty: e.source_ty.as_ref().map(|t| t.substitute(mapping)),
+                span: e.span.clone(),
+            }),
             Expr::If(e) => Expr::If(IfExpr {
                 cond: Box::new(e.cond.substitute(mapping)),
                 then_block: e.then_block.iter().map(|s| s.substitute(mapping)).collect(),

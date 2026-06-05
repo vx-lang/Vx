@@ -912,6 +912,14 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: Span::default(),
                 });
+            } else if self.match_token(&TokenType::As) {
+                let target_ty = self.parse_type()?;
+                expr = Expr::AsCast(AsCastExpr {
+                    expr: Box::new(expr),
+                    target_ty,
+                    source_ty: None,
+                    span: Span::default(),
+                });
             } else {
                 break;
             }

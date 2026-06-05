@@ -171,6 +171,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Match(..) => self.check_match_expr(expr, consume, silent),
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr, silent),
             Expr::Closure(..) => self.check_closure_expr(expr, consume, silent),
+            Expr::AsCast(e) => self.check_ascast_expr(e, consume, silent),
             Expr::MacroCall(m) => panic!(
                 "Macros should be expanded before type checking: macro `{}` at {:?}",
                 m.name, m.span
@@ -711,6 +712,72 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool, silent: bool) -> Type {
+        let source_ty = self.check_expr_type_flag(&mut expr.expr, consume, silent);
+        let target_ty = expr.target_ty.clone();
+        expr.source_ty = Some(source_ty.clone());
+
+        match (&source_ty, &target_ty) {
+            (Type::Struct(name, _), Type::Closure(target_args, target_ret))
+                if name.starts_with("Closure_") =>
+            {
+                let call_method_name = format!("{}_call", name);
+
+                let mut found_func = None;
+                if let Some(func_type) = self.env.functions.get(&call_method_name) {
+                    found_func = Some(func_type.0.clone());
+                } else {
+                    for (func, _) in &self.monomorphized_functions {
+                        if func.name == call_method_name {
+                            let params = func.params.iter().map(|(_, t)| t.clone()).collect();
+                            found_func =
+                                Some(Type::Function(params, Box::new(func.return_type.clone())));
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(func_type) = found_func {
+                    let Type::Function(func_args, func_ret) = func_type else {
+                        unreachable!()
+                    };
+                    let mut args_match = func_args.len() == target_args.len() + 1;
+                    if args_match {
+                        for (i, target_arg) in target_args.iter().enumerate() {
+                            if target_arg != &func_args[i + 1] {
+                                args_match = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if !args_match || target_ret.as_ref() != func_ret.as_ref() {
+                        self.errors.push(format!(
+                                "Closure cast signature mismatch. Expected {:?} but found a function with args {:?} and ret {:?}",
+                                target_ty, func_args, func_ret
+                            ));
+                        return Type::Unknown;
+                    }
+
+                    return target_ty;
+                } else {
+                    self.errors.push(format!(
+                        "Closure call method '{}' not found for cast.",
+                        call_method_name
+                    ));
+                    return Type::Unknown;
+                }
+            }
+            _ => {}
+        }
+
+        self.errors.push(format!(
+            "Unsupported cast: cannot cast from {:?} to {:?}",
+            source_ty, target_ty
+        ));
+        Type::Unknown
+    }
+
     fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
             Expr::Transfer(TransferExpr {
@@ -978,19 +1045,21 @@ impl<'a> TypeChecker<'a> {
                 }
             } else {
                 if !silent {
-                    self.errors.push(format!(
-                        "Cannot call non-closure struct '{}'",
-                        struct_name
-                    ));
+                    self.errors
+                        .push(format!("Cannot call non-closure struct '{}'", struct_name));
                 }
             }
         } else if let Type::Function(_, _) = callee_ty {
             if !silent {
-                self.errors.push("Function pointers are not natively callable yet; use closure interfaces.".to_string());
+                self.errors.push(
+                    "Function pointers are not natively callable yet; use closure interfaces."
+                        .to_string(),
+                );
             }
         } else {
             if !silent {
-                self.errors.push(format!("Cannot call expression of type {:?}", callee_ty));
+                self.errors
+                    .push(format!("Cannot call expression of type {:?}", callee_ty));
             }
         }
 

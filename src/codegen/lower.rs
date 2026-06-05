@@ -4697,3 +4697,119 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
         unreachable!("ClosureExpr should be transformed to StructInitExpr by Sema")
     }
 }
+
+impl<'c> LowerToMelior<'c> for crate::ast::expr::AsCastExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let (source_val, _source_ty) = gen.generate_expr(&self.expr, block);
+
+        if let crate::ast::Type::Closure(_, _) = &self.target_ty {
+            let closure_struct_name = match self.source_ty.as_ref() {
+                Some(crate::ast::Type::Struct(name, _)) => name.clone(),
+                Some(crate::ast::Type::Borrow(inner, _, _, _)) => {
+                    if let crate::ast::Type::Struct(name, _) = &**inner {
+                        name.clone()
+                    } else {
+                        panic!("Expected Closure_N struct, got {:?}", inner);
+                    }
+                }
+                Some(t) => panic!("Expected Closure_N struct, got {:?}", t),
+                None => panic!("Missing source_ty for AsCast expression"),
+            };
+
+            let call_fn_name = format!("{}_call", closure_struct_name);
+            let (ret_ty, orig_arg_types) = gen
+                .functions
+                .get(&call_fn_name)
+                .cloned()
+                .expect("Closure call function not found");
+
+            let fn_ty =
+                melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+            let const_op = melior::ir::operation::OperationBuilder::new(
+                "func.constant",
+                Location::unknown(gen.context),
+            )
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &call_fn_name)
+                    .into(),
+            )])
+            .add_results(&[fn_ty.into()])
+            .build()
+            .unwrap();
+            let const_ref = block.append_operation(const_op);
+            let mut fn_ptr_val: melior::ir::Value = const_ref.result(0).unwrap().into();
+
+            let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+            let bitcast_op = melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[fn_ptr_val])
+            .add_results(&[ptr_ty])
+            .build()
+            .unwrap();
+            let bitcast_ref = block.append_operation(bitcast_op);
+            fn_ptr_val = bitcast_ref.result(0).unwrap().into();
+
+            let fat_ptr_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr)>").unwrap();
+            let undef_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.mlir.undef",
+                Location::unknown(gen.context),
+            )
+            .add_results(&[fat_ptr_ty])
+            .build()
+            .unwrap();
+            let undef_ref = block.append_operation(undef_op);
+            let mut fat_ptr_val: melior::ir::Value = undef_ref.result(0).unwrap().into();
+
+            let insert_fn_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.insertvalue",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[fat_ptr_val, fn_ptr_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "position"),
+                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+            )])
+            .add_results(&[fat_ptr_ty])
+            .build()
+            .unwrap();
+            let insert_fn_ref = block.append_operation(insert_fn_op);
+            fat_ptr_val = insert_fn_ref.result(0).unwrap().into();
+
+            let mut env_ptr_val = source_val;
+            let ptr_bitcast_op = melior::ir::operation::OperationBuilder::new(
+                "builtin.unrealized_conversion_cast",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[env_ptr_val])
+            .add_results(&[ptr_ty])
+            .build()
+            .unwrap();
+            let ptr_bitcast_ref = block.append_operation(ptr_bitcast_op);
+            env_ptr_val = ptr_bitcast_ref.result(0).unwrap().into();
+
+            let insert_env_op = melior::ir::operation::OperationBuilder::new(
+                "llvm.insertvalue",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[fat_ptr_val, env_ptr_val])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "position"),
+                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+            )])
+            .add_results(&[fat_ptr_ty])
+            .build()
+            .unwrap();
+            let insert_env_ref = block.append_operation(insert_env_op);
+            fat_ptr_val = insert_env_ref.result(0).unwrap().into();
+
+            return (fat_ptr_val, fat_ptr_ty);
+        }
+
+        panic!("Unsupported cast operation in codegen");
+    }
+}

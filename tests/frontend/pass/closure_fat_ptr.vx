@@ -1,0 +1,16 @@
+fn main() -> i32 {
+    let mut x = 10;
+    
+    // Create a closure that captures `x` by reference (implicit in Vx)
+    let my_closure = || x + 1;
+
+    // Cast the closure to a fat pointer
+    let fat_ptr = my_closure as || -> i32;
+    
+    // Call the fat pointer
+    // Note: IndirectCall lowering to func.call_indirect is the next step!
+    // We haven't implemented func.call_indirect for fat pointers yet.
+    // For now, let's just make sure it compiles and cast works.
+    
+    return 0;
+}
