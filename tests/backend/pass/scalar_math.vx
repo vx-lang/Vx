@@ -21,10 +21,10 @@ fn main() -> i32 {
   let f: f32 = a / b;
 
   unsafe {
-    print_f32(c);
-    print_f32(d);
-    print_f32(e);
-    print_f32(f);
+    print!(c);
+    print!(d);
+    print!(e);
+    print!(f);
   }
 
   return 0;

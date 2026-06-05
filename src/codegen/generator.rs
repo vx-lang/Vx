@@ -565,6 +565,8 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Dereference(e) => e.lower(self, block),
             Expr::AsCast(e) => e.lower(self, block),
             Expr::IndirectCall(e) => e.lower(self, block),
+            Expr::Print(e) => e.lower(self, block),
+            Expr::Println(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }

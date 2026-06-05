@@ -12,21 +12,21 @@ fn main() -> i32 {
   let mut sum: i32 = 0;
 
   unsafe {
-    print_str("sizeof i32 is: ");
-    print_i32(sizeof<i32>());
+    print!("sizeof i32 is: ");
+    print!(sizeof<i32>());
   }
 
   for x in v.iter() {
     unsafe {
-      print_str("x is: ");
-      print_i32(x);
+      print!("x is: ");
+      print!(x);
     }
     sum = sum + x;
   }
 
   unsafe {
-    print_str("Sum is: ");
-    print_i32(sum);
+    print!("Sum is: ");
+    print!(sum);
   }
   return sum;
 }

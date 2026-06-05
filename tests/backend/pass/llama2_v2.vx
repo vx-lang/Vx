@@ -425,10 +425,10 @@ fn main() -> i32 {
     let logits: *mut f32 = transformer(token, pos, &config, &state, &weights);
     next = argmax(logits, config.vocab_size);
     let piece: *mut i8 = unsafe { vx_decode_token(tokenizer_ptr, token, next) };
-    unsafe { print_str(piece); }
+    unsafe { print!(piece); }
     token = next;
   }
-  unsafe { print_f32(0.0); }
+  unsafe { print!(0.0); }
   return 0;
 }
 

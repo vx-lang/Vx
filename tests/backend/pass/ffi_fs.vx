@@ -45,8 +45,8 @@ fn main() -> i32 {
     if bytes_read != 5 {
       success = 2;
     }
-    print_str("Success: ");
-    print_i32(success);
+    print!("Success: ");
+    print!(success);
   }
   return 0;
 }

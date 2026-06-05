@@ -537,6 +537,28 @@ impl MacroCallExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct PrintExpr {
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl PrintExpr {
+    pub fn new(args: Vec<Expr>, span: Span) -> Self {
+        Self { args, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct PrintlnExpr {
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+impl PrintlnExpr {
+    pub fn new(args: Vec<Expr>, span: Span) -> Self {
+        Self { args, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Identifier(IdentifierExpr),
     EnumVariant(EnumVariantExpr),
@@ -571,6 +593,8 @@ pub enum Expr {
     Closure(ClosureExpr),
     MacroCall(MacroCallExpr),
     AsCast(AsCastExpr),
+    Print(PrintExpr),
+    Println(PrintlnExpr),
 }
 
 impl Expr {
@@ -609,6 +633,8 @@ impl Expr {
             Expr::Closure(e) => e.span.clone(),
             Expr::MacroCall(e) => e.span.clone(),
             Expr::AsCast(e) => e.span.clone(),
+            Expr::Print(e) => e.span.clone(),
+            Expr::Println(e) => e.span.clone(),
         }
     }
 
@@ -882,6 +908,14 @@ impl Expr {
             Expr::MacroCall(e) => Expr::MacroCall(MacroCallExpr {
                 name: e.name.clone(),
                 token_tree: e.token_tree.clone(),
+                span: e.span.clone(),
+            }),
+            Expr::Print(e) => Expr::Print(PrintExpr {
+                args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::Println(e) => Expr::Println(PrintlnExpr {
+                args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {

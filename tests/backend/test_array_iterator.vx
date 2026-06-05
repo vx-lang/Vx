@@ -6,8 +6,8 @@ fn main() -> i32 {
 
   for sptr in strs.iter() {
     unsafe {
-      print_str(sptr);
-      print_i32(0);
+      print!(sptr);
+      print!(0);
     }
   }
   return 0;

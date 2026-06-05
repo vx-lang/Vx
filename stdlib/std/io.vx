@@ -6,11 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 extern {
-  fn print_i32(val: i32) -> i32;
-  fn print_f32(val: f32) -> i32;
-  fn print_f64(val: f64) -> i32;
-  fn print_str(piece: *const i8) -> i32;
-  fn println() -> i32;
   fn vx_stdout_write(buffer: *const u8, len: i64) -> i64;
   fn vx_stderr_write(buffer: *const u8, len: i64) -> i64;
   fn vx_stdin_read(buffer: *mut u8, len: i64) -> i64;

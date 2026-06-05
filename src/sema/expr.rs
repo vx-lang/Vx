@@ -172,6 +172,18 @@ impl<'a> TypeChecker<'a> {
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr, silent),
             Expr::Closure(..) => self.check_closure_expr(expr, consume, silent),
             Expr::AsCast(e) => self.check_ascast_expr(e, consume, silent),
+            Expr::Print(p) => {
+                for arg in &mut p.args {
+                    self.check_expr_type_flag(arg, consume, silent);
+                }
+                Type::Scalar(ElementType::I32) // Assuming print returns 0 as i32 for C compatibility
+            }
+            Expr::Println(p) => {
+                for arg in &mut p.args {
+                    self.check_expr_type_flag(arg, consume, silent);
+                }
+                Type::Scalar(ElementType::I32)
+            }
             Expr::MacroCall(m) => panic!(
                 "Macros should be expanded before type checking: macro `{}` at {:?}",
                 m.name, m.span

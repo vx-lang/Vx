@@ -59,7 +59,7 @@ fn main() -> i32 {
 
 
   unsafe {
-    print_i32(1);
+    print!(1);
   }
   return 1;
 }

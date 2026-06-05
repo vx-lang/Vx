@@ -41,7 +41,9 @@ pub extern "C" fn print_f64(val: f64) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn print_str(piece: *const libc::c_char) -> i32 {
-    if piece.is_null() { return 0; }
+    if piece.is_null() {
+        return 0;
+    }
     if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(piece) }.to_str() {
         print!("{}", s);
         let _ = std::io::Write::flush(&mut std::io::stdout());

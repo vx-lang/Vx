@@ -117,7 +117,6 @@ pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> 
     0
 }
 
-
 #[no_mangle]
 pub extern "C" fn vx_print(tensor_id: i64) {
     println!(
@@ -133,14 +132,9 @@ pub extern "C" fn printMemrefBF16(_rank: *mut c_void, _ptr: *mut c_void) {
     println!(" [24.0,   24.0,   24.0,   24.0]]");
 }
 
-
-
-
-
 // ============================================================================
 // Llama2 Model Loading Helpers
 // ============================================================================
-
 
 #[no_mangle]
 pub extern "C" fn vx_load_config(filepath: *const c_char) -> *mut i32 {
@@ -394,5 +388,3 @@ pub extern "C" fn vx_read_prompt_file(filepath: *const c_char) -> *mut c_char {
     }
     ptr::null_mut()
 }
-
-

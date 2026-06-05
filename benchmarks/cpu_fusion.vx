@@ -2,7 +2,6 @@
 
 extern "C" {
   fn vx_get_time() -> f32;
-  fn print_f32(val: f32) -> i32;
 }
 
 fn run_benchmark_128() -> i32 {
@@ -124,8 +123,8 @@ fn run_benchmark_128() -> i32 {
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print_f32(time_unfused);
-    print_f32(time_fused);
+    print!(time_unfused);
+    print!(time_fused);
   }
 
   // Verification
@@ -257,8 +256,8 @@ fn run_benchmark_256() -> i32 {
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print_f32(time_unfused);
-    print_f32(time_fused);
+    print!(time_unfused);
+    print!(time_fused);
   }
 
   // Verification
@@ -390,8 +389,8 @@ fn run_benchmark_512() -> i32 {
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print_f32(time_unfused);
-    print_f32(time_fused);
+    print!(time_unfused);
+    print!(time_fused);
   }
 
   // Verification
@@ -523,8 +522,8 @@ fn run_benchmark_1024() -> i32 {
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print_f32(time_unfused);
-    print_f32(time_fused);
+    print!(time_unfused);
+    print!(time_fused);
   }
 
   // Verification
@@ -656,8 +655,8 @@ fn run_benchmark_2048() -> i32 {
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print_f32(time_unfused);
-    print_f32(time_fused);
+    print!(time_unfused);
+    print!(time_fused);
   }
 
   // Verification

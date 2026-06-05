@@ -4828,6 +4828,174 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
+impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        for arg in &self.args {
+            let (arg_val, arg_ty) = gen.generate_expr(arg, block);
+
+            let func_name = match arg_ty.to_string().as_str() {
+                "i32" => "print_i32",
+                "f32" => "print_f32",
+                "f64" => "print_f64",
+                "!llvm.ptr" | "!llvm.ptr<i8>" => "print_str",
+                _ => {
+                    // Fallback or warning
+                    println!("Warning: unsupported print arg type {}", arg_ty);
+                    "print_i32"
+                }
+            };
+
+            // Declare if not exists
+            if !gen.functions.contains_key(func_name) {
+                let func_ty = if func_name == "print_str" {
+                    Type::parse(gen.context, "(!llvm.ptr) -> i32").unwrap()
+                } else {
+                    Type::parse(gen.context, &format!("({}) -> i32", arg_ty)).unwrap()
+                };
+
+                let func_decl = melior::ir::operation::OperationBuilder::new(
+                    "func.func",
+                    Location::unknown(gen.context),
+                )
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(gen.context, "sym_name"),
+                        melior::ir::attribute::StringAttribute::new(gen.context, func_name).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "function_type"),
+                        melior::ir::attribute::TypeAttribute::new(func_ty).into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "sym_visibility"),
+                        melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
+                    ),
+                ])
+                .add_regions([melior::ir::Region::new()])
+                .build()
+                .unwrap();
+
+                gen.module.body().append_operation(func_decl);
+                gen.functions.insert(
+                    func_name.to_string(),
+                    (
+                        Type::parse(gen.context, "i32").unwrap(),
+                        vec![if func_name == "print_str" {
+                            Type::parse(gen.context, "!llvm.ptr").unwrap()
+                        } else {
+                            arg_ty
+                        }],
+                    ),
+                );
+            }
+
+            let name_attr =
+                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, func_name);
+            let call_op = melior::ir::operation::OperationBuilder::new(
+                "func.call",
+                Location::unknown(gen.context),
+            )
+            .add_operands(&[arg_val])
+            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "callee"),
+                name_attr.into(),
+            )])
+            .build()
+            .unwrap();
+
+            block.append_operation(call_op);
+        }
+
+        let dummy_op = melior::ir::operation::OperationBuilder::new(
+            "llvm.mlir.constant",
+            Location::unknown(gen.context),
+        )
+        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "value"),
+            melior::ir::attribute::IntegerAttribute::new(
+                Type::parse(gen.context, "i32").unwrap(),
+                0,
+            )
+            .into(),
+        )])
+        .build()
+        .unwrap();
+
+        (
+            block.append_operation(dummy_op).result(0).unwrap().into(),
+            Type::parse(gen.context, "i32").unwrap(),
+        )
+    }
+}
+
+impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintlnExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        // First, reuse PrintExpr logic for arguments
+        if !self.args.is_empty() {
+            let print_expr = crate::ast::expr::PrintExpr {
+                args: self.args.clone(),
+                span: self.span.clone(),
+            };
+            print_expr.lower(gen, block);
+        }
+
+        // Then emit a call to println()
+        if !gen.functions.contains_key("println") {
+            let func_ty = Type::parse(gen.context, "() -> i32").unwrap();
+
+            let func_decl = melior::ir::operation::OperationBuilder::new(
+                "func.func",
+                Location::unknown(gen.context),
+            )
+            .add_attributes(&[
+                (
+                    melior::ir::Identifier::new(gen.context, "sym_name"),
+                    melior::ir::attribute::StringAttribute::new(gen.context, "println").into(),
+                ),
+                (
+                    melior::ir::Identifier::new(gen.context, "function_type"),
+                    melior::ir::attribute::TypeAttribute::new(func_ty).into(),
+                ),
+                (
+                    melior::ir::Identifier::new(gen.context, "sym_visibility"),
+                    melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()
+            .unwrap();
+
+            gen.module.body().append_operation(func_decl);
+            gen.functions.insert(
+                "println".to_string(),
+                (Type::parse(gen.context, "i32").unwrap(), vec![]),
+            );
+        }
+
+        let name_attr = melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, "println");
+        let call_op = melior::ir::operation::OperationBuilder::new(
+            "func.call",
+            Location::unknown(gen.context),
+        )
+        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "callee"),
+            name_attr.into(),
+        )])
+        .build()
+        .unwrap();
+
+        (
+            block.append_operation(call_op).result(0).unwrap().into(),
+            Type::parse(gen.context, "i32").unwrap(),
+        )
+    }
+}
+
 impl<'c> LowerToMelior<'c> for crate::ast::expr::AsCastExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
 
