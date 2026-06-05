@@ -1,3 +1,11 @@
+fn create_closure() -> || -> i32 {
+  let text = 42;
+
+  // In Vx, closures capture by value implicitly, so no 'move' is needed!
+  let my_closure = || text;
+  return my_closure as || -> i32;
+}
+
 fn main() -> i32 {
   let mut x = 10;
 
@@ -10,7 +18,24 @@ fn main() -> i32 {
   // Call the fat pointer via func.call_indirect
   let result = fat_ptr();
 
+  let name = 99;
+  let print_name = || name; // Inferred: value capture
+
+  print_name();
+  let y = name; // Works because name was copied into the closure
+
+  let mut score = 0;
+  let increment = || score + 1;
+
+  let s = increment();
+  // Cannot borrow `score` while closure holds &mut (not implemented yet in Vx)
+
+  let consume_data = || score + 2; // Inferred: data is moved into the closure
+
+  consume_data();
+
   assert(result == 11);
+  assert(create_closure()() == 42);
 
   return 0;
 }

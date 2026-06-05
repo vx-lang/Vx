@@ -564,6 +564,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::ComptimeBlock(e) => e.lower(self, block),
             Expr::Dereference(e) => e.lower(self, block),
             Expr::AsCast(e) => e.lower(self, block),
+            Expr::IndirectCall(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
