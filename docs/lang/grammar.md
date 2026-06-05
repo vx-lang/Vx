@@ -27,7 +27,7 @@ Identifier ::= XID_Start { XID_Continue }
 ### 2.2 Keywords
 
 The following identifiers are reserved keywords and cannot be used as variable or function names:
-`fn`, `let`, `mut`, `for`, `in`, `if`, `else`, `loop`, `break`, `continue`, `return`, `spawn`, `on`, `transfer`, `unroll`, `across`, `match`, `struct`, `enum`, `trait`, `impl`, `extern`, `unsafe`, `safe`, `comptime`, `import`, `assert`, `grad`, `vjp`, `jvp`.
+`fn`, `let`, `mut`, `for`, `in`, `if`, `else`, `loop`, `break`, `continue`, `return`, `spawn`, `on`, `transfer`, `unroll`, `across`, `match`, `struct`, `enum`, `trait`, `impl`, `extern`, `unsafe`, `safe`, `comptime`, `import`, `assert`, `grad`, `vjp`, `jvp`, `as`, `requires`, `ensures`, `invariant`, `macro_rules`.
 
 ### 2.3 Literals
 

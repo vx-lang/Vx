@@ -126,3 +126,47 @@ fn optimize() {
     let gradients = grad(loss_function)(current_weights);
 }
 ```
+
+## 9. Formal Verification Contracts
+
+Vx supports formal verification through contract programming. Functions and loops can be annotated with preconditions, postconditions, and invariants to mathematically prove program correctness at compile time.
+
+```rust
+// Preconditions (`requires`) must be true before the function executes
+// Postconditions (`ensures`) are proven to be true after the function returns
+fn safe_divide(x: i32, y: i32) -> i32
+    requires y != 0
+    ensures return <= x
+{
+    return x / y;
+}
+
+fn compute_sum(n: i32) -> i32 
+    requires n >= 0
+{
+    let mut sum = 0;
+    let mut i = 0;
+    // Loop invariants must hold before, during, and after loop execution
+    loop 
+        invariant i <= n
+        invariant sum >= 0
+    {
+        if i >= n { break; }
+        sum += i;
+        i += 1;
+    }
+    return sum;
+}
+```
+
+## 10. Macros
+
+Vx provides a robust macro system via the `macro_rules` keyword, enabling metaprogramming and code generation at compile time.
+
+```rust
+macro_rules! create_tensor {
+    ($val:expr) => {
+        Tensor::new($val)
+    };
+}
+```
