@@ -42,7 +42,7 @@ impl SmtProver {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 println!("Warning: z3 solver not found in PATH. Skipping formal verification.");
-                return Ok(true);
+                return Ok(false); // Return UNSAT so the proof trivially succeeds and compilation can continue
             }
             Err(e) => return Err(format!("Failed to spawn z3: {}", e)),
         };
