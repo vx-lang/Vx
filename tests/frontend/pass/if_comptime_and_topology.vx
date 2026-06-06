@@ -2,11 +2,11 @@ fn check_top() on Topology::NPU[0] -> void {
   // If comptime returns an expression
   let a = if comptime true { 1 } else { 0 };
 
-  // current_topology should evaluate to NPU here
-  let t = current_topology;
+  // Topology::Current should evaluate to NPU here
+  let t = Topology::Current;
   let t2 = Topology::NPU[0];
 
-  spawn on (current_topology) {
+  spawn on (Topology::Current) {
     let mut x = 10;
   };
 
@@ -17,7 +17,7 @@ fn check_top() on Topology::NPU[0] -> void {
 }
 
 fn check_top2() on Topology::GPU -> void {
-  let t = if comptime true { current_topology } else { Topology::Host };
+  let t = if comptime true { Topology::Current } else { Topology::Host };
   comptime {
     assert(t == Topology::GPU);
   }

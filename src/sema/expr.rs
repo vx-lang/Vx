@@ -156,7 +156,13 @@ impl<'a> TypeChecker<'a> {
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume, silent),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr, silent),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr, silent),
-            Expr::MemorySpace(MemorySpaceExpr { .. }) | Expr::Topology(TopologyExpr { .. }) => {
+            Expr::MemorySpace(MemorySpaceExpr { .. }) => {
+                Type::Tensor(ElementType::F32, vec![], None)
+            }
+            Expr::Topology(TopologyExpr { top, span: _ }) => {
+                if matches!(top, Topology::Current) {
+                    *top = self.active_topology.clone();
+                }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
             Expr::UnaryOp(..) => self.check_unaryop_expr(expr, silent),
@@ -522,17 +528,9 @@ impl<'a> TypeChecker<'a> {
     }
     fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr { name, span }) => {
+            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
-                }
-                if name == "current_topology" {
-                    let active_top = self.active_topology.clone();
-                    *expr = Expr::Topology(TopologyExpr {
-                        top: active_top,
-                        span: span.clone(),
-                    });
-                    return Type::Tensor(ElementType::F32, vec![], None);
                 }
 
                 if let Some(borrows) = self.active_borrows.get(name) {
@@ -1185,23 +1183,13 @@ impl<'a> TypeChecker<'a> {
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
-                let is_builtin_ref = resolved_name == "print"
-                    || resolved_name == "Verified"
-                    || resolved_name == "current_topology";
+                let is_builtin_ref = resolved_name == "print" || resolved_name == "Verified";
                 let arg_consume = if is_builtin_ref { false } else { consume };
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
-                if resolved_name == "current_topology" {
-                    if !args.is_empty() {
-                        self.errors.push(format!(
-                            "Function 'current_topology' expects 0 arguments, got {}",
-                            args.len()
-                        ));
-                    }
-                    Type::Tensor(ElementType::F32, vec![], None)
-                } else if resolved_name == "Verified" {
+                if resolved_name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
                             "Function 'Verified' expects 1 argument, got {}",

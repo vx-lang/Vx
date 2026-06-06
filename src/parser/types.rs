@@ -2,9 +2,6 @@ use super::*;
 
 impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> Result<Topology, String> {
-        if self.match_token(&TokenType::Identifier("current_topology".to_string())) {
-            return Ok(Topology::Current);
-        }
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match self.advance().kind.clone() {
@@ -13,6 +10,7 @@ impl<'a> Parser<'a> {
         };
         match ident.as_str() {
             "Host" => Ok(Topology::Host),
+            "Current" => Ok(Topology::Current),
             "NPU" => {
                 if self.match_token(&TokenType::LeftBracket) {
                     let expr = self.parse_expr()?;

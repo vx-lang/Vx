@@ -375,9 +375,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => {
                 Some(Value::Bool(false))
             }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "current_topology" => {
-                Some(Value::Topology(self.active_topology.clone()))
-            }
+
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
             Expr::BinaryOp(BinaryOpExpr {
                 lhs,
@@ -477,10 +475,6 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                if name == "current_topology" {
-                    return Some(Value::Topology(self.active_topology.clone()));
-                }
-
                 let func = self.env.ast_functions.get(name)?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -494,7 +488,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 None
             }
-            Expr::Topology(TopologyExpr { top, span: _ }) => Some(Value::Topology(top.clone())),
+            Expr::Topology(TopologyExpr { top, span: _ }) => {
+                if matches!(top, Topology::Current) {
+                    Some(Value::Topology(self.active_topology.clone()))
+                } else {
+                    Some(Value::Topology(top.clone()))
+                }
+            }
             Expr::If(crate::ast::IfExpr {
                 cond,
                 then_block,

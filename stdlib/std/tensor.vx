@@ -19,7 +19,7 @@ impl<T: Float> Tensor<T> {
   }
 
   fn copy(self: &mut Tensor<T>, src: &Tensor<T>) -> void {
-    if comptime current_topology() == Topology::Host_AVX512 {
+    if comptime Topology::Current == Topology::Host_AVX512 {
       mlir!(
       inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
       clobbers: [self],
@@ -28,7 +28,7 @@ impl<T: Float> Tensor<T> {
         linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
         macro.yield
       };
-    } else if comptime current_topology() == Topology::ANE {
+    } else if comptime Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
       clobbers: [self],
@@ -50,7 +50,7 @@ impl<T: Float> Tensor<T> {
   }
 
   fn assign(self: &mut Tensor<T>, val: T) -> void {
-    if comptime current_topology() == Topology::Host_AVX512 {
+    if comptime Topology::Current == Topology::Host_AVX512 {
       mlir!(
       inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
       clobbers: [self],
@@ -59,7 +59,7 @@ impl<T: Float> Tensor<T> {
         linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
         macro.yield
       };
-    } else if comptime current_topology() == Topology::ANE {
+    } else if comptime Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
       clobbers: [self],
@@ -81,7 +81,7 @@ impl<T: Float> Tensor<T> {
   }
 
   fn compare(self: &Tensor<T>, other: &Tensor<T>) -> bool {
-    if comptime current_topology() == Topology::Host_AVX512 {
+    if comptime Topology::Current == Topology::Host_AVX512 {
       mlir!(
       inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
       clobbers: [],
@@ -107,7 +107,7 @@ impl<T: Float> Tensor<T> {
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
       }
-    } else if comptime current_topology() == Topology::ANE {
+    } else if comptime Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
       clobbers: [],
@@ -166,7 +166,7 @@ impl<T: Float> Tensor<T> {
 impl<T: Float, const N: i32, const M: i32> Tensor<T, [N, M]> {
   // Fills the statically shaped tensor with a constant value using Linalg
   fn fill_static(self: &mut Tensor<T, [N, M]>, val: T) -> void {
-    if comptime current_topology() == Topology::Host_AVX512 {
+    if comptime Topology::Current == Topology::Host_AVX512 {
       // Demonstrate optimized code path for AVX512 (fallback to standard Linalg for demonstration)
       mlir!(
       inputs: (%arg_t = self: memref<N x M x f32>, %arg_v = val: f32),
