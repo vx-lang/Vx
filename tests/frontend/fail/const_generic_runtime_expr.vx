@@ -1,8 +1,0 @@
-// RUN: not vxc %s
-struct Foo<const N: i32> {
-  x: i32,
-}
-fn main() -> void {
-  let n = 5;
-  let mut a: Foo<n>;
-}

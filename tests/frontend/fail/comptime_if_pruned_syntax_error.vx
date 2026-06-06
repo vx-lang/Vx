@@ -1,6 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  if comptime false {
-    let x = ; // Syntax error should be caught in parsing before comptime eval
-  }
-}

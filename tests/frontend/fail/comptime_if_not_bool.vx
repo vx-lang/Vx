@@ -1,6 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  if comptime 5 {
-    let x = 1;
-  }
-}

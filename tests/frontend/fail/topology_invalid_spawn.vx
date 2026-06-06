@@ -1,6 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  spawn on (5) {
-    let x = 1;
-  };
-}

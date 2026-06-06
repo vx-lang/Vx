@@ -1,5 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  // Tensor requires 1 type argument and 2 const arguments: Tensor<T: Float, const N: i32, const M: i32>
-  let mut x: Tensor<f32>; 
-}

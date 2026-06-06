@@ -1,8 +1,0 @@
-// RUN: not vxc %s
-struct Foo<const N: i32> {
-  x: i32,
-}
-impl Foo<const N: f32> { // Mismatch here
-  fn bar(self: &Foo<N>) -> void {}
-}
-fn main() -> void {}

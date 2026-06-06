@@ -1,5 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  // Const generic expects an i32, but we give a string
-  let mut x: Tensor<f32, ["invalid", 10]>; 
-}

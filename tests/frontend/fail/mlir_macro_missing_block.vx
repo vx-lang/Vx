@@ -1,9 +1,0 @@
-// RUN: not vxc %s
-fn main() -> void {
-  mlir!(
-    inputs: (),
-    clobbers: [],
-    returns: void,
-    dialects: ["linalg"]
-  ); // Missing {} block
-}

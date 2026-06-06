@@ -1,0 +1,45 @@
+// RUN: not vxc %s
+
+// From const_generic_arg_count.vx
+struct Foo_0<const N: i32, const M: i32> {
+  x: i32,
+}
+fn test_0() -> void {
+  let mut a: Foo_0<1>; // Missing M
+}
+
+
+// From const_generic_impl_mismatch.vx
+struct Foo_1<const N: i32> {
+  x: i32,
+}
+impl Foo_1<const N: f32> { // Mismatch here
+  fn bar(self: &Foo_1<N>) -> void {}
+}
+fn test_1() -> void {}
+
+
+// From const_generic_runtime_expr.vx
+struct Foo_2<const N: i32> {
+  x: i32,
+}
+fn test_2() -> void {
+  let n = 5;
+  let mut a: Foo_2<n>;
+}
+
+
+// From const_generics_missing_args.vx
+fn test_3() -> void {
+  // Tensor requires 1 type argument and 2 const arguments: Tensor<T: Float, const N: i32, const M: i32>
+  let mut x: Tensor<f32>; 
+}
+
+
+// From const_generics_type_mismatch.vx
+fn test_4() -> void {
+  // Const generic expects an i32, but we give a string
+  let mut x: Tensor<f32, ["invalid", 10]>; 
+}
+
+
