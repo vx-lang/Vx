@@ -1,0 +1,7 @@
+// RUN: not vxc %s
+fn main() -> void {
+  let condition = true;
+  if comptime condition {
+    let x = 1;
+  }
+}

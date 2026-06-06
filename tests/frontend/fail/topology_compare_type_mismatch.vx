@@ -1,0 +1,6 @@
+// RUN: not vxc %s
+fn main() -> void {
+  if Topology::Current == 5 {
+    let x = 1;
+  }
+}

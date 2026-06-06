@@ -1,0 +1,11 @@
+// RUN: not vxc %s
+fn main() -> void {
+  mlir!(
+    inputs: (),
+    clobbers: [undefined_var],
+    returns: void,
+    dialects: ["linalg"]
+  ) {
+    macro.yield
+  };
+}

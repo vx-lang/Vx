@@ -1,0 +1,7 @@
+// RUN: not vxc %s
+struct Foo<const N: i32, const M: i32> {
+  x: i32,
+}
+fn main() -> void {
+  let mut a: Foo<1>; // Missing M
+}

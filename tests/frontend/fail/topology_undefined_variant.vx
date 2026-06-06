@@ -1,0 +1,4 @@
+// RUN: not vxc %s
+fn main() -> void {
+  let x = Topology::Fake;
+}
