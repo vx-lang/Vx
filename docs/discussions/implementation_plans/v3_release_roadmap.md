@@ -53,7 +53,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 
 - [x] Bootstrap a native Vx standard library.
 - [x] Split the ecosystem into `stdlib/` (compiler intrinsic types, IO) and `packages/` (third-party style libraries like `vx_nn` and `vx_linalg`).
-- [ ] Include File I/O, native Strings, core mathematical functions, and topologically-aware Tensors (`Tensor<f32, ANE_SRAM>`) backed directly by MLIR `memref`.
+- [x] Include File I/O, native Strings, core mathematical functions, and topologically-aware Tensors (`Tensor<f32, ANE_SRAM>`) backed directly by MLIR `memref`.
 
 ______________________________________________________________________
 

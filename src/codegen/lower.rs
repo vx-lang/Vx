@@ -1863,6 +1863,282 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return (arg_val, expr_ty);
         }
 
+        if name == "fill" {
+            let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
+            let (fill_val, _) = gen.generate_expr(&args[1], block);
+
+            let tensor_ty_str = tensor_ty.to_string();
+            let is_memref = tensor_ty_str.starts_with("memref<");
+            if is_memref {
+                // Determine element type
+                let parts: Vec<&str> = tensor_ty_str
+                    .trim_start_matches("memref<")
+                    .trim_end_matches('>')
+                    .split('x')
+                    .collect();
+                let el_ty_str = parts.last().unwrap_or(&"f32").trim();
+
+                let region_fill = Region::new();
+                let block_fill = melior::ir::Block::new(&[
+                    (
+                        Type::parse(gen.context, el_ty_str).unwrap(),
+                        Location::unknown(gen.context),
+                    ),
+                    (
+                        Type::parse(gen.context, el_ty_str).unwrap(),
+                        Location::unknown(gen.context),
+                    ),
+                ]);
+                let yield_fill = melior::ir::operation::OperationBuilder::new(
+                    "linalg.yield",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[block_fill.argument(0).unwrap().into()])
+                .build()
+                .unwrap();
+                block_fill.append_operation(yield_fill);
+                region_fill.append_block(block_fill);
+
+                let linalg_fill = melior::ir::operation::OperationBuilder::new(
+                    "linalg.fill",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[fill_val, tensor_val])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+                )])
+                .add_regions([region_fill])
+                .build()
+                .unwrap();
+                block.append_operation(linalg_fill);
+
+                return (tensor_val, tensor_ty);
+            }
+        }
+
+        if name == "map" {
+            let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
+            // args[1] is the closure
+            // We need to fetch the closure's function and invoke it inside a linalg.generic.
+            let tensor_ty_str = tensor_ty.to_string();
+            if tensor_ty_str.starts_with("memref<") {
+                let parts: Vec<&str> = tensor_ty_str
+                    .trim_start_matches("memref<")
+                    .trim_end_matches('>')
+                    .split('x')
+                    .collect();
+                let el_ty_str = parts.last().unwrap_or(&"f32").trim();
+                let rank = parts.len() - 1;
+
+                // 1. Allocate output memref
+                let mut alloc_operands = Vec::new();
+                let index_ty = Type::parse(gen.context, "index").unwrap();
+                for (i, dim_str) in parts.iter().take(rank).enumerate() {
+                    if *dim_str == "?" {
+                        let idx_attr = melior::ir::attribute::IntegerAttribute::new(
+                            Type::index(gen.context),
+                            i as i64,
+                        )
+                        .into();
+                        let cst_op = melior::ir::operation::OperationBuilder::new(
+                            "arith.constant",
+                            Location::unknown(gen.context),
+                        )
+                        .add_results(&[index_ty])
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(gen.context, "value"),
+                            idx_attr,
+                        )])
+                        .build()
+                        .unwrap();
+                        let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+
+                        let dim_op = melior::ir::operation::OperationBuilder::new(
+                            "memref.dim",
+                            Location::unknown(gen.context),
+                        )
+                        .add_operands(&[tensor_val, idx_val])
+                        .add_results(&[index_ty])
+                        .build()
+                        .unwrap();
+                        alloc_operands
+                            .push(block.append_operation(dim_op).result(0).unwrap().into());
+                    }
+                }
+
+                let alloc_op = melior::ir::operation::OperationBuilder::new(
+                    "memref.alloc",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&alloc_operands)
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(
+                        gen.context,
+                        &[alloc_operands.len() as i32, 0],
+                    )
+                    .into(),
+                )])
+                .add_results(&[tensor_ty])
+                .build()
+                .unwrap();
+                let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+
+                // 2. Generate linalg.generic
+                let region = Region::new();
+                let block_generic = melior::ir::Block::new(&[
+                    (
+                        Type::parse(gen.context, el_ty_str).unwrap(),
+                        Location::unknown(gen.context),
+                    ),
+                    (
+                        Type::parse(gen.context, el_ty_str).unwrap(),
+                        Location::unknown(gen.context),
+                    ),
+                ]);
+
+                // We need to call the closure!
+                // args[1] is the closure expression (StructInitExpr for Closure_N).
+                let (closure_val, closure_ty) = gen.generate_expr(&args[1], block);
+
+                // Allocate it on stack to get a pointer
+                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                let i32_ty = Type::parse(gen.context, "i32").unwrap();
+                let c1_op = melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
+                )])
+                .build()
+                .unwrap();
+                let c1 = block.append_operation(c1_op).result(0).unwrap().into();
+
+                let alloca_op = melior::ir::operation::OperationBuilder::new(
+                    "llvm.alloca",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[c1])
+                .add_results(&[ptr_ty])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "elem_type"),
+                    melior::ir::attribute::TypeAttribute::new(closure_ty).into(),
+                )])
+                .build()
+                .unwrap();
+                let alloca_ptr = block.append_operation(alloca_op).result(0).unwrap().into();
+
+                let store_op = melior::ir::operation::OperationBuilder::new(
+                    "llvm.store",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[closure_val, alloca_ptr])
+                .build()
+                .unwrap();
+                block.append_operation(store_op);
+
+                // Extract invoke method name
+                let ty_str = closure_ty.to_string();
+                let struct_name = ty_str
+                    .strip_prefix("!llvm.struct<\"")
+                    .unwrap_or(&ty_str)
+                    .split("\"")
+                    .next()
+                    .unwrap();
+                let invoke_method = format!("{}_call", struct_name);
+
+                let call_op = melior::ir::operation::OperationBuilder::new(
+                    "func.call",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[alloca_ptr, block_generic.argument(0).unwrap().into()])
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "callee"),
+                    melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &invoke_method)
+                        .into(),
+                )])
+                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .build()
+                .unwrap();
+
+                let call_res = block_generic
+                    .append_operation(call_op)
+                    .result(0)
+                    .unwrap()
+                    .into();
+
+                let yield_op = melior::ir::operation::OperationBuilder::new(
+                    "linalg.yield",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[call_res])
+                .build()
+                .unwrap();
+                block_generic.append_operation(yield_op);
+                region.append_block(block_generic);
+
+                // Affine maps: both input and output are identity maps
+                let affine_map = format!(
+                    "affine_map<(d0{}) -> (d0{})>",
+                    (1..rank).map(|i| format!(", d{}", i)).collect::<String>(),
+                    (1..rank).map(|i| format!(", d{}", i)).collect::<String>()
+                );
+                // For rank 0 it's affine_map<() -> ()>
+                let affine_map_attr = if rank == 0 {
+                    melior::ir::attribute::Attribute::parse(gen.context, "affine_map<() -> ()>")
+                        .unwrap()
+                } else {
+                    melior::ir::attribute::Attribute::parse(gen.context, &affine_map).unwrap()
+                };
+
+                let linalg_generic = melior::ir::operation::OperationBuilder::new(
+                    "linalg.generic",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[tensor_val, out_val])
+                .add_attributes(&[
+                    (
+                        melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
+                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1])
+                            .into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "indexing_maps"),
+                        melior::ir::attribute::ArrayAttribute::new(
+                            gen.context,
+                            &[affine_map_attr, affine_map_attr],
+                        )
+                        .into(),
+                    ),
+                    (
+                        melior::ir::Identifier::new(gen.context, "iterator_types"),
+                        melior::ir::attribute::ArrayAttribute::new(
+                            gen.context,
+                            &vec![
+                                melior::ir::attribute::Attribute::parse(
+                                    gen.context,
+                                    "#linalg.iterator_type<parallel>"
+                                )
+                                .unwrap();
+                                rank
+                            ],
+                        )
+                        .into(),
+                    ),
+                ])
+                .add_regions([region])
+                .build()
+                .unwrap();
+                block.append_operation(linalg_generic);
+
+                return (out_val, tensor_ty);
+            }
+        }
+
         if name == "print" {
             let mut print_arg = &args[0];
             if let Expr::Borrow(borrow) = print_arg {

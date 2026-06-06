@@ -238,7 +238,6 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn is_assignable(&self, target: &Type, source: &Type) -> bool {
-        println!("is_assignable(target: {:?}, source: {:?})", target, source);
         if target == source {
             return true;
         }
@@ -1771,6 +1770,18 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let mut base_ty = self.check_expr_type_flag(obj, false, silent);
+
+                // Pre-infer closure argument types for specific intrinsics before type-checking them
+                if let Type::Tensor(el_ty, _, _) = &base_ty {
+                    if _method == "map" && args.len() == 1 {
+                        if let Expr::Closure(c) = &mut args[0] {
+                            if c.params.len() == 1 && c.params[0].1 == Type::Unknown {
+                                c.params[0].1 = Type::Scalar(el_ty.clone());
+                            }
+                        }
+                    }
+                }
+
                 for arg in args.iter_mut() {
                     self.check_expr_type(arg);
                 }
@@ -1882,6 +1893,40 @@ impl<'a> TypeChecker<'a> {
                         // We lower .iter() on Tensors to just evaluate to the tensor itself
                         // so the ForLoopStmt can catch it and emit a native scf.for loop
                         *expr = *obj.clone();
+                        return base_ty;
+                    } else if _method == "fill" {
+                        if args.len() != 1 {
+                            self.errors.push(
+                                "fill requires exactly 1 argument (the value to fill)".to_string(),
+                            );
+                            return base_ty;
+                        }
+                        let arg_ty = self.check_expr_type(&mut args[0]);
+                        if arg_ty != Type::Scalar(el_ty.clone()) {
+                            self.errors.push(format!(
+                                "fill expects argument of type {:?}, got {:?}",
+                                Type::Scalar(el_ty.clone()),
+                                arg_ty
+                            ));
+                        }
+                        return base_ty;
+                    } else if _method == "map" {
+                        if args.len() != 1 {
+                            self.errors
+                                .push("map requires exactly 1 argument (the closure)".to_string());
+                            return base_ty;
+                        }
+
+                        let arg_ty = self.check_expr_type(&mut args[0]);
+                        if let Type::Struct(name, _) = &arg_ty {
+                            if !name.starts_with("Closure_") {
+                                self.errors
+                                    .push(format!("map expects a closure, got {:?}", arg_ty));
+                            }
+                        } else {
+                            self.errors
+                                .push(format!("map expects a closure, got {:?}", arg_ty));
+                        }
                         return base_ty;
                     } else if _method == "transpose" {
                         if args.len() != 1 {

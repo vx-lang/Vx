@@ -1,0 +1,15 @@
+//===- tensor.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// This module provides standard library methods for the built-in Tensor type.
+// Tensors are natively backed by MLIR memref operations in the compiler backend.
+
+impl<T> Tensor<T> {
+  // We can add basic methods that work across generic element types T.
+  // Note: True shape-aware iteration and map operations depend on the compiler's 
+  // ability to lower these closures into MLIR loops.
+}

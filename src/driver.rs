@@ -412,6 +412,7 @@ fn get_optimization_pipeline(
 
     if llvm_lower {
         passes.push("vx-to-llvm".to_string());
+        passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
         passes.push("finalize-memref-to-llvm".to_string());

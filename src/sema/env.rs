@@ -417,7 +417,6 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_function(&mut self, func: &mut Function) {
-        println!("check_function({})", func.name);
         if !func.generics.is_empty() {
             return;
         }

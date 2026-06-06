@@ -572,7 +572,6 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     pub(crate) fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
-        println!("lower_type: {:?}", ty);
         let ty_str = match ty {
             crate::ast::Type::Tensor(el_ty, dims, top) => {
                 let ty_str = match el_ty {
