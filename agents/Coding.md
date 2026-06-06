@@ -1,7 +1,9 @@
 ## Language
+
 Write code in Rust by default.
 
 ## Coding guidelines
+
 - Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.
 - Always run formatters: 'cargo clippy', 'vx-format', 'cargo fmt' and fix all the warnings/errors before commiting.
@@ -10,16 +12,18 @@ Write code in Rust by default.
 - When planning to add TODO to make progress: better add a `panic!` to prevent accidental usage of the feature and also so that you are forced to implement it when you come back to it. (prefer adding a github issue ID to it as well).
 
 ## Testing
+
 Write unit tests and integration tests for all the code that you write. For testing, prefer using crates like `proptest` for property based testing and `rstest` for test fixtures.
 
 ## Usage of AI Tools
+
 - Use AI tools for writing code when you think it is appropriate.
-But always make sure that you understand the code that you are writing. And write appropriate comments for the code that you write.
+  But always make sure that you understand the code that you are writing. And write appropriate comments for the code that you write.
 
 If you are unsure about anything, then ask me.
 
-
 ## Adding Vx language features
+
 - When adding a language feature, make sure that:
   - You also add a test for it in the `tests` directory.
   - You also update all the other files that are related to the new feature.

@@ -32,14 +32,14 @@ fn test_2() -> void {
 // From const_generics_missing_args.vx
 fn test_3() -> void {
   // Tensor requires 1 type argument and 2 const arguments: Tensor<T: Float, const N: i32, const M: i32>
-  let mut x: Tensor<f32>; 
+  let mut x: Tensor<f32>;
 }
 
 
 // From const_generics_type_mismatch.vx
 fn test_4() -> void {
   // Const generic expects an i32, but we give a string
-  let mut x: Tensor<f32, ["invalid", 10]>; 
+  let mut x: Tensor<f32, ["invalid", 10]>;
 }
 
 
