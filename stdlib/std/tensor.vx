@@ -8,17 +8,17 @@
 // This module provides standard library methods for the built-in Tensor type.
 // Tensors are natively backed by MLIR memref operations in the compiler backend.
 
-impl<T> Tensor<T> {
-  // Fills the tensor with the given value.
-  fn fill(self: Tensor<T>, value: T) -> Tensor<T> {
-    mlir!(
-    inputs: (%val = value: f32, %tensor = self: memref<?x?xf32>),
-    clobbers: [],
-    returns: Tensor<T>,
-    dialects: ["linalg"]
-    ) {
-      linalg.fill ins(%val: f32) outs(%tensor: memref<?x?xf32>)
-      return %tensor : memref<?x?xf32>
+impl<T: Float, const N: i32> Tensor<T> {
+    // Fills the tensor with a constant value using Linalg
+    fn fill(self: &mut Tensor<T>, val: T) -> void {
+        mlir!(
+            inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+            clobbers: [%arg_t],
+            dialects: ["linalg"]
+        ) {
+        ^bb0(%arg_t: memref<?x?xf32>, %arg_v: f32):
+            linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+            macro.yield
+        };
     }
-  }
 }
