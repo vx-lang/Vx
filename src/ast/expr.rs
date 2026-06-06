@@ -942,18 +942,26 @@ impl Expr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span.clone(),
             }),
-            Expr::InlineMlir(e) => Expr::InlineMlir(InlineMlirExpr {
-                inputs: e
-                    .inputs
-                    .iter()
-                    .map(|(n, ex, t)| (n.clone(), ex.substitute(mapping), t.clone()))
-                    .collect(),
-                clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
-                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
-                dialects: e.dialects.clone(),
-                block_str: e.block_str.clone(),
-                span: e.span.clone(),
-            }),
+            Expr::InlineMlir(e) => {
+                let mut new_block_str = e.block_str.clone();
+                for (k, v) in mapping {
+                    if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(k))) {
+                        new_block_str = re.replace_all(&new_block_str, v.to_string()).to_string();
+                    }
+                }
+                Expr::InlineMlir(InlineMlirExpr {
+                    inputs: e
+                        .inputs
+                        .iter()
+                        .map(|(n, ex, t)| (n.clone(), ex.substitute(mapping), t.clone()))
+                        .collect(),
+                    clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
+                    returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                    dialects: e.dialects.clone(),
+                    block_str: new_block_str,
+                    span: e.span.clone(),
+                })
+            }
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {
                 self.clone()
             }
