@@ -1,0 +1,12 @@
+// RUN: not vxc %s
+fn main() on Topology::Host -> void {
+  if comptime Topology::Current == Topology::Host {
+    // This branch is ACTIVE because Topology::Current is Topology::Host
+    // This type mismatch SHOULD trigger a compiler error.
+    let x: f32 = "this is a string, not a float";
+  } else {
+    // This branch is PRUNED.
+    // This type mismatch should NOT trigger a compiler error.
+    let y: f32 = "world";
+  }
+}

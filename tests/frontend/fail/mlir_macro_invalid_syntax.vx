@@ -1,0 +1,11 @@
+// RUN: not vxc %s
+fn main() -> void {
+  mlir!(
+    inputs: (),
+    invalid_key: [],
+    dialects: ["linalg"]
+  ) {
+    // This should fail to parse because 'invalid_key' is not supported in the mlir! macro.
+    %x = "test"
+  };
+}
