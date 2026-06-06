@@ -33,7 +33,8 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_stmt(&mut self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
-            let expanded_expr = self.expand_macro_call(&call.name, &call.token_tree, &None)?;
+            let expanded_expr =
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
             let recursively_expanded = self.expand_expr(expanded_expr)?;
             // for now, a macro call statement returns the expanded expr as a statement
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {

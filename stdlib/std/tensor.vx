@@ -10,15 +10,15 @@
 
 impl<T> Tensor<T> {
   // Fills the tensor with the given value.
-  fn fill(mut self, value: T) -> Tensor<T> {
-      mlir!(
-          inputs: (%val = value: f32, %tensor = self: memref<?x?xf32>),
-          clobbers: [],
-          returns: Tensor<T>,
-          dialects: ["linalg"]
-      ) {
-          linalg.fill ins(%val: f32) outs(%tensor: memref<?x?xf32>)
-          return %tensor : memref<?x?xf32>
-      }
+  fn fill(self: Tensor<T>, value: T) -> Tensor<T> {
+    mlir!(
+    inputs: (%val = value: f32, %tensor = self: memref<?x?xf32>),
+    clobbers: [],
+    returns: Tensor<T>,
+    dialects: ["linalg"]
+    ) {
+      linalg.fill ins(%val: f32) outs(%tensor: memref<?x?xf32>)
+      return %tensor : memref<?x?xf32>
+    }
   }
 }

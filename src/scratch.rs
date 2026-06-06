@@ -1,4 +1,6 @@
+#[allow(unused_imports)]
 use melior::ir::BlockLike;
+
 #[test]
 pub fn test_clone4() {
     let registry = melior::dialect::DialectRegistry::new();

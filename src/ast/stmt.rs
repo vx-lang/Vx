@@ -168,13 +168,20 @@ impl ContinueStmt {
 pub struct MacroCallStmt {
     pub name: String,
     pub token_tree: TokenTree,
+    pub block_tree: Option<TokenTree>,
     pub span: Span,
 }
 impl MacroCallStmt {
-    pub fn new(name: String, token_tree: TokenTree, span: Span) -> Self {
+    pub fn new(
+        name: String,
+        token_tree: TokenTree,
+        block_tree: Option<TokenTree>,
+        span: Span,
+    ) -> Self {
         Self {
             name,
             token_tree,
+            block_tree,
             span,
         }
     }
@@ -255,6 +262,7 @@ impl Statement {
             Statement::MacroCall(e) => Statement::MacroCall(MacroCallStmt {
                 name: e.name.clone(),
                 token_tree: e.token_tree.clone(),
+                block_tree: e.block_tree.clone(),
                 span: e.span.clone(),
             }),
         }

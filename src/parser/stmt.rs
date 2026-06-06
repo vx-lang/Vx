@@ -170,10 +170,15 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume identifier
                     self.advance(); // consume '!'
                     let token_tree = self.parse_token_tree()?;
+                    let mut block_tree = None;
+                    if self.check(&TokenType::LeftBrace) {
+                        block_tree = Some(self.parse_token_tree()?);
+                    }
                     self.match_token(&TokenType::Semicolon); // optional semicolon for statement macros
                     return Ok(Statement::MacroCall(MacroCallStmt {
                         name,
                         token_tree,
+                        block_tree,
                         span: Span::default(),
                     }));
                 }

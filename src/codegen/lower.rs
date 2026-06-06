@@ -2636,7 +2636,9 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let mut call_ret_tys = Vec::new();
         if let Some(ret_ty) = &self.returns {
             let mlir_ret_ty = gen.lower_type(ret_ty);
-            ret_str = format!("-> {}", mlir_ret_ty.to_string());
+            if mlir_ret_ty.to_string() != "void" {
+                ret_str = format!("-> {}", mlir_ret_ty);
+            }
             call_ret_tys.push(mlir_ret_ty);
         }
 
