@@ -268,7 +268,16 @@ impl<'a> Parser<'a> {
                         self.advance(); // consume '<'
                         let mut type_args = Vec::new();
                         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
-                            type_args.push(self.parse_type()?);
+                            // Try to parse an expression if it's a number literal
+                            if let TokenType::Number(_) = self.peek().kind {
+                                if let Ok(expr) = self.parse_expr() {
+                                    type_args.push(Type::Const(Box::new(expr)));
+                                } else {
+                                    type_args.push(self.parse_type()?);
+                                }
+                            } else {
+                                type_args.push(self.parse_type()?);
+                            }
                             if !self.match_token(&TokenType::Comma) {
                                 break;
                             }

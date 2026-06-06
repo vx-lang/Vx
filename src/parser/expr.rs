@@ -262,15 +262,22 @@ impl<'a> Parser<'a> {
             while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
                 && !matches!(self.peek_n(j).kind, TokenType::Eof)
             {
-                if let TokenType::Identifier(ref s) = self.peek_n(j).kind {
+                let kind = &self.peek_n(j).kind;
+                if let TokenType::Identifier(ref s) = kind {
                     type_args.push(s.clone());
                     j += 1;
-                    if matches!(self.peek_n(j).kind, TokenType::Comma) {
-                        j += 1;
-                    }
+                } else if let TokenType::Number(v) = kind {
+                    type_args.push(v.clone());
+                    j += 1;
+                } else if let TokenType::StringLiteral(s) = kind {
+                    type_args.push(format!("\"{}\"", s));
+                    j += 1;
                 } else {
                     is_generic = false;
                     break;
+                }
+                if matches!(self.peek_n(j).kind, TokenType::Comma) {
+                    j += 1;
                 }
             }
             if is_generic
@@ -311,15 +318,22 @@ impl<'a> Parser<'a> {
                         while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
                             && !matches!(self.peek_n(j).kind, TokenType::Eof)
                         {
-                            if let TokenType::Identifier(ref s) = self.peek_n(j).kind {
+                            let kind = &self.peek_n(j).kind;
+                            if let TokenType::Identifier(ref s) = kind {
                                 type_args.push(s.clone());
                                 j += 1;
-                                if matches!(self.peek_n(j).kind, TokenType::Comma) {
-                                    j += 1;
-                                }
+                            } else if let TokenType::Number(v) = kind {
+                                type_args.push(v.clone());
+                                j += 1;
+                            } else if let TokenType::StringLiteral(s) = kind {
+                                type_args.push(format!("\"{}\"", s));
+                                j += 1;
                             } else {
                                 is_generic = false;
                                 break;
+                            }
+                            if matches!(self.peek_n(j).kind, TokenType::Comma) {
+                                j += 1;
                             }
                         }
                         if is_generic
@@ -731,9 +745,14 @@ impl<'a> Parser<'a> {
                     TokenType::Identifier(s) => {
                         if self.match_token(&TokenType::Bang) {
                             let token_tree = self.parse_token_tree()?;
+                            let mut block_tree = None;
+                            if self.check(&TokenType::LeftBrace) {
+                                block_tree = Some(self.parse_token_tree()?);
+                            }
                             Expr::MacroCall(MacroCallExpr {
                                 name: s,
                                 token_tree,
+                                block_tree,
                                 span: Span::default(),
                             })
                         } else {

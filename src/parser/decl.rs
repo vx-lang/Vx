@@ -1,23 +1,35 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_generic_params(&mut self) -> Result<Vec<(String, Option<String>)>, String> {
+    pub(crate) fn parse_generic_params(&mut self) -> Result<Vec<GenericParam>, String> {
         let mut generics = Vec::new();
         if self.match_token(&TokenType::LeftAngle) {
             while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
-                let name = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
-                    _ => return Err("Expected generic parameter name".to_string()),
-                };
-                self.generic_params.push(name.clone());
-                let mut bound = None;
-                if self.match_token(&TokenType::Colon) {
-                    bound = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => Some(s),
-                        _ => return Err("Expected trait bound identifier".to_string()),
+                if self.check(&TokenType::Identifier("const".to_string())) {
+                    self.advance(); // consume const
+                    let name = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err("Expected const parameter name".to_string()),
                     };
+                    self.consume(&TokenType::Colon, "Expected ':' after const parameter name")?;
+                    let ty = self.parse_type()?;
+                    self.generic_params.push(name.clone());
+                    generics.push(GenericParam::Const { name, ty });
+                } else {
+                    let name = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err("Expected generic parameter name".to_string()),
+                    };
+                    self.generic_params.push(name.clone());
+                    let mut bound = None;
+                    if self.match_token(&TokenType::Colon) {
+                        bound = match self.advance().kind.clone() {
+                            TokenType::Identifier(s) => Some(s),
+                            _ => return Err("Expected trait bound identifier".to_string()),
+                        };
+                    }
+                    generics.push(GenericParam::Type { name, bound });
                 }
-                generics.push((name, bound));
                 if !self.match_token(&TokenType::Comma) {
                     break;
                 }

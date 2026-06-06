@@ -48,6 +48,7 @@ impl Type {
                 }
                 ret_ty.resolve_names(current_module, symbol_map);
             }
+            Type::Const(_) => {}
             Type::Matrix | Type::Scalar(_) | Type::Simd(_, _) => {}
             Type::Unknown => {}
         }

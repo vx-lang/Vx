@@ -79,6 +79,7 @@ pub enum Type {
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
     Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
+    Const(Box<crate::ast::expr::Expr>),          // E.g., generic const argument like `10`
     Unknown,
 }
 
@@ -104,6 +105,10 @@ impl Type {
                 } else {
                     self.clone()
                 }
+            }
+            Type::Const(expr) => {
+                // Technically substitute expressions inside, but for now we clone
+                Type::Const(expr.clone())
             }
             Type::GenericInstance(base, args) => {
                 let new_base = base.substitute(mapping);
@@ -248,6 +253,16 @@ impl std::fmt::Display for Type {
                 write!(f, ">")
             }
             Type::Generic(name, _) => write!(f, "{}", name),
+            Type::Const(expr) => {
+                if let crate::ast::expr::Expr::Number(n) = &**expr {
+                    write!(f, "{}", n.value)
+                } else if let crate::ast::expr::Expr::StringLiteral(s) = &**expr {
+                    write!(f, "\"{}\"", s.value)
+                } else {
+                    write!(f, "{{{:?}}}", expr)
+                }
+            }
+            Type::Unknown => write!(f, "?"),
             Type::Function(params, ret) => {
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {

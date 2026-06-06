@@ -1,9 +1,24 @@
 use super::*;
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum GenericParam {
+    Type { name: String, bound: Option<String> },
+    Const { name: String, ty: Type },
+}
+
+impl GenericParam {
+    pub fn name(&self) -> &str {
+        match self {
+            GenericParam::Type { name, .. } => name,
+            GenericParam::Const { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Function {
     pub name: String,
-    pub generics: Vec<(String, Option<String>)>, // (TypeParamName, OptionalTraitBound)
+    pub generics: Vec<GenericParam>,
     pub params: Vec<(String, Type)>,
     pub topology: Topology,
     pub return_type: Type,
@@ -15,14 +30,14 @@ pub struct Function {
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDecl {
     pub name: String,
-    pub generics: Vec<(String, Option<String>)>,
+    pub generics: Vec<GenericParam>,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumDecl {
     pub name: String,
-    pub generics: Vec<(String, Option<String>)>,
+    pub generics: Vec<GenericParam>,
     pub variants: Vec<(String, Option<Vec<Type>>)>,
 }
 
@@ -37,7 +52,7 @@ pub struct ExternDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct TraitDecl {
     pub name: String,
-    pub generics: Vec<(String, Option<String>)>,
+    pub generics: Vec<GenericParam>,
     // (method_name, params, return_type)
     #[allow(clippy::type_complexity)]
     pub methods: Vec<(String, Vec<(String, Type)>, Type)>,
@@ -45,7 +60,7 @@ pub struct TraitDecl {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ImplBlock {
-    pub generics: Vec<(String, Option<String>)>,
+    pub generics: Vec<GenericParam>,
     pub trait_name: Option<String>,
     pub target_type: Type,
     pub methods: Vec<Function>,

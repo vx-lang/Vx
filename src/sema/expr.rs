@@ -184,6 +184,19 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Scalar(ElementType::I32)
             }
+            Expr::InlineMlir(e) => {
+                // Typecheck inputs
+                for (_, arg_expr, _) in &mut e.inputs {
+                    self.check_expr_type_flag(arg_expr, consume, silent);
+                }
+                // Typecheck clobbers and mark them as mutated if needed
+                for clobber in &mut e.clobbers {
+                    self.check_expr_type_flag(clobber, consume, silent);
+                }
+
+                // Return the specified type or Unknown if void
+                e.returns.clone().unwrap_or(Type::Unknown)
+            }
             Expr::MacroCall(m) => panic!(
                 "Macros should be expanded before type checking: macro `{}` at {:?}",
                 m.name, m.span
@@ -647,9 +660,7 @@ impl<'a> TypeChecker<'a> {
                                     if let Some(idx) = enum_name.find('<') {
                                         let ty_args_str = &enum_name[idx + 1..enum_name.len() - 1];
                                         let ty_args: Vec<&str> = ty_args_str.split(',').collect();
-                                        for (i, (g_name, _)) in
-                                            enum_decl.generics.iter().enumerate()
-                                        {
+                                        for (i, param) in enum_decl.generics.iter().enumerate() {
                                             if i < ty_args.len() {
                                                 let ty_arg = ty_args[i].trim();
                                                 let parsed_ty = match ty_arg {
@@ -660,7 +671,7 @@ impl<'a> TypeChecker<'a> {
                                                     "Bool" => Type::Scalar(ElementType::Bool),
                                                     _ => Type::Struct(ty_arg.to_string(), None),
                                                 };
-                                                mapping.insert(g_name.clone(), parsed_ty);
+                                                mapping.insert(param.name().to_string(), parsed_ty);
                                             }
                                         }
                                     }
@@ -1111,6 +1122,18 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let resolved_name = name.clone();
+                let mut base_name = resolved_name.clone();
+                let mut explicit_generic_args = Vec::new();
+                if let Some(idx) = resolved_name.find('<') {
+                    if resolved_name.ends_with('>') {
+                        base_name = resolved_name[..idx].to_string();
+                        let args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
+                        explicit_generic_args = args_str
+                            .split(',')
+                            .map(|s| self.parse_ty_str(s.trim()))
+                            .collect();
+                    }
+                }
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -1397,7 +1420,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     func.0.return_type.clone()
                 } else if let Some((generic_func, origin_hash)) =
-                    self.env.generic_functions.get(&resolved_name).cloned()
+                    self.env.generic_functions.get(&base_name).cloned()
                 {
                     // Type deduction
                     let mut mapping = HashMap::new();
@@ -1413,6 +1436,14 @@ impl<'a> TypeChecker<'a> {
                         }
                         success = false;
                     } else {
+                        for (i, param) in generic_func.generics.iter().enumerate() {
+                            if i < explicit_generic_args.len() {
+                                mapping.insert(
+                                    param.name().to_string(),
+                                    explicit_generic_args[i].clone(),
+                                );
+                            }
+                        }
                         for (i, _arg) in args.iter_mut().enumerate() {
                             let arg_ty = arg_types[i].clone();
                             let param_ty = &generic_func.params[i].1;
@@ -1427,11 +1458,16 @@ impl<'a> TypeChecker<'a> {
 
                     if success {
                         // Trait Bounds Checking
-                        for (g_name, bound_opt) in &generic_func.generics {
+                        for param in &generic_func.generics {
+                            let g_name = param.name().to_string();
+                            let bound_opt = match param {
+                                crate::ast::decl::GenericParam::Type { bound, .. } => bound.clone(),
+                                _ => None,
+                            };
                             if let Some(bound_name) = bound_opt {
-                                if let Some(concrete_ty) = mapping.get(g_name) {
+                                if let Some(concrete_ty) = mapping.get(&g_name) {
                                     let mut implements_trait = false;
-                                    if let Some(impl_blocks) = self.env.impls.get(bound_name) {
+                                    if let Some(impl_blocks) = self.env.impls.get(&bound_name) {
                                         for ib in impl_blocks {
                                             if self.unify_types(
                                                 &ib.target_type,
@@ -1567,7 +1603,7 @@ impl<'a> TypeChecker<'a> {
                                             {
                                                 if i < ib.generics.len() {
                                                     found_mapping.insert(
-                                                        ib.generics[i].0.clone(),
+                                                        ib.generics[i].name().to_string(),
                                                         parsed_ty,
                                                     );
                                                 }
@@ -1586,8 +1622,13 @@ impl<'a> TypeChecker<'a> {
                     if let Some(generic_func) = found_generic_func {
                         let mut modified_func = generic_func.clone();
                         modified_func.name = format!("{}::{}", struct_name, method_name);
-                        modified_func.generics =
-                            found_mapping.keys().map(|k| (k.clone(), None)).collect();
+                        modified_func.generics = found_mapping
+                            .keys()
+                            .map(|k| crate::ast::decl::GenericParam::Type {
+                                name: k.clone(),
+                                bound: None,
+                            })
+                            .collect();
 
                         let mut inst_func =
                             self.instantiate_function(&modified_func, &found_mapping);
@@ -1691,9 +1732,9 @@ impl<'a> TypeChecker<'a> {
                                     .cloned()
                             });
                         if let Some(decl) = &struct_decl_opt {
-                            for (i, (g_name, _)) in decl.generics.iter().enumerate() {
+                            for (i, param) in decl.generics.iter().enumerate() {
                                 if i < args.len() {
-                                    mapping.insert(g_name.clone(), args[i].clone());
+                                    mapping.insert(param.name().to_string(), args[i].clone());
                                 }
                             }
                         }
@@ -2034,7 +2075,13 @@ impl<'a> TypeChecker<'a> {
 
                     // Provide generic mapping to the method itself by copying impl block generics
                     let mut modified_func = generic_method.clone();
-                    modified_func.generics = mapping.keys().map(|k| (k.clone(), None)).collect();
+                    modified_func.generics = mapping
+                        .keys()
+                        .map(|k| crate::ast::decl::GenericParam::Type {
+                            name: k.clone(),
+                            bound: None,
+                        })
+                        .collect();
                     let mut method_func = self.instantiate_function(&modified_func, &mapping);
 
                     // Create a unique mangled name for the method based on the target type
@@ -2419,9 +2466,9 @@ impl<'a> TypeChecker<'a> {
                     })
                 {
                     let mut mapping = std::collections::HashMap::new();
-                    for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+                    for (i, param) in struct_decl.generics.iter().enumerate() {
                         if i < generic_args.len() {
-                            mapping.insert(g_name.clone(), generic_args[i].clone());
+                            mapping.insert(param.name().to_string(), generic_args[i].clone());
                         }
                     }
 
@@ -2647,9 +2694,9 @@ impl<'a> TypeChecker<'a> {
                         if let Some(payload_types) = &variant.1 {
                             let mut mapping = std::collections::HashMap::new();
                             if let Type::GenericInstance(_, args) = expr_ty {
-                                for (i, (g_name, _)) in enum_decl.generics.iter().enumerate() {
+                                for (i, param) in enum_decl.generics.iter().enumerate() {
                                     if i < args.len() {
-                                        mapping.insert(g_name.clone(), args[i].clone());
+                                        mapping.insert(param.name().to_string(), args[i].clone());
                                     }
                                 }
                             }

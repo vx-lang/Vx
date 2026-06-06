@@ -45,3 +45,4 @@ pub fn parse_module(source: &str) -> Result<ast::VxModule, String> {
     let mut parser = parser::Parser::new(tokens, source);
     parser.parse()
 }
+pub mod scratch;

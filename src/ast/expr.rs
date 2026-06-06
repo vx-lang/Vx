@@ -524,13 +524,20 @@ impl ClosureExpr {
 pub struct MacroCallExpr {
     pub name: String,
     pub token_tree: TokenTree,
+    pub block_tree: Option<TokenTree>,
     pub span: Span,
 }
 impl MacroCallExpr {
-    pub fn new(name: String, token_tree: TokenTree, span: Span) -> Self {
+    pub fn new(
+        name: String,
+        token_tree: TokenTree,
+        block_tree: Option<TokenTree>,
+        span: Span,
+    ) -> Self {
         Self {
             name,
             token_tree,
+            block_tree,
             span,
         }
     }
@@ -556,6 +563,16 @@ impl PrintlnExpr {
     pub fn new(args: Vec<Expr>, span: Span) -> Self {
         Self { args, span }
     }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct InlineMlirExpr {
+    pub inputs: Vec<(String, Expr, String)>, // "%argN", expr, mlir_type_str
+    pub clobbers: Vec<Expr>,
+    pub returns: Option<Type>, // None for void
+    pub dialects: Vec<String>,
+    pub block_str: String,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -595,6 +612,7 @@ pub enum Expr {
     AsCast(AsCastExpr),
     Print(PrintExpr),
     Println(PrintlnExpr),
+    InlineMlir(InlineMlirExpr),
 }
 
 impl Expr {
@@ -635,6 +653,7 @@ impl Expr {
             Expr::AsCast(e) => e.span.clone(),
             Expr::Print(e) => e.span.clone(),
             Expr::Println(e) => e.span.clone(),
+            Expr::InlineMlir(e) => e.span.clone(),
         }
     }
 
@@ -844,18 +863,22 @@ impl Expr {
                 span: e.span.clone(),
             }),
             Expr::Identifier(id) => {
-                if let Some(Type::Generic(val_str, _)) = mapping.get(&id.name) {
-                    if val_str.parse::<f64>().is_ok() {
-                        return Expr::Number(crate::ast::NumberExpr {
-                            value: val_str.clone(),
-                            ty: None,
-                            span: id.span.clone(),
-                        });
-                    } else {
-                        return Expr::Identifier(crate::ast::IdentifierExpr {
-                            name: val_str.clone(),
-                            span: id.span.clone(),
-                        });
+                if let Some(mapped_ty) = mapping.get(&id.name) {
+                    if let Type::Generic(val_str, _) = mapped_ty {
+                        if val_str.parse::<f64>().is_ok() {
+                            return Expr::Number(crate::ast::NumberExpr {
+                                value: val_str.clone(),
+                                ty: None,
+                                span: id.span.clone(),
+                            });
+                        } else {
+                            return Expr::Identifier(crate::ast::IdentifierExpr {
+                                name: val_str.clone(),
+                                span: id.span.clone(),
+                            });
+                        }
+                    } else if let Type::Const(expr) = mapped_ty {
+                        return *expr.clone();
                     }
                 }
                 self.clone()
@@ -908,6 +931,7 @@ impl Expr {
             Expr::MacroCall(e) => Expr::MacroCall(MacroCallExpr {
                 name: e.name.clone(),
                 token_tree: e.token_tree.clone(),
+                block_tree: e.block_tree.clone(),
                 span: e.span.clone(),
             }),
             Expr::Print(e) => Expr::Print(PrintExpr {
@@ -916,6 +940,18 @@ impl Expr {
             }),
             Expr::Println(e) => Expr::Println(PrintlnExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::InlineMlir(e) => Expr::InlineMlir(InlineMlirExpr {
+                inputs: e
+                    .inputs
+                    .iter()
+                    .map(|(n, ex, t)| (n.clone(), ex.substitute(mapping), t.clone()))
+                    .collect(),
+                clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
+                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                dialects: e.dialects.clone(),
+                block_str: e.block_str.clone(),
                 span: e.span.clone(),
             }),
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {

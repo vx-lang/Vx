@@ -717,7 +717,7 @@ impl<'c> MeliorGenerator<'c> {
                             if i >= args.len() {
                                 panic!("Not enough arguments for generic instance {} (expected {}, got {})", name, decl.generics.len(), args.len());
                             }
-                            mapping.insert(param.0.clone(), args[i].clone());
+                            mapping.insert(param.name().to_string(), args[i].clone());
                         }
                         for (_, ty) in &decl.fields {
                             let sub_ty = ty.substitute(&mapping);
@@ -859,6 +859,9 @@ impl<'c> MeliorGenerator<'c> {
                 return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             }
             crate::ast::Type::Module(..) => "none".to_string(),
+            crate::ast::Type::Const(expr) => {
+                format!("{:?}", expr)
+            }
             crate::ast::Type::Unknown => "unknown".to_string(),
         };
 
@@ -896,7 +899,8 @@ impl<'c> MeliorGenerator<'c> {
                                     let mut mapping = std::collections::HashMap::new();
                                     for (i, param) in decl.generics.iter().enumerate() {
                                         if i < args.len() {
-                                            mapping.insert(param.0.clone(), args[i].clone());
+                                            mapping
+                                                .insert(param.name().to_string(), args[i].clone());
                                         }
                                     }
                                     resolved_ty = resolved_ty.substitute(&mapping);

@@ -496,6 +496,16 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if other.chars().all(|c| c.is_ascii_digit()) {
+                    return Type::Const(Box::new(crate::ast::Expr::Number(
+                        crate::ast::NumberExpr::new(
+                            other.to_string(),
+                            None,
+                            crate::ast::Span::default(),
+                        ),
+                    )));
+                }
+
                 if self.env.structs.contains_key(other)
                     || self.generated_structs.iter().any(|s| s.name == other)
                 {

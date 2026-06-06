@@ -1190,9 +1190,9 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 };
                 inner_tys.push(inner_ty);
             }
-            for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+            for (i, param) in struct_decl.generics.iter().enumerate() {
                 if i < inner_tys.len() {
-                    mapping.insert(g_name.clone(), inner_tys[i].clone());
+                    mapping.insert(param.name().to_string(), inner_tys[i].clone());
                 }
             }
             println!("StructInit {}: mapping = {:?}", name, mapping);
@@ -1516,9 +1516,9 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                     inner_tys.push(inner_ty);
                 }
                 if let Some(struct_decl) = gen.structs.get(&base_name) {
-                    for (i, (g_name, _)) in struct_decl.generics.iter().enumerate() {
+                    for (i, param) in struct_decl.generics.iter().enumerate() {
                         if i < inner_tys.len() {
-                            mapping.insert(g_name.clone(), inner_tys[i].clone());
+                            mapping.insert(param.name().to_string(), inner_tys[i].clone());
                         }
                     }
                 }
