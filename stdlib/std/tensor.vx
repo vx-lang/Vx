@@ -9,7 +9,16 @@
 // Tensors are natively backed by MLIR memref operations in the compiler backend.
 
 impl<T> Tensor<T> {
-  // We can add basic methods that work across generic element types T.
-  // Note: True shape-aware iteration and map operations depend on the compiler's 
-  // ability to lower these closures into MLIR loops.
+  // Fills the tensor with the given value.
+  fn fill(mut self, value: T) -> Tensor<T> {
+      mlir!(
+          inputs: (%val = value: f32, %tensor = self: memref<?x?xf32>),
+          clobbers: [],
+          returns: Tensor<T>,
+          dialects: ["linalg"]
+      ) {
+          linalg.fill ins(%val: f32) outs(%tensor: memref<?x?xf32>)
+          return %tensor : memref<?x?xf32>
+      }
+  }
 }

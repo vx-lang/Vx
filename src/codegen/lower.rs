@@ -1863,60 +1863,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return (arg_val, expr_ty);
         }
 
-        if name == "fill" {
-            let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
-            let (fill_val, _) = gen.generate_expr(&args[1], block);
-
-            let tensor_ty_str = tensor_ty.to_string();
-            let is_memref = tensor_ty_str.starts_with("memref<");
-            if is_memref {
-                // Determine element type
-                let parts: Vec<&str> = tensor_ty_str
-                    .trim_start_matches("memref<")
-                    .trim_end_matches('>')
-                    .split('x')
-                    .collect();
-                let el_ty_str = parts.last().unwrap_or(&"f32").trim();
-
-                let region_fill = Region::new();
-                let block_fill = melior::ir::Block::new(&[
-                    (
-                        Type::parse(gen.context, el_ty_str).unwrap(),
-                        Location::unknown(gen.context),
-                    ),
-                    (
-                        Type::parse(gen.context, el_ty_str).unwrap(),
-                        Location::unknown(gen.context),
-                    ),
-                ]);
-                let yield_fill = melior::ir::operation::OperationBuilder::new(
-                    "linalg.yield",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[block_fill.argument(0).unwrap().into()])
-                .build()
-                .unwrap();
-                block_fill.append_operation(yield_fill);
-                region_fill.append_block(block_fill);
-
-                let linalg_fill = melior::ir::operation::OperationBuilder::new(
-                    "linalg.fill",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[fill_val, tensor_val])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
-                )])
-                .add_regions([region_fill])
-                .build()
-                .unwrap();
-                block.append_operation(linalg_fill);
-
-                return (tensor_val, tensor_ty);
-            }
-        }
-
         if name == "map" {
             let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
             // args[1] is the closure
@@ -2668,6 +2614,92 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
             }),
             block,
         )
+    }
+}
+
+impl<'c> LowerToMelior<'c> for InlineMlirExpr {
+    type Output = (Value<'c, 'c>, Type<'c>);
+
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let mut mlir_args = Vec::new();
+        let mut input_types_str = Vec::new();
+
+        for (name, expr, ty_str) in &self.inputs {
+            let (val, _) = gen.generate_expr(expr, block);
+            mlir_args.push(val);
+            input_types_str.push(format!("{}: {}", name, ty_str));
+        }
+
+        let args_str = input_types_str.join(", ");
+
+        let mut ret_str = String::new();
+        let mut call_ret_tys = Vec::new();
+        if let Some(ret_ty) = &self.returns {
+            let mlir_ret_ty = gen.lower_type(ret_ty);
+            ret_str = format!("-> {}", mlir_ret_ty.to_string());
+            call_ret_tys.push(mlir_ret_ty);
+        }
+
+        let unique_id = format!("vx_macro_mlir_L{}_C{}", self.span.line, self.span.column);
+
+        let block_str = self.block_str.replace("vx.yield", "return");
+
+        let mlir_source = format!(
+            "module {{\n    func.func private @{}({}) {} {{\n{}\n    }}\n}}",
+            unique_id, args_str, ret_str, block_str
+        );
+
+        gen.context.set_allow_unregistered_dialects(true);
+        let parsed_module = match melior::ir::Module::parse(gen.context, &mlir_source) {
+            Some(m) => m,
+            None => {
+                panic!(
+                    "Failed to parse mlir! block at {:?}. Source:\n{}",
+                    self.span, mlir_source
+                );
+            }
+        };
+
+        use melior::ir::BlockLike;
+        let func_op = parsed_module.body().first_operation().unwrap();
+        let cloned_func = (*func_op).clone();
+
+        gen.module.body().append_operation(cloned_func);
+
+        let call_op = melior::ir::operation::OperationBuilder::new(
+            "func.call",
+            melior::ir::Location::unknown(gen.context),
+        )
+        .add_attributes(&[(
+            melior::ir::Identifier::new(gen.context, "callee"),
+            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &unique_id).into(),
+        )])
+        .add_operands(&mlir_args)
+        .add_results(&call_ret_tys)
+        .build()
+        .unwrap();
+
+        let op = block.append_operation(call_op);
+
+        if let Some(ret_ty) = &self.returns {
+            (op.result(0).unwrap().into(), gen.lower_type(ret_ty))
+        } else {
+            let dummy_val = melior::ir::operation::OperationBuilder::new(
+                "arith.constant",
+                melior::ir::Location::unknown(gen.context),
+            )
+            .add_attributes(&[(
+                melior::ir::Identifier::new(gen.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0).into(),
+            )])
+            .add_results(&[Type::index(gen.context)])
+            .build()
+            .unwrap();
+            (
+                block.append_operation(dummy_val).result(0).unwrap().into(),
+                Type::index(gen.context),
+            )
+        }
     }
 }
 

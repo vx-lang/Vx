@@ -33,7 +33,7 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_stmt(&mut self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
-            let expanded_expr = self.expand_macro_call(&call.name, &call.token_tree)?;
+            let expanded_expr = self.expand_macro_call(&call.name, &call.token_tree, &None)?;
             let recursively_expanded = self.expand_expr(expanded_expr)?;
             // for now, a macro call statement returns the expanded expr as a statement
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
@@ -99,7 +99,8 @@ impl<'a> MacroExpander<'a> {
 
     fn expand_expr(&mut self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
-            let expanded = self.expand_macro_call(&call.name, &call.token_tree)?;
+            let expanded =
+                self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
             return self.expand_expr(expanded);
         }
         // Traverse and expand
@@ -266,8 +267,17 @@ impl<'a> MacroExpander<'a> {
         Ok(expr)
     }
 
-    fn expand_macro_call(&mut self, name: &str, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_macro_call(
+        &mut self,
+        name: &str,
+        tt: &TokenTree,
+        block_tree: &Option<TokenTree>,
+    ) -> Result<expr::Expr, String> {
         println!("Expanding macro call: {}!", name);
+
+        if name == "mlir" {
+            return self.expand_mlir_macro(tt, block_tree);
+        }
 
         if name == "vec" {
             return self.expand_vec_macro(tt);
@@ -564,6 +574,189 @@ impl<'a> MacroExpander<'a> {
 
         Ok(expr::Expr::Println(expr::PrintlnExpr {
             args: exprs,
+            span: crate::ast::Span::default(),
+        }))
+    }
+
+    fn expand_mlir_macro(
+        &mut self,
+        tt: &TokenTree,
+        block_tree: &Option<TokenTree>,
+    ) -> Result<expr::Expr, String> {
+        let mut inputs = Vec::new();
+        let mut clobbers = Vec::new();
+        let mut returns = None;
+        let mut dialects = Vec::new();
+
+        let tokens = match tt {
+            TokenTree::Delimited(_, inner) => {
+                let mut t = Vec::new();
+                for i in inner {
+                    t.extend(self.flatten_tt(i));
+                }
+                t.push(crate::lexer::Token {
+                    kind: crate::lexer::TokenType::Eof,
+                    line: 0,
+                    column: 0,
+                    length: 0,
+                });
+                t
+            }
+            _ => return Err("Expected delimited token tree for mlir!".to_string()),
+        };
+
+        let mut parser = crate::parser::Parser::new(tokens, "");
+
+        while !parser.check(&crate::lexer::TokenType::Eof) {
+            let field_name = match &parser.advance().kind {
+                crate::lexer::TokenType::Identifier(s) => s.clone(),
+                _ => {
+                    return Err(
+                        "Expected 'inputs', 'clobbers', 'returns', or 'dialects'".to_string()
+                    )
+                }
+            };
+            parser.consume(&crate::lexer::TokenType::Colon, "Expected ':'")?;
+
+            match field_name.as_str() {
+                "inputs" => {
+                    parser.consume(&crate::lexer::TokenType::LeftParen, "Expected '('")?;
+                    if !parser.check(&crate::lexer::TokenType::RightParen) {
+                        loop {
+                            let is_percent = match parser.peek().kind {
+                                crate::lexer::TokenType::Unknown('%') => {
+                                    parser.advance();
+                                    true
+                                }
+                                _ => false,
+                            };
+                            let arg_name = match &parser.advance().kind {
+                                crate::lexer::TokenType::Identifier(s) => {
+                                    if is_percent {
+                                        format!("%{}", s)
+                                    } else {
+                                        s.clone()
+                                    }
+                                }
+                                _ => return Err("Expected identifier in inputs".to_string()),
+                            };
+                            parser.consume(&crate::lexer::TokenType::Equals, "Expected '='")?;
+                            let expr = parser.parse_expr()?;
+                            parser.consume(&crate::lexer::TokenType::Colon, "Expected ':'")?;
+
+                            let mut ty_str = String::new();
+                            let mut angle_depth = 0;
+                            while !parser.check(&crate::lexer::TokenType::Eof) {
+                                if angle_depth == 0
+                                    && (parser.check(&crate::lexer::TokenType::Comma)
+                                        || parser.check(&crate::lexer::TokenType::RightParen))
+                                {
+                                    break;
+                                }
+                                let tok = parser.advance();
+                                if tok.kind == crate::lexer::TokenType::LeftAngle {
+                                    angle_depth += 1;
+                                } else if tok.kind == crate::lexer::TokenType::RightAngle {
+                                    angle_depth -= 1;
+                                }
+                                ty_str.push_str(&tok.kind.to_string());
+                            }
+                            inputs.push((arg_name, expr, ty_str));
+
+                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    parser.consume(&crate::lexer::TokenType::RightParen, "Expected ')'")?;
+                }
+                "clobbers" => {
+                    parser.consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")?;
+                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                        loop {
+                            clobbers.push(parser.parse_expr()?);
+                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    parser.consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")?;
+                }
+                "returns" => {
+                    if parser.match_token(&crate::lexer::TokenType::Identifier("void".to_string()))
+                    {
+                        returns = None;
+                    } else {
+                        returns = Some(parser.parse_type()?);
+                    }
+                }
+                "dialects" => {
+                    parser.consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")?;
+                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                        loop {
+                            match &parser.advance().kind {
+                                crate::lexer::TokenType::StringLiteral(s) => {
+                                    dialects.push(s.clone());
+                                }
+                                _ => return Err("Expected string literal in dialects".to_string()),
+                            }
+                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    parser.consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")?;
+                }
+                _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
+            }
+
+            parser.match_token(&crate::lexer::TokenType::Comma);
+        }
+
+        let block_str = if let Some(TokenTree::Delimited(_, inner)) = block_tree {
+            let mut t = Vec::new();
+            for i in inner {
+                t.extend(self.flatten_tt(i));
+            }
+
+            let mut s = String::new();
+            let mut current_line = 0;
+            let mut current_col = 0;
+
+            for tok in t {
+                if current_line == 0 {
+                    current_line = tok.line;
+                    current_col = tok.column;
+                }
+
+                if tok.line > current_line {
+                    for _ in 0..(tok.line - current_line) {
+                        s.push('\n');
+                    }
+                    current_col = 1;
+                    current_line = tok.line;
+                }
+
+                if tok.column > current_col {
+                    for _ in 0..(tok.column - current_col) {
+                        s.push(' ');
+                    }
+                }
+
+                s.push_str(&tok.kind.to_string());
+                current_col = tok.column + tok.length;
+            }
+            s
+        } else {
+            return Err("mlir! macro requires a trailing block".to_string());
+        };
+
+        Ok(expr::Expr::InlineMlir(expr::InlineMlirExpr {
+            inputs,
+            clobbers,
+            returns,
+            dialects,
+            block_str,
             span: crate::ast::Span::default(),
         }))
     }
