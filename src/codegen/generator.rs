@@ -19,6 +19,7 @@ pub struct MeliorGenerator<'c> {
     pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
     pub allocs: std::collections::HashSet<String>,
     pub is_lvalue_context: bool,
+    pub mlir_block_counter: usize,
     pub has_returned: bool,
 }
 
@@ -203,6 +204,7 @@ impl<'c> MeliorGenerator<'c> {
             continue_flags: Vec::new(),
             allocs: std::collections::HashSet::new(),
             is_lvalue_context: false,
+            mlir_block_counter: 0,
             has_returned: false,
         }
     }
@@ -359,9 +361,14 @@ impl<'c> MeliorGenerator<'c> {
             }
             let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
 
+            let mut actual_ret_tys = Vec::new();
+            if ret_ty.to_string() != "none" {
+                actual_ret_tys.push(*ret_ty);
+            }
+
             // FunctionType::new takes arg_tys and ret_tys
             let func_type =
-                melior::ir::r#type::FunctionType::new(self.context, arg_tys, &[*ret_ty]);
+                melior::ir::r#type::FunctionType::new(self.context, arg_tys, &actual_ret_tys);
 
             // Define the string attribute for the function name
             let name_attr = melior::ir::attribute::StringAttribute::new(self.context, name);
@@ -423,7 +430,12 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
 
-        let func_type = melior::ir::r#type::FunctionType::new(self.context, &arg_tys, &[ret_ty]);
+        let mut actual_ret_tys = Vec::new();
+        if ret_ty.to_string() != "none" {
+            actual_ret_tys.push(ret_ty);
+        }
+        let func_type =
+            melior::ir::r#type::FunctionType::new(self.context, &arg_tys, &actual_ret_tys);
         let name_attr = melior::ir::attribute::StringAttribute::new(self.context, &func.name);
         let type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
 
@@ -477,6 +489,23 @@ impl<'c> MeliorGenerator<'c> {
                 .build()
                 .unwrap(),
             );
+        } else if let crate::ast::Type::Struct(name, _) = &func.return_type {
+            if name == "void" {
+                let has_return = func
+                    .body
+                    .last()
+                    .is_some_and(|stmt| matches!(stmt, Statement::Return(_)));
+                if !has_return {
+                    block.append_operation(
+                        melior::ir::operation::OperationBuilder::new(
+                            "func.return",
+                            Location::unknown(self.context),
+                        )
+                        .build()
+                        .unwrap(),
+                    );
+                }
+            }
         }
 
         self.current_return_type = None;
@@ -567,6 +596,8 @@ impl<'c> MeliorGenerator<'c> {
             Expr::IndirectCall(e) => e.lower(self, block),
             Expr::Print(e) => e.lower(self, block),
             Expr::Println(e) => e.lower(self, block),
+            Expr::InlineMlir(e) => e.lower(self, block),
+            Expr::Topology(e) => e.lower(self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -619,14 +650,17 @@ impl<'c> MeliorGenerator<'c> {
                 }
 
                 let addr_space = match top {
-                    Some(crate::ast::Topology::NPU(_))
-                    | Some(crate::ast::Topology::Slice(_, _, _))
-                    | Some(crate::ast::Topology::ANE) => 1,
-                    Some(crate::ast::Topology::AccCore(_)) => 2,
                     Some(crate::ast::Topology::Host)
-                    | Some(crate::ast::Topology::AMX)
-                    | Some(crate::ast::Topology::GPU)
-                    | None => 0,
+                    | Some(crate::ast::Topology::Host_AVX512)
+                    | Some(crate::ast::Topology::Host_Neon)
+                    | Some(crate::ast::Topology::Current) => 0,
+                    Some(crate::ast::Topology::NPU(_))
+                    | Some(crate::ast::Topology::Slice(_, _, _)) => 1,
+                    Some(crate::ast::Topology::AccCore(_)) => 2,
+                    Some(crate::ast::Topology::AMX) => 3,
+                    Some(crate::ast::Topology::ANE) => 4,
+                    Some(crate::ast::Topology::GPU) => 5,
+                    None => 0,
                 };
 
                 if addr_space != 0 {
@@ -661,13 +695,19 @@ impl<'c> MeliorGenerator<'c> {
                 let inner_ty_str = self.lower_type(inner).to_string();
                 inner_ty_str
             }
-            crate::ast::Type::Borrow(_, mem, _, _) | crate::ast::Type::Pointer(_, mem, _) => {
-                let addr_space = match mem {
-                    Some(MemorySpace::NPUHBM) => 1,
-                    Some(MemorySpace::LocalSRAM) => 2,
-                    Some(MemorySpace::HostDRAM) | None => 0,
-                };
-                format!("!llvm.ptr<{}>", addr_space)
+            crate::ast::Type::Borrow(inner, mem, _, _)
+            | crate::ast::Type::Pointer(inner, mem, _) => {
+                let inner_str = self.lower_type_str(inner);
+                if inner_str.starts_with("memref<") {
+                    format!("memref<{}>", inner_str)
+                } else {
+                    let addr_space = match mem {
+                        Some(MemorySpace::NPUHBM) => 1,
+                        Some(MemorySpace::LocalSRAM) => 2,
+                        Some(MemorySpace::HostDRAM) | None => 0,
+                    };
+                    format!("!llvm.ptr<{}>", addr_space)
+                }
             }
             crate::ast::Type::Struct(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
@@ -704,6 +744,8 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(lowered);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(", "))
+                } else if name == "void" {
+                    "none".to_string()
                 } else {
                     format!("!llvm.struct<\"{}\">", name)
                 }

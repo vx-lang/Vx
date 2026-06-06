@@ -528,6 +528,7 @@ impl<'a> Parser<'a> {
                 span: Span::default(),
             }));
         } else if self.match_token(&TokenType::If) {
+            let is_comptime = self.match_token(&TokenType::Comptime);
             let cond = self.parse_expr()?;
             self.consume(&TokenType::LeftBrace, "Expected '{'")?;
             let mut then_block = Vec::new();
@@ -557,6 +558,7 @@ impl<'a> Parser<'a> {
                 }
             }
             return Ok(Expr::If(IfExpr {
+                is_comptime,
                 cond: Box::new(cond),
                 then_block,
                 else_block,

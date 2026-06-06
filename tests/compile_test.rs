@@ -42,10 +42,26 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let mut program = program_arr.remove(ast_idx);
 
     let mut global_macros = std::collections::HashMap::new();
+    for p in &program_arr {
+        for mac in &p.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    for p in &mut program_arr {
+        if let Err(e) = expander.expand_module(p) {
+            if !expect_pass {
+                return Ok(());
+            }
+            return Err(format!(
+                "Macro expansion failed on {}: {}",
+                p.module_path, e
+            ));
+        }
+    }
     if let Err(e) = expander.expand_module(&mut program) {
         if !expect_pass {
             return Ok(());
@@ -108,10 +124,23 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let mut program = program_arr.remove(ast_idx);
 
     let mut global_macros = std::collections::HashMap::new();
+    for p in &program_arr {
+        for mac in &p.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    for p in &mut program_arr {
+        if let Err(e) = expander.expand_module(p) {
+            return Err(format!(
+                "Macro expansion failed on {}: {}",
+                p.module_path, e
+            ));
+        }
+    }
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
@@ -201,10 +230,23 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     let mut program = program_arr.remove(ast_idx);
 
     let mut global_macros = std::collections::HashMap::new();
+    for p in &program_arr {
+        for mac in &p.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    for p in &mut program_arr {
+        if let Err(e) = expander.expand_module(p) {
+            return Err(format!(
+                "Macro expansion failed on {}: {}",
+                p.module_path, e
+            ));
+        }
+    }
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
@@ -689,10 +731,23 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     let mut program = program_arr.remove(ast_idx);
 
     let mut global_macros = std::collections::HashMap::new();
+    for p in &program_arr {
+        for mac in &p.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
     let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    for p in &mut program_arr {
+        if let Err(e) = expander.expand_module(p) {
+            return Err(format!(
+                "Macro expansion failed on {}: {}",
+                p.module_path, e
+            ));
+        }
+    }
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }

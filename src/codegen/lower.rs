@@ -225,9 +225,16 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let BorrowExpr { expr, .. } = self;
         if let Expr::Identifier(id) = &**expr {
             if gen.allocs.contains(&id.name) {
-                if let Some((val, _ty)) = gen.env.get(&id.name) {
+                if let Some((val, val_ty)) = gen.env.get(&id.name) {
                     let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-                    return (*val, ptr_ty);
+                    if val_ty.to_string().starts_with("memref<") {
+                        return (*val, *val_ty);
+                    } else if *val_ty == ptr_ty {
+                        return (*val, ptr_ty);
+                    } else {
+                        // Cast from val to ptr_ty if necessary? No, just return val_ty.
+                        return (*val, *val_ty);
+                    }
                 }
             }
         }
@@ -239,7 +246,37 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         if ty == ptr_ty {
             return (val, ptr_ty);
         }
-        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        if ty.to_string().starts_with("memref<memref<") {
+            return (val, ty);
+        }
+        if ty.to_string().starts_with("memref<") {
+            // Allocate a pointer to the memref
+            let alloca_op = block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "memref.alloca",
+                    Location::unknown(gen.context),
+                )
+                .add_results(&[Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap()])
+                .build()
+                .unwrap(),
+            );
+            let ptr = alloca_op.result(0).unwrap().into();
+
+            block.append_operation(
+                melior::ir::operation::OperationBuilder::new(
+                    "memref.store",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[val, ptr])
+                .build()
+                .unwrap(),
+            );
+            return (
+                ptr,
+                Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap(),
+            );
+        }
+
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
         let c1_op = block.append_operation(
             melior::ir::operation::OperationBuilder::new(
@@ -1319,7 +1356,10 @@ fn topology_to_i32(top: &crate::ast::Topology) -> i32 {
         AMX => 300,
         ANE => 400,
         GPU => 500,
+        Host_AVX512 => 600,
+        Host_Neon => 700,
         Slice(_, _, _) => 900,
+        Current => 0,
     }
 }
 
@@ -2625,7 +2665,18 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let mut input_types_str = Vec::new();
 
         for (name, expr, ty_str) in &self.inputs {
-            let (val, _) = gen.generate_expr(expr, block);
+            let (mut val, val_ty) = gen.generate_expr(expr, block);
+            if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
+                let load_op = melior::ir::operation::OperationBuilder::new(
+                    "memref.load",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[val])
+                .add_results(&[Type::parse(gen.context, ty_str).unwrap()])
+                .build()
+                .unwrap();
+                val = block.append_operation(load_op).result(0).unwrap().into();
+            }
             mlir_args.push(val);
             input_types_str.push(format!("{}: {}", name, ty_str));
         }
@@ -2642,9 +2693,13 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             call_ret_tys.push(mlir_ret_ty);
         }
 
-        let unique_id = format!("vx_macro_mlir_L{}_C{}", self.span.line, self.span.column);
+        let unique_id = format!(
+            "vx_macro_mlir_L{}_C{}_{}",
+            self.span.line, self.span.column, gen.mlir_block_counter
+        );
+        gen.mlir_block_counter += 1;
 
-        let block_str = self.block_str.replace("vx.yield", "return");
+        let block_str = self.block_str.replace("macro.yield", "return");
 
         let mlir_source = format!(
             "module {{\n    func.func private @{}({}) {} {{\n{}\n    }}\n}}",
@@ -2767,11 +2822,94 @@ impl<'c> LowerToMelior<'c> for IfExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let IfExpr {
+            is_comptime,
             cond,
             then_block,
             else_block: else_block_opt,
             span: _,
         } = self;
+
+        if *is_comptime {
+            let mut last_val = None;
+            let target_block = if !then_block.is_empty() {
+                Some(then_block)
+            } else {
+                else_block_opt.as_ref()
+            };
+
+            if let Some(tb) = target_block {
+                for (i, stmt) in tb.iter().enumerate() {
+                    let is_last = i == tb.len() - 1;
+                    if is_last {
+                        if let crate::ast::Statement::ExprStmt(crate::ast::stmt::ExprStmtStmt {
+                            expr,
+                            has_semi,
+                            ..
+                        }) = stmt
+                        {
+                            let (val, ty) = gen.generate_expr(expr, block);
+                            if !has_semi {
+                                last_val = Some((val, ty));
+                            }
+                        } else {
+                            gen.generate_statement(stmt, block);
+                        }
+                    } else {
+                        gen.generate_statement(stmt, block);
+                    }
+                }
+            }
+
+            if let Some((val, ty)) = last_val {
+                return (val, ty);
+            }
+
+            let ret_ty = gen
+                .expected_type
+                .unwrap_or_else(|| Type::parse(gen.context, "f32").unwrap());
+            let dummy_op = if ret_ty.to_string() == "f32" {
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::FloatAttribute::new(gen.context, ret_ty, 0.0).into(),
+                )])
+                .add_results(&[ret_ty])
+                .build()
+                .unwrap()
+            } else if ret_ty.to_string() == "i1" {
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
+                )])
+                .add_results(&[ret_ty])
+                .build()
+                .unwrap()
+            } else {
+                melior::ir::operation::OperationBuilder::new(
+                    "arith.constant",
+                    Location::unknown(gen.context),
+                )
+                .add_attributes(&[(
+                    melior::ir::Identifier::new(gen.context, "value"),
+                    melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
+                )])
+                .add_results(&[ret_ty])
+                .build()
+                .unwrap()
+            };
+            return (
+                block.append_operation(dummy_op).result(0).unwrap().into(),
+                ret_ty,
+            );
+        }
+
         let (cond_val, _) = gen.generate_expr(cond, block);
 
         let then_region = Region::new();
@@ -2891,7 +3029,9 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
     type Output = ();
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
+        gen.expected_type = gen.current_return_type;
         let (mut val, expr_ty) = gen.generate_expr(expr, block);
+        gen.expected_type = None;
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
                 if expr_ty.to_string().starts_with("memref<")

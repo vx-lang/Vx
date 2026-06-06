@@ -522,9 +522,17 @@ impl<'a> TypeChecker<'a> {
     }
     fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
+            Expr::Identifier(IdentifierExpr { name, span }) => {
                 if name == "true" || name == "false" {
                     return Type::Scalar(ElementType::Bool);
+                }
+                if name == "current_topology" {
+                    let active_top = self.active_topology.clone();
+                    *expr = Expr::Topology(TopologyExpr {
+                        top: active_top,
+                        span: span.clone(),
+                    });
+                    return Type::Tensor(ElementType::F32, vec![], None);
                 }
 
                 if let Some(borrows) = self.active_borrows.get(name) {
@@ -916,10 +924,17 @@ impl<'a> TypeChecker<'a> {
                 ret,
                 span: _,
             }) => {
+                let mut actual_top = top.clone();
+                if actual_top == Topology::Current {
+                    actual_top = self.active_topology.clone();
+                }
+
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
-                self.active_topology = top.clone();
-                self.active_memory = crate::arch::HardwareGraph::default_memory_for(top);
+                self.active_topology = actual_top.clone();
+                self.active_memory = crate::arch::HardwareGraph::default_memory_for(&actual_top);
+
+                *top = actual_top;
 
                 self.push_scope();
 
@@ -932,7 +947,13 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
-                    Topology::Host | Topology::AMX | Topology::ANE | Topology::GPU => {}
+                    Topology::Host
+                    | Topology::AMX
+                    | Topology::ANE
+                    | Topology::GPU
+                    | Topology::Host_AVX512
+                    | Topology::Host_Neon
+                    | Topology::Current => {}
                 }
 
                 self.check_expr_block(stmts, consume, silent);
@@ -954,47 +975,74 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_if_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
-        match expr {
-            Expr::If(IfExpr {
-                cond,
-                then_block,
-                else_block,
-                span: _,
-            }) => {
-                let cond_ty = self.check_expr_type(cond);
-                if cond_ty != Type::Scalar(ElementType::Bool) {
-                    self.errors
-                        .push("Condition in if expression must be of type bool (i1)".to_string());
+        let if_expr = match expr {
+            Expr::If(e) => e,
+            _ => unreachable!(),
+        };
+
+        let cond_ty = self.check_expr_type(&mut if_expr.cond);
+        if cond_ty != Type::Scalar(ElementType::Bool) {
+            self.errors
+                .push("Condition in if expression must be of type bool (i1)".to_string());
+        }
+
+        if if_expr.is_comptime {
+            let mut tmp_env = std::collections::HashMap::new();
+            for env in &self.eval_env {
+                for (k, v) in env {
+                    tmp_env.insert(k.clone(), v.clone());
                 }
+            }
+            if let Some(Value::Bool(b)) = self.eval_expr(&if_expr.cond, &tmp_env) {
+                if b {
+                    if_expr.else_block = None;
+                } else {
+                    if_expr.then_block.clear();
+                }
+            } else {
+                self.errors
+                    .push("Cannot statically evaluate comptime if condition".to_string());
+            }
+        }
+
+        self.push_scope();
+        let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
+        if !silent && !if_expr.then_block.is_empty() {
+            then_ty = self.check_expr_block(&mut if_expr.then_block, consume, silent);
+        }
+        self.pop_scope();
+
+        let mut else_ty = Type::Tensor(ElementType::F32, vec![], None);
+        if let Some(else_b) = if_expr.else_block.as_mut() {
+            if !else_b.is_empty() {
                 self.push_scope();
-                let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
                 if !silent {
-                    then_ty = self.check_expr_block(then_block, consume, silent);
+                    else_ty = self.check_expr_block(else_b, consume, silent);
                 }
                 self.pop_scope();
 
-                let mut else_ty = Type::Tensor(ElementType::F32, vec![], None);
-                if let Some(else_b) = else_block.as_mut() {
-                    self.push_scope();
-                    if !silent {
-                        else_ty = self.check_expr_block(else_b, consume, silent);
-                    }
-                    self.pop_scope();
-
-                    if then_ty != else_ty {
-                        self.errors.push(format!(
-                            "If expression branches have incompatible types: {:?} and {:?}",
-                            then_ty, else_ty
-                        ));
-                    }
-                } else {
-                    // Without else block, it evaluates to unit (represented as dummy Tensor)
-                    then_ty = Type::Tensor(ElementType::F32, vec![], None);
+                if !if_expr.is_comptime && then_ty != else_ty {
+                    self.errors.push(format!(
+                        "If expression branches have incompatible types: {:?} and {:?}",
+                        then_ty, else_ty
+                    ));
                 }
-                then_ty
             }
-            _ => unreachable!(),
+        } else if !if_expr.is_comptime {
+            // Without else block, it evaluates to unit (represented as dummy Tensor)
+            then_ty = Type::Tensor(ElementType::F32, vec![], None);
         }
+
+        // If it was comptime evaluated to false, the return type should just be the else block type
+        if if_expr.is_comptime {
+            if if_expr.then_block.is_empty() {
+                return else_ty;
+            } else {
+                return then_ty;
+            }
+        }
+
+        then_ty
     }
 
     fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
@@ -1137,13 +1185,23 @@ impl<'a> TypeChecker<'a> {
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
-                let is_builtin_ref = resolved_name == "print" || resolved_name == "Verified";
+                let is_builtin_ref = resolved_name == "print"
+                    || resolved_name == "Verified"
+                    || resolved_name == "current_topology";
                 let arg_consume = if is_builtin_ref { false } else { consume };
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
-                if resolved_name == "Verified" {
+                if resolved_name == "current_topology" {
+                    if !args.is_empty() {
+                        self.errors.push(format!(
+                            "Function 'current_topology' expects 0 arguments, got {}",
+                            args.len()
+                        ));
+                    }
+                    Type::Tensor(ElementType::F32, vec![], None)
+                } else if resolved_name == "Verified" {
                     if args.len() != 1 {
                         self.errors.push(format!(
                             "Function 'Verified' expects 1 argument, got {}",
@@ -1934,22 +1992,6 @@ impl<'a> TypeChecker<'a> {
                         // We lower .iter() on Tensors to just evaluate to the tensor itself
                         // so the ForLoopStmt can catch it and emit a native scf.for loop
                         *expr = *obj.clone();
-                        return base_ty;
-                    } else if _method == "fill" {
-                        if args.len() != 1 {
-                            self.errors.push(
-                                "fill requires exactly 1 argument (the value to fill)".to_string(),
-                            );
-                            return base_ty;
-                        }
-                        let arg_ty = self.check_expr_type(&mut args[0]);
-                        if arg_ty != Type::Scalar(el_ty.clone()) {
-                            self.errors.push(format!(
-                                "fill expects argument of type {:?}, got {:?}",
-                                Type::Scalar(el_ty.clone()),
-                                arg_ty
-                            ));
-                        }
                         return base_ty;
                     } else if _method == "map" {
                         if args.len() != 1 {

@@ -430,6 +430,7 @@ impl JvpExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct IfExpr {
+    pub is_comptime: bool,
     pub cond: Box<Expr>,
     pub then_block: Vec<Statement>,
     pub else_block: Option<Vec<Statement>>,
@@ -437,12 +438,14 @@ pub struct IfExpr {
 }
 impl IfExpr {
     pub fn new(
+        is_comptime: bool,
         cond: Box<Expr>,
         then_block: Vec<Statement>,
         else_block: Option<Vec<Statement>>,
         span: Span,
     ) -> Self {
         Self {
+            is_comptime,
             cond,
             then_block,
             else_block,
@@ -814,6 +817,7 @@ impl Expr {
                 span: e.span.clone(),
             }),
             Expr::If(e) => Expr::If(IfExpr {
+                is_comptime: e.is_comptime,
                 cond: Box::new(e.cond.substitute(mapping)),
                 then_block: e.then_block.iter().map(|s| s.substitute(mapping)).collect(),
                 else_block: e

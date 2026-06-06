@@ -5,32 +5,186 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-impl<T: Float, const N: i32> Tensor<T> {
-    // Fills the tensor with a constant value using Linalg
-    fn fill(self: &mut Tensor<T>, val: T) -> void {
-        mlir!(
-            inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
-            clobbers: [%arg_t],
-            dialects: ["linalg"]
-        ) {
-        ^bb0(%arg_t: memref<?x?xf32>, %arg_v: f32):
-            linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
-            macro.yield
-        };
+impl<T: Float> Tensor<T> {
+  // Fills the tensor with a constant value using Linalg
+  fn fill(self: &mut Tensor<T>, val: T) -> void {
+    mlir!(
+    inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+    clobbers: [self],
+    dialects: ["linalg"]
+    ) {
+      linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+      macro.yield
+    };
+  }
+
+  fn copy(self: &mut Tensor<T>, src: &Tensor<T>) -> void {
+    if comptime current_topology() == Topology::Host_AVX512 {
+      mlir!(
+      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        macro.yield
+      };
+    } else if comptime current_topology() == Topology::ANE {
+      mlir!(
+      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        macro.yield
+      };
+    } else {
+      mlir!(
+      inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
+        macro.yield
+      };
+    };
+  }
+
+  fn assign(self: &mut Tensor<T>, val: T) -> void {
+    if comptime current_topology() == Topology::Host_AVX512 {
+      mlir!(
+      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        macro.yield
+      };
+    } else if comptime current_topology() == Topology::ANE {
+      mlir!(
+      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        macro.yield
+      };
+    } else {
+      mlir!(
+      inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
+        macro.yield
+      };
+    };
+  }
+
+  fn compare(self: &Tensor<T>, other: &Tensor<T>) -> bool {
+    if comptime current_topology() == Topology::Host_AVX512 {
+      mlir!(
+      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      clobbers: [],
+      returns: bool,
+      dialects: ["linalg", "arith", "memref", "func"]
+      ) {
+        %true = arith.constant 1 : i1
+        %res = memref.alloca() : memref<i1>
+        memref.store %true, %res[] : memref<i1>
+        linalg.generic {
+          indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> ()>
+          ],
+          iterator_types = ["reduction", "reduction"]
+        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
+          ^bb0(%a: f32, %b: f32, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : f32
+          %and = arith.andi %out, %cmp : i1
+          linalg.yield %and : i1
+        }
+        %val = memref.load %res[] : memref<i1>
+        func.return %val : i1
+      }
+    } else if comptime current_topology() == Topology::ANE {
+      mlir!(
+      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      clobbers: [],
+      returns: bool,
+      dialects: ["linalg", "arith", "memref", "func"]
+      ) {
+        %true = arith.constant 1 : i1
+        %res = memref.alloca() : memref<i1>
+        memref.store %true, %res[] : memref<i1>
+        linalg.generic {
+          indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> ()>
+          ],
+          iterator_types = ["reduction", "reduction"]
+        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
+          ^bb0(%a: f32, %b: f32, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : f32
+          %and = arith.andi %out, %cmp : i1
+          linalg.yield %and : i1
+        }
+        %val = memref.load %res[] : memref<i1>
+        func.return %val : i1
+      }
+    } else {
+      mlir!(
+      inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
+      clobbers: [],
+      returns: bool,
+      dialects: ["linalg", "arith", "memref", "func"]
+      ) {
+        %true = arith.constant 1 : i1
+        %res = memref.alloca() : memref<i1>
+        memref.store %true, %res[] : memref<i1>
+        linalg.generic {
+          indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> ()>
+          ],
+          iterator_types = ["reduction", "reduction"]
+        } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
+          ^bb0(%a: f32, %b: f32, %out: i1):
+          %cmp = arith.cmpf oeq, %a, %b : f32
+          %and = arith.andi %out, %cmp : i1
+          linalg.yield %and : i1
+        }
+        %val = memref.load %res[] : memref<i1>
+        func.return %val : i1
+      }
     }
+  }
 }
 
 impl<T: Float, const N: i32, const M: i32> Tensor<T, [N, M]> {
-    // Fills the statically shaped tensor with a constant value using Linalg
-    fn fill_static(self: &mut Tensor<T, [N, M]>, val: T) -> void {
-        mlir!(
-            inputs: (%arg_t = self: memref<N x M x f32>, %arg_v = val: f32),
-            clobbers: [%arg_t],
-            dialects: ["linalg"]
-        ) {
-        ^bb0(%arg_t: memref<N x M x f32>, %arg_v: f32):
-            linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<N x M x f32>)
-            macro.yield
-        };
+  // Fills the statically shaped tensor with a constant value using Linalg
+  fn fill_static(self: &mut Tensor<T, [N, M]>, val: T) -> void {
+    if comptime current_topology() == Topology::Host_AVX512 {
+      // Demonstrate optimized code path for AVX512 (fallback to standard Linalg for demonstration)
+      mlir!(
+      inputs: (%arg_t = self: memref<N x M x f32>, %arg_v = val: f32),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<N x M x f32>)
+        macro.yield
+      };
+    } else {
+      mlir!(
+      inputs: (%arg_t = self: memref<N x M x f32>, %arg_v = val: f32),
+      clobbers: [self],
+      dialects: ["linalg"]
+      ) {
+        linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<N x M x f32>)
+        macro.yield
+      };
     }
+  }
 }

@@ -174,11 +174,12 @@ impl<'a> Parser<'a> {
                     if self.check(&TokenType::LeftBrace) {
                         block_tree = Some(self.parse_token_tree()?);
                     }
-                    self.match_token(&TokenType::Semicolon); // optional semicolon for statement macros
+                    let has_semi = self.match_token(&TokenType::Semicolon); // optional semicolon for statement macros
                     return Ok(Statement::MacroCall(MacroCallStmt {
                         name,
                         token_tree,
                         block_tree,
+                        has_semi,
                         span: Span::default(),
                     }));
                 }

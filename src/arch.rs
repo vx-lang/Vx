@@ -75,13 +75,16 @@ impl HardwareGraph {
     /// Returns the default memory space for a given topology.
     pub fn default_memory_for(topology: &Topology) -> MemorySpace {
         match topology {
+            Topology::Host | Topology::Host_AVX512 | Topology::Host_Neon => MemorySpace::HostDRAM,
             Topology::NPU(_) => MemorySpace::NPUHBM,
             Topology::AccCore(_) => MemorySpace::LocalSRAM,
-            Topology::Host => MemorySpace::HostDRAM,
             Topology::AMX => MemorySpace::HostDRAM,
             Topology::ANE => MemorySpace::NPUHBM,
             Topology::GPU => MemorySpace::HostDRAM,
             Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
+            Topology::Current => {
+                unreachable!("Must specify a concrete topology other than Current")
+            }
         }
     }
 

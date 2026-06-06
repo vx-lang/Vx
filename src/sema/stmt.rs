@@ -294,7 +294,9 @@ impl<'a> TypeChecker<'a> {
                         tmp_env.insert(k.clone(), v.clone());
                     }
                 }
-                if let Some(Value::Bool(b)) = self.eval_expr(expr, &tmp_env) {
+                let eval_res = self.eval_expr(expr, &tmp_env);
+
+                if let Some(Value::Bool(b)) = eval_res {
                     if !b {
                         let m = msg
                             .clone()
@@ -373,6 +375,9 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => {
                 Some(Value::Bool(false))
             }
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "current_topology" => {
+                Some(Value::Topology(self.active_topology.clone()))
+            }
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
             Expr::BinaryOp(BinaryOpExpr {
                 lhs,
@@ -433,6 +438,12 @@ impl<'a> TypeChecker<'a> {
                     (Value::Bool(a), Value::Bool(b), RelationalOp::NotEq) => {
                         Some(Value::Bool(a != b))
                     }
+                    (Value::Topology(a), Value::Topology(b), RelationalOp::Eq) => {
+                        Some(Value::Bool(self.topologies_equal(&a, &b)))
+                    }
+                    (Value::Topology(a), Value::Topology(b), RelationalOp::NotEq) => {
+                        Some(Value::Bool(!self.topologies_equal(&a, &b)))
+                    }
                     _ => None,
                 }
             }
@@ -466,6 +477,10 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
+                if name == "current_topology" {
+                    return Some(Value::Topology(self.active_topology.clone()));
+                }
+
                 let func = self.env.ast_functions.get(name)?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
@@ -478,6 +493,46 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 None
+            }
+            Expr::Topology(TopologyExpr { top, span: _ }) => Some(Value::Topology(top.clone())),
+            Expr::If(crate::ast::IfExpr {
+                cond,
+                then_block,
+                else_block,
+                span: _,
+                is_comptime: _,
+            }) => {
+                if let Some(Value::Bool(cond_val)) = self.eval_expr(cond, env) {
+                    let block = if cond_val {
+                        then_block
+                    } else if let Some(e) = else_block {
+                        e
+                    } else {
+                        return None;
+                    };
+                    let mut ret = None;
+                    let mut local_env = env.clone();
+                    for stmt in block {
+                        if let Statement::ExprStmt(crate::ast::ExprStmtStmt {
+                            expr: e,
+                            has_semi,
+                            span: _,
+                        }) = stmt
+                        {
+                            let val = self.eval_expr(e, &local_env);
+                            if !*has_semi {
+                                ret = val;
+                            }
+                        } else {
+                            if let Some(val) = self.eval_statement(stmt, &mut local_env) {
+                                ret = Some(val);
+                            }
+                        }
+                    }
+                    ret
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -513,6 +568,56 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Return(ReturnStmt { expr, span: _ }) => self.eval_expr(expr, env),
             _ => None,
+        }
+    }
+
+    fn topologies_equal(&self, a: &Topology, b: &Topology) -> bool {
+        match (a, b) {
+            (Topology::Host, Topology::Host) => true,
+            (Topology::Host_AVX512, Topology::Host_AVX512) => true,
+            (Topology::Host_Neon, Topology::Host_Neon) => true,
+            (Topology::AMX, Topology::AMX) => true,
+            (Topology::ANE, Topology::ANE) => true,
+            (Topology::GPU, Topology::GPU) => true,
+            (Topology::Current, Topology::Current) => true,
+            (Topology::NPU(expr_a), Topology::NPU(expr_b)) => self.exprs_equal(expr_a, expr_b),
+            (Topology::AccCore(expr_a), Topology::AccCore(expr_b)) => {
+                self.exprs_equal(expr_a, expr_b)
+            }
+            (Topology::Slice(top_a, start_a, end_a), Topology::Slice(top_b, start_b, end_b)) => {
+                self.topologies_equal(top_a, top_b)
+                    && self.exprs_equal(start_a, start_b)
+                    && self.exprs_equal(end_a, end_b)
+            }
+            _ => false,
+        }
+    }
+
+    fn exprs_equal(&self, a: &Expr, b: &Expr) -> bool {
+        // Try to evaluate both expressions to see if they result in the same value.
+        // For static values like indices, this is much better than AST comparison.
+        let empty_env = HashMap::new();
+        if let (Some(val_a), Some(val_b)) =
+            (self.eval_expr(a, &empty_env), self.eval_expr(b, &empty_env))
+        {
+            match (val_a, val_b) {
+                (Value::Number(na), Value::Number(nb)) => return (na - nb).abs() < 1e-9,
+                (Value::Bool(ba), Value::Bool(bb)) => return ba == bb,
+                _ => {}
+            }
+        }
+
+        // Fallback to structural AST matching for things we can't fully evaluate
+        match (a, b) {
+            (
+                Expr::Number(crate::ast::NumberExpr { value: va, .. }),
+                Expr::Number(crate::ast::NumberExpr { value: vb, .. }),
+            ) => va == vb,
+            (
+                Expr::Identifier(crate::ast::IdentifierExpr { name: na, .. }),
+                Expr::Identifier(crate::ast::IdentifierExpr { name: nb, .. }),
+            ) => na == nb,
+            _ => false,
         }
     }
 }

@@ -1,15 +1,15 @@
 struct Array<T, const N: i32> {
-    val: T
+  val: T
 }
 
 fn initialize<const N: i32>() -> Array<f32, N> {
-    let a = Array<f32, N> {
-        val: 1.0
-    };
-    return a;
+  let a = Array<f32, N> {
+    val: 1.0
+  };
+  return a;
 }
 
 fn test_const_generics() -> void {
-    let array = initialize<10>();
-    assert(true);
+  let array = initialize<10>();
+  assert(true);
 }

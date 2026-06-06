@@ -19,11 +19,11 @@ fn main() -> Tensor<i32> {
 }
 
 // CHECK: module {
-// CHECK:   func.func private @malloc(memref<?x?xi32>) -> !llvm.ptr
+// CHECK:   func.func private @malloc(memref<?x?xi32>) -> memref<memref<?x?xf32>>
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 // CHECK:     %c1024_i32 = arith.constant 1024 : i32
 // CHECK:     %0 = builtin.unrealized_conversion_cast %c1024_i32 : i32 to memref<?x?xi32>
-// CHECK:     %1 = call @malloc(%0) : (memref<?x?xi32>) -> !llvm.ptr
+// CHECK:     %1 = call @malloc(%0) : (memref<?x?xi32>) -> memref<memref<?x?xf32>>
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     %c0_i32_0 = arith.constant 0 : i32
 // CHECK:     return %c0_i32_0 : i32

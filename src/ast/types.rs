@@ -21,6 +21,7 @@ pub struct Span {
     pub length: usize,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, Clone)]
 pub enum Topology {
     Host,
@@ -29,7 +30,10 @@ pub enum Topology {
     AMX,
     ANE,
     GPU,
+    Host_AVX512,
+    Host_Neon,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
+    Current,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]

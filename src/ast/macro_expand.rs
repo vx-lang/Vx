@@ -15,6 +15,11 @@ impl<'a> MacroExpander<'a> {
         for func in &mut module.functions {
             self.expand_function(func)?;
         }
+        for impl_block in &mut module.impls {
+            for func in &mut impl_block.methods {
+                self.expand_function(func)?;
+            }
+        }
         Ok(())
     }
 
@@ -36,10 +41,9 @@ impl<'a> MacroExpander<'a> {
             let expanded_expr =
                 self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
             let recursively_expanded = self.expand_expr(expanded_expr)?;
-            // for now, a macro call statement returns the expanded expr as a statement
             return Ok(vec![stmt::Statement::ExprStmt(stmt::ExprStmtStmt {
                 expr: recursively_expanded,
-                has_semi: true,
+                has_semi: call.has_semi,
                 span: call.span,
             })]);
         }

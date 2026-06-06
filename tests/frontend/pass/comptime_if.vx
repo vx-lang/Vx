@@ -1,0 +1,25 @@
+// RUN: vxc %s
+// RUN: %t
+
+fn main() -> i32 {
+  let mut val = 0;
+
+  // Evaluate comptime if blocks
+  if comptime current_topology() == Topology::Host {
+    val = 1;
+  } else if comptime current_topology() == Topology::Host_AVX512 {
+    // This block will be pruned out if the active topology is Host
+    val = 2;
+    invalid_function_that_does_not_exist(); // Semantic analysis should completely skip this if pruned!
+  } else {
+    val = 3;
+  }
+
+  if comptime current_topology() != Topology::Host {
+    return 1; // Should be pruned out
+  }
+
+  // Since our default compiler configuration executes as Topology::Host, 
+  // val must be 1.
+  return if val == 1 { 0 } else { 1 };
+}

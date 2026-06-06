@@ -30,6 +30,7 @@ use std::collections::HashMap;
 pub enum Value {
     Bool(bool),
     Number(f64),
+    Topology(Topology),
 }
 
 pub struct GlobalAstEnv<'a> {
@@ -425,6 +426,12 @@ impl<'a> TypeChecker<'a> {
         let prev_ret_ty = self.current_return_type.clone();
         self.current_return_type = Some(func.return_type.clone());
         self.push_scope();
+
+        let prev_top = self.active_topology.clone();
+        let prev_mem = self.active_memory.clone();
+        self.active_topology = func.topology.clone();
+        self.active_memory = crate::arch::HardwareGraph::default_memory_for(&self.active_topology);
+
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());
         }
@@ -449,6 +456,8 @@ impl<'a> TypeChecker<'a> {
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
         self.constraints = prev_constraints;
+        self.active_topology = prev_top;
+        self.active_memory = prev_mem;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

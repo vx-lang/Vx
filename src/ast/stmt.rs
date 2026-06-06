@@ -169,6 +169,7 @@ pub struct MacroCallStmt {
     pub name: String,
     pub token_tree: TokenTree,
     pub block_tree: Option<TokenTree>,
+    pub has_semi: bool,
     pub span: Span,
 }
 impl MacroCallStmt {
@@ -176,12 +177,14 @@ impl MacroCallStmt {
         name: String,
         token_tree: TokenTree,
         block_tree: Option<TokenTree>,
+        has_semi: bool,
         span: Span,
     ) -> Self {
         Self {
             name,
             token_tree,
             block_tree,
+            has_semi,
             span,
         }
     }
@@ -263,6 +266,7 @@ impl Statement {
                 name: e.name.clone(),
                 token_tree: e.token_tree.clone(),
                 block_tree: e.block_tree.clone(),
+                has_semi: e.has_semi,
                 span: e.span.clone(),
             }),
         }
