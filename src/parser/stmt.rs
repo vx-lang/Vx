@@ -207,7 +207,7 @@ impl<'a> Parser<'a> {
                     match &expr {
                         Expr::UnsafeBlock(UnsafeBlockExpr { .. })
                         | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
-                        | Expr::SpawnOn(crate::ast::SpawnOnExpr { .. })
+                        | Expr::SpawnOn(SpawnOnExpr { .. })
                         | Expr::If(IfExpr { .. })
                         | Expr::Match(MatchExpr { .. }) => {
                             has_semicolon = self.match_token(&TokenType::Semicolon);
@@ -251,7 +251,7 @@ impl<'a> Parser<'a> {
                     match &expr {
                         Expr::UnsafeBlock(UnsafeBlockExpr { .. })
                         | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
-                        | Expr::SpawnOn(crate::ast::SpawnOnExpr { .. })
+                        | Expr::SpawnOn(SpawnOnExpr { .. })
                         | Expr::If(IfExpr { .. })
                         | Expr::Match(MatchExpr { .. }) => {
                             has_semicolon = self.match_token(&TokenType::Semicolon);

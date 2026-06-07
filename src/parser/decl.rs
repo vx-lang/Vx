@@ -551,9 +551,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
 
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
-        if let Statement::Return(crate::ast::ReturnStmt {
+        if let Statement::Return(ReturnStmt {
             expr:
-                Expr::SpawnOn(crate::ast::SpawnOnExpr {
+                Expr::SpawnOn(SpawnOnExpr {
                     top,
                     stmts,
                     ret: _,
@@ -566,7 +566,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                 *top,
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                     value: "0".to_string(),
-                    ty: Some(crate::ast::ElementType::I32),
+                    ty: Some(ElementType::I32),
                     span: Span::default()
                 })))
             );
@@ -628,7 +628,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");
-            if let Expr::Range(crate::ast::expr::RangeExpr {
+            if let Expr::Range(RangeExpr {
                 start,
                 end,
                 span: _,
@@ -638,7 +638,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                     **start,
                     Expr::Number(NumberExpr {
                         value: "0".to_string(),
-                        ty: Some(crate::ast::ElementType::I32),
+                        ty: Some(ElementType::I32),
                         span: Span::default()
                     })
                 );
@@ -646,7 +646,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                     **end,
                     Expr::Number(NumberExpr {
                         value: "10".to_string(),
-                        ty: Some(crate::ast::ElementType::I32),
+                        ty: Some(ElementType::I32),
                         span: Span::default()
                     })
                 );
@@ -666,7 +666,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                     *rhs,
                     Expr::Number(NumberExpr {
                         value: "5".to_string(),
-                        ty: Some(crate::ast::ElementType::I32),
+                        ty: Some(ElementType::I32),
                         span: Span::default()
                     })
                 );
@@ -708,7 +708,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
                     **idx,
                     Expr::Number(NumberExpr {
                         value: "0".to_string(),
-                        ty: Some(crate::ast::ElementType::I32),
+                        ty: Some(ElementType::I32),
                         span: Span::default()
                     })
                 );
@@ -815,9 +815,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::Host_DRAM>, b: Ref<Tensor, Memory::
         assert_eq!(program.functions.len(), 1);
         let func = &program.functions[0];
         assert_eq!(func.name, "custom_matmul");
-        if let Statement::Return(crate::ast::ReturnStmt {
+        if let Statement::Return(ReturnStmt {
             expr:
-                Expr::SpawnOn(crate::ast::SpawnOnExpr {
+                Expr::SpawnOn(SpawnOnExpr {
                     top: _,
                     stmts,
                     ret: _,

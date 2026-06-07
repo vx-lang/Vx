@@ -143,7 +143,7 @@ pub struct TypeChecker<'a> {
     pub(crate) closure_depths: Vec<usize>,
     #[allow(dead_code)]
     pub(crate) closure_captures_stack: Vec<HashMap<String, Type>>,
-    pub generated_structs: Vec<crate::ast::StructDecl>,
+    pub generated_structs: Vec<StructDecl>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -278,7 +278,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
-                let e1_match = if let crate::ast::ElementType::Generic(ref name) = e1 {
+                let e1_match = if let ElementType::Generic(ref name) = e1 {
                     if let Some(existing) = mapping.get(name) {
                         existing == &Type::Scalar(e2.clone())
                     } else {
@@ -292,10 +292,10 @@ impl<'a> TypeChecker<'a> {
                     return false;
                 }
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
-                    if let crate::ast::Expr::Identifier(id) = dim1 {
-                        if let crate::ast::Expr::Number(n) = dim2 {
+                    if let Expr::Identifier(id) = dim1 {
+                        if let Expr::Number(n) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
-                        } else if let crate::ast::Expr::Identifier(id2) = dim2 {
+                        } else if let Expr::Identifier(id2) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
                         } else if dim1 != dim2 {
                             return false;
@@ -506,13 +506,11 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if other.chars().all(|c| c.is_ascii_digit()) {
-                    return Type::Const(Box::new(crate::ast::Expr::Number(
-                        crate::ast::NumberExpr::new(
-                            other.to_string(),
-                            None,
-                            crate::ast::Span::default(),
-                        ),
-                    )));
+                    return Type::Const(Box::new(Expr::Number(NumberExpr::new(
+                        other.to_string(),
+                        None,
+                        Span::default(),
+                    ))));
                 }
 
                 if self.env.structs.contains_key(other)

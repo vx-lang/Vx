@@ -27,7 +27,7 @@ pub struct Parser<'a> {
     source: &'a str,
 }
 
-impl From<&str> for crate::ast::Function {
+impl From<&str> for Function {
     fn from(source: &str) -> Self {
         // Strip out 'pub' keyword if the user provided it as an example,
         // since Vx currently expects functions to start with 'fn'.

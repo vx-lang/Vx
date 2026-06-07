@@ -1,8 +1,6 @@
 use super::*;
 
-pub(crate) fn infer_number_literal(
-    s: &str,
-) -> Result<(String, Option<crate::ast::ElementType>), String> {
+pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementType>), String> {
     let mut num_str = s.to_string();
     let mut suffix_str = String::new();
 
@@ -12,7 +10,7 @@ pub(crate) fn infer_number_literal(
     }
 
     let el_ty = if !suffix_str.is_empty() {
-        match suffix_str.parse::<crate::ast::ElementType>() {
+        match suffix_str.parse::<ElementType>() {
             Ok(el) => Some(el),
             Err(e) => return Err(e),
         }
@@ -22,21 +20,21 @@ pub(crate) fn infer_number_literal(
                 if f32_val.is_infinite() {
                     if let Ok(f64_val) = num_str.parse::<f64>() {
                         if f64_val.is_finite() {
-                            return Ok((num_str, Some(crate::ast::ElementType::F64)));
+                            return Ok((num_str, Some(ElementType::F64)));
                         }
                     }
                 }
             }
-            Some(crate::ast::ElementType::F32)
+            Some(ElementType::F32)
         } else {
             if num_str.parse::<i32>().is_err() {
                 if num_str.parse::<i64>().is_ok() {
-                    Some(crate::ast::ElementType::I64)
+                    Some(ElementType::I64)
                 } else {
-                    Some(crate::ast::ElementType::I128)
+                    Some(ElementType::I128)
                 }
             } else {
-                Some(crate::ast::ElementType::I32)
+                Some(ElementType::I32)
             }
         }
     };
@@ -865,7 +863,7 @@ impl<'a> Parser<'a> {
                             stmts.push(stmt);
                         }
                         self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                        Expr::SpawnOn(crate::ast::SpawnOnExpr {
+                        Expr::SpawnOn(SpawnOnExpr {
                             top,
                             stmts,
                             ret: ret_expr,

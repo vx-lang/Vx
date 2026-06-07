@@ -210,7 +210,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_differentiability(&mut self, func: &crate::ast::Function) {
+    pub(crate) fn check_differentiability(&mut self, func: &Function) {
         match &func.return_type {
             Type::Tensor(_, _, _) | Type::Scalar(_) | Type::Simd(_, _) => {}
             _ => {
@@ -839,14 +839,14 @@ impl<'a> TypeChecker<'a> {
                             MemorySpace::NPUHBM => {
                                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                                     value: "0".to_string(),
-                                    ty: Some(crate::ast::ElementType::I32),
+                                    ty: Some(ElementType::I32),
                                     span: Span::default(),
                                 })))
                             }
                             MemorySpace::LocalSRAM => {
                                 Topology::AccCore(Box::new(Expr::Number(NumberExpr {
                                     value: "0".to_string(),
-                                    ty: Some(crate::ast::ElementType::I32),
+                                    ty: Some(ElementType::I32),
                                     span: Span::default(),
                                 })))
                             }
@@ -863,14 +863,14 @@ impl<'a> TypeChecker<'a> {
                             MemorySpace::NPUHBM => {
                                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                                     value: "0".to_string(),
-                                    ty: Some(crate::ast::ElementType::I32),
+                                    ty: Some(ElementType::I32),
                                     span: Span::default(),
                                 })))
                             }
                             MemorySpace::LocalSRAM => {
                                 Topology::AccCore(Box::new(Expr::Number(NumberExpr {
                                     value: "0".to_string(),
-                                    ty: Some(crate::ast::ElementType::I32),
+                                    ty: Some(ElementType::I32),
                                     span: Span::default(),
                                 })))
                             }
@@ -916,7 +916,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::SpawnOn(crate::ast::SpawnOnExpr {
+            Expr::SpawnOn(SpawnOnExpr {
                 top,
                 stmts,
                 ret,
@@ -1507,7 +1507,7 @@ impl<'a> TypeChecker<'a> {
                         for param in &generic_func.generics {
                             let g_name = param.name().to_string();
                             let bound_opt = match param {
-                                crate::ast::decl::GenericParam::Type { bound, .. } => bound.clone(),
+                                decl::GenericParam::Type { bound, .. } => bound.clone(),
                                 _ => None,
                             };
                             if let Some(bound_name) = bound_opt {
@@ -1670,7 +1670,7 @@ impl<'a> TypeChecker<'a> {
                         modified_func.name = format!("{}::{}", struct_name, method_name);
                         modified_func.generics = found_mapping
                             .keys()
-                            .map(|k| crate::ast::decl::GenericParam::Type {
+                            .map(|k| decl::GenericParam::Type {
                                 name: k.clone(),
                                 bound: None,
                             })
@@ -2013,7 +2013,7 @@ impl<'a> TypeChecker<'a> {
                             let mut new_dims = vec![
                                 Expr::Number(NumberExpr {
                                     value: "0".to_string(),
-                                    ty: Some(crate::ast::ElementType::I32),
+                                    ty: Some(ElementType::I32),
                                     span: Span::default()
                                 });
                                 dims.len()
@@ -2107,7 +2107,7 @@ impl<'a> TypeChecker<'a> {
                     let mut modified_func = generic_method.clone();
                     modified_func.generics = mapping
                         .keys()
-                        .map(|k| crate::ast::decl::GenericParam::Type {
+                        .map(|k| decl::GenericParam::Type {
                             name: k.clone(),
                             bound: None,
                         })
@@ -2202,7 +2202,7 @@ impl<'a> TypeChecker<'a> {
                         Box::new(base_ty),
                         Topology::NPU(Box::new(Expr::Number(NumberExpr {
                             value: "0".to_string(),
-                            ty: Some(crate::ast::ElementType::I32),
+                            ty: Some(ElementType::I32),
                             span: Span::default(),
                         }))),
                     ); // Default to NPU[0]
@@ -2708,12 +2708,12 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn bind_pattern_variables(&mut self, pattern: &crate::ast::expr::Pattern, expr_ty: &Type) {
+    fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
-            crate::ast::expr::Pattern::Identifier(name) => {
+            Pattern::Identifier(name) => {
                 self.insert(name.clone(), expr_ty.clone());
             }
-            crate::ast::expr::Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
+            Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
                 let mut base_name = enum_name.clone();
                 if let Some(idx) = enum_name.find('<') {
                     base_name = enum_name[..idx].to_string();
@@ -2731,7 +2731,7 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                             for (i, p) in payloads.iter().enumerate() {
-                                if let crate::ast::expr::Pattern::Identifier(name) = p {
+                                if let Pattern::Identifier(name) = p {
                                     if i < payload_types.len() {
                                         let p_ty = payload_types[i].substitute(&mapping);
                                         self.insert(name.clone(), p_ty);
@@ -2744,7 +2744,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else {
                     for p in payloads {
-                        if let crate::ast::expr::Pattern::Identifier(name) = p {
+                        if let Pattern::Identifier(name) = p {
                             self.insert(name.clone(), Type::Unknown);
                         }
                     }
@@ -2892,7 +2892,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Create StructDecl for the environment
-                let struct_decl = crate::ast::decl::StructDecl {
+                let struct_decl = decl::StructDecl {
                     name: struct_name.clone(),
                     generics: vec![],
                     fields: captured_vars.clone(),
@@ -2915,8 +2915,8 @@ impl<'a> TypeChecker<'a> {
 
                 let mut body_stmts = Vec::new();
                 for (cap_name, cap_ty) in &captured_vars {
-                    let env_access = Expr::MemberAccess(crate::ast::expr::MemberAccessExpr {
-                        base: Box::new(Expr::Identifier(crate::ast::expr::IdentifierExpr::new(
+                    let env_access = Expr::MemberAccess(MemberAccessExpr {
+                        base: Box::new(Expr::Identifier(IdentifierExpr::new(
                             "_env".to_string(),
                             e.span.clone(),
                         ))),
@@ -2924,7 +2924,7 @@ impl<'a> TypeChecker<'a> {
                         struct_name: Some(struct_name.clone()),
                         span: e.span.clone(),
                     });
-                    body_stmts.push(Statement::LetDecl(crate::ast::stmt::LetDeclStmt {
+                    body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
                         is_mut: true,
                         ty_ann: Some(cap_ty.clone()),
@@ -2933,12 +2933,12 @@ impl<'a> TypeChecker<'a> {
                     }));
                 }
 
-                body_stmts.push(Statement::Return(crate::ast::stmt::ReturnStmt {
+                body_stmts.push(Statement::Return(ReturnStmt {
                     expr: *b,
                     span: e.span.clone(),
                 }));
 
-                let call_func = crate::ast::decl::Function {
+                let call_func = decl::Function {
                     name: func_name.clone(),
                     generics: vec![],
                     params: env_params,
@@ -2955,14 +2955,11 @@ impl<'a> TypeChecker<'a> {
                 for (cap_name, _) in &captured_vars {
                     fields.push((
                         cap_name.clone(),
-                        Expr::Identifier(crate::ast::expr::IdentifierExpr::new(
-                            cap_name.clone(),
-                            e.span.clone(),
-                        )),
+                        Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span.clone())),
                     ));
                 }
 
-                *expr = Expr::StructInit(crate::ast::expr::StructInitExpr {
+                *expr = Expr::StructInit(StructInitExpr {
                     name: struct_name.clone(),
                     fields,
                     span: e.span.clone(),

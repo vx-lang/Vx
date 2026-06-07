@@ -91,15 +91,15 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if !*_is_mut {
-                    let id_expr = Expr::Identifier(crate::ast::IdentifierExpr {
+                    let id_expr = Expr::Identifier(IdentifierExpr {
                         name: name.clone(),
-                        span: crate::ast::Span::default(),
+                        span: Span::default(),
                     });
-                    let eq_expr = Expr::RelationalOp(crate::ast::RelationalOpExpr {
+                    let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                         lhs: Box::new(id_expr),
-                        op: crate::ast::RelationalOp::Eq,
+                        op: RelationalOp::Eq,
                         rhs: Box::new(expr.clone()),
-                        span: crate::ast::Span::default(),
+                        span: Span::default(),
                     });
                     self.constraints.push(eq_expr);
                 }
@@ -258,13 +258,13 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
-                let return_ident = Expr::Identifier(crate::ast::expr::IdentifierExpr {
+                let return_ident = Expr::Identifier(IdentifierExpr {
                     name: "return".to_string(),
                     span: span.clone(),
                 });
-                let return_eq = Expr::RelationalOp(crate::ast::expr::RelationalOpExpr {
+                let return_eq = Expr::RelationalOp(RelationalOpExpr {
                     lhs: Box::new(return_ident),
-                    op: crate::ast::expr::RelationalOp::Eq,
+                    op: RelationalOp::Eq,
                     rhs: Box::new(expr.clone()),
                     span: span.clone(),
                 });
@@ -336,10 +336,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         // To prove `expr` holds under `constraints`, we assert `!expr` and check for unsatisfiability.
-        let negated_expr = Expr::UnaryOp(crate::ast::UnaryOpExpr {
-            op: crate::ast::UnaryOp::Not,
+        let negated_expr = Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Not,
             expr: Box::new(expr.clone()),
-            span: crate::ast::Span::default(),
+            span: Span::default(),
         });
 
         if let Err(e) = prover.add_constraint(&negated_expr) {
@@ -495,7 +495,7 @@ impl<'a> TypeChecker<'a> {
                     Some(Value::Topology(top.clone()))
                 }
             }
-            Expr::If(crate::ast::IfExpr {
+            Expr::If(IfExpr {
                 cond,
                 then_block,
                 else_block,
@@ -513,7 +513,7 @@ impl<'a> TypeChecker<'a> {
                     let mut ret = None;
                     let mut local_env = env.clone();
                     for stmt in block {
-                        if let Statement::ExprStmt(crate::ast::ExprStmtStmt {
+                        if let Statement::ExprStmt(ExprStmtStmt {
                             expr: e,
                             has_semi,
                             span: _,
@@ -610,12 +610,12 @@ impl<'a> TypeChecker<'a> {
         // Fallback to structural AST matching for things we can't fully evaluate
         match (a, b) {
             (
-                Expr::Number(crate::ast::NumberExpr { value: va, .. }),
-                Expr::Number(crate::ast::NumberExpr { value: vb, .. }),
+                Expr::Number(NumberExpr { value: va, .. }),
+                Expr::Number(NumberExpr { value: vb, .. }),
             ) => va == vb,
             (
-                Expr::Identifier(crate::ast::IdentifierExpr { name: na, .. }),
-                Expr::Identifier(crate::ast::IdentifierExpr { name: nb, .. }),
+                Expr::Identifier(IdentifierExpr { name: na, .. }),
+                Expr::Identifier(IdentifierExpr { name: nb, .. }),
             ) => na == nb,
             _ => false,
         }

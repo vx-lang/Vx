@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, RelationalOp};
+use crate::ast::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -109,16 +109,16 @@ impl SmtProver {
                 let lhs = self.lower_expr(&l.lhs)?;
                 let rhs = self.lower_expr(&l.rhs)?;
                 let op = match l.op {
-                    crate::ast::LogicalOp::And => "and",
-                    crate::ast::LogicalOp::Or => "or",
+                    LogicalOp::And => "and",
+                    LogicalOp::Or => "or",
                 };
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::UnaryOp(u) => {
                 let inner = self.lower_expr(&u.expr)?;
                 match u.op {
-                    crate::ast::UnaryOp::Not => Ok(format!("(not {})", inner)),
-                    crate::ast::UnaryOp::Neg => Ok(format!("(- {})", inner)),
+                    UnaryOp::Not => Ok(format!("(not {})", inner)),
+                    UnaryOp::Neg => Ok(format!("(- {})", inner)),
                 }
             }
             Expr::MemberAccess(m) => {
@@ -139,24 +139,24 @@ impl SmtProver {
             }
             Expr::Topology(t) => {
                 let name = match &t.top {
-                    crate::ast::Topology::Host => "Topology_Host".to_string(),
-                    crate::ast::Topology::NPU(e) => {
+                    Topology::Host => "Topology_Host".to_string(),
+                    Topology::NPU(e) => {
                         if let Expr::Number(n) = &**e {
                             format!("Topology_NPU_{}", n.value)
                         } else {
                             "Topology_NPU".to_string()
                         }
                     }
-                    crate::ast::Topology::AccCore(e) => {
+                    Topology::AccCore(e) => {
                         if let Expr::Number(n) = &**e {
                             format!("Topology_AccCore_{}", n.value)
                         } else {
                             "Topology_AccCore".to_string()
                         }
                     }
-                    crate::ast::Topology::AMX => "Topology_AMX".to_string(),
-                    crate::ast::Topology::ANE => "Topology_ANE".to_string(),
-                    crate::ast::Topology::GPU => "Topology_GPU".to_string(),
+                    Topology::AMX => "Topology_AMX".to_string(),
+                    Topology::ANE => "Topology_ANE".to_string(),
+                    Topology::GPU => "Topology_GPU".to_string(),
                     _ => "Topology_Complex".to_string(),
                 };
                 self.declarations.insert(name.clone());
