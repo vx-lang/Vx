@@ -52,4 +52,14 @@ impl TransferDMA<NPU> for NPU {
 }
 fn main() -> void {}
 
-// CHECK: func.func private @printMemrefF32
+// CHECK: module {
+// CHECK:   func.func private @printMemrefF32(memref<*xf32>)
+// CHECK:   func.func private @printMemrefF64(memref<*xf64>)
+// CHECK:   func.func private @printMemrefI32(memref<*xi32>)
+// CHECK:   func.func private @printMemrefI64(memref<*xi64>)
+// CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }
