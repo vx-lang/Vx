@@ -11,6 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
+use melior::ir::{
+    attribute::{
+        ArrayAttribute, Attribute, DenseI32ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute,
+        IntegerAttribute, StringAttribute, TypeAttribute,
+    },
+    operation::OperationBuilder,
+    Identifier,
+};
 
 use crate::ast;
 use crate::codegen;
@@ -115,17 +123,14 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
         if name == "true" || name == "false" {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
             let val = if name == "true" { 1 } else { 0 };
-            let const_op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i1_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i1_ty, val).into(),
-            )])
-            .build()
-            .unwrap();
+            let const_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i1_ty, val).into(),
+                )])
+                .build()
+                .unwrap();
             let const_ref = block.append_operation(const_op);
             return (const_ref.result(0).unwrap().into(), i1_ty);
         }
@@ -137,14 +142,12 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap_or_else(|| {
                         panic!("failed to parse {:?} for variable {:?}", inner_ty_str, name)
                     });
-                    let load_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.load",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[*val])
-                    .add_results(&[inner_ty])
-                    .build()
-                    .unwrap();
+                    let load_op =
+                        OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                            .add_operands(&[*val])
+                            .add_results(&[inner_ty])
+                            .build()
+                            .unwrap();
                     let load_ref = block.append_operation(load_op);
                     return (load_ref.result(0).unwrap().into(), inner_ty);
                 } else if ty_str.starts_with("!llvm.ptr")
@@ -158,14 +161,12 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                         return (*val, ptr_ty);
                     }
                     let elem_ty = *ty;
-                    let load_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.load",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[*val])
-                    .add_results(&[elem_ty])
-                    .build()
-                    .unwrap();
+                    let load_op =
+                        OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+                            .add_operands(&[*val])
+                            .add_results(&[elem_ty])
+                            .build()
+                            .unwrap();
                     let load_ref = block.append_operation(load_op);
                     return (load_ref.result(0).unwrap().into(), elem_ty);
                 }
@@ -173,27 +174,21 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             if ty_str.starts_with("memref<memref<") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
-                let load_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.load",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[*val])
-                .add_results(&[inner_ty])
-                .build()
-                .unwrap();
+                let load_op = OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                    .add_operands(&[*val])
+                    .add_results(&[inner_ty])
+                    .build()
+                    .unwrap();
                 let load_ref = block.append_operation(load_op);
                 (load_ref.result(0).unwrap().into(), inner_ty)
             } else if ty_str.starts_with("memref<") && !ty_str.contains("x") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
-                let load_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.load",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[*val])
-                .add_results(&[inner_ty])
-                .build()
-                .unwrap();
+                let load_op = OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                    .add_operands(&[*val])
+                    .add_results(&[inner_ty])
+                    .build()
+                    .unwrap();
                 let load_ref = block.append_operation(load_op);
                 (load_ref.result(0).unwrap().into(), inner_ty)
             } else {
@@ -202,21 +197,18 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
         } else if gen.functions.contains_key(name) {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
             let func_ty = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[*ret_ty]);
-            let const_op = melior::ir::operation::OperationBuilder::new(
-                "func.constant",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, name).into(),
-            )])
-            .add_results(&[func_ty.into()])
-            .build()
-            .unwrap();
+            let const_op = OperationBuilder::new("func.constant", Location::unknown(gen.context))
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    FlatSymbolRefAttribute::new(gen.context, name).into(),
+                )])
+                .add_results(&[func_ty.into()])
+                .build()
+                .unwrap();
             let const_ref = block.append_operation(const_op);
 
             let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-            let cast_op = melior::ir::operation::OperationBuilder::new(
+            let cast_op = OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),
             )
@@ -266,24 +258,18 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         if ty.to_string().starts_with("memref<") {
             // Allocate a pointer to the memref
             let alloca_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.alloca",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap()])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("memref.alloca", Location::unknown(gen.context))
+                    .add_results(&[Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap()])
+                    .build()
+                    .unwrap(),
             );
             let ptr = alloca_op.result(0).unwrap().into();
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[val, ptr])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                    .add_operands(&[val, ptr])
+                    .build()
+                    .unwrap(),
             );
             return (
                 ptr,
@@ -293,44 +279,35 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
 
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
         let c1_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.mlir.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i32_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i32_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let c1 = c1_op.result(0).unwrap().into();
 
         let alloca_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.alloca",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[c1])
-            .add_results(&[ptr_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "elem_type"),
-                melior::ir::attribute::TypeAttribute::new(ty).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.alloca", Location::unknown(gen.context))
+                .add_operands(&[c1])
+                .add_results(&[ptr_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "elem_type"),
+                    TypeAttribute::new(ty).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let ptr = alloca_op.result(0).unwrap().into();
 
         block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.store",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[val, ptr])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                .add_operands(&[val, ptr])
+                .build()
+                .unwrap(),
         );
 
         (ptr, ptr_ty)
@@ -349,48 +326,43 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
             Type::parse(gen.context, &format!("!llvm.array<{} x i8>", str_val.len())).unwrap();
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
 
-        let global_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.mlir.global",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[
-            (
-                melior::ir::Identifier::new(gen.context, "sym_name"),
-                melior::ir::attribute::StringAttribute::new(gen.context, &str_name).into(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "global_type"),
-                melior::ir::attribute::TypeAttribute::new(array_ty).into(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "constant"),
-                melior::ir::Attribute::parse(gen.context, "unit").unwrap(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "linkage"),
-                melior::ir::Attribute::parse(gen.context, "#llvm.linkage<internal>").unwrap(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::StringAttribute::new(gen.context, &str_val).into(),
-            ),
-        ])
-        .add_regions([Region::new()])
-        .build()
-        .unwrap();
+        let global_op = OperationBuilder::new("llvm.mlir.global", Location::unknown(gen.context))
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, &str_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "global_type"),
+                    TypeAttribute::new(array_ty).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "constant"),
+                    Attribute::parse(gen.context, "unit").unwrap(),
+                ),
+                (
+                    Identifier::new(gen.context, "linkage"),
+                    Attribute::parse(gen.context, "#llvm.linkage<internal>").unwrap(),
+                ),
+                (
+                    Identifier::new(gen.context, "value"),
+                    StringAttribute::new(gen.context, &str_val).into(),
+                ),
+            ])
+            .add_regions([Region::new()])
+            .build()
+            .unwrap();
         module_body.append_operation(global_op);
 
-        let addressof_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.mlir.addressof",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "global_name"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &str_name).into(),
-        )])
-        .add_results(&[ptr_ty])
-        .build()
-        .unwrap();
+        let addressof_op =
+            OperationBuilder::new("llvm.mlir.addressof", Location::unknown(gen.context))
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "global_name"),
+                    FlatSymbolRefAttribute::new(gen.context, &str_name).into(),
+                )])
+                .add_results(&[ptr_ty])
+                .build()
+                .unwrap();
         let addressof_ref = block.append_operation(addressof_op);
 
         (addressof_ref.result(0).unwrap().into(), ptr_ty)
@@ -407,17 +379,14 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
             gen.generate_expr(ret_expr, block)
         } else {
             let none_ty = Type::parse(gen.context, "none").unwrap();
-            let dummy_val = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0).into(),
-            )])
-            .add_results(&[Type::index(gen.context)])
-            .build()
-            .unwrap();
+            let dummy_val = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(Type::index(gen.context), 0).into(),
+                )])
+                .add_results(&[Type::index(gen.context)])
+                .build()
+                .unwrap();
             let dummy_ref = block.append_operation(dummy_val);
             (dummy_ref.result(0).unwrap().into(), none_ty)
         }
@@ -445,14 +414,11 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             return (ptr_val, ptr_ty);
         }
 
-        let load_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.load",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[ptr_val])
-        .add_results(&[inner_ty])
-        .build()
-        .unwrap();
+        let load_op = OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+            .add_operands(&[ptr_val])
+            .add_results(&[inner_ty])
+            .build()
+            .unwrap();
         let load_ref = block.append_operation(load_op);
         (load_ref.result(0).unwrap().into(), inner_ty)
     }
@@ -480,35 +446,29 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
                 .unwrap_or_else(|| panic!("Failed to parse inner ptr type: {}", inner_ty_str));
 
             let i64_ty = Type::parse(gen.context, "i64").unwrap();
-            let cast_op = melior::ir::operation::OperationBuilder::new(
-                "arith.index_cast",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[indices[0]])
-            .add_results(&[i64_ty])
-            .build()
-            .unwrap();
+            let cast_op = OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                .add_operands(&[indices[0]])
+                .add_results(&[i64_ty])
+                .build()
+                .unwrap();
             let idx_i64 = block.append_operation(cast_op).result(0).unwrap().into();
 
-            let gep_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.getelementptr",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(gen.context, "rawConstantIndices"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[-2147483648])
-                        .into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "elem_type"),
-                    melior::ir::attribute::TypeAttribute::new(inner_ty).into(),
-                ),
-            ])
-            .add_operands(&[base_val, idx_i64])
-            .add_results(&[base_ty])
-            .build()
-            .unwrap();
+            let gep_op =
+                OperationBuilder::new("llvm.getelementptr", Location::unknown(gen.context))
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "rawConstantIndices"),
+                            DenseI32ArrayAttribute::new(gen.context, &[-2147483648]).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "elem_type"),
+                            TypeAttribute::new(inner_ty).into(),
+                        ),
+                    ])
+                    .add_operands(&[base_val, idx_i64])
+                    .add_results(&[base_ty])
+                    .build()
+                    .unwrap();
 
             let gep_ref = block.append_operation(gep_op);
             let ptr_val = gep_ref.result(0).unwrap().into();
@@ -518,14 +478,11 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
                 return (ptr_val, ptr_ty);
             }
 
-            let load_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.load",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[ptr_val])
-            .add_results(&[inner_ty])
-            .build()
-            .unwrap();
+            let load_op = OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+                .add_operands(&[ptr_val])
+                .add_results(&[inner_ty])
+                .build()
+                .unwrap();
 
             let load_ref = block.append_operation(load_op);
             (load_ref.result(0).unwrap().into(), inner_ty)
@@ -540,11 +497,9 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
             };
 
             let inner_ty = Type::parse(gen.context, &inner_ty_str).unwrap();
-            let mut load_builder = melior::ir::operation::OperationBuilder::new(
-                "memref.load",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[base_val]);
+            let mut load_builder =
+                OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                    .add_operands(&[base_val]);
 
             for idx in indices {
                 load_builder = load_builder.add_operands(&[idx]);
@@ -630,89 +585,59 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             let index_ty = Type::parse(gen.context, "index").unwrap();
 
             if m_str == "?" {
-                let m_idx_attr =
-                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0)
-                        .into();
-                let cst_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[index_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    m_idx_attr,
-                )])
-                .build()
-                .unwrap();
+                let m_idx_attr = IntegerAttribute::new(Type::index(gen.context), 0).into();
+                let cst_op =
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[index_ty])
+                        .add_attributes(&[(Identifier::new(gen.context, "value"), m_idx_attr)])
+                        .build()
+                        .unwrap();
                 let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
 
-                let dim_m_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.dim",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[lhs_val, idx_val])
-                .add_results(&[index_ty])
-                .build()
-                .unwrap();
+                let dim_m_op = OperationBuilder::new("memref.dim", Location::unknown(gen.context))
+                    .add_operands(&[lhs_val, idx_val])
+                    .add_results(&[index_ty])
+                    .build()
+                    .unwrap();
                 alloc_operands.push(block.append_operation(dim_m_op).result(0).unwrap().into());
             }
 
             if n_str == "?" {
-                let n_idx_attr =
-                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 1)
-                        .into();
-                let cst_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[index_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    n_idx_attr,
-                )])
-                .build()
-                .unwrap();
+                let n_idx_attr = IntegerAttribute::new(Type::index(gen.context), 1).into();
+                let cst_op =
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[index_ty])
+                        .add_attributes(&[(Identifier::new(gen.context, "value"), n_idx_attr)])
+                        .build()
+                        .unwrap();
                 let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
 
-                let dim_n_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.dim",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[rhs_val, idx_val])
-                .add_results(&[index_ty])
-                .build()
-                .unwrap();
+                let dim_n_op = OperationBuilder::new("memref.dim", Location::unknown(gen.context))
+                    .add_operands(&[rhs_val, idx_val])
+                    .add_results(&[index_ty])
+                    .build()
+                    .unwrap();
                 alloc_operands.push(block.append_operation(dim_n_op).result(0).unwrap().into());
             }
 
             // Alloc output buffer
-            let alloc_op = melior::ir::operation::OperationBuilder::new(
-                "memref.alloc",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&alloc_operands)
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(
-                    gen.context,
-                    &[alloc_operands.len() as i32, 0],
-                )
-                .into(),
-            )])
-            .add_results(&[out_ty])
-            .build()
-            .unwrap();
+            let alloc_op = OperationBuilder::new("memref.alloc", Location::unknown(gen.context))
+                .add_operands(&alloc_operands)
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0])
+                        .into(),
+                )])
+                .add_results(&[out_ty])
+                .build()
+                .unwrap();
             let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
 
             // Zero initialize the output buffer since matmul accumulates!
             let zero_attr = if el_ty_str.starts_with('i') {
-                melior::ir::attribute::IntegerAttribute::new(
-                    Type::parse(gen.context, el_ty_str).unwrap(),
-                    0,
-                )
-                .into()
+                IntegerAttribute::new(Type::parse(gen.context, el_ty_str).unwrap(), 0).into()
             } else {
-                melior::ir::attribute::FloatAttribute::new(
+                FloatAttribute::new(
                     gen.context,
                     Type::parse(gen.context, el_ty_str).unwrap(),
                     0.0,
@@ -720,14 +645,11 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 .into()
             };
 
-            let zero_op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-            .add_attributes(&[(melior::ir::Identifier::new(gen.context, "value"), zero_attr)])
-            .build()
-            .unwrap();
+            let zero_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
+                .build()
+                .unwrap();
             let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
 
             let region_fill = Region::new();
@@ -741,28 +663,22 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     Location::unknown(gen.context),
                 ),
             ]);
-            let yield_fill = melior::ir::operation::OperationBuilder::new(
-                "linalg.yield",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[block_fill.argument(0).unwrap().into()])
-            .build()
-            .unwrap();
+            let yield_fill = OperationBuilder::new("linalg.yield", Location::unknown(gen.context))
+                .add_operands(&[block_fill.argument(0).unwrap().into()])
+                .build()
+                .unwrap();
             block_fill.append_operation(yield_fill);
             region_fill.append_block(block_fill);
 
-            let linalg_fill = melior::ir::operation::OperationBuilder::new(
-                "linalg.fill",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[zero_val, out_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
-            )])
-            .add_regions([region_fill])
-            .build()
-            .unwrap();
+            let linalg_fill = OperationBuilder::new("linalg.fill", Location::unknown(gen.context))
+                .add_operands(&[zero_val, out_val])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+                )])
+                .add_regions([region_fill])
+                .build()
+                .unwrap();
             block.append_operation(linalg_fill);
 
             // Execute linalg.matmul
@@ -789,59 +705,48 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             let mul_op_name = if is_float { "arith.mulf" } else { "arith.muli" };
             let add_op_name = if is_float { "arith.addf" } else { "arith.addi" };
 
-            let mul_op = melior::ir::operation::OperationBuilder::new(
-                mul_op_name,
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[
-                block_matmul.argument(0).unwrap().into(),
-                block_matmul.argument(1).unwrap().into(),
-            ])
-            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-            .build()
-            .unwrap();
+            let mul_op = OperationBuilder::new(mul_op_name, Location::unknown(gen.context))
+                .add_operands(&[
+                    block_matmul.argument(0).unwrap().into(),
+                    block_matmul.argument(1).unwrap().into(),
+                ])
+                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .build()
+                .unwrap();
             let mul_val = block_matmul
                 .append_operation(mul_op)
                 .result(0)
                 .unwrap()
                 .into();
 
-            let add_op = melior::ir::operation::OperationBuilder::new(
-                add_op_name,
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[block_matmul.argument(2).unwrap().into(), mul_val])
-            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-            .build()
-            .unwrap();
+            let add_op = OperationBuilder::new(add_op_name, Location::unknown(gen.context))
+                .add_operands(&[block_matmul.argument(2).unwrap().into(), mul_val])
+                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .build()
+                .unwrap();
             let add_val = block_matmul
                 .append_operation(add_op)
                 .result(0)
                 .unwrap()
                 .into();
 
-            let yield_matmul = melior::ir::operation::OperationBuilder::new(
-                "linalg.yield",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[add_val])
-            .build()
-            .unwrap();
+            let yield_matmul =
+                OperationBuilder::new("linalg.yield", Location::unknown(gen.context))
+                    .add_operands(&[add_val])
+                    .build()
+                    .unwrap();
             block_matmul.append_operation(yield_matmul);
             region_matmul.append_block(block_matmul);
 
-            let matmul_op = melior::ir::operation::OperationBuilder::new(
-                "linalg.matmul",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[lhs_val, rhs_val, out_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
-            )])
-            .add_regions([region_matmul])
-            .build()
-            .unwrap();
+            let matmul_op = OperationBuilder::new("linalg.matmul", Location::unknown(gen.context))
+                .add_operands(&[lhs_val, rhs_val, out_val])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+                )])
+                .add_regions([region_matmul])
+                .build()
+                .unwrap();
             block.append_operation(matmul_op);
 
             return (out_val, out_ty);
@@ -857,53 +762,36 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             for (i, dim_str) in lhs_parts.iter().take(rank).enumerate() {
                 if *dim_str == "?" {
-                    let idx_attr = melior::ir::attribute::IntegerAttribute::new(
-                        Type::index(gen.context),
-                        i as i64,
-                    )
-                    .into();
-                    let cst_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[index_ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        idx_attr,
-                    )])
-                    .build()
-                    .unwrap();
+                    let idx_attr = IntegerAttribute::new(Type::index(gen.context), i as i64).into();
+                    let cst_op =
+                        OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                            .add_results(&[index_ty])
+                            .add_attributes(&[(Identifier::new(gen.context, "value"), idx_attr)])
+                            .build()
+                            .unwrap();
                     let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
 
-                    let dim_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.dim",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[lhs_val, idx_val])
-                    .add_results(&[index_ty])
-                    .build()
-                    .unwrap();
+                    let dim_op =
+                        OperationBuilder::new("memref.dim", Location::unknown(gen.context))
+                            .add_operands(&[lhs_val, idx_val])
+                            .add_results(&[index_ty])
+                            .build()
+                            .unwrap();
                     alloc_operands.push(block.append_operation(dim_op).result(0).unwrap().into());
                 }
             }
 
             // Alloc output buffer
-            let alloc_op = melior::ir::operation::OperationBuilder::new(
-                "memref.alloc",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&alloc_operands)
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(
-                    gen.context,
-                    &[alloc_operands.len() as i32, 0],
-                )
-                .into(),
-            )])
-            .add_results(&[out_ty])
-            .build()
-            .unwrap();
+            let alloc_op = OperationBuilder::new("memref.alloc", Location::unknown(gen.context))
+                .add_operands(&alloc_operands)
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0])
+                        .into(),
+                )])
+                .add_results(&[out_ty])
+                .build()
+                .unwrap();
             let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
 
             let op_name = match op {
@@ -936,17 +824,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 ),
             ]);
 
-            let arith_op = melior::ir::operation::OperationBuilder::new(
-                arith_op_name,
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[
-                block_inner.argument(0).unwrap().into(),
-                block_inner.argument(1).unwrap().into(),
-            ])
-            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-            .build()
-            .unwrap();
+            let arith_op = OperationBuilder::new(arith_op_name, Location::unknown(gen.context))
+                .add_operands(&[
+                    block_inner.argument(0).unwrap().into(),
+                    block_inner.argument(1).unwrap().into(),
+                ])
+                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .build()
+                .unwrap();
 
             let arith_val = block_inner
                 .append_operation(arith_op)
@@ -954,29 +839,23 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 .unwrap()
                 .into();
 
-            let yield_op = melior::ir::operation::OperationBuilder::new(
-                "linalg.yield",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[arith_val])
-            .build()
-            .unwrap();
+            let yield_op = OperationBuilder::new("linalg.yield", Location::unknown(gen.context))
+                .add_operands(&[arith_val])
+                .build()
+                .unwrap();
 
             block_inner.append_operation(yield_op);
             region.append_block(block_inner);
 
-            let linalg_op = melior::ir::operation::OperationBuilder::new(
-                op_name,
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[lhs_val, rhs_val, out_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
-            )])
-            .add_regions([region])
-            .build()
-            .unwrap();
+            let linalg_op = OperationBuilder::new(op_name, Location::unknown(gen.context))
+                .add_operands(&[lhs_val, rhs_val, out_val])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
+                )])
+                .add_regions([region])
+                .build()
+                .unwrap();
             block.append_operation(linalg_op);
 
             return (out_val, out_ty);
@@ -987,24 +866,20 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 || (lhs_ty_str == "i32" && rhs_ty_str == "index"))
         {
             if lhs_ty_str == "index" && rhs_ty_str == "i32" {
-                let cast_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.index_cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[rhs_val])
-                .add_results(&[lhs_ty])
-                .build()
-                .unwrap();
+                let cast_op =
+                    OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                        .add_operands(&[rhs_val])
+                        .add_results(&[lhs_ty])
+                        .build()
+                        .unwrap();
                 rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
             } else {
-                let cast_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.index_cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[lhs_val])
-                .add_results(&[rhs_ty])
-                .build()
-                .unwrap();
+                let cast_op =
+                    OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                        .add_operands(&[lhs_val])
+                        .add_results(&[rhs_ty])
+                        .build()
+                        .unwrap();
                 lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
                 final_ty = rhs_ty;
             }
@@ -1015,18 +890,16 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
-        let mut builder = melior::ir::operation::OperationBuilder::new(
-            op.get_op_name(is_float),
-            Location::unknown(gen.context),
-        );
+        let mut builder =
+            OperationBuilder::new(op.get_op_name(is_float), Location::unknown(gen.context));
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
             let i64_ty = Type::parse(gen.context, "i64").unwrap();
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "predicate"),
-                melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
+                Identifier::new(gen.context, "predicate"),
+                IntegerAttribute::new(i64_ty, pred_val).into(),
             )]);
             i1_ty
         } else {
@@ -1073,18 +946,16 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
-        let mut builder = melior::ir::operation::OperationBuilder::new(
-            op.get_op_name(is_float),
-            Location::unknown(gen.context),
-        );
+        let mut builder =
+            OperationBuilder::new(op.get_op_name(is_float), Location::unknown(gen.context));
         builder = builder.add_operands(&[lhs_val, rhs_val]);
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
             let i64_ty = Type::parse(gen.context, "i64").unwrap();
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "predicate"),
-                melior::ir::attribute::IntegerAttribute::new(i64_ty, pred_val).into(),
+                Identifier::new(gen.context, "predicate"),
+                IntegerAttribute::new(i64_ty, pred_val).into(),
             )]);
             i1_ty
         } else {
@@ -1112,12 +983,9 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
 
         let final_ty = Type::parse(gen.context, "i1").unwrap();
 
-        let builder = melior::ir::operation::OperationBuilder::new(
-            op.get_op_name(false),
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[lhs_val, rhs_val])
-        .add_results(&[final_ty]);
+        let builder = OperationBuilder::new(op.get_op_name(false), Location::unknown(gen.context))
+            .add_operands(&[lhs_val, rhs_val])
+            .add_results(&[final_ty]);
 
         let bin_op = builder.build().unwrap();
         let bin_ref = block.append_operation(bin_op);
@@ -1132,27 +1000,22 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
         let (val, ty) = gen.generate_expr(expr, block);
         match op {
             ast::UnaryOp::Not => {
-                let true_val_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty, 1).into(),
-                )])
-                .build()
-                .unwrap();
+                let true_val_op =
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(ty, 1).into(),
+                        )])
+                        .build()
+                        .unwrap();
                 let true_val_ref = block.append_operation(true_val_op);
 
-                let not_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.xori",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[val, true_val_ref.result(0).unwrap().into()])
-                .add_results(&[ty])
-                .build()
-                .unwrap();
+                let not_op = OperationBuilder::new("arith.xori", Location::unknown(gen.context))
+                    .add_operands(&[val, true_val_ref.result(0).unwrap().into()])
+                    .add_results(&[ty])
+                    .build()
+                    .unwrap();
 
                 let not_ref = block.append_operation(not_op);
                 (not_ref.result(0).unwrap().into(), ty)
@@ -1163,38 +1026,32 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
                     || ty.to_string().contains("f16")
                     || ty.to_string().contains("bf16");
                 if is_float {
-                    let neg_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.negf",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[val])
-                    .add_results(&[ty])
-                    .build()
-                    .unwrap();
+                    let neg_op =
+                        OperationBuilder::new("arith.negf", Location::unknown(gen.context))
+                            .add_operands(&[val])
+                            .add_results(&[ty])
+                            .build()
+                            .unwrap();
                     let neg_ref = block.append_operation(neg_op);
                     (neg_ref.result(0).unwrap().into(), ty)
                 } else {
-                    let zero_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
-                    )])
-                    .build()
-                    .unwrap();
+                    let zero_op =
+                        OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                            .add_results(&[ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(ty, 0).into(),
+                            )])
+                            .build()
+                            .unwrap();
                     let zero_ref = block.append_operation(zero_op);
 
-                    let neg_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.subi",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[zero_ref.result(0).unwrap().into(), val])
-                    .add_results(&[ty])
-                    .build()
-                    .unwrap();
+                    let neg_op =
+                        OperationBuilder::new("arith.subi", Location::unknown(gen.context))
+                            .add_operands(&[zero_ref.result(0).unwrap().into(), val])
+                            .add_results(&[ty])
+                            .build()
+                            .unwrap();
                     let neg_ref = block.append_operation(neg_op);
                     (neg_ref.result(0).unwrap().into(), ty)
                 }
@@ -1261,13 +1118,10 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             gen.lower_type(&ast::Type::Struct(name.clone(), None))
         };
 
-        let undef_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.mlir.undef",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[struct_ty])
-        .build()
-        .unwrap();
+        let undef_op = OperationBuilder::new("llvm.mlir.undef", Location::unknown(gen.context))
+            .add_results(&[struct_ty])
+            .build()
+            .unwrap();
         let mut current_struct = block.append_operation(undef_op).result(0).unwrap().into();
 
         for (field_name, f_expr) in fields {
@@ -1288,14 +1142,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
                     || (expr_ty.to_string() == "i32" && field_ty.to_string() == "index"))
             {
-                let cast_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.index_cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[field_val])
-                .add_results(&[field_ty])
-                .build()
-                .unwrap();
+                let cast_op =
+                    OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                        .add_operands(&[field_val])
+                        .add_results(&[field_ty])
+                        .build()
+                        .unwrap();
                 field_val = block.append_operation(cast_op).result(0).unwrap().into();
             }
 
@@ -1304,18 +1156,13 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 &[field_idx as i64],
             );
 
-            let insert_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.insertvalue",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[current_struct, field_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "position"),
-                pos_attr.into(),
-            )])
-            .add_results(&[struct_ty])
-            .build()
-            .unwrap();
+            let insert_op =
+                OperationBuilder::new("llvm.insertvalue", Location::unknown(gen.context))
+                    .add_operands(&[current_struct, field_val])
+                    .add_attributes(&[(Identifier::new(gen.context, "position"), pos_attr.into())])
+                    .add_results(&[struct_ty])
+                    .build()
+                    .unwrap();
             current_struct = block.append_operation(insert_op).result(0).unwrap().into();
         }
         (current_struct, struct_ty)
@@ -1333,15 +1180,12 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
         } else {
             // Return an i32 0 or something empty if no return type is expected.
             let i32_ty = Type::parse(gen.context, "i32").unwrap();
-            let zero_attr = melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into();
-            let zero_op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i32_ty])
-            .add_attributes(&[(melior::ir::Identifier::new(gen.context, "value"), zero_attr)])
-            .build()
-            .unwrap();
+            let zero_attr = IntegerAttribute::new(i32_ty, 0).into();
+            let zero_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[i32_ty])
+                .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
+                .build()
+                .unwrap();
             let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
             (zero_val, i32_ty)
         }
@@ -1403,8 +1247,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         }
 
         if needs_yield {
-            let mut yield_builder =
-                melior::ir::operation::OperationBuilder::new("vx.yield", location);
+            let mut yield_builder = OperationBuilder::new("vx.yield", location);
             if let Some(v) = ret_val {
                 yield_builder = yield_builder.add_operands(&[v]);
             }
@@ -1418,17 +1261,12 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         region.append_block(body_block);
 
         let topology_id = topology_to_i32(&self.top);
-        let top_attr = melior::ir::attribute::IntegerAttribute::new(
-            Type::parse(gen.context, "i32").unwrap(),
-            topology_id as i64,
-        )
-        .into();
+        let top_attr =
+            IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), topology_id as i64)
+                .into();
 
-        let mut spawn_builder = melior::ir::operation::OperationBuilder::new("vx.spawn", location)
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "topology"),
-                top_attr,
-            )])
+        let mut spawn_builder = OperationBuilder::new("vx.spawn", location)
+            .add_attributes(&[(Identifier::new(gen.context, "topology"), top_attr)])
             .add_regions([region]);
 
         if !result_types.is_empty() {
@@ -1439,8 +1277,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         let spawn_ref = block.append_operation(spawn_op);
 
         if !needs_yield {
-            let mut ret_builder =
-                melior::ir::operation::OperationBuilder::new("func.return", location);
+            let mut ret_builder = OperationBuilder::new("func.return", location);
             if !result_types.is_empty() {
                 ret_builder = ret_builder.add_operands(&[spawn_ref.result(0).unwrap().into()]);
             }
@@ -1453,11 +1290,10 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         } else {
             let _none_ty =
                 Type::parse(gen.context, "none").unwrap_or_else(|| Type::index(gen.context));
-            let dummy_op = melior::ir::operation::OperationBuilder::new("arith.constant", location)
+            let dummy_op = OperationBuilder::new("arith.constant", location)
                 .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0)
-                        .into(),
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(Type::index(gen.context), 0).into(),
                 )])
                 .add_results(&[Type::index(gen.context)])
                 .build()
@@ -1484,7 +1320,7 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
             ast::MemorySpace::LocalSRAM => 200,
         };
 
-        let top_attr = melior::ir::attribute::IntegerAttribute::new(
+        let top_attr = IntegerAttribute::new(
             melior::ir::Type::parse(gen.context, "i32").unwrap(),
             target_topology_id as i64,
         )
@@ -1502,12 +1338,9 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
             target_ty = Type::parse(gen.context, &target_ty_str).unwrap_or(src_ty);
         }
 
-        let transfer_op = melior::ir::operation::OperationBuilder::new("vx.transfer", location)
+        let transfer_op = OperationBuilder::new("vx.transfer", location)
             .add_operands(&[src_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "target_topology"),
-                top_attr,
-            )])
+            .add_attributes(&[(Identifier::new(gen.context, "target_topology"), top_attr)])
             .add_results(&[target_ty])
             .build()
             .expect("Failed to build vx.transfer operation");
@@ -1606,23 +1439,20 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                         );
                         let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str).unwrap();
 
-                        let gep_op = melior::ir::operation::OperationBuilder::new(
+                        let gep_op = OperationBuilder::new(
                             "llvm.getelementptr",
                             Location::unknown(gen.context),
                         )
                         .add_operands(&[base_val])
                         .add_attributes(&[
                             (
-                                melior::ir::Identifier::new(gen.context, "rawConstantIndices"),
-                                melior::ir::attribute::DenseI32ArrayAttribute::new(
-                                    gen.context,
-                                    &[0, field_idx as i32],
-                                )
-                                .into(),
+                                Identifier::new(gen.context, "rawConstantIndices"),
+                                DenseI32ArrayAttribute::new(gen.context, &[0, field_idx as i32])
+                                    .into(),
                             ),
                             (
-                                melior::ir::Identifier::new(gen.context, "elem_type"),
-                                melior::ir::attribute::TypeAttribute::new(struct_llvm_ty).into(),
+                                Identifier::new(gen.context, "elem_type"),
+                                TypeAttribute::new(struct_llvm_ty).into(),
                             ),
                         ])
                         .add_results(&[ptr_ty])
@@ -1635,14 +1465,12 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             return (field_ptr, ptr_ty);
                         }
 
-                        let load_op = melior::ir::operation::OperationBuilder::new(
-                            "llvm.load",
-                            Location::unknown(gen.context),
-                        )
-                        .add_operands(&[field_ptr])
-                        .add_results(&[field_ty])
-                        .build()
-                        .unwrap();
+                        let load_op =
+                            OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+                                .add_operands(&[field_ptr])
+                                .add_results(&[field_ty])
+                                .build()
+                                .unwrap();
                         let load_ref = block.append_operation(load_op);
                         return (load_ref.result(0).unwrap().into(), field_ty);
                     } else {
@@ -1651,13 +1479,13 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             &[field_idx as i64],
                         );
 
-                        let ext_op = melior::ir::operation::OperationBuilder::new(
+                        let ext_op = OperationBuilder::new(
                             "llvm.extractvalue",
                             Location::unknown(gen.context),
                         )
                         .add_operands(&[base_val])
                         .add_attributes(&[(
-                            melior::ir::Identifier::new(gen.context, "position"),
+                            Identifier::new(gen.context, "position"),
                             pos_attr.into(),
                         )])
                         .add_results(&[field_ty])
@@ -1769,7 +1597,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     for el in &arr.elements {
                         let (mut val, ty) = gen.generate_expr(el, block);
                         if ty.to_string() != "index" {
-                            let cast_op = melior::ir::operation::OperationBuilder::new(
+                            let cast_op = OperationBuilder::new(
                                 "arith.index_cast",
                                 Location::unknown(gen.context),
                             )
@@ -1787,7 +1615,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 for el in args {
                     let (mut val, ty) = gen.generate_expr(el, block);
                     if ty.to_string() != "index" {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                        let cast_op = OperationBuilder::new(
                             "arith.index_cast",
                             Location::unknown(gen.context),
                         )
@@ -1808,22 +1636,16 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let tensor_ty_str = format!("memref<{}{}>", shape_str, mlir_ty_str);
             let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
 
-            let alloc_op = melior::ir::operation::OperationBuilder::new(
-                "memref.alloc",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&dynamic_sizes)
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                melior::ir::attribute::DenseI32ArrayAttribute::new(
-                    gen.context,
-                    &[dynamic_sizes.len() as i32, 0],
-                )
-                .into(),
-            )])
-            .add_results(&[tensor_ty])
-            .build()
-            .unwrap();
+            let alloc_op = OperationBuilder::new("memref.alloc", Location::unknown(gen.context))
+                .add_operands(&dynamic_sizes)
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    DenseI32ArrayAttribute::new(gen.context, &[dynamic_sizes.len() as i32, 0])
+                        .into(),
+                )])
+                .add_results(&[tensor_ty])
+                .build()
+                .unwrap();
             let alloc_ref = block.append_operation(alloc_op);
             return (alloc_ref.result(0).unwrap().into(), tensor_ty);
         }
@@ -1858,28 +1680,22 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let unranked_ty = Type::parse(gen.context, &unranked_ty_str).unwrap();
 
             // Cast to unranked first
-            let cast1_op = melior::ir::operation::OperationBuilder::new(
-                "memref.cast",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[arg_val])
-            .add_results(&[unranked_ty])
-            .build()
-            .unwrap();
+            let cast1_op = OperationBuilder::new("memref.cast", Location::unknown(gen.context))
+                .add_operands(&[arg_val])
+                .add_results(&[unranked_ty])
+                .build()
+                .unwrap();
             let cast1_ref = block.append_operation(cast1_op);
             let unranked_val = cast1_ref.result(0).unwrap().into();
 
             let target_ty = Type::parse(gen.context, &target_ty_str).unwrap();
 
             // Cast to targeted shape
-            let cast2_op = melior::ir::operation::OperationBuilder::new(
-                "memref.cast",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[unranked_val])
-            .add_results(&[target_ty])
-            .build()
-            .unwrap();
+            let cast2_op = OperationBuilder::new("memref.cast", Location::unknown(gen.context))
+                .add_operands(&[unranked_val])
+                .add_results(&[target_ty])
+                .build()
+                .unwrap();
 
             let cast2_ref = block.append_operation(cast2_op);
             return (cast2_ref.result(0).unwrap().into(), target_ty);
@@ -1892,295 +1708,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
 
         if name == "map" {
-            let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
-            // args[1] is the closure
-            // We need to fetch the closure's function and invoke it inside a linalg.generic.
-            let tensor_ty_str = tensor_ty.to_string();
-            if tensor_ty_str.starts_with("memref<") {
-                let parts: Vec<&str> = tensor_ty_str
-                    .trim_start_matches("memref<")
-                    .trim_end_matches('>')
-                    .split('x')
-                    .collect();
-                let el_ty_str = parts.last().unwrap_or(&"f32").trim();
-                let rank = parts.len() - 1;
-
-                // 1. Allocate output memref
-                let mut alloc_operands = Vec::new();
-                let index_ty = Type::parse(gen.context, "index").unwrap();
-                for (i, dim_str) in parts.iter().take(rank).enumerate() {
-                    if *dim_str == "?" {
-                        let idx_attr = melior::ir::attribute::IntegerAttribute::new(
-                            Type::index(gen.context),
-                            i as i64,
-                        )
-                        .into();
-                        let cst_op = melior::ir::operation::OperationBuilder::new(
-                            "arith.constant",
-                            Location::unknown(gen.context),
-                        )
-                        .add_results(&[index_ty])
-                        .add_attributes(&[(
-                            melior::ir::Identifier::new(gen.context, "value"),
-                            idx_attr,
-                        )])
-                        .build()
-                        .unwrap();
-                        let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
-
-                        let dim_op = melior::ir::operation::OperationBuilder::new(
-                            "memref.dim",
-                            Location::unknown(gen.context),
-                        )
-                        .add_operands(&[tensor_val, idx_val])
-                        .add_results(&[index_ty])
-                        .build()
-                        .unwrap();
-                        alloc_operands
-                            .push(block.append_operation(dim_op).result(0).unwrap().into());
-                    }
-                }
-
-                let alloc_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.alloc",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&alloc_operands)
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(
-                        gen.context,
-                        &[alloc_operands.len() as i32, 0],
-                    )
-                    .into(),
-                )])
-                .add_results(&[tensor_ty])
-                .build()
-                .unwrap();
-                let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
-
-                // 2. Generate linalg.generic
-                let region = Region::new();
-                let block_generic = melior::ir::Block::new(&[
-                    (
-                        Type::parse(gen.context, el_ty_str).unwrap(),
-                        Location::unknown(gen.context),
-                    ),
-                    (
-                        Type::parse(gen.context, el_ty_str).unwrap(),
-                        Location::unknown(gen.context),
-                    ),
-                ]);
-
-                // We need to call the closure!
-                // args[1] is the closure expression (StructInitExpr for Closure_N).
-                let (closure_val, closure_ty) = gen.generate_expr(&args[1], block);
-
-                // Allocate it on stack to get a pointer
-                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-                let i32_ty = Type::parse(gen.context, "i32").unwrap();
-                let c1_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[i32_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
-                )])
-                .build()
-                .unwrap();
-                let c1 = block.append_operation(c1_op).result(0).unwrap().into();
-
-                let alloca_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.alloca",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[c1])
-                .add_results(&[ptr_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "elem_type"),
-                    melior::ir::attribute::TypeAttribute::new(closure_ty).into(),
-                )])
-                .build()
-                .unwrap();
-                let alloca_ptr = block.append_operation(alloca_op).result(0).unwrap().into();
-
-                let store_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[closure_val, alloca_ptr])
-                .build()
-                .unwrap();
-                block.append_operation(store_op);
-
-                // Extract invoke method name
-                let ty_str = closure_ty.to_string();
-                let struct_name = ty_str
-                    .strip_prefix("!llvm.struct<\"")
-                    .unwrap_or(&ty_str)
-                    .split("\"")
-                    .next()
-                    .unwrap();
-                let invoke_method = format!("{}_call", struct_name);
-
-                let call_op = melior::ir::operation::OperationBuilder::new(
-                    "func.call",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[alloca_ptr, block_generic.argument(0).unwrap().into()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "callee"),
-                    melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &invoke_method)
-                        .into(),
-                )])
-                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-                .build()
-                .unwrap();
-
-                let call_res = block_generic
-                    .append_operation(call_op)
-                    .result(0)
-                    .unwrap()
-                    .into();
-
-                let yield_op = melior::ir::operation::OperationBuilder::new(
-                    "linalg.yield",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[call_res])
-                .build()
-                .unwrap();
-                block_generic.append_operation(yield_op);
-                region.append_block(block_generic);
-
-                // Affine maps: both input and output are identity maps
-                let affine_map = format!(
-                    "affine_map<(d0{}) -> (d0{})>",
-                    (1..rank).map(|i| format!(", d{}", i)).collect::<String>(),
-                    (1..rank).map(|i| format!(", d{}", i)).collect::<String>()
-                );
-                // For rank 0 it's affine_map<() -> ()>
-                let affine_map_attr = if rank == 0 {
-                    melior::ir::attribute::Attribute::parse(gen.context, "affine_map<() -> ()>")
-                        .unwrap()
-                } else {
-                    melior::ir::attribute::Attribute::parse(gen.context, &affine_map).unwrap()
-                };
-
-                let linalg_generic = melior::ir::operation::OperationBuilder::new(
-                    "linalg.generic",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[tensor_val, out_val])
-                .add_attributes(&[
-                    (
-                        melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 1])
-                            .into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "indexing_maps"),
-                        melior::ir::attribute::ArrayAttribute::new(
-                            gen.context,
-                            &[affine_map_attr, affine_map_attr],
-                        )
-                        .into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "iterator_types"),
-                        melior::ir::attribute::ArrayAttribute::new(
-                            gen.context,
-                            &vec![
-                                melior::ir::attribute::Attribute::parse(
-                                    gen.context,
-                                    "#linalg.iterator_type<parallel>"
-                                )
-                                .unwrap();
-                                rank
-                            ],
-                        )
-                        .into(),
-                    ),
-                ])
-                .add_regions([region])
-                .build()
-                .unwrap();
-                block.append_operation(linalg_generic);
-
-                return (out_val, tensor_ty);
-            }
+            return lower_map_call(gen, block, args);
         }
 
         if name == "print" {
-            let mut print_arg = &args[0];
-            if let Expr::Borrow(borrow) = print_arg {
-                print_arg = &borrow.expr;
-            }
-
-            let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block);
-
-            let el_ty_str =
-                extract_mlir_element_type(&arg_ty.to_string()).unwrap_or_else(|e| panic!("{}", e));
-
-            let print_fn_name = match el_ty_str {
-                "f64" => "printMemrefF64",
-                "i64" => "printMemrefI64",
-                "i32" => "printMemrefI32",
-                "bf16" => "printMemrefBF16",
-                _ => "printMemrefF32",
-            };
-
-            if arg_ty.to_string().contains(", ") {
-                let stripped_ty =
-                    Type::parse(gen.context, &format!("memref<?x?x{}>", el_ty_str)).unwrap();
-                let mcast_op = block.append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "memref.memory_space_cast",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[arg_val])
-                    .add_results(&[stripped_ty])
-                    .build()
-                    .unwrap(),
-                );
-                arg_val = mcast_op.result(0).unwrap().into();
-            }
-
-            let unranked_memref_ty =
-                Type::parse(gen.context, &format!("memref<*x{}>", el_ty_str)).unwrap();
-            let cast_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[arg_val])
-                .add_results(&[unranked_memref_ty])
-                .build()
-                .unwrap(),
-            );
-            let cast_val: Value = cast_op.result(0).unwrap().into();
-
-            block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "func.call",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[cast_val])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "callee"),
-                    melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, print_fn_name)
-                        .into(),
-                )])
-                .build()
-                .unwrap(),
-            );
-
-            return (
-                cast_val, // Dummy return value, caller ignores it
-                Type::parse(gen.context, "none").unwrap(),
-            );
+            return lower_print_call(gen, block, args);
         }
 
         if name == "printf" || name == "vx_internal_printf" {
@@ -2190,7 +1722,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 arg_vals.push(arg_val);
             }
 
-            let printf_func_ty = melior::ir::attribute::TypeAttribute::new(
+            let printf_func_ty = TypeAttribute::new(
                 Type::parse(gen.context, "!llvm.func<i32 (!llvm.ptr, ...)>").unwrap(),
             );
 
@@ -2200,27 +1732,25 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // Let's just forcefully insert it if we haven't seen it in gen.functions, BUT wait,
             // gen.functions has "printf" from the AST extern. So let's use a unique key for the llvm decl.
             if !gen.functions.contains_key("llvm_printf_decl") {
-                let printf_decl = melior::ir::operation::OperationBuilder::new(
-                    "llvm.func",
-                    Location::unknown(gen.context),
-                )
-                .add_attributes(&[
-                    (
-                        melior::ir::Identifier::new(gen.context, "sym_name"),
-                        melior::ir::attribute::StringAttribute::new(gen.context, "printf").into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "linkage_name"),
-                        melior::ir::attribute::StringAttribute::new(gen.context, "printf").into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "function_type"),
-                        printf_func_ty.into(),
-                    ),
-                ])
-                .add_regions([melior::ir::Region::new()])
-                .build()
-                .unwrap();
+                let printf_decl =
+                    OperationBuilder::new("llvm.func", Location::unknown(gen.context))
+                        .add_attributes(&[
+                            (
+                                Identifier::new(gen.context, "sym_name"),
+                                StringAttribute::new(gen.context, "printf").into(),
+                            ),
+                            (
+                                Identifier::new(gen.context, "linkage_name"),
+                                StringAttribute::new(gen.context, "printf").into(),
+                            ),
+                            (
+                                Identifier::new(gen.context, "function_type"),
+                                printf_func_ty.into(),
+                            ),
+                        ])
+                        .add_regions([melior::ir::Region::new()])
+                        .build()
+                        .unwrap();
 
                 gen.module.body().append_operation(printf_decl);
                 gen.functions.insert(
@@ -2233,37 +1763,30 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             }
 
             let call_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "llvm.call",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&arg_vals)
-                .add_attributes(&[
-                    (
-                        melior::ir::Identifier::new(gen.context, "callee"),
-                        melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, "printf")
-                            .into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "var_callee_type"),
-                        printf_func_ty.into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "operandSegmentSizes"),
-                        melior::ir::attribute::DenseI32ArrayAttribute::new(
-                            gen.context,
-                            &[arg_vals.len() as i32, 0],
-                        )
-                        .into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "op_bundle_sizes"),
-                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[]).into(),
-                    ),
-                ])
-                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("llvm.call", Location::unknown(gen.context))
+                    .add_operands(&arg_vals)
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "callee"),
+                            FlatSymbolRefAttribute::new(gen.context, "printf").into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "var_callee_type"),
+                            printf_func_ty.into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[arg_vals.len() as i32, 0])
+                                .into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "op_bundle_sizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[]).into(),
+                        ),
+                    ])
+                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                    .build()
+                    .unwrap(),
             );
 
             return (
@@ -2281,14 +1804,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     if expr_ty.to_string().starts_with("memref<")
                         && field_ty.to_string().starts_with("memref<")
                     {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
-                            "memref.cast",
-                            Location::unknown(gen.context),
-                        )
-                        .add_operands(&[arg_val])
-                        .add_results(&[field_ty])
-                        .build()
-                        .unwrap();
+                        let cast_op =
+                            OperationBuilder::new("memref.cast", Location::unknown(gen.context))
+                                .add_operands(&[arg_val])
+                                .add_results(&[field_ty])
+                                .build()
+                                .unwrap();
                         arg_val = block.append_operation(cast_op).result(0).unwrap().into();
                     } else {
                         arg_val = gen.coerce_type(block, arg_val, expr_ty, field_ty);
@@ -2297,16 +1818,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 arg_vals.push(arg_val);
             }
 
-            let name_attr = melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, name);
-            let mut builder = melior::ir::operation::OperationBuilder::new(
-                "func.call",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&arg_vals)
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "callee"),
-                name_attr.into(),
-            )]);
+            let name_attr = FlatSymbolRefAttribute::new(gen.context, name);
+            let mut builder = OperationBuilder::new("func.call", Location::unknown(gen.context))
+                .add_operands(&arg_vals)
+                .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())]);
 
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
@@ -2318,21 +1833,16 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 block.append_operation(call_op);
                 let none_ty = Type::parse(gen.context, "none").unwrap();
                 // this value shouldn't be used
-                let dummy_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.mlir.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(
-                        Type::parse(gen.context, "i32").unwrap(),
-                        0,
-                    )
-                    .into(),
-                )])
-                .build()
-                .unwrap();
+                let dummy_op =
+                    OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0)
+                                .into(),
+                        )])
+                        .build()
+                        .unwrap();
                 (
                     block.append_operation(dummy_op).result(0).unwrap().into(),
                     none_ty,
@@ -2373,36 +1883,38 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 if is_closure {
                     arg_offset = 1;
                     // Extract env_ptr
-                    let extract_env_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.extractvalue",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[ptr_val])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "position"),
-                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
-                            .into(),
-                    )])
-                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
-                    .build()
-                    .unwrap();
+                    let extract_env_op =
+                        OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                            .add_operands(&[ptr_val])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "position"),
+                                melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                    gen.context,
+                                    &[0],
+                                )
+                                .into(),
+                            )])
+                            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                            .build()
+                            .unwrap();
                     let extract_env_ref = block.append_operation(extract_env_op);
                     env_ptr = Some(extract_env_ref.result(0).unwrap().into());
 
                     // Extract func_ptr
-                    let extract_func_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.extractvalue",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[ptr_val])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "position"),
-                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
-                            .into(),
-                    )])
-                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
-                    .build()
-                    .unwrap();
+                    let extract_func_op =
+                        OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                            .add_operands(&[ptr_val])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "position"),
+                                melior::ir::attribute::DenseI64ArrayAttribute::new(
+                                    gen.context,
+                                    &[1],
+                                )
+                                .into(),
+                            )])
+                            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                            .build()
+                            .unwrap();
                     let extract_func_ref = block.append_operation(extract_func_op);
                     actual_ptr_val = extract_func_ref.result(0).unwrap().into();
                 }
@@ -2417,7 +1929,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 }
 
                 if func_ty.to_string() == "!llvm.ptr" || is_closure {
-                    let cast_op = melior::ir::operation::OperationBuilder::new(
+                    let cast_op = OperationBuilder::new(
                         "builtin.unrealized_conversion_cast",
                         Location::unknown(gen.context),
                     )
@@ -2429,11 +1941,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     actual_ptr_val = cast_ref.result(0).unwrap().into();
                 }
 
-                let mut builder = melior::ir::operation::OperationBuilder::new(
-                    "func.call_indirect",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[actual_ptr_val]);
+                let mut builder =
+                    OperationBuilder::new("func.call_indirect", Location::unknown(gen.context))
+                        .add_operands(&[actual_ptr_val]);
 
                 if let Some(ep) = env_ptr {
                     builder = builder.add_operands(&[ep]);
@@ -2452,21 +1962,16 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     let call_op = builder.build().unwrap();
                     block.append_operation(call_op);
                     let none_ty = Type::parse(gen.context, "none").unwrap();
-                    let dummy_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.mlir.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(
-                            Type::parse(gen.context, "i32").unwrap(),
-                            0,
-                        )
-                        .into(),
-                    )])
-                    .build()
-                    .unwrap();
+                    let dummy_op =
+                        OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0)
+                                    .into(),
+                            )])
+                            .build()
+                            .unwrap();
                     (
                         block.append_operation(dummy_op).result(0).unwrap().into(),
                         none_ty,
@@ -2498,34 +2003,32 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
 
         if callee_ty.to_string() == "!llvm.struct<(ptr, ptr)>" {
             // Extract env_ptr
-            let extract_env_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.extractvalue",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[callee_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "position"),
-                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
-            )])
-            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
-            .build()
-            .unwrap();
+            let extract_env_op =
+                OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                    .add_operands(&[callee_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
+                            .into(),
+                    )])
+                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                    .build()
+                    .unwrap();
             let extract_env_ref = block.append_operation(extract_env_op);
             let env_ptr = extract_env_ref.result(0).unwrap().into();
 
             // Extract func_ptr
-            let extract_func_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.extractvalue",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[callee_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "position"),
-                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
-            )])
-            .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
-            .build()
-            .unwrap();
+            let extract_func_op =
+                OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                    .add_operands(&[callee_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
+                            .into(),
+                    )])
+                    .add_results(&[Type::parse(gen.context, "!llvm.ptr").unwrap()])
+                    .build()
+                    .unwrap();
             let extract_func_ref = block.append_operation(extract_func_op);
             let mut actual_ptr_val = extract_func_ref.result(0).unwrap().into();
 
@@ -2558,7 +2061,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let ret_ty = actual_mlir_func_ty.result(0).unwrap();
 
             // Cast the raw func ptr to the actual function signature
-            let cast_op = melior::ir::operation::OperationBuilder::new(
+            let cast_op = OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),
             )
@@ -2569,11 +2072,9 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let cast_ref = block.append_operation(cast_op);
             actual_ptr_val = cast_ref.result(0).unwrap().into();
 
-            let mut builder = melior::ir::operation::OperationBuilder::new(
-                "func.call_indirect",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[actual_ptr_val, env_ptr]);
+            let mut builder =
+                OperationBuilder::new("func.call_indirect", Location::unknown(gen.context))
+                    .add_operands(&[actual_ptr_val, env_ptr]);
 
             for a_val in &arg_vals {
                 builder = builder.add_operands(&[*a_val]);
@@ -2588,21 +2089,16 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                 let call_op = builder.build().unwrap();
                 block.append_operation(call_op);
                 let none_ty = Type::parse(gen.context, "none").unwrap();
-                let dummy_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.mlir.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(
-                        Type::parse(gen.context, "i32").unwrap(),
-                        0,
-                    )
-                    .into(),
-                )])
-                .build()
-                .unwrap();
+                let dummy_op =
+                    OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0)
+                                .into(),
+                        )])
+                        .build()
+                        .unwrap();
                 (
                     block.append_operation(dummy_op).result(0).unwrap().into(),
                     none_ty,
@@ -2646,14 +2142,11 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         for (name, expr, ty_str) in &self.inputs {
             let (mut val, val_ty) = gen.generate_expr(expr, block);
             if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
-                let load_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.load",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[val])
-                .add_results(&[Type::parse(gen.context, ty_str).unwrap()])
-                .build()
-                .unwrap();
+                let load_op = OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                    .add_operands(&[val])
+                    .add_results(&[Type::parse(gen.context, ty_str).unwrap()])
+                    .build()
+                    .unwrap();
                 val = block.append_operation(load_op).result(0).unwrap().into();
             }
             mlir_args.push(val);
@@ -2702,35 +2195,31 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
 
         gen.module.body().append_operation(cloned_func);
 
-        let call_op = melior::ir::operation::OperationBuilder::new(
-            "func.call",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "callee"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &unique_id).into(),
-        )])
-        .add_operands(&mlir_args)
-        .add_results(&call_ret_tys)
-        .build()
-        .unwrap();
+        let call_op =
+            OperationBuilder::new("func.call", melior::ir::Location::unknown(gen.context))
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "callee"),
+                    FlatSymbolRefAttribute::new(gen.context, &unique_id).into(),
+                )])
+                .add_operands(&mlir_args)
+                .add_results(&call_ret_tys)
+                .build()
+                .unwrap();
 
         let op = block.append_operation(call_op);
 
         if let Some(ret_ty) = &self.returns {
             (op.result(0).unwrap().into(), gen.lower_type(ret_ty))
         } else {
-            let dummy_val = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                melior::ir::Location::unknown(gen.context),
-            )
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(Type::index(gen.context), 0).into(),
-            )])
-            .add_results(&[Type::index(gen.context)])
-            .build()
-            .unwrap();
+            let dummy_val =
+                OperationBuilder::new("arith.constant", melior::ir::Location::unknown(gen.context))
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(Type::index(gen.context), 0).into(),
+                    )])
+                    .add_results(&[Type::index(gen.context)])
+                    .build()
+                    .unwrap();
             (
                 block.append_operation(dummy_val).result(0).unwrap().into(),
                 Type::index(gen.context),
@@ -2761,14 +2250,11 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         let tensor_ty =
             Type::parse(gen.context, &format!("tensor<{}x{}>", num_elements, el_ty)).unwrap();
 
-        let op = melior::ir::operation::OperationBuilder::new(
-            "tensor.from_elements",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&vals)
-        .add_results(&[tensor_ty])
-        .build()
-        .unwrap();
+        let op = OperationBuilder::new("tensor.from_elements", Location::unknown(gen.context))
+            .add_operands(&vals)
+            .add_results(&[tensor_ty])
+            .build()
+            .unwrap();
 
         let val = block.append_operation(op).result(0).unwrap().into();
         (val, tensor_ty)
@@ -2847,41 +2333,32 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 .expected_type
                 .unwrap_or_else(|| Type::parse(gen.context, "f32").unwrap());
             let dummy_op = if ret_ty.to_string() == "f32" {
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::FloatAttribute::new(gen.context, ret_ty, 0.0).into(),
-                )])
-                .add_results(&[ret_ty])
-                .build()
-                .unwrap()
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        FloatAttribute::new(gen.context, ret_ty, 0.0).into(),
+                    )])
+                    .add_results(&[ret_ty])
+                    .build()
+                    .unwrap()
             } else if ret_ty.to_string() == "i1" {
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
-                )])
-                .add_results(&[ret_ty])
-                .build()
-                .unwrap()
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ret_ty, 0).into(),
+                    )])
+                    .add_results(&[ret_ty])
+                    .build()
+                    .unwrap()
             } else {
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
-                )])
-                .add_results(&[ret_ty])
-                .build()
-                .unwrap()
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ret_ty, 0).into(),
+                    )])
+                    .add_results(&[ret_ty])
+                    .build()
+                    .unwrap()
             };
             return (
                 block.append_operation(dummy_op).result(0).unwrap().into(),
@@ -2896,12 +2373,9 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         for stmt in then_block {
             gen.generate_statement(stmt, &then_b);
         }
-        let yield_op = melior::ir::operation::OperationBuilder::new(
-            "scf.yield",
-            Location::unknown(gen.context),
-        )
-        .build()
-        .unwrap();
+        let yield_op = OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+            .build()
+            .unwrap();
         then_b.append_operation(yield_op);
         then_region.append_block(then_b);
 
@@ -2912,36 +2386,29 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 gen.generate_statement(stmt, &else_b);
             }
         }
-        let yield_op = melior::ir::operation::OperationBuilder::new(
-            "scf.yield",
-            Location::unknown(gen.context),
-        )
-        .build()
-        .unwrap();
+        let yield_op = OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+            .build()
+            .unwrap();
         else_b.append_operation(yield_op);
         else_region.append_block(else_b);
 
-        let if_op =
-            melior::ir::operation::OperationBuilder::new("scf.if", Location::unknown(gen.context))
-                .add_operands(&[cond_val])
-                .add_regions([then_region, else_region])
-                .build()
-                .unwrap();
+        let if_op = OperationBuilder::new("scf.if", Location::unknown(gen.context))
+            .add_operands(&[cond_val])
+            .add_regions([then_region, else_region])
+            .build()
+            .unwrap();
 
         block.append_operation(if_op);
 
         let ty = Type::parse(gen.context, "i32").unwrap();
-        let op = melior::ir::operation::OperationBuilder::new(
-            "arith.constant",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
-        )])
-        .build()
-        .unwrap();
+        let op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+            .add_results(&[ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(ty, 0).into(),
+            )])
+            .build()
+            .unwrap();
         let op_ref = block.append_operation(op);
         (op_ref.result(0).unwrap().into(), ty)
     }
@@ -2968,37 +2435,25 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             || ty_str.contains("f16")
             || ty_str.contains("bf16")
         {
-            let op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::FloatAttribute::new(
-                    gen.context,
-                    ty,
-                    val_str.parse::<f64>().unwrap(),
-                )
-                .into(),
-            )])
-            .build()
-            .unwrap();
+            let op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    FloatAttribute::new(gen.context, ty, val_str.parse::<f64>().unwrap()).into(),
+                )])
+                .build()
+                .unwrap();
             let op_ref = block.append_operation(op);
             (op_ref.result(0).unwrap().into(), ty)
         } else {
-            let op = melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(ty, val_str.parse::<i64>().unwrap())
-                    .into(),
-            )])
-            .build()
-            .unwrap();
+            let op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, val_str.parse::<i64>().unwrap()).into(),
+                )])
+                .build()
+                .unwrap();
             let op_ref = block.append_operation(op);
             (op_ref.result(0).unwrap().into(), ty)
         }
@@ -3027,28 +2482,24 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                         cast_op_name = "memref.memory_space_cast";
                     }
 
-                    let cast_op = melior::ir::operation::OperationBuilder::new(
-                        cast_op_name,
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[val])
-                    .add_results(&[ret_ty])
-                    .build()
-                    .unwrap();
+                    let cast_op =
+                        OperationBuilder::new(cast_op_name, Location::unknown(gen.context))
+                            .add_operands(&[val])
+                            .add_results(&[ret_ty])
+                            .build()
+                            .unwrap();
                     val = block.append_operation(cast_op).result(0).unwrap().into();
                 } else if ret_ty.to_string() == "i32" && expr_ty.to_string().starts_with("memref<")
                 {
-                    let zero_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[ret_ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
-                    )])
-                    .build()
-                    .unwrap();
+                    let zero_op =
+                        OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                            .add_results(&[ret_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(ret_ty, 0).into(),
+                            )])
+                            .build()
+                            .unwrap();
                     val = block.append_operation(zero_op).result(0).unwrap().into();
                 } else {
                     val = gen.coerce_type(block, val, expr_ty, ret_ty);
@@ -3060,11 +2511,10 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         } else {
             "func.return"
         };
-        let ret_op =
-            melior::ir::operation::OperationBuilder::new(op_name, Location::unknown(gen.context))
-                .add_operands(&[val])
-                .build()
-                .unwrap();
+        let ret_op = OperationBuilder::new(op_name, Location::unknown(gen.context))
+            .add_operands(&[val])
+            .build()
+            .unwrap();
         block.append_operation(ret_op);
         gen.has_returned = true;
     }
@@ -3102,39 +2552,32 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
                 let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
                 let i32_ty = Type::parse(gen.context, "i32").unwrap();
-                let one_attr = melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into();
-                let const_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.mlir.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[i32_ty])
-                .add_attributes(&[(melior::ir::Identifier::new(gen.context, "value"), one_attr)])
-                .build()
-                .unwrap();
+                let one_attr = IntegerAttribute::new(i32_ty, 1).into();
+                let const_op =
+                    OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                        .add_results(&[i32_ty])
+                        .add_attributes(&[(Identifier::new(gen.context, "value"), one_attr)])
+                        .build()
+                        .unwrap();
                 let one_val = block.append_operation(const_op).result(0).unwrap().into();
 
-                let alloca_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.alloca",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[one_val])
-                .add_results(&[ptr_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "elem_type"),
-                    melior::ir::attribute::TypeAttribute::new(ty).into(),
-                )])
-                .build()
-                .unwrap();
+                let alloca_op =
+                    OperationBuilder::new("llvm.alloca", Location::unknown(gen.context))
+                        .add_operands(&[one_val])
+                        .add_results(&[ptr_ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "elem_type"),
+                            TypeAttribute::new(ty).into(),
+                        )])
+                        .build()
+                        .unwrap();
                 let alloca_ref = block.append_operation(alloca_op);
                 let alloca_val = alloca_ref.result(0).unwrap().into();
 
-                let store_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[val, alloca_val])
-                .build()
-                .unwrap();
+                let store_op = OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                    .add_operands(&[val, alloca_val])
+                    .build()
+                    .unwrap();
                 block.append_operation(store_op);
 
                 gen.env.insert(name.clone(), (alloca_val, ty));
@@ -3142,23 +2585,19 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             } else {
                 let memref_ty = format!("memref<{}>", ty);
                 let parsed_memref_ty = Type::parse(gen.context, &memref_ty).unwrap();
-                let alloca_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.alloca",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[parsed_memref_ty])
-                .build()
-                .unwrap();
+                let alloca_op =
+                    OperationBuilder::new("memref.alloca", Location::unknown(gen.context))
+                        .add_results(&[parsed_memref_ty])
+                        .build()
+                        .unwrap();
                 let alloca_ref = block.append_operation(alloca_op);
                 let alloca_val = alloca_ref.result(0).unwrap().into();
 
-                let store_op = melior::ir::operation::OperationBuilder::new(
-                    "memref.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[val, alloca_val])
-                .build()
-                .unwrap();
+                let store_op =
+                    OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                        .add_operands(&[val, alloca_val])
+                        .build()
+                        .unwrap();
                 block.append_operation(store_op);
                 gen.env.insert(name.clone(), (alloca_val, parsed_memref_ty));
                 gen.allocs.insert(name.clone());
@@ -3208,7 +2647,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
                             || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
                     {
-                        let cast_op = melior::ir::operation::OperationBuilder::new(
+                        let cast_op = OperationBuilder::new(
                             "arith.index_cast",
                             Location::unknown(gen.context),
                         )
@@ -3220,22 +2659,18 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         store_val = block.append_operation(cast_op).result(0).unwrap().into();
                     }
 
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[store_val, mem_val])
-                    .build()
-                    .unwrap();
+                    let store_op =
+                        OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                            .add_operands(&[store_val, mem_val])
+                            .build()
+                            .unwrap();
                     block.append_operation(store_op);
                 } else if gen.allocs.contains(name) {
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[rhs_val, mem_val])
-                    .build()
-                    .unwrap();
+                    let store_op =
+                        OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                            .add_operands(&[rhs_val, mem_val])
+                            .build()
+                            .unwrap();
                     block.append_operation(store_op);
                 } else {
                     gen.env.insert(name.clone(), (rhs_val, rhs_ty));
@@ -3261,49 +2696,39 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 let base_ty_str = base_ty.to_string();
                 if base_ty_str.starts_with("!llvm.ptr") {
                     let i64_ty = Type::parse(gen.context, "i64").unwrap();
-                    let cast_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.index_cast",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[indices[0]])
-                    .add_results(&[i64_ty])
-                    .build()
-                    .unwrap();
+                    let cast_op =
+                        OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                            .add_operands(&[indices[0]])
+                            .add_results(&[i64_ty])
+                            .build()
+                            .unwrap();
                     let idx_i64 = block.append_operation(cast_op).result(0).unwrap().into();
 
-                    let gep_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.getelementptr",
-                        Location::unknown(gen.context),
-                    )
-                    .add_attributes(&[
-                        (
-                            melior::ir::Identifier::new(gen.context, "rawConstantIndices"),
-                            melior::ir::attribute::DenseI32ArrayAttribute::new(
-                                gen.context,
-                                &[-2147483648],
-                            )
-                            .into(),
-                        ),
-                        (
-                            melior::ir::Identifier::new(gen.context, "elem_type"),
-                            melior::ir::attribute::TypeAttribute::new(rhs_ty).into(),
-                        ),
-                    ])
-                    .add_operands(&[base_val, idx_i64])
-                    .add_results(&[base_ty])
-                    .build()
-                    .unwrap();
+                    let gep_op =
+                        OperationBuilder::new("llvm.getelementptr", Location::unknown(gen.context))
+                            .add_attributes(&[
+                                (
+                                    Identifier::new(gen.context, "rawConstantIndices"),
+                                    DenseI32ArrayAttribute::new(gen.context, &[-2147483648]).into(),
+                                ),
+                                (
+                                    Identifier::new(gen.context, "elem_type"),
+                                    TypeAttribute::new(rhs_ty).into(),
+                                ),
+                            ])
+                            .add_operands(&[base_val, idx_i64])
+                            .add_results(&[base_ty])
+                            .build()
+                            .unwrap();
 
                     let gep_ref = block.append_operation(gep_op);
                     let ptr_val = gep_ref.result(0).unwrap().into();
 
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "llvm.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[rhs_val, ptr_val])
-                    .build()
-                    .unwrap();
+                    let store_op =
+                        OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                            .add_operands(&[rhs_val, ptr_val])
+                            .build()
+                            .unwrap();
 
                     block.append_operation(store_op);
                 } else {
@@ -3325,11 +2750,9 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         store_val = gen.coerce_type(block, store_val, rhs_ty, inner_ty);
                     }
 
-                    let mut store_builder = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[store_val, base_val]);
+                    let mut store_builder =
+                        OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                            .add_operands(&[store_val, base_val]);
 
                     for idx in indices {
                         store_builder = store_builder.add_operands(&[idx]);
@@ -3381,7 +2804,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     || (rhs_ty.to_string() == "i32"
                                         && field_ty.to_string() == "index"))
                             {
-                                let cast_op = melior::ir::operation::OperationBuilder::new(
+                                let cast_op = OperationBuilder::new(
                                     "arith.index_cast",
                                     Location::unknown(gen.context),
                                 )
@@ -3411,26 +2834,22 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let struct_llvm_ty =
                                     Type::parse(gen.context, &struct_llvm_ty_str).unwrap();
 
-                                let gep_op = melior::ir::operation::OperationBuilder::new(
+                                let gep_op = OperationBuilder::new(
                                     "llvm.getelementptr",
                                     Location::unknown(gen.context),
                                 )
                                 .add_attributes(&[
                                     (
-                                        melior::ir::Identifier::new(
-                                            gen.context,
-                                            "rawConstantIndices",
-                                        ),
-                                        melior::ir::attribute::DenseI32ArrayAttribute::new(
+                                        Identifier::new(gen.context, "rawConstantIndices"),
+                                        DenseI32ArrayAttribute::new(
                                             gen.context,
                                             &[0, field_idx as i32],
                                         )
                                         .into(),
                                     ),
                                     (
-                                        melior::ir::Identifier::new(gen.context, "elem_type"),
-                                        melior::ir::attribute::TypeAttribute::new(struct_llvm_ty)
-                                            .into(),
+                                        Identifier::new(gen.context, "elem_type"),
+                                        TypeAttribute::new(struct_llvm_ty).into(),
                                     ),
                                 ])
                                 .add_operands(&[base_val])
@@ -3441,7 +2860,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let gep_ref = block.append_operation(gep_op);
                                 let ptr_val = gep_ref.result(0).unwrap().into();
 
-                                let store_op = melior::ir::operation::OperationBuilder::new(
+                                let store_op = OperationBuilder::new(
                                     "llvm.store",
                                     Location::unknown(gen.context),
                                 )
@@ -3454,13 +2873,13 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     gen.context,
                                     &[field_idx as i64],
                                 );
-                                let insert_op = melior::ir::operation::OperationBuilder::new(
+                                let insert_op = OperationBuilder::new(
                                     "llvm.insertvalue",
                                     Location::unknown(gen.context),
                                 )
                                 .add_operands(&[base_val, field_val])
                                 .add_attributes(&[(
-                                    melior::ir::Identifier::new(gen.context, "position"),
+                                    Identifier::new(gen.context, "position"),
                                     pos_attr.into(),
                                 )])
                                 .add_results(&[base_ty])
@@ -3473,14 +2892,13 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 if let Some((mem_val, mem_ty)) = gen.env.get(base_name).cloned() {
                                     let mem_ty_str = mem_ty.to_string();
                                     if mem_ty_str.starts_with("memref<") {
-                                        let store_op =
-                                            melior::ir::operation::OperationBuilder::new(
-                                                "memref.store",
-                                                Location::unknown(gen.context),
-                                            )
-                                            .add_operands(&[new_struct_val, mem_val])
-                                            .build()
-                                            .unwrap();
+                                        let store_op = OperationBuilder::new(
+                                            "memref.store",
+                                            Location::unknown(gen.context),
+                                        )
+                                        .add_operands(&[new_struct_val, mem_val])
+                                        .build()
+                                        .unwrap();
                                         block.append_operation(store_op);
                                     } else {
                                         gen.env
@@ -3515,14 +2933,11 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             && ((rhs_ty.to_string() == "index" && ty.to_string() == "i32")
                 || (rhs_ty.to_string() == "i32" && ty.to_string() == "index"))
         {
-            let cast_op = melior::ir::operation::OperationBuilder::new(
-                "arith.index_cast",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[actual_rhs])
-            .add_results(&[ty])
-            .build()
-            .unwrap();
+            let cast_op = OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                .add_operands(&[actual_rhs])
+                .add_results(&[ty])
+                .build()
+                .unwrap();
             actual_rhs = block.append_operation(cast_op).result(0).unwrap().into();
         }
 
@@ -3530,14 +2945,12 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             || ty.to_string().contains("f64")
             || ty.to_string().contains("f16")
             || ty.to_string().contains("bf16");
-        let bin_op = melior::ir::operation::OperationBuilder::new(
-            op.get_op_name(is_float),
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[lhs_val, actual_rhs])
-        .add_results(&[ty])
-        .build()
-        .unwrap();
+        let bin_op =
+            OperationBuilder::new(op.get_op_name(is_float), Location::unknown(gen.context))
+                .add_operands(&[lhs_val, actual_rhs])
+                .add_results(&[ty])
+                .build()
+                .unwrap();
         let bin_ref = block.append_operation(bin_op);
         let result_val = bin_ref.result(0).unwrap().into();
 
@@ -3545,13 +2958,11 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[result_val, mem_val])
-                    .build()
-                    .unwrap();
+                    let store_op =
+                        OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                            .add_operands(&[result_val, mem_val])
+                            .build()
+                            .unwrap();
                     block.append_operation(store_op);
                 } else {
                     gen.env.insert(name.clone(), (result_val, ty));
@@ -3581,13 +2992,11 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                 if mem_ty_str.starts_with("memref<") {
                     let mut operands = vec![result_val, mem_val];
                     operands.extend(indices);
-                    let store_op = melior::ir::operation::OperationBuilder::new(
-                        "memref.store",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&operands)
-                    .build()
-                    .unwrap();
+                    let store_op =
+                        OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                            .add_operands(&operands)
+                            .build()
+                            .unwrap();
                     block.append_operation(store_op);
                 }
             }
@@ -3633,14 +3042,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let start_idx = if start_ty == ty_index {
                 start_val
             } else {
-                let cast_start_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.index_cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[start_val])
-                .add_results(&[ty_index])
-                .build()
-                .unwrap();
+                let cast_start_op =
+                    OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                        .add_operands(&[start_val])
+                        .add_results(&[ty_index])
+                        .build()
+                        .unwrap();
                 block
                     .append_operation(cast_start_op)
                     .result(0)
@@ -3651,14 +3058,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let end_idx = if end_ty == ty_index {
                 end_val
             } else {
-                let cast_end_op = melior::ir::operation::OperationBuilder::new(
-                    "arith.index_cast",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[end_val])
-                .add_results(&[ty_index])
-                .build()
-                .unwrap();
+                let cast_end_op =
+                    OperationBuilder::new("arith.index_cast", Location::unknown(gen.context))
+                        .add_operands(&[end_val])
+                        .add_results(&[ty_index])
+                        .build()
+                        .unwrap();
                 block
                     .append_operation(cast_end_op)
                     .result(0)
@@ -3667,17 +3072,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             };
 
             let step_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[ty_index])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_results(&[ty_index])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(ty_index, 1).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let step_idx = step_op.result(0).unwrap().into();
 
@@ -3692,24 +3094,18 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             }
 
             for_block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(gen.context),
-                )
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                    .build()
+                    .unwrap(),
             );
             for_region.append_block(for_block);
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.for",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[start_idx, end_idx, step_idx])
-                .add_regions([for_region])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.for", Location::unknown(gen.context))
+                    .add_operands(&[start_idx, end_idx, step_idx])
+                    .add_regions([for_region])
+                    .build()
+                    .unwrap(),
             );
             return;
         }
@@ -3722,17 +3118,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let ty_index = Type::parse(gen.context, "index").unwrap();
             let start_idx = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[ty_index])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(ty_index, 0).into(),
-                    )])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[ty_index])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(ty_index, 0).into(),
+                        )])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -3749,17 +3142,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
             let end_idx = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[ty_index])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(ty_index, len).into(),
-                    )])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[ty_index])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(ty_index, len).into(),
+                        )])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -3767,17 +3157,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
             let step_idx = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[ty_index])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(ty_index, 1).into(),
-                    )])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[ty_index])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(ty_index, 1).into(),
+                        )])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -3790,14 +3177,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let el_ty_str = iter_ty_str.split('x').nth(1).unwrap().trim_end_matches('>');
             let el_ty = Type::parse(gen.context, el_ty_str).unwrap();
 
-            let extract_op = melior::ir::operation::OperationBuilder::new(
-                "tensor.extract",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[iter_val, i_arg])
-            .add_results(&[el_ty])
-            .build()
-            .unwrap();
+            let extract_op =
+                OperationBuilder::new("tensor.extract", Location::unknown(gen.context))
+                    .add_operands(&[iter_val, i_arg])
+                    .add_results(&[el_ty])
+                    .build()
+                    .unwrap();
 
             let el_val = for_block
                 .append_operation(extract_op)
@@ -3812,24 +3197,18 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             }
 
             for_block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(gen.context),
-                )
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                    .build()
+                    .unwrap(),
             );
             for_region.append_block(for_block);
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.for",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[start_idx, end_idx, step_idx])
-                .add_regions([for_region])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.for", Location::unknown(gen.context))
+                    .add_operands(&[start_idx, end_idx, step_idx])
+                    .add_regions([for_region])
+                    .build()
+                    .unwrap(),
             );
             return;
         }
@@ -3860,43 +3239,34 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
         let c1_op_alloc = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.mlir.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i32_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i32_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let c1_val_alloc = c1_op_alloc.result(0).unwrap().into();
 
         let alloca_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.alloca",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[c1_val_alloc])
-            .add_results(&[ptr_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "elem_type"),
-                melior::ir::attribute::TypeAttribute::new(iter_ty).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.alloca", Location::unknown(gen.context))
+                .add_operands(&[c1_val_alloc])
+                .add_results(&[ptr_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "elem_type"),
+                    TypeAttribute::new(iter_ty).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let ptr_val = alloca_op.result(0).unwrap().into();
         before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.store",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[iter_arg, ptr_val])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                .add_operands(&[iter_arg, ptr_val])
+                .build()
+                .unwrap(),
         );
 
         // Add ptr_val to gen.allocs and gen.env temporarily so IdentifierExpr returns it!
@@ -3922,29 +3292,24 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         // Load the updated iterator value to yield it back
         let load_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.load",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[ptr_val])
-            .add_results(&[iter_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+                .add_operands(&[ptr_val])
+                .add_results(&[iter_ty])
+                .build()
+                .unwrap(),
         );
         let updated_iter_val = load_op.result(0).unwrap().into();
 
-        let extract_tag_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.extractvalue",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[opt_val])
-        .add_results(&[i32_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "position"),
-            melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
-        )])
-        .build()
-        .unwrap();
+        let extract_tag_op =
+            OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                .add_operands(&[opt_val])
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                )])
+                .build()
+                .unwrap();
         let tag_val = before_block
             .append_operation(extract_tag_op)
             .result(0)
@@ -3952,48 +3317,39 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             .into();
 
         let c1_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i32_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i32_ty, 0).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let c1_val = c1_op.result(0).unwrap().into();
 
         let cmpi_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.cmpi",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[tag_val, c1_val])
-            .add_results(&[Type::parse(gen.context, "i1").unwrap()])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "predicate"),
-                melior::ir::attribute::IntegerAttribute::new(
-                    Type::parse(gen.context, "i64").unwrap(),
-                    0, // eq
-                )
-                .into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.cmpi", Location::unknown(gen.context))
+                .add_operands(&[tag_val, c1_val])
+                .add_results(&[Type::parse(gen.context, "i1").unwrap()])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(
+                        Type::parse(gen.context, "i64").unwrap(),
+                        0, // eq
+                    )
+                    .into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let cond_val = cmpi_op.result(0).unwrap().into();
 
         let _condition_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.condition",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[cond_val, opt_val, updated_iter_val])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.condition", Location::unknown(gen.context))
+                .add_operands(&[cond_val, opt_val, updated_iter_val])
+                .build()
+                .unwrap(),
         );
         before_region.append_block(before_block);
 
@@ -4015,18 +3371,16 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         };
         let payload_ty = Type::parse(gen.context, &payload_ty_str).unwrap();
 
-        let extract_payload_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.extractvalue",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[opt_arg])
-        .add_results(&[payload_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "position"),
-            melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
-        )])
-        .build()
-        .unwrap();
+        let extract_payload_op =
+            OperationBuilder::new("llvm.extractvalue", Location::unknown(gen.context))
+                .add_operands(&[opt_arg])
+                .add_results(&[payload_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+                )])
+                .build()
+                .unwrap();
         let payload_val = after_block
             .append_operation(extract_payload_op)
             .result(0)
@@ -4045,26 +3399,20 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         gen.break_flags.pop();
 
         after_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.yield",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[next_iter_arg])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                .add_operands(&[next_iter_arg])
+                .build()
+                .unwrap(),
         );
         after_region.append_block(after_block);
 
         block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.while",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[iter_val])
-            .add_results(&[opt_ty, iter_ty])
-            .add_regions([before_region, after_region])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.while", Location::unknown(gen.context))
+                .add_operands(&[iter_val])
+                .add_results(&[opt_ty, iter_ty])
+                .add_regions([before_region, after_region])
+                .build()
+                .unwrap(),
         );
     }
 }
@@ -4089,31 +3437,28 @@ fn emit_enzyme_decl<'c>(
     let enzyme_name = format!("{}_{}_{}", prefix, suffix, target_fn);
     if !gen.functions.contains_key(&enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
         let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
-        let _name_attr = melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name);
-        let _type_attr = melior::ir::attribute::TypeAttribute::new(func_type.into());
+        let _name_attr = StringAttribute::new(gen.context, &enzyme_name);
+        let _type_attr = TypeAttribute::new(func_type.into());
 
         let region = melior::ir::Region::new();
-        let func_op = melior::ir::operation::OperationBuilder::new(
-            "func.func",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[
-            (
-                melior::ir::Identifier::new(gen.context, "sym_name"),
-                melior::ir::attribute::StringAttribute::new(gen.context, &enzyme_name).into(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "function_type"),
-                melior::ir::attribute::TypeAttribute::new(func_type.into()).into(),
-            ),
-            (
-                melior::ir::Identifier::new(gen.context, "sym_visibility"),
-                melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
-            ),
-        ])
-        .add_regions([region])
-        .build()
-        .unwrap();
+        let func_op = OperationBuilder::new("func.func", Location::unknown(gen.context))
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, &enzyme_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "function_type"),
+                    TypeAttribute::new(func_type.into()).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "sym_visibility"),
+                    StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([region])
+            .build()
+            .unwrap();
 
         gen.module.body().append_operation(func_op);
     }
@@ -4135,17 +3480,14 @@ impl<'c> LowerToMelior<'c> for GradExpr {
             .expect("Function not found");
 
         let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
-        let const_op = melior::ir::operation::OperationBuilder::new(
-            "func.constant",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
-        )])
-        .add_results(&[fn_ty.into()])
-        .build()
-        .unwrap();
+        let const_op = OperationBuilder::new("func.constant", Location::unknown(gen.context))
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+            )])
+            .add_results(&[fn_ty.into()])
+            .build()
+            .unwrap();
         let const_ref = block.append_operation(const_op);
         let target_fn_val = const_ref.result(0).unwrap().into();
 
@@ -4160,20 +3502,13 @@ impl<'c> LowerToMelior<'c> for GradExpr {
 
         let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
-        let name_attr =
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
-        let call_op = melior::ir::operation::OperationBuilder::new(
-            "func.call",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&arg_vals)
-        .add_results(&[ret_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "callee"),
-            name_attr.into(),
-        )])
-        .build()
-        .unwrap();
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_operands(&arg_vals)
+            .add_results(&[ret_ty])
+            .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
+            .build()
+            .unwrap();
 
         let call_ref = block.append_operation(call_op);
         (call_ref.result(0).unwrap().into(), ret_ty)
@@ -4196,17 +3531,14 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             .expect("Function not found");
 
         let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
-        let const_op = melior::ir::operation::OperationBuilder::new(
-            "func.constant",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
-        )])
-        .add_results(&[fn_ty.into()])
-        .build()
-        .unwrap();
+        let const_op = OperationBuilder::new("func.constant", Location::unknown(gen.context))
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+            )])
+            .add_results(&[fn_ty.into()])
+            .build()
+            .unwrap();
         let const_ref = block.append_operation(const_op);
         let target_fn_val = const_ref.result(0).unwrap().into();
 
@@ -4223,20 +3555,13 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         // and then multiply by the cotangent seed.
         let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
-        let name_attr =
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
-        let call_op = melior::ir::operation::OperationBuilder::new(
-            "func.call",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&arg_vals)
-        .add_results(&[ret_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "callee"),
-            name_attr.into(),
-        )])
-        .build()
-        .unwrap();
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_operands(&arg_vals)
+            .add_results(&[ret_ty])
+            .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
+            .build()
+            .unwrap();
 
         let call_ref = block.append_operation(call_op);
         let grad_val = call_ref.result(0).unwrap().into();
@@ -4249,12 +3574,11 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             || ret_ty.to_string().contains("f16")
             || ret_ty.to_string().contains("bf16");
         let op_name = if is_float { "arith.mulf" } else { "arith.muli" };
-        let mul_op =
-            melior::ir::operation::OperationBuilder::new(op_name, Location::unknown(gen.context))
-                .add_operands(&[grad_val, c_val])
-                .add_results(&[ret_ty])
-                .build()
-                .unwrap();
+        let mul_op = OperationBuilder::new(op_name, Location::unknown(gen.context))
+            .add_operands(&[grad_val, c_val])
+            .add_results(&[ret_ty])
+            .build()
+            .unwrap();
         let mul_ref = block.append_operation(mul_op);
 
         (mul_ref.result(0).unwrap().into(), ret_ty)
@@ -4277,17 +3601,14 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
             .expect("Function not found");
 
         let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
-        let const_op = melior::ir::operation::OperationBuilder::new(
-            "func.constant",
-            Location::unknown(gen.context),
-        )
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
-        )])
-        .add_results(&[fn_ty.into()])
-        .build()
-        .unwrap();
+        let const_op = OperationBuilder::new("func.constant", Location::unknown(gen.context))
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
+            )])
+            .add_results(&[fn_ty.into()])
+            .build()
+            .unwrap();
         let const_ref = block.append_operation(const_op);
         let target_fn_val = const_ref.result(0).unwrap().into();
 
@@ -4307,20 +3628,13 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         // Enzyme intercepts `__enzyme_fwddiff` for forward mode.
         let enzyme_name = emit_enzyme_decl(gen, "fwddiff", target_fn, &enzyme_arg_types, ret_ty);
 
-        let name_attr =
-            melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
-        let call_op = melior::ir::operation::OperationBuilder::new(
-            "func.call",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&arg_vals)
-        .add_results(&[ret_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "callee"),
-            name_attr.into(),
-        )])
-        .build()
-        .unwrap();
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, &enzyme_name);
+        let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_operands(&arg_vals)
+            .add_results(&[ret_ty])
+            .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
+            .build()
+            .unwrap();
 
         let call_ref = block.append_operation(call_op);
         (call_ref.result(0).unwrap().into(), ret_ty)
@@ -4336,69 +3650,50 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         let memref_ty = Type::parse(gen.context, "memref<1xi1>").unwrap();
 
         let alloca_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "memref.alloca",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[memref_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("memref.alloca", Location::unknown(gen.context))
+                .add_results(&[memref_ty])
+                .build()
+                .unwrap(),
         );
         let break_ptr = alloca_op.result(0).unwrap().into();
 
         let continue_alloca = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "memref.alloca",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[memref_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("memref.alloca", Location::unknown(gen.context))
+                .add_results(&[memref_ty])
+                .build()
+                .unwrap(),
         );
         let continue_ptr = continue_alloca.result(0).unwrap().into();
 
         let false_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i1_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i1_ty, 0).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i1_ty, 0).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let false_val = false_op.result(0).unwrap().into();
 
         let c0_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[Type::parse(gen.context, "index").unwrap()])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(
-                    Type::parse(gen.context, "index").unwrap(),
-                    0,
-                )
-                .into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let c0_idx = c0_op.result(0).unwrap().into();
 
         block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "memref.store",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[false_val, break_ptr, c0_idx])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                .add_operands(&[false_val, break_ptr, c0_idx])
+                .build()
+                .unwrap(),
         );
 
         gen.break_flags.push(break_ptr);
@@ -4408,62 +3703,47 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         let before_block = Block::new(&[]);
 
         before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "memref.store",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[false_val, continue_ptr, c0_idx])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                .add_operands(&[false_val, continue_ptr, c0_idx])
+                .build()
+                .unwrap(),
         );
 
         let load_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "memref.load",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[break_ptr, c0_idx])
-            .add_results(&[i1_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                .add_operands(&[break_ptr, c0_idx])
+                .add_results(&[i1_ty])
+                .build()
+                .unwrap(),
         );
         let is_break = load_op.result(0).unwrap().into();
 
         let true_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i1_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i1_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let true_val = true_op.result(0).unwrap().into();
 
         let not_break_op = before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "arith.xori",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[is_break, true_val])
-            .add_results(&[i1_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("arith.xori", Location::unknown(gen.context))
+                .add_operands(&[is_break, true_val])
+                .add_results(&[i1_ty])
+                .build()
+                .unwrap(),
         );
         let not_break = not_break_op.result(0).unwrap().into();
 
         before_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.condition",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[not_break])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.condition", Location::unknown(gen.context))
+                .add_operands(&[not_break])
+                .build()
+                .unwrap(),
         );
         before_region.append_block(before_block);
 
@@ -4481,23 +3761,17 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         );
 
         after_block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.yield",
-                Location::unknown(gen.context),
-            )
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                .build()
+                .unwrap(),
         );
         after_region.append_block(after_block);
 
         block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "scf.while",
-                Location::unknown(gen.context),
-            )
-            .add_regions([before_region, after_region])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("scf.while", Location::unknown(gen.context))
+                .add_regions([before_region, after_region])
+                .build()
+                .unwrap(),
         );
 
         gen.continue_flags.pop();
@@ -4511,47 +3785,34 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
         if let Some(&break_ptr) = gen.break_flags.last() {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
             let true_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[i1_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_results(&[i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(i1_ty, 1).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let true_val = true_op.result(0).unwrap().into();
 
             let c0_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[Type::parse(gen.context, "index").unwrap()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(
-                        Type::parse(gen.context, "index").unwrap(),
-                        0,
-                    )
-                    .into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let c0_idx = c0_op.result(0).unwrap().into();
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[true_val, break_ptr, c0_idx])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                    .add_operands(&[true_val, break_ptr, c0_idx])
+                    .build()
+                    .unwrap(),
             );
         } else {
             panic!("break outside of a loop");
@@ -4565,47 +3826,34 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
         if let Some(&continue_ptr) = gen.continue_flags.last() {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
             let true_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[i1_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_results(&[i1_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(i1_ty, 1).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let true_val = true_op.result(0).unwrap().into();
 
             let c0_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    Location::unknown(gen.context),
-                )
-                .add_results(&[Type::parse(gen.context, "index").unwrap()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(
-                        Type::parse(gen.context, "index").unwrap(),
-                        0,
-                    )
-                    .into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                    .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let c0_idx = c0_op.result(0).unwrap().into();
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "memref.store",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[true_val, continue_ptr, c0_idx])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("memref.store", Location::unknown(gen.context))
+                    .add_operands(&[true_val, continue_ptr, c0_idx])
+                    .build()
+                    .unwrap(),
             );
         } else {
             panic!("continue outside of a loop");
@@ -4658,17 +3906,14 @@ pub fn generate_match_chain<'c>(
             }
 
             let tag_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.constant",
-                    melior::ir::Location::unknown(gen.context),
-                )
-                .add_results(&[i32_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "value"),
-                    melior::ir::attribute::IntegerAttribute::new(i32_ty, tag_val).into(),
-                )])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.constant", melior::ir::Location::unknown(gen.context))
+                    .add_results(&[i32_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(i32_ty, tag_val).into(),
+                    )])
+                    .build()
+                    .unwrap(),
             );
             let tag = tag_op.result(0).unwrap().into();
 
@@ -4676,14 +3921,14 @@ pub fn generate_match_chain<'c>(
                 match_val
             } else {
                 let extract_tag_op = block.append_operation(
-                    melior::ir::operation::OperationBuilder::new(
+                    OperationBuilder::new(
                         "llvm.extractvalue",
                         melior::ir::Location::unknown(gen.context),
                     )
                     .add_operands(&[match_val])
                     .add_results(&[i32_ty])
                     .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "position"),
+                        Identifier::new(gen.context, "position"),
                         melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
                             .into(),
                     )])
@@ -4694,22 +3939,19 @@ pub fn generate_match_chain<'c>(
             };
 
             let cmp_op = block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "arith.cmpi",
-                    melior::ir::Location::unknown(gen.context),
-                )
-                .add_operands(&[actual_tag, tag])
-                .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "predicate"),
-                    melior::ir::attribute::IntegerAttribute::new(
-                        melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
-                        0,
-                    )
-                    .into(),
-                )]) // 0 = eq
-                .build()
-                .unwrap(),
+                OperationBuilder::new("arith.cmpi", melior::ir::Location::unknown(gen.context))
+                    .add_operands(&[actual_tag, tag])
+                    .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "predicate"),
+                        IntegerAttribute::new(
+                            melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
+                            0,
+                        )
+                        .into(),
+                    )]) // 0 = eq
+                    .build()
+                    .unwrap(),
             );
             cmp_op.result(0).unwrap().into()
         }
@@ -4744,14 +3986,14 @@ pub fn generate_match_chain<'c>(
                             payload_ty_str, opt_ty_str
                         );
                     });
-                let extract_payload_op = melior::ir::operation::OperationBuilder::new(
+                let extract_payload_op = OperationBuilder::new(
                     "llvm.extractvalue",
                     melior::ir::Location::unknown(gen.context),
                 )
                 .add_operands(&[match_val])
                 .add_results(&[payload_ty])
                 .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "position"),
+                    Identifier::new(gen.context, "position"),
                     melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
                 )])
                 .build()
@@ -4770,12 +4012,9 @@ pub fn generate_match_chain<'c>(
         gen.generate_statement(stmt, &then_block);
     }
     then_block.append_operation(
-        melior::ir::operation::OperationBuilder::new(
-            "scf.yield",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .build()
-        .unwrap(),
+        OperationBuilder::new("scf.yield", melior::ir::Location::unknown(gen.context))
+            .build()
+            .unwrap(),
     );
     then_region.append_block(then_block);
 
@@ -4786,24 +4025,18 @@ pub fn generate_match_chain<'c>(
     generate_match_chain(gen, &arms[1..], match_val, _match_ty, &else_block);
 
     else_block.append_operation(
-        melior::ir::operation::OperationBuilder::new(
-            "scf.yield",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .build()
-        .unwrap(),
+        OperationBuilder::new("scf.yield", melior::ir::Location::unknown(gen.context))
+            .build()
+            .unwrap(),
     );
     else_region.append_block(else_block);
 
     block.append_operation(
-        melior::ir::operation::OperationBuilder::new(
-            "scf.if",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .add_operands(&[cond_val])
-        .add_regions([then_region, else_region])
-        .build()
-        .unwrap(),
+        OperationBuilder::new("scf.if", melior::ir::Location::unknown(gen.context))
+            .add_operands(&[cond_val])
+            .add_regions([then_region, else_region])
+            .build()
+            .unwrap(),
     );
 }
 
@@ -4816,17 +4049,15 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
 
         // Return dummy value for now like IfExpr
         let ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
-        let op = melior::ir::operation::OperationBuilder::new(
-            "arith.constant",
-            melior::ir::Location::unknown(gen.context),
-        )
-        .add_results(&[ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::IntegerAttribute::new(ty, 0).into(),
-        )])
-        .build()
-        .unwrap();
+        let op =
+            OperationBuilder::new("arith.constant", melior::ir::Location::unknown(gen.context))
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, 0).into(),
+                )])
+                .build()
+                .unwrap();
         let op_ref = block.append_operation(op);
         (op_ref.result(0).unwrap().into(), ty)
     }
@@ -4851,14 +4082,11 @@ fn generate_statements_with_break_guard<'c>(
         if contains_break(&stmts[0]) {
             let load_break = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "memref.load",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[break_ptr, c0_idx])
-                    .add_results(&[i1_ty])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                        .add_operands(&[break_ptr, c0_idx])
+                        .add_results(&[i1_ty])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -4866,14 +4094,11 @@ fn generate_statements_with_break_guard<'c>(
 
             let load_cont = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "memref.load",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[continue_ptr, c0_idx])
-                    .add_results(&[i1_ty])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("memref.load", Location::unknown(gen.context))
+                        .add_operands(&[continue_ptr, c0_idx])
+                        .add_results(&[i1_ty])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -4881,14 +4106,11 @@ fn generate_statements_with_break_guard<'c>(
 
             let is_break_or_cont = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.ori",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[load_break, load_cont])
-                    .add_results(&[i1_ty])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.ori", Location::unknown(gen.context))
+                        .add_operands(&[load_break, load_cont])
+                        .add_results(&[i1_ty])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -4896,17 +4118,14 @@ fn generate_statements_with_break_guard<'c>(
 
             let true_val = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_results(&[i1_ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(i1_ty, 1).into(),
-                    )])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[i1_ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(i1_ty, 1).into(),
+                        )])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -4914,14 +4133,11 @@ fn generate_statements_with_break_guard<'c>(
 
             let not_break = block
                 .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "arith.xori",
-                        Location::unknown(gen.context),
-                    )
-                    .add_operands(&[is_break_or_cont, true_val])
-                    .add_results(&[i1_ty])
-                    .build()
-                    .unwrap(),
+                    OperationBuilder::new("arith.xori", Location::unknown(gen.context))
+                        .add_operands(&[is_break_or_cont, true_val])
+                        .add_results(&[i1_ty])
+                        .build()
+                        .unwrap(),
                 )
                 .result(0)
                 .unwrap()
@@ -4941,35 +4157,26 @@ fn generate_statements_with_break_guard<'c>(
             );
 
             if_block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.yield",
-                    Location::unknown(gen.context),
-                )
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                    .build()
+                    .unwrap(),
             );
             if_region.append_block(if_block);
 
             let else_region = melior::ir::Region::new();
             let else_block = melior::ir::Block::new(&[]);
-            let yield_op = melior::ir::operation::OperationBuilder::new(
-                "scf.yield",
-                Location::unknown(gen.context),
-            )
-            .build()
-            .unwrap();
+            let yield_op = OperationBuilder::new("scf.yield", Location::unknown(gen.context))
+                .build()
+                .unwrap();
             else_block.append_operation(yield_op);
             else_region.append_block(else_block);
 
             block.append_operation(
-                melior::ir::operation::OperationBuilder::new(
-                    "scf.if",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[not_break])
-                .add_regions([if_region, else_region])
-                .build()
-                .unwrap(),
+                OperationBuilder::new("scf.if", Location::unknown(gen.context))
+                    .add_operands(&[not_break])
+                    .add_regions([if_region, else_region])
+                    .build()
+                    .unwrap(),
             );
         } else {
             generate_statements_with_break_guard(
@@ -5037,17 +4244,14 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         }
 
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
-        let tag_op = melior::ir::operation::OperationBuilder::new(
-            "arith.constant",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[i32_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::IntegerAttribute::new(i32_ty, tag_val).into(),
-        )])
-        .build()
-        .unwrap();
+        let tag_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(i32_ty, tag_val).into(),
+            )])
+            .build()
+            .unwrap();
         let tag_val = block.append_operation(tag_op).result(0).unwrap().into();
 
         println!(
@@ -5061,27 +4265,22 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 
         // We have an Option<T> struct
         let struct_ty = Type::parse(gen.context, &enum_ty_str).unwrap();
-        let undef_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.mlir.undef",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[struct_ty])
-        .build()
-        .unwrap();
+        let undef_op = OperationBuilder::new("llvm.mlir.undef", Location::unknown(gen.context))
+            .add_results(&[struct_ty])
+            .build()
+            .unwrap();
         let undef_val = block.append_operation(undef_op).result(0).unwrap().into();
 
-        let insert_tag_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.insertvalue",
-            Location::unknown(gen.context),
-        )
-        .add_operands(&[undef_val, tag_val])
-        .add_results(&[struct_ty])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "position"),
-            melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
-        )])
-        .build()
-        .unwrap();
+        let insert_tag_op =
+            OperationBuilder::new("llvm.insertvalue", Location::unknown(gen.context))
+                .add_operands(&[undef_val, tag_val])
+                .add_results(&[struct_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "position"),
+                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                )])
+                .build()
+                .unwrap();
         let mut struct_val = block
             .append_operation(insert_tag_op)
             .result(0)
@@ -5091,18 +4290,17 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         if let Some(payload_exprs) = payload {
             if !payload_exprs.is_empty() {
                 let (payload_val, _payload_ty) = gen.generate_expr(&payload_exprs[0], block);
-                let insert_payload_op = melior::ir::operation::OperationBuilder::new(
-                    "llvm.insertvalue",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[struct_val, payload_val])
-                .add_results(&[struct_ty])
-                .add_attributes(&[(
-                    melior::ir::Identifier::new(gen.context, "position"),
-                    melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
-                )])
-                .build()
-                .unwrap();
+                let insert_payload_op =
+                    OperationBuilder::new("llvm.insertvalue", Location::unknown(gen.context))
+                        .add_operands(&[struct_val, payload_val])
+                        .add_results(&[struct_ty])
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "position"),
+                            melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
+                                .into(),
+                        )])
+                        .build()
+                        .unwrap();
                 struct_val = block
                     .append_operation(insert_payload_op)
                     .result(0)
@@ -5164,45 +4362,36 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
 
         let i32_ty = Type::parse(gen.context, "i32").unwrap();
         let c1_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.mlir.constant",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[i32_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+                .add_results(&[i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(i32_ty, 1).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let c1 = c1_op.result(0).unwrap().into();
 
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
         let alloca_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.alloca",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[c1])
-            .add_results(&[ptr_ty])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "elem_type"),
-                melior::ir::attribute::TypeAttribute::new(vec_ty).into(),
-            )])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.alloca", Location::unknown(gen.context))
+                .add_operands(&[c1])
+                .add_results(&[ptr_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "elem_type"),
+                    TypeAttribute::new(vec_ty).into(),
+                )])
+                .build()
+                .unwrap(),
         );
         let ptr_val = alloca_op.result(0).unwrap().into();
 
         block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.store",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[vec_val, ptr_val])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+                .add_operands(&[vec_val, ptr_val])
+                .build()
+                .unwrap(),
         );
 
         let tmp_vec_name = format!("__vec_ptr_{}", gen.string_counter);
@@ -5230,14 +4419,11 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         }
 
         let load_op = block.append_operation(
-            melior::ir::operation::OperationBuilder::new(
-                "llvm.load",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[ptr_val])
-            .add_results(&[vec_ty])
-            .build()
-            .unwrap(),
+            OperationBuilder::new("llvm.load", Location::unknown(gen.context))
+                .add_operands(&[ptr_val])
+                .add_results(&[vec_ty])
+                .build()
+                .unwrap(),
         );
         (load_op.result(0).unwrap().into(), vec_ty)
     }
@@ -5281,27 +4467,24 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
                     Type::parse(gen.context, &format!("({}) -> i32", arg_ty)).unwrap()
                 };
 
-                let func_decl = melior::ir::operation::OperationBuilder::new(
-                    "func.func",
-                    Location::unknown(gen.context),
-                )
-                .add_attributes(&[
-                    (
-                        melior::ir::Identifier::new(gen.context, "sym_name"),
-                        melior::ir::attribute::StringAttribute::new(gen.context, func_name).into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "function_type"),
-                        melior::ir::attribute::TypeAttribute::new(func_ty).into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(gen.context, "sym_visibility"),
-                        melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
-                    ),
-                ])
-                .add_regions([melior::ir::Region::new()])
-                .build()
-                .unwrap();
+                let func_decl = OperationBuilder::new("func.func", Location::unknown(gen.context))
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "sym_name"),
+                            StringAttribute::new(gen.context, func_name).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "function_type"),
+                            TypeAttribute::new(func_ty).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "sym_visibility"),
+                            StringAttribute::new(gen.context, "private").into(),
+                        ),
+                    ])
+                    .add_regions([melior::ir::Region::new()])
+                    .build()
+                    .unwrap();
 
                 gen.module.body().append_operation(func_decl);
                 gen.functions.insert(
@@ -5317,39 +4500,25 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
                 );
             }
 
-            let name_attr =
-                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, func_name);
-            let call_op = melior::ir::operation::OperationBuilder::new(
-                "func.call",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[arg_val])
-            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "callee"),
-                name_attr.into(),
-            )])
-            .build()
-            .unwrap();
+            let name_attr = FlatSymbolRefAttribute::new(gen.context, func_name);
+            let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+                .add_operands(&[arg_val])
+                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
+                .build()
+                .unwrap();
 
             block.append_operation(call_op);
         }
 
-        let dummy_op = melior::ir::operation::OperationBuilder::new(
-            "llvm.mlir.constant",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "value"),
-            melior::ir::attribute::IntegerAttribute::new(
-                Type::parse(gen.context, "i32").unwrap(),
-                0,
-            )
-            .into(),
-        )])
-        .build()
-        .unwrap();
+        let dummy_op = OperationBuilder::new("llvm.mlir.constant", Location::unknown(gen.context))
+            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0).into(),
+            )])
+            .build()
+            .unwrap();
 
         (
             block.append_operation(dummy_op).result(0).unwrap().into(),
@@ -5374,27 +4543,24 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
         if !gen.functions.contains_key("println") {
             let func_ty = Type::parse(gen.context, "() -> i32").unwrap();
 
-            let func_decl = melior::ir::operation::OperationBuilder::new(
-                "func.func",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[
-                (
-                    melior::ir::Identifier::new(gen.context, "sym_name"),
-                    melior::ir::attribute::StringAttribute::new(gen.context, "println").into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "function_type"),
-                    melior::ir::attribute::TypeAttribute::new(func_ty).into(),
-                ),
-                (
-                    melior::ir::Identifier::new(gen.context, "sym_visibility"),
-                    melior::ir::attribute::StringAttribute::new(gen.context, "private").into(),
-                ),
-            ])
-            .add_regions([melior::ir::Region::new()])
-            .build()
-            .unwrap();
+            let func_decl = OperationBuilder::new("func.func", Location::unknown(gen.context))
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "sym_name"),
+                        StringAttribute::new(gen.context, "println").into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "function_type"),
+                        TypeAttribute::new(func_ty).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "sym_visibility"),
+                        StringAttribute::new(gen.context, "private").into(),
+                    ),
+                ])
+                .add_regions([melior::ir::Region::new()])
+                .build()
+                .unwrap();
 
             gen.module.body().append_operation(func_decl);
             gen.functions.insert(
@@ -5403,18 +4569,12 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
             );
         }
 
-        let name_attr = melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, "println");
-        let call_op = melior::ir::operation::OperationBuilder::new(
-            "func.call",
-            Location::unknown(gen.context),
-        )
-        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
-        .add_attributes(&[(
-            melior::ir::Identifier::new(gen.context, "callee"),
-            name_attr.into(),
-        )])
-        .build()
-        .unwrap();
+        let name_attr = FlatSymbolRefAttribute::new(gen.context, "println");
+        let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+            .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
+            .build()
+            .unwrap();
 
         (
             block.append_operation(call_op).result(0).unwrap().into(),
@@ -5452,23 +4612,19 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
 
             let fn_ty =
                 melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
-            let const_op = melior::ir::operation::OperationBuilder::new(
-                "func.constant",
-                Location::unknown(gen.context),
-            )
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "value"),
-                melior::ir::attribute::FlatSymbolRefAttribute::new(gen.context, &call_fn_name)
-                    .into(),
-            )])
-            .add_results(&[fn_ty.into()])
-            .build()
-            .unwrap();
+            let const_op = OperationBuilder::new("func.constant", Location::unknown(gen.context))
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    FlatSymbolRefAttribute::new(gen.context, &call_fn_name).into(),
+                )])
+                .add_results(&[fn_ty.into()])
+                .build()
+                .unwrap();
             let const_ref = block.append_operation(const_op);
             let mut fn_ptr_val: melior::ir::Value = const_ref.result(0).unwrap().into();
 
             let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-            let bitcast_op = melior::ir::operation::OperationBuilder::new(
+            let bitcast_op = OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),
             )
@@ -5480,33 +4636,29 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             fn_ptr_val = bitcast_ref.result(0).unwrap().into();
 
             let fat_ptr_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr)>").unwrap();
-            let undef_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.mlir.undef",
-                Location::unknown(gen.context),
-            )
-            .add_results(&[fat_ptr_ty])
-            .build()
-            .unwrap();
+            let undef_op = OperationBuilder::new("llvm.mlir.undef", Location::unknown(gen.context))
+                .add_results(&[fat_ptr_ty])
+                .build()
+                .unwrap();
             let undef_ref = block.append_operation(undef_op);
             let mut fat_ptr_val: melior::ir::Value = undef_ref.result(0).unwrap().into();
 
-            let insert_fn_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.insertvalue",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[fat_ptr_val, fn_ptr_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "position"),
-                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
-            )])
-            .add_results(&[fat_ptr_ty])
-            .build()
-            .unwrap();
+            let insert_fn_op =
+                OperationBuilder::new("llvm.insertvalue", Location::unknown(gen.context))
+                    .add_operands(&[fat_ptr_val, fn_ptr_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
+                            .into(),
+                    )])
+                    .add_results(&[fat_ptr_ty])
+                    .build()
+                    .unwrap();
             let insert_fn_ref = block.append_operation(insert_fn_op);
             fat_ptr_val = insert_fn_ref.result(0).unwrap().into();
 
             let mut env_ptr_val = source_val;
-            let ptr_bitcast_op = melior::ir::operation::OperationBuilder::new(
+            let ptr_bitcast_op = OperationBuilder::new(
                 "builtin.unrealized_conversion_cast",
                 Location::unknown(gen.context),
             )
@@ -5517,18 +4669,17 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             let ptr_bitcast_ref = block.append_operation(ptr_bitcast_op);
             env_ptr_val = ptr_bitcast_ref.result(0).unwrap().into();
 
-            let insert_env_op = melior::ir::operation::OperationBuilder::new(
-                "llvm.insertvalue",
-                Location::unknown(gen.context),
-            )
-            .add_operands(&[fat_ptr_val, env_ptr_val])
-            .add_attributes(&[(
-                melior::ir::Identifier::new(gen.context, "position"),
-                melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
-            )])
-            .add_results(&[fat_ptr_ty])
-            .build()
-            .unwrap();
+            let insert_env_op =
+                OperationBuilder::new("llvm.insertvalue", Location::unknown(gen.context))
+                    .add_operands(&[fat_ptr_val, env_ptr_val])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
+                            .into(),
+                    )])
+                    .add_results(&[fat_ptr_ty])
+                    .build()
+                    .unwrap();
             let insert_env_ref = block.append_operation(insert_env_op);
             fat_ptr_val = insert_env_ref.result(0).unwrap().into();
 
@@ -5541,4 +4692,245 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
 
         panic!("Unsupported cast operation in codegen");
     }
+}
+fn lower_map_call<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::Block<'c>,
+    args: &[Expr],
+) -> (Value<'c, 'c>, Type<'c>) {
+    let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block);
+    // args[1] is the closure
+    // We need to fetch the closure's function and invoke it inside a linalg.generic.
+    let tensor_ty_str = tensor_ty.to_string();
+    if tensor_ty_str.starts_with("memref<") {
+        let parts: Vec<&str> = tensor_ty_str
+            .trim_start_matches("memref<")
+            .trim_end_matches('>')
+            .split('x')
+            .collect();
+        let el_ty_str = parts.last().unwrap_or(&"f32").trim();
+        let rank = parts.len() - 1;
+
+        // 1. Allocate output memref
+        let mut alloc_operands = Vec::new();
+        let index_ty = Type::parse(gen.context, "index").unwrap();
+        for (i, dim_str) in parts.iter().take(rank).enumerate() {
+            if *dim_str == "?" {
+                let idx_attr = IntegerAttribute::new(Type::index(gen.context), i as i64).into();
+                let cst_op =
+                    OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+                        .add_results(&[index_ty])
+                        .add_attributes(&[(Identifier::new(gen.context, "value"), idx_attr)])
+                        .build()
+                        .unwrap();
+                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+
+                let dim_op = OperationBuilder::new("memref.dim", Location::unknown(gen.context))
+                    .add_operands(&[tensor_val, idx_val])
+                    .add_results(&[index_ty])
+                    .build()
+                    .unwrap();
+                alloc_operands.push(block.append_operation(dim_op).result(0).unwrap().into());
+            }
+        }
+
+        let alloc_op = OperationBuilder::new("memref.alloc", Location::unknown(gen.context))
+            .add_operands(&alloc_operands)
+            .add_attributes(&[(
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0]).into(),
+            )])
+            .add_results(&[tensor_ty])
+            .build()
+            .unwrap();
+        let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+
+        // 2. Generate linalg.generic
+        let region = Region::new();
+        let block_generic = melior::ir::Block::new(&[
+            (
+                Type::parse(gen.context, el_ty_str).unwrap(),
+                Location::unknown(gen.context),
+            ),
+            (
+                Type::parse(gen.context, el_ty_str).unwrap(),
+                Location::unknown(gen.context),
+            ),
+        ]);
+
+        // We need to call the closure!
+        // args[1] is the closure expression (StructInitExpr for Closure_N).
+        let (closure_val, closure_ty) = gen.generate_expr(&args[1], block);
+
+        // Allocate it on stack to get a pointer
+        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let c1_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(i32_ty, 1).into(),
+            )])
+            .build()
+            .unwrap();
+        let c1 = block.append_operation(c1_op).result(0).unwrap().into();
+
+        let alloca_op = OperationBuilder::new("llvm.alloca", Location::unknown(gen.context))
+            .add_operands(&[c1])
+            .add_results(&[ptr_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "elem_type"),
+                TypeAttribute::new(closure_ty).into(),
+            )])
+            .build()
+            .unwrap();
+        let alloca_ptr = block.append_operation(alloca_op).result(0).unwrap().into();
+
+        let store_op = OperationBuilder::new("llvm.store", Location::unknown(gen.context))
+            .add_operands(&[closure_val, alloca_ptr])
+            .build()
+            .unwrap();
+        block.append_operation(store_op);
+
+        // Extract invoke method name
+        let ty_str = closure_ty.to_string();
+        let struct_name = ty_str
+            .strip_prefix("!llvm.struct<\"")
+            .unwrap_or(&ty_str)
+            .split("\"")
+            .next()
+            .unwrap();
+        let invoke_method = format!("{}_call", struct_name);
+
+        let call_op = OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_operands(&[alloca_ptr, block_generic.argument(0).unwrap().into()])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                FlatSymbolRefAttribute::new(gen.context, &invoke_method).into(),
+            )])
+            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+            .build()
+            .unwrap();
+
+        let call_res = block_generic
+            .append_operation(call_op)
+            .result(0)
+            .unwrap()
+            .into();
+
+        let yield_op = OperationBuilder::new("linalg.yield", Location::unknown(gen.context))
+            .add_operands(&[call_res])
+            .build()
+            .unwrap();
+        block_generic.append_operation(yield_op);
+        region.append_block(block_generic);
+
+        // Affine maps: both input and output are identity maps
+        let affine_map = format!(
+            "affine_map<(d0{}) -> (d0{})>",
+            (1..rank).map(|i| format!(", d{}", i)).collect::<String>(),
+            (1..rank).map(|i| format!(", d{}", i)).collect::<String>()
+        );
+        // For rank 0 it's affine_map<() -> ()>
+        let affine_map_attr = if rank == 0 {
+            Attribute::parse(gen.context, "affine_map<() -> ()>").unwrap()
+        } else {
+            Attribute::parse(gen.context, &affine_map).unwrap()
+        };
+
+        let linalg_generic =
+            OperationBuilder::new("linalg.generic", Location::unknown(gen.context))
+                .add_operands(&[tensor_val, out_val])
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "indexing_maps"),
+                        ArrayAttribute::new(gen.context, &[affine_map_attr, affine_map_attr])
+                            .into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "iterator_types"),
+                        ArrayAttribute::new(
+                            gen.context,
+                            &vec![
+                                Attribute::parse(gen.context, "#linalg.iterator_type<parallel>")
+                                    .unwrap();
+                                rank
+                            ],
+                        )
+                        .into(),
+                    ),
+                ])
+                .add_regions([region])
+                .build()
+                .unwrap();
+        block.append_operation(linalg_generic);
+
+        return (out_val, tensor_ty);
+    }
+}
+
+fn lower_print_call<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: &melior::ir::Block<'c>,
+    args: &[Expr],
+) -> (Value<'c, 'c>, Type<'c>) {
+    let mut print_arg = &args[0];
+    if let Expr::Borrow(borrow) = print_arg {
+        print_arg = &borrow.expr;
+    }
+
+    let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block);
+
+    let el_ty_str =
+        extract_mlir_element_type(&arg_ty.to_string()).unwrap_or_else(|e| panic!("{}", e));
+
+    let print_fn_name = match el_ty_str {
+        "f64" => "printMemrefF64",
+        "i64" => "printMemrefI64",
+        "i32" => "printMemrefI32",
+        "bf16" => "printMemrefBF16",
+        _ => "printMemrefF32",
+    };
+
+    if arg_ty.to_string().contains(", ") {
+        let stripped_ty = Type::parse(gen.context, &format!("memref<?x?x{}>", el_ty_str)).unwrap();
+        let mcast_op = block.append_operation(
+            OperationBuilder::new("memref.memory_space_cast", Location::unknown(gen.context))
+                .add_operands(&[arg_val])
+                .add_results(&[stripped_ty])
+                .build()
+                .unwrap(),
+        );
+        arg_val = mcast_op.result(0).unwrap().into();
+    }
+
+    let unranked_memref_ty = Type::parse(gen.context, &format!("memref<*x{}>", el_ty_str)).unwrap();
+    let cast_op = block.append_operation(
+        OperationBuilder::new("memref.cast", Location::unknown(gen.context))
+            .add_operands(&[arg_val])
+            .add_results(&[unranked_memref_ty])
+            .build()
+            .unwrap(),
+    );
+    let cast_val: Value = cast_op.result(0).unwrap().into();
+
+    block.append_operation(
+        OperationBuilder::new("func.call", Location::unknown(gen.context))
+            .add_operands(&[cast_val])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                FlatSymbolRefAttribute::new(gen.context, print_fn_name).into(),
+            )])
+            .build()
+            .unwrap(),
+    );
+
+    return (
+        cast_val, // Dummy return value, caller ignores it
+        Type::parse(gen.context, "none").unwrap(),
+    );
 }
