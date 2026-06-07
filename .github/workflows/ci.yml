@@ -55,10 +55,10 @@ jobs:
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --workspace --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
 
       - name: Run stress tests (Every 10th Commit)
         run: |

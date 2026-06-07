@@ -349,25 +349,36 @@ impl CompilerDriver {
             Action::EmitObj => {
                 let current_dir = std::env::current_dir().unwrap();
                 let vx_std_core = format!(
-                    "{}/target/debug/libvx_std_core.dylib",
-                    current_dir.display()
+                    "{}/target/debug/{}vx_std_core{}",
+                    current_dir.display(),
+                    std::env::consts::DLL_PREFIX,
+                    std::env::consts::DLL_SUFFIX
                 );
-                let libnpu = format!("{}/target/jit/libnpu_shared.dylib", current_dir.display());
+                let libnpu = format!(
+                    "{}/target/jit/{}npu_shared{}",
+                    current_dir.display(),
+                    std::env::consts::DLL_PREFIX,
+                    std::env::consts::DLL_SUFFIX
+                );
 
                 let mlir_c_runner =
                     format!("libmlir_c_runner_utils{}", std::env::consts::DLL_SUFFIX);
                 let mlir_runner = format!("libmlir_runner_utils{}", std::env::consts::DLL_SUFFIX);
-                let shared_libs = [
-                    mlir_c_runner.as_str(),
-                    mlir_runner.as_str(),
-                    &vx_std_core,
-                    &libnpu,
+                let mut shared_libs = vec![
+                    mlir_c_runner.clone(),
+                    mlir_runner.clone(),
+                    vx_std_core.clone(),
                 ];
+                if cfg!(target_os = "macos") {
+                    shared_libs.push(libnpu.clone());
+                }
+
+                let shared_libs_refs: Vec<&str> = shared_libs.iter().map(|s| s.as_str()).collect();
 
                 let engine = melior::ExecutionEngine::new(
                     &module,
                     self.options.opt_level as usize,
-                    &shared_libs,
+                    &shared_libs_refs,
                     true,
                     true,
                 );
