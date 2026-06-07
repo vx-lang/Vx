@@ -618,7 +618,7 @@ impl<'a> TypeChecker<'a> {
                         }
 
                         // Enforce Topology Boundaries!
-                        let is_valid = self.hardware_graph.is_type_accessible(
+                        let is_valid = self.transfer_cost_graph.is_type_accessible(
                             &self.active_topology,
                             &top,
                             &ty,
@@ -835,11 +835,11 @@ impl<'a> TypeChecker<'a> {
                 // Extract source memory space, default to HostDRAM if it's not explicitly a Ref
                 let source_mem = match &inner_ty {
                     Type::Ref(_, mem) => mem.clone(),
-                    Type::Pinned(_, top) => crate::arch::HardwareGraph::default_memory_for(top),
+                    Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
                     _ => MemorySpace::HostDRAM,
                 };
 
-                let calculated_cost = self.hardware_graph.transfer_cost(&source_mem, target_mem);
+                let calculated_cost = self.transfer_cost_graph.transfer_cost(&source_mem, target_mem);
                 if calculated_cost.is_none() {
                     if !silent {
                         self.errors.push(format!(
@@ -949,7 +949,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = actual_top.clone();
-                self.active_memory = crate::arch::HardwareGraph::default_memory_for(&actual_top);
+                self.active_memory = crate::arch::TransferCostGraph::default_memory_for(&actual_top);
 
                 *top = actual_top;
 

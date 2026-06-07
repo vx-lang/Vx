@@ -1,6 +1,6 @@
 # Pillar 2: Data Movement Cost Algebra
 
-- `[x]` Phase 1: Update HardwareGraph (`src/arch.rs`)
+- `[x]` Phase 1: Update TransferCostGraph (`src/arch.rs`)
   - `[x]` Update `transfer_edges` to use `(MemorySpace, u32)`.
   - `[x]` Update `default()` to include realistic edge weights.
   - `[x]` Implement `transfer_cost()` using Dijkstra's algorithm.

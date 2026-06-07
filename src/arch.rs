@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the HardwareGraph, formalizing the memory and topology
+// This file defines the TransferCostGraph, formalizing the memory and topology
 // algebra for cross-device accesses and transfers.
 //
 //===----------------------------------------------------------------------===//
@@ -15,7 +15,7 @@ use crate::ast::{MemorySpace, Topology, Type};
 use std::collections::HashMap;
 
 use crate::ast;
-pub struct HardwareGraph {
+pub struct TransferCostGraph {
     /// Adjacency list for MemorySpace data transfers.
     /// Directed edge from A -> B means memory can be transferred from A to B.
     transfer_edges: HashMap<MemorySpace, Vec<(MemorySpace, u32)>>,
@@ -25,7 +25,7 @@ pub struct HardwareGraph {
     visibility_edges: Vec<(Topology, Vec<MemorySpace>)>,
 }
 
-impl Default for HardwareGraph {
+impl Default for TransferCostGraph {
     fn default() -> Self {
         let mut graph = Self {
             transfer_edges: HashMap::new(),
@@ -60,7 +60,7 @@ impl Default for HardwareGraph {
     }
 }
 
-impl HardwareGraph {
+impl TransferCostGraph {
     pub fn add_transfer_edge(&mut self, src: MemorySpace, dst: MemorySpace, cost: u32) {
         self.transfer_edges
             .entry(src)
@@ -272,36 +272,36 @@ mod tests {
     #[test]
     fn test_default_memory_mappings() {
         assert_eq!(
-            HardwareGraph::default_memory_for(&Topology::Host),
+            TransferCostGraph::default_memory_for(&Topology::Host),
             MemorySpace::HostDRAM
         );
         assert_eq!(
-            HardwareGraph::default_memory_for(&Topology::GPU),
+            TransferCostGraph::default_memory_for(&Topology::GPU),
             MemorySpace::HostDRAM
         );
         assert_eq!(
-            HardwareGraph::default_memory_for(&Topology::AMX),
+            TransferCostGraph::default_memory_for(&Topology::AMX),
             MemorySpace::HostDRAM
         );
 
         assert_eq!(
-            HardwareGraph::default_memory_for(&Topology::ANE),
+            TransferCostGraph::default_memory_for(&Topology::ANE),
             MemorySpace::NPUHBM
         );
         assert_eq!(
-            HardwareGraph::default_memory_for(&make_npu()),
+            TransferCostGraph::default_memory_for(&make_npu()),
             MemorySpace::NPUHBM
         );
 
         assert_eq!(
-            HardwareGraph::default_memory_for(&make_acc_core()),
+            TransferCostGraph::default_memory_for(&make_acc_core()),
             MemorySpace::LocalSRAM
         );
     }
 
     #[test]
     fn test_accessibility_same_topology() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         let ty = make_tensor();
         // Exact same topology is always accessible
         assert!(graph.is_type_accessible(&Topology::Host, &Topology::Host, &ty));
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_accessibility_host_unified_memory() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         let ty = make_tensor();
         // AMX, ANE, GPU can read variables stored in Host topology
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::Host, &ty));
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_accessibility_pinned_memory() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         let pinned_ane = Type::Pinned(Box::new(make_tensor()), Topology::ANE);
         let pinned_host = Type::Pinned(Box::new(make_tensor()), Topology::Host);
 
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_accessibility_memory_space_refs() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         let ref_hbm = Type::Ref(Box::new(make_tensor()), MemorySpace::NPUHBM);
         let ref_dram = Type::Ref(Box::new(make_tensor()), MemorySpace::HostDRAM);
 
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_transfer_legal_paths() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         // Identity
         assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::HostDRAM));
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_transfer_multi_hop_paths() {
-        let graph = HardwareGraph::default();
+        let graph = TransferCostGraph::default();
         // Local SRAM <-> Host DRAM (BFS multi-hop routing makes this valid)
         assert!(graph.can_transfer(&MemorySpace::LocalSRAM, &MemorySpace::HostDRAM));
         assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::LocalSRAM));

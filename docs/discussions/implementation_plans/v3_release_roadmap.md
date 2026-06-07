@@ -27,7 +27,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 **The Gap:** The topology type-checker uses hardcoded `if/else` enums.
 **The Fix:**
 
-- Introduce a generic mathematical algebra for memory. The compiler will construct a graph of connected hardware topologies (e.g., `Host_DRAM` \<-> `NPU_HBM`). (Implemented in `HardwareGraph`)
+- Introduce a generic mathematical algebra for memory. The compiler will construct a graph of connected hardware topologies (e.g., `Host_DRAM` \<-> `NPU_HBM`). (Implemented in `TransferCostGraph`)
 - `transfer()` calls will be structurally verified at compile time against this graph to ensure physical legality and calculate data movement costs. (Physical legality implemented. [Data movement costs plan](./pillar2_cost_algebra.md))
 
 ## 3. Formal Verification (`Verified<T>`) (Completed)

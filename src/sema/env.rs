@@ -131,7 +131,7 @@ pub struct TypeChecker<'a> {
     pub(crate) in_unsafe_block: bool,
     pub(crate) active_topology: Topology,
     pub(crate) active_memory: MemorySpace,
-    pub hardware_graph: crate::arch::HardwareGraph,
+    pub transfer_cost_graph: crate::arch::TransferCostGraph,
     pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
     pub constraints: Vec<Expr>,
     pub(crate) next_reg: u32,
@@ -159,8 +159,8 @@ impl<'a> TypeChecker<'a> {
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
             active_topology: Topology::Host,
-            active_memory: crate::arch::HardwareGraph::default_memory_for(&Topology::Host),
-            hardware_graph: crate::arch::HardwareGraph::default(),
+            active_memory: crate::arch::TransferCostGraph::default_memory_for(&Topology::Host),
+            transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             active_borrows: HashMap::new(),
             constraints: Vec::new(),
             next_reg: 1,
@@ -426,7 +426,7 @@ impl<'a> TypeChecker<'a> {
         let prev_top = self.active_topology.clone();
         let prev_mem = self.active_memory.clone();
         self.active_topology = func.topology.clone();
-        self.active_memory = crate::arch::HardwareGraph::default_memory_for(&self.active_topology);
+        self.active_memory = crate::arch::TransferCostGraph::default_memory_for(&self.active_topology);
 
         for (name, ty) in &func.params {
             self.insert(name.clone(), ty.clone());

@@ -4,9 +4,9 @@ This plan outlines the final stage of **Pillar 2: Rigorous Topology & Memory Alg
 
 ## Proposed Changes
 
-### `src/arch.rs` (HardwareGraph Core)
+### `src/arch.rs` (TransferCostGraph Core)
 
-The `HardwareGraph` structure needs to evolve from an unweighted adjacency list to a weighted directed graph, and its BFS pathfinding must be upgraded to Dijkstra's algorithm.
+The `TransferCostGraph` structure needs to evolve from an unweighted adjacency list to a weighted directed graph, and its BFS pathfinding must be upgraded to Dijkstra's algorithm.
 
 #### [MODIFY] \[arch.rs\](file:///Users/adityak/go/Vx/src/arch.rs)
 
@@ -31,7 +31,7 @@ The semantic analyzer will execute the pathfinding and embed the cost into the A
 
 #### [MODIFY] \[expr.rs\](file:///Users/adityak/go/Vx/src/sema/expr.rs)
 
-- Update `check_transfer_expr` to call `self.hardware_graph.transfer_cost()`.
+- Update `check_transfer_expr` to call `self.transfer_cost_graph.transfer_cost()`.
 - If `None` is returned, throw the existing "no hardware path exists" compile error.
 - If `Some(cost)` is returned, assign it to the `expr.cost` field on the AST node.
 

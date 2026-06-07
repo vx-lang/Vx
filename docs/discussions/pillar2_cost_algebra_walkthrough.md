@@ -4,7 +4,7 @@ I have successfully finished implementing **Pillar 2: Rigorous Topology & Memory
 
 ## Changes Made
 
-- **Hardware Graph Weights:** Upgraded `HardwareGraph` (`src/arch.rs`) to support weighted, directed edges indicating bandwidth/latency cost:
+- **Hardware Graph Weights:** Upgraded `TransferCostGraph` (`src/arch.rs`) to support weighted, directed edges indicating bandwidth/latency cost:
   - `HostDRAM <-> NPUHBM` penalty: 50
   - `NPUHBM <-> LocalSRAM` penalty: 10
 - **Dijkstra's Algorithm:** Implemented `transfer_cost(src, dest)` using a min-heap to find the lowest-cost transfer path across hardware memory spaces.
