@@ -64,10 +64,27 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 - Implement compile-time constant evaluation within the semantic analyzer to ensure static shape compatibility across tensor bounds.
 - Empower user-defined libraries to represent compile-time properties (like kernel sizes or channel counts) securely without hardcoded compiler magic.
 
+## 7. Native `SizeOf` Expressions and Scalar Casts (Completed)
+
+**The Gap:** The compiler relied on string-based type name matching to determine memory allocation sizes, which was fragile and didn't support target-dependent type sizes. Furthermore, explicit type casting between basic scalar types was missing.
+**The Fix:**
+
+- [x] Introduced a dedicated `SizeOfExpr` AST node natively evaluated during LLVM lowering using `llvm.getelementptr` and `llvm.mlir.zero`.
+- [x] Implemented safe scalar-to-scalar casting in the semantic analyzer and MLIR lowering pipeline.
+- [x] Replaced hardcoded type size strings in `malloc` and tensor allocations with native `sizeof()` calls.
+
+## 8. Unified `FileCheck` Test Infrastructure (Completed)
+
+**The Gap:** Tests were verified through a brittle combination of Python generation scripts (`gen_tests.py`) and ad-hoc string matching rather than an industry-standard testing framework.
+**The Fix:**
+
+- [x] Migrated all test files (`.vx`, `.mlir`, `.mlr`) to use LLVM's `FileCheck` verification pipeline (`// RUN: ... | FileCheck %s`).
+- [x] Consolidated hundreds of auto-generated tests into maintainable, aggregated test files, entirely removing the need for `gen_tests.py`.
+
 ______________________________________________________________________
 
 > [!NOTE]
 > **Which pillar should we tackle first?**
-> The most natural continuation of our current trajectory is **Pillar 1: Custom `vx` MLIR Dialect**. Since we just laid down the Melior backend infrastructure, defining our own dialect is the key that unlocks true kernel generation and auto-vectorization.
+> The most natural continuation of our current trajectory is **Pillar 1b: Real Hardware Kernel Generation**. Since we just laid down the Melior backend infrastructure, defining our own dialect is the key that unlocks true kernel generation and auto-vectorization.
 
 Let me know if you agree with this assessment or if you'd like to prioritize the Borrow Checker or Topology Algebra first!
