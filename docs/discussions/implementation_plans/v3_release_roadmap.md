@@ -7,7 +7,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 ## 1. Custom `vx` MLIR Dialect (Completed)
 
 **The Gap:** The compiler relied on custom AST walking and C-FFI shims instead of an industry-standard intermediate representation.
-**The Fix:**
+**The Fix:** ([Dialect Plan](./implementation_plan_vx_dialect.md), [Spawn Plan](./implementation_plan_vx_spawn.md))
 
 - [x] Implement a custom `vx` MLIR dialect (e.g., `vx.spawn`, `vx.transfer`, `vx.tensor`).
 - [x] Lower tensor math into MLIR's `linalg` and `affine` dialects rather than emitting function calls.
@@ -27,8 +27,8 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 **The Gap:** The topology type-checker uses hardcoded `if/else` enums.
 **The Fix:**
 
-- Introduce a generic mathematical algebra for memory. The compiler will construct a graph of connected hardware topologies (e.g., `Host_DRAM` \<-> `NPU_HBM`).
-- `transfer()` calls will be structurally verified at compile time against this graph to ensure physical legality and calculate data movement costs.
+- Introduce a generic mathematical algebra for memory. The compiler will construct a graph of connected hardware topologies (e.g., `Host_DRAM` \<-> `NPU_HBM`). (Implemented in `HardwareGraph`)
+- `transfer()` calls will be structurally verified at compile time against this graph to ensure physical legality and calculate data movement costs. (Physical legality implemented. [Data movement costs plan](./pillar2_cost_algebra.md))
 
 ## 3. Formal Verification (`Verified<T>`) (Completed)
 
@@ -41,7 +41,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 ## 4. Complete Borrow Checker (NLL & Aliasing)
 
 **The Gap:** The borrow checker only tracks basic linear/affine consumption.
-**The Fix:**
+**The Fix:** ([Borrow Checker Plan](./borrow_checker_fastpath_integration.md))
 
 - Implement Non-Lexical Lifetimes (NLL) and strict aliasing rules for mutable (`&mut`) and immutable (`&`) borrows.
 - This is critical given how heavily our benchmarks rely on raw `*mut f32` pointers. We need to prevent data races during parallel execution across different topologies.
@@ -49,7 +49,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 ## 5. Standard Library Ecosystem (`std`)
 
 **The Gap:** Users are forced to bypass safety features with raw C-FFI calls.
-**The Fix:**
+**The Fix:** ([Stdlib Plan](./05_vx_stdlib_io_networking.md))
 
 - [x] Bootstrap a native Vx standard library.
 - [x] Split the ecosystem into `stdlib/` (compiler intrinsic types, IO) and `packages/` (third-party style libraries like `vx_nn` and `vx_linalg`).
@@ -76,7 +76,7 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 ## 8. Unified `FileCheck` Test Infrastructure (Completed)
 
 **The Gap:** Tests were verified through a brittle combination of Python generation scripts (`gen_tests.py`) and ad-hoc string matching rather than an industry-standard testing framework.
-**The Fix:**
+**The Fix:** ([Testing Strategy Plan](./testing_strategy.md))
 
 - [x] Migrated all test files (`.vx`, `.mlir`, `.mlr`) to use LLVM's `FileCheck` verification pipeline (`// RUN: ... | FileCheck %s`).
 - [x] Consolidated hundreds of auto-generated tests into maintainable, aggregated test files, entirely removing the need for `gen_tests.py`.
