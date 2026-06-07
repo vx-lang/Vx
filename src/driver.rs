@@ -433,6 +433,9 @@ fn get_optimization_pipeline(
         passes.push("finalize-memref-to-llvm".to_string());
         passes.push("convert-vector-to-llvm".to_string());
         passes.push("convert-func-to-llvm".to_string());
+        passes.push("convert-index-to-llvm".to_string());
+        passes.push("convert-math-to-llvm".to_string());
+        passes.push("convert-math-to-libm".to_string());
         passes.push("convert-cf-to-llvm".to_string());
         passes.push("convert-arith-to-llvm".to_string());
         passes.push("reconcile-unrealized-casts".to_string());

@@ -127,7 +127,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
-    pipeline.push_str("convert-linalg-to-loops,lower-affine,convert-scf-to-cf,expand-strided-metadata,convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
+    pipeline.push_str("convert-linalg-to-loops,lower-affine,convert-scf-to-cf,expand-strided-metadata,convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
