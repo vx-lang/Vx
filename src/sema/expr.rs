@@ -1900,7 +1900,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_methodcall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+    fn check_methodcall_expr(&mut self, expr: &mut Expr, _consume: bool, silent: bool) -> Type {
         match expr {
             Expr::MethodCall(MethodCallExpr {
                 base: obj,
@@ -2238,7 +2238,7 @@ impl<'a> TypeChecker<'a> {
                         args: call_args,
                         span: Span::default(),
                     });
-                    let ret_ty = self.check_expr_type_flag(&mut func_call, consume, silent);
+                    let ret_ty = self.check_expr_type_flag(&mut func_call, false, true);
 
                     // Replace the AST node in-place!
                     *expr = func_call;
