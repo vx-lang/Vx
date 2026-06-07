@@ -118,21 +118,8 @@ impl<'a> Parser<'a> {
                 TokenType::Identifier(s) => s,
                 _ => return Err("Expected element type after 'x' in SIMD type".to_string()),
             };
-            let el_ty = match el_ty_ident.as_str() {
-                "f32" => ElementType::F32,
-                "f64" => ElementType::F64,
-                "f16" => ElementType::F16,
-                "bf16" => ElementType::BF16,
-                "i8" => ElementType::I8,
-                "i16" => ElementType::I16,
-                "i32" => ElementType::I32,
-                "i64" => ElementType::I64,
-                "u8" => ElementType::U8,
-                "u16" => ElementType::U16,
-                "u32" => ElementType::U32,
-                "u64" => ElementType::U64,
-                _ => return Err(format!("Unknown SIMD element type {}", el_ty_ident)),
-            };
+            let el_ty = std::str::FromStr::from_str(el_ty_ident.as_str())
+                .map_err(|_| format!("Unknown SIMD element type {}", el_ty_ident))?;
             self.consume(
                 &TokenType::RightAngle,
                 "Expected '>' after SIMD element type",
@@ -197,21 +184,14 @@ impl<'a> Parser<'a> {
                             TokenType::Identifier(s) => s,
                             _ => return Err("Expected element type after '<'".to_string()),
                         };
-                        el_ty = match ty_ident.as_str() {
-                            "f32" => ElementType::F32,
-                            "f64" => ElementType::F64,
-                            "bf16" => ElementType::BF16,
-                            "i32" => ElementType::I32,
-                            "i64" => ElementType::I64,
-                            "Bool" => ElementType::Bool,
-                            _ => {
-                                if self.generic_params.contains(&ty_ident) {
-                                    ElementType::Generic(ty_ident)
-                                } else {
-                                    return Err(format!("Unknown element type {}", ty_ident));
-                                }
-                            }
-                        };
+                        el_ty =
+                            if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
+                                parsed_ty
+                            } else if self.generic_params.contains(&ty_ident) {
+                                ElementType::Generic(ty_ident)
+                            } else {
+                                return Err(format!("Unknown element type {}", ty_ident));
+                            };
                         let mut dims = Vec::new();
                         if self.match_token(&TokenType::Comma) {
                             if self.match_token(&TokenType::LeftBracket) {
