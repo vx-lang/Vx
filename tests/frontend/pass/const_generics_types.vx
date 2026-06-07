@@ -1,0 +1,15 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+// CHECK: module
+// CHECK: func.func @threshold_{{.*}}() -> f32
+// CHECK: %cst = arith.constant 3.140000e+00 : f32
+// CHECK: return %cst : f32
+
+fn threshold<const T: f32>() -> f32 {
+  return T;
+}
+
+fn test_const_generics_types() -> void {
+  let val = threshold<3.14>();
+  assert(true);
+}

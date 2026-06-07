@@ -901,7 +901,10 @@ impl<'c> MeliorGenerator<'c> {
             }
             ast::Type::Module(..) => "none".to_string(),
             ast::Type::Const(expr) => {
-                format!("{:?}", expr)
+                panic!(
+                    "Cannot lower a const generic argument to an MLIR type: {:?}",
+                    expr
+                );
             }
             ast::Type::Unknown => "unknown".to_string(),
         };
@@ -913,6 +916,19 @@ impl<'c> MeliorGenerator<'c> {
     pub(crate) fn lower_type_str(&self, ty: &ast::Type) -> String {
         if let ast::Type::Function(_, _) = ty {
             return "!llvm.ptr".to_string();
+        }
+        if let ast::Type::Const(expr) = ty {
+            if let ast::Expr::Number(n) = &**expr {
+                return n.value.clone();
+            } else if let ast::Expr::StringLiteral(s) = &**expr {
+                return s.value.clone();
+            } else {
+                return format!("{:?}", expr)
+                    .replace(" ", "_")
+                    .replace("\"", "")
+                    .replace("(", "_")
+                    .replace(")", "_");
+            }
         }
         let t = self.lower_type(ty);
         t.to_string()
