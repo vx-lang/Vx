@@ -8,8 +8,8 @@ fn main() -> i32 {
   let t_sram = transfer(t_npu, Memory::Local_SRAM);
 
   // This is illegal! Direct SRAM to DRAM transfer bypasses HBM.
-  // CHECK: Cannot transfer from LocalSRAM to HostDRAM: no hardware path exists
-  let invalid = transfer(t_sram, Memory::Host_DRAM);
+  // CHECK: Cannot transfer from LocalSRAM to CPUDRAM: no hardware path exists
+  let invalid = transfer(t_sram, Memory::CPU_DRAM);
 
   return 0;
 }

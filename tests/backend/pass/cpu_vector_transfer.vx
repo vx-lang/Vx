@@ -10,8 +10,8 @@ fn test_f32() -> i32 {
   a[1] = 2.0;
   a[2] = 3.0;
   a[3] = 4.0;
-  // Transfer to CPU (Host_DRAM is default CPU memory)
-  let a_cpu = transfer(a, Memory::Host_DRAM);
+  // Transfer to CPU (CPU_DRAM is default CPU memory)
+  let a_cpu = transfer(a, Memory::CPU_DRAM);
   assert(a_cpu[0] == a[0], "f32 index 0 match");
   assert(a_cpu[1] == a[1], "f32 index 1 match");
   assert(a_cpu[2] == a[2], "f32 index 2 match");
@@ -25,7 +25,7 @@ fn test_bf16() -> i32 {
   a[1] = 2.0;
   a[2] = 3.0;
   a[3] = 4.0;
-  let a_cpu = transfer(a, Memory::Host_DRAM);
+  let a_cpu = transfer(a, Memory::CPU_DRAM);
   assert(a_cpu[0] == a[0], "bf16 index 0 match");
   assert(a_cpu[1] == a[1], "bf16 index 1 match");
   assert(a_cpu[2] == a[2], "bf16 index 2 match");

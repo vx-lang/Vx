@@ -25,7 +25,7 @@ fn test_f32() -> i32 {
     i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
   }
 
-  let c_host = transfer(c, Memory::Host_DRAM);
+  let c_host = transfer(c, Memory::CPU_DRAM);
   assert(c_host[0] == sum, "f32 index 0 match");
   assert(c_host[1] == sum, "f32 index 1 match");
   assert(c_host[2] == sum, "f32 index 2 match");
@@ -53,7 +53,7 @@ fn test_bf16() -> i32 {
     i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
   }
 
-  let c_host = transfer(c, Memory::Host_DRAM);
+  let c_host = transfer(c, Memory::CPU_DRAM);
   assert(c_host[0] == sum, "bf16 index 0 match");
   assert(c_host[1] == sum, "bf16 index 1 match");
   assert(c_host[2] == sum, "bf16 index 2 match");

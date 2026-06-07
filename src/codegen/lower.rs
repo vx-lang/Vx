@@ -1351,7 +1351,7 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
 fn topology_to_i32(top: &ast::Topology) -> i32 {
     use ast::Topology::*;
     match top {
-        Host => 0,
+        CPU => 0,
         NPU(expr) => {
             if let ast::Expr::Number(n) = &**expr {
                 100 + n.value.parse::<i32>().unwrap_or(0)
@@ -1369,8 +1369,8 @@ fn topology_to_i32(top: &ast::Topology) -> i32 {
         AMX => 300,
         ANE => 400,
         GPU => 500,
-        Host_AVX512 => 600,
-        Host_Neon => 700,
+        CPU_AVX512 => 600,
+        CPU_Neon => 700,
         Slice(_, _, _) => 900,
         Current => 0,
     }
@@ -1479,7 +1479,7 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
 
         // Map memory space to topology target.
         let target_topology_id = match self.space {
-            ast::MemorySpace::HostDRAM => 0,
+            ast::MemorySpace::CPUDRAM => 0,
             ast::MemorySpace::NPUHBM => 100,
             ast::MemorySpace::LocalSRAM => 200,
         };

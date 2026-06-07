@@ -29,26 +29,26 @@ impl ExecuteArith<NPU> for NPU {
 }
 trait TransferDMA<T> {
   fn transfer_array_to_npu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]>;
-  fn transfer_array_to_cpu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host>;
+  fn transfer_array_to_cpu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU>;
   fn transfer_vector(self: T, data: <4 x f32>) -> <4 x f32>;
   fn transfer_tensor_to_npu(self: T, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]>;
-  fn transfer_tensor_to_cpu(self: T, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host>;
+  fn transfer_tensor_to_cpu(self: T, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU>;
 }
 
 impl TransferDMA<CPU> for CPU {
   fn transfer_array_to_npu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_array_to_cpu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_array_to_cpu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
   fn transfer_vector(self: CPU, data: <4 x f32>) -> <4 x f32> { return data; }
   fn transfer_tensor_to_npu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_tensor_to_cpu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_tensor_to_cpu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
 }
 
 impl TransferDMA<NPU> for NPU {
   fn transfer_array_to_npu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_array_to_cpu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_array_to_cpu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
   fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> { return data; }
   fn transfer_tensor_to_npu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_tensor_to_cpu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_tensor_to_cpu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
 }
 fn main() -> void {}
 

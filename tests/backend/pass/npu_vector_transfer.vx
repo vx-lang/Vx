@@ -11,7 +11,7 @@ fn test_f32() -> i32 {
   a[2] = 3.0;
   a[3] = 4.0;
   let a_npu = transfer(a, Memory::NPU_HBM);
-  let a_host = transfer(a_npu, Memory::Host_DRAM);
+  let a_host = transfer(a_npu, Memory::CPU_DRAM);
   assert(a_host[0] == a[0], "f32 index 0 match");
   assert(a_host[1] == a[1], "f32 index 1 match");
   assert(a_host[2] == a[2], "f32 index 2 match");
@@ -26,7 +26,7 @@ fn test_bf16() -> i32 {
   a[2] = 3.0;
   a[3] = 4.0;
   let a_npu = transfer(a, Memory::NPU_HBM);
-  let a_host = transfer(a_npu, Memory::Host_DRAM);
+  let a_host = transfer(a_npu, Memory::CPU_DRAM);
   assert(a_host[0] == a[0], "bf16 index 0 match");
   assert(a_host[1] == a[1], "bf16 index 1 match");
   assert(a_host[2] == a[2], "bf16 index 2 match");

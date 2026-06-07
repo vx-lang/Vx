@@ -663,9 +663,9 @@ impl<'c> MeliorGenerator<'c> {
                 }
 
                 let addr_space = match top {
-                    Some(ast::Topology::Host)
-                    | Some(ast::Topology::Host_AVX512)
-                    | Some(ast::Topology::Host_Neon)
+                    Some(ast::Topology::CPU)
+                    | Some(ast::Topology::CPU_AVX512)
+                    | Some(ast::Topology::CPU_Neon)
                     | Some(ast::Topology::Current) => 0,
                     Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
                     Some(ast::Topology::AccCore(_)) => 2,
@@ -715,7 +715,7 @@ impl<'c> MeliorGenerator<'c> {
                     let addr_space = match mem {
                         Some(MemorySpace::NPUHBM) => 1,
                         Some(MemorySpace::LocalSRAM) => 2,
-                        Some(MemorySpace::HostDRAM) | None => 0,
+                        Some(MemorySpace::CPUDRAM) | None => 0,
                     };
                     format!("!llvm.ptr<{}>", addr_space)
                 }

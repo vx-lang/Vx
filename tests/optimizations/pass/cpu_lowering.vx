@@ -5,11 +5,11 @@
 // mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1
 // | FileCheck %s
 
-fn dummy(x : i32) on Topology::Host -> i32 { return x; }
+fn dummy(x : i32) on Topology::CPU -> i32 { return x; }
 
 fn process(t : Tensor<f32>) -> Tensor<f32> {
-  let mut res = Tensor<i32>([ 4, 4 ]).with_memory(Memory::Host_DRAM);
-  let val = spawn on(Topology::Host){dummy(0)};
+  let mut res = Tensor<i32>([ 4, 4 ]).with_memory(Memory::CPU_DRAM);
+  let val = spawn on(Topology::CPU){dummy(0)};
   return t;
 }
 

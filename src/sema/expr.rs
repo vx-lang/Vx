@@ -626,7 +626,7 @@ impl<'a> TypeChecker<'a> {
 
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
-                                && matches!(self.active_topology, Topology::Host);
+                                && matches!(self.active_topology, Topology::CPU);
                             if !is_pinned_on_host && !silent {
                                 let msg = format!(
                                                 "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
@@ -830,11 +830,11 @@ impl<'a> TypeChecker<'a> {
         if let Expr::Transfer(t) = expr {
             inner_ty = self.check_expr_type_flag(&mut t.expr, false, silent);
 
-            // Extract source memory space, default to HostDRAM if it's not explicitly a Ref
+            // Extract source memory space, default to CPUDRAM if it's not explicitly a Ref
             let source_mem = match &inner_ty {
                 Type::Ref(_, mem) => mem.clone(),
                 Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
-                _ => MemorySpace::HostDRAM,
+                _ => MemorySpace::CPUDRAM,
             };
             target_mem = t.space.clone();
 
@@ -905,7 +905,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::HostDRAM => Topology::Host,
+                    MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
             }
@@ -931,7 +931,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::HostDRAM => Topology::Host,
+                    MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(base, pinned_top)
             }
@@ -999,12 +999,12 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
-                    Topology::Host
+                    Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::GPU
-                    | Topology::Host_AVX512
-                    | Topology::Host_Neon
+                    | Topology::CPU_AVX512
+                    | Topology::CPU_Neon
                     | Topology::Current => {}
                 }
 
@@ -2265,8 +2265,8 @@ impl<'a> TypeChecker<'a> {
                         span: Span::default(),
                     });
                 } else if _method == "to_host" {
-                    let target_mem = MemorySpace::HostDRAM;
-                    base_ty = Type::Pinned(Box::new(base_ty), Topology::Host);
+                    let target_mem = MemorySpace::CPUDRAM;
+                    base_ty = Type::Pinned(Box::new(base_ty), Topology::CPU);
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,

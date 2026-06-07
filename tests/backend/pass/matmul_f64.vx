@@ -31,7 +31,7 @@ b : Pinned<Tensor<f64, [ 4, 4 ]>, Topology::NPU[0]>)
 }
 
 fn main() -> Verified<Ref<Tensor<f64, [ 4, 4 ]>, Memory::NPU_HBM>> {
-  let mut a_host = Tensor<f64>([ 4, 4 ]); // Defaults to Host_DRAM
+  let mut a_host = Tensor<f64>([ 4, 4 ]); // Defaults to CPU_DRAM
   let mut b_host = Tensor<f64>([ 4, 4 ]);
 
   for

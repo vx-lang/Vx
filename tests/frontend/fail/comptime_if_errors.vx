@@ -1,10 +1,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From comptime_active_branch_error.vx
-fn test_0() on Topology::Host -> void {
+fn test_0() on Topology::CPU -> void {
   if comptime
-  Topology::Current == Topology::Host {
-    // This branch is ACTIVE because Topology::Current is Topology::Host
+  Topology::Current == Topology::CPU {
+    // This branch is ACTIVE because Topology::Current is Topology::CPU
     // This type mismatch SHOULD trigger a compiler error.
     let x : f32 = "this is a string, not a float";
   }

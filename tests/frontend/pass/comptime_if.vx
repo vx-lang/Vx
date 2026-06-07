@@ -6,9 +6,9 @@ fn main() -> i32 {
 
   // Evaluate comptime if blocks
   if comptime
-  Topology::Current == Topology::Host { val = 1; }
+  Topology::Current == Topology::CPU { val = 1; }
   else if comptime
-  Topology::Current == Topology::Host_AVX512 {
+  Topology::Current == Topology::CPU_AVX512 {
     // This block will be pruned out if the active topology is Host
     val = 2;
     invalid_function_that_does_not_exist(); // Semantic analysis should
@@ -19,11 +19,11 @@ fn main() -> i32 {
   }
 
   if comptime
-  Topology::Current != Topology::Host {
+  Topology::Current != Topology::CPU {
     return 1; // Should be pruned out
   }
 
-  // Since our default compiler configuration executes as Topology::Host,
+  // Since our default compiler configuration executes as Topology::CPU,
   // val must be 1.
   return if val == 1 {0} else {1};
 }

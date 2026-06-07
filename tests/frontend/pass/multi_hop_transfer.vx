@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Verifies that semantic analysis successfully resolves multi-hop transfers
-// using the topological solver (e.g., HostDRAM -> NPUHBM -> LocalSRAM).
+// using the topological solver (e.g., CPUDRAM -> NPUHBM -> LocalSRAM).
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,9 +17,9 @@ fn main() -> void {
 
   // Explicitly request a transfer to LocalSRAM (AccCore).
   // This requires a multi-hop route through NPUHBM because there is no direct
-  // link between HostDRAM and LocalSRAM.
+  // link between CPUDRAM and LocalSRAM.
   let acc_tensor = transfer(host_tensor, Memory::Local_SRAM);
 
   // A reverse multi-hop transfer
-  let host_tensor_2 = transfer(acc_tensor, Memory::Host_DRAM);
+  let host_tensor_2 = transfer(acc_tensor, Memory::CPU_DRAM);
 }

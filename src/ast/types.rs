@@ -25,21 +25,21 @@ pub struct Span {
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, Clone)]
 pub enum Topology {
-    Host,
+    CPU,
     NPU(Box<Expr>),
     AccCore(Box<Expr>),
     AMX,
     ANE,
     GPU,
-    Host_AVX512,
-    Host_Neon,
+    CPU_AVX512,
+    CPU_Neon,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
     Current,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum MemorySpace {
-    HostDRAM,
+    CPUDRAM,
     NPUHBM,
     LocalSRAM,
 }

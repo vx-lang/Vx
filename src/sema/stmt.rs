@@ -587,9 +587,9 @@ impl<'a> TypeChecker<'a> {
 
     fn topologies_equal(&self, a: &Topology, b: &Topology) -> bool {
         match (a, b) {
-            (Topology::Host, Topology::Host) => true,
-            (Topology::Host_AVX512, Topology::Host_AVX512) => true,
-            (Topology::Host_Neon, Topology::Host_Neon) => true,
+            (Topology::CPU, Topology::CPU) => true,
+            (Topology::CPU_AVX512, Topology::CPU_AVX512) => true,
+            (Topology::CPU_Neon, Topology::CPU_Neon) => true,
             (Topology::AMX, Topology::AMX) => true,
             (Topology::ANE, Topology::ANE) => true,
             (Topology::GPU, Topology::GPU) => true,

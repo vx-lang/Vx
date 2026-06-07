@@ -2,12 +2,12 @@
 
 fn test_group1_0(X : i32) -> i32
 requires Topology::NPU
-[0] == Topology::Host ensures return == X {
+[0] == Topology::CPU ensures return == X {
   return X;
 }
 
 fn test_group1_1(X : i32) -> i32
-requires Topology::Host <=
+requires Topology::CPU <=
 Topology::NPU[0] ensures return == X {
   return X;
 }

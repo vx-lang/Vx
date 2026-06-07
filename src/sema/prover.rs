@@ -151,7 +151,7 @@ impl SmtProver {
             }
             Expr::Topology(t) => {
                 let name = match &t.top {
-                    Topology::Host => "Topology_Host".to_string(),
+                    Topology::CPU => "Topology_Host".to_string(),
                     Topology::NPU(e) => {
                         if let Expr::Number(n) = &**e {
                             format!("Topology_NPU_{}", n.value)

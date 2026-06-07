@@ -34,8 +34,8 @@ impl Default for TransferCostGraph {
 
         // Standard Transfer Paths
         // Host <-> HBM
-        graph.add_transfer_edge(MemorySpace::HostDRAM, MemorySpace::NPUHBM, 50);
-        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::HostDRAM, 50);
+        graph.add_transfer_edge(MemorySpace::CPUDRAM, MemorySpace::NPUHBM, 50);
+        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::CPUDRAM, 50);
 
         // HBM <-> SRAM
         graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::LocalSRAM, 10);
@@ -43,12 +43,12 @@ impl Default for TransferCostGraph {
 
         // Standard Visibility Paths
         // Host can access DRAM and HBM
-        graph.add_visibility_edge(Topology::Host, MemorySpace::HostDRAM);
-        graph.add_visibility_edge(Topology::Host, MemorySpace::NPUHBM);
+        graph.add_visibility_edge(Topology::CPU, MemorySpace::CPUDRAM);
+        graph.add_visibility_edge(Topology::CPU, MemorySpace::NPUHBM);
         // GPUs, AMX, ANE can access DRAM (Unified Memory Fallback)
-        graph.add_visibility_edge(Topology::AMX, MemorySpace::HostDRAM);
-        graph.add_visibility_edge(Topology::ANE, MemorySpace::HostDRAM);
-        graph.add_visibility_edge(Topology::GPU, MemorySpace::HostDRAM);
+        graph.add_visibility_edge(Topology::AMX, MemorySpace::CPUDRAM);
+        graph.add_visibility_edge(Topology::ANE, MemorySpace::CPUDRAM);
+        graph.add_visibility_edge(Topology::GPU, MemorySpace::CPUDRAM);
 
         // ANE also accesses HBM
         graph.add_visibility_edge(Topology::ANE, MemorySpace::NPUHBM);
@@ -79,12 +79,12 @@ impl TransferCostGraph {
     /// Returns the default memory space for a given topology.
     pub fn default_memory_for(topology: &Topology) -> MemorySpace {
         match topology {
-            Topology::Host | Topology::Host_AVX512 | Topology::Host_Neon => MemorySpace::HostDRAM,
+            Topology::CPU | Topology::CPU_AVX512 | Topology::CPU_Neon => MemorySpace::CPUDRAM,
             Topology::NPU(_) => MemorySpace::NPUHBM,
             Topology::AccCore(_) => MemorySpace::LocalSRAM,
-            Topology::AMX => MemorySpace::HostDRAM,
+            Topology::AMX => MemorySpace::CPUDRAM,
             Topology::ANE => MemorySpace::NPUHBM,
-            Topology::GPU => MemorySpace::HostDRAM,
+            Topology::GPU => MemorySpace::CPUDRAM,
             Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
             Topology::Current => {
                 unreachable!("Must specify a concrete topology other than Current")
@@ -159,12 +159,12 @@ impl TransferCostGraph {
         }
 
         // Host unified memory fallback (handled by graph edges but we can explicitly check if needed)
-        // Check if var_topology is Host, and active_topology has visibility to HostDRAM
-        if *var_topology == Topology::Host {
+        // Check if var_topology is Host, and active_topology has visibility to CPUDRAM
+        if *var_topology == Topology::CPU {
             if let Some((_, visible_mems)) =
                 self.visibility_edges.iter().find(|(t, _)| *t == active_gen)
             {
-                if visible_mems.contains(&MemorySpace::HostDRAM) {
+                if visible_mems.contains(&MemorySpace::CPUDRAM) {
                     return true;
                 }
             }
@@ -291,16 +291,16 @@ mod tests {
     #[test]
     fn test_default_memory_mappings() {
         assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::Host),
-            MemorySpace::HostDRAM
+            TransferCostGraph::default_memory_for(&Topology::CPU),
+            MemorySpace::CPUDRAM
         );
         assert_eq!(
             TransferCostGraph::default_memory_for(&Topology::GPU),
-            MemorySpace::HostDRAM
+            MemorySpace::CPUDRAM
         );
         assert_eq!(
             TransferCostGraph::default_memory_for(&Topology::AMX),
-            MemorySpace::HostDRAM
+            MemorySpace::CPUDRAM
         );
 
         assert_eq!(
@@ -323,7 +323,7 @@ mod tests {
         let graph = TransferCostGraph::default();
         let ty = make_tensor();
         // Exact same topology is always accessible
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::Host, &ty));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::ANE, &ty));
         assert!(graph.is_type_accessible(&make_npu(), &make_npu(), &ty));
     }
@@ -333,61 +333,61 @@ mod tests {
         let graph = TransferCostGraph::default();
         let ty = make_tensor();
         // AMX, ANE, GPU can read variables stored in Host topology
-        assert!(graph.is_type_accessible(&Topology::AMX, &Topology::Host, &ty));
-        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::Host, &ty));
-        assert!(graph.is_type_accessible(&Topology::GPU, &Topology::Host, &ty));
+        assert!(graph.is_type_accessible(&Topology::AMX, &Topology::CPU, &ty));
+        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ty));
+        assert!(graph.is_type_accessible(&Topology::GPU, &Topology::CPU, &ty));
 
-        // But under formal graph memory, since ANE/GPU default to HostDRAM (for GPU) and NPUHBM (for ANE),
-        // and Host can see both HostDRAM and NPUHBM, Host can technically read those memory spaces.
+        // But under formal graph memory, since ANE/GPU default to CPUDRAM (for GPU) and NPUHBM (for ANE),
+        // and Host can see both CPUDRAM and NPUHBM, Host can technically read those memory spaces.
         // The formal graph makes memory spaces the single source of truth!
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::ANE, &ty));
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::GPU, &ty));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ty));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::GPU, &ty));
     }
 
     #[test]
     fn test_accessibility_pinned_memory() {
         let graph = TransferCostGraph::default();
         let pinned_ane = Type::Pinned(Box::new(make_tensor()), Topology::ANE);
-        let pinned_host = Type::Pinned(Box::new(make_tensor()), Topology::Host);
+        let pinned_host = Type::Pinned(Box::new(make_tensor()), Topology::CPU);
 
         // ANE can access ANE pinned
-        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::Host, &pinned_ane));
+        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &pinned_ane));
         // Host CAN access ANE pinned (as a handle)
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::Host, &pinned_ane));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::CPU, &pinned_ane));
         // Host can access Host pinned
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::ANE, &pinned_host));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &pinned_host));
     }
 
     #[test]
     fn test_accessibility_memory_space_refs() {
         let graph = TransferCostGraph::default();
         let ref_hbm = Type::Ref(Box::new(make_tensor()), MemorySpace::NPUHBM);
-        let ref_dram = Type::Ref(Box::new(make_tensor()), MemorySpace::HostDRAM);
+        let ref_dram = Type::Ref(Box::new(make_tensor()), MemorySpace::CPUDRAM);
 
         // HBM reachable by NPU and ANE and Host
-        assert!(graph.is_type_accessible(&make_npu(), &Topology::Host, &ref_hbm));
-        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::Host, &ref_hbm));
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::Host, &ref_hbm));
-        assert!(!graph.is_type_accessible(&make_acc_core(), &Topology::Host, &ref_hbm)); // AccCore has LocalSRAM
+        assert!(graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_hbm));
+        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ref_hbm));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::CPU, &ref_hbm));
+        assert!(!graph.is_type_accessible(&make_acc_core(), &Topology::CPU, &ref_hbm)); // AccCore has LocalSRAM
 
         // DRAM reachable by Host, AMX, GPU, ANE
-        assert!(graph.is_type_accessible(&Topology::Host, &Topology::ANE, &ref_dram));
+        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::GPU, &Topology::ANE, &ref_dram));
-        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::Host, &ref_dram));
+        assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ref_dram));
         // NPU doesn't directly reach DRAM in this default unified memory model
-        assert!(!graph.is_type_accessible(&make_npu(), &Topology::Host, &ref_dram));
+        assert!(!graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_dram));
     }
 
     #[test]
     fn test_transfer_legal_paths() {
         let graph = TransferCostGraph::default();
         // Identity
-        assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::HostDRAM));
+        assert!(graph.can_transfer(&MemorySpace::CPUDRAM, &MemorySpace::CPUDRAM));
 
         // Host <-> NPU HBM
-        assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::NPUHBM));
-        assert!(graph.can_transfer(&MemorySpace::NPUHBM, &MemorySpace::HostDRAM));
+        assert!(graph.can_transfer(&MemorySpace::CPUDRAM, &MemorySpace::NPUHBM));
+        assert!(graph.can_transfer(&MemorySpace::NPUHBM, &MemorySpace::CPUDRAM));
 
         // NPU HBM <-> Local SRAM
         assert!(graph.can_transfer(&MemorySpace::NPUHBM, &MemorySpace::LocalSRAM));
@@ -398,20 +398,20 @@ mod tests {
     fn test_transfer_multi_hop_paths() {
         let graph = TransferCostGraph::default();
         // Local SRAM <-> Host DRAM (BFS multi-hop routing makes this valid)
-        assert!(graph.can_transfer(&MemorySpace::LocalSRAM, &MemorySpace::HostDRAM));
-        assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::LocalSRAM));
+        assert!(graph.can_transfer(&MemorySpace::LocalSRAM, &MemorySpace::CPUDRAM));
+        assert!(graph.can_transfer(&MemorySpace::CPUDRAM, &MemorySpace::LocalSRAM));
 
         // Let's actually verify the multi-hop path array generated
-        let path = graph.transfer_path(&MemorySpace::HostDRAM, &MemorySpace::LocalSRAM);
+        let path = graph.transfer_path(&MemorySpace::CPUDRAM, &MemorySpace::LocalSRAM);
         assert!(path.is_some());
         let (cost, hops) = path.unwrap();
-        // Default graph: HostDRAM -> NPUHBM -> LocalSRAM
+        // Default graph: CPUDRAM -> NPUHBM -> LocalSRAM
         // cost = 50 + 10 = 60
         assert_eq!(cost, 60);
         assert_eq!(
             hops,
             vec![
-                MemorySpace::HostDRAM,
+                MemorySpace::CPUDRAM,
                 MemorySpace::NPUHBM,
                 MemorySpace::LocalSRAM
             ]

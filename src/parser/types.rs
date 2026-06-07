@@ -21,7 +21,7 @@ impl<'a> Parser<'a> {
             _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
         match ident.as_str() {
-            "Host" => Ok(Topology::Host),
+            "CPU" => Ok(Topology::CPU),
             "Current" => Ok(Topology::Current),
             "NPU" => {
                 if self.match_token(&TokenType::LeftBracket) {
@@ -44,8 +44,8 @@ impl<'a> Parser<'a> {
             "AMX" => Ok(Topology::AMX),
             "ANE" => Ok(Topology::ANE),
             "GPU" => Ok(Topology::GPU),
-            "Host_AVX512" => Ok(Topology::Host_AVX512),
-            "Host_Neon" => Ok(Topology::Host_Neon),
+            "CPU_AVX512" => Ok(Topology::CPU_AVX512),
+            "CPU_Neon" => Ok(Topology::CPU_Neon),
             _ => Err(format!("Unknown topology {}", ident)),
         }
     }
@@ -58,7 +58,7 @@ impl<'a> Parser<'a> {
             _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
         match ident.as_str() {
-            "Host_DRAM" => Ok(MemorySpace::HostDRAM),
+            "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
             "NPU_HBM" => Ok(MemorySpace::NPUHBM),
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
             _ => Err(format!("Unknown memory space {}", ident)),
