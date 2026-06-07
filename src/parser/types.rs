@@ -248,8 +248,8 @@ impl<'a> Parser<'a> {
                     }
 
                     // Check for GenericInstance like Config<f32>
-                    if self.check(&TokenType::LeftAngle) {
-                        self.advance(); // consume '<'
+                    let base_type = Type::Struct(ident, None);
+                    if self.match_token(&TokenType::LeftAngle) {
                         let mut type_args = Vec::new();
                         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
                             let saved_pos = self.pos;
@@ -274,12 +274,9 @@ impl<'a> Parser<'a> {
                             &TokenType::RightAngle,
                             "Expected '>' after generic type arguments",
                         )?;
-                        Ok(Type::GenericInstance(
-                            Box::new(Type::Struct(ident, None)),
-                            type_args,
-                        ))
+                        Ok(Type::GenericInstance(Box::new(base_type), type_args))
                     } else {
-                        Ok(Type::Struct(ident, None))
+                        Ok(base_type)
                     }
                 }
             }
