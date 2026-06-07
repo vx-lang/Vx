@@ -250,30 +250,7 @@ impl<'a> Parser<'a> {
                     // Check for GenericInstance like Config<f32>
                     let base_type = Type::Struct(ident, None);
                     if self.match_token(&TokenType::LeftAngle) {
-                        let mut type_args = Vec::new();
-                        while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
-                            let saved_pos = self.pos;
-                            if let Ok(ty) = self.parse_type() {
-                                type_args.push(ty);
-                            } else {
-                                self.pos = saved_pos;
-                                if let Ok(expr) = self.parse_primary_expr() {
-                                    type_args.push(Type::Const(Box::new(expr)));
-                                } else {
-                                    return Err(
-                                        "Expected type or constant expression in generic arguments"
-                                            .to_string(),
-                                    );
-                                }
-                            }
-                            if !self.match_token(&TokenType::Comma) {
-                                break;
-                            }
-                        }
-                        self.consume(
-                            &TokenType::RightAngle,
-                            "Expected '>' after generic type arguments",
-                        )?;
+                        let type_args = self.parse_generic_type_args()?;
                         Ok(Type::GenericInstance(Box::new(base_type), type_args))
                     } else {
                         Ok(base_type)
@@ -281,5 +258,32 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    pub(crate) fn parse_generic_type_args(&mut self) -> Result<Vec<Type>, String> {
+        let mut type_args = Vec::new();
+        while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
+            let saved_pos = self.pos;
+            if let Ok(ty) = self.parse_type() {
+                type_args.push(ty);
+            } else {
+                self.pos = saved_pos;
+                if let Ok(expr) = self.parse_primary_expr() {
+                    type_args.push(Type::Const(Box::new(expr)));
+                } else {
+                    return Err(
+                        "Expected type or constant expression in generic arguments".to_string()
+                    );
+                }
+            }
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(
+            &TokenType::RightAngle,
+            "Expected '>' after generic type arguments",
+        )?;
+        Ok(type_args)
     }
 }
