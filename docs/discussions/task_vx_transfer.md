@@ -1,5 +1,0 @@
-- [x] Step 1: Update `VxLowering.cpp` to include `#include "mlir/Dialect/MemRef/IR/MemRef.h"`.
-- [x] Step 2: Implement `TransferOpLowering` rewrite pattern in `VxLowering.cpp`.
-- [x] Step 3: Add `memref` dialect to the legal targets in `ConvertVxToStandardPass` in `VxLowering.cpp`.
-- [x] Step 4: Add `TransferOpLowering` to the pattern set in `ConvertVxToStandardPass`.
-- [x] Step 5: Test the build (`cargo build` and `cargo test`).

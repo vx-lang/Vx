@@ -1,7 +1,9 @@
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// FileCheck %s RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1
+// | FileCheck %s RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
 fn dummy(x : i32) on Topology::NPU[0] -> i32 { return x; }
 
 fn process(t : Tensor<f32>) -> Tensor<f32> {

@@ -37,8 +37,8 @@ fn test_match_no_braces() -> i32 {
   let x = 1;
   let mut out = 0;
   match x {
-    1 => out = 10;
-    , _ => out = 20;
+    1 = > out = 10;
+    , _ = > out = 20;
     ,
   }
   return out; // Should be 10
