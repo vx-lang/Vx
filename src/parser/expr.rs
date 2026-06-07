@@ -614,6 +614,7 @@ impl<'a> Parser<'a> {
                 Expr::Transfer(TransferExpr {
                     expr: Box::new(inner),
                     space: mem,
+                    cost: None,
                     span: Span::default(),
                 })
             }

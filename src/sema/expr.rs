@@ -815,6 +815,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Transfer(TransferExpr {
                 expr: inner_expr,
                 space: target_mem,
+                cost: ref mut expr_cost,
                 span: _,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner_expr, false, silent);
@@ -826,7 +827,8 @@ impl<'a> TypeChecker<'a> {
                     _ => MemorySpace::HostDRAM,
                 };
 
-                if !self.hardware_graph.can_transfer(&source_mem, target_mem) {
+                let calculated_cost = self.hardware_graph.transfer_cost(&source_mem, target_mem);
+                if calculated_cost.is_none() {
                     if !silent {
                         self.errors.push(format!(
                             "Cannot transfer from {:?} to {:?}: no hardware path exists",
@@ -835,6 +837,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
                 }
+                *expr_cost = calculated_cost;
 
                 match inner_ty {
                     Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
@@ -2211,6 +2214,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        cost: None,
                         span: Span::default(),
                     });
                 } else if _method == "to_host" {
@@ -2219,6 +2223,7 @@ impl<'a> TypeChecker<'a> {
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
+                        cost: None,
                         span: Span::default(),
                     });
                 } else if _method == "as_ptr" || _method == "as_mut_ptr" {

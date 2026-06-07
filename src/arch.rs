@@ -12,13 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 use crate::ast::{MemorySpace, Topology, Type};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use crate::ast;
 pub struct HardwareGraph {
     /// Adjacency list for MemorySpace data transfers.
     /// Directed edge from A -> B means memory can be transferred from A to B.
-    transfer_edges: HashMap<MemorySpace, Vec<MemorySpace>>,
+    transfer_edges: HashMap<MemorySpace, Vec<(MemorySpace, u32)>>,
 
     /// Adjacency list for Topology to MemorySpace visibility.
     /// Directed edge from Top -> Mem means Top can directly read/write Mem.
@@ -34,12 +34,12 @@ impl Default for HardwareGraph {
 
         // Standard Transfer Paths
         // Host <-> HBM
-        graph.add_transfer_edge(MemorySpace::HostDRAM, MemorySpace::NPUHBM);
-        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::HostDRAM);
+        graph.add_transfer_edge(MemorySpace::HostDRAM, MemorySpace::NPUHBM, 50);
+        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::HostDRAM, 50);
 
         // HBM <-> SRAM
-        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::LocalSRAM);
-        graph.add_transfer_edge(MemorySpace::LocalSRAM, MemorySpace::NPUHBM);
+        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::LocalSRAM, 10);
+        graph.add_transfer_edge(MemorySpace::LocalSRAM, MemorySpace::NPUHBM, 10);
 
         // Standard Visibility Paths
         // Host can access DRAM and HBM
@@ -61,8 +61,8 @@ impl Default for HardwareGraph {
 }
 
 impl HardwareGraph {
-    pub fn add_transfer_edge(&mut self, src: MemorySpace, dst: MemorySpace) {
-        self.transfer_edges.entry(src).or_default().push(dst);
+    pub fn add_transfer_edge(&mut self, src: MemorySpace, dst: MemorySpace, cost: u32) {
+        self.transfer_edges.entry(src).or_default().push((dst, cost));
     }
 
     pub fn add_visibility_edge(&mut self, top: Topology, mem: MemorySpace) {
@@ -170,35 +170,74 @@ impl HardwareGraph {
         false
     }
 
-    /// Determines if a data transfer between two memory spaces is physically supported
-    /// using BFS pathfinding.
-    pub fn can_transfer(&self, source: &MemorySpace, target: &MemorySpace) -> bool {
+    /// Determines the minimum data movement cost between two memory spaces using Dijkstra's algorithm.
+    pub fn transfer_cost(&self, source: &MemorySpace, target: &MemorySpace) -> Option<u32> {
         if source == target {
-            return true;
+            return Some(0);
         }
 
-        let mut queue = VecDeque::new();
-        let mut visited = HashSet::new();
+        use std::collections::BinaryHeap;
 
-        queue.push_back(source.clone());
-        visited.insert(source.clone());
+        #[derive(Eq, PartialEq)]
+        struct State {
+            cost: u32,
+            mem: MemorySpace,
+        }
 
-        while let Some(current) = queue.pop_front() {
-            if current == *target {
-                return true;
+        impl Ord for State {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                other.cost.cmp(&self.cost) // Reverse for min-heap
+            }
+        }
+
+        impl PartialOrd for State {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut heap = BinaryHeap::new();
+        let mut dists = HashMap::new();
+
+        heap.push(State {
+            cost: 0,
+            mem: source.clone(),
+        });
+        dists.insert(source.clone(), 0);
+
+        while let Some(State { cost, mem }) = heap.pop() {
+            if mem == *target {
+                return Some(cost);
             }
 
-            if let Some(neighbors) = self.transfer_edges.get(&current) {
-                for next in neighbors {
-                    if !visited.contains(next) {
-                        visited.insert(next.clone());
-                        queue.push_back(next.clone());
+            if let Some(current_dist) = dists.get(&mem) {
+                if cost > *current_dist {
+                    continue;
+                }
+            }
+
+            if let Some(neighbors) = self.transfer_edges.get(&mem) {
+                for (next, edge_cost) in neighbors {
+                    let next_cost = cost + edge_cost;
+                    let is_better = dists.get(next).map_or(true, |&c| next_cost < c);
+
+                    if is_better {
+                        dists.insert(next.clone(), next_cost);
+                        heap.push(State {
+                            cost: next_cost,
+                            mem: next.clone(),
+                        });
                     }
                 }
             }
         }
 
-        false
+        None
+    }
+
+    /// Determines if a data transfer between two memory spaces is physically supported.
+    pub fn can_transfer(&self, source: &MemorySpace, target: &MemorySpace) -> bool {
+        self.transfer_cost(source, target).is_some()
     }
 }
 

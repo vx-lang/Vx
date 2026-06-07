@@ -93,11 +93,12 @@ impl StringLiteralExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
+    pub cost: Option<u32>, // Added by sema
     pub span: Span,
 }
 impl TransferExpr {
     pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self {
-        Self { expr, space, span }
+        Self { expr, space, cost: None, span }
     }
 }
 
@@ -695,6 +696,7 @@ impl Expr {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
+                cost: e.cost,
                 span: e.span.clone(),
             }),
             Expr::ComptimeBlock(e) => Expr::ComptimeBlock(ComptimeBlockExpr {
