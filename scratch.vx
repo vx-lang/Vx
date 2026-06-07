@@ -1,1 +1,0 @@
-impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {}
