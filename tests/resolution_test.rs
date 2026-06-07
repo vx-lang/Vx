@@ -33,7 +33,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             name: "get_vector".to_string(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::Host,
+            topology: vxc::ast::Topology::CPU,
             return_type: Type::Struct("Vector".to_string(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
@@ -88,7 +88,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             name: "get_vector".to_string(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::Host,
+            topology: vxc::ast::Topology::CPU,
             return_type: Type::Struct("Vector".to_string(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
@@ -131,13 +131,13 @@ fn test_nested_type_resolution() -> Result<(), String> {
         functions: vec![Function {
             name: "compute".to_string(),
             generics: vec![],
-            topology: vxc::ast::Topology::Host,
+            topology: vxc::ast::Topology::CPU,
             params: vec![(
                 "m".to_string(),
                 // &mut Matrix
                 Type::Borrow(
                     Box::new(Type::Struct("Matrix".to_string(), None)),
-                    Some(MemorySpace::HostDRAM),
+                    Some(MemorySpace::CPUDRAM),
                     true,
                     0,
                 ),
@@ -189,7 +189,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             name: "setup".to_string(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::Host,
+            topology: vxc::ast::Topology::CPU,
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             requires: Vec::new(),
             ensures: Vec::new(),
