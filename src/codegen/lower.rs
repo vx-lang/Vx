@@ -1224,6 +1224,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                     ast::Type::Scalar(ast::ElementType::F32)
                 } else if ty_arg == "i64" {
                     ast::Type::Scalar(ast::ElementType::I64)
+                } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
+                    ast::Type::Const(Box::new(ast::Expr::Number(ast::expr::NumberExpr::new(
+                        ty_arg.to_string(),
+                        None,
+                        ast::Span::default(),
+                    ))))
                 } else {
                     ast::Type::Struct(ty_arg.to_string(), None)
                 };
@@ -1234,7 +1240,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                     mapping.insert(param.name().to_string(), inner_tys[i].clone());
                 }
             }
-            println!("StructInit {}: mapping = {:?}", name, mapping);
+
             gen.lower_type(&ast::Type::GenericInstance(
                 Box::new(ast::Type::Struct(base_name.clone(), None)),
                 inner_tys,
@@ -1259,19 +1265,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 .position(|(n, _)| n == field_name)
                 .unwrap();
             let sub_ty = struct_decl.fields[field_idx].1.substitute(&mapping);
-            println!(
-                "Struct {} field {} has type {:?}, mapped to {:?}",
-                name, field_name, struct_decl.fields[field_idx].1, sub_ty
-            );
+
             let field_ty = gen.lower_type(&sub_ty);
             let prev_expected = gen.expected_type;
             gen.expected_type = Some(field_ty);
             let (mut field_val, expr_ty) = gen.generate_expr(f_expr, block);
             gen.expected_type = prev_expected;
-            println!(
-                "Struct {} field {} has type {:?}, expr has type {:?}",
-                name, field_name, struct_decl.fields[field_idx].1, expr_ty
-            );
 
             if expr_ty != field_ty
                 && ((expr_ty.to_string() == "index" && field_ty.to_string() == "i32")
@@ -1552,6 +1551,12 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                         ast::Type::Scalar(ast::ElementType::F32)
                     } else if ty_arg == "i64" {
                         ast::Type::Scalar(ast::ElementType::I64)
+                    } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
+                        ast::Type::Const(Box::new(ast::Expr::Number(ast::expr::NumberExpr::new(
+                            ty_arg.to_string(),
+                            None,
+                            ast::Span::default(),
+                        ))))
                     } else {
                         ast::Type::Struct(ty_arg.to_string(), None)
                     };

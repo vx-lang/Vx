@@ -382,11 +382,7 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         let new_ret = generic_func.return_type.substitute(mapping);
-        // Add a print to see the substituted return type!
-        println!(
-            "instantiate_function: func={}, new_ret={:?}",
-            mangled_name, new_ret
-        );
+
         let new_body = generic_func
             .body
             .iter()

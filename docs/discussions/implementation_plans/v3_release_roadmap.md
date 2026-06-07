@@ -55,14 +55,14 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 - [x] Split the ecosystem into `stdlib/` (compiler intrinsic types, IO) and `packages/` (third-party style libraries like `vx_nn` and `vx_linalg`).
 - [x] Include File I/O, native Strings, core mathematical functions, and topologically-aware Tensors (`Tensor<f32, ANE_SRAM>`) backed directly by MLIR `memref`.
 
-## 6. Const Generics Support
+## 6. Const Generics Support (Completed)
 
 **The Gap:** The language currently only supports type generics (e.g., `T`, `U`) with optional trait bounds, and relies on built-in compiler intrinsics to handle static, multidimensional tensor shapes.
 **The Fix:**
 
-- Expand the AST, parser, and semantic analyzer to support constant values in generic parameter lists (e.g., `struct Array<T, const N: usize>`).
-- Implement compile-time constant evaluation within the semantic analyzer to ensure static shape compatibility across tensor bounds.
-- Empower user-defined libraries to represent compile-time properties (like kernel sizes or channel counts) securely without hardcoded compiler magic.
+- [x] Expand the AST, parser, and semantic analyzer to support constant values in generic parameter lists (e.g., `struct Array<T, const N: usize>`).
+- [x] Implement compile-time constant evaluation within the semantic analyzer to ensure static shape compatibility across tensor bounds.
+- [x] Empower user-defined libraries to represent compile-time properties (like kernel sizes or channel counts) securely without hardcoded compiler magic.
 
 ## 7. Native `SizeOf` Expressions and Scalar Casts (Completed)
 
