@@ -1,0 +1,55 @@
+//===- trait_topologies.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+struct CPU {}
+struct NPU {}
+
+trait ExecuteArith<T> {
+  fn add_array(self: T, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]>;
+  fn add_vector(self: T, a: <4 x f32>, b: <4 x f32>) -> <4 x f32>;
+  fn add_tensor(self: T, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32>;
+}
+
+impl ExecuteArith<CPU> for CPU {
+  fn add_array(self: CPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
+  fn add_vector(self: CPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
+  fn add_tensor(self: CPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+}
+
+impl ExecuteArith<NPU> for NPU {
+  fn add_array(self: NPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
+  fn add_vector(self: NPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
+  fn add_tensor(self: NPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+}
+trait TransferDMA<T> {
+  fn transfer_array_to_npu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]>;
+  fn transfer_array_to_cpu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host>;
+  fn transfer_vector(self: T, data: <4 x f32>) -> <4 x f32>;
+  fn transfer_tensor_to_npu(self: T, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]>;
+  fn transfer_tensor_to_cpu(self: T, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host>;
+}
+
+impl TransferDMA<CPU> for CPU {
+  fn transfer_array_to_npu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
+  fn transfer_array_to_cpu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_vector(self: CPU, data: <4 x f32>) -> <4 x f32> { return data; }
+  fn transfer_tensor_to_npu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
+  fn transfer_tensor_to_cpu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+}
+
+impl TransferDMA<NPU> for NPU {
+  fn transfer_array_to_npu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
+  fn transfer_array_to_cpu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+  fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> { return data; }
+  fn transfer_tensor_to_npu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
+  fn transfer_tensor_to_cpu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::Host> { return transfer(data, Memory::Host_DRAM); }
+}
+fn main() -> void {}
+
+// CHECK: func.func private @printMemrefF32
