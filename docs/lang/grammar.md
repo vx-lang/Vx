@@ -155,3 +155,16 @@ topology ::=
     | "Topology" "::" "Host_AVX512"
     | "Topology" "::" "Host_Neon"
 ```
+
+## 6. ABI Mangling
+
+Internally, the compiler uses a deterministic mangling scheme based on the `$` character to represent types, generics, and traits in the C-ABI. This guarantees no naming collisions with user-defined identifiers (which cannot contain `$`).
+
+### Mangling Rules
+
+- Scalar Types: Used verbatim (e.g. `f32`, `i64`).
+- Tensors: `Tensor$<element_type>$<rank>` (e.g., `Tensor$f32$2`).
+- Vectors: `Simd$<element_type>$<width>` (e.g., `Simd$f32$4`).
+- Methods: `<struct_name>$<method_name>` (e.g., `Point$distance`).
+
+*Note: The user-facing syntax uses `< >` for generics and `::` for paths. The `$` symbol is strictly reserved for backend lowering and internal compiler representation.*
