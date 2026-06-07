@@ -18,8 +18,8 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 **The Gap:** While `vx.spawn` successfully outlines code for NPU topologies, the resulting function is still compiled for the CPU. It doesn't actually execute on an accelerator.
 **The Fix:**
 
-- Lower the outlined `vx.spawn` bodies to the MLIR `gpu` dialect.
-- Compile the GPU modules into hardware-specific target binaries (e.g., SPIR-V for Vulkan/Metal, PTX for NVIDIA, or specific MLIR-to-CoreML representations).
+- Expand the custom `vx` MLIR dialect (e.g., `vx.kernel_launch`, `vx.module`) to directly represent hardware-agnostic accelerator kernels. We intentionally avoid MLIR's built-in `gpu` dialect, which is too rigidly coupled to traditional GPU architectures and poorly suited for heterogeneous edge devices (NPUs/TPUs).
+- Lower the `vx` kernel representations into hardware-specific target binaries (e.g., SPIR-V for Vulkan/Metal, PTX for NVIDIA, or CoreML representations).
 - Inject host-side runtime API calls (e.g., `vulkanLaunchKernel` or a custom Metal C-API) to dispatch the compiled kernel blob to the actual hardware accelerator at runtime.
 
 ## 2. Rigorous Topology & Memory Algebra
