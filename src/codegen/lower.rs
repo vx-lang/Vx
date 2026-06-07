@@ -1702,22 +1702,34 @@ fn map_frontend_type_to_mlir(el_ty_str: &str) -> Result<&'static str, String> {
 }
 
 fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {
-    if ty_str.contains("bf16") {
-        Ok("bf16")
-    } else if ty_str.contains("f16") {
-        Ok("f16")
-    } else if ty_str.contains("f32") {
-        Ok("f32")
-    } else if ty_str.contains("f64") {
-        Ok("f64")
-    } else if ty_str.contains("i32") {
-        Ok("i32")
-    } else if ty_str.contains("i64") {
-        Ok("i64")
-    } else if ty_str.contains("i1") {
-        Ok("i1")
+    let mut inner = ty_str;
+    if inner.starts_with("memref<") && inner.ends_with('>') {
+        inner = &inner[7..inner.len() - 1];
+    } else if inner.starts_with("tensor<") && inner.ends_with('>') {
+        inner = &inner[7..inner.len() - 1];
     } else {
-        Err(format!("Unsupported MLIR element type in: {}", ty_str))
+        return Err(format!("Unsupported MLIR element type in: {}", ty_str));
+    }
+
+    if let Some(idx) = inner.find(',') {
+        inner = &inner[..idx];
+    }
+
+    if let Some(idx) = inner.rfind('x') {
+        inner = &inner[idx + 1..];
+    }
+
+    inner = inner.trim();
+
+    match inner {
+        "bf16" => Ok("bf16"),
+        "f16" => Ok("f16"),
+        "f32" => Ok("f32"),
+        "f64" => Ok("f64"),
+        "i32" => Ok("i32"),
+        "i64" => Ok("i64"),
+        "i1" => Ok("i1"),
+        _ => Err(format!("Unsupported MLIR element type in: {}", ty_str)),
     }
 }
 
