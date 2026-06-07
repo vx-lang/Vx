@@ -1,5 +1,4 @@
-// RUN: vxc %s --action emit-mlir -X
-// mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
+// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-loops),convert-scf-to-cf)"
 // 2>&1 | FileCheck %s
 
 fn test_scf_to_cf(a : Tensor<f32, [16]>, b : Tensor<f32, [16]>)

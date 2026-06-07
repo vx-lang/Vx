@@ -11,8 +11,7 @@
 // -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
 // | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o EXEC_RUN: clang
 // %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t EXEC_RUN: %t | FileCheck
-// %s --check-prefix=EXEC RUN: vxc %s --emit-mlir -O0 RUN: vxc %s --emit-mlir -X
-// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" RUN: vxc %s
+// %s --check-prefix=EXEC RUN: vxc %s --emit-mlir -O0 RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" RUN: vxc %s
 // --emit-llvm
 
 fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {

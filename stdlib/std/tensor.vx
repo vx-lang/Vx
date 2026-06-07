@@ -21,7 +21,7 @@ impl<T : Float> Tensor<T> {
 
   fn copy(self : &mut Tensor<T>, src : &Tensor<T>) -> void {
     if comptime
-    Topology::Current == Topology::Host_AVX512 {
+    Topology::Current == Topology::CPU_AVX512 {
       mlir!(
       inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
       clobbers: [self],
@@ -56,7 +56,7 @@ impl<T : Float> Tensor<T> {
 
   fn assign(self : &mut Tensor<T>, val : T) -> void {
     if comptime
-    Topology::Current == Topology::Host_AVX512 {
+    Topology::Current == Topology::CPU_AVX512 {
       mlir!(
       inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
       clobbers: [self],
@@ -91,7 +91,7 @@ impl<T : Float> Tensor<T> {
 
   fn compare(self : &Tensor<T>, other : &Tensor<T>) -> bool {
     if comptime
-    Topology::Current == Topology::Host_AVX512 {
+    Topology::Current == Topology::CPU_AVX512 {
       mlir!(
       inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
       clobbers: [],
@@ -180,7 +180,7 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   // Fills the statically shaped tensor with a constant value using Linalg
   fn fill_static(self : &mut Tensor<T, [ N, M ]>, val : T) -> void {
     if comptime
-    Topology::Current == Topology::Host_AVX512 {
+    Topology::Current == Topology::CPU_AVX512 {
       // Demonstrate optimized code path for AVX512 (fallback to standard
       // Linalg for demonstration)
       mlir !(inputs : (% arg_t = self : memref<N x M x f32>,
