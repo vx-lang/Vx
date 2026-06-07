@@ -839,7 +839,9 @@ impl<'a> TypeChecker<'a> {
                     _ => MemorySpace::HostDRAM,
                 };
 
-                let calculated_cost = self.transfer_cost_graph.transfer_cost(&source_mem, target_mem);
+                let calculated_cost = self
+                    .transfer_cost_graph
+                    .transfer_cost(&source_mem, target_mem);
                 if calculated_cost.is_none() {
                     if !silent {
                         self.errors.push(format!(
@@ -949,7 +951,8 @@ impl<'a> TypeChecker<'a> {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = actual_top.clone();
-                self.active_memory = crate::arch::TransferCostGraph::default_memory_for(&actual_top);
+                self.active_memory =
+                    crate::arch::TransferCostGraph::default_memory_for(&actual_top);
 
                 *top = actual_top;
 
