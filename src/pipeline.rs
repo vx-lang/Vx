@@ -94,7 +94,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         .flat_map(|(module_idx, module)| {
             let global_session_ref = &global_session;
             let global_env_ref = &global_env;
-            module
+            let mut func_results = module
                 .functions
                 .par_iter_mut()
                 .map(move |func| {
@@ -112,7 +112,32 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                         generated_structs,
                     )
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+
+            let impl_results = module
+                .impls
+                .par_iter_mut()
+                .flat_map(|i| {
+                    i.methods.par_iter_mut().map(move |func| {
+                        let mut worker = LocalWorkerState::new(global_session_ref.clone());
+                        let mut checker = TypeChecker::new(global_env_ref, &mut worker);
+                        checker.check_function(func);
+                        let errors = checker.errors;
+                        let monomorphized_functions = checker.monomorphized_functions;
+                        let generated_structs = checker.generated_structs;
+                        (
+                            errors,
+                            monomorphized_functions,
+                            worker,
+                            module_idx,
+                            generated_structs,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            func_results.extend(impl_results);
+            func_results
         })
         .collect();
 

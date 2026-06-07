@@ -240,6 +240,11 @@ impl CompilerDriver {
         for f in &mut ast.functions {
             checker.check_function(f);
         }
+        for i in &mut ast.impls {
+            for f in &mut i.methods {
+                checker.check_function(f);
+            }
+        }
 
         let has_errors = checker
             .errors
