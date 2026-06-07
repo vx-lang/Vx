@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 extern "C" {
   fn malloc(size: i32) -> *mut f32;

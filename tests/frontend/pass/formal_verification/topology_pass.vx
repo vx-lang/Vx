@@ -1,5 +1,5 @@
 //===- topology_pass.vx ---------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_topology_npu(T: i32) -> i32
 requires Topology::NPU[0] == Topology::NPU[0]
@@ -44,3 +44,5 @@ ensures return == 1
 }
 
 fn main() -> i32 { return 0; }
+
+// CHECK: module

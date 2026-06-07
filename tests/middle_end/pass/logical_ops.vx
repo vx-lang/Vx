@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn main(d: Tensor<i32>) -> Tensor<i32> {
   let a: Tensor<i32> = 10;

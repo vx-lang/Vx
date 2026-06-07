@@ -1,5 +1,5 @@
-// RUN: vxc %s
-// RUN: %t
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: %t 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   let mut val = 0;
@@ -23,3 +23,5 @@ fn main() -> i32 {
   // val must be 1.
   return if val == 1 { 0 } else { 1 };
 }
+
+// CHECK: module

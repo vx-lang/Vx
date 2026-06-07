@@ -1,4 +1,4 @@
-// RUN: not vxc %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From const_generic_arg_count.vx
 struct Foo_0<const N: i32, const M: i32> {
@@ -43,3 +43,5 @@ fn test_4() -> void {
 }
 
 
+
+// CHECK: Expected type identifier

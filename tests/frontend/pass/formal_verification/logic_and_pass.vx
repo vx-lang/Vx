@@ -1,5 +1,5 @@
 //===- logic_and_pass.vx ---------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_complex_bounds(A: i32, B: i32) -> i32
 requires A > 10 && A < 20 && B > 5 && B < 10
@@ -24,3 +24,5 @@ ensures return >= 10
 }
 
 fn main() -> i32 { return 0; }
+
+// CHECK: module

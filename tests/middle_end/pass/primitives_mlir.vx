@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- primitives_mlir.vx - Vx Compiler --------------------------*- Vx -*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
@@ -7,6 +5,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
 fn test_primitives() -> i32 {
   let a: u8 = 10;
   let b: i8 = 20;

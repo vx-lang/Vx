@@ -3,7 +3,6 @@ use crate::ast::{Delimiter, Span};
 use crate::lexer::TokenType;
 use std::collections::HashMap;
 
-use crate::ast;
 use crate::parser;
 pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<String, Vec<MacroRule>>,

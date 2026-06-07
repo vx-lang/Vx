@@ -1,4 +1,4 @@
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 import tests::modules::iter;
 

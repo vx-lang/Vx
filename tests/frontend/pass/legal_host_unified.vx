@@ -1,5 +1,5 @@
 //===- legal_host_unified.vx - Vx Compiler -------------------------------*- Vx -*-===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   let t_host: Tensor<f32> = 1.0;
@@ -31,3 +31,5 @@ fn main() -> i32 {
 
 // LLVM-LABEL: module {
 // LLVM: llvm.func @test_f32() -> i32
+
+// CHECK: module

@@ -1,4 +1,4 @@
-// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))"
+// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))" 2>&1 | FileCheck %s
 
 module {
   func.func @test_unroll(%arg0: memref<16xf32>, %arg1: memref<16xf32>) -> memref<16xf32> {

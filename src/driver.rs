@@ -10,9 +10,7 @@ use crate::module_loader::ModuleLoader;
 use crate::sema::{GlobalAstEnv, TypeChecker};
 use crate::session::{GlobalSession, LocalWorkerState};
 
-use crate::ast;
 use crate::codegen;
-use crate::sema;
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum Action {
     /// Only run the lexer and parser

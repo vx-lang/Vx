@@ -1,5 +1,5 @@
 //===- autodiff_higher_order.vx -----------------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 import std::googletest;
 
 // EXPECT: callee = @__enzyme_autodiff_grad_compute_val
@@ -51,3 +51,5 @@ fn main() -> i32 {
 
 // LLVM-LABEL: module {
 // LLVM: llvm.func @test_f32() -> i32
+
+// CHECK: module

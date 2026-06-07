@@ -14,7 +14,6 @@
 //===----------------------------------------------------------------------===//
 use crate::ast::*;
 
-use crate::ast;
 pub struct AstPrinter;
 
 impl AstPrinter {

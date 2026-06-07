@@ -1,4 +1,4 @@
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 
 fn test_group1_0(X: i32) -> i32
@@ -16,3 +16,5 @@ ensures return == X
 }
 
 fn main() -> i32 { return 0; }
+
+// CHECK: module

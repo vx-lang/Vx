@@ -1,4 +1,4 @@
-// RUN: not vxc %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From topology_assign_type_mismatch.vx
 fn test_0() -> void {
@@ -28,3 +28,5 @@ fn test_3() -> void {
 }
 
 
+
+// CHECK: Error at 19:13: Expected 'Topology'

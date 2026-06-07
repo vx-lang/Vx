@@ -1,5 +1,5 @@
-// RUN: vxc %s
-// RUN: vxc --emit-mlir %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
 // CHECK: module {
 // CHECK:   func.func private @__enzyme_autodiff_grad_poly((f32) -> f32, f32) -> f32
 // CHECK:   func.func private @vx_googletest_expect_eq_f32(f32, f32) -> i32

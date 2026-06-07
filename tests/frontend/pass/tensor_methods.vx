@@ -1,5 +1,5 @@
-// RUN: vxc %s
-// RUN: %t
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: %t 2>&1 | FileCheck %s
 
 import std::tensor;
 
@@ -9,3 +9,5 @@ fn main() -> i32 {
   let y = x.map(|val| val * 2.0);
   return 0;
 }
+
+// CHECK: module

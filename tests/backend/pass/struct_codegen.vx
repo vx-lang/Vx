@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s
-// RUN: %t
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: %t 2>&1 | FileCheck %s
 
 
 

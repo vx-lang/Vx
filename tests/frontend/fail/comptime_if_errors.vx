@@ -1,4 +1,4 @@
-// RUN: not vxc %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From comptime_active_branch_error.vx
 fn test_0() on Topology::Host -> void {
@@ -39,3 +39,5 @@ fn test_3() -> void {
 }
 
 
+
+// CHECK: Expected expression, found Semicolon

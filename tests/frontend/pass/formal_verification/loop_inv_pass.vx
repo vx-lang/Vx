@@ -1,5 +1,5 @@
 //===- loop_inv_pass.vx ---------------------------------===//
-// RUN: vxc %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_loop_increment(N: i32) -> i32
 requires N == 0
@@ -23,3 +23,5 @@ ensures return > 5
 }
 
 fn main() -> i32 { return 0; }
+
+// CHECK: module

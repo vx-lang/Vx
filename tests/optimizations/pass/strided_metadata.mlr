@@ -1,4 +1,4 @@
-// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(expand-strided-metadata))"
+// RUN: vxc %s -x mlir --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(expand-strided-metadata))" 2>&1 | FileCheck %s
 // CHECK: func.func @test_strided
 // CHECK: memref.extract_strided_metadata
 // CHECK: memref.reinterpret_cast
