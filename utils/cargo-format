@@ -21,7 +21,7 @@ cargo fmt
 
 echo "[2/3] Running vx-format for Vx files..."
 cargo build --release --quiet --bin vx-format
-find . -name "*.vx" -exec ./target/release/vx-format {} +
+find . -type d \( -name target -o -name .git \) -prune -o -name "*.vx" -exec ./target/release/vx-format {} +
 
 echo "[3/3] Running mdformat for Markdown files..."
 if command -v mdformat &> /dev/null; then
