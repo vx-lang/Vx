@@ -1685,19 +1685,39 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
     }
 }
 
-fn map_frontend_type_to_mlir(el_ty_str: &str) -> &'static str {
+fn map_frontend_type_to_mlir(el_ty_str: &str) -> Result<&'static str, String> {
     match el_ty_str {
-        "f16" => "f16",
-        "f32" => "f32",
-        "f64" => "f64",
-        "bf16" => "bf16",
-        "i32" => "i32",
-        "i64" => "i64",
-        "Bool" => "i1",
-        _ => panic!(
+        "f16" => Ok("f16"),
+        "f32" => Ok("f32"),
+        "f64" => Ok("f64"),
+        "bf16" => Ok("bf16"),
+        "i32" => Ok("i32"),
+        "i64" => Ok("i64"),
+        "Bool" | "i1" => Ok("i1"),
+        _ => Err(format!(
             "Unsupported frontend element type for MLIR lowering: {}",
             el_ty_str
-        ),
+        )),
+    }
+}
+
+fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {
+    if ty_str.contains("bf16") {
+        Ok("bf16")
+    } else if ty_str.contains("f16") {
+        Ok("f16")
+    } else if ty_str.contains("f32") {
+        Ok("f32")
+    } else if ty_str.contains("f64") {
+        Ok("f64")
+    } else if ty_str.contains("i32") {
+        Ok("i32")
+    } else if ty_str.contains("i64") {
+        Ok("i64")
+    } else if ty_str.contains("i1") {
+        Ok("i1")
+    } else {
+        Err(format!("Unsupported MLIR element type in: {}", ty_str))
     }
 }
 
@@ -1726,7 +1746,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             } else {
                 "f32"
             };
-            let mlir_ty_str = map_frontend_type_to_mlir(el_ty_str);
+            let mlir_ty_str =
+                map_frontend_type_to_mlir(el_ty_str).unwrap_or_else(|e| panic!("{}", e));
             let mut dynamic_sizes = Vec::new();
             let mut dims_count = 2; // Default fallback
 
@@ -1800,27 +1821,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let expr_ty_str = expr_ty.to_string();
 
             // Extract element type
-            let el_ty_str = if expr_ty_str.starts_with("memref<") {
-                if expr_ty_str.contains("f16") {
-                    "f16"
-                } else if expr_ty_str.contains("f32") {
-                    "f32"
-                } else if expr_ty_str.contains("f64") {
-                    "f64"
-                } else if expr_ty_str.contains("bf16") {
-                    "bf16"
-                } else if expr_ty_str.contains("i32") {
-                    "i32"
-                } else if expr_ty_str.contains("i64") {
-                    "i64"
-                } else if expr_ty_str.contains("i1") {
-                    "i1"
-                } else {
-                    "f32"
-                }
-            } else {
-                "f32"
-            };
+            let el_ty_str =
+                extract_mlir_element_type(&expr_ty_str).unwrap_or_else(|e| panic!("{}", e));
 
             let mut shape_str = String::new();
             if let Expr::Array(arr) = &args[1] {
@@ -2107,17 +2109,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
             let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block);
 
-            let el_ty_str = if arg_ty.to_string().contains("f64") {
-                "f64"
-            } else if arg_ty.to_string().contains("i64") {
-                "i64"
-            } else if arg_ty.to_string().contains("i32") {
-                "i32"
-            } else if arg_ty.to_string().contains("bf16") {
-                "bf16"
-            } else {
-                "f32"
-            };
+            let el_ty_str =
+                extract_mlir_element_type(&arg_ty.to_string()).unwrap_or_else(|e| panic!("{}", e));
 
             let print_fn_name = match el_ty_str {
                 "f64" => "printMemrefF64",
