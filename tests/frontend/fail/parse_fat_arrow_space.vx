@@ -1,0 +1,56 @@
+//! vx-format: OFF
+// RUN: vxc %s 2>&1 | FileCheck %s
+
+import std::io;
+
+fn main() {
+  let x = 1;
+  let mut out = 0;
+  match x {
+    1 = > out = 10;
+    , _ => out = 20;
+  }
+}
+
+fn verify_permissions(age: u32, has_id: bool, is_banned: bool) {
+    // Use of `==`, `<=`, and `&&`
+    if age >= 18 && has_id == true {
+        println!("Access granted.");
+    }
+
+    // Use of `!=`, `<=`, and `||`
+    if age <= 17 || is_banned != false {
+        println!("Access denied.");
+    }
+}
+
+fn bitwise_shifts() {
+    let base: i32 = 2;
+
+    let shift_left = base << 2;  // Use of `<<` (multiplies by 4)
+    let shift_right = base >> 1; // Use of `>>` (divides by 2)
+}
+
+fn compound_assignments() {
+    let mut x = 10;
+    let mut mask = 0b0101;
+
+    // Arithmetic Assignments
+    x += 5;   // Add and assign
+    x -= 2;   // Subtract and assign
+    x *= 3;   // Multiply and assign
+    x /= 2;   // Divide and assign
+    x %= 4;   // Remainder and assign
+
+    // Bitwise Assignments
+    mask &= 0b0011;  // Bitwise AND and assign
+    mask |= 0b1000;  // Bitwise OR and assign
+    mask ^= 0b1111;  // Bitwise XOR and assign
+
+    // Shift Assignments
+    x <<= 1;  // Left shift and assign
+    x >>= 1;  // Right shift and assign
+}
+
+
+// CHECK: Expected '=>' after pattern
