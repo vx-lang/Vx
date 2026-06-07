@@ -1562,7 +1562,7 @@ fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
-    type Output = (Value<'c, 'c>, Type<'c>);
+    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let FunctionCallExpr {
             name,
@@ -1570,7 +1570,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             span: _,
         } = self;
         if name == "Verified" {
-            return gen.generate_expr(&args[0], block);
+            return Ok(gen.generate_expr(&args[0], block));
         }
         if (name.starts_with("Tensor<")
             && name.ends_with(">")
@@ -1647,7 +1647,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .build()
                 .unwrap();
             let alloc_ref = block.append_operation(alloc_op);
-            return (alloc_ref.result(0).unwrap().into(), tensor_ty);
+            return Ok((alloc_ref.result(0).unwrap().into(), tensor_ty));
         }
 
         if name == "reshape" || name == "transpose" {
@@ -1698,22 +1698,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .unwrap();
 
             let cast2_ref = block.append_operation(cast2_op);
-            return (cast2_ref.result(0).unwrap().into(), target_ty);
+            return Ok((cast2_ref.result(0).unwrap().into(), target_ty));
         }
 
         if name == "with_memory" {
             // For now, with_memory is a no-op in lowering, just returns the tensor
             let (arg_val, expr_ty) = gen.generate_expr(&args[0], block);
-            return (arg_val, expr_ty);
+            return Ok((arg_val, expr_ty));
         }
 
         if name == "map" {
-            return lower_map_call(gen, block, args);
+            return Ok(lower_map_call(gen, block, args));
         }
 
         if name == "print" {
-            return lower_print_call(gen, block, args)
-                .unwrap_or_else(|e| panic!("Failed to lower print call: {:?}", e));
+            return lower_print_call(gen, block, args);
         }
 
         if name == "printf" || name == "vx_internal_printf" {
@@ -1790,10 +1789,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     .unwrap(),
             );
 
-            return (
+            return Ok((
                 call_op.result(0).unwrap().into(),
                 Type::parse(gen.context, "i32").unwrap(),
-            );
+            ));
         }
 
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
@@ -1828,7 +1827,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build().unwrap();
                 let call_ref = block.append_operation(call_op);
-                (call_ref.result(0).unwrap().into(), ret_ty)
+                Ok((call_ref.result(0).unwrap().into(), ret_ty))
             } else {
                 let call_op = builder.build().unwrap();
                 block.append_operation(call_op);
@@ -1844,10 +1843,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         )])
                         .build()
                         .unwrap();
-                (
+                Ok((
                     block.append_operation(dummy_op).result(0).unwrap().into(),
                     none_ty,
-                )
+                ))
             }
         } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
             let mut actual_func_ty = func_ty;
@@ -1958,7 +1957,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     builder = builder.add_results(&[ret_ty]);
                     let call_op = builder.build().unwrap();
                     let call_ref = block.append_operation(call_op);
-                    (call_ref.result(0).unwrap().into(), ret_ty)
+                    Ok((call_ref.result(0).unwrap().into(), ret_ty))
                 } else {
                     let call_op = builder.build().unwrap();
                     block.append_operation(call_op);
@@ -1973,10 +1972,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             )])
                             .build()
                             .unwrap();
-                    (
+                    Ok((
                         block.append_operation(dummy_op).result(0).unwrap().into(),
                         none_ty,
-                    )
+                    ))
                 }
             } else {
                 panic!(

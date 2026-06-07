@@ -587,7 +587,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::StructInit(e) => e.lower(self, block),
             Expr::MemberAccess(e) => e.lower(self, block),
             Expr::IndexAccess(e) => e.lower(self, block),
-            Expr::FunctionCall(e) => e.lower(self, block),
+            Expr::FunctionCall(e) => e.lower(self, block).unwrap_or_else(|err| panic!("Function call codegen error: {:?}", err)),
             Expr::MethodCall(e) => e.lower(self, block),
             Expr::SpawnOn(e) => e.lower(self, block),
             Expr::Array(e) => e.lower(self, block),
