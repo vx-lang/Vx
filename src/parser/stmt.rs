@@ -24,7 +24,7 @@ impl<'a> Parser<'a> {
                 }
                 let name = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s,
-                    _ => return Err("Expected identifier after let".to_string()),
+                    _ => return Err(self.error("Expected identifier after let")),
                 };
                 let mut type_annotation = None;
                 if self.match_token(&TokenType::Colon) {
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let iter = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s,
-                    _ => return Err("Expected identifier after 'for'".to_string()),
+                    _ => return Err(self.error("Expected identifier after 'for'")),
                 };
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr()?;

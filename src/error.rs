@@ -35,16 +35,101 @@ pub fn format_compiler_error(
                 } else {
                     pointer.push(' ');
                 }
-            } else if i == col - 1 {
-                pointer.push('^');
-            } else if i < col - 1 + len {
-                pointer.push('~');
             } else {
                 break;
             }
         }
+
+        let mut prefix_tildes = 0;
+        while prefix_tildes < 4 && pointer.ends_with(' ') {
+            pointer.pop();
+            prefix_tildes += 1;
+        }
+        for _ in 0..prefix_tildes {
+            pointer.push('~');
+        }
+
+        for _ in 0..len {
+            pointer.push('^');
+        }
+        pointer.push_str("~~~~");
         out.push_str(&pointer);
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_compiler_error_len_1_with_padding() {
+        // "    + " (col = 5)
+        let source = "    + ";
+        let formatted = format_compiler_error(source, 1, 5, 1, "Expected operand");
+
+        // Should produce:
+        // Error at 1:5: Expected operand
+        //     +
+        // ~~~~^~~~~
+        let expected = "Error at 1:5: Expected operand\n    + \n~~~~^~~~~\n";
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_compiler_error_len_1_no_padding() {
+        // "+ " (col = 1)
+        let source = "+ ";
+        let formatted = format_compiler_error(source, 1, 1, 1, "Unexpected");
+
+        // Should produce:
+        // Error at 1:1: Unexpected
+        // +
+        // ^~~~~
+        let expected = "Error at 1:1: Unexpected\n+ \n^~~~~\n";
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_compiler_error_len_4() {
+        // "asdf" (col = 1)
+        let source = "asdf";
+        let formatted = format_compiler_error(source, 1, 1, 4, "Unknown identifier");
+
+        // Should produce:
+        // Error at 1:1: Unknown identifier
+        // asdf
+        // ^^^^~~~~
+        let expected = "Error at 1:1: Unknown identifier\nasdf\n^^^^~~~~\n";
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_compiler_error_len_4_with_padding() {
+        // "    asdf" (col = 5) - full 4 spaces of padding
+        let source = "    asdf";
+        let formatted = format_compiler_error(source, 1, 5, 4, "Unknown identifier");
+
+        // Should produce:
+        // Error at 1:5: Unknown identifier
+        //     asdf
+        // ~~~~^^^^~~~~
+        let expected = "Error at 1:5: Unknown identifier\n    asdf\n~~~~^^^^~~~~\n";
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_format_compiler_error_len_4_with_partial_padding() {
+        // "  asdf" (col = 3) - only 2 spaces of padding available to replace
+        let source = "  asdf";
+        let formatted = format_compiler_error(source, 1, 3, 4, "Unknown identifier");
+
+        // Should produce:
+        // Error at 1:3: Unknown identifier
+        //   asdf
+        // ~~^^^^~~~~
+        let expected = "Error at 1:3: Unknown identifier\n  asdf\n~~^^^^~~~~\n";
+        assert_eq!(formatted, expected);
+    }
 }

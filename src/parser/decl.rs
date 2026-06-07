@@ -21,7 +21,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume const
                     let name = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
-                        _ => return Err("Expected const parameter name".to_string()),
+                        _ => return Err(self.error("Expected const parameter name")),
                     };
                     self.consume(&TokenType::Colon, "Expected ':' after const parameter name")?;
                     let ty = self.parse_type()?;
@@ -30,14 +30,14 @@ impl<'a> Parser<'a> {
                 } else {
                     let name = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
-                        _ => return Err("Expected generic parameter name".to_string()),
+                        _ => return Err(self.error("Expected generic parameter name")),
                     };
                     self.generic_params.push(name.clone());
                     let mut bound = None;
                     if self.match_token(&TokenType::Colon) {
                         bound = match self.advance().kind.clone() {
                             TokenType::Identifier(s) => Some(s),
-                            _ => return Err("Expected trait bound identifier".to_string()),
+                            _ => return Err(self.error("Expected trait bound identifier")),
                         };
                     }
                     generics.push(GenericParam::Type { name, bound });
@@ -59,7 +59,7 @@ impl<'a> Parser<'a> {
 
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected function name".to_string()),
+            _ => return Err(self.error("Expected function name")),
         };
 
         let generics = self.parse_generic_params()?;
@@ -70,7 +70,7 @@ impl<'a> Parser<'a> {
             loop {
                 let p_name = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s,
-                    _ => return Err("Expected parameter name".to_string()),
+                    _ => return Err(self.error("Expected parameter name")),
                 };
                 self.consume(&TokenType::Colon, "Expected ':'")?;
                 let p_type = self.parse_type()?;
@@ -90,7 +90,7 @@ impl<'a> Parser<'a> {
 
         if !self.match_token(&TokenType::Arrow) {
             // In Vx, '->' is currently required for functions in parse_function
-            return Err("Expected '->'".to_string());
+            return Err(self.error("Expected '->'"));
         }
         let return_type = self.parse_type()?;
 
@@ -147,7 +147,7 @@ impl<'a> Parser<'a> {
 
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected struct name".to_string()),
+            _ => return Err(self.error("Expected struct name")),
         };
 
         let generics = self.parse_generic_params()?;
@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let f_name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected field name".to_string()),
+                _ => return Err(self.error("Expected field name")),
             };
             self.consume(&TokenType::Colon, "Expected ':'")?;
             let f_type = self.parse_type()?;
@@ -186,7 +186,7 @@ impl<'a> Parser<'a> {
 
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected enum name".to_string()),
+            _ => return Err(self.error("Expected enum name")),
         };
 
         let generics = self.parse_generic_params()?;
@@ -196,7 +196,7 @@ impl<'a> Parser<'a> {
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let v_name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected enum variant name".to_string()),
+                _ => return Err(self.error("Expected enum variant name")),
             };
 
             let mut payload = None;
@@ -252,7 +252,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected function name".to_string()),
+                _ => return Err(self.error("Expected function name")),
             };
 
             self.consume(&TokenType::LeftParen, "Expected '('")?;
@@ -261,7 +261,7 @@ impl<'a> Parser<'a> {
                 loop {
                     let p_name = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
-                        _ => return Err("Expected parameter name".to_string()),
+                        _ => return Err(self.error("Expected parameter name")),
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
                     let p_type = self.parse_type()?;
@@ -294,7 +294,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected trait name".to_string()),
+            _ => return Err(self.error("Expected trait name")),
         };
         let generics = self.parse_generic_params()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
@@ -304,7 +304,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected method name".to_string()),
+                _ => return Err(self.error("Expected method name")),
             };
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             let mut params = Vec::new();
@@ -312,7 +312,7 @@ impl<'a> Parser<'a> {
                 loop {
                     let p_name = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
-                        _ => return Err("Expected parameter name".to_string()),
+                        _ => return Err(self.error("Expected parameter name")),
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
                     let p_type = self.parse_type()?;
@@ -364,10 +364,10 @@ impl<'a> Parser<'a> {
                 if let Type::Struct(name, _) = *inner {
                     trait_name = Some(name);
                 } else {
-                    return Err("Expected trait name before 'for'".to_string());
+                    return Err(self.error("Expected trait name before 'for'"));
                 }
             } else {
-                return Err("Expected trait name before 'for'".to_string());
+                return Err(self.error("Expected trait name before 'for'"));
             }
             target_type = self.parse_type()?;
         } else {
@@ -399,7 +399,7 @@ impl<'a> Parser<'a> {
         loop {
             let ident = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected identifier in import path".to_string()),
+                _ => return Err(self.error("Expected identifier in import path")),
             };
             path.push(ident);
             if self.match_token(&TokenType::DoubleColon) {
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
 
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected macro name".to_string()),
+            _ => return Err(self.error("Expected macro name")),
         };
 
         self.consume(&TokenType::LeftBrace, "Expected '{' for macro rules body")?;
@@ -496,10 +496,7 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Fn) {
                 functions.push(self.parse_function()?);
             } else {
-                return Err(format!(
-                    "Unexpected token at program root: {:?}",
-                    self.peek()
-                ));
+                return Err(self.error(&format!("Unexpected token at program root: {:?}", self.peek().kind)));
             }
         }
         Ok(Program {

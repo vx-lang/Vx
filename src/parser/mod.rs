@@ -91,15 +91,19 @@ impl<'a> Parser<'a> {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            let token = self.peek();
-            Err(crate::error::format_compiler_error(
-                self.source,
-                token.line,
-                token.column,
-                token.length.max(1),
-                msg,
-            ))
+            Err(self.error(msg))
         }
+    }
+
+    pub(crate) fn error(&self, msg: &str) -> String {
+        let token = self.peek();
+        crate::error::format_compiler_error(
+            self.source,
+            token.line,
+            token.column,
+            token.length.max(1),
+            msg,
+        )
     }
 
     pub(crate) fn parse_token_tree(&mut self) -> Result<TokenTree, String> {

@@ -18,7 +18,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected hardware identifier after Topology::".to_string()),
+            _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
         match ident.as_str() {
             "Host" => Ok(Topology::Host),
@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightBracket, "Expected ']'")?;
                     Ok(Topology::NPU(Box::new(expr)))
                 } else {
-                    Err("Expected index for NPU".to_string())
+                    Err(self.error("Expected index for NPU"))
                 }
             }
             "AccCore" => {
@@ -38,7 +38,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightBracket, "Expected ']'")?;
                     Ok(Topology::AccCore(Box::new(expr)))
                 } else {
-                    Err("Expected index for AccCore".to_string())
+                    Err(self.error("Expected index for AccCore"))
                 }
             }
             "AMX" => Ok(Topology::AMX),
@@ -55,7 +55,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
         let ident = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected memory identifier after Memory::".to_string()),
+            _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
         match ident.as_str() {
             "Host_DRAM" => Ok(MemorySpace::HostDRAM),
@@ -78,7 +78,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 false
             } else {
-                return Err("Expected 'mut' or 'const' after '*'".to_string());
+                return Err(self.error("Expected 'mut' or 'const' after '*'"));
             };
             let inner = self.parse_type()?;
             Ok(Type::Pointer(Box::new(inner), None, is_mut))
@@ -107,16 +107,16 @@ impl<'a> Parser<'a> {
                 TokenType::Number(s) => s
                     .parse::<usize>()
                     .map_err(|_| "Expected integer for SIMD size".to_string())?,
-                _ => return Err("Expected number after '<' in SIMD type".to_string()),
+                _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
             let x_token = self.advance().clone();
             match x_token.kind {
                 TokenType::Identifier(ref s) if s == "x" => {}
-                _ => return Err("Expected 'x' after size in SIMD type".to_string()),
+                _ => return Err(self.error("Expected 'x' after size in SIMD type")),
             }
             let el_ty_ident = match self.advance().kind.clone() {
                 TokenType::Identifier(s) => s,
-                _ => return Err("Expected element type after 'x' in SIMD type".to_string()),
+                _ => return Err(self.error("Expected element type after 'x' in SIMD type")),
             };
             let el_ty = std::str::FromStr::from_str(el_ty_ident.as_str())
                 .map_err(|_| format!("Unknown SIMD element type {}", el_ty_ident))?;
@@ -205,7 +205,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_named_type(&mut self) -> Result<Type, String> {
         let ident = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
-            _ => return Err("Expected type identifier".to_string()),
+            _ => return Err(self.error("Expected type identifier")),
         };
         match ident.as_str() {
             "Tensor" => {
@@ -214,7 +214,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '<'
                     let ty_ident = match self.advance().kind.clone() {
                         TokenType::Identifier(s) => s,
-                        _ => return Err("Expected element type after '<'".to_string()),
+                        _ => return Err(self.error("Expected element type after '<'")),
                     };
                     el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
                         parsed_ty
@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
                                 "Expected ']' after Tensor dimensions",
                             )?;
                         } else {
-                            return Err("Expected '[' for Tensor dimensions".to_string());
+                            return Err(self.error("Expected '[' for Tensor dimensions"));
                         }
                     }
 

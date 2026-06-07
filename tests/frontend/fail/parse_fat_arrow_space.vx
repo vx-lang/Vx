@@ -2,7 +2,7 @@
 // RUN: vxc %s 2>&1 | FileCheck %s
 
 import std::io;
-
+asdfasf
 fn main() {
   let x = 1;
   let mut out = 0;

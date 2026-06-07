@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
                         span: Span::default(),
                     });
                 }
-                _ => return Err("Unknown binary operator".to_string()),
+                _ => return Err(self.error("Unknown binary operator")),
             };
         }
 
@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '<'
                     let ty_ident = match &self.advance().kind {
                         TokenType::Identifier(s) => s.clone(),
-                        _ => return Err("Expected type identifier in generic pattern".to_string()),
+                        _ => return Err(self.error("Expected type identifier in generic pattern")),
                     };
                     self.consume(&TokenType::RightAngle, "Expected '>' in generic pattern")?;
                     enum_name = format!("{}<{}>", enum_name, ty_ident);
@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
                 if self.match_token(&TokenType::DoubleColon) {
                     let variant_name = match &self.advance().kind {
                         TokenType::Identifier(v) => v.clone(),
-                        _ => return Err("Expected variant name".to_string()),
+                        _ => return Err(self.error("Expected variant name")),
                     };
                     let mut payload = None;
                     if self.match_token(&TokenType::LeftParen) {
@@ -434,7 +434,7 @@ impl<'a> Parser<'a> {
             } else if self.match_token(&TokenType::DoubleColon) {
                 let variant = match self.advance().kind.clone() {
                     TokenType::Identifier(v) => v,
-                    _ => return Err("Expected enum variant after ::".to_string()),
+                    _ => return Err(self.error("Expected enum variant after ::")),
                 };
                 let mut payload = None;
                 if self.match_token(&TokenType::LeftParen) {
@@ -465,7 +465,7 @@ impl<'a> Parser<'a> {
         } else if self.match_token(&TokenType::DoubleColon) {
             let variant = match self.advance().kind.clone() {
                 TokenType::Identifier(v) => v,
-                _ => return Err("Expected enum variant after ::".to_string()),
+                _ => return Err(self.error("Expected enum variant after ::")),
             };
             let mut payload = None;
             if self.match_token(&TokenType::LeftParen) {
@@ -716,7 +716,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 if all_args.is_empty() {
-                    return Err("Expected cotangent argument for vjp".to_string());
+                    return Err(self.error("Expected cotangent argument for vjp"));
                 }
                 let cotangent = all_args.pop().unwrap();
                 Expr::Vjp(VjpExpr {
@@ -749,7 +749,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 if all_args.is_empty() {
-                    return Err("Expected tangent argument for jvp".to_string());
+                    return Err(self.error("Expected tangent argument for jvp"));
                 }
                 let tangent = all_args.pop().unwrap();
                 Expr::Jvp(JvpExpr {
@@ -905,7 +905,7 @@ impl<'a> Parser<'a> {
             if self.match_token(&TokenType::Dot) {
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s,
-                    _ => return Err("Expected identifier after '.'".to_string()),
+                    _ => return Err(self.error("Expected identifier after '.'")),
                 };
                 if self.match_token(&TokenType::LeftParen) {
                     let mut args = Vec::new();
