@@ -311,11 +311,7 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
                 let ty_args_str = type_args.join(", ");
-                if call_name == "Tensor" {
-                    call_name = format!("Tensor_{}", type_args[0]);
-                } else {
-                    call_name = format!("{}<{}>", call_name, ty_args_str);
-                }
+                call_name = format!("{}<{}>", call_name, ty_args_str);
             }
         }
         if self.check(&TokenType::DoubleColon) {

@@ -13,7 +13,7 @@
 
 fn main() -> void {
   // A simple tensor in Host memory by default.
-  let host_tensor = Tensor_f32();
+  let host_tensor = Tensor<f32>();
 
   // Explicitly request a transfer to LocalSRAM (AccCore).
   // This requires a multi-hop route through NPUHBM because there is no direct

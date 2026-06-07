@@ -10,8 +10,8 @@
 // 0, length: 0 } })], None)
 
 fn main() -> Tensor<f32, [ 16, 16 ]> {
-  let a : Tensor<f32, [ 16, 16 ]> = Tensor_f32(16, 16);
-  let b : Tensor<i32, [ 16, 16 ]> = Tensor_i32(16, 16);
+  let a : Tensor<f32, [ 16, 16 ]> = Tensor<f32>(16, 16);
+  let b : Tensor<i32, [ 16, 16 ]> = Tensor<i32>(16, 16);
   // EXPECT: Tensor multiplication requires matching element types
   return a * b;
 }

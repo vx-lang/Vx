@@ -170,6 +170,63 @@ impl Type {
             _ => self.clone(),
         }
     }
+
+    pub fn mangle(&self) -> String {
+        match self {
+            Type::Scalar(el) => el.mangle(),
+            Type::Simd(el, n) => format!("Simd${}${}", el.mangle(), n),
+            Type::Pointer(inner, _, is_mut) => {
+                format!(
+                    "ptr${}${}",
+                    if *is_mut { "mut" } else { "const" },
+                    inner.mangle()
+                )
+            }
+            Type::Borrow(inner, _, is_mut, _) => {
+                format!(
+                    "ref${}${}",
+                    if *is_mut { "mut" } else { "const" },
+                    inner.mangle()
+                )
+            }
+            Type::Ref(inner, _) => format!("ref${}", inner.mangle()),
+            Type::Tensor(el, dims, _) => format!("Tensor${}${}", el.mangle(), dims.len()),
+            Type::Matrix => "Matrix".to_string(),
+            Type::Struct(name, _) => name.clone(),
+            Type::Enum(name, _) => name.clone(),
+            Type::Generic(name, _) => name.clone(),
+            Type::GenericInstance(base, args) => {
+                let mut s = base.mangle();
+                for arg in args {
+                    s.push_str(&format!("${}", arg.mangle()));
+                }
+                s
+            }
+            Type::Function(_, _) => "fn".to_string(),
+            Type::Closure(_, _) => "closure".to_string(),
+            Type::Verified(inner) => format!("Verified${}", inner.mangle()),
+            Type::Pinned(inner, _) => format!("Pinned${}", inner.mangle()),
+            Type::Const(expr) => {
+                let debug_str = format!("{:?}", expr);
+                let sanitized: String = debug_str
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                format!("const${}", sanitized)
+            }
+            Type::Module(name, _) => format!("Module${}", name),
+            Type::Unknown => "Unknown".to_string(),
+        }
+    }
+}
+
+impl ElementType {
+    pub fn mangle(&self) -> String {
+        match self {
+            ElementType::Generic(g) => g.clone(),
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for ElementType {

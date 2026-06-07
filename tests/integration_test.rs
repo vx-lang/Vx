@@ -161,7 +161,7 @@ fn test_integration_loops() -> Result<(), String> {
 fn test_integration_arrays_and_indexing() -> Result<(), String> {
     let input = r#"
     fn array_test(a: Tensor<f32, [2, 2]>, b: Tensor<f32, [2, 2]>) -> Tensor<f32, [2, 2]> {
-        let mut arr = Tensor_f32(2, 2);
+        let mut arr = Tensor<f32>(2, 2);
         arr[0][0] = a[0][1] * b[1][0];
         return arr;
     }
@@ -233,7 +233,7 @@ fn test_integration_linear_variable_consumption() -> Result<(), String> {
     }
 
     fn main() -> Tensor {
-        let x = Tensor_f32(2, 2);
+        let x = Tensor<f32>(2, 2);
         
         let mut sum = 0;
         for i in 0..10 {

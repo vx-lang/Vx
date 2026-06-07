@@ -1279,25 +1279,21 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     Type::Tensor(el_ty, dims, None)
-                } else if resolved_name.starts_with("Tensor") && !resolved_name.contains("__") {
-                    let el_ty = match resolved_name.as_str() {
-                        "Tensor_f64" => ElementType::F64,
-                        "Tensor_bf16" => ElementType::BF16,
-                        "Tensor_i32" => ElementType::I32,
-                        "Tensor_i64" => ElementType::I64,
-                        _ => {
-                            if resolved_name.starts_with("Tensor_") {
-                                let t_name = resolved_name.strip_prefix("Tensor_").unwrap();
-                                if t_name != "f32" {
-                                    ElementType::Generic(t_name.to_string())
-                                } else {
-                                    ElementType::F32
-                                }
+                } else if resolved_name.starts_with("Tensor")
+                    && !resolved_name.contains("$")
+                    && !resolved_name.contains("__")
+                {
+                    let el_ty =
+                        if resolved_name.starts_with("Tensor<") && resolved_name.ends_with(">") {
+                            let t_name = &resolved_name["Tensor<".len()..resolved_name.len() - 1];
+                            if let Ok(el) = t_name.parse::<ElementType>() {
+                                el
                             } else {
-                                ElementType::F32
+                                ElementType::Generic(t_name.to_string())
                             }
-                        }
-                    };
+                        } else {
+                            ElementType::F32
+                        };
                     let mut dims = Vec::new();
                     if !args.is_empty() {
                         if let Expr::Array(arr) = &args[0] {
@@ -2167,19 +2163,7 @@ impl<'a> TypeChecker<'a> {
                     let mut method_func = self.instantiate_function(&modified_func, &mapping);
 
                     // Create a unique mangled name for the method based on the target type
-                    let mangled_name = format!("{:?}_{}", base_ty, method_func.name)
-                        .replace("(", "_")
-                        .replace(")", "")
-                        .replace(" ", "")
-                        .replace("[", "")
-                        .replace("]", "")
-                        .replace(",", "_")
-                        .replace("_None", "")
-                        .replace("\"", "")
-                        .replace("Tensor", "Tensor_")
-                        .replace("GenericInstance_", "")
-                        .replace("Struct_", "")
-                        .replace("Scalar_", "");
+                    let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
 
                     println!(
                         "MethodCall: method={} base_ty={:?} mangled_name={}",

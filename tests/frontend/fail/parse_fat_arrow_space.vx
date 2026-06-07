@@ -2,7 +2,7 @@
 // RUN: vxc %s 2>&1 | FileCheck %s
 
 import std::io;
-fn main() {
+fn main() -> i32 {
   let x = 1;
   let mut out = 0;
   match x {
@@ -11,7 +11,7 @@ fn main() {
   }
 }
 
-fn verify_permissions(age: u32, has_id: bool, is_banned: bool) {
+fn verify_permissions(age: u32, has_id: bool, is_banned: bool) -> void {
     // Use of `==`, `<=`, and `&&`
     if age >= 18 && has_id == true {
         println!("Access granted.");
@@ -23,14 +23,14 @@ fn verify_permissions(age: u32, has_id: bool, is_banned: bool) {
     }
 }
 
-fn bitwise_shifts() {
+fn bitwise_shifts() -> void {
     let base: i32 = 2;
 
     let shift_left = base << 2;  // Use of `<<` (multiplies by 4)
     let shift_right = base >> 1; // Use of `>>` (divides by 2)
 }
 
-fn compound_assignments() {
+fn compound_assignments() -> void {
     let mut x = 10;
     let mut mask = 0b0101;
 

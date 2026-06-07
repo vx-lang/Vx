@@ -81,26 +81,26 @@ fn main() -> void {}
 // CHECK:   func.func private @printMemrefI32(memref<*xi32>)
 // CHECK:   func.func private @printMemrefI64(memref<*xi64>)
 // CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
-// CHECK:   func.func @CPU_add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @CPU$add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     %0 = arith.addf %arg1, %arg2 : vector<4xf32>
 // CHECK:     return %0 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @NPU$add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     %0 = arith.addf %arg1, %arg2 : vector<4xf32>
 // CHECK:     return %0 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @CPU$transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     return %arg1 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// CHECK:   func.func @NPU$transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // CHECK:     return %arg1 : vector<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_add_array(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>, %arg2: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @CPU$add_array(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>, %arg2: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %alloc = memref.alloc() : memref<4xf32>
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<4xf32>, memref<4xf32>) outs(%alloc : memref<4xf32>)
 // CHECK:     return %alloc : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %c0 = arith.constant 0 : index
 // CHECK:     %dim = memref.dim %arg1, %c0 : memref<?x?xf32>
 // CHECK:     %c1 = arith.constant 1 : index
@@ -109,12 +109,12 @@ fn main() -> void {}
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc : memref<?x?xf32>)
 // CHECK:     return %alloc : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_add_array(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>, %arg2: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @NPU$add_array(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>, %arg2: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %alloc = memref.alloc() : memref<4xf32>
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<4xf32>, memref<4xf32>) outs(%alloc : memref<4xf32>)
 // CHECK:     return %alloc : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>, %arg2: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %c0 = arith.constant 0 : index
 // CHECK:     %dim = memref.dim %arg1, %c0 : memref<?x?xf32>
 // CHECK:     %c1 = arith.constant 1 : index
@@ -123,116 +123,116 @@ fn main() -> void {}
 // CHECK:     linalg.add ins(%arg1, %arg2 : memref<?x?xf32>, memref<?x?xf32>) outs(%alloc : memref<?x?xf32>)
 // CHECK:     return %alloc : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_transfer_array_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @CPU$transfer_array_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     return %0 : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_transfer_array_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @CPU$transfer_array_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     return %0 : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @CPU_transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @CPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_transfer_array_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @NPU$transfer_array_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     return %0 : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_transfer_array_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
+// CHECK:   func.func @NPU$transfer_array_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<4xf32>) -> memref<4xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> : (memref<4xf32>) -> memref<4xf32>
 // CHECK:     return %0 : memref<4xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 100 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
-// CHECK:   func.func @NPU_transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
+// CHECK:   func.func @NPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: memref<?x?xf32>) -> memref<?x?xf32> {
 // CHECK:     %0 = "vx.transfer"(%arg1) <{target_topology = 0 : i32}> : (memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return %0 : memref<?x?xf32>
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @CPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @NPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_transfer_vec(%arg0: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @CPU$transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_transfer_vec(%arg0: vector<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
+// CHECK:     %1 = call @NPU$transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_arr(%arg0: memref<4xf32>, %arg1: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_add_array(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<4xf32>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @CPU$add_array(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<4xf32>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_add_tensor(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_arr(%arg0: memref<4xf32>, %arg1: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_add_array(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<4xf32>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @NPU$add_array(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<4xf32>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_add_tensor(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$add_tensor(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_npu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_transfer_array_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @CPU$transfer_array_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_cpu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_transfer_array_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @CPU$transfer_array_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_npu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_cpu_t_cpu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// CHECK:     %1 = call @CPU_transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @CPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"CPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_npu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_transfer_array_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @NPU$transfer_array_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_cpu_arr(%arg0: memref<4xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_transfer_array_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<4xf32>) -> memref<4xf32>
+// CHECK:     %1 = call @NPU$transfer_array_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<4xf32>) -> memref<4xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_npu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$transfer_tensor_to_npu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @test_npu_t_cpu_tensor(%arg0: memref<?x?xf32>) {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// CHECK:     %1 = call @NPU_transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
+// CHECK:     %1 = call @NPU$transfer_tensor_to_cpu(%0, %arg0) : (!llvm.struct<"NPU", ()>, memref<?x?xf32>) -> memref<?x?xf32>
 // CHECK:     return
 // CHECK:   }
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
@@ -249,21 +249,21 @@ fn main() -> void {}
 // LLVM:   llvm.func @printMemrefI32(i64, !llvm.ptr) attributes {sym_visibility = "private"}
 // LLVM:   llvm.func @printMemrefI64(i64, !llvm.ptr) attributes {sym_visibility = "private"}
 // LLVM:   llvm.func @printMemrefBF16(i64, !llvm.ptr) attributes {sym_visibility = "private"}
-// LLVM:   llvm.func @CPU_add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// LLVM:   llvm.func @CPU$add_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // LLVM:     %0 = llvm.fadd %arg1, %arg2 : vector<4xf32>
 // LLVM:     llvm.return %0 : vector<4xf32>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
+// LLVM:   llvm.func @NPU$add_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>, %arg2: vector<4xf32>) -> vector<4xf32> {
 // LLVM:     %0 = llvm.fadd %arg1, %arg2 : vector<4xf32>
 // LLVM:     llvm.return %0 : vector<4xf32>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// LLVM:   llvm.func @CPU$transfer_vector(%arg0: !llvm.struct<"CPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // LLVM:     llvm.return %arg1 : vector<4xf32>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
+// LLVM:   llvm.func @NPU$transfer_vector(%arg0: !llvm.struct<"NPU", ()>, %arg1: vector<4xf32>) -> vector<4xf32> {
 // LLVM:     llvm.return %arg1 : vector<4xf32>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_add_array(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: i64, %arg9: i64, %arg10: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @CPU$add_array(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: i64, %arg9: i64, %arg10: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg6, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg7, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -309,7 +309,7 @@ fn main() -> void {}
 // LLVM:   ^bb3:  // pred: ^bb1
 // LLVM:     llvm.return %27 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64, %arg14: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @CPU$add_tensor(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64, %arg14: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg8, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg9, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -374,7 +374,7 @@ fn main() -> void {}
 // LLVM:   ^bb6:  // pred: ^bb1
 // LLVM:     llvm.return %32 : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_add_array(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: i64, %arg9: i64, %arg10: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @NPU$add_array(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: i64, %arg9: i64, %arg10: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg6, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg7, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -420,7 +420,7 @@ fn main() -> void {}
 // LLVM:   ^bb3:  // pred: ^bb1
 // LLVM:     llvm.return %27 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64, %arg14: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @NPU$add_tensor(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64, %arg14: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg8, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg9, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -485,7 +485,7 @@ fn main() -> void {}
 // LLVM:   ^bb6:  // pred: ^bb1
 // LLVM:     llvm.return %32 : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_transfer_array_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @CPU$transfer_array_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -514,7 +514,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%13) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %18 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_transfer_array_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @CPU$transfer_array_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -543,7 +543,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%13) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %18 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @CPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -577,7 +577,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%15) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %22 : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @CPU_transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @CPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"CPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -611,7 +611,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%15) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %22 : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_transfer_array_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @NPU$transfer_array_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -640,7 +640,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%13) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %18 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_transfer_array_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
+// LLVM:   llvm.func @NPU$transfer_array_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
@@ -669,7 +669,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%13) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %18 : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @NPU$transfer_tensor_to_npu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -703,7 +703,7 @@ fn main() -> void {}
 // LLVM:     llvm.call @free(%15) : (!llvm.ptr) -> ()
 // LLVM:     llvm.return %22 : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:   }
-// LLVM:   llvm.func @NPU_transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
+// LLVM:   llvm.func @NPU$transfer_tensor_to_cpu(%arg0: !llvm.struct<"NPU", ()>, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> {
 // LLVM:     %0 = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     %1 = llvm.insertvalue %arg1, %0[0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %2 = llvm.insertvalue %arg2, %1[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
@@ -739,22 +739,22 @@ fn main() -> void {}
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // LLVM:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %1 = llvm.call @CPU_add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// LLVM:     %1 = llvm.call @CPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"CPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_add_vec(%arg0: vector<4xf32>, %arg1: vector<4xf32>) {
 // LLVM:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %1 = llvm.call @NPU_add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+// LLVM:     %1 = llvm.call @NPU$add_vector(%0, %arg0, %arg1) : (!llvm.struct<"NPU", ()>, vector<4xf32>, vector<4xf32>) -> vector<4xf32>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_transfer_vec(%arg0: vector<4xf32>) {
 // LLVM:     %0 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %1 = llvm.call @CPU_transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
+// LLVM:     %1 = llvm.call @CPU$transfer_vector(%0, %arg0) : (!llvm.struct<"CPU", ()>, vector<4xf32>) -> vector<4xf32>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_transfer_vec(%arg0: vector<4xf32>) {
 // LLVM:     %0 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %1 = llvm.call @NPU_transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
+// LLVM:     %1 = llvm.call @NPU$transfer_vector(%0, %arg0) : (!llvm.struct<"NPU", ()>, vector<4xf32>) -> vector<4xf32>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_add_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: i64, %arg8: i64, %arg9: i64) {
@@ -771,7 +771,7 @@ fn main() -> void {}
 // LLVM:     %10 = llvm.insertvalue %arg3, %9[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %11 = llvm.insertvalue %arg4, %10[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %12 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %13 = llvm.call @CPU_add_array(%12, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %13 = llvm.call @CPU$add_array(%12, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_add_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: i64, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64) {
@@ -792,7 +792,7 @@ fn main() -> void {}
 // LLVM:     %14 = llvm.insertvalue %arg4, %13[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %15 = llvm.insertvalue %arg6, %14[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %16 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %17 = llvm.call @CPU_add_tensor(%16, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10, %arg11, %arg12, %arg13) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %17 = llvm.call @CPU$add_tensor(%16, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10, %arg11, %arg12, %arg13) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_add_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: i64, %arg8: i64, %arg9: i64) {
@@ -809,7 +809,7 @@ fn main() -> void {}
 // LLVM:     %10 = llvm.insertvalue %arg3, %9[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %11 = llvm.insertvalue %arg4, %10[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %12 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %13 = llvm.call @NPU_add_array(%12, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %13 = llvm.call @NPU$add_array(%12, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_add_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: i64, %arg10: i64, %arg11: i64, %arg12: i64, %arg13: i64) {
@@ -830,7 +830,7 @@ fn main() -> void {}
 // LLVM:     %14 = llvm.insertvalue %arg4, %13[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %15 = llvm.insertvalue %arg6, %14[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %16 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %17 = llvm.call @NPU_add_tensor(%16, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10, %arg11, %arg12, %arg13) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %17 = llvm.call @NPU$add_tensor(%16, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10, %arg11, %arg12, %arg13) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_t_npu_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64) {
@@ -841,7 +841,7 @@ fn main() -> void {}
 // LLVM:     %4 = llvm.insertvalue %arg3, %3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %5 = llvm.insertvalue %arg4, %4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %6 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %7 = llvm.call @CPU_transfer_array_to_npu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %7 = llvm.call @CPU$transfer_array_to_npu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_t_cpu_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64) {
@@ -852,7 +852,7 @@ fn main() -> void {}
 // LLVM:     %4 = llvm.insertvalue %arg3, %3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %5 = llvm.insertvalue %arg4, %4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %6 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %7 = llvm.call @CPU_transfer_array_to_cpu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %7 = llvm.call @CPU$transfer_array_to_cpu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_t_npu_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64) {
@@ -865,7 +865,7 @@ fn main() -> void {}
 // LLVM:     %6 = llvm.insertvalue %arg4, %5[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %7 = llvm.insertvalue %arg6, %6[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %8 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %9 = llvm.call @CPU_transfer_tensor_to_npu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %9 = llvm.call @CPU$transfer_tensor_to_npu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_cpu_t_cpu_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64) {
@@ -878,7 +878,7 @@ fn main() -> void {}
 // LLVM:     %6 = llvm.insertvalue %arg4, %5[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %7 = llvm.insertvalue %arg6, %6[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %8 = llvm.mlir.undef : !llvm.struct<"CPU", ()>
-// LLVM:     %9 = llvm.call @CPU_transfer_tensor_to_cpu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %9 = llvm.call @CPU$transfer_tensor_to_cpu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"CPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_t_npu_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64) {
@@ -889,7 +889,7 @@ fn main() -> void {}
 // LLVM:     %4 = llvm.insertvalue %arg3, %3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %5 = llvm.insertvalue %arg4, %4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %6 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %7 = llvm.call @NPU_transfer_array_to_npu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %7 = llvm.call @NPU$transfer_array_to_npu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_t_cpu_arr(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64) {
@@ -900,7 +900,7 @@ fn main() -> void {}
 // LLVM:     %4 = llvm.insertvalue %arg3, %3[3, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %5 = llvm.insertvalue %arg4, %4[4, 0] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> 
 // LLVM:     %6 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %7 = llvm.call @NPU_transfer_array_to_cpu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
+// LLVM:     %7 = llvm.call @NPU$transfer_array_to_cpu(%6, %arg0, %arg1, %arg2, %arg3, %arg4) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_t_npu_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64) {
@@ -913,7 +913,7 @@ fn main() -> void {}
 // LLVM:     %6 = llvm.insertvalue %arg4, %5[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %7 = llvm.insertvalue %arg6, %6[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %8 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %9 = llvm.call @NPU_transfer_tensor_to_npu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %9 = llvm.call @NPU$transfer_tensor_to_npu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @test_npu_t_cpu_tensor(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64) {
@@ -926,7 +926,7 @@ fn main() -> void {}
 // LLVM:     %6 = llvm.insertvalue %arg4, %5[3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %7 = llvm.insertvalue %arg6, %6[4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> 
 // LLVM:     %8 = llvm.mlir.undef : !llvm.struct<"NPU", ()>
-// LLVM:     %9 = llvm.call @NPU_transfer_tensor_to_cpu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// LLVM:     %9 = llvm.call @NPU$transfer_tensor_to_cpu(%8, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6) : (!llvm.struct<"NPU", ()>, !llvm.ptr, !llvm.ptr, i64, i64, i64, i64, i64) -> !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // LLVM:     llvm.return
 // LLVM:   }
 // LLVM:   llvm.func @main() -> i32 attributes {llvm.emit_c_interface} {

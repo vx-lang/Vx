@@ -356,19 +356,7 @@ impl<'a> TypeChecker<'a> {
         sorted_keys.sort();
         for g_name in sorted_keys {
             if let Some(ty) = mapping.get(g_name) {
-                let mut type_str = format!("_{:?}", ty)
-                    .replace("(", "")
-                    .replace(")", "")
-                    .replace(" ", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace(",", "_")
-                    .replace("_None", "")
-                    .replace("\"", "");
-                while type_str.contains("__") {
-                    type_str = type_str.replace("__", "_");
-                }
-                mangled_name.push_str(&type_str);
+                mangled_name.push_str(&format!("${}", ty.mangle()));
             }
         }
 
