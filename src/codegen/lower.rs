@@ -1712,7 +1712,8 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
 
         if name == "print" {
-            return lower_print_call(gen, block, args);
+            return lower_print_call(gen, block, args)
+                .unwrap_or_else(|e| panic!("Failed to lower print call: {:?}", e));
         }
 
         if name == "printf" || name == "vx_internal_printf" {
@@ -4871,13 +4872,33 @@ fn lower_map_call<'c>(
 
         return (out_val, tensor_ty);
     }
+    panic!("map called on unsupported tensor type: {}", tensor_ty_str);
+}
+
+#[derive(Debug)]
+pub enum LowerError {
+    UnsupportedElementType(String),
+    Melior(melior::Error),
+    ParseType(String),
+}
+
+impl From<melior::Error> for LowerError {
+    fn from(e: melior::Error) -> Self {
+        LowerError::Melior(e)
+    }
+}
+
+impl From<String> for LowerError {
+    fn from(s: String) -> Self {
+        LowerError::ParseType(s)
+    }
 }
 
 fn lower_print_call<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: &melior::ir::Block<'c>,
     args: &[Expr],
-) -> (Value<'c, 'c>, Type<'c>) {
+) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
     let mut print_arg = &args[0];
     if let Expr::Borrow(borrow) = print_arg {
         print_arg = &borrow.expr;
@@ -4885,38 +4906,38 @@ fn lower_print_call<'c>(
 
     let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block);
 
-    let el_ty_str =
-        extract_mlir_element_type(&arg_ty.to_string()).unwrap_or_else(|e| panic!("{}", e));
+    let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
 
     let print_fn_name = match el_ty_str {
+        "f32" => "printMemrefF32",
         "f64" => "printMemrefF64",
-        "i64" => "printMemrefI64",
         "i32" => "printMemrefI32",
+        "i64" => "printMemrefI64",
         "bf16" => "printMemrefBF16",
-        _ => "printMemrefF32",
+        _ => return Err(LowerError::UnsupportedElementType(el_ty_str.to_string())),
     };
 
     if arg_ty.to_string().contains(", ") {
-        let stripped_ty = Type::parse(gen.context, &format!("memref<?x?x{}>", el_ty_str)).unwrap();
+        let stripped_ty = Type::parse(gen.context, &format!("memref<?x?x{}>", el_ty_str))
+            .ok_or_else(|| LowerError::ParseType(format!("memref<?x?x{}>", el_ty_str)))?;
         let mcast_op = block.append_operation(
             OperationBuilder::new("memref.memory_space_cast", Location::unknown(gen.context))
                 .add_operands(&[arg_val])
                 .add_results(&[stripped_ty])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        arg_val = mcast_op.result(0).unwrap().into();
+        arg_val = mcast_op.result(0)?.into();
     }
 
-    let unranked_memref_ty = Type::parse(gen.context, &format!("memref<*x{}>", el_ty_str)).unwrap();
+    let unranked_memref_ty = Type::parse(gen.context, &format!("memref<*x{}>", el_ty_str))
+        .ok_or_else(|| LowerError::ParseType(format!("memref<*x{}>", el_ty_str)))?;
     let cast_op = block.append_operation(
         OperationBuilder::new("memref.cast", Location::unknown(gen.context))
             .add_operands(&[arg_val])
             .add_results(&[unranked_memref_ty])
-            .build()
-            .unwrap(),
+            .build()?,
     );
-    let cast_val: Value = cast_op.result(0).unwrap().into();
+    let cast_val: Value = cast_op.result(0)?.into();
 
     block.append_operation(
         OperationBuilder::new("func.call", Location::unknown(gen.context))
@@ -4925,12 +4946,12 @@ fn lower_print_call<'c>(
                 Identifier::new(gen.context, "callee"),
                 FlatSymbolRefAttribute::new(gen.context, print_fn_name).into(),
             )])
-            .build()
-            .unwrap(),
+            .build()?,
     );
 
-    return (
+    return Ok((
         cast_val, // Dummy return value, caller ignores it
-        Type::parse(gen.context, "none").unwrap(),
-    );
+        Type::parse(gen.context, "none")
+            .ok_or_else(|| LowerError::ParseType("none".to_string()))?,
+    ));
 }
