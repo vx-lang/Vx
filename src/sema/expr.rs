@@ -823,95 +823,127 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
-        match expr {
-            Expr::Transfer(TransferExpr {
-                expr: inner_expr,
-                space: target_mem,
-                cost: ref mut expr_cost,
-                span: _,
-            }) => {
-                let inner_ty = self.check_expr_type_flag(inner_expr, false, silent);
+        let mut do_rewrite = None;
+        let target_mem;
+        let inner_ty;
 
-                // Extract source memory space, default to HostDRAM if it's not explicitly a Ref
-                let source_mem = match &inner_ty {
-                    Type::Ref(_, mem) => mem.clone(),
-                    Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
-                    _ => MemorySpace::HostDRAM,
-                };
+        if let Expr::Transfer(t) = expr {
+            inner_ty = self.check_expr_type_flag(&mut t.expr, false, silent);
 
-                let calculated_cost = self
-                    .transfer_cost_graph
-                    .transfer_cost(&source_mem, target_mem);
-                if calculated_cost.is_none() {
-                    if !silent {
-                        self.errors.push(format!(
-                            "Cannot transfer from {:?} to {:?}: no hardware path exists",
-                            source_mem, target_mem
-                        ));
-                    }
-                    return Type::Tensor(ElementType::F32, vec![], None);
+            // Extract source memory space, default to HostDRAM if it's not explicitly a Ref
+            let source_mem = match &inner_ty {
+                Type::Ref(_, mem) => mem.clone(),
+                Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
+                _ => MemorySpace::HostDRAM,
+            };
+            target_mem = t.space.clone();
+
+            let path_result = self
+                .transfer_cost_graph
+                .transfer_path(&source_mem, &target_mem);
+
+            if path_result.is_none() {
+                if !silent {
+                    self.errors.push(format!(
+                        "Cannot transfer from {:?} to {:?}: no hardware path exists",
+                        source_mem, target_mem
+                    ));
                 }
-                *expr_cost = calculated_cost;
-
-                match inner_ty {
-                    Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
-                    Type::Tensor(_, _, _) => {
-                        let pinned_top = match &target_mem {
-                            MemorySpace::NPUHBM => {
-                                Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                                    value: "0".to_string(),
-                                    ty: Some(ElementType::I32),
-                                    span: Span::default(),
-                                })))
-                            }
-                            MemorySpace::LocalSRAM => {
-                                Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                                    value: "0".to_string(),
-                                    ty: Some(ElementType::I32),
-                                    span: Span::default(),
-                                })))
-                            }
-                            MemorySpace::HostDRAM => Topology::Host,
-                        };
-                        Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
-                    }
-                    Type::Verified(_inner) => {
-                        let inner_pinned = self.check_expr_type_flag(inner_expr, consume, silent);
-                        Type::Verified(Box::new(inner_pinned))
-                    }
-                    Type::Pinned(base, _) => {
-                        let pinned_top = match &target_mem {
-                            MemorySpace::NPUHBM => {
-                                Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                                    value: "0".to_string(),
-                                    ty: Some(ElementType::I32),
-                                    span: Span::default(),
-                                })))
-                            }
-                            MemorySpace::LocalSRAM => {
-                                Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                                    value: "0".to_string(),
-                                    ty: Some(ElementType::I32),
-                                    span: Span::default(),
-                                })))
-                            }
-                            MemorySpace::HostDRAM => Topology::Host,
-                        };
-                        Type::Pinned(base, pinned_top)
-                    }
-                    _ => {
-                        if !silent {
-                            self.errors.push(format!(
-                                "Cannot transfer non-reference type: {:?}",
-                                inner_ty
-                            ));
-                        }
-                        Type::Tensor(ElementType::F32, vec![], None)
-                    }
-                }
+                return Type::Tensor(ElementType::F32, vec![], None);
             }
 
-            _ => unreachable!(),
+            let (cost, path) = path_result.unwrap();
+            if path.len() > 2 {
+                do_rewrite = Some(path);
+            } else {
+                t.cost = Some(cost);
+            }
+        } else {
+            unreachable!()
+        }
+
+        if let Some(path) = do_rewrite {
+            let Expr::Transfer(t) = std::mem::replace(
+                expr,
+                Expr::Number(NumberExpr::new("0".to_string(), None, Span::default())),
+            ) else {
+                unreachable!()
+            };
+            let mut current_expr = *t.expr;
+            let path_len = path.len();
+            for intermediate_space in path.into_iter().skip(1).take(path_len - 2) {
+                current_expr = Expr::Transfer(TransferExpr {
+                    expr: Box::new(current_expr),
+                    space: intermediate_space,
+                    cost: None,
+                    span: t.span.clone(),
+                });
+            }
+            *expr = Expr::Transfer(TransferExpr {
+                expr: Box::new(current_expr),
+                space: target_mem.clone(),
+                cost: None,
+                span: t.span.clone(),
+            });
+            // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!
+            return self.check_transfer_expr(expr, consume, silent);
+        }
+
+        match inner_ty {
+            Type::Ref(base_ty, _) => Type::Ref(base_ty, target_mem.clone()),
+            Type::Tensor(_, _, _) => {
+                let pinned_top = match &target_mem {
+                    MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                        value: "0".to_string(),
+                        ty: Some(ElementType::I32),
+                        span: Span::default(),
+                    }))),
+                    MemorySpace::LocalSRAM => {
+                        Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(ElementType::I32),
+                            span: Span::default(),
+                        })))
+                    }
+                    MemorySpace::HostDRAM => Topology::Host,
+                };
+                Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
+            }
+            Type::Verified(_inner) => {
+                if let Expr::Transfer(t) = expr {
+                    let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume, silent);
+                    Type::Verified(Box::new(inner_pinned))
+                } else {
+                    unreachable!()
+                }
+            }
+            Type::Pinned(base, _) => {
+                let pinned_top = match &target_mem {
+                    MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                        value: "0".to_string(),
+                        ty: Some(ElementType::I32),
+                        span: Span::default(),
+                    }))),
+                    MemorySpace::LocalSRAM => {
+                        Topology::AccCore(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(ElementType::I32),
+                            span: Span::default(),
+                        })))
+                    }
+                    MemorySpace::HostDRAM => Topology::Host,
+                };
+                Type::Pinned(base, pinned_top)
+            }
+            _ => {
+                if !silent {
+                    self.errors.push(format!(
+                        "Cannot transfer non-reference type: {:?}",
+                        inner_ty
+                    ));
+                }
+                Type::Tensor(ElementType::F32, vec![], None)
+            }
         }
     }
 

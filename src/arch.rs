@@ -173,10 +173,14 @@ impl TransferCostGraph {
         false
     }
 
-    /// Determines the minimum data movement cost between two memory spaces using Dijkstra's algorithm.
-    pub fn transfer_cost(&self, source: &MemorySpace, target: &MemorySpace) -> Option<u32> {
+    /// Determines the minimum data movement cost and path between two memory spaces using Dijkstra's algorithm.
+    pub fn transfer_path(
+        &self,
+        source: &MemorySpace,
+        target: &MemorySpace,
+    ) -> Option<(u32, Vec<MemorySpace>)> {
         if source == target {
-            return Some(0);
+            return Some((0, vec![source.clone()]));
         }
 
         use std::collections::BinaryHeap;
@@ -201,6 +205,7 @@ impl TransferCostGraph {
 
         let mut heap = BinaryHeap::new();
         let mut dists = HashMap::new();
+        let mut predecessors: HashMap<MemorySpace, MemorySpace> = HashMap::new();
 
         heap.push(State {
             cost: 0,
@@ -210,7 +215,15 @@ impl TransferCostGraph {
 
         while let Some(State { cost, mem }) = heap.pop() {
             if mem == *target {
-                return Some(cost);
+                let mut path = Vec::new();
+                let mut curr = mem.clone();
+                while curr != *source {
+                    path.push(curr.clone());
+                    curr = predecessors.get(&curr).unwrap().clone();
+                }
+                path.push(source.clone());
+                path.reverse();
+                return Some((cost, path));
             }
 
             if let Some(current_dist) = dists.get(&mem) {
@@ -226,6 +239,7 @@ impl TransferCostGraph {
 
                     if is_better {
                         dists.insert(next.clone(), next_cost);
+                        predecessors.insert(next.clone(), mem.clone());
                         heap.push(State {
                             cost: next_cost,
                             mem: next.clone(),
@@ -236,6 +250,11 @@ impl TransferCostGraph {
         }
 
         None
+    }
+
+    /// Determines the minimum data movement cost between two memory spaces using Dijkstra's algorithm.
+    pub fn transfer_cost(&self, source: &MemorySpace, target: &MemorySpace) -> Option<u32> {
+        self.transfer_path(source, target).map(|(cost, _)| cost)
     }
 
     /// Determines if a data transfer between two memory spaces is physically supported.
@@ -381,5 +400,21 @@ mod tests {
         // Local SRAM <-> Host DRAM (BFS multi-hop routing makes this valid)
         assert!(graph.can_transfer(&MemorySpace::LocalSRAM, &MemorySpace::HostDRAM));
         assert!(graph.can_transfer(&MemorySpace::HostDRAM, &MemorySpace::LocalSRAM));
+
+        // Let's actually verify the multi-hop path array generated
+        let path = graph.transfer_path(&MemorySpace::HostDRAM, &MemorySpace::LocalSRAM);
+        assert!(path.is_some());
+        let (cost, hops) = path.unwrap();
+        // Default graph: HostDRAM -> NPUHBM -> LocalSRAM
+        // cost = 50 + 10 = 60
+        assert_eq!(cost, 60);
+        assert_eq!(
+            hops,
+            vec![
+                MemorySpace::HostDRAM,
+                MemorySpace::NPUHBM,
+                MemorySpace::LocalSRAM
+            ]
+        );
     }
 }

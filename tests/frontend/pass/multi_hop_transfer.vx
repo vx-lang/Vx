@@ -1,0 +1,25 @@
+//===- multi_hop_transfer.vx - Vx Compiler -----------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Verifies that semantic analysis successfully resolves multi-hop transfers
+// using the topological solver (e.g., HostDRAM -> NPUHBM -> LocalSRAM).
+//
+//===----------------------------------------------------------------------===//
+
+fn main() -> void {
+    // A simple tensor in Host memory by default.
+    let host_tensor = Tensor_f32();
+    
+    // Explicitly request a transfer to LocalSRAM (AccCore).
+    // This requires a multi-hop route through NPUHBM because there is no direct
+    // link between HostDRAM and LocalSRAM.
+    let acc_tensor = transfer(host_tensor, Memory::Local_SRAM);
+    
+    // A reverse multi-hop transfer
+    let host_tensor_2 = transfer(acc_tensor, Memory::Host_DRAM);
+}
