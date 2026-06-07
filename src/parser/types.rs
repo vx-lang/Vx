@@ -242,22 +242,11 @@ impl<'a> Parser<'a> {
                     Ok(Type::Tensor(el_ty, Vec::new(), None))
                 }
                 "Matrix" => Ok(Type::Matrix),
-                "f32" => Ok(Type::Scalar(ElementType::F32)),
-                "f64" => Ok(Type::Scalar(ElementType::F64)),
-                "f16" => Ok(Type::Scalar(ElementType::F16)),
-                "bf16" => Ok(Type::Scalar(ElementType::BF16)),
-                "i8" => Ok(Type::Scalar(ElementType::I8)),
-                "i16" => Ok(Type::Scalar(ElementType::I16)),
-                "i32" => Ok(Type::Scalar(ElementType::I32)),
-                "i64" => Ok(Type::Scalar(ElementType::I64)),
-                "i128" => Ok(Type::Scalar(ElementType::I128)),
-                "u8" => Ok(Type::Scalar(ElementType::U8)),
-                "u16" => Ok(Type::Scalar(ElementType::U16)),
-                "u32" => Ok(Type::Scalar(ElementType::U32)),
-                "u64" => Ok(Type::Scalar(ElementType::U64)),
-                "u128" => Ok(Type::Scalar(ElementType::U128)),
-                "bool" | "Bool" => Ok(Type::Scalar(ElementType::Bool)),
                 _ => {
+                    if let Ok(el_ty) = std::str::FromStr::from_str(ident.as_str()) {
+                        return Ok(Type::Scalar(el_ty));
+                    }
+
                     // Check for GenericInstance like Config<f32>
                     if self.check(&TokenType::LeftAngle) {
                         self.advance(); // consume '<'

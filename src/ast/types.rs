@@ -218,7 +218,7 @@ impl std::str::FromStr for ElementType {
             "u64" => Ok(ElementType::U64),
             "i128" => Ok(ElementType::I128),
             "u128" => Ok(ElementType::U128),
-            "Bool" => Ok(ElementType::Bool),
+            "bool" | "Bool" => Ok(ElementType::Bool),
             _ => Err(format!("Unknown element type '{}'", s)),
         }
     }
