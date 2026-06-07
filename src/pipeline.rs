@@ -17,6 +17,7 @@ use crate::ast::VxModule;
 use crate::diagnostic::DiagnosticLevel;
 use crate::lexer::Lexer;
 use crate::metadata::VxMetadata;
+#[cfg(debug_assertions)]
 use crate::parallel_architecture_verifier::verify_arch::*;
 use crate::parser::Parser;
 use crate::sema::{GlobalAstEnv, TypeChecker};
