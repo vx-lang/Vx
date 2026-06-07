@@ -147,6 +147,7 @@ impl<'a> TypeChecker<'a> {
             Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume, silent),
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume, silent),
             Expr::If(..) => self.check_if_expr(expr, consume, silent),
+            Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
             Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume, silent),
             Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume, silent),
             Expr::Array(..) => self.check_array_expr(expr, silent),
@@ -796,6 +797,9 @@ impl<'a> TypeChecker<'a> {
                     return Type::Unknown;
                 }
             }
+            (Type::Scalar(_), Type::Scalar(_)) => {
+                return target_ty;
+            }
             _ => {}
         }
 
@@ -1269,8 +1273,6 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                     Type::Scalar(ElementType::F32)
-                } else if resolved_name.starts_with("sizeof<") {
-                    Type::Scalar(ElementType::I32)
                 } else if resolved_name == "print" {
                     if args.len() != 1 {
                         self.errors

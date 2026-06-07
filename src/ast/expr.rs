@@ -569,6 +569,17 @@ impl PrintlnExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct SizeOfExpr {
+    pub target_ty: Type,
+    pub span: Span,
+}
+impl SizeOfExpr {
+    pub fn new(target_ty: Type, span: Span) -> Self {
+        Self { target_ty, span }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct InlineMlirExpr {
     pub inputs: Vec<(String, Expr, String)>, // "%argN", expr, mlir_type_str
     pub clobbers: Vec<Expr>,
@@ -615,6 +626,7 @@ pub enum Expr {
     AsCast(AsCastExpr),
     Print(PrintExpr),
     Println(PrintlnExpr),
+    SizeOf(SizeOfExpr),
     InlineMlir(InlineMlirExpr),
 }
 
@@ -656,6 +668,7 @@ impl Expr {
             Expr::AsCast(e) => e.span.clone(),
             Expr::Print(e) => e.span.clone(),
             Expr::Println(e) => e.span.clone(),
+            Expr::SizeOf(e) => e.span.clone(),
             Expr::InlineMlir(e) => e.span.clone(),
         }
     }
@@ -944,6 +957,10 @@ impl Expr {
             }),
             Expr::Println(e) => Expr::Println(PrintlnExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
+                span: e.span.clone(),
+            }),
+            Expr::SizeOf(e) => Expr::SizeOf(SizeOfExpr {
+                target_ty: e.target_ty.substitute(mapping),
                 span: e.span.clone(),
             }),
             Expr::InlineMlir(e) => {

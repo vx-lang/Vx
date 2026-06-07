@@ -253,6 +253,18 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> Result<Expr, String> {
+        if call_name == "sizeof" {
+            self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
+            let target_ty = self.parse_type()?;
+            self.consume(&TokenType::RightAngle, "Expected '>' after sizeof type")?;
+            self.consume(&TokenType::LeftParen, "Expected '(' after sizeof<...>")?;
+            self.consume(&TokenType::RightParen, "Expected ')' after sizeof<...>(")?;
+            return Ok(Expr::SizeOf(SizeOfExpr {
+                target_ty,
+                span: Span::default(),
+            }));
+        }
+
         if matches!(self.peek().kind, TokenType::LeftAngle) {
             let mut is_generic = true;
             let mut type_args = Vec::new();

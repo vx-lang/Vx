@@ -1674,64 +1674,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             args,
             span: _,
         } = self;
-        if name.starts_with("sizeof<") {
-            let ty_str = &name[7..name.len() - 1];
-            let size_bytes: i32 = match ty_str {
-                "i32" | "f32" => 4,
-                "i64" | "f64" => 8,
-                "Bool" => 1,
-                "i8" | "u8" => 1,
-                "i16" | "u16" => 2,
-                _ => {
-                    if let Some(struct_decl) = gen.structs.get(ty_str) {
-                        let mut size = 0;
-                        for (_, field_ty) in &struct_decl.fields {
-                            size += match field_ty {
-                                crate::ast::Type::Scalar(crate::ast::ElementType::F32)
-                                | crate::ast::Type::Scalar(crate::ast::ElementType::I32) => 4,
-                                crate::ast::Type::Scalar(crate::ast::ElementType::F64)
-                                | crate::ast::Type::Scalar(crate::ast::ElementType::I64) => 8,
-                                crate::ast::Type::Scalar(crate::ast::ElementType::I8)
-                                | crate::ast::Type::Scalar(crate::ast::ElementType::Bool) => 1,
-                                _ => 8, // pointers, nested structs, etc default to 8
-                            };
-                        }
-                        if size == 0 {
-                            8
-                        } else {
-                            size
-                        }
-                    } else if ty_str.starts_with("*") {
-                        8
-                    } else {
-                        8
-                    }
-                }
-            };
-
-            let i32_ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
-            let size_val = block
-                .append_operation(
-                    melior::ir::operation::OperationBuilder::new(
-                        "llvm.mlir.constant",
-                        Location::unknown(gen.context),
-                    )
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(gen.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(i32_ty, size_bytes as i64)
-                            .into(),
-                    )])
-                    .add_results(&[i32_ty])
-                    .build()
-                    .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            return (size_val, i32_ty);
-        }
-
         if name == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
@@ -5556,6 +5498,10 @@ impl<'c> LowerToMelior<'c> for crate::ast::expr::AsCastExpr {
             fat_ptr_val = insert_env_ref.result(0).unwrap().into();
 
             return (fat_ptr_val, fat_ptr_ty);
+        } else if let crate::ast::Type::Scalar(_) = &self.target_ty {
+            let target_ty_mlir = gen.lower_type(&self.target_ty);
+            let coerced_val = gen.coerce_type(block, source_val, _source_ty, target_ty_mlir);
+            return (coerced_val, target_ty_mlir);
         }
 
         panic!("Unsupported cast operation in codegen");

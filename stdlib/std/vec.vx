@@ -9,8 +9,8 @@ import std::closure;
 import std::iter;
 
 extern "C" {
-  fn malloc(size: i32) -> *mut i8;
-  fn realloc(ptr: *mut i8, size: i32) -> *mut i8;
+  fn malloc(size: i64) -> *mut i8;
+  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
   fn free(ptr: *mut i8) -> i32;
 }
 
@@ -36,7 +36,7 @@ impl<T> Vec<T> {
       if self.capacity > 0 {
         new_cap = self.capacity * 2;
       }
-      let size_bytes: i32 = new_cap * sizeof<T>();
+      let size_bytes: i64 = (new_cap as i64) * sizeof<T>();
 
       let ptr: *mut i8 = self.data;
       self.data = unsafe { realloc(ptr, size_bytes) };

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 extern "C" {
-  fn malloc(size: i32) -> *mut i8;
+  fn malloc(size: i64) -> *mut i8;
   fn free(ptr: *mut i8) -> i32;
 }
 
@@ -17,7 +17,7 @@ struct Box<T> {
 
 impl<T> Box<T> {
   fn new(val: T) -> Box<T> {
-    let size_bytes: i32 = sizeof<T>();
+    let size_bytes: i64 = sizeof<T>();
     let p: *mut T = unsafe { malloc(size_bytes) };
     unsafe {
       *p = val;
