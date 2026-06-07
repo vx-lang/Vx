@@ -496,7 +496,10 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Fn) {
                 functions.push(self.parse_function()?);
             } else {
-                return Err(self.error(&format!("Unexpected token at program root: {:?}", self.peek().kind)));
+                return Err(self.error(&format!(
+                    "Unexpected token at program root: {:?}",
+                    self.peek().kind
+                )));
             }
         }
         Ok(Program {

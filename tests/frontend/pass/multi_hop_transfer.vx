@@ -12,14 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 fn main() -> void {
-    // A simple tensor in Host memory by default.
-    let host_tensor = Tensor_f32();
-    
-    // Explicitly request a transfer to LocalSRAM (AccCore).
-    // This requires a multi-hop route through NPUHBM because there is no direct
-    // link between HostDRAM and LocalSRAM.
-    let acc_tensor = transfer(host_tensor, Memory::Local_SRAM);
-    
-    // A reverse multi-hop transfer
-    let host_tensor_2 = transfer(acc_tensor, Memory::Host_DRAM);
+  // A simple tensor in Host memory by default.
+  let host_tensor = Tensor_f32();
+
+  // Explicitly request a transfer to LocalSRAM (AccCore).
+  // This requires a multi-hop route through NPUHBM because there is no direct
+  // link between HostDRAM and LocalSRAM.
+  let acc_tensor = transfer(host_tensor, Memory::Local_SRAM);
+
+  // A reverse multi-hop transfer
+  let host_tensor_2 = transfer(acc_tensor, Memory::Host_DRAM);
 }
