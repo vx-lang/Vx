@@ -16,11 +16,18 @@
 #   cargo format
 # =====================================================================
 
-echo "[1/2] Running cargo fmt for Rust files..."
+echo "[1/3] Running cargo fmt for Rust files..."
 cargo fmt
 
-echo "[2/2] Running vx-format for Vx files..."
+echo "[2/3] Running vx-format for Vx files..."
 cargo build --release --quiet --bin vx-format
 find . -name "*.vx" -exec ./target/release/vx-format {} +
+
+echo "[3/3] Running mdformat for Markdown files..."
+if command -v mdformat &> /dev/null; then
+    mdformat docs/ README.md
+else
+    echo "mdformat not found. Skipping markdown formatting. (Install with: pipx install mdformat)"
+fi
 
 echo "Formatting complete!"
