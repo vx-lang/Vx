@@ -1,3 +1,15 @@
+//===- expr.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Parser for Vx expressions. Handles precedence climbing for binary operators and method chains.
+//
+//===----------------------------------------------------------------------===//
+
 use super::*;
 
 pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementType>), String> {

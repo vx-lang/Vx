@@ -1,3 +1,15 @@
+//===- macro_expand.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// AST transformations for expanding macros into inline code during compilation.
+//
+//===----------------------------------------------------------------------===//
+
 use super::*;
 use crate::ast::{Delimiter, Span};
 use crate::lexer::TokenType;

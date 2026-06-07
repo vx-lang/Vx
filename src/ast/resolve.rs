@@ -1,3 +1,15 @@
+//===- resolve.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Name resolution passes for the AST, resolving variable shadowing and lifetimes.
+//
+//===----------------------------------------------------------------------===//
+
 use super::*;
 
 impl Type {

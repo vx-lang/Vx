@@ -1,3 +1,15 @@
+//===- types.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Parser for Vx type signatures, including generic arguments, memory spaces, and topologies.
+//
+//===----------------------------------------------------------------------===//
+
 use super::*;
 
 impl<'a> Parser<'a> {

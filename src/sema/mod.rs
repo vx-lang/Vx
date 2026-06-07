@@ -1,3 +1,15 @@
+//===- mod.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Semantic analysis module for the Vx compiler. Defines the type checking environment and validation rules.
+//
+//===----------------------------------------------------------------------===//
+
 use crate::ast::*;
 
 pub mod env;

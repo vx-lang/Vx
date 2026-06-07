@@ -1,3 +1,15 @@
+//===- prover.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Formal verification prover integration. Handles symbolic execution and Z3 validation.
+//
+//===----------------------------------------------------------------------===//
+
 use crate::ast::*;
 use std::io::Write;
 use std::process::{Command, Stdio};

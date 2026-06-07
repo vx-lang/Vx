@@ -1,3 +1,15 @@
+//===- driver.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Compiler driver orchestrating file I/O, parsing, semantic analysis, and code generation.
+//
+//===----------------------------------------------------------------------===//
+
 use crate::ast::MacroExpander;
 use crate::ast_printer::AstPrinter;
 use crate::diagnostic::DiagnosticLevel;

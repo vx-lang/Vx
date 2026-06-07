@@ -1,3 +1,15 @@
+//===- vx-opt.rs - Vx Compiler -------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+//
+// Standalone Vx optimizer tool that interfaces with the MLIR backend.
+//
+//===----------------------------------------------------------------------===//
+
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
