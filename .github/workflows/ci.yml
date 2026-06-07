@@ -38,8 +38,8 @@ jobs:
 
       - name: Check Vx Formatting (vx-format)
         run: |
-          cargo build --bin vx-format
-          find tests stdlib -name "*.vx" -exec ./target/debug/vx-format {} +
+          cargo build --release --bin vx-format
+          find tests stdlib -name "*.vx" -exec ./target/release/vx-format {} +
           git diff --exit-code || (echo "Vx files are not formatted properly. Run vx-format locally." && exit 1)
 
       - name: Check Markdown Formatting (mdformat)
@@ -55,16 +55,16 @@ jobs:
           echo "ENZYME_LIB=$ENZYME_LIB" >> $GITHUB_ENV
 
       - name: Build
-        run: cargo build --workspace --verbose
+        run: cargo build --release --workspace --verbose
 
       - name: Run tests
-        run: cargo test --workspace --verbose
+        run: cargo test --release --workspace --verbose
 
       - name: Run stress tests (Every 10th Commit)
         run: |
           if [ $((GITHUB_RUN_NUMBER % 10)) -eq 0 ]; then
             echo "Running stress tests for run $GITHUB_RUN_NUMBER"
-            cargo test --test stress_test -- --ignored --verbose
+            cargo test --release --test stress_test -- --ignored --verbose
           else
             echo "Skipping stress tests. They run every 10th commit (current run: $GITHUB_RUN_NUMBER)."
           fi
@@ -73,7 +73,7 @@ jobs:
         run: |
           if [ $(((GITHUB_RUN_NUMBER + 1) % 10)) -eq 0 ]; then
             echo "Running benchmarks for run $GITHUB_RUN_NUMBER"
-            cargo bench --verbose
+            cargo bench --workspace --verbose
           else
             echo "Skipping benchmarks. They run every 10th commit offset by 1 (current run: $GITHUB_RUN_NUMBER)."
           fi
