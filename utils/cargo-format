@@ -20,6 +20,7 @@ echo "[1/2] Running cargo fmt for Rust files..."
 cargo fmt
 
 echo "[2/2] Running vx-format for Vx files..."
-find . -name "*.vx" -exec cargo run --quiet --bin vx-format {} +
+cargo build --release --quiet --bin vx-format
+find . -name "*.vx" -exec ./target/release/vx-format {} +
 
 echo "Formatting complete!"

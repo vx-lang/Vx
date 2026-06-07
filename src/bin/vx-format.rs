@@ -50,11 +50,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    for file_path in file_paths {
+    use rayon::prelude::*;
+
+    file_paths.par_iter().for_each(|file_path| {
         let path = Path::new(file_path);
         if !path.exists() {
             eprintln!("Error: File not found: {}", file_path);
-            continue;
+            return;
         }
 
         match fs::read_to_string(path) {
@@ -74,5 +76,5 @@ fn main() {
                 eprintln!("Error reading {}: {}", file_path, e);
             }
         }
-    }
+    });
 }
