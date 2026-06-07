@@ -213,30 +213,16 @@ impl<'a> Parser<'a> {
                         }
 
                         let mut top = None;
-                        if self.match_token(&TokenType::Comma)
-                            && self.match_token(&TokenType::Identifier("Topology".to_string()))
-                        {
-                            self.consume(&TokenType::DoubleColon, "Expected '::' after Topology")?;
-                            // Need to parse Topology... For now let's just parse the basic ones
-                            if let TokenType::Identifier(t_name) = &self.peek().kind {
-                                let t = t_name.clone();
-                                self.advance();
-                                if t == "ANE" {
-                                    top = Some(Topology::ANE);
-                                } else if t == "Host" {
-                                    top = Some(Topology::Host);
-                                } else if t == "AMX" {
-                                    top = Some(Topology::AMX);
-                                } else if t == "GPU" {
-                                    top = Some(Topology::GPU);
-                                }
+                        if self.match_token(&TokenType::Comma) {
+                            if self.check(&TokenType::Topology) {
+                                top = Some(self.parse_topology()?);
                             }
                         }
 
-                        match self.advance().kind {
-                            TokenType::RightAngle => {}
-                            _ => return Err("Expected '>' after Tensor parameters".to_string()),
-                        }
+                        self.consume(
+                            &TokenType::RightAngle,
+                            "Expected '>' after Tensor parameters",
+                        )?;
                         return Ok(Type::Tensor(el_ty, dims, top));
                     }
                     Ok(Type::Tensor(el_ty, Vec::new(), None))
