@@ -1,4 +1,6 @@
 use super::*;
+use crate::ast::{Delimiter, Span};
+use crate::lexer::TokenType;
 use std::collections::HashMap;
 
 pub struct MacroExpander<'a> {
@@ -315,7 +317,7 @@ impl<'a> MacroExpander<'a> {
                 let mut transcribed = self.transcribe(&rule.transcriber, &captures)?;
                 // IMPORTANT: The parser expects an EOF token at the end!
                 transcribed.push(crate::lexer::Token {
-                    kind: crate::lexer::TokenType::Eof,
+                    kind: TokenType::Eof,
                     line: 0,
                     column: 0,
                     length: 0,
@@ -339,18 +341,9 @@ impl<'a> MacroExpander<'a> {
             }
             TokenTree::Delimited(delim, inner) => {
                 let (open, close) = match delim {
-                    crate::ast::Delimiter::Parenthesis => (
-                        crate::lexer::TokenType::LeftParen,
-                        crate::lexer::TokenType::RightParen,
-                    ),
-                    crate::ast::Delimiter::Brace => (
-                        crate::lexer::TokenType::LeftBrace,
-                        crate::lexer::TokenType::RightBrace,
-                    ),
-                    crate::ast::Delimiter::Bracket => (
-                        crate::lexer::TokenType::LeftBracket,
-                        crate::lexer::TokenType::RightBracket,
-                    ),
+                    Delimiter::Parenthesis => (TokenType::LeftParen, TokenType::RightParen),
+                    Delimiter::Brace => (TokenType::LeftBrace, TokenType::RightBrace),
+                    Delimiter::Bracket => (TokenType::LeftBracket, TokenType::RightBracket),
                 };
                 tokens.push(crate::lexer::Token {
                     kind: open,
@@ -389,16 +382,14 @@ impl<'a> MacroExpander<'a> {
         while j < matcher_tokens.len() {
             let m_tok = &matcher_tokens[j];
 
-            if m_tok.kind == crate::lexer::TokenType::Dollar && j + 2 < matcher_tokens.len() {
+            if m_tok.kind == TokenType::Dollar && j + 2 < matcher_tokens.len() {
                 let name_tok = &matcher_tokens[j + 1];
                 let colon_tok = &matcher_tokens[j + 2];
 
-                if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
-                    if colon_tok.kind == crate::lexer::TokenType::Colon
-                        && j + 3 < matcher_tokens.len()
-                    {
+                if let TokenType::Identifier(name) = &name_tok.kind {
+                    if colon_tok.kind == TokenType::Colon && j + 3 < matcher_tokens.len() {
                         let kind_tok = &matcher_tokens[j + 3];
-                        if let crate::lexer::TokenType::Identifier(kind) = &kind_tok.kind {
+                        if let TokenType::Identifier(kind) = &kind_tok.kind {
                             // Match a meta-variable
                             if kind == "expr" {
                                 // Simplified: just grab tokens until the next matcher token is found or EOF
@@ -459,9 +450,9 @@ impl<'a> MacroExpander<'a> {
         let mut j = 0;
         while j < transcriber_tokens.len() {
             let m_tok = &transcriber_tokens[j];
-            if m_tok.kind == crate::lexer::TokenType::Dollar && j + 1 < transcriber_tokens.len() {
+            if m_tok.kind == TokenType::Dollar && j + 1 < transcriber_tokens.len() {
                 let name_tok = &transcriber_tokens[j + 1];
-                if let crate::lexer::TokenType::Identifier(name) = &name_tok.kind {
+                if let TokenType::Identifier(name) = &name_tok.kind {
                     if let Some(captured) = captures.get(name) {
                         tokens.extend(captured.clone());
                         j += 2;
@@ -475,7 +466,7 @@ impl<'a> MacroExpander<'a> {
 
         // Append EOF to ensure parser completes
         tokens.push(crate::lexer::Token {
-            kind: crate::lexer::TokenType::Eof,
+            kind: TokenType::Eof,
             line: 0,
             column: 0,
             length: 0,
@@ -498,7 +489,7 @@ impl<'a> MacroExpander<'a> {
 
         // Append EOF token
         tokens.push(crate::lexer::Token {
-            kind: crate::lexer::TokenType::Eof,
+            kind: TokenType::Eof,
             line: 0,
             column: 0,
             length: 0,
@@ -506,16 +497,16 @@ impl<'a> MacroExpander<'a> {
 
         let mut parser = crate::parser::Parser::new(tokens, "");
         let mut exprs = Vec::new();
-        while !parser.check(&crate::lexer::TokenType::Eof) {
+        while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
-            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+            if !parser.match_token(&TokenType::Comma) {
                 break;
             }
         }
 
         Ok(expr::Expr::VecMacro(expr::VecMacroExpr {
             elements: exprs,
-            span: crate::ast::Span::default(),
+            span: Span::default(),
         }))
     }
 
@@ -530,7 +521,7 @@ impl<'a> MacroExpander<'a> {
             tokens.extend(self.flatten_tt(t));
         }
         tokens.push(crate::lexer::Token {
-            kind: crate::lexer::TokenType::Eof,
+            kind: TokenType::Eof,
             line: 0,
             column: 0,
             length: 0,
@@ -538,16 +529,16 @@ impl<'a> MacroExpander<'a> {
 
         let mut parser = crate::parser::Parser::new(tokens, "");
         let mut exprs = Vec::new();
-        while !parser.check(&crate::lexer::TokenType::Eof) {
+        while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
-            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+            if !parser.match_token(&TokenType::Comma) {
                 break;
             }
         }
 
         Ok(expr::Expr::Print(expr::PrintExpr {
             args: exprs,
-            span: crate::ast::Span::default(),
+            span: Span::default(),
         }))
     }
 
@@ -562,7 +553,7 @@ impl<'a> MacroExpander<'a> {
             tokens.extend(self.flatten_tt(t));
         }
         tokens.push(crate::lexer::Token {
-            kind: crate::lexer::TokenType::Eof,
+            kind: TokenType::Eof,
             line: 0,
             column: 0,
             length: 0,
@@ -570,16 +561,16 @@ impl<'a> MacroExpander<'a> {
 
         let mut parser = crate::parser::Parser::new(tokens, "");
         let mut exprs = Vec::new();
-        while !parser.check(&crate::lexer::TokenType::Eof) {
+        while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
-            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+            if !parser.match_token(&TokenType::Comma) {
                 break;
             }
         }
 
         Ok(expr::Expr::Println(expr::PrintlnExpr {
             args: exprs,
-            span: crate::ast::Span::default(),
+            span: Span::default(),
         }))
     }
 
@@ -600,7 +591,7 @@ impl<'a> MacroExpander<'a> {
                     t.extend(self.flatten_tt(i));
                 }
                 t.push(crate::lexer::Token {
-                    kind: crate::lexer::TokenType::Eof,
+                    kind: TokenType::Eof,
                     line: 0,
                     column: 0,
                     length: 0,
@@ -612,31 +603,31 @@ impl<'a> MacroExpander<'a> {
 
         let mut parser = crate::parser::Parser::new(tokens, "");
 
-        while !parser.check(&crate::lexer::TokenType::Eof) {
+        while !parser.check(&TokenType::Eof) {
             let field_name = match &parser.advance().kind {
-                crate::lexer::TokenType::Identifier(s) => s.clone(),
+                TokenType::Identifier(s) => s.clone(),
                 _ => {
                     return Err(
                         "Expected 'inputs', 'clobbers', 'returns', or 'dialects'".to_string()
                     )
                 }
             };
-            parser.consume(&crate::lexer::TokenType::Colon, "Expected ':'")?;
+            parser.consume(&TokenType::Colon, "Expected ':'")?;
 
             match field_name.as_str() {
                 "inputs" => {
-                    parser.consume(&crate::lexer::TokenType::LeftParen, "Expected '('")?;
-                    if !parser.check(&crate::lexer::TokenType::RightParen) {
+                    parser.consume(&TokenType::LeftParen, "Expected '('")?;
+                    if !parser.check(&TokenType::RightParen) {
                         loop {
                             let is_percent = match parser.peek().kind {
-                                crate::lexer::TokenType::Unknown('%') => {
+                                TokenType::Unknown('%') => {
                                     parser.advance();
                                     true
                                 }
                                 _ => false,
                             };
                             let arg_name = match &parser.advance().kind {
-                                crate::lexer::TokenType::Identifier(s) => {
+                                TokenType::Identifier(s) => {
                                     if is_percent {
                                         format!("%{}", s)
                                     } else {
@@ -645,77 +636,76 @@ impl<'a> MacroExpander<'a> {
                                 }
                                 _ => return Err("Expected identifier in inputs".to_string()),
                             };
-                            parser.consume(&crate::lexer::TokenType::Equals, "Expected '='")?;
+                            parser.consume(&TokenType::Equals, "Expected '='")?;
                             let expr = parser.parse_expr()?;
-                            parser.consume(&crate::lexer::TokenType::Colon, "Expected ':'")?;
+                            parser.consume(&TokenType::Colon, "Expected ':'")?;
 
                             let mut ty_str = String::new();
                             let mut angle_depth = 0;
-                            while !parser.check(&crate::lexer::TokenType::Eof) {
+                            while !parser.check(&TokenType::Eof) {
                                 if angle_depth == 0
-                                    && (parser.check(&crate::lexer::TokenType::Comma)
-                                        || parser.check(&crate::lexer::TokenType::RightParen))
+                                    && (parser.check(&TokenType::Comma)
+                                        || parser.check(&TokenType::RightParen))
                                 {
                                     break;
                                 }
                                 let tok = parser.advance();
-                                if tok.kind == crate::lexer::TokenType::LeftAngle {
+                                if tok.kind == TokenType::LeftAngle {
                                     angle_depth += 1;
-                                } else if tok.kind == crate::lexer::TokenType::RightAngle {
+                                } else if tok.kind == TokenType::RightAngle {
                                     angle_depth -= 1;
                                 }
                                 ty_str.push_str(&tok.kind.to_string());
                             }
                             inputs.push((arg_name, expr, ty_str));
 
-                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                            if !parser.match_token(&TokenType::Comma) {
                                 break;
                             }
                         }
                     }
-                    parser.consume(&crate::lexer::TokenType::RightParen, "Expected ')'")?;
+                    parser.consume(&TokenType::RightParen, "Expected ')'")?;
                 }
                 "clobbers" => {
-                    parser.consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")?;
-                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                    parser.consume(&TokenType::LeftBracket, "Expected '['")?;
+                    if !parser.check(&TokenType::RightBracket) {
                         loop {
                             clobbers.push(parser.parse_expr()?);
-                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                            if !parser.match_token(&TokenType::Comma) {
                                 break;
                             }
                         }
                     }
-                    parser.consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")?;
+                    parser.consume(&TokenType::RightBracket, "Expected ']'")?;
                 }
                 "returns" => {
-                    if parser.match_token(&crate::lexer::TokenType::Identifier("void".to_string()))
-                    {
+                    if parser.match_token(&TokenType::Identifier("void".to_string())) {
                         returns = None;
                     } else {
                         returns = Some(parser.parse_type()?);
                     }
                 }
                 "dialects" => {
-                    parser.consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")?;
-                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                    parser.consume(&TokenType::LeftBracket, "Expected '['")?;
+                    if !parser.check(&TokenType::RightBracket) {
                         loop {
                             match &parser.advance().kind {
-                                crate::lexer::TokenType::StringLiteral(s) => {
+                                TokenType::StringLiteral(s) => {
                                     dialects.push(s.clone());
                                 }
                                 _ => return Err("Expected string literal in dialects".to_string()),
                             }
-                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                            if !parser.match_token(&TokenType::Comma) {
                                 break;
                             }
                         }
                     }
-                    parser.consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")?;
+                    parser.consume(&TokenType::RightBracket, "Expected ']'")?;
                 }
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }
 
-            parser.match_token(&crate::lexer::TokenType::Comma);
+            parser.match_token(&TokenType::Comma);
         }
 
         let block_str = if let Some(TokenTree::Delimited(_, inner)) = block_tree {
@@ -762,7 +752,7 @@ impl<'a> MacroExpander<'a> {
             returns,
             dialects,
             block_str,
-            span: crate::ast::Span::default(),
+            span: Span::default(),
         }))
     }
 }

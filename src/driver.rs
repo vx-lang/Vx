@@ -1,3 +1,7 @@
+use crate::ast::MacroExpander;
+use crate::ast_printer::AstPrinter;
+use crate::codegen::MeliorGenerator;
+use crate::diagnostic::DiagnosticLevel;
 use clap::{Parser, ValueEnum};
 use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
@@ -186,7 +190,7 @@ impl CompilerDriver {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let mut expander = crate::ast::MacroExpander::new(&global_macros);
+        let mut expander = MacroExpander::new(&global_macros);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));
@@ -209,7 +213,7 @@ impl CompilerDriver {
         let mut ast = program_arr.remove(ast_idx);
 
         if self.options.action == Action::PrintAst {
-            crate::ast_printer::AstPrinter::print_program(&ast);
+            AstPrinter::print_program(&ast);
         }
 
         let global_session = std::sync::Arc::new(GlobalSession::new(1));
@@ -227,10 +231,10 @@ impl CompilerDriver {
         let has_errors = checker
             .errors
             .iter()
-            .any(|d| d.level == crate::diagnostic::DiagnosticLevel::Error);
+            .any(|d| d.level == DiagnosticLevel::Error);
 
         for diag in checker.errors.iter() {
-            if diag.level == crate::diagnostic::DiagnosticLevel::Warning {
+            if diag.level == DiagnosticLevel::Warning {
                 println!("Warning in {}: {}", filename, diag.message);
             }
         }
@@ -238,7 +242,7 @@ impl CompilerDriver {
         if has_errors {
             let mut err_msg = format!("Semantic check failed on '{}':\n", filename);
             for diag in checker.errors.iter() {
-                if diag.level == crate::diagnostic::DiagnosticLevel::Error {
+                if diag.level == DiagnosticLevel::Error {
                     err_msg.push_str(&format!("  {}\n", diag.message));
                 }
             }
@@ -285,7 +289,7 @@ impl CompilerDriver {
         context.load_all_available_dialects();
         crate::codegen::register_vx_dialect(&context);
 
-        let mut codegen = crate::codegen::MeliorGenerator::new(&context);
+        let mut codegen = MeliorGenerator::new(&context);
         codegen.generate(&monomorphized_ast, &module_asts);
         let mut module = codegen.into_module();
 

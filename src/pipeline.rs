@@ -12,7 +12,15 @@
 // invoking the compiler on a project.
 //
 //===----------------------------------------------------------------------===//
+use crate::ast::MacroExpander;
 use crate::ast::VxModule;
+use crate::diagnostic::DiagnosticLevel;
+use crate::lexer::Lexer;
+use crate::metadata::VxMetadata;
+use crate::parallel_architecture_verifier::verify_arch::*;
+use crate::parser::Parser;
+use crate::sema::{GlobalAstEnv, TypeChecker};
+use crate::session::{GlobalSession, LocalWorkerState};
 use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.
@@ -25,9 +33,9 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             println!("Parsing file: {}", path);
             let source = std::fs::read_to_string(path)
                 .map_err(|e| format!("Failed to read {}: {}", path, e))?;
-            let mut lexer = crate::lexer::Lexer::new(&source);
+            let mut lexer = Lexer::new(&source);
             let tokens = lexer.tokenize();
-            let mut parser = crate::parser::Parser::new(tokens, &source);
+            let mut parser = Parser::new(tokens, &source);
             let mut program = parser
                 .parse()
                 .map_err(|e| format!("Failed to parse {}: {}", path, e))?;
@@ -39,10 +47,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut parsed_modules = modules?;
 
     #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_phase_1_parse(
-        file_paths,
-        &parsed_modules,
-    );
+    verify_phase_1_parse(file_paths, &parsed_modules);
 
     // Phase 1.1: Sequential Macro Collection & Expansion
     let mut global_macros = std::collections::HashMap::new();
@@ -51,7 +56,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             global_macros.insert(mac.name.clone(), mac.rules.clone());
         }
     }
-    let mut expander = crate::ast::MacroExpander::new(&global_macros);
+    let mut expander = MacroExpander::new(&global_macros);
     for m in &mut parsed_modules {
         expander.expand_module(m)?;
     }
@@ -72,15 +77,13 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
-    let global_session = std::sync::Arc::new(crate::session::GlobalSession::new(1));
+    let global_session = std::sync::Arc::new(GlobalSession::new(1));
     #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_phase_2_registry(
-        &global_session.registry,
-    );
+    verify_phase_2_registry(&global_session.registry);
 
     // Phase 2.5: Build Global AST Environment (Sequential)
     let global_env_modules = parsed_modules.clone();
-    let global_env = crate::sema::GlobalAstEnv::build(&global_env_modules);
+    let global_env = GlobalAstEnv::build(&global_env_modules);
 
     // Phase 3: Parallel Body Type-Checking (Lock-Free Frontend Threading)
     let mut check_results: Vec<_> = parsed_modules
@@ -93,9 +96,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                 .functions
                 .par_iter_mut()
                 .map(move |func| {
-                    let mut worker =
-                        crate::session::LocalWorkerState::new(global_session_ref.clone());
-                    let mut checker = crate::sema::TypeChecker::new(global_env_ref, &mut worker);
+                    let mut worker = LocalWorkerState::new(global_session_ref.clone());
+                    let mut checker = TypeChecker::new(global_env_ref, &mut worker);
                     checker.check_function(func);
                     let errors = checker.errors;
                     let monomorphized_functions = checker.monomorphized_functions;
@@ -115,10 +117,10 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     let mut total_errors = 0;
     for (errs, _, _, _, _) in &check_results {
         for diag in errs.iter() {
-            if diag.level == crate::diagnostic::DiagnosticLevel::Error {
+            if diag.level == DiagnosticLevel::Error {
                 total_errors += 1;
                 println!("Error: {}", diag.message);
-            } else if diag.level == crate::diagnostic::DiagnosticLevel::Warning {
+            } else if diag.level == DiagnosticLevel::Warning {
                 println!("Warning: {}", diag.message);
             }
         }
@@ -147,10 +149,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             .iter()
             .map(|(_, _, worker, _, _)| worker)
             .collect();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_3_isolation(
-            &workers,
-            &global_session,
-        );
+        verify_phase_3_isolation(&workers, &global_session);
     }
 
     // Phase 4: Parallel Local Deduplication & Cross-Thread Merging (Frozen Epoch)
@@ -211,7 +210,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     });
 
     #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_phase_4_deduplication(
+    verify_phase_4_deduplication(
         &_epoch_2_session.generics_arena,
         &_epoch_2_session.slow_path_arena,
     );
@@ -273,10 +272,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             .iter()
             .flat_map(|(_, stream)| stream.clone())
             .collect();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_6_simd_patch(
-            &patched_stream,
-            &global_session,
-        );
+        verify_phase_6_simd_patch(&patched_stream, &global_session);
     }
 
     // Phase 7: Parallel Module Deduplication & Codegen
@@ -309,10 +305,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     }
 
     #[cfg(debug_assertions)]
-    crate::parallel_architecture_verifier::verify_arch::verify_phase_7_routing(
-        &module_buckets,
-        &module_hash_to_index,
-    );
+    verify_phase_7_routing(&module_buckets, &module_hash_to_index);
 
     // Parallel Deduplication Step (Zero Lock Contention)
     parsed_modules
@@ -352,7 +345,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     // Save the zero-copy metadata file to disk
     let metadata_path = std::path::Path::new("output.vxm");
-    crate::metadata::VxMetadata::save_to_file(&master_type_dictionary, metadata_path)
+    VxMetadata::save_to_file(&master_type_dictionary, metadata_path)
         .map_err(|e| format!("Failed to save metadata: {}", e))?;
 
     println!(
@@ -365,15 +358,10 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     {
         let weak_session = std::sync::Arc::downgrade(&global_session);
         drop(global_session);
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_5_epoch_advance(
-            weak_session,
-        );
+        verify_phase_5_epoch_advance(weak_session);
 
         let bytes = std::fs::read(metadata_path).unwrap();
-        crate::parallel_architecture_verifier::verify_arch::verify_phase_8_serialization(
-            &bytes,
-            master_type_dictionary.len(),
-        );
+        verify_phase_8_serialization(&bytes, master_type_dictionary.len());
     }
 
     Ok(())
