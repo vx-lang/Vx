@@ -1696,11 +1696,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
-        if (name.starts_with("Tensor_") && !name.contains("__") && !name.contains("_dim"))
+        if (name.starts_with("Tensor<") && name.ends_with(">") && !name.contains("__") && !name.contains("_dim"))
             || name == "Tensor"
         {
-            let el_ty_str = if name.starts_with("Tensor_") {
-                name.strip_prefix("Tensor_").unwrap()
+            let el_ty_str = if name.starts_with("Tensor<") {
+                name.strip_prefix("Tensor<").unwrap().strip_suffix(">").unwrap()
             } else {
                 "f32"
             };
