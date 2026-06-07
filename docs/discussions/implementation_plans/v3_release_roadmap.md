@@ -30,13 +30,13 @@ Here is a proposed roadmap for **Vx v3.0**, addressing the major technical gaps 
 - Introduce a generic mathematical algebra for memory. The compiler will construct a graph of connected hardware topologies (e.g., `Host_DRAM` \<-> `NPU_HBM`).
 - `transfer()` calls will be structurally verified at compile time against this graph to ensure physical legality and calculate data movement costs.
 
-## 3. Formal Verification (`Verified<T>`)
+## 3. Formal Verification (`Verified<T>`) (Completed)
 
 **The Gap:** The `Verified<T>` label is hollow and has no SMT solver backing.
 **The Fix:**
 
-- Implement basic dependent types to verify matrix shapes and dimensions at compile time.
-- Add pre-condition and post-condition tracking to the semantic analyzer, ensuring bounds checks and shape transformations are mathematically proven before execution.
+- [x] Implement basic dependent types to verify matrix shapes and dimensions at compile time.
+- [x] Add pre-condition and post-condition tracking to the semantic analyzer, ensuring bounds checks and shape transformations are mathematically proven before execution (integrated Z3 solver via `prover.rs`).
 
 ## 4. Complete Borrow Checker (NLL & Aliasing)
 
