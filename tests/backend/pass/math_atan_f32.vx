@@ -18,6 +18,6 @@ fn main() -> i32 {
   let diff : f32 = (res - expected).abs();
   let mut ret : i32 = 1;
   if diff
-    < 0.001 { ret = 0; }
+  < 0.001 { ret = 0; }
   return ret;
 }

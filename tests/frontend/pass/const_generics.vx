@@ -3,7 +3,7 @@
 struct Array<T, const N : i32>{val : T}
 
 fn initialize<const N : i32>()
-    ->Array<f32, N> {
+->Array<f32, N> {
   let a = Array<f32, N>{val : 1.0};
   let x = N + 1;
   return a;

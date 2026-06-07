@@ -5,7 +5,7 @@ fn main() -> i32 {
   loop {
     i = i + 1;
     if i
-      >= 5 { break; }
+    >= 5 { break; }
   }
   return i - 5;
 }

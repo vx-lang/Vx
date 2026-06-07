@@ -10,19 +10,19 @@ fn test_f32() -> i32 {
 
   let mut counter : f32 = 0.0;
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = counter;
-        counter = counter + 1.0;
-      }
+    j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
     }
+  }
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 { c[j][i] = a[i][j]; }
-    }
+    j in 0..4 { c[j][i] = a[i][j]; }
+  }
 
   assert(c[0][1] == 4.0, "f32 c[0][1] match");
   assert(c[1][0] == 1.0, "f32 c[1][0] match");
@@ -36,19 +36,19 @@ fn test_bf16() -> i32 {
 
   let mut counter : bf16 = 0.0;
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = counter;
-        counter = counter + 1.0;
-      }
+    j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
     }
+  }
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 { c[j][i] = a[i][j]; }
-    }
+    j in 0..4 { c[j][i] = a[i][j]; }
+  }
 
   assert(c[0][1] == 4.0, "bf16 c[0][1] match");
   assert(c[1][0] == 1.0, "bf16 c[1][0] match");

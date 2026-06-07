@@ -11,12 +11,12 @@
 import std::io;
 struct Config {
   dim : i32,
-        hidden_dim : i32,
-                     n_layers : i32,
-                                n_heads : i32,
-                                          vocab_size : i32,
-                                                       seq_len : i32,
-                                                                 norm_eps : f32,
+  hidden_dim : i32,
+  n_layers : i32,
+  n_heads : i32,
+  vocab_size : i32,
+  seq_len : i32,
+  norm_eps : f32,
 }
 
 fn main() -> i32 {

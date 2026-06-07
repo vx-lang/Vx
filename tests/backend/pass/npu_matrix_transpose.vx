@@ -11,22 +11,22 @@ fn test_f32() -> i32 {
 
   let mut counter : f32 = 0.0;
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = counter;
-        counter = counter + 1.0;
-      }
+    j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
     }
+  }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
     for
-      i in 0..4 {
+    i in 0..4 {
       for
-        j in 0..4 { c[j][i] = a_npu[i][j]; }
-      }
+      j in 0..4 { c[j][i] = a_npu[i][j]; }
+    }
   }
 
   let c_host = transfer(c, Memory::Host_DRAM);
@@ -42,22 +42,22 @@ fn test_bf16() -> i32 {
 
   let mut counter : bf16 = 0.0;
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = counter;
-        counter = counter + 1.0;
-      }
+    j in 0..4 {
+      a[i][j] = counter;
+      counter = counter + 1.0;
     }
+  }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
     for
-      i in 0..4 {
+    i in 0..4 {
       for
-        j in 0..4 { c[j][i] = a_npu[i][j]; }
-      }
+      j in 0..4 { c[j][i] = a_npu[i][j]; }
+    }
   }
 
   let c_host = transfer(c, Memory::Host_DRAM);

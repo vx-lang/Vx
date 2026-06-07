@@ -12,7 +12,7 @@ extern {
   fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8;
   fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
   fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : i64,
-                           c_addr : *const i8) -> i64;
+  c_addr : *const i8) -> i64;
   fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 }
 

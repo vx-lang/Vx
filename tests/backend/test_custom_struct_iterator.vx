@@ -20,11 +20,11 @@ impl MyList {
 impl Iterator<MyListIter, i32> for MyListIter {
   fn next(self : MyListIter) -> Option<i32> {
     if self
-      .current < self.len {
-        let val : i32 = self.current * 2;
-        self.current = self.current + 1;
-        return Option::Some(i32)(val);
-      }
+    .current < self.len {
+      let val : i32 = self.current * 2;
+      self.current = self.current + 1;
+      return Option::Some(i32)(val);
+    }
     return Option::None(i32)();
   }
 }
@@ -32,11 +32,11 @@ impl Iterator<MyListIter, i32> for MyListIter {
 fn main() -> i32 {
   let list : MyList = MyList{len : 5};
   for
-    item in list.iter() {
-      unsafe {
-        print !("Custom Struct Item: ");
-        print !(item);
-      }
+  item in list.iter() {
+    unsafe {
+      print !("Custom Struct Item: ");
+      print !(item);
     }
+  }
   return 0;
 }

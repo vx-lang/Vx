@@ -9,7 +9,7 @@
 // RUN: FileCheck %s < %t.mlir
 
 fn process_tensor(val : Tensor<f32, [ 128, 128 ]>)
-    -> Tensor<f32, [ 4, 64, 64 ]> {
+-> Tensor<f32, [ 4, 64, 64 ]> {
   // 128 * 128 = 16384
   // 2 * 64 * 2 * 64 = 16384
   let temp = val.reshape([ 2, 64, 2, 64 ]);

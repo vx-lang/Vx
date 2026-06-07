@@ -11,42 +11,42 @@ fn test_f32() -> i32 {
   let mut c = Tensor<f32>([ 64, 64 ]).with_memory(Memory::NPU_HBM);
 
   for
-    i in 0..64 {
+  i in 0..64 {
     for
-      j in 0..64 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..64 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
     for
-      ii in 0..4 {
+    ii in 0..4 {
       for
-        jj in 0..4 {
+      jj in 0..4 {
         for
-          kk in 0..4 {
+        kk in 0..4 {
           for
-            i in 0..16 {
+          i in 0..16 {
             for
-              j in 0..16 {
-                if kk
-                  == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+            j in 0..16 {
+              if kk
+              == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
               for
-                k in 0..16 {
-                  c[ii * 16 + i][jj * 16 + j] =
-                      c[ii * 16 + i][jj * 16 + j] +
-                      a_npu[ii * 16 + i][kk * 16 + k] *
-                          b_npu[kk * 16 + k][jj * 16 + j];
-                }
+              k in 0..16 {
+                c[ii * 16 + i][jj * 16 + j] =
+                c[ii * 16 + i][jj * 16 + j] +
+                a_npu[ii * 16 + i][kk * 16 + k] *
+                b_npu[kk * 16 + k][jj * 16 + j];
               }
             }
           }
         }
       }
+    }
   }
 
   // 64 * (2.0 * 3.0) = 384.0
@@ -63,42 +63,42 @@ fn test_bf16() -> i32 {
   let mut c = Tensor<bf16>([ 64, 64 ]).with_memory(Memory::NPU_HBM);
 
   for
-    i in 0..64 {
+  i in 0..64 {
     for
-      j in 0..64 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..64 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
     for
-      ii in 0..4 {
+    ii in 0..4 {
       for
-        jj in 0..4 {
+      jj in 0..4 {
         for
-          kk in 0..4 {
+        kk in 0..4 {
           for
-            i in 0..16 {
+          i in 0..16 {
             for
-              j in 0..16 {
-                if kk
-                  == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+            j in 0..16 {
+              if kk
+              == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
               for
-                k in 0..16 {
-                  c[ii * 16 + i][jj * 16 + j] =
-                      c[ii * 16 + i][jj * 16 + j] +
-                      a_npu[ii * 16 + i][kk * 16 + k] *
-                          b_npu[kk * 16 + k][jj * 16 + j];
-                }
+              k in 0..16 {
+                c[ii * 16 + i][jj * 16 + j] =
+                c[ii * 16 + i][jj * 16 + j] +
+                a_npu[ii * 16 + i][kk * 16 + k] *
+                b_npu[kk * 16 + k][jj * 16 + j];
               }
             }
           }
         }
       }
+    }
   }
 
   let c_host = transfer(c, Memory::Host_DRAM);

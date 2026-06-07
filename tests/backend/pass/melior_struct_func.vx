@@ -9,13 +9,13 @@
 //===----------------------------------------------------------------------===//
 struct Config {
   dim : i32,
-        hidden_dim : i32,
-                     n_layers : i32,
-                                n_heads : i32,
-                                          n_kv_heads : i32,
-                                                       vocab_size : i32,
-                                                                    seq_len
-      : i32
+  hidden_dim : i32,
+  n_layers : i32,
+  n_heads : i32,
+  n_kv_heads : i32,
+  vocab_size : i32,
+  seq_len
+  : i32
 }
 
 fn mutate_config(conf: Config) -> Config {
@@ -39,7 +39,7 @@ fn main() -> i32 {
   let mut ret = 0;
   // updated.dim should be 512
   if updated
-    .dim == 512 { ret = 0; }
+  .dim == 512 { ret = 0; }
   else {
     ret = 1;
   }

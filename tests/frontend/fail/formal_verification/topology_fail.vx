@@ -4,19 +4,19 @@
 // at compile time
 
 fn test_topology_npu_fail(T : i32)
-        -> i32 ensures Topology::NPU[0] == Topology::NPU[1] {
+-> i32 ensures Topology::NPU[0] == Topology::NPU[1] {
   // FAILS because NPU[0] is distinct from NPU[1]
   return 1;
 }
 
 fn test_topology_host_fail(T : i32) -> i32 ensures Topology::Host
-    == Topology::GPU {
+== Topology::GPU {
   // FAILS because Host is distinct from GPU
   return 1;
 }
 
 fn test_topology_acc_core_fail(T : i32)
-        -> i32 ensures Topology::AccCore[3] == Topology::Host {
+-> i32 ensures Topology::AccCore[3] == Topology::Host {
   // FAILS because AccCore is distinct from Host
   return 1;
 }

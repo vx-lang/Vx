@@ -2,14 +2,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_transitive_ineq(X : i32, Y : i32, Z : i32) -> i32
-  requires X >
+requires X >
 Y &&Y > Z ensures return > 1 {
   let diff = X - Z;
   return diff;
 }
 
 fn test_four_vars(A : i32, B : i32, C : i32, D : i32) -> i32
-  requires A >=
+requires A >=
 B &&B >= C &&C >= D ensures return >= 0 {
   let diff = A - D;
   return diff;

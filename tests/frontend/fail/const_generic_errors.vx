@@ -4,7 +4,7 @@
 struct Foo_0<const N : i32, const M : i32>{
   x : i32,
 } fn test_0()
-    ->void {
+->void {
   let mut a : Foo_0<1>; // Missing M
 }
 
@@ -20,7 +20,7 @@ struct Foo_1<const N : i32>{
 struct Foo_2<const N : i32>{
   x : i32,
 } fn test_2()
-    ->void {
+->void {
   let n = 5;
   let mut a : Foo_2<n>;
 }

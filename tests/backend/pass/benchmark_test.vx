@@ -9,10 +9,10 @@
 // RUN: %t 2>&1 | FileCheck %s
 
 extern "C" {
-fn start_benchmark() -> Tensor<f32>;
-fn end_benchmark() -> Tensor<i32>;
-fn trace_start() -> Tensor<i32>;
-fn trace_end() -> Tensor<i32>;
+  fn start_benchmark() -> Tensor<f32>;
+  fn end_benchmark() -> Tensor<i32>;
+  fn trace_start() -> Tensor<i32>;
+  fn trace_end() -> Tensor<i32>;
 }
 
 fn main() -> Tensor<i32> {

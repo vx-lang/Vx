@@ -10,23 +10,23 @@ fn test_f32() -> i32 {
   let mut c = Tensor<f32>([ 4, 4 ]);
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..4 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        c[i][j] = 0.0;
+    j in 0..4 {
+      c[i][j] = 0.0;
       for
-        k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
-      }
+      k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
     }
+  }
 
   // 4 * (2.0 * 3.0) = 24.0
   assert(c[0][0] == 24.0, "f32 matmul 0,0 match");
@@ -41,23 +41,23 @@ fn test_bf16() -> i32 {
   let mut c = Tensor<bf16>([ 4, 4 ]);
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..4 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   for
-    i in 0..4 {
+  i in 0..4 {
     for
-      j in 0..4 {
-        c[i][j] = 0.0;
+    j in 0..4 {
+      c[i][j] = 0.0;
       for
-        k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
-      }
+      k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
     }
+  }
 
   assert(c[0][0] == 24.0, "bf16 matmul 0,0 match");
   assert(c[2][3] == 24.0, "bf16 matmul 2,3 match");

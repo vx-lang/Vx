@@ -44,7 +44,7 @@ fn main() -> i32 {
   let mut ret : i32 = 1;
 
   if sum
-    > 5.9 { ret = 0; }
+  > 5.9 { ret = 0; }
 
   // Ensure all FFI math bindings we added work
   return ret;

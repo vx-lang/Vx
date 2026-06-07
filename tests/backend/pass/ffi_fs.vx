@@ -42,9 +42,9 @@ fn main() -> i32 {
 
     let mut success : i32 = 0;
     if bytes_written
-      != 5 { success = 1; }
+    != 5 { success = 1; }
     if bytes_read
-      != 5 { success = 2; }
+    != 5 { success = 2; }
     print !("Success: ");
     print !(success);
   }

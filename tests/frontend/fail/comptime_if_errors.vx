@@ -3,11 +3,11 @@
 // From comptime_active_branch_error.vx
 fn test_0() on Topology::Host -> void {
   if comptime
-    Topology::Current == Topology::Host {
-      // This branch is ACTIVE because Topology::Current is Topology::Host
-      // This type mismatch SHOULD trigger a compiler error.
-      let x : f32 = "this is a string, not a float";
-    }
+  Topology::Current == Topology::Host {
+    // This branch is ACTIVE because Topology::Current is Topology::Host
+    // This type mismatch SHOULD trigger a compiler error.
+    let x : f32 = "this is a string, not a float";
+  }
   else {
     // This branch is PRUNED.
     // This type mismatch should NOT trigger a compiler error.
@@ -18,22 +18,22 @@ fn test_0() on Topology::Host -> void {
 // From comptime_if_not_bool.vx
 fn test_1() -> void {
   if comptime
-    5 { let x = 1; }
+  5 { let x = 1; }
 }
 
 // From comptime_if_pruned_syntax_error.vx
 fn test_2() -> void {
   if comptime
-    false {
-      let x = ; // Syntax error should be caught in parsing before comptime eval
-    }
+  false {
+    let x = ; // Syntax error should be caught in parsing before comptime eval
+  }
 }
 
 // From comptime_if_runtime_cond.vx
 fn test_3() -> void {
   let condition = true;
   if comptime
-    condition { let x = 1; }
+  condition { let x = 1; }
 }
 
 // CHECK: Expected expression, found Semicolon

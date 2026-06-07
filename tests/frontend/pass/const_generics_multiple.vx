@@ -8,7 +8,7 @@
 struct Grid<T, const R : i32, const C : i32>{val : T}
 
 fn initialize<const R : i32, const C : i32>()
-    ->Grid<i32, R, C> {
+->Grid<i32, R, C> {
   let m = Grid<i32, R, C>{val : 0};
   let area = R * C;
   return m;

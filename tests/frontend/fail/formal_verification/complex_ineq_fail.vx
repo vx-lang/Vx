@@ -4,7 +4,7 @@
 // (ensures) at compile time
 
 fn test_transitive_ineq_fail(X : i32, Y : i32, Z : i32) -> i32
-  requires X >
+requires X >
 Y &&Y > Z ensures return > 2 {
   // FAILS because X=3, Y=2, Z=1 implies X-Z=2, which is not > 2.
   let diff = X - Z;
@@ -12,7 +12,7 @@ Y &&Y > Z ensures return > 2 {
 }
 
 fn test_four_vars_fail(A : i32, B : i32, C : i32, D : i32) -> i32
-  requires A >=
+requires A >=
 B &&B >= C &&C >= D ensures return > 0 {
   // FAILS because they could all be equal, meaning A - D = 0.
   let diff = A - D;

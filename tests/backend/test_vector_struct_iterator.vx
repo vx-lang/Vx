@@ -24,11 +24,11 @@ impl PointVec {
 impl Iterator<PointVecIter, Point> for PointVecIter {
   fn next(self : PointVecIter) -> Option<Point> {
     if self
-      .current < self.len {
-        let p : Point = Point{x : self.current, y : self.current * 10};
-        self.current = self.current + 1;
-        return Option::Some(Point)(p);
-      }
+    .current < self.len {
+      let p : Point = Point{x : self.current, y : self.current * 10};
+      self.current = self.current + 1;
+      return Option::Some(Point)(p);
+    }
     return Option::None(Point)();
   }
 }
@@ -36,13 +36,13 @@ impl Iterator<PointVecIter, Point> for PointVecIter {
 fn main() -> i32 {
   let vec : PointVec = PointVec{len : 3};
   for
-    p in vec.iter() {
-      unsafe {
-        print !("Point x: ");
-        print !(p.x);
-        print !("Point y: ");
-        print !(p.y);
-      }
+  p in vec.iter() {
+    unsafe {
+      print !("Point x: ");
+      print !(p.x);
+      print !("Point y: ");
+      print !(p.y);
     }
+  }
   return 0;
 }

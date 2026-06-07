@@ -5,7 +5,7 @@ fn test_loop() -> i32 {
   loop {
     sum += 1;
     if sum
-      >= 10 { break; }
+    >= 10 { break; }
   }
   return sum;
 }

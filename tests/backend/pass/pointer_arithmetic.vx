@@ -10,7 +10,7 @@
 
 import std::io;
 extern "C" {
-fn malloc(size : i32)->*mut f32;
+  fn malloc(size : i32)->*mut f32;
 }
 
 fn main() -> i32 {

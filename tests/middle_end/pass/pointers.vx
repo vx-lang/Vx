@@ -8,7 +8,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 extern "C" {
-fn malloc(size : i32)->*mut f32;
+  fn malloc(size : i32)->*mut f32;
 }
 
 fn main() -> i32 {

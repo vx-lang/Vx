@@ -1,13 +1,13 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_group1_0(X : i32) -> i32
-  requires Topology::NPU
+requires Topology::NPU
 [0] == Topology::Host ensures return == X {
   return X;
 }
 
 fn test_group1_1(X : i32) -> i32
-  requires Topology::Host <=
+requires Topology::Host <=
 Topology::NPU[0] ensures return == X {
   return X;
 }

@@ -8,10 +8,10 @@ fn wrap<N, M>(val : Tensor<f32, [ N, M ]>) -> Verified<Tensor<f32, [N, M]>> {
 }
 
 fn outer<A, B>(t : Tensor<f32, [ A, B ]>)
-    ->Verified<Tensor<f32, [A, B]>> { return wrap(t); }
+->Verified<Tensor<f32, [A, B]>> { return wrap(t); }
 
 fn main()
-    ->i32 {
+->i32 {
   let n : i32 = 10;
   let m : i32 = 20; // Deliberate mismatch
   // assert(n == m, "Pre-condition for outer"); // If we omit the assert, SMT

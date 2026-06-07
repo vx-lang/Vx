@@ -34,7 +34,7 @@ extern {
   fn vx_advance_ptr(ptr : *mut f32, offset : i32) -> *mut f32;
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)
-      -> *mut i8;
+  -> *mut i8;
   fn vx_read_prompt_file(filepath : *const i8) -> *mut i8;
   fn vx_encode_prompt(tokenizer_ptr : *mut i8, text : *const i8) -> *mut i32;
   fn vx_get_time() -> f32;

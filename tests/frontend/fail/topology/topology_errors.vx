@@ -6,7 +6,7 @@ fn test_0() -> void { let x : i32 = Topology::Current; }
 // From topology_compare_type_mismatch.vx
 fn test_1() -> void {
   if Topology
-    ::Current == 5 { let x = 1; }
+  ::Current == 5 { let x = 1; }
 }
 
 // From topology_invalid_spawn.vx

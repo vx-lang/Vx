@@ -10,37 +10,37 @@ fn test_f32() -> i32 {
   let mut c = Tensor<f32>([ 64, 64 ]);
 
   for
-    i in 0..64 {
+  i in 0..64 {
     for
-      j in 0..64 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..64 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   for
-    ii in 0..4 {
+  ii in 0..4 {
     for
-      jj in 0..4 {
+    jj in 0..4 {
       for
-        kk in 0..4 {
+      kk in 0..4 {
         for
-          i in 0..16 {
+        i in 0..16 {
           for
-            j in 0..16 {
-              if kk
-                == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+          j in 0..16 {
+            if kk
+            == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
             for
-              k in 0..16 {
-                c[ii * 16 + i][jj * 16 + j] =
-                    c[ii * 16 + i][jj * 16 + j] +
-                    a[ii * 16 + i][kk * 16 + k] * b[kk * 16 + k][jj * 16 + j];
-              }
+            k in 0..16 {
+              c[ii * 16 + i][jj * 16 + j] =
+              c[ii * 16 + i][jj * 16 + j] +
+              a[ii * 16 + i][kk * 16 + k] * b[kk * 16 + k][jj * 16 + j];
             }
           }
         }
       }
     }
+  }
 
   // 64 * (2.0 * 3.0) = 384.0
   assert(c[0][0] == 384.0, "f32 large matmul 0,0 match");
@@ -55,37 +55,37 @@ fn test_bf16() -> i32 {
   let mut c = Tensor<bf16>([ 64, 64 ]);
 
   for
-    i in 0..64 {
+  i in 0..64 {
     for
-      j in 0..64 {
-        a[i][j] = 2.0;
-        b[i][j] = 3.0;
-      }
+    j in 0..64 {
+      a[i][j] = 2.0;
+      b[i][j] = 3.0;
     }
+  }
 
   for
-    ii in 0..4 {
+  ii in 0..4 {
     for
-      jj in 0..4 {
+    jj in 0..4 {
       for
-        kk in 0..4 {
+      kk in 0..4 {
         for
-          i in 0..16 {
+        i in 0..16 {
           for
-            j in 0..16 {
-              if kk
-                == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+          j in 0..16 {
+            if kk
+            == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
             for
-              k in 0..16 {
-                c[ii * 16 + i][jj * 16 + j] =
-                    c[ii * 16 + i][jj * 16 + j] +
-                    a[ii * 16 + i][kk * 16 + k] * b[kk * 16 + k][jj * 16 + j];
-              }
+            k in 0..16 {
+              c[ii * 16 + i][jj * 16 + j] =
+              c[ii * 16 + i][jj * 16 + j] +
+              a[ii * 16 + i][kk * 16 + k] * b[kk * 16 + k][jj * 16 + j];
             }
           }
         }
       }
     }
+  }
 
   assert(c[0][0] == 384.0, "bf16 large matmul 0,0 match");
   assert(c[31][31] == 384.0, "bf16 large matmul 31,31 match");

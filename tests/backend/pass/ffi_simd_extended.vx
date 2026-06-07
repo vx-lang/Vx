@@ -33,7 +33,7 @@ fn main() -> i32 {
 
     let sum = res1 + res2 + res3 + res4 + res5;
     if sum
-      == 0 { ret = 0; }
+    == 0 { ret = 0; }
   }
   return ret;
 }

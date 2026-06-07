@@ -6,11 +6,11 @@ fn main() -> i32 {
   let strs = [ "red", "green", "blue" ];
 
   for
-    sptr in strs.iter() {
-      unsafe {
-        print !(sptr);
-        print !(0);
-      }
+  sptr in strs.iter() {
+    unsafe {
+      print !(sptr);
+      print !(0);
     }
+  }
   return 0;
 }

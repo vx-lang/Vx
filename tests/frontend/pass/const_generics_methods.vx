@@ -8,7 +8,7 @@
 struct Buffer<T, const N : i32>{val : T}
 
 impl<T, const N : i32>
-    Buffer<T, N> {
+Buffer<T, N> {
   fn get_size(self : &Buffer<T, N>) -> i32 { return N; }
 }
 

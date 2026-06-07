@@ -5,31 +5,31 @@
 fn test_0() -> void {
   let y = 1;
   mlir !(inputs : (x = y : i32), // Should be %x
-         clobbers : [], returns : void, dialects : ["linalg"]){macro.yield};
+  clobbers : [], returns : void, dialects : ["linalg"]){macro.yield};
 }
 
 // From mlir_macro_invalid_syntax.vx
 fn test_1() -> void {
   mlir !(inputs : (), invalid_key : [], dialects : ["linalg"]){
-      // This should fail to parse because 'invalid_key' is not supported in the
-      // mlir! macro.
-      % x = "test"};
+    // This should fail to parse because 'invalid_key' is not supported in the
+    // mlir! macro.
+    % x = "test"};
 }
 
 // From mlir_macro_missing_block.vx
 fn test_2() -> void {
   mlir !(inputs : (), clobbers : [], returns : void,
-         dialects : ["linalg"]); // Missing {} block
+  dialects : ["linalg"]); // Missing {} block
 }
 
 // From mlir_macro_undefined_clobber.vx
 fn test_3() -> void {
   mlir !(inputs : (), clobbers : [undefined_var], returns : void,
-         dialects : ["linalg"]){macro.yield};
+  dialects : ["linalg"]){macro.yield};
 }
 
 // From mlir_macro_undefined_input.vx
 fn test_4() -> void {
   mlir !(inputs : (% x = undefined_var : i32), clobbers : [], returns : void,
-         dialects : ["linalg"]){macro.yield};
+  dialects : ["linalg"]){macro.yield};
 }

@@ -20,7 +20,7 @@ fn main() -> i32 {
   let mut ret : i32 = 1;
   // Test that FFI correctly returned scalar 1.0
   if s_abs
-    > 0.99 { ret = 0; }
+  > 0.99 { ret = 0; }
   return ret;
 }
 

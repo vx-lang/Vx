@@ -11,11 +11,11 @@ impl Iterator<Range, i32> for Range {
   fn next(self : &mut Range) -> Option<i32> {
     let mut ret = Option<i32>::None;
     if self
-      .current < self.end {
-        let val = self.current;
-        self.current = self.current + 1;
-        ret = Option<i32>::Some(val);
-      }
+    .current < self.end {
+      let val = self.current;
+      self.current = self.current + 1;
+      ret = Option<i32>::Some(val);
+    }
     else {
       ret = Option<i32>::None;
     }

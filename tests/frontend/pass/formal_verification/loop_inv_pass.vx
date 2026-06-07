@@ -2,19 +2,19 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_loop_increment(N : i32) -> i32
-  requires N == 0
+requires N == 0
 ensures return == 0 {
   // The invariant must be true before the loop and after the loop body.
   for
-    i in 0..10 invariant(N == 0) { let x = N; }
+  i in 0..10 invariant(N == 0) { let x = N; }
   return N;
 }
 
 fn test_loop_range(N : i32) -> i32
-  requires N > 5 && N < 15 ensures return > 5
+requires N > 5 && N < 15 ensures return > 5
 {
   for
-    i in 0..5 invariant(N > 5) { let dummy = N; }
+  i in 0..5 invariant(N > 5) { let dummy = N; }
   return N;
 }
 

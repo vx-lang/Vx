@@ -3,14 +3,14 @@
 // CHECK: Cannot statically prove assertion for Verified return type
 
 fn verify_bypass<N, M>(val : Tensor<f32, [ N, M ]>, dyn_var : i32)
-    -> Verified<Tensor<f32, [N, M]>> {
-      // EXPECT: Cannot statically prove assertion for Verified return type
-      assert(dyn_var == 5, "Dynamic variable constraint failed");
-      return val;
-    }
+-> Verified<Tensor<f32, [N, M]>> {
+  // EXPECT: Cannot statically prove assertion for Verified return type
+  assert(dyn_var == 5, "Dynamic variable constraint failed");
+  return val;
+}
 
 fn main()
-    ->i32 {
+->i32 {
   let t : Tensor<f32, [ 16, 32 ]> = Tensor_f32(16, 32);
   let dyn : i32 = 5;
   let v : Verified<Tensor<f32, [ 16, 32 ]>> = verify_bypass(t, dyn);
