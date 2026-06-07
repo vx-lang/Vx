@@ -1,3 +1,5 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch in binary operation: Scalar(I32) vs Scalar(Bool)
 fn main() -> i32 {
   let a: i32 = 1;
   let b: bool = true;

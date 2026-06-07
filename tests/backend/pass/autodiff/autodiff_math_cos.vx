@@ -1,3 +1,5 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 //===- autodiff_math_cos.vx - Vx Compiler -------------------*- Vx -*-===//
 import std::math;
 

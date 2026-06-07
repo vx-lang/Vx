@@ -1,3 +1,5 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Missing field 'b' in initialization of struct 'MyStruct'
 struct MyStruct { a: i32, b: f32 }
 
 fn main() -> MyStruct {

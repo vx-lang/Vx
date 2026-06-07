@@ -1,3 +1,5 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 fn test_nested_loops() -> i32 {
   let mut i = 0;
   let mut sum = 0;

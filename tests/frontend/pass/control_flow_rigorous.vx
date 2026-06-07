@@ -1,3 +1,5 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 enum Result {
   Ok(i32, f32),
   Err,

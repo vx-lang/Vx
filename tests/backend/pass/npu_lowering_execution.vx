@@ -1,3 +1,5 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 // EXPECT: Unranked Memref base@ =
 // REQUIRES: macos
 // EXPECT: rank = 2 offset = 0 sizes = [4, 4] strides = [4, 1] data =

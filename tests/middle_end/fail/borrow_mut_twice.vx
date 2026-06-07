@@ -1,3 +1,5 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Cannot access 'x' because it is mutably borrowed.
 fn main() -> Tensor<f32> {
   let mut x: Tensor<f32> = Tensor_f32();
   let y = &mut x;

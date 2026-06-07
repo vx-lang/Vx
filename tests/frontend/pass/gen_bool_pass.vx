@@ -1,0 +1,15 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn gen_bool_and() -> Bool {
+  let a: Bool = true;
+  let b: Bool = false;
+  return a && b;
+}
+
+fn gen_bool_or() -> Bool {
+  let a: Bool = true;
+  let b: Bool = false;
+  return a || b;
+}
+

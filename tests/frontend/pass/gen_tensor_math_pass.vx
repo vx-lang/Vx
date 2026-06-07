@@ -1,0 +1,28 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn gen_tensor_math_add() -> i32 {
+  let a: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let b: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let c = a + b;
+  return 0;
+}
+
+fn gen_tensor_math_div() -> Tensor<f32, [16, 16]> {
+  let a: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let b: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  return a / b;
+}
+
+fn gen_tensor_math_mul() -> Tensor<f32, [16, 16]> {
+  let a: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let b: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  return a * b;
+}
+
+fn gen_tensor_math_sub() -> Tensor<f32, [16, 16]> {
+  let a: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  let b: Tensor<f32, [16, 16]> = Tensor_f32(16, 16);
+  return a - b;
+}
+
