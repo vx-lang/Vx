@@ -171,78 +171,7 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            let ident = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s,
-                _ => return Err("Expected type identifier".to_string()),
-            };
-            match ident.as_str() {
-                "Tensor" => {
-                    let mut el_ty = ElementType::F32;
-                    if let TokenType::LeftAngle = &self.peek().kind {
-                        self.advance(); // consume '<'
-                        let ty_ident = match self.advance().kind.clone() {
-                            TokenType::Identifier(s) => s,
-                            _ => return Err("Expected element type after '<'".to_string()),
-                        };
-                        el_ty =
-                            if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
-                                parsed_ty
-                            } else if self.generic_params.contains(&ty_ident) {
-                                ElementType::Generic(ty_ident)
-                            } else {
-                                return Err(format!("Unknown element type {}", ty_ident));
-                            };
-                        let mut dims = Vec::new();
-                        if self.match_token(&TokenType::Comma) {
-                            if self.match_token(&TokenType::LeftBracket) {
-                                while !self.check(&TokenType::RightBracket)
-                                    && !self.check(&TokenType::Eof)
-                                {
-                                    dims.push(self.parse_expr()?);
-                                    if !self.match_token(&TokenType::Comma) {
-                                        break;
-                                    }
-                                }
-                                self.consume(
-                                    &TokenType::RightBracket,
-                                    "Expected ']' after Tensor dimensions",
-                                )?;
-                            } else {
-                                return Err("Expected '[' for Tensor dimensions".to_string());
-                            }
-                        }
-
-                        let mut top = None;
-                        if self.match_token(&TokenType::Comma) {
-                            if self.check(&TokenType::Topology) {
-                                top = Some(self.parse_topology()?);
-                            }
-                        }
-
-                        self.consume(
-                            &TokenType::RightAngle,
-                            "Expected '>' after Tensor parameters",
-                        )?;
-                        return Ok(Type::Tensor(el_ty, dims, top));
-                    }
-                    Ok(Type::Tensor(el_ty, Vec::new(), None))
-                }
-                "Matrix" => Ok(Type::Matrix),
-                _ => {
-                    if let Ok(el_ty) = std::str::FromStr::from_str(ident.as_str()) {
-                        return Ok(Type::Scalar(el_ty));
-                    }
-
-                    // Check for GenericInstance like Config<f32>
-                    let base_type = Type::Struct(ident, None);
-                    if self.match_token(&TokenType::LeftAngle) {
-                        let type_args = self.parse_generic_type_args()?;
-                        Ok(Type::GenericInstance(Box::new(base_type), type_args))
-                    } else {
-                        Ok(base_type)
-                    }
-                }
-            }
+            self.parse_named_type()
         }
     }
 
@@ -271,5 +200,79 @@ impl<'a> Parser<'a> {
             "Expected '>' after generic type arguments",
         )?;
         Ok(type_args)
+    }
+
+    pub(crate) fn parse_named_type(&mut self) -> Result<Type, String> {
+        let ident = match self.advance().kind.clone() {
+            TokenType::Identifier(s) => s,
+            _ => return Err("Expected type identifier".to_string()),
+        };
+        match ident.as_str() {
+            "Tensor" => {
+                let mut el_ty = ElementType::F32;
+                if let TokenType::LeftAngle = &self.peek().kind {
+                    self.advance(); // consume '<'
+                    let ty_ident = match self.advance().kind.clone() {
+                        TokenType::Identifier(s) => s,
+                        _ => return Err("Expected element type after '<'".to_string()),
+                    };
+                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
+                        parsed_ty
+                    } else if self.generic_params.contains(&ty_ident) {
+                        ElementType::Generic(ty_ident)
+                    } else {
+                        return Err(format!("Unknown element type {}", ty_ident));
+                    };
+                    let mut dims = Vec::new();
+                    if self.match_token(&TokenType::Comma) {
+                        if self.match_token(&TokenType::LeftBracket) {
+                            while !self.check(&TokenType::RightBracket)
+                                && !self.check(&TokenType::Eof)
+                            {
+                                dims.push(self.parse_expr()?);
+                                if !self.match_token(&TokenType::Comma) {
+                                    break;
+                                }
+                            }
+                            self.consume(
+                                &TokenType::RightBracket,
+                                "Expected ']' after Tensor dimensions",
+                            )?;
+                        } else {
+                            return Err("Expected '[' for Tensor dimensions".to_string());
+                        }
+                    }
+
+                    let mut top = None;
+                    if self.match_token(&TokenType::Comma) {
+                        if self.check(&TokenType::Topology) {
+                            top = Some(self.parse_topology()?);
+                        }
+                    }
+
+                    self.consume(
+                        &TokenType::RightAngle,
+                        "Expected '>' after Tensor parameters",
+                    )?;
+                    return Ok(Type::Tensor(el_ty, dims, top));
+                }
+                Ok(Type::Tensor(el_ty, Vec::new(), None))
+            }
+            "Matrix" => Ok(Type::Matrix),
+            _ => {
+                if let Ok(el_ty) = std::str::FromStr::from_str(ident.as_str()) {
+                    return Ok(Type::Scalar(el_ty));
+                }
+
+                // Check for GenericInstance like Config<f32>
+                let base_type = Type::Struct(ident, None);
+                if self.match_token(&TokenType::LeftAngle) {
+                    let type_args = self.parse_generic_type_args()?;
+                    Ok(Type::GenericInstance(Box::new(base_type), type_args))
+                } else {
+                    Ok(base_type)
+                }
+            }
+        }
     }
 }
