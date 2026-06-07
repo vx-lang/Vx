@@ -1685,6 +1685,22 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
     }
 }
 
+fn map_frontend_type_to_mlir(el_ty_str: &str) -> &'static str {
+    match el_ty_str {
+        "f16" => "f16",
+        "f32" => "f32",
+        "f64" => "f64",
+        "bf16" => "bf16",
+        "i32" => "i32",
+        "i64" => "i64",
+        "Bool" => "i1",
+        _ => panic!(
+            "Unsupported frontend element type for MLIR lowering: {}",
+            el_ty_str
+        ),
+    }
+}
+
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
@@ -1696,24 +1712,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
-        if (name.starts_with("Tensor<") && name.ends_with(">") && !name.contains("__") && !name.contains("_dim"))
+        if (name.starts_with("Tensor<")
+            && name.ends_with(">")
+            && !name.contains("__")
+            && !name.contains("_dim"))
             || name == "Tensor"
         {
             let el_ty_str = if name.starts_with("Tensor<") {
-                name.strip_prefix("Tensor<").unwrap().strip_suffix(">").unwrap()
+                name.strip_prefix("Tensor<")
+                    .unwrap()
+                    .strip_suffix(">")
+                    .unwrap()
             } else {
                 "f32"
             };
-            let mlir_ty_str = match el_ty_str {
-                "f16" => "f16",
-                "f32" => "f32",
-                "f64" => "f64",
-                "bf16" => "bf16",
-                "i32" => "i32",
-                "i64" => "i64",
-                "Bool" => "i1",
-                _ => "f32", // Default fallback
-            };
+            let mlir_ty_str = map_frontend_type_to_mlir(el_ty_str);
             let mut dynamic_sizes = Vec::new();
             let mut dims_count = 2; // Default fallback
 
