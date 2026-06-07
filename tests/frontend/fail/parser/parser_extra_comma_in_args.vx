@@ -1,4 +1,5 @@
-//===- parser_extra_comma_in_args.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_extra_comma_in_args.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Expected parameter name
 //
@@ -8,6 +9,4 @@
 //
 //===----------------------------------------------------------------------===//
 
-fn add(a: i32, , b: i32) -> i32 {
-  return a + b;
-}
+fn add(a : i32, , b : i32) -> i32 { return a + b; }

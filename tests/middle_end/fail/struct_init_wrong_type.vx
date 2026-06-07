@@ -1,8 +1,11 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in struct initialization for field 'a'. Expected Scalar(I32), got Scalar(Bool)
-struct MyStruct { a: i32 }
+// CHECK: Type mismatch in struct initialization for field 'a'. Expected
+// Scalar(I32), got Scalar(Bool)
+struct MyStruct {
+  a : i32
+}
 
 fn main() -> MyStruct {
-  let b: bool = true;
-  return MyStruct { a: b };
+  let b : bool = true;
+  return MyStruct{a : b};
 }

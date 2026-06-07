@@ -9,30 +9,29 @@
 // CHECK: Type mismatch in logical operation: Scalar(Bool) vs Scalar(I32)
 
 fn gen_bool_mismatch_f32_and() -> Bool {
-  let a: Bool = true;
-  let b: f32 = 1f32;
+  let a : Bool = true;
+  let b : f32 = 1f32;
   // EXPECT: Type mismatch
   return a && b;
 }
 
 fn gen_bool_mismatch_f32_or() -> Bool {
-  let a: Bool = true;
-  let b: f32 = 1f32;
+  let a : Bool = true;
+  let b : f32 = 1f32;
   // EXPECT: Type mismatch
   return a || b;
 }
 
 fn gen_bool_mismatch_i32_and() -> Bool {
-  let a: Bool = true;
-  let b: i32 = 1i32;
+  let a : Bool = true;
+  let b : i32 = 1i32;
   // EXPECT: Type mismatch
   return a && b;
 }
 
 fn gen_bool_mismatch_i32_or() -> Bool {
-  let a: Bool = true;
-  let b: i32 = 1i32;
+  let a : Bool = true;
+  let b : i32 = 1i32;
   // EXPECT: Type mismatch
   return a || b;
 }
-

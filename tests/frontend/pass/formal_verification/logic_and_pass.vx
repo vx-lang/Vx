@@ -1,25 +1,23 @@
 //===- logic_and_pass.vx ---------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-fn test_complex_bounds(A: i32, B: i32) -> i32
-requires A > 10 && A < 20 && B > 5 && B < 10
-ensures return > 15 && return < 30
-{
-  let sum = A + B;
-  return sum;
+fn test_complex_bounds(A : i32, B : i32)
+    ->i32
+  requires A > 10 && A < 20 && B > 5 && B < 10 ensures return > 15 &&
+               return < 30 {let sum = A + B;
+return sum;
 }
 
-fn test_or_logic(A: i32) -> i32
-requires A == 10 || A == 20
-ensures return >= 10 && return <= 20
-{
+fn test_or_logic(A : i32) -> i32
+  requires A == 10 || A == 20
+                              ensures return >= 10 &&
+               return <= 20 {
   return A;
 }
 
-fn test_negated_logic(A: i32) -> i32
-requires !(A < 10)
-ensures return >= 10
-{
+fn test_negated_logic(A : i32) -> i32
+  requires !(A < 10)
+           ensures return >= 10 {
   return A;
 }
 

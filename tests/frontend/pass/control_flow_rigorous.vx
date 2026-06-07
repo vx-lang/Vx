@@ -9,14 +9,12 @@ fn test_loop_nested() -> i32 {
   let mut i = 0;
   let mut sum = 0;
   loop {
-    if i >= 5 {
-      break;
-    }
+    if i
+      >= 5 { break; }
     let mut j = 0;
     loop {
-      if j >= 5 {
-        break;
-      }
+      if j
+        >= 5 { break; }
       sum += 1;
       j += 1;
     }
@@ -29,12 +27,8 @@ fn test_match_multi_payload() -> f32 {
   let r = Result::Ok(10, 2.5);
   let mut out = 0.0;
   match r {
-    Result::Ok(a, b) => {
-      out = b;
-    },
-    Result::Err => {
-      out = 0.0 - 1.0;
-    }
+    Result::Ok(a, b) => { out = b; }
+    , Result::Err => { out = 0.0 - 1.0; }
   }
   return out; // Should be 2.5
 }
@@ -43,8 +37,9 @@ fn test_match_no_braces() -> i32 {
   let x = 1;
   let mut out = 0;
   match x {
-    1 => out = 10;,
-    _ => out = 20;,
+    1 = > out = 10;
+    , _ = > out = 20;
+    ,
   }
   return out; // Should be 10
 }
@@ -53,12 +48,8 @@ fn test_match_string() -> i32 {
   let s = "hello";
   let mut out = 0;
   match s {
-    "hello" => {
-      out = 1;
-    },
-    _ => {
-      out = 2;
-    }
+    "hello" => { out = 1; }
+    , _ => { out = 2; }
   }
   return out; // Should be 1
 }

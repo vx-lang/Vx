@@ -7,18 +7,20 @@
 //===----------------------------------------------------------------------===//
 extern {
   fn vx_get_time() -> f32;
-  fn vx_print_float(val: f32) -> i32;
+  fn vx_print_float(val : f32)->i32;
 }
 
 // A tiny benchmark harness written natively in Vx!
 fn run_heavy_workload() -> i32 {
-  let mut sum: i32 = 0;
-  for i in 0..10000 {
-    for j in 0..10000 {
-      // Some heavy iterative math
-      sum += 1;
+  let mut sum : i32 = 0;
+  for
+    i in 0..10000 {
+    for
+      j in 0..10000 {
+        // Some heavy iterative math
+        sum += 1;
+      }
     }
-  }
   return sum;
 }
 

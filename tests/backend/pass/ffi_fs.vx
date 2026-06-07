@@ -9,21 +9,21 @@
 //===----------------------------------------------------------------------===//
 import std::io;
 extern {
-  fn vx_file_open(c_path: *const i8, mode: i32) -> *mut i8;
-  fn vx_file_read(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
-  fn vx_file_write(ptr: *mut i8, buffer: *const i8, len: i64) -> i64;
-  fn vx_file_seek(ptr: *mut i8, offset: i64, whence: i32) -> i64;
-  fn vx_file_drop(ptr: *mut i8) -> i32;
-  fn malloc(size: i64) -> *mut u8;
-  fn free(ptr: *mut u8) -> i32;
-  fn remove(filename: *const i8) -> i32;
-  fn vx_get_temp_file(filename: *const i8) -> *mut i8;
-  fn vx_free_temp_file(ptr: *mut i8) -> i32;
+  fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
+  fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  fn vx_file_write(ptr : *mut i8, buffer : *const i8, len : i64) -> i64;
+  fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
+  fn vx_file_drop(ptr : *mut i8) -> i32;
+  fn malloc(size : i64)->*mut u8;
+  fn free(ptr : *mut u8) -> i32;
+  fn remove(filename : *const i8) -> i32;
+  fn vx_get_temp_file(filename : *const i8) -> *mut i8;
+  fn vx_free_temp_file(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
-    let path: *mut i8 = vx_get_temp_file("test_output.txt");
+    let path : *mut i8 = vx_get_temp_file("test_output.txt");
 
     let file_w = vx_file_open(path, 1);
     let msg = "Hello";
@@ -40,22 +40,17 @@ fn main() -> i32 {
 
     vx_free_temp_file(path);
 
-    let mut success: i32 = 0;
-    if bytes_written != 5 {
-      success = 1;
-    }
-    if bytes_read != 5 {
-      success = 2;
-    }
-    print!("Success: ");
-    print!(success);
+    let mut success : i32 = 0;
+    if bytes_written
+      != 5 { success = 1; }
+    if bytes_read
+      != 5 { success = 2; }
+    print !("Success: ");
+    print !(success);
   }
   return 0;
 }
 // EXPECT: Success: 0
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

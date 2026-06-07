@@ -1,6 +1,8 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch on return. Expected Scalar(I32), got Struct("MyStruct", None)
-struct MyStruct { a: i32 }
-fn main() -> i32 {
-  return MyStruct { a: 1 };
+// CHECK: Type mismatch on return. Expected Scalar(I32), got Struct("MyStruct",
+// None)
+struct MyStruct {
+  a : i32
+} fn main() -> i32 {
+  return MyStruct{a : 1};
 }

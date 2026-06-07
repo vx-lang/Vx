@@ -10,28 +10,25 @@
 
 import std::io;
 extern "C" {
-  fn vx_sqrtf(x: f32) -> f32;
-  fn vx_expf(x: f32) -> f32;
+fn vx_sqrtf(x : f32)->f32;
+fn vx_expf(x : f32)->f32;
 }
 
 fn main() -> i32 {
-  let a: f32 = 16.0;
-  let b: f32 = 0.0;
+  let a : f32 = 16.0;
+  let b : f32 = 0.0;
 
   unsafe {
     let root = vx_sqrtf(a);
     let exp = vx_expf(b);
-    print!(root);
-    print!(exp);
+    print !(root);
+    print !(exp);
   }
   return 0;
 }
 
 // CHECK: 4.000000
 // CHECK: 1.000000
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

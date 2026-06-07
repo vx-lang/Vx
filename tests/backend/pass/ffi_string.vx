@@ -16,12 +16,12 @@ fn main() -> i32 {
     vx_string_push_c_str(s, "World!");
 
     let len = vx_string_len(s);
-    print!("Len: ");
-    print!(len);
+    print !("Len: ");
+    print !(len);
 
     let c_str = vx_string_as_c_str(s);
-    print!("String: %s");
-    print!(0); // We don't have vx_printf_str yet, but we'll test the length
+    print !("String: %s");
+    print !(0); // We don't have vx_printf_str yet, but we'll test the length
 
     vx_string_free_c_str(c_str);
     vx_string_drop(s);
@@ -30,9 +30,6 @@ fn main() -> i32 {
 }
 
 // EXPECT: Len: 12
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

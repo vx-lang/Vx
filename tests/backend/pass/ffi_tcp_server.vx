@@ -9,8 +9,8 @@
 //===----------------------------------------------------------------------===//
 import std::io;
 extern {
-  fn vx_tcp_listener_bind(c_addr: *const i8) -> *mut i8;
-  fn vx_tcp_listener_drop(ptr: *mut i8) -> i32;
+  fn vx_tcp_listener_bind(c_addr : *const i8) -> *mut i8;
+  fn vx_tcp_listener_drop(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
@@ -20,15 +20,12 @@ fn main() -> i32 {
     let addr = "127.0.0.1:0";
     let listener = vx_tcp_listener_bind(addr);
     vx_tcp_listener_drop(listener);
-    print!("TCP Server Success: ");
-    print!(0);
+    print !("TCP Server Success: ");
+    print !(0);
   }
   return 0;
 }
 // EXPECT: TCP Server Success: 0
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

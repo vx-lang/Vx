@@ -7,50 +7,52 @@
 //===----------------------------------------------------------------------===//
 extern {
   fn vx_string_new() -> *mut i8;
-  fn vx_string_from_c_str(ptr: *const i8) -> *mut i8;
-  fn vx_string_push_c_str(ptr: *mut i8, c_str: *const i8) -> i32;
-  fn vx_string_len(ptr: *mut i8) -> i32;
-  fn vx_string_as_c_str(ptr: *mut i8) -> *const i8;
-  fn vx_string_free_c_str(ptr: *const i8) -> i32;
-  fn vx_string_drop(ptr: *mut i8) -> i32;
-  fn vx_i32_to_string(val: i32) -> *mut i8;
+  fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
+  fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
+  fn vx_string_len(ptr : *mut i8) -> i32;
+  fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
+  fn vx_string_free_c_str(ptr : *const i8) -> i32;
+  fn vx_string_drop(ptr : *mut i8) -> i32;
+  fn vx_i32_to_string(val : i32)->*mut i8;
 }
 
 struct String {
-  ptr: *mut i8,
+  ptr : *mut i8,
 }
 
 impl String {
-  fn new() -> String {
+  fn new ()->String {
     let ptr = vx_string_new();
-    String { ptr: ptr }
+    String {
+    ptr:
+      ptr
+    }
   }
 
-  fn from_c_str(c_str: *const i8) -> String {
+  fn from_c_str(c_str : *const i8) -> String {
     let ptr = vx_string_from_c_str(c_str);
-    String { ptr: ptr }
+    String {
+    ptr:
+      ptr
+    }
   }
 
-  fn push_c_str(self: *mut String, c_str: *const i8) -> i32 {
+  fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
     return vx_string_push_c_str(self.ptr, c_str);
   }
 
-  fn len(self: *mut String) -> i32 {
-    return vx_string_len(self.ptr);
-  }
+  fn len(self : *mut String) -> i32 { return vx_string_len(self.ptr); }
 
-  fn as_c_str(self: *mut String) -> *const i8 {
+  fn as_c_str(self : *mut String) -> *const i8 {
     return vx_string_as_c_str(self.ptr);
   }
 
-  fn drop(self: *mut String) -> i32 {
-    return vx_string_drop(self.ptr);
-  }
+  fn drop(self : *mut String) -> i32 { return vx_string_drop(self.ptr); }
 }
 
 impl i32 {
-  fn to_string(self: i32) -> String {
-    let ptr = unsafe { vx_i32_to_string(self) };
-    return String { ptr: ptr };
+  fn to_string(self : i32) -> String {
+    let ptr = unsafe{vx_i32_to_string(self)};
+    return String{ptr : ptr};
   }
 }

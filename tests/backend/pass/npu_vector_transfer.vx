@@ -1,11 +1,15 @@
 //===- npu_vector_transfer.vx ---------------------------------*- Vx -*-===//
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// FileCheck %s RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
 
 fn test_f32() -> i32 {
   let mut a = Tensor<f32>([4]);
-  a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; a[3] = 4.0;
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  a[3] = 4.0;
   let a_npu = transfer(a, Memory::NPU_HBM);
   let a_host = transfer(a_npu, Memory::Host_DRAM);
   assert(a_host[0] == a[0], "f32 index 0 match");
@@ -17,7 +21,10 @@ fn test_f32() -> i32 {
 
 fn test_bf16() -> i32 {
   let mut a = Tensor<bf16>([4]);
-  a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; a[3] = 4.0;
+  a[0] = 1.0;
+  a[1] = 2.0;
+  a[2] = 3.0;
+  a[3] = 4.0;
   let a_npu = transfer(a, Memory::NPU_HBM);
   let a_host = transfer(a_npu, Memory::Host_DRAM);
   assert(a_host[0] == a[0], "bf16 index 0 match");
@@ -34,12 +41,6 @@ fn main() -> i32 {
 }
 
 // NO_EXEC
-
-
-
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

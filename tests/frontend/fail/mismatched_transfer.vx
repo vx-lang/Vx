@@ -1,6 +1,9 @@
 //===- mismatched_transfer.vx - Vx Compiler ----------------------*- Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Type mismatch in argument 1 for function 'expects_host'. Expected Tensor(F32, [], None), got Pinned(Tensor(F32, [], None), NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })))
+// CHECK: Type mismatch in argument 1 for function 'expects_host'. Expected
+// Tensor(F32, [], None), got Pinned(Tensor(F32, [], None),
+// NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: Span { line: 0,
+// column: 0, length: 0 } })))
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -8,17 +11,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-fn expects_host(t: Tensor<f32>) -> Tensor<f32> {
-  return t;
-}
+fn expects_host(t : Tensor<f32>) -> Tensor<f32> { return t; }
 
 fn main() -> Tensor<Bool> {
-  let host_tensor: Tensor<f32> = 1.0;
+  let host_tensor : Tensor<f32> = 1.0;
 
   // Transfer to device
   let device_tensor = host_tensor.to_device();
 
-  // Trying to transfer an NPU tensor to NPU again (redundant transfer, may need explicit error)
+  // Trying to transfer an NPU tensor to NPU again (redundant transfer, may need
+  // explicit error)
   let redundant_tensor = device_tensor.to_device();
 
   // Pass device tensor to host function (should strip pin or fail)

@@ -2,15 +2,14 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Type mismatch in variable declaration 'df'
 
-fn compute_val(x: f32) -> bool {
-  return x > 0.0;
-}
+fn compute_val(x : f32) -> bool { return x > 0.0; }
 
 fn main() -> i32 {
-  let x: f32 = 4.0;
+  let x : f32 = 4.0;
 
-  // EXPECT: Function 'compute_val' cannot be differentiated because it returns a non-continuous type
-  let df: f32 = grad(compute_val, x);
+  // EXPECT: Function 'compute_val' cannot be differentiated because it returns
+  // a non-continuous type
+  let df : f32 = grad(compute_val, x);
 
   return 0;
 }

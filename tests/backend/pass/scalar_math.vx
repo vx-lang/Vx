@@ -8,23 +8,21 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: %t 2>&1 | FileCheck %s
 
-
-
 import std::io;
 fn main() -> i32 {
-  let a: f32 = 10.5;
-  let b: f32 = 2.0;
+  let a : f32 = 10.5;
+  let b : f32 = 2.0;
 
-  let c: f32 = a + b;
-  let d: f32 = a - b;
-  let e: f32 = a * b;
-  let f: f32 = a / b;
+  let c : f32 = a + b;
+  let d : f32 = a - b;
+  let e : f32 = a * b;
+  let f : f32 = a / b;
 
   unsafe {
-    print!(c);
-    print!(d);
-    print!(e);
-    print!(f);
+    print !(c);
+    print !(d);
+    print !(e);
+    print !(f);
   }
 
   return 0;
@@ -34,9 +32,6 @@ fn main() -> i32 {
 // CHECK: 8.500000
 // CHECK: 21.000000
 // CHECK: 5.250000
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

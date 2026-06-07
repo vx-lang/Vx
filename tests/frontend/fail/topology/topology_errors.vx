@@ -1,32 +1,20 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From topology_assign_type_mismatch.vx
-fn test_0() -> void {
-  let x: i32 = Topology::Current;
-}
-
+fn test_0() -> void { let x : i32 = Topology::Current; }
 
 // From topology_compare_type_mismatch.vx
 fn test_1() -> void {
-  if Topology::Current == 5 {
-    let x = 1;
-  }
+  if Topology
+    ::Current == 5 { let x = 1; }
 }
-
 
 // From topology_invalid_spawn.vx
 fn test_2() -> void {
-  spawn on (5) {
-    let x = 1;
-  };
+  spawn on(5) { let x = 1; };
 }
-
 
 // From topology_undefined_variant.vx
-fn test_3() -> void {
-  let x = Topology::Fake;
-}
-
-
+fn test_3() -> void { let x = Topology::Fake; }
 
 // CHECK: Error at 19:13: Expected 'Topology'

@@ -1,4 +1,5 @@
-//===- parser_struct_missing_comma.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_struct_missing_comma.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error at 13:3: Expected '}'
 //
@@ -9,6 +10,5 @@
 //===----------------------------------------------------------------------===//
 
 struct Point {
-  x: i32
-  y: i32
+  x : i32 y : i32
 }

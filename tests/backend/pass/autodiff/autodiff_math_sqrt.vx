@@ -3,19 +3,16 @@
 //===- autodiff_math_sqrt.vx - Vx Compiler -------------------*- Vx -*-===//
 import std::math;
 
-fn test_func(x: f32) -> f32 {
-  return x.sqrt();
-}
+fn test_func(x : f32) -> f32 { return x.sqrt(); }
 
 fn main() -> i32 {
-  let x: f32 = 4.0;
-  let dx: f32 = grad(test_func, x);
-  let expected: f32 = 0.25;
+  let x : f32 = 4.0;
+  let dx : f32 = grad(test_func, x);
+  let expected : f32 = 0.25;
 
-  let diff: f32 = (dx - expected).abs();
-  let mut ret: i32 = 1;
-  if diff < 0.001 {
-    ret = 0;
-  }
+  let diff : f32 = (dx - expected).abs();
+  let mut ret : i32 = 1;
+  if diff
+    < 0.001 { ret = 0; }
   return ret;
 }

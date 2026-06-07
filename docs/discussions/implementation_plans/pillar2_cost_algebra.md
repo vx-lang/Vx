@@ -1,6 +1,6 @@
 # Data Movement Cost Algebra & Topology Weights
 
-This plan outlines the final stage of **Pillar 2: Rigorous Topology & Memory Algebra**. While the compiler already parses hardware graphs and correctly verifies memory access using unweighted paths, it currently lacks the mathematical formalization of **data movement costs**. 
+This plan outlines the final stage of **Pillar 2: Rigorous Topology & Memory Algebra**. While the compiler already parses hardware graphs and correctly verifies memory access using unweighted paths, it currently lacks the mathematical formalization of **data movement costs**.
 
 ## Proposed Changes
 
@@ -42,5 +42,5 @@ The semantic analyzer will execute the pathfinding and embed the cost into the A
 ## User Review Required
 
 > [!IMPORTANT]
-> - Do you want the calculated transfer cost to be emitted directly into the MLIR output as an attribute (e.g., `vx.transfer ... { cost = 50 }`)? If so, I will also update `src/codegen/lower.rs`. 
+> - Do you want the calculated transfer cost to be emitted directly into the MLIR output as an attribute (e.g., `vx.transfer ... { cost = 50 }`)? If so, I will also update `src/codegen/lower.rs`.
 > - Are you okay with integer costs (`u32`) for edge weights, or would you prefer floating point representation (`f32`)?

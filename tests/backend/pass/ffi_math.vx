@@ -10,23 +10,19 @@
 import std::math;
 
 fn main() -> i32 {
-  let pi: f32 = 3.141592;
-  let half_pi: f32 = 1.570796;
+  let pi : f32 = 3.141592;
+  let half_pi : f32 = 1.570796;
 
   // sin(pi/2) approx 1.0
-  let s: f32 = half_pi.sin();
-  let s_abs: f32 = s.abs();
+  let s : f32 = half_pi.sin();
+  let s_abs : f32 = s.abs();
 
-  let mut ret: i32 = 1;
+  let mut ret : i32 = 1;
   // Test that FFI correctly returned scalar 1.0
-  if s_abs > 0.99 {
-    ret = 0;
-  }
+  if s_abs
+    > 0.99 { ret = 0; }
   return ret;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

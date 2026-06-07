@@ -1,4 +1,5 @@
-//===- parser_invalid_if_condition.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_invalid_if_condition.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Expected expression, found LeftBrace
 //

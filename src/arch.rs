@@ -62,7 +62,10 @@ impl Default for HardwareGraph {
 
 impl HardwareGraph {
     pub fn add_transfer_edge(&mut self, src: MemorySpace, dst: MemorySpace, cost: u32) {
-        self.transfer_edges.entry(src).or_default().push((dst, cost));
+        self.transfer_edges
+            .entry(src)
+            .or_default()
+            .push((dst, cost));
     }
 
     pub fn add_visibility_edge(&mut self, top: Topology, mem: MemorySpace) {

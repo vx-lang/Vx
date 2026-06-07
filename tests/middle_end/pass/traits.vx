@@ -7,41 +7,33 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-trait Dimension {
-  fn dim(self: Tensor<f32>) -> Tensor<i32>;
-}
+trait Dimension { fn dim(self : Tensor<f32>)->Tensor<i32>; }
 
 impl Dimension for Tensor<f32> {
-  fn dim(self: Tensor<f32>) -> Tensor<i32> {
-    return 2;
-  }
+  fn dim(self : Tensor<f32>) -> Tensor<i32> { return 2; }
 }
 
-fn process<T: Dimension>(val: T) -> Tensor<i32> {
+fn process<T : Dimension>(val : T) -> Tensor<i32> {
   let d = val.dim();
   return d;
 }
 
 fn main() -> Tensor<i32> {
-  let t: Tensor<f32> = 1.0;
+  let t : Tensor<f32> = 1.0;
   let res = process(t);
   return res;
 }
 
 // CHECK: module {
-// CHECK:   func.func @Tensor__F32__dim(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
-// CHECK:     arith.constant 2 : i32
-// CHECK:     return
-// CHECK:   func.func @process_TensorF32_(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
+// CHECK:   func.func @Tensor__F32__dim(%arg0: memref<?x?xf32>) ->
+// memref<?x?xi32> { CHECK:     arith.constant 2 : i32 CHECK:     return CHECK:
+// func.func @process_TensorF32_(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {
 // CHECK:     call @Tensor__F32__dim(%
 // CHECK:     return
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 // CHECK:     arith.constant 1.000000e+00 : f32
 // CHECK:     call @process_TensorF32_(%
 // CHECK:     return
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

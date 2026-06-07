@@ -9,55 +9,45 @@ import std::closure;
 import std::iter;
 
 extern "C" {
-  fn malloc(size: i64) -> *mut i8;
-  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
-  fn free(ptr: *mut i8) -> i32;
+fn malloc(size : i64)->*mut i8;
+fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
+fn free(ptr : *mut i8) -> i32;
 }
 
-struct Vec<T> {
-  data: *mut T,
-  len: i32,
-  capacity: i32,
+struct Vec<T>{
+  data : *mut T,
+  len : i32,
+  capacity : i32,
 }
 
-impl<T> Vec<T> {
-  fn new() -> Vec<T> {
-    let ptr: *mut T = unsafe { malloc(0) };
-    return Vec<T> {
-      data: ptr,
-      len: 0,
-      capacity: 0
-    };
+impl<T>
+    Vec<T> {
+  fn new ()->Vec<T> {
+    let ptr : *mut T = unsafe{malloc(0)};
+    return Vec<T>{data : ptr, len : 0, capacity : 0};
   }
 
-  fn push(self: &mut Vec<T>, val: T) -> i32 {
-    if self.len == self.capacity {
-      let mut new_cap: i32 = 4;
-      if self.capacity > 0 {
-        new_cap = self.capacity * 2;
-      }
-      let size_bytes: i64 = (new_cap as i64) * sizeof<T>();
+  fn push(self : &mut Vec<T>, val : T) -> i32 {
+    if self
+      .len == self.capacity {
+        let mut new_cap : i32 = 4;
+        if self
+          .capacity > 0 { new_cap = self.capacity * 2; }
+        let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
 
-      let ptr: *mut i8 = self.data;
-      self.data = unsafe { realloc(ptr, size_bytes) };
-      self.capacity = new_cap;
-    }
-    unsafe {
-      self.data[self.len] = val;
-    }
+        let ptr : *mut i8 = self.data;
+        self.data = unsafe{realloc(ptr, size_bytes)};
+        self.capacity = new_cap;
+      }
+    unsafe { self.data[self.len] = val; }
     self.len = self.len + 1;
     return 0;
   }
 
-  fn len(self: &Vec<T>) -> i32 {
-    return self.len;
-  }
+  fn len(self : &Vec<T>) -> i32 { return self.len; }
 
-  fn iter(self: &Vec<T>) -> VecIter<T> {
-    return VecIter<T> {
-      vec: self,
-      current: 0
-    };
+  fn iter(self : &Vec<T>) -> VecIter<T> {
+    return VecIter<T>{vec : self, current : 0};
   }
 }
 
@@ -67,21 +57,24 @@ struct VecIter<T> {
 }
 
 impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
-  fn next(self: &mut VecIter<T>) -> Option<T> {
-    let vec_len: i32 = unsafe { (*self.vec).len };
+  fn next(self : &mut VecIter<T>) -> Option<T> {
+    let vec_len : i32 = unsafe{(*self.vec).len};
     let mut ret = Option<T>::None();
-    if self.current < vec_len {
-      let val: T = unsafe { (*self.vec).data[self.current] };
-      self.current = self.current + 1;
-      ret = Option<T>::Some(val);
-    }
+    if self
+      .current < vec_len {
+        let val : T = unsafe{(*self.vec).data[self.current]};
+        self.current = self.current + 1;
+        ret = Option<T>::Some(val);
+      }
     return ret;
   }
 }
 
-impl<T> VecIter<T> {
-  fn map<NewItem>(self: VecIter<T>, f: Closure1<T, NewItem>) -> VecMap<T, NewItem> {
-    return VecMap<T, NewItem> { iter: self, f: f };
+impl<T>
+    VecIter<T> {
+  fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
+      -> VecMap<T, NewItem> {
+    return VecMap<T, NewItem>{iter : self, f : f};
   }
 }
 
@@ -91,11 +84,12 @@ struct VecMap<T, NewItem> {
 }
 
 impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
-  fn next(self: &mut VecMap<T, NewItem>) -> Option<NewItem> {
+  fn next(self : &mut VecMap<T, NewItem>) -> Option<NewItem> {
     let mut ret = Option<NewItem>::None();
     let mut opt = self.iter.next();
     loop {
-      if opt.is_none() { break; }
+      if opt
+        .is_none() { break; }
       let item = opt.unwrap();
       let f_closure = self.f;
       let f_ptr = f_closure.func;
@@ -107,12 +101,14 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
   }
 }
 
-impl<T, NewItem> VecMap<T, NewItem> {
-  fn collect(self: &mut VecMap<T, NewItem>) -> Vec<NewItem> {
-    let mut result = Vec<NewItem>::new();
+impl<T, NewItem>
+    VecMap<T, NewItem> {
+  fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
+    let mut result = Vec<NewItem>::new ();
     loop {
       let mut opt = self.next();
-      if opt.is_none() { break; }
+      if opt
+        .is_none() { break; }
       result.push(opt.unwrap());
     }
     return result;

@@ -2,7 +2,7 @@
 
 import std::io;
 extern "C" {
-  fn vx_get_time() -> f32;
+fn vx_get_time() -> f32;
 }
 
 fn main() -> i32 {
@@ -12,130 +12,148 @@ fn main() -> i32 {
   let mut out_unfused = Tensor_f32(128, 128);
   let mut out_fused = Tensor_f32(128, 128);
 
-  for i in 0..128 {
-    for j in 0..128 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a[i][j] = 1.0;
-        bias[i][j] = 0.0 - 150.0;
-      } else {
-        a[i][j] = 0.0 - 1.0;
-        bias[i][j] = 50.0;
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a[i][j] = 1.0;
+            bias[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a[i][j] = 0.0 - 1.0;
+          bias[i][j] = 50.0;
+        }
+        b[i][j] = 1.0;
+        out_unfused[i][j] = 0.0;
+        out_fused[i][j] = 0.0;
       }
-      b[i][j] = 1.0;
-      out_unfused[i][j] = 0.0;
-      out_fused[i][j] = 0.0;
     }
-  }
 
   let mut temp_matmul = Tensor_f32(128, 128);
   let mut temp_bias = Tensor_f32(128, 128);
 
   // Warmup Unfused
-  for i in 0..128 {
-    for j in 0..128 {
-      temp_matmul[i][j] = 0.0;
-      for k in 0..128 {
-        temp_matmul[i][j] += a[i][k] * b[k][j];
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        temp_matmul[i][j] = 0.0;
+      for
+        k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
       }
     }
-  }
-  for i in 0..128 {
-    for j in 0..128 {
-      temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
+  for
+    i in 0..128 {
+    for
+      j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
     }
-  }
-  for i in 0..128 {
-    for j in 0..128 {
-      let val = temp_bias[i][j];
-      if val > 0.0 {
-        out_unfused[i][j] = val;
-      } else {
-        out_unfused[i][j] = 0.0;
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        let val = temp_bias[i][j];
+        if val
+          > 0.0 { out_unfused[i][j] = val; }
+        else {
+          out_unfused[i][j] = 0.0;
+        }
       }
     }
-  }
 
   // Warmup Fused
-  for i in 0..128 {
-    for j in 0..128 {
-      let mut sum = 0.0;
-      for k in 0..128 {
-        sum += a[i][k] * b[k][j];
-      }
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        let mut sum = 0.0;
+      for
+        k in 0..128 { sum += a[i][k] * b[k][j]; }
       sum += bias[i][j];
-      if sum > 0.0 {
-        out_fused[i][j] = sum;
-      } else {
+      if sum
+        > 0.0 { out_fused[i][j] = sum; }
+      else {
         out_fused[i][j] = 0.0;
       }
+      }
     }
-  }
 
   // Verification
-  for i in 0..128 {
-    for j in 0..128 {
-      assert(out_unfused[i][j] == out_fused[i][j], "Mismatch between fused and unfused CPU results");
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        assert(out_unfused[i][j] == out_fused[i][j],
+               "Mismatch between fused and unfused CPU results");
+      }
     }
-  }
 
   unsafe {
     // Benchmark Unfused
     let t1 = vx_get_time();
-    for _iter in 0..10 {
-      for i in 0..128 {
-        for j in 0..128 {
-          temp_matmul[i][j] = 0.0;
-          for k in 0..128 {
-            temp_matmul[i][j] += a[i][k] * b[k][j];
+    for
+      _iter in 0..10 {
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
+            temp_matmul[i][j] = 0.0;
+          for
+            k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
+          }
+        }
+      for
+        i in 0..128 {
+        for
+          j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
+        }
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
+            let val = temp_bias[i][j];
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
+              out_unfused[i][j] = 0.0;
+            }
           }
         }
       }
-      for i in 0..128 {
-        for j in 0..128 {
-          temp_bias[i][j] = temp_matmul[i][j] + bias[i][j];
-        }
-      }
-      for i in 0..128 {
-        for j in 0..128 {
-          let val = temp_bias[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      for i in 0..128 {
-        for j in 0..128 {
-          let mut sum = 0.0;
-          for k in 0..128 {
-            sum += a[i][k] * b[k][j];
-          }
+    for
+      _iter in 0..10 {
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
+            let mut sum = 0.0;
+          for
+            k in 0..128 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
+          }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
 
-    // We expect fused to be faster or equal, but let's just log it and not assert 
-    // because caching effects could sometimes make them close, or O3 might fuse both anyway.
+    // We expect fused to be faster or equal, but let's just log it and not
+    // assert because caching effects could sometimes make them close, or O3
+    // might fuse both anyway.
   }
 
   return 0;

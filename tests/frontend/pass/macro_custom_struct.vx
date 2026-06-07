@@ -3,11 +3,12 @@
 import std::vec;
 import std::closure;
 
-struct Point { x: i32, y: i32 }
-macro_rules new_point {
-  ($x:expr) => { Point { x: $x, y: 0 } };
+struct Point {
+  x : i32, y : i32
+} macro_rules new_point {
+  ($x : expr) =>{Point{x : $x, y : 0}};
 }
 fn main() -> i32 {
-  let p = new_point!(10);
+  let p = new_point !(10);
   return p.x;
 }

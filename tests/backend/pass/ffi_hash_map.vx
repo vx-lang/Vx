@@ -8,16 +8,16 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn vx_hash_map_new_i32_i32() -> *mut i8;
-  fn vx_hash_map_insert_i32_i32(map: *mut i8, k: i32, v: i32) -> i32;
-  fn vx_hash_map_get_i32_i32(map: *mut i8, k: i32) -> *mut i8;
-  fn vx_hash_map_contains_key_i32_i32(map: *mut i8, k: i32) -> Bool;
-  fn vx_hash_map_len_i32_i32(map: *mut i8) -> i32;
-  fn vx_hash_map_drop_i32_i32(map: *mut i8) -> i32;
+fn vx_hash_map_new_i32_i32() -> *mut i8;
+fn vx_hash_map_insert_i32_i32(map : *mut i8, k : i32, v : i32) -> i32;
+fn vx_hash_map_get_i32_i32(map : *mut i8, k : i32) -> *mut i8;
+fn vx_hash_map_contains_key_i32_i32(map : *mut i8, k : i32) -> Bool;
+fn vx_hash_map_len_i32_i32(map : *mut i8) -> i32;
+fn vx_hash_map_drop_i32_i32(map : *mut i8) -> i32;
 
-  fn vx_option_is_some_i32(ptr: *mut i8) -> Bool;
-  fn vx_option_unwrap_i32(ptr: *mut i8) -> i32;
-  fn vx_option_drop_i32(ptr: *mut i8) -> i32;
+fn vx_option_is_some_i32(ptr : *mut i8) -> Bool;
+fn vx_option_unwrap_i32(ptr : *mut i8) -> i32;
+fn vx_option_drop_i32(ptr : *mut i8) -> i32;
 }
 import std::io;
 
@@ -28,20 +28,20 @@ fn main() -> i32 {
     vx_hash_map_insert_i32_i32(map, 20, 200);
 
     let len = vx_hash_map_len_i32_i32(map);
-    print!("Len: ");
-    print!(len);
+    print !("Len: ");
+    print !(len);
 
     let has_10 = vx_hash_map_contains_key_i32_i32(map, 10);
     if has_10 {
-      print!("Has 10: ");
-      print!(1);
+      print !("Has 10: ");
+      print !(1);
     }
 
     let opt = vx_hash_map_get_i32_i32(map, 20);
-    if vx_option_is_some_i32(opt) {
+    if vx_option_is_some_i32 (opt) {
       let val = vx_option_unwrap_i32(opt);
-      print!("Val 20: ");
-      print!(val);
+      print !("Val 20: ");
+      print !(val);
     }
     vx_option_drop_i32(opt);
 
@@ -53,9 +53,6 @@ fn main() -> i32 {
 // EXPECT: Len: 2
 // EXPECT: Has 10: 1
 // EXPECT: Val 20: 200
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

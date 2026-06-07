@@ -12,13 +12,9 @@ fn foo() -> i64 {
   return a;
 }
 
-fn bar() -> i64 {
-  return 10;
-}
+fn bar() -> i64 { return 10; }
 
-fn baz() -> i64 {
-  return 20;
-}
+fn baz() -> i64 { return 20; }
 
 fn main() -> i32 {
   comptime {
@@ -35,9 +31,6 @@ fn main() -> i32 {
   }
   return 0;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

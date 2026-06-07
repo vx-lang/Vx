@@ -5,42 +5,39 @@ import std::googletest;
 // EXPECT: callee = @__enzyme_autodiff_grad_compute_val
 // EXPECT: callee = @__enzyme_fwddiff_jvp_compute_val
 
-fn compute_val(x: f32) -> f32 {
+fn compute_val(x : f32) -> f32 {
   return x * x * x; // x^3
 }
 
 // First derivative: 3x^2
 // Second derivative: 6x
 fn main() -> i32 {
-  let val: f32 = 4.0;
+  let val : f32 = 4.0;
 
   // Test grad
-  let df: f32 = grad(compute_val, val);
-  let expected_df: f32 = 48.0;
+  let df : f32 = grad(compute_val, val);
+  let expected_df : f32 = 48.0;
   expect_eq(df, expected_df);
 
   // Test multiple uses of grad
-  let val2: f32 = 5.0;
-  let df2: f32 = grad(compute_val, val2);
-  let expected_df2: f32 = 75.0;
+  let val2 : f32 = 5.0;
+  let df2 : f32 = grad(compute_val, val2);
+  let expected_df2 : f32 = 75.0;
   expect_eq(df2, expected_df2);
 
   // Test JVP
-  let one_f32: f32 = 1.0;
-  let j: f32 = jvp(compute_val, val, one_f32);
-  let expected_j: f32 = 48.0;
+  let one_f32 : f32 = 1.0;
+  let j : f32 = jvp(compute_val, val, one_f32);
+  let expected_j : f32 = 48.0;
   expect_eq(j, expected_j);
 
   // Test VJP
-  let v: f32 = vjp(compute_val, val, one_f32);
-  let expected_v: f32 = 48.0;
+  let v : f32 = vjp(compute_val, val, one_f32);
+  let expected_v : f32 = 48.0;
   expect_eq(v, expected_v);
 
   return 0;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

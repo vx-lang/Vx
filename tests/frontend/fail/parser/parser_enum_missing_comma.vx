@@ -1,4 +1,5 @@
-//===- parser_enum_missing_comma.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_enum_missing_comma.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error at 13:3: Expected '}'
 //
@@ -8,7 +9,4 @@
 //
 //===----------------------------------------------------------------------===//
 
-enum Option {
-  Some(i32)
-  None
-}
+enum Option { Some(i32) None }

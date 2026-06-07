@@ -8,21 +8,21 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn test_primitives() -> i32 {
-  let a: u8 = 10;
-  let b: i8 = 20;
-  let c: u16 = 30;
-  let d: i16 = 40;
-  let e: u32 = 50;
-  let f: i32 = 60;
-  let g: u64 = 70;
-  let h: i64 = 80;
-  let i: u128 = 90;
-  let j: i128 = 100;
+  let a : u8 = 10;
+  let b : i8 = 20;
+  let c : u16 = 30;
+  let d : i16 = 40;
+  let e : u32 = 50;
+  let f : i32 = 60;
+  let g : u64 = 70;
+  let h : i64 = 80;
+  let i : u128 = 90;
+  let j : i128 = 100;
 
-  let x: f16 = 1.0;
-  let y: bf16 = 2.0;
-  let z: f32 = 3.0;
-  let w: f64 = 4.0;
+  let x : f16 = 1.0;
+  let y : bf16 = 2.0;
+  let z : f32 = 3.0;
+  let w : f64 = 4.0;
 
   return 0;
 }
@@ -47,9 +47,6 @@ fn test_primitives() -> i32 {
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
 // CHECK: }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

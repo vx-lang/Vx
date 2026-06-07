@@ -1,11 +1,11 @@
 fn test1() -> bool {
-    let a: f32 = 1.0;
-    let b: bool = true;
-    return a && b;
+  let a : f32 = 1.0;
+  let b : bool = true;
+  return a && b;
 }
 
 fn test2() -> bool {
-    let a: i32 = 1;
-    let b: bool = false;
-    return a || b;
+  let a : i32 = 1;
+  let b : bool = false;
+  return a || b;
 }

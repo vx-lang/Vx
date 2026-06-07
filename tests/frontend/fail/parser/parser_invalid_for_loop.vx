@@ -1,4 +1,5 @@
-//===- parser_invalid_for_loop.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_invalid_for_loop.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Expected expression, found LeftBrace
 //
@@ -9,8 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 fn main() -> i32 {
-  for i in  {
-
-  }
+  for
+    i in {}
   return 0;
 }

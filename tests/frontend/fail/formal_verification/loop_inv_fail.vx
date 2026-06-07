@@ -2,25 +2,21 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Loop invariant cannot be proven on entry
 
-fn test_loop_increment_fail(N: i32) -> i32
-requires N == 0
-ensures return == 0
-{
+fn test_loop_increment_fail(N : i32) -> i32
+  requires N == 0
+ensures return == 0 {
   // FAILS because the invariant demands N == 1, which is not true initially.
-  for i in 0..10 invariant(N == 1) {
-    let x = N;
-  }
+  for
+    i in 0..10 invariant(N == 1) { let x = N; }
   return N;
 }
 
-fn test_loop_range_fail(N: i32) -> i32
-requires N > 5 && N < 15
-ensures return > 5
+fn test_loop_range_fail(N : i32) -> i32
+  requires N > 5 && N < 15 ensures return > 5
 {
   // FAILS because invariant N > 10 is not guaranteed initially.
-  for i in 0..5 invariant(N > 10) {
-    let dummy = N;
-  }
+  for
+    i in 0..5 invariant(N > 10) { let dummy = N; }
   return N;
 }
 

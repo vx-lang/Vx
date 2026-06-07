@@ -31,10 +31,10 @@ In `sema.rs`, we will modify `is_assignable()` to utilize the bitwise FastPath w
 if let Type::Borrow(...) = target {
     if let Type::Borrow(...) = source {
         // ... (Memory space checks) ...
-        
+
         let id_target = self.lower_to_type_id(target);
         let id_source = self.lower_to_type_id(source);
-        
+
         // Execute the 256-bit register hash strategy!
         if !crate::borrow::verify_subtyping_bounds(&id_source, &id_target, self.worker) {
             return false;

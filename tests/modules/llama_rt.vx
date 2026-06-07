@@ -1,6 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-//===- llama_rt.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//===- llama_rt.vx - Vx Compiler -------------------------------------*- Vx
+//-*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -13,35 +14,33 @@
 
 import std::io;
 extern {
-  fn vx_malloc_f32(num_elements: i32) -> *mut f32;
-  fn free(ptr: *mut f32) -> i32;
-  fn putchar(char: i32) -> i32;
+  fn vx_malloc_f32(num_elements : i32)->*mut f32;
+  fn free(ptr : *mut f32) -> i32;
+  fn putchar(char : i32) -> i32;
 
-  fn vx_sqrtf(x: f32) -> f32;
-  fn vx_expf(x: f32) -> f32;
-  fn vx_cosf(x: f32) -> f32;
-  fn vx_sinf(x: f32) -> f32;
-  fn vx_simd_reduce_add(v: <4 x f32>) -> f32;
-  fn vx_powf(x: f32, y: f32) -> f32;
-  fn vx_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32;
-  fn vx_file_open(c_path: *const i8, mode: i32) -> *mut i8;
-  fn vx_file_read(ptr: *mut i8, buffer: *mut f32, len: i32) -> i32;
-  fn vx_file_drop(ptr: *mut i8) -> i32;
+  fn vx_sqrtf(x : f32)->f32;
+  fn vx_expf(x : f32)->f32;
+  fn vx_cosf(x : f32)->f32;
+  fn vx_sinf(x : f32)->f32;
+  fn vx_simd_reduce_add(v : <4 x f32>)->f32;
+  fn vx_powf(x : f32, y : f32)->f32;
+  fn vx_get_rope_freq(pos : i32, i : i32, head_size : i32)->f32;
+  fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
+  fn vx_file_read(ptr : *mut i8, buffer : *mut f32, len : i32) -> i32;
+  fn vx_file_drop(ptr : *mut i8) -> i32;
 
-  fn vx_load_config(filepath: *const i8) -> *mut i32;
-  fn vx_load_weights(filepath: *const i8) -> *mut f32;
-  fn vx_advance_ptr(ptr: *mut f32, offset: i32) -> *mut f32;
-  fn vx_build_tokenizer(filepath: *const i8, vocab_size: i32) -> *mut i8;
-  fn vx_decode_token(tokenizer_ptr: *mut i8, prev_token: i32, token: i32) -> *mut i8;
-  fn vx_read_prompt_file(filepath: *const i8) -> *mut i8;
-  fn vx_encode_prompt(tokenizer_ptr: *mut i8, text: *const i8) -> *mut i32;
+  fn vx_load_config(filepath : *const i8) -> *mut i32;
+  fn vx_load_weights(filepath : *const i8) -> *mut f32;
+  fn vx_advance_ptr(ptr : *mut f32, offset : i32) -> *mut f32;
+  fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
+  fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)
+      -> *mut i8;
+  fn vx_read_prompt_file(filepath : *const i8) -> *mut i8;
+  fn vx_encode_prompt(tokenizer_ptr : *mut i8, text : *const i8) -> *mut i32;
   fn vx_get_time() -> f32;
-  fn vx_get_env_int(name: *const i8, default_val: i32) -> i32;
+  fn vx_get_env_int(name : *const i8, default_val : i32) -> i32;
   fn vx_get_llama_config() -> *mut i32;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

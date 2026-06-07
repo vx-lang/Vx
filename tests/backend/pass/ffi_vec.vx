@@ -8,10 +8,10 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn vx_vec_new_i32() -> *mut i8;
-  fn vx_vec_push_i32(vec: *mut i8, val: i32) -> i32;
-  fn vx_vec_len_i32(vec: *mut i8) -> i32;
-  fn vx_vec_drop_i32(vec: *mut i8) -> i32;
+fn vx_vec_new_i32() -> *mut i8;
+fn vx_vec_push_i32(vec : *mut i8, val : i32) -> i32;
+fn vx_vec_len_i32(vec : *mut i8) -> i32;
+fn vx_vec_drop_i32(vec : *mut i8) -> i32;
 }
 import std::io;
 fn main() -> i32 {
@@ -20,17 +20,14 @@ fn main() -> i32 {
     vx_vec_push_i32(vec, 42);
     vx_vec_push_i32(vec, 100);
     let len = vx_vec_len_i32(vec);
-    print!("Length: ");
-    print!(len);
+    print !("Length: ");
+    print !(len);
     vx_vec_drop_i32(vec);
   }
   return 0;
 }
 
 // EXPECT: Length: 2
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

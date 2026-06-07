@@ -14,17 +14,19 @@
 // EXPECT:  [0,   0,   0,   0],
 // EXPECT:  [0,   0,   0,   0]]
 
-fn main() -> Pinned<Tensor<i32, [4, 4]>, Topology::NPU[0]> {
-  let mut a = Tensor<i32>([4, 4]);
-  let mut b = Tensor<i32>([4, 4]);
+fn main() -> Pinned<Tensor<i32, [ 4, 4 ]>, Topology::NPU[0]> {
+  let mut a = Tensor<i32>([ 4, 4 ]);
+  let mut b = Tensor<i32>([ 4, 4 ]);
 
-  a[0][0] = 1; a[0][1] = 2;
-  a[1][0] = 3; a[1][1] = 4;
+  a[0][0] = 1;
+  a[0][1] = 2;
+  a[1][0] = 3;
+  a[1][1] = 4;
 
   let mut a_npu = transfer(a, Memory::NPU_HBM);
   let mut b_npu = transfer(b, Memory::NPU_HBM);
 
-  spawn on (Topology::NPU[0]) {
+  spawn on(Topology::NPU[0]) {
     b_npu[0][0] = a_npu[0][0] * 10;
     b_npu[0][1] = a_npu[0][1] * 10;
     b_npu[1][0] = a_npu[1][0] * 10;
@@ -36,9 +38,6 @@ fn main() -> Pinned<Tensor<i32, [4, 4]>, Topology::NPU[0]> {
   return b_npu;
 }
 // NO_EXEC
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

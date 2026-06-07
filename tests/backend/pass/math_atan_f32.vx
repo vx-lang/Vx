@@ -10,15 +10,14 @@
 import std::math;
 
 fn main() -> i32 {
-  let x: f32 = 0.0;
-  let res: f32 = x.atan();
-  let expected: f32 = 0.0;
+  let x : f32 = 0.0;
+  let res : f32 = x.atan();
+  let expected : f32 = 0.0;
 
   // allow small floating point difference
-  let diff: f32 = (res - expected).abs();
-  let mut ret: i32 = 1;
-  if diff < 0.001 {
-    ret = 0;
-  }
+  let diff : f32 = (res - expected).abs();
+  let mut ret : i32 = 1;
+  if diff
+    < 0.001 { ret = 0; }
   return ret;
 }

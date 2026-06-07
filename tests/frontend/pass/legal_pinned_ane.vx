@@ -1,14 +1,15 @@
-//===- legal_pinned_ane.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+//===- legal_pinned_ane.vx - Vx Compiler -----------------------------------*-
+// Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   // Transfer a variable to ANE pinned memory
-  let t_host: Tensor<f32> = 1.0;
+  let t_host : Tensor<f32> = 1.0;
 
   // Note: transfer to NPU/ANE returns a Pinned type.
   let t_ane = transfer(t_host, Memory::NPU_HBM);
 
-  spawn on (Topology::ANE) {
+  spawn on(Topology::ANE) {
     // CHECK-NOT: error
     // Pinned to NPU/ANE is accessible from ANE natively
     let valid = t_ane;
@@ -16,9 +17,6 @@ fn main() -> i32 {
 
   return 0;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

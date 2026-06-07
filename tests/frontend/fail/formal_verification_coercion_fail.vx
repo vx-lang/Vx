@@ -3,8 +3,8 @@
 // CHECK: Type mismatch in variable declaration 'v'
 
 fn main() -> i32 {
-  let t: Tensor<f32, [16, 32]> = Tensor_f32(16, 32);
+  let t : Tensor<f32, [ 16, 32 ]> = Tensor_f32(16, 32);
   // EXPECT: Type mismatch in variable declaration 'v'
-  let v: Verified<Tensor<f32, [16, 32]>> = t;
+  let v : Verified<Tensor<f32, [ 16, 32 ]>> = t;
   return 0;
 }

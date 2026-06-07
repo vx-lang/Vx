@@ -47,7 +47,7 @@ Instead of just `fn dummy(x: i32) -> i32`, we can use a `where` clause (or `requ
 ```rust
 // A function that strictly runs on an NPU and guarantees its memory interactions
 fn tile_matmul(a: Tensor<f32, [128, 128]>, b: Tensor<f32, [128, 128]>) -> Tensor<f32, [128, 128]>
-where 
+where
     topology == Topology::NPU, // SMT checks that caller's spawn_on matches
     a.loc == b.loc // SMT proves both tensors are in the same physical memory space before execution
 {
@@ -65,7 +65,7 @@ namespace npu_kernels where topology: Topology::NPU {
     // If a user tries to call this directly from the Host thread without `spawn_on`,
     // the SMT solver flags a precondition violation at compile time.
     fn dummy(x: i32) -> i32 { ... }
-    
+
     fn fast_gelu(x: Tensor<f32, [N]>) -> Tensor<f32, [N]> { ... }
 }
 
@@ -87,8 +87,8 @@ For a systems language, keeping it close to the loop header is crucial so the de
 Borrowing slightly from languages like Dafny or Ada SPARK, a `where` or `invariant` clause attached directly to the block feels natural:
 
 ```rust
-for i in 0..N 
-where invariant(i < bounds), invariant(memory_safe(ptr + i)) 
+for i in 0..N
+where invariant(i < bounds), invariant(memory_safe(ptr + i))
 {
     // ...
 }

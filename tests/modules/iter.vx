@@ -1,6 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-//===- iter.vx - Vx Standard Library ---------------------------------*- Vx -*-===//
+//===- iter.vx - Vx Standard Library ---------------------------------*- Vx
+//-*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -18,12 +19,11 @@ enum Option<T> {
 }
 
 trait Iterator<Iter, Item> {
-  fn next(self: Iter) -> Option<Item>;
+  fn next(self : Iter)->Option<Item>;
 }
 
 struct Range {
-  start: i64,
-  end: i64,
+  start : i64, end : i64,
 }
 
 // Iterator implementation will be provided natively or via bootstrapping.

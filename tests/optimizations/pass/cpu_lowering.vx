@@ -1,19 +1,17 @@
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// FileCheck %s RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1
+// | FileCheck %s
 
-fn dummy(x: i32) on Topology::Host -> i32 {
-  return x;
-}
+fn dummy(x : i32) on Topology::Host -> i32 { return x; }
 
-fn process(t: Tensor<f32>) -> Tensor<f32> {
-  let mut res = Tensor<i32>([4, 4]).with_memory(Memory::Host_DRAM);
-  let val = spawn on (Topology::Host) {
-    dummy(0)
-  };
+fn process(t : Tensor<f32>) -> Tensor<f32> {
+  let mut res = Tensor<i32>([ 4, 4 ]).with_memory(Memory::Host_DRAM);
+  let val = spawn on(Topology::Host){dummy(0)};
   return t;
 }
-
 
 // HOST: module {
 // HOST:   func.func private @printMemrefF32(memref<*xf32>)
@@ -60,9 +58,6 @@ fn process(t: Tensor<f32>) -> Tensor<f32> {
 // VXLLVM:     return %arg0 : memref<?x?xf32>
 // VXLLVM:   }
 // VXLLVM: }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

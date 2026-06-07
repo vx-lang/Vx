@@ -1,4 +1,5 @@
-//===- iter.vx - Vx Compiler --------------------------------------*- Vx -*-===//
+//===- iter.vx - Vx Compiler --------------------------------------*- Vx
+//-*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -8,31 +9,30 @@
 import std::option;
 import std::vec;
 
-trait Iterator<T, Item> {
-  fn next(self: &mut T) -> Option<Item>;
-}
-
+trait Iterator<T, Item> { fn next(self : &mut T) -> Option<Item>; }
 
 impl<I, F, Item, NewItem> Iterator<Map<I, F, Item, NewItem>, NewItem> for Map<I, F, Item, NewItem> {
-  fn next(self: &mut Map<I, F, Item, NewItem>) -> Option<NewItem> {
+  fn next(self : &mut Map<I, F, Item, NewItem>) -> Option<NewItem> {
     let opt = self.iter.next();
     let mut ret = Option<NewItem>::None();
-    if opt.is_some() {
-      let val = opt.unwrap();
-      let func = self.f;
-      let mapped = func(val);
-      ret = Option<NewItem>::Some(mapped);
-    }
+    if opt
+      .is_some() {
+        let val = opt.unwrap();
+        let func = self.f;
+        let mapped = func(val);
+        ret = Option<NewItem>::Some(mapped);
+      }
     return ret;
   }
 }
 
 impl<I, F, Item, NewItem> Map<I, F, Item, NewItem> {
-  fn collect(self: &mut Map<I, F, Item, NewItem>) -> Vec<NewItem> {
-    let mut vec = Vec<NewItem>::new();
+  fn collect(self : &mut Map<I, F, Item, NewItem>) -> Vec<NewItem> {
+    let mut vec = Vec<NewItem>::new ();
     let mut opt = self.next();
     loop {
-      if opt.is_none() { break; }
+      if opt
+        .is_none() { break; }
       vec.push(opt.unwrap());
       opt = self.next();
     }

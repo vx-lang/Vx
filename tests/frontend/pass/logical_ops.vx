@@ -17,9 +17,6 @@ fn parser_logical_pass() -> Tensor<Bool> {
   return f;
 }
 
-
-
-
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32
 // FRONTEND: memref.alloc

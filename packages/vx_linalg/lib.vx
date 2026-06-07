@@ -6,57 +6,66 @@
 
 // Matrix Multiplication
 // M: Rows of A, K: Cols of A / Rows of B, N: Cols of B
-fn matmul<T, M, N, K>(A: Tensor<T, [M, K]>, B: Tensor<T, [K, N]>) -> Verified<Tensor<T, [M, N]>> {
-  // The generic type signature `[M, K]` and `[K, N]` inherently forces the inner dimensions to match.
-  // We can add an explicit assert that the type-checker will trivially prove, for documentation.
-  assert(K == K, "Inner dimensions must match");
+fn matmul<T, M, N, K>(A : Tensor<T, [ M, K ]>, B : Tensor<T, [ K, N ]>)
+    -> Verified<Tensor<T, [M, N]>> {
+      // The generic type signature `[M, K]` and `[K, N]` inherently forces the
+      // inner dimensions to match. We can add an explicit assert that the
+      // type-checker will trivially prove, for documentation.
+      assert(K == K, "Inner dimensions must match");
 
-  // Construct the resulting tensor
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+      // Construct the resulting tensor
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }
 
 // Matrix Transposition
-fn transpose<T, M, N>(A: Tensor<T, [M, N]>) -> Verified<Tensor<T, [N, M]>> {
-  // Transposes an M x N matrix into an N x M matrix
-  let out: Tensor<T, [N, M]> = Tensor<T>(N, M);
-  return Verified(out);
-}
+fn transpose<T, M, N>(A : Tensor<T, [ M, N ]>)
+    ->Verified<Tensor<T, [N, M]>> {
+      // Transposes an M x N matrix into an N x M matrix
+      let out : Tensor<T, [ N, M ]> = Tensor<T>(N, M);
+      return Verified(out);
+    }
 
 // L2 Normalization (Row-wise)
-fn norm_l2<T, M, N>(A: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
-  // Normalizing doesn't change the shape
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+fn norm_l2<T, M, N>(A : Tensor<T, [ M, N ]>)
+    ->Verified<Tensor<T, [M, N]>> {
+      // Normalizing doesn't change the shape
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }
 
 // Scalar Multiplication
-fn scalar_mul<T, M, N>(A: Tensor<T, [M, N]>, scalar: T) -> Verified<Tensor<T, [M, N]>> {
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+fn scalar_mul<T, M, N>(A : Tensor<T, [ M, N ]>, scalar : T)
+    ->Verified<Tensor<T, [M, N]>> {
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }
 
 // Element-wise Addition
-fn add<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+fn add<T, M, N>(A : Tensor<T, [ M, N ]>, B : Tensor<T, [ M, N ]>)
+    ->Verified<Tensor<T, [M, N]>> {
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }
 
 // Element-wise Subtraction
-fn sub<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+fn sub<T, M, N>(A : Tensor<T, [ M, N ]>, B : Tensor<T, [ M, N ]>)
+    ->Verified<Tensor<T, [M, N]>> {
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }
 
 // Dot Product (assumes column vectors for simplicity, returning a 1x1 tensor)
-fn dot<T, N, ONE>(A: Tensor<T, [N, ONE]>, B: Tensor<T, [N, ONE]>) -> Verified<Tensor<T, [ONE, ONE]>> {
-  assert(ONE == 1, "Must be column vectors");
-  let out: Tensor<T, [ONE, ONE]> = Tensor<T>(ONE, ONE);
-  return Verified(out);
-}
+fn dot<T, N, ONE>(A : Tensor<T, [ N, ONE ]>, B : Tensor<T, [ N, ONE ]>)
+    ->Verified<Tensor<T, [ONE, ONE]>> {
+      assert(ONE == 1, "Must be column vectors");
+      let out : Tensor<T, [ ONE, ONE ]> = Tensor<T>(ONE, ONE);
+      return Verified(out);
+    }
 
 // Hadamard (Element-wise) Multiplication
-fn hadamard_mul<T, M, N>(A: Tensor<T, [M, N]>, B: Tensor<T, [M, N]>) -> Verified<Tensor<T, [M, N]>> {
-  let out: Tensor<T, [M, N]> = Tensor<T>(M, N);
-  return Verified(out);
-}
+fn hadamard_mul<T, M, N>(A : Tensor<T, [ M, N ]>, B : Tensor<T, [ M, N ]>)
+    ->Verified<Tensor<T, [M, N]>> {
+      let out : Tensor<T, [ M, N ]> = Tensor<T>(M, N);
+      return Verified(out);
+    }

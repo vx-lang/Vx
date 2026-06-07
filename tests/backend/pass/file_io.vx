@@ -9,19 +9,19 @@
 //===----------------------------------------------------------------------===//
 import std::io;
 extern {
-  fn fopen(filename: *const i8, mode: *const i8) -> *mut i8;
-  fn fputs(s: *const i8, stream: *mut i8) -> i32;
-  fn fclose(stream: *mut i8) -> i32;
-  fn remove(filename: *const i8) -> i32;
-  fn vx_get_temp_file(filename: *const i8) -> *mut i8;
-  fn vx_free_temp_file(ptr: *mut i8) -> i32;
+  fn fopen(filename : *const i8, mode : *const i8) -> *mut i8;
+  fn fputs(s : *const i8, stream : *mut i8) -> i32;
+  fn fclose(stream : *mut i8) -> i32;
+  fn remove(filename : *const i8) -> i32;
+  fn vx_get_temp_file(filename : *const i8) -> *mut i8;
+  fn vx_free_temp_file(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
-    let path_buf: *mut i8 = vx_get_temp_file("test_output.txt");
+    let path_buf : *mut i8 = vx_get_temp_file("test_output.txt");
 
-    let f: *mut i8 = fopen(path_buf, "w");
+    let f : *mut i8 = fopen(path_buf, "w");
     fputs("Hello, File I/O from Vx!
 ", f);
     fclose(f);
@@ -44,9 +44,6 @@ fn main() -> i32 {
 // CHECK: = llvm.mlir.addressof @str_2 : !llvm.ptr<0>
 // CHECK: = func.call @fputs(%
 // CHECK: = func.call @fclose(%
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

@@ -1,8 +1,9 @@
 //===- npu_vector_add.vx ---------------------------------*- Vx -*-===//
 // REQUIRES: macos
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// FileCheck %s RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
 
 fn test_f32() -> i32 {
   let mut a = Tensor<f32>([4]);
@@ -10,18 +11,18 @@ fn test_f32() -> i32 {
   let mut c = Tensor<f32>([4]).with_memory(Memory::NPU_HBM);
   let sum = 3.0;
 
-  for i in 0..4 {
-    a[i] = 1.0;
-    b[i] = 2.0;
-  }
+  for
+    i in 0..4 {
+      a[i] = 1.0;
+      b[i] = 2.0;
+    }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
-    for i in 0..4 {
-      c[i] = a_npu[i] + b_npu[i];
-    }
+    for
+      i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
   }
 
   let c_host = transfer(c, Memory::Host_DRAM);
@@ -38,18 +39,18 @@ fn test_bf16() -> i32 {
   let mut c = Tensor<bf16>([4]).with_memory(Memory::NPU_HBM);
   let sum = 3.0;
 
-  for i in 0..4 {
-    a[i] = 1.0;
-    b[i] = 2.0;
-  }
+  for
+    i in 0..4 {
+      a[i] = 1.0;
+      b[i] = 2.0;
+    }
 
   let a_npu = transfer(a, Memory::NPU_HBM);
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
-    for i in 0..4 {
-      c[i] = a_npu[i] + b_npu[i];
-    }
+    for
+      i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
   }
 
   let c_host = transfer(c, Memory::Host_DRAM);
@@ -67,12 +68,6 @@ fn main() -> i32 {
 }
 
 // NO_EXEC
-
-
-
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

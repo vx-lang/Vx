@@ -8,9 +8,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-fn requires_specific_layout(t: Tensor<f32, [128, 256]>) {}
+fn requires_specific_layout(t : Tensor<f32, [ 128, 256 ]>) {}
 
 fn main() {
-  let t: Tensor<f32, [128, 128]> = 1.0;
+  let t : Tensor<f32, [ 128, 128 ]> = 1.0;
   requires_specific_layout(t);
 }

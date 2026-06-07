@@ -1,29 +1,26 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // CHECK: module
-// CHECK: func.func @"create_wrapper_ConstNumberNumberExpr{value:10_ty:None_span:Span{line:0_column:0_length:0}}"() -> !llvm.struct<"Wrapper_10", (struct<"Array_f32_10", (f32)>)>
-// CHECK: %c10_i32 = arith.constant 10 : i32
-// CHECK: %{{.*}} = arith.addi %{{.*}}, %{{.*}} : i32
+// CHECK: func.func
+// @"create_wrapper_ConstNumberNumberExpr{value:10_ty:None_span:Span{line:0_column:0_length:0}}"()
+// -> !llvm.struct<"Wrapper_10", (struct<"Array_f32_10", (f32)>)> CHECK:
+// %c10_i32 = arith.constant 10 : i32 CHECK: %{{.*}} = arith.addi %{{.*}},
+// %{{.*}} : i32
 
-struct Array<T, const N: i32> {
-  val: T
+struct Array<T, const N : i32> {
+  val : T
 }
 
-struct Wrapper<const N: i32> {
-  inner: Array<f32, N>
-}
+struct Wrapper<const N : i32>{inner : Array<f32, N>}
 
-fn create_wrapper<const N: i32>() -> Wrapper<N> {
-  let a = Array<f32, N> {
-    val: 1.0
-  };
-  let w = Wrapper<N> {
-    inner: a
-  };
-  
+fn create_wrapper<const N : i32>()
+    ->Wrapper<N> {
+  let a = Array<f32, N>{val : 1.0};
+  let w = Wrapper<N>{inner : a};
+
   // Verify N evaluates properly in nested context
   let double_n = N + N;
-  
+
   return w;
 }
 

@@ -7,16 +7,12 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-fn main() -> Tensor<f32> {
-  return 0.0;
-}
+fn main() -> Tensor<f32> { return 0.0; }
 
-fn process(t_host: Tensor<f32>) -> Tensor<f32> {
+fn process(t_host : Tensor<f32>) -> Tensor<f32> {
   let t_device = t_host.to_device();
 
-  spawn on (Topology::NPU[0]) {
-    let x = t_device;
-  }
+  spawn on(Topology::NPU[0]) { let x = t_device; }
 
   return t_host;
 }
@@ -34,9 +30,6 @@ fn process(t_host: Tensor<f32>) -> Tensor<f32> {
 // CHECK:     return %arg0 : memref<?x?xf32>
 // CHECK:   }
 // CHECK: }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

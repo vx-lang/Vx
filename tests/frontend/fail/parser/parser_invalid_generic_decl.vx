@@ -1,4 +1,5 @@
-//===- parser_invalid_generic_decl.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_invalid_generic_decl.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Expected '->'
 //

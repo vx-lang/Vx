@@ -49,7 +49,7 @@ If a programmer wants to target an NPU-specific dialect, they can explicitly ove
 ```rust
 fn custom_npu_kernel(t: Tensor<f32>) {
     mlir! {
-        // Here we explicitly tell the macro to lower `t` into an `npu_buffer` 
+        // Here we explicitly tell the macro to lower `t` into an `npu_buffer`
         // instead of the default `memref`.
         npu::compute(t) : (npu_buffer<?xf32, NPU_HBM>) -> ()
     }
@@ -66,7 +66,7 @@ fn map<U>(&self, closure: |T| -> U) -> Tensor<U> {
         linalg::generic(self, closure) {
             indexing_maps = [ ... ],
             iterator_types = ["parallel"]
-        } 
+        }
         // Region 1
         ({
             // Block 1 with arguments

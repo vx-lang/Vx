@@ -3,10 +3,8 @@
 import std::vec;
 import std::closure;
 
-macro_rules get_str {
-  ($s:expr) => { $s };
-}
+macro_rules get_str { ($s : expr) =>{$s}; }
 fn main() -> i32 {
-  let s = get_str!("hello");
+  let s = get_str !("hello");
   return 0;
 }

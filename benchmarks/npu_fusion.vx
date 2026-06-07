@@ -1,7 +1,7 @@
 //===- npu_fusion_overhead.vx ------------------------------*- Vx -*-===//
 
 extern "C" {
-  fn vx_get_time() -> f32;
+fn vx_get_time() -> f32;
 }
 
 fn run_benchmark_128() -> i32 {
@@ -11,21 +11,25 @@ fn run_benchmark_128() -> i32 {
   let mut out_unfused_host = Tensor_f32(128, 128);
   let mut out_fused_host = Tensor_f32(128, 128);
 
-  for i in 0..128 {
-    for j in 0..128 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a_host[i][j] = 1.0;
-        bias_host[i][j] = 0.0 - 150.0;
-      } else {
-        a_host[i][j] = 0.0 - 1.0;
-        bias_host[i][j] = 50.0;
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a_host[i][j] = 1.0;
+            bias_host[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a_host[i][j] = 0.0 - 1.0;
+          bias_host[i][j] = 50.0;
+        }
+        b_host[i][j] = 1.0;
+        out_unfused_host[i][j] = 0.0;
+        out_fused_host[i][j] = 0.0;
       }
-      b_host[i][j] = 1.0;
-      out_unfused_host[i][j] = 0.0;
-      out_fused_host[i][j] = 0.0;
     }
-  }
 
   // Transfer to 128PU
   let a = transfer(a_host, Memory::NPU_HBM);
@@ -42,125 +46,142 @@ fn run_benchmark_128() -> i32 {
   unsafe {
     // Warmup Unfused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..128 {
-        for j in 0..128 {
-          temp_matmul_npu[i][j] = 0.0;
-          for k in 0..128 {
-            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-          }
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..128 {
-        for j in 0..128 {
-          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..128 {
-        for j in 0..128 {
-          let val = temp_bias_npu[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
-
-    // Benchmark Unfused
-    let t1 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
             temp_matmul_npu[i][j] = 0.0;
-            for k in 0..128 {
-              temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-            }
+          for
+            k in 0..128 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
             temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
             let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
               out_unfused[i][j] = 0.0;
             }
           }
         }
-      }
     }
+
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..128 {
+          for
+            j in 0..128 {
+              temp_matmul_npu[i][j] = 0.0;
+            for
+              k in 0..128 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..128 {
+          for
+            j in 0..128 {
+              temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..128 {
+          for
+            j in 0..128 {
+              let val = temp_bias_npu[i][j];
+              if val
+                > 0.0 { out_unfused[i][j] = val; }
+              else {
+                out_unfused[i][j] = 0.0;
+              }
+            }
+          }
+        }
+      }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..128 {
-        for j in 0..128 {
-          let mut sum = 0.0;
-          for k in 0..128 {
-            sum += a[i][k] * b[k][j];
-          }
+      for
+        i in 0..128 {
+        for
+          j in 0..128 {
+            let mut sum = 0.0;
+          for
+            k in 0..128 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
           }
+          }
         }
-      }
     }
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
-            let mut sum = 0.0;
-            for k in 0..128 {
-              sum += a[i][k] * b[k][j];
-            }
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..128 {
+          for
+            j in 0..128 {
+              let mut sum = 0.0;
+            for
+              k in 0..128 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
+            if sum
+              > 0.0 { out_fused[i][j] = sum; }
+            else {
               out_fused[i][j] = 0.0;
+            }
             }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
     assert(time_fused <= time_unfused);
   }
 
   // Verification
   let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
   let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..128 {
-    for j in 0..128 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused 128PU results");
+  for
+    i in 0..128 {
+    for
+      j in 0..128 {
+        assert(out_unfused_res[i][j] == out_fused_res[i][j],
+               "Mismatch between fused and unfused 128PU results");
+      }
     }
-  }
 
   return 0;
 }
@@ -172,21 +193,25 @@ fn run_benchmark_256() -> i32 {
   let mut out_unfused_host = Tensor_f32(256, 256);
   let mut out_fused_host = Tensor_f32(256, 256);
 
-  for i in 0..256 {
-    for j in 0..256 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a_host[i][j] = 1.0;
-        bias_host[i][j] = 0.0 - 150.0;
-      } else {
-        a_host[i][j] = 0.0 - 1.0;
-        bias_host[i][j] = 50.0;
+  for
+    i in 0..256 {
+    for
+      j in 0..256 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a_host[i][j] = 1.0;
+            bias_host[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a_host[i][j] = 0.0 - 1.0;
+          bias_host[i][j] = 50.0;
+        }
+        b_host[i][j] = 1.0;
+        out_unfused_host[i][j] = 0.0;
+        out_fused_host[i][j] = 0.0;
       }
-      b_host[i][j] = 1.0;
-      out_unfused_host[i][j] = 0.0;
-      out_fused_host[i][j] = 0.0;
     }
-  }
 
   // Transfer to 256PU
   let a = transfer(a_host, Memory::NPU_HBM);
@@ -203,125 +228,142 @@ fn run_benchmark_256() -> i32 {
   unsafe {
     // Warmup Unfused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..256 {
-        for j in 0..256 {
-          temp_matmul_npu[i][j] = 0.0;
-          for k in 0..256 {
-            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-          }
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..256 {
-        for j in 0..256 {
-          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..256 {
-        for j in 0..256 {
-          let val = temp_bias_npu[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
-
-    // Benchmark Unfused
-    let t1 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..256 {
-          for j in 0..256 {
+      for
+        i in 0..256 {
+        for
+          j in 0..256 {
             temp_matmul_npu[i][j] = 0.0;
-            for k in 0..256 {
-              temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-            }
+          for
+            k in 0..256 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..256 {
-          for j in 0..256 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..256 {
+        for
+          j in 0..256 {
             temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..256 {
-          for j in 0..256 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..256 {
+        for
+          j in 0..256 {
             let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
               out_unfused[i][j] = 0.0;
             }
           }
         }
-      }
     }
+
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..256 {
+          for
+            j in 0..256 {
+              temp_matmul_npu[i][j] = 0.0;
+            for
+              k in 0..256 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..256 {
+          for
+            j in 0..256 {
+              temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..256 {
+          for
+            j in 0..256 {
+              let val = temp_bias_npu[i][j];
+              if val
+                > 0.0 { out_unfused[i][j] = val; }
+              else {
+                out_unfused[i][j] = 0.0;
+              }
+            }
+          }
+        }
+      }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..256 {
-        for j in 0..256 {
-          let mut sum = 0.0;
-          for k in 0..256 {
-            sum += a[i][k] * b[k][j];
-          }
+      for
+        i in 0..256 {
+        for
+          j in 0..256 {
+            let mut sum = 0.0;
+          for
+            k in 0..256 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
           }
+          }
         }
-      }
     }
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..256 {
-          for j in 0..256 {
-            let mut sum = 0.0;
-            for k in 0..256 {
-              sum += a[i][k] * b[k][j];
-            }
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..256 {
+          for
+            j in 0..256 {
+              let mut sum = 0.0;
+            for
+              k in 0..256 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
+            if sum
+              > 0.0 { out_fused[i][j] = sum; }
+            else {
               out_fused[i][j] = 0.0;
+            }
             }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
     assert(time_fused <= time_unfused);
   }
 
   // Verification
   let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
   let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..256 {
-    for j in 0..256 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused 256PU results");
+  for
+    i in 0..256 {
+    for
+      j in 0..256 {
+        assert(out_unfused_res[i][j] == out_fused_res[i][j],
+               "Mismatch between fused and unfused 256PU results");
+      }
     }
-  }
 
   return 0;
 }
@@ -333,21 +375,25 @@ fn run_benchmark_512() -> i32 {
   let mut out_unfused_host = Tensor_f32(512, 512);
   let mut out_fused_host = Tensor_f32(512, 512);
 
-  for i in 0..512 {
-    for j in 0..512 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a_host[i][j] = 1.0;
-        bias_host[i][j] = 0.0 - 150.0;
-      } else {
-        a_host[i][j] = 0.0 - 1.0;
-        bias_host[i][j] = 50.0;
+  for
+    i in 0..512 {
+    for
+      j in 0..512 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a_host[i][j] = 1.0;
+            bias_host[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a_host[i][j] = 0.0 - 1.0;
+          bias_host[i][j] = 50.0;
+        }
+        b_host[i][j] = 1.0;
+        out_unfused_host[i][j] = 0.0;
+        out_fused_host[i][j] = 0.0;
       }
-      b_host[i][j] = 1.0;
-      out_unfused_host[i][j] = 0.0;
-      out_fused_host[i][j] = 0.0;
     }
-  }
 
   // Transfer to 512PU
   let a = transfer(a_host, Memory::NPU_HBM);
@@ -364,125 +410,142 @@ fn run_benchmark_512() -> i32 {
   unsafe {
     // Warmup Unfused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..512 {
-        for j in 0..512 {
-          temp_matmul_npu[i][j] = 0.0;
-          for k in 0..512 {
-            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-          }
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..512 {
-        for j in 0..512 {
-          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..512 {
-        for j in 0..512 {
-          let val = temp_bias_npu[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
-
-    // Benchmark Unfused
-    let t1 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..512 {
-          for j in 0..512 {
+      for
+        i in 0..512 {
+        for
+          j in 0..512 {
             temp_matmul_npu[i][j] = 0.0;
-            for k in 0..512 {
-              temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-            }
+          for
+            k in 0..512 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..512 {
-          for j in 0..512 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..512 {
+        for
+          j in 0..512 {
             temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..512 {
-          for j in 0..512 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..512 {
+        for
+          j in 0..512 {
             let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
               out_unfused[i][j] = 0.0;
             }
           }
         }
-      }
     }
+
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..512 {
+          for
+            j in 0..512 {
+              temp_matmul_npu[i][j] = 0.0;
+            for
+              k in 0..512 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..512 {
+          for
+            j in 0..512 {
+              temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..512 {
+          for
+            j in 0..512 {
+              let val = temp_bias_npu[i][j];
+              if val
+                > 0.0 { out_unfused[i][j] = val; }
+              else {
+                out_unfused[i][j] = 0.0;
+              }
+            }
+          }
+        }
+      }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..512 {
-        for j in 0..512 {
-          let mut sum = 0.0;
-          for k in 0..512 {
-            sum += a[i][k] * b[k][j];
-          }
+      for
+        i in 0..512 {
+        for
+          j in 0..512 {
+            let mut sum = 0.0;
+          for
+            k in 0..512 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
           }
+          }
         }
-      }
     }
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..512 {
-          for j in 0..512 {
-            let mut sum = 0.0;
-            for k in 0..512 {
-              sum += a[i][k] * b[k][j];
-            }
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..512 {
+          for
+            j in 0..512 {
+              let mut sum = 0.0;
+            for
+              k in 0..512 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
+            if sum
+              > 0.0 { out_fused[i][j] = sum; }
+            else {
               out_fused[i][j] = 0.0;
+            }
             }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
     assert(time_fused <= time_unfused);
   }
 
   // Verification
   let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
   let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..512 {
-    for j in 0..512 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused 512PU results");
+  for
+    i in 0..512 {
+    for
+      j in 0..512 {
+        assert(out_unfused_res[i][j] == out_fused_res[i][j],
+               "Mismatch between fused and unfused 512PU results");
+      }
     }
-  }
 
   return 0;
 }
@@ -494,21 +557,25 @@ fn run_benchmark_1024() -> i32 {
   let mut out_unfused_host = Tensor_f32(1024, 1024);
   let mut out_fused_host = Tensor_f32(1024, 1024);
 
-  for i in 0..1024 {
-    for j in 0..1024 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a_host[i][j] = 1.0;
-        bias_host[i][j] = 0.0 - 150.0;
-      } else {
-        a_host[i][j] = 0.0 - 1.0;
-        bias_host[i][j] = 50.0;
+  for
+    i in 0..1024 {
+    for
+      j in 0..1024 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a_host[i][j] = 1.0;
+            bias_host[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a_host[i][j] = 0.0 - 1.0;
+          bias_host[i][j] = 50.0;
+        }
+        b_host[i][j] = 1.0;
+        out_unfused_host[i][j] = 0.0;
+        out_fused_host[i][j] = 0.0;
       }
-      b_host[i][j] = 1.0;
-      out_unfused_host[i][j] = 0.0;
-      out_fused_host[i][j] = 0.0;
     }
-  }
 
   // Transfer to 1024PU
   let a = transfer(a_host, Memory::NPU_HBM);
@@ -525,125 +592,142 @@ fn run_benchmark_1024() -> i32 {
   unsafe {
     // Warmup Unfused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..1024 {
-        for j in 0..1024 {
-          temp_matmul_npu[i][j] = 0.0;
-          for k in 0..1024 {
-            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-          }
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..1024 {
-        for j in 0..1024 {
-          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..1024 {
-        for j in 0..1024 {
-          let val = temp_bias_npu[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
-
-    // Benchmark Unfused
-    let t1 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1024 {
-          for j in 0..1024 {
+      for
+        i in 0..1024 {
+        for
+          j in 0..1024 {
             temp_matmul_npu[i][j] = 0.0;
-            for k in 0..1024 {
-              temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-            }
+          for
+            k in 0..1024 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1024 {
-          for j in 0..1024 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..1024 {
+        for
+          j in 0..1024 {
             temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1024 {
-          for j in 0..1024 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..1024 {
+        for
+          j in 0..1024 {
             let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
               out_unfused[i][j] = 0.0;
             }
           }
         }
-      }
     }
+
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..1024 {
+          for
+            j in 0..1024 {
+              temp_matmul_npu[i][j] = 0.0;
+            for
+              k in 0..1024 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..1024 {
+          for
+            j in 0..1024 {
+              temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..1024 {
+          for
+            j in 0..1024 {
+              let val = temp_bias_npu[i][j];
+              if val
+                > 0.0 { out_unfused[i][j] = val; }
+              else {
+                out_unfused[i][j] = 0.0;
+              }
+            }
+          }
+        }
+      }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..1024 {
-        for j in 0..1024 {
-          let mut sum = 0.0;
-          for k in 0..1024 {
-            sum += a[i][k] * b[k][j];
-          }
+      for
+        i in 0..1024 {
+        for
+          j in 0..1024 {
+            let mut sum = 0.0;
+          for
+            k in 0..1024 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
           }
+          }
         }
-      }
     }
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1024 {
-          for j in 0..1024 {
-            let mut sum = 0.0;
-            for k in 0..1024 {
-              sum += a[i][k] * b[k][j];
-            }
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..1024 {
+          for
+            j in 0..1024 {
+              let mut sum = 0.0;
+            for
+              k in 0..1024 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
+            if sum
+              > 0.0 { out_fused[i][j] = sum; }
+            else {
               out_fused[i][j] = 0.0;
+            }
             }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
     assert(time_fused <= time_unfused);
   }
 
   // Verification
   let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
   let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..1024 {
-    for j in 0..1024 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused 1024PU results");
+  for
+    i in 0..1024 {
+    for
+      j in 0..1024 {
+        assert(out_unfused_res[i][j] == out_fused_res[i][j],
+               "Mismatch between fused and unfused 1024PU results");
+      }
     }
-  }
 
   return 0;
 }
@@ -655,21 +739,25 @@ fn run_benchmark_2048() -> i32 {
   let mut out_unfused_host = Tensor_f32(2048, 2048);
   let mut out_fused_host = Tensor_f32(2048, 2048);
 
-  for i in 0..2048 {
-    for j in 0..2048 {
-      let sum_idx = i + j;
-      if sum_idx == 0 {
-        a_host[i][j] = 1.0;
-        bias_host[i][j] = 0.0 - 150.0;
-      } else {
-        a_host[i][j] = 0.0 - 1.0;
-        bias_host[i][j] = 50.0;
+  for
+    i in 0..2048 {
+    for
+      j in 0..2048 {
+        let sum_idx = i + j;
+        if sum_idx
+          == 0 {
+            a_host[i][j] = 1.0;
+            bias_host[i][j] = 0.0 - 150.0;
+          }
+        else {
+          a_host[i][j] = 0.0 - 1.0;
+          bias_host[i][j] = 50.0;
+        }
+        b_host[i][j] = 1.0;
+        out_unfused_host[i][j] = 0.0;
+        out_fused_host[i][j] = 0.0;
       }
-      b_host[i][j] = 1.0;
-      out_unfused_host[i][j] = 0.0;
-      out_fused_host[i][j] = 0.0;
     }
-  }
 
   // Transfer to 2048PU
   let a = transfer(a_host, Memory::NPU_HBM);
@@ -686,125 +774,142 @@ fn run_benchmark_2048() -> i32 {
   unsafe {
     // Warmup Unfused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..2048 {
-        for j in 0..2048 {
-          temp_matmul_npu[i][j] = 0.0;
-          for k in 0..2048 {
-            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-          }
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..2048 {
-        for j in 0..2048 {
-          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-        }
-      }
-    }
-    spawn on(Topology::NPU[0]) {
-      for i in 0..2048 {
-        for j in 0..2048 {
-          let val = temp_bias_npu[i][j];
-          if val > 0.0 {
-            out_unfused[i][j] = val;
-          } else {
-            out_unfused[i][j] = 0.0;
-          }
-        }
-      }
-    }
-
-    // Benchmark Unfused
-    let t1 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..2048 {
-          for j in 0..2048 {
+      for
+        i in 0..2048 {
+        for
+          j in 0..2048 {
             temp_matmul_npu[i][j] = 0.0;
-            for k in 0..2048 {
-              temp_matmul_npu[i][j] += a[i][k] * b[k][j];
-            }
+          for
+            k in 0..2048 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..2048 {
-          for j in 0..2048 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..2048 {
+        for
+          j in 0..2048 {
             temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
           }
         }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..2048 {
-          for j in 0..2048 {
+    }
+    spawn on(Topology::NPU[0]) {
+      for
+        i in 0..2048 {
+        for
+          j in 0..2048 {
             let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
+            if val
+              > 0.0 { out_unfused[i][j] = val; }
+            else {
               out_unfused[i][j] = 0.0;
             }
           }
         }
-      }
     }
+
+    // Benchmark Unfused
+    let t1 = vx_get_time();
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..2048 {
+          for
+            j in 0..2048 {
+              temp_matmul_npu[i][j] = 0.0;
+            for
+              k in 0..2048 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..2048 {
+          for
+            j in 0..2048 {
+              temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+            }
+          }
+        }
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..2048 {
+          for
+            j in 0..2048 {
+              let val = temp_bias_npu[i][j];
+              if val
+                > 0.0 { out_unfused[i][j] = val; }
+              else {
+                out_unfused[i][j] = 0.0;
+              }
+            }
+          }
+        }
+      }
     let t2 = vx_get_time();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
     spawn on(Topology::NPU[0]) {
-      for i in 0..2048 {
-        for j in 0..2048 {
-          let mut sum = 0.0;
-          for k in 0..2048 {
-            sum += a[i][k] * b[k][j];
-          }
+      for
+        i in 0..2048 {
+        for
+          j in 0..2048 {
+            let mut sum = 0.0;
+          for
+            k in 0..2048 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
-          if sum > 0.0 {
-            out_fused[i][j] = sum;
-          } else {
+          if sum
+            > 0.0 { out_fused[i][j] = sum; }
+          else {
             out_fused[i][j] = 0.0;
           }
+          }
         }
-      }
     }
 
     // Benchmark Fused
     let t3 = vx_get_time();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..2048 {
-          for j in 0..2048 {
-            let mut sum = 0.0;
-            for k in 0..2048 {
-              sum += a[i][k] * b[k][j];
-            }
+    for
+      _iter in 0..10 {
+        spawn on(Topology::NPU[0]) {
+        for
+          i in 0..2048 {
+          for
+            j in 0..2048 {
+              let mut sum = 0.0;
+            for
+              k in 0..2048 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
+            if sum
+              > 0.0 { out_fused[i][j] = sum; }
+            else {
               out_fused[i][j] = 0.0;
+            }
             }
           }
         }
       }
-    }
     let t4 = vx_get_time();
     let time_fused = t4 - t3;
 
-    print!(time_unfused);
-    print!(time_fused);
+    print !(time_unfused);
+    print !(time_fused);
     assert(time_fused <= time_unfused);
   }
 
   // Verification
   let out_unfused_res = transfer(out_unfused, Memory::Host_DRAM);
   let out_fused_res = transfer(out_fused, Memory::Host_DRAM);
-  for i in 0..2048 {
-    for j in 0..2048 {
-      assert(out_unfused_res[i][j] == out_fused_res[i][j], "Mismatch between fused and unfused 2048PU results");
+  for
+    i in 0..2048 {
+    for
+      j in 0..2048 {
+        assert(out_unfused_res[i][j] == out_fused_res[i][j],
+               "Mismatch between fused and unfused 2048PU results");
+      }
     }
-  }
 
   return 0;
 }

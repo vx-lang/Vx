@@ -1,12 +1,11 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
 fn main() -> Tensor<f32> {
-  let mut x: Tensor<f32> = Tensor_f32();
+  let mut x : Tensor<f32> = Tensor_f32();
 
   // Borrow scope 1
-  if true {
-    let y = &mut x;
-  } // y goes out of scope, borrow on x is released
+  if
+    true { let y = &mut x; } // y goes out of scope, borrow on x is released
 
   // Borrow scope 2
   let z = &mut x; // This should be perfectly valid!

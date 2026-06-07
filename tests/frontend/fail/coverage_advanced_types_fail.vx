@@ -8,6 +8,6 @@ enum MyEnum {
 
 fn test_missing_variant() -> MyEnum {
   // EXPECT: Enum MyEnum does not have variant VariantB
-  let e: MyEnum = MyEnum::VariantB;
+  let e : MyEnum = MyEnum::VariantB;
   return e;
 }

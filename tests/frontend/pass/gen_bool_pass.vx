@@ -2,14 +2,13 @@
 // CHECK: module
 
 fn gen_bool_and() -> Bool {
-  let a: Bool = true;
-  let b: Bool = false;
+  let a : Bool = true;
+  let b : Bool = false;
   return a && b;
 }
 
 fn gen_bool_or() -> Bool {
-  let a: Bool = true;
-  let b: Bool = false;
+  let a : Bool = true;
+  let b : Bool = false;
   return a || b;
 }
-

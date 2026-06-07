@@ -1,5 +1,5 @@
 fn test_f32_f64_add() -> f32 {
-  let a: f32 = 10f32;
-  let b: f64 = 5f64;
+  let a : f32 = 10f32;
+  let b : f64 = 5f64;
   return a + b;
 }

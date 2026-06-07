@@ -1,4 +1,5 @@
-//===- parser_match_missing_fat_arrow.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_match_missing_fat_arrow.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error at 14:8: Expected '=>' after pattern
 //
@@ -10,8 +11,5 @@
 
 fn main() -> i32 {
   let x = 1;
-  match x {
-    1  10,
-    _  0,
-  }
+  match x { 1 10, _ 0, }
 }

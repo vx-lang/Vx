@@ -9,33 +9,30 @@
 //===----------------------------------------------------------------------===//
 import std::io;
 extern {
-  fn vx_stdout_write(buffer: *const u8, len: i64) -> i64;
-  fn vx_stderr_write(buffer: *const u8, len: i64) -> i64;
+  fn vx_stdout_write(buffer : *const u8, len : i64) -> i64;
+  fn vx_stderr_write(buffer : *const u8, len : i64) -> i64;
 }
 
 fn main() -> i32 {
   unsafe {
     let msg = "Hello Stdout!
-";
-    // msg is a string literal, which in Vx acts as a pointer to bytes?
-    // Length of "Hello Stdout!\n" is 14
-    vx_stdout_write(msg, 14);
+              ";
+        // msg is a string literal, which in Vx acts as a pointer to bytes?
+        // Length of "Hello Stdout!\n" is 14
+        vx_stdout_write(msg, 14);
 
     let msg2 = "Hello Stderr!
-";
-    vx_stderr_write(msg2, 14);
+               ";
+        vx_stderr_write(msg2, 14);
 
-    print!("Stdio Success: ");
-    print!(0);
+    print !("Stdio Success: ");
+    print !(0);
   }
   return 0;
 }
 // EXPECT: Hello Stdout!
 // EXPECT: Hello Stderr!
 // EXPECT: Stdio Success: 0
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

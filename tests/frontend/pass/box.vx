@@ -11,15 +11,19 @@ import std::box;
 import std::io;
 
 fn main() -> i32 {
-  let mut b = Box<i32>::new(42);
+  let mut b = Box<i32>::new (42);
 
-  unsafe { print!("Value: ");
-    print!(*b.ptr); }
+  unsafe {
+    print !("Value: ");
+    print !(*b.ptr);
+  }
 
   unsafe { *b.ptr = 100; }
 
-  unsafe { print!("Updated: ");
-    print!(*b.ptr); }
+  unsafe {
+    print !("Updated: ");
+    print !(*b.ptr);
+  }
 
   b.free();
   return 0;

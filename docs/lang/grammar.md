@@ -58,9 +58,9 @@ type ::=
     | topology_state_type
     | Identifier [ generic_args ]
 
-PrimitiveType ::= `i4` | `u4` | `i8` | `u8` | `i16` | `u16` | `i32` | `u32` 
-                | `i64` | `u64` | `i128` | `u128` 
-                | `f16` | `bf16` | `f32` | `f64` 
+PrimitiveType ::= `i4` | `u4` | `i8` | `u8` | `i16` | `u16` | `i32` | `u32`
+                | `i64` | `u64` | `i128` | `u128`
+                | `f16` | `bf16` | `f32` | `f64`
                 | `bool`
 
 tensor_type   ::= `Tensor` `<` type `,` `[` { expression `,` } `]` [ `,` Topology ] `>`
@@ -70,7 +70,7 @@ ptr_type      ::= `*` ( `const` | `mut` ) type [ `in` MemorySpace ]
 array_type    ::= `[` type `;` expression `]`
 simd_type     ::= `<` IntegerLiteral `x` PrimitiveType `>`
 
-topology_state_type ::= 
+topology_state_type ::=
     | `Verified` `<` type `>`
     | `Pinned` `<` type `,` Topology `>`
     | `HardwareState` `<` type `,` Topology `>`
@@ -87,7 +87,7 @@ ______________________________________________________________________
 ## 4. Expressions
 
 ```ebnf
-expression ::= 
+expression ::=
     | literal
     | Identifier
     | tuple_expression
@@ -128,7 +128,7 @@ ______________________________________________________________________
 ## 5. Statements
 
 ```ebnf
-statement ::= 
+statement ::=
     | let_statement
     | expression_statement
     | loop_statement
@@ -163,7 +163,7 @@ ______________________________________________________________________
 ## 6. Declarations
 
 ```ebnf
-declaration ::= 
+declaration ::=
     | function_declaration
     | struct_declaration
     | enum_declaration
@@ -172,7 +172,7 @@ declaration ::=
     | extern_block
     | import_declaration
 
-function_declaration ::= [ `safe` ] `fn` Identifier [ generic_params ] `(` [ param_list ] `)` 
+function_declaration ::= [ `safe` ] `fn` Identifier [ generic_params ] `(` [ param_list ] `)`
                          [ `on` Topology ] [ `->` type ] [ `effects` `(` effect_list `)` ]
                          block_expression
 

@@ -141,13 +141,13 @@ fn safe_divide(x: i32, y: i32) -> i32
     return x / y;
 }
 
-fn compute_sum(n: i32) -> i32 
+fn compute_sum(n: i32) -> i32
     requires n >= 0
 {
     let mut sum = 0;
     let mut i = 0;
     // Loop invariants must hold before, during, and after loop execution
-    loop 
+    loop
         invariant i <= n
         invariant sum >= 0
     {

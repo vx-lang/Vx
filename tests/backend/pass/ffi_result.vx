@@ -8,20 +8,20 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn vx_result_new_ok_i32_i32(val: i32) -> *mut i8;
-  fn vx_result_new_err_i32_i32(err: i32) -> *mut i8;
-  fn vx_result_is_ok_i32_i32(ptr: *mut i8) -> Bool;
-  fn vx_result_unwrap_i32_i32(ptr: *mut i8) -> i32;
-  fn vx_result_drop_i32_i32(ptr: *mut i8) -> i32;
+fn vx_result_new_ok_i32_i32(val : i32)->*mut i8;
+fn vx_result_new_err_i32_i32(err : i32)->*mut i8;
+fn vx_result_is_ok_i32_i32(ptr : *mut i8) -> Bool;
+fn vx_result_unwrap_i32_i32(ptr : *mut i8) -> i32;
+fn vx_result_drop_i32_i32(ptr : *mut i8) -> i32;
 }
 import std::io;
 fn main() -> i32 {
   unsafe {
     let res = vx_result_new_ok_i32_i32(99);
-    if vx_result_is_ok_i32_i32(res) {
+    if vx_result_is_ok_i32_i32 (res) {
       let val = vx_result_unwrap_i32_i32(res);
-      print!("Ok: ");
-      print!(val);
+      print !("Ok: ");
+      print !(val);
     }
     vx_result_drop_i32_i32(res);
   }
@@ -29,9 +29,6 @@ fn main() -> i32 {
 }
 
 // EXPECT: Ok: 99
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

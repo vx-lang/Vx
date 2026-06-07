@@ -3,15 +3,14 @@
 import std::vec;
 import std::closure;
 
-struct Box { val: i32 }
-impl Box {
-  fn get(self: Box) -> i32 { return self.val; }
+struct Box {
+  val : i32
+} impl Box {
+  fn get(self : Box) -> i32 { return self.val; }
 }
-macro_rules get_val {
-  ($obj:expr) => { $obj.get() };
-}
+macro_rules get_val { ($obj : expr) =>{$obj.get()}; }
 fn main() -> i32 {
-  let b = Box { val: 100 };
-  let v = get_val!(b);
+  let b = Box{val : 100};
+  let v = get_val !(b);
   return v;
 }

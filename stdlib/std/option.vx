@@ -3,7 +3,7 @@
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
 extern "C" {
-  fn malloc(size: i64) -> *mut i8;
+fn malloc(size : i64)->*mut i8;
 }
 
 enum Option<T> {
@@ -11,8 +11,9 @@ enum Option<T> {
   None,
 }
 
-impl<T> Option<T> {
-  fn is_some(self: &Option<T>) -> Bool {
+impl<T>
+    Option<T> {
+  fn is_some(self : &Option<T>) -> Bool {
     let mut ret = false;
     match *self {
       Option<T>::Some(v) => { ret = true; }
@@ -21,7 +22,7 @@ impl<T> Option<T> {
     return ret;
   }
 
-  fn is_none(self: &Option<T>) -> Bool {
+  fn is_none(self : &Option<T>) -> Bool {
     let mut ret = true;
     match *self {
       Option<T>::Some(v) => { ret = false; }
@@ -30,15 +31,13 @@ impl<T> Option<T> {
     return ret;
   }
 
-  fn unwrap(self: Option<T>) -> T {
-    let ptr: *mut T = unsafe { malloc(0) };
-    let mut ret: T = unsafe { *ptr };
+  fn unwrap(self : Option<T>) -> T {
+    let ptr : *mut T = unsafe{malloc(0)};
+    let mut ret : T = unsafe{*ptr};
     match self {
       Option<T>::Some(v) => { ret = v; }
-      Option<T>::None() => {
-      }
+      Option<T>::None() => {}
     }
     return ret;
   }
 }
-

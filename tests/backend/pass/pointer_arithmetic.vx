@@ -10,22 +10,19 @@
 
 import std::io;
 extern "C" {
-  fn malloc(size: i32) -> *mut f32;
+fn malloc(size : i32)->*mut f32;
 }
 
 fn main() -> i32 {
   unsafe {
-    let ptr: *mut f32 = malloc(1024);
-    let val: f32 = ptr[0];
-    print!(val);
+    let ptr : *mut f32 = malloc(1024);
+    let val : f32 = ptr[0];
+    print !(val);
   }
   return 0;
 }
 
 // CHECK: 0.000000
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

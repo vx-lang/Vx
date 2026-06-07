@@ -7,149 +7,136 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-fn test_if(x: i32) -> i32 {
-  let val: i32 = if x > 10 {
-    100
-  } else {
-    200
-  };
+fn test_if(x : i32) -> i32 {
+  let val : i32 = if x > 10 {100} else {200};
   return val;
 }
 
 fn test_unsafe() -> i32 {
-  let val: i32 = unsafe {
-    300
-  };
+  let val : i32 = unsafe{300};
   return val;
 }
 
 fn test_comptime() -> i32 {
-  let val: i32 = comptime {
-    400
-  };
+  let val : i32 = comptime{400};
   val
 }
 
-fn test_nested_if(x: i32) -> i32 {
-  let val: i32 = if x > 10 {
-    if x > 20 {
-      100
-    } else {
-      50
-    }
-  } else {
-    0
-  };
+fn test_nested_if(x : i32) -> i32 {
+  let val : i32 = if x > 10 {
+    if x
+      > 20 {100} else {50}
+  }
+  else {0};
   return val;
 }
 
-fn my_identity(x: i32) -> i32 {
-  x
+fn my_identity(x : i32) -> i32{x}
+
+fn test_implicit_return(x : i32)
+    ->i32 {
+  if x
+    > 10 {my_identity(100) + 1000} else {my_identity(200) + 1000}
 }
 
-fn test_implicit_return(x: i32) -> i32 {
-  if x > 10 {
-    my_identity(100) + 1000
-  } else {
-    my_identity(200) + 1000
-  }
-}
+fn test_standalone_statement(x : i32) -> i32 {
+  let mut y : i32 = 0;
+  if x
+    > 10 { y = my_identity(100); }
 
-fn test_standalone_statement(x: i32) -> i32 {
-  let mut y: i32 = 0;
-  if x > 10 {
-    y = my_identity(100);
-  }
-
-  let val: i32 = my_identity(if x > 10 {
-    y
-  } else {
-    my_identity(200)
-  });
+  let val : i32 = my_identity(if x > 10 { y } else {my_identity(200)});
 
   val
 }
 
 fn main() -> i32 {
-  let a: i32 = test_if(15);
-  let b: i32 = test_if(5);
-  let c: i32 = test_unsafe();
-  let d: i32 = test_comptime();
-  let e: i32 = test_nested_if(25);
-  let f: i32 = test_nested_if(15);
-  let g: i32 = test_nested_if(5);
+  let a : i32 = test_if(15);
+  let b : i32 = test_if(5);
+  let c : i32 = test_unsafe();
+  let d : i32 = test_comptime();
+  let e : i32 = test_nested_if(25);
+  let f : i32 = test_nested_if(15);
+  let g : i32 = test_nested_if(5);
 
-  let mut ret: i32 = 1;
-  if a == 100 {
-    if b == 200 {
-      if c == 300 {
-        if d == 400 {
-          if e == 100 {
-            if f == 50 {
-              if g == 0 {
-                ret = 0;
-              }
+  let mut ret : i32 = 1;
+  if a
+    == 100 {
+      if b
+        == 200 {
+          if c
+            == 300 {
+              if d
+                == 400 {
+                  if e
+                    == 100 {
+                      if f
+                        == 50 {
+                          if g
+                            == 0 { ret = 0; }
+                        }
+                    }
+                }
             }
-          }
         }
-      }
     }
-  }
 
   ret += if a == 100 {
-    if b == 200 {
-      if c == 300 {
-        if d == 400 {
-          if e == 100 {
-            if f == 50 {
-              if g == 0 {
-                100
-              } else {
-                50
+    if b
+      == 200 {
+        if c
+          == 300 {
+            if d
+              == 400 {
+                if e
+                  == 100 {
+                    if f
+                      == 50 {
+                        if g
+                          == 0 {100} else {50}
+                      }
+                    else {
+                      51
+                    }
+                  }
+                else {
+                  52
+                }
               }
-            } else {
-              51
+            else {
+              53
             }
-          } else {
-            52
           }
-        } else {
-          53
-        }
-      } else {
-        54
-      }
-    } else if g == 0 {
-      test_comptime() / 10
-    } else {
-      101
-    }
-  } else {
-    102
-  };
-
-  let h: i32 = test_implicit_return(15);
-  let i: i32 = test_implicit_return(5);
-  let j: i32 = test_standalone_statement(15);
-  let k: i32 = test_standalone_statement(5);
-
-  if h == 100 {
-    if i == 200 {
-      if j == 100 {
-        if k == 200 {
-          if ret == 100 {
-            ret = 10 + test_implicit_return(15);
-          }
+        else {
+          54
         }
       }
-    }
+    else if g
+      == 0 {test_comptime() / 10} else {101}
   }
+  else {102};
+
+  let h : i32 = test_implicit_return(15);
+  let i : i32 = test_implicit_return(5);
+  let j : i32 = test_standalone_statement(15);
+  let k : i32 = test_standalone_statement(5);
+
+  if h
+    == 100 {
+      if i
+        == 200 {
+          if j
+            == 100 {
+              if k
+                == 200 {
+                  if ret
+                    == 100 { ret = 10 + test_implicit_return(15); }
+                }
+            }
+        }
+    }
 
   return ret;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

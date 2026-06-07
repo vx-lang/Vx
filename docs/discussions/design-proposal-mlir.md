@@ -106,7 +106,7 @@ mlir!(
     %c1 = affine.constant 1 : f32
     // 1. Use NPU-specific attributes
     %2 = npu.load_constant %c1 : f32
-    
+
     // 2. Use affine dialect for memory access
     affine.for %i in (0 .. 128) {
         affine.for %j in (0 .. 128) {

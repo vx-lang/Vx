@@ -110,7 +110,12 @@ pub struct TransferExpr {
 }
 impl TransferExpr {
     pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self {
-        Self { expr, space, cost: None, span }
+        Self {
+            expr,
+            space,
+            cost: None,
+            span,
+        }
     }
 }
 

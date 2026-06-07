@@ -7,16 +7,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-fn foo() -> i32 {
-  return 10;
-}
+fn foo() -> i32 { return 10; }
 
-fn bar() -> i32 {
-  return 20;
-}
+fn bar() -> i32 { return 20; }
 
 fn main() -> i32 {
-  let x: i32 = 10;
+  let x : i32 = 10;
   assert(x == 10, "Math still works at runtime");
   assert(foo() != bar(), "equal");
   assert(foo() < bar(), "greater");
@@ -29,9 +25,6 @@ fn main() -> i32 {
   assert(true || false == true, "true or false is not true");
   return 0;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

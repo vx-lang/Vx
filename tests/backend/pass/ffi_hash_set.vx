@@ -8,11 +8,11 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn vx_hash_set_new_i32() -> *mut i8;
-  fn vx_hash_set_insert_i32(set: *mut i8, val: i32) -> i32;
-  fn vx_hash_set_contains_i32(set: *mut i8, val: i32) -> Bool;
-  fn vx_hash_set_len_i32(set: *mut i8) -> i32;
-  fn vx_hash_set_drop_i32(set: *mut i8) -> i32;
+fn vx_hash_set_new_i32() -> *mut i8;
+fn vx_hash_set_insert_i32(set : *mut i8, val : i32) -> i32;
+fn vx_hash_set_contains_i32(set : *mut i8, val : i32) -> Bool;
+fn vx_hash_set_len_i32(set : *mut i8) -> i32;
+fn vx_hash_set_drop_i32(set : *mut i8) -> i32;
 }
 import std::io;
 
@@ -23,13 +23,13 @@ fn main() -> i32 {
     vx_hash_set_insert_i32(set, 42);
 
     let len = vx_hash_set_len_i32(set);
-    print!("Len: ");
-    print!(len);
+    print !("Len: ");
+    print !(len);
 
     let has_42 = vx_hash_set_contains_i32(set, 42);
     if has_42 {
-      print!("Has 42: ");
-      print!(1);
+      print !("Has 42: ");
+      print !(1);
     }
 
     vx_hash_set_drop_i32(set);
@@ -39,9 +39,6 @@ fn main() -> i32 {
 
 // EXPECT: Len: 1
 // EXPECT: Has 42: 1
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

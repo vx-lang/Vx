@@ -1,11 +1,9 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-macro_rules return_42 {
-  () => { 42 };
-}
+macro_rules return_42 { () =>{42}; }
 
 fn main() -> i32 {
-  let val = return_42!();
+  let val = return_42 !();
   assert(val == 42);
   return 0;
 }

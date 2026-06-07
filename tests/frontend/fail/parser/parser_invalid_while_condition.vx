@@ -1,4 +1,5 @@
-//===- parser_invalid_while_condition.vx - Vx Compiler -------------------*- Vx -*-===//
+//===- parser_invalid_while_condition.vx - Vx Compiler -------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error at 12:9: Expected ';'
 //

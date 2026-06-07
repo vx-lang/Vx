@@ -1,8 +1,9 @@
-//===- illegal_transfer_sram_dram.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//===- illegal_transfer_sram_dram.vx - Vx Compiler ---------------------------*-
+// Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-  let t_host: Tensor<f32> = 1.0;
+  let t_host : Tensor<f32> = 1.0;
   let t_npu = transfer(t_host, Memory::NPU_HBM);
   let t_sram = transfer(t_npu, Memory::Local_SRAM);
 
@@ -12,9 +13,6 @@ fn main() -> i32 {
 
   return 0;
 }
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

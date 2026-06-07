@@ -9,10 +9,11 @@
 //===----------------------------------------------------------------------===//
 import std::io;
 extern {
-  fn vx_udp_socket_bind(c_addr: *const i8) -> *mut i8;
-  fn vx_udp_socket_recv(ptr: *mut i8, buffer: *mut u8, len: i64) -> i64;
-  fn vx_udp_socket_send_to(ptr: *mut i8, buffer: *const u8, len: i64, c_addr: *const i8) -> i64;
-  fn vx_udp_socket_drop(ptr: *mut i8) -> i32;
+  fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8;
+  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : i64) -> i64;
+  fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : i64,
+                           c_addr : *const i8) -> i64;
+  fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
@@ -25,15 +26,12 @@ fn main() -> i32 {
 
     vx_udp_socket_drop(socket1);
     vx_udp_socket_drop(socket2);
-    print!("Net Success: ");
-    print!(0);
+    print !("Net Success: ");
+    print !(0);
   }
   return 0;
 }
 // EXPECT: Net Success: 0
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

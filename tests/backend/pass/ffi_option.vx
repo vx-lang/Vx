@@ -8,20 +8,20 @@
 //
 //===----------------------------------------------------------------------===//
 extern "C" {
-  fn vx_option_new_some_i32(val: i32) -> *mut i8;
-  fn vx_option_new_none_i32() -> *mut i8;
-  fn vx_option_is_some_i32(ptr: *mut i8) -> Bool;
-  fn vx_option_unwrap_i32(ptr: *mut i8) -> i32;
-  fn vx_option_drop_i32(ptr: *mut i8) -> i32;
+fn vx_option_new_some_i32(val : i32)->*mut i8;
+fn vx_option_new_none_i32() -> *mut i8;
+fn vx_option_is_some_i32(ptr : *mut i8) -> Bool;
+fn vx_option_unwrap_i32(ptr : *mut i8) -> i32;
+fn vx_option_drop_i32(ptr : *mut i8) -> i32;
 }
 import std::io;
 fn main() -> i32 {
   unsafe {
     let opt1 = vx_option_new_some_i32(42);
-    if vx_option_is_some_i32(opt1) {
+    if vx_option_is_some_i32 (opt1) {
       let val = vx_option_unwrap_i32(opt1);
-      print!("Some: ");
-      print!(val);
+      print !("Some: ");
+      print !(val);
     }
     vx_option_drop_i32(opt1);
   }
@@ -29,9 +29,6 @@ fn main() -> i32 {
 }
 
 // EXPECT: Some: 42
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

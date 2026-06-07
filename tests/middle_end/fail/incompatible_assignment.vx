@@ -1,7 +1,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Type mismatch in assignment
 fn main() -> i32 {
-  let mut a: bool = true;
+  let mut a : bool = true;
   a = 2.0;
   return 1;
 }

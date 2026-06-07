@@ -1,11 +1,11 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-fn create_closure() -> || -> i32 {
+fn create_closure() -> ||->i32 {
   let text = 42;
 
   // In Vx, closures capture by value implicitly, so no 'move' is needed!
   let my_closure = || text;
-  return my_closure as || -> i32;
+  return my_closure as ||->i32;
 }
 
 fn main() -> i32 {
@@ -15,7 +15,7 @@ fn main() -> i32 {
   let my_closure = || x + 1;
 
   // Cast the closure to a fat pointer
-  let fat_ptr = my_closure as || -> i32;
+  let fat_ptr = my_closure as ||->i32;
 
   // Call the fat pointer via func.call_indirect
   let result = fat_ptr();

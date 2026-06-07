@@ -8,40 +8,33 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: %t 2>&1 | FileCheck %s
 
-
-
 import std::io;
 struct Config {
-  dim: i32,
-  hidden_dim: i32,
-  n_layers: i32,
-  n_heads: i32,
-  vocab_size: i32,
-  seq_len: i32,
-  norm_eps: f32,
+  dim : i32,
+        hidden_dim : i32,
+                     n_layers : i32,
+                                n_heads : i32,
+                                          vocab_size : i32,
+                                                       seq_len : i32,
+                                                                 norm_eps : f32,
 }
 
 fn main() -> i32 {
-  let conf = Config {
-    dim: 288,
-    hidden_dim: 768,
-    n_layers: 6,
-    n_heads: 6,
-    vocab_size: 32000,
-    seq_len: 256,
-    norm_eps: 0.00001,
+  let conf = Config{
+    dim : 288,
+    hidden_dim : 768,
+    n_layers : 6,
+    n_heads : 6,
+    vocab_size : 32000,
+    seq_len : 256,
+    norm_eps : 0.00001,
   };
 
-  unsafe {
-    print!(conf.norm_eps);
-  }
+  unsafe { print !(conf.norm_eps); }
   return 0;
 }
 
 // CHECK: 0.000010
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

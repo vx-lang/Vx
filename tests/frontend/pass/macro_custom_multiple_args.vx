@@ -1,11 +1,9 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-macro_rules sub {
-  ($a:expr, $b:expr) => { $a - $b };
-}
+macro_rules sub { ($a : expr, $b : expr) =>{$a - $b}; }
 
 fn main() -> i32 {
-  let val = sub!(10, 3);
+  let val = sub !(10, 3);
   assert(val == 7);
   return 0;
 }

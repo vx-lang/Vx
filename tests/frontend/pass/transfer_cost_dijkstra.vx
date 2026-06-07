@@ -1,12 +1,13 @@
 // RUN: %vxc %s | FileCheck %s
 
-// Verify that a multi-hop transfer across topologies completes successfully using Dijkstra's algorithm.
+// Verify that a multi-hop transfer across topologies completes successfully
+// using Dijkstra's algorithm.
 
 fn test_multi_hop_transfer() -> void {
-    let a: Tensor<f32, Host_DRAM> = malloc(10);
-    // Local_SRAM requires routing: Host_DRAM -> NPU_HBM -> Local_SRAM
-    // Costs: 50 + 10 = 60
-    let b = transfer(a, Memory::Local_SRAM);
+  let a : Tensor<f32, Host_DRAM> = malloc(10);
+  // Local_SRAM requires routing: Host_DRAM -> NPU_HBM -> Local_SRAM
+  // Costs: 50 + 10 = 60
+  let b = transfer(a, Memory::Local_SRAM);
 }
 
 // CHECK: func.func @test_multi_hop_transfer

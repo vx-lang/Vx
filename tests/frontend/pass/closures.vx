@@ -2,37 +2,34 @@
 // CHECK: module
 // EXPECT: 1
 
-
 import std::io;
-fn apply_lambda<F>(f: F, val: i32) -> i32 {
-  return f(val);
-}
+fn apply_lambda<F>(f : F, val : i32) -> i32 { return f(val); }
 
 struct Captures {
-  i: i32,
+  i : i32,
 }
 
 fn main() -> i32 {
   // closure_basic
   let x1 = 40;
-  let closure_basic = |y: i32| x1 + y;
+  let closure_basic = | y : i32 | x1 + y;
   assert(closure_basic(2) == 42);
 
   // closure_multi_arg
   let base2 = 50;
-  let adder2 = |a: i32, b: i32| a + b + base2;
-  let adder3 = |a: i32, b: i32, c: i32| a + b + c + base2;
+  let adder2 = | a : i32, b : i32 | a + b + base2;
+  let adder3 = | a : i32, b : i32, c : i32 | a + b + c + base2;
   assert(adder2(20, 30) + adder3(1, 2, 3) == 156);
 
   // closure_multi_capture
   let mc_base1 = 50;
   let mc_base2 = 40;
-  let mc_adder = |a: i32, b: i32| a + b + mc_base1 + mc_base2;
+  let mc_adder = | a : i32, b : i32 | a + b + mc_base1 + mc_base2;
   assert(mc_adder(20, 30) == 140);
 
   // closure_multi_param
   let mp_x = 10;
-  let mp_closure = |y: i32, z: i32| mp_x + y + z;
+  let mp_closure = | y : i32, z : i32 | mp_x + y + z;
   assert(mp_closure(12, 20) == 42);
 
   // closure_nested
@@ -54,14 +51,11 @@ fn main() -> i32 {
 
   // closure_passed
   let i = 10;
-  let cap = Captures { i: 10 };
-  let cp_lambda = |x: i32| x + cap.i + i;
+  let cap = Captures{i : 10};
+  let cp_lambda = | x : i32 | x + cap.i + i;
   // x(32) + cap.i(10) + i(10) = 52
   assert(apply_lambda(cp_lambda, 32) == 52);
 
-
-  unsafe {
-    print!(1);
-  }
+  unsafe { print !(1); }
   return 1;
 }

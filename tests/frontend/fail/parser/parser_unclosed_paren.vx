@@ -1,4 +1,5 @@
-//===- parser_unclosed_paren.vx - Vx Compiler ----------------------*- Vx -*-===//
+//===- parser_unclosed_paren.vx - Vx Compiler ----------------------*- Vx
+//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Error at 12:18: Expected ')' after expression
 //

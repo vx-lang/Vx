@@ -1,28 +1,32 @@
 //===- cpu_matmul.vx ---------------------------------*- Vx -*-===//
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X
+// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
+// FileCheck %s RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
 
 fn test_f32() -> i32 {
-  let mut a = Tensor<f32>([4, 4]);
-  let mut b = Tensor<f32>([4, 4]);
-  let mut c = Tensor<f32>([4, 4]);
+  let mut a = Tensor<f32>([ 4, 4 ]);
+  let mut b = Tensor<f32>([ 4, 4 ]);
+  let mut c = Tensor<f32>([ 4, 4 ]);
 
-  for i in 0..4 {
-    for j in 0..4 {
-      a[i][j] = 2.0;
-      b[i][j] = 3.0;
-    }
-  }
-
-  for i in 0..4 {
-    for j in 0..4 {
-      c[i][j] = 0.0;
-      for k in 0..4 {
-        c[i][j] = c[i][j] + a[i][k] * b[k][j];
+  for
+    i in 0..4 {
+    for
+      j in 0..4 {
+        a[i][j] = 2.0;
+        b[i][j] = 3.0;
       }
     }
-  }
+
+  for
+    i in 0..4 {
+    for
+      j in 0..4 {
+        c[i][j] = 0.0;
+      for
+        k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
+      }
+    }
 
   // 4 * (2.0 * 3.0) = 24.0
   assert(c[0][0] == 24.0, "f32 matmul 0,0 match");
@@ -32,25 +36,28 @@ fn test_f32() -> i32 {
 }
 
 fn test_bf16() -> i32 {
-  let mut a = Tensor<bf16>([4, 4]);
-  let mut b = Tensor<bf16>([4, 4]);
-  let mut c = Tensor<bf16>([4, 4]);
+  let mut a = Tensor<bf16>([ 4, 4 ]);
+  let mut b = Tensor<bf16>([ 4, 4 ]);
+  let mut c = Tensor<bf16>([ 4, 4 ]);
 
-  for i in 0..4 {
-    for j in 0..4 {
-      a[i][j] = 2.0;
-      b[i][j] = 3.0;
-    }
-  }
-
-  for i in 0..4 {
-    for j in 0..4 {
-      c[i][j] = 0.0;
-      for k in 0..4 {
-        c[i][j] = c[i][j] + a[i][k] * b[k][j];
+  for
+    i in 0..4 {
+    for
+      j in 0..4 {
+        a[i][j] = 2.0;
+        b[i][j] = 3.0;
       }
     }
-  }
+
+  for
+    i in 0..4 {
+    for
+      j in 0..4 {
+        c[i][j] = 0.0;
+      for
+        k in 0..4 { c[i][j] = c[i][j] + a[i][k] * b[k][j]; }
+      }
+    }
 
   assert(c[0][0] == 24.0, "bf16 matmul 0,0 match");
   assert(c[2][3] == 24.0, "bf16 matmul 2,3 match");
@@ -63,12 +70,6 @@ fn main() -> i32 {
   test_bf16();
   return 0;
 }
-
-
-
-
-
-
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32
