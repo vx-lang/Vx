@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::ast;
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOp {
     Add,
@@ -124,7 +125,7 @@ pub struct AsCastExpr {
 pub struct IndirectCallExpr {
     pub callee: Box<Expr>,
     pub args: Vec<Expr>,
-    pub target_func_ty: Option<crate::ast::Type>,
+    pub target_func_ty: Option<ast::Type>,
     pub span: Span,
 }
 impl IndirectCallExpr {
@@ -305,7 +306,7 @@ impl BorrowExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct DereferenceExpr {
     pub expr: Box<Expr>,
-    pub ty: Option<crate::ast::Type>,
+    pub ty: Option<ast::Type>,
     pub span: Span,
 }
 impl DereferenceExpr {
@@ -883,13 +884,13 @@ impl Expr {
                 if let Some(mapped_ty) = mapping.get(&id.name) {
                     if let Type::Generic(val_str, _) = mapped_ty {
                         if val_str.parse::<f64>().is_ok() {
-                            return Expr::Number(crate::ast::NumberExpr {
+                            return Expr::Number(ast::NumberExpr {
                                 value: val_str.clone(),
                                 ty: None,
                                 span: id.span.clone(),
                             });
                         } else {
-                            return Expr::Identifier(crate::ast::IdentifierExpr {
+                            return Expr::Identifier(ast::IdentifierExpr {
                                 name: val_str.clone(),
                                 span: id.span.clone(),
                             });

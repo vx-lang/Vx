@@ -2,6 +2,7 @@ use crate::ast::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use crate::ast;
 pub struct SmtProver {
     assertions: Vec<String>,
     declarations: std::collections::HashSet<String>,

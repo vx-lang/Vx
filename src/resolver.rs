@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 /// A global read-only map generated during Phase 1.25.
 /// Maps module_path -> (symbol_name -> TypeId)
+use crate::ast;
 pub type SymbolMap = HashMap<String, HashMap<String, TypeId>>;
 
 /// Iterates through all parsed modules sequentially and computes their deterministic

@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::ast;
+use crate::codegen;
 pub trait LowerToMelior<'c> {
     type Output;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output;
@@ -444,11 +446,11 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::IndexAccessExpr {
+impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let (base_val, base_ty, indices) = gen
-            .flatten_indices(&crate::ast::Expr::IndexAccess(self.clone()), block)
+            .flatten_indices(&ast::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");
 
         let base_ty_str = base_ty.to_string();
@@ -1111,13 +1113,13 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::UnaryOpExpr {
+impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let crate::ast::UnaryOpExpr { op, expr, span: _ } = self;
+        let ast::UnaryOpExpr { op, expr, span: _ } = self;
         let (val, ty) = gen.generate_expr(expr, block);
         match op {
-            crate::ast::UnaryOp::Not => {
+            ast::UnaryOp::Not => {
                 let true_val_op = melior::ir::operation::OperationBuilder::new(
                     "arith.constant",
                     Location::unknown(gen.context),
@@ -1143,7 +1145,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::UnaryOpExpr {
                 let not_ref = block.append_operation(not_op);
                 (not_ref.result(0).unwrap().into(), ty)
             }
-            crate::ast::UnaryOp::Neg => {
+            ast::UnaryOp::Neg => {
                 let is_float = ty.to_string().contains("f32")
                     || ty.to_string().contains("f64")
                     || ty.to_string().contains("f16")
@@ -1217,13 +1219,13 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             for ty_arg_raw in inner_ty_str.split(',') {
                 let ty_arg = ty_arg_raw.trim();
                 let inner_ty = if ty_arg == "i32" {
-                    crate::ast::Type::Scalar(crate::ast::ElementType::I32)
+                    ast::Type::Scalar(ast::ElementType::I32)
                 } else if ty_arg == "f32" {
-                    crate::ast::Type::Scalar(crate::ast::ElementType::F32)
+                    ast::Type::Scalar(ast::ElementType::F32)
                 } else if ty_arg == "i64" {
-                    crate::ast::Type::Scalar(crate::ast::ElementType::I64)
+                    ast::Type::Scalar(ast::ElementType::I64)
                 } else {
-                    crate::ast::Type::Struct(ty_arg.to_string(), None)
+                    ast::Type::Struct(ty_arg.to_string(), None)
                 };
                 inner_tys.push(inner_ty);
             }
@@ -1233,12 +1235,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 }
             }
             println!("StructInit {}: mapping = {:?}", name, mapping);
-            gen.lower_type(&crate::ast::Type::GenericInstance(
-                Box::new(crate::ast::Type::Struct(base_name.clone(), None)),
+            gen.lower_type(&ast::Type::GenericInstance(
+                Box::new(ast::Type::Struct(base_name.clone(), None)),
                 inner_tys,
             ))
         } else {
-            gen.lower_type(&crate::ast::Type::Struct(name.clone(), None))
+            gen.lower_type(&ast::Type::Struct(name.clone(), None))
         };
 
         let undef_op = melior::ir::operation::OperationBuilder::new(
@@ -1335,19 +1337,19 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
     }
 }
 
-fn topology_to_i32(top: &crate::ast::Topology) -> i32 {
-    use crate::ast::Topology::*;
+fn topology_to_i32(top: &ast::Topology) -> i32 {
+    use ast::Topology::*;
     match top {
         Host => 0,
         NPU(expr) => {
-            if let crate::ast::Expr::Number(n) = &**expr {
+            if let ast::Expr::Number(n) = &**expr {
                 100 + n.value.parse::<i32>().unwrap_or(0)
             } else {
                 100
             }
         }
         AccCore(expr) => {
-            if let crate::ast::Expr::Number(n) = &**expr {
+            if let ast::Expr::Number(n) = &**expr {
                 200 + n.value.parse::<i32>().unwrap_or(0)
             } else {
                 200
@@ -1363,7 +1365,7 @@ fn topology_to_i32(top: &crate::ast::Topology) -> i32 {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::SpawnOnExpr {
+impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let location = melior::ir::Location::unknown(gen.context);
@@ -1385,7 +1387,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::SpawnOnExpr {
         }
 
         let mut needs_yield = true;
-        if let Some(crate::ast::Statement::Return(_)) = self.stmts.last() {
+        if let Some(ast::Statement::Return(_)) = self.stmts.last() {
             needs_yield = false;
         }
 
@@ -1458,7 +1460,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::SpawnOnExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::TransferExpr {
+impl<'c> LowerToMelior<'c> for ast::TransferExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let (src_val, src_ty) = gen.generate_expr(&self.expr, block);
@@ -1466,9 +1468,9 @@ impl<'c> LowerToMelior<'c> for crate::ast::TransferExpr {
 
         // Map memory space to topology target.
         let target_topology_id = match self.space {
-            crate::ast::MemorySpace::HostDRAM => 0,
-            crate::ast::MemorySpace::NPUHBM => 100,
-            crate::ast::MemorySpace::LocalSRAM => 200,
+            ast::MemorySpace::HostDRAM => 0,
+            ast::MemorySpace::NPUHBM => 100,
+            ast::MemorySpace::LocalSRAM => 200,
         };
 
         let top_attr = melior::ir::attribute::IntegerAttribute::new(
@@ -1545,13 +1547,13 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                 for ty_arg_raw in inner_ty_str.split(',') {
                     let ty_arg = ty_arg_raw.trim();
                     let inner_ty = if ty_arg == "i32" {
-                        crate::ast::Type::Scalar(crate::ast::ElementType::I32)
+                        ast::Type::Scalar(ast::ElementType::I32)
                     } else if ty_arg == "f32" {
-                        crate::ast::Type::Scalar(crate::ast::ElementType::F32)
+                        ast::Type::Scalar(ast::ElementType::F32)
                     } else if ty_arg == "i64" {
-                        crate::ast::Type::Scalar(crate::ast::ElementType::I64)
+                        ast::Type::Scalar(ast::ElementType::I64)
                     } else {
-                        crate::ast::Type::Struct(ty_arg.to_string(), None)
+                        ast::Type::Struct(ty_arg.to_string(), None)
                     };
                     inner_tys.push(inner_ty);
                 }
@@ -2305,7 +2307,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut actual_func_ty = func_ty;
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
-                if let Some(crate::ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret);
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
@@ -2315,7 +2317,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
             } else if is_closure {
-                if let Some(crate::ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
                     let r = gen.lower_type(ret);
                     let mut a: Vec<_> = vec![Type::parse(gen.context, "!llvm.ptr").unwrap()];
                     a.extend(func_args.iter().map(|t| gen.lower_type(t)));
@@ -2508,7 +2510,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let target_func_ty = target_func_ty
                 .as_ref()
                 .expect("IndirectCallExpr MLIR lowering needs explicit target_func_ty from Sema");
-            let crate::ast::Type::Closure(func_args, ret) = target_func_ty else {
+            let ast::Type::Closure(func_args, ret) = target_func_ty else {
                 panic!("Expected Type::Closure for indirect call fat pointer target");
             };
 
@@ -2783,7 +2785,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 for (i, stmt) in tb.iter().enumerate() {
                     let is_last = i == tb.len() - 1;
                     if is_last {
-                        if let crate::ast::Statement::ExprStmt(crate::ast::stmt::ExprStmtStmt {
+                        if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
                             expr,
                             has_semi,
                             ..
@@ -2919,7 +2921,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             span: _,
         } = self;
         let ty = if let Some(ast_ty) = ast_ty_opt {
-            gen.lower_type(&crate::ast::Type::Scalar(ast_ty.clone()))
+            gen.lower_type(&ast::Type::Scalar(ast_ty.clone()))
         } else if val_str.contains('.') {
             Type::parse(gen.context, "f32").unwrap()
         } else {
@@ -3053,10 +3055,10 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             let ret_ty = c
                 .ret_ty
                 .clone()
-                .unwrap_or(crate::ast::Type::Scalar(crate::ast::ElementType::I32));
+                .unwrap_or(ast::Type::Scalar(ast::ElementType::I32));
             gen.ast_env.insert(
                 name.clone(),
-                crate::ast::Type::Closure(func_args, Box::new(ret_ty)),
+                ast::Type::Closure(func_args, Box::new(ret_ty)),
             );
         }
         gen.expected_type = prev_expected;
@@ -3204,14 +3206,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     gen.env.insert(name.clone(), (rhs_val, rhs_ty));
                 }
             }
-        } else if let Expr::IndexAccess(crate::ast::IndexAccessExpr {
+        } else if let Expr::IndexAccess(ast::IndexAccessExpr {
             base,
             index: _,
             span: _,
         }) = lhs
         {
             if let Some((base_val, base_ty, indices)) = gen.flatten_indices(
-                &crate::ast::Expr::IndexAccess(crate::ast::IndexAccessExpr {
+                &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
                         Expr::IndexAccess(i) => i.index.clone(),
@@ -3520,14 +3522,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                     gen.env.insert(name.clone(), (result_val, ty));
                 }
             }
-        } else if let Expr::IndexAccess(crate::ast::IndexAccessExpr {
+        } else if let Expr::IndexAccess(ast::IndexAccessExpr {
             base,
             index: _,
             span: _,
         }) = lhs
         {
             if let Some((mem_val, mem_ty, indices)) = gen.flatten_indices(
-                &crate::ast::Expr::IndexAccess(crate::ast::IndexAccessExpr {
+                &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
                         Expr::IndexAccess(i) => i.index.clone(),
@@ -3581,7 +3583,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             span: _,
         } = self;
 
-        if let Expr::Range(crate::ast::expr::RangeExpr {
+        if let Expr::Range(ast::expr::RangeExpr {
             start,
             end,
             span: _,
@@ -4290,7 +4292,7 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
     }
 }
 
-use crate::codegen::break_utils::*;
+use codegen::break_utils::*;
 
 impl<'c> LowerToMelior<'c> for LoopStmt {
     type Output = ();
@@ -4981,15 +4983,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                         let base = &enum_name[..idx];
                         let ty_arg = &enum_name[idx + 1..end_idx];
                         let parsed_ty = match ty_arg {
-                            "i32" => crate::ast::Type::Scalar(crate::ast::ElementType::I32),
-                            "f32" => crate::ast::Type::Scalar(crate::ast::ElementType::F32),
-                            "f64" => crate::ast::Type::Scalar(crate::ast::ElementType::F64),
-                            "i64" => crate::ast::Type::Scalar(crate::ast::ElementType::I64),
-                            "Bool" => crate::ast::Type::Scalar(crate::ast::ElementType::Bool),
-                            _ => crate::ast::Type::Struct(ty_arg.to_string(), None),
+                            "i32" => ast::Type::Scalar(ast::ElementType::I32),
+                            "f32" => ast::Type::Scalar(ast::ElementType::F32),
+                            "f64" => ast::Type::Scalar(ast::ElementType::F64),
+                            "i64" => ast::Type::Scalar(ast::ElementType::I64),
+                            "Bool" => ast::Type::Scalar(ast::ElementType::Bool),
+                            _ => ast::Type::Struct(ty_arg.to_string(), None),
                         };
-                        let t = crate::ast::Type::GenericInstance(
-                            Box::new(crate::ast::Type::Struct(base.to_string(), None)),
+                        let t = ast::Type::GenericInstance(
+                            Box::new(ast::Type::Struct(base.to_string(), None)),
                             vec![parsed_ty],
                         );
                         enum_ty_str = gen.lower_type_str(&t);
@@ -5081,13 +5083,11 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 impl<'c> LowerToMelior<'c> for VecMacroExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let mut el_ty = crate::ast::ElementType::F32;
+        let mut el_ty = ast::ElementType::F32;
         if !self.elements.is_empty() {
-            if let Some(crate::ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
+            if let Some(ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
                 el_ty = t;
-            } else if let Some(crate::ast::Type::Struct(s, _)) =
-                gen.infer_ast_type(&self.elements[0])
-            {
+            } else if let Some(ast::Type::Struct(s, _)) = gen.infer_ast_type(&self.elements[0]) {
                 if s == "String" {
                     // String is equivalent to pointer, but generic instantiation requires element type
                 }
@@ -5095,13 +5095,13 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         }
 
         let type_suffix = match el_ty {
-            crate::ast::ElementType::I32 => "i32",
-            crate::ast::ElementType::F32 => "f32",
-            crate::ast::ElementType::I64 => "i64",
-            crate::ast::ElementType::F64 => "f64",
-            crate::ast::ElementType::Bool => "Bool",
+            ast::ElementType::I32 => "i32",
+            ast::ElementType::F32 => "f32",
+            ast::ElementType::I64 => "i64",
+            ast::ElementType::F64 => "f64",
+            ast::ElementType::Bool => "Bool",
             _ => {
-                if let Some(crate::ast::Type::Struct(s, _)) =
+                if let Some(ast::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
                         value: "0".to_string(),
                         ty: None,
@@ -5220,7 +5220,7 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintExpr {
+impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         for arg in &self.args {
@@ -5323,12 +5323,12 @@ impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintlnExpr {
+impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         // First, reuse PrintExpr logic for arguments
         if !self.args.is_empty() {
-            let print_expr = crate::ast::expr::PrintExpr {
+            let print_expr = ast::expr::PrintExpr {
                 args: self.args.clone(),
                 span: self.span.clone(),
             };
@@ -5388,17 +5388,17 @@ impl<'c> LowerToMelior<'c> for crate::ast::expr::PrintlnExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for crate::ast::expr::AsCastExpr {
+impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
     type Output = (Value<'c, 'c>, Type<'c>);
 
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let (source_val, _source_ty) = gen.generate_expr(&self.expr, block);
 
-        if let crate::ast::Type::Closure(_, _) = &self.target_ty {
+        if let ast::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {
-                Some(crate::ast::Type::Struct(name, _)) => name.clone(),
-                Some(crate::ast::Type::Borrow(inner, _, _, _)) => {
-                    if let crate::ast::Type::Struct(name, _) = &**inner {
+                Some(ast::Type::Struct(name, _)) => name.clone(),
+                Some(ast::Type::Borrow(inner, _, _, _)) => {
+                    if let ast::Type::Struct(name, _) = &**inner {
                         name.clone()
                     } else {
                         panic!("Expected Closure_N struct, got {:?}", inner);
@@ -5498,7 +5498,7 @@ impl<'c> LowerToMelior<'c> for crate::ast::expr::AsCastExpr {
             fat_ptr_val = insert_env_ref.result(0).unwrap().into();
 
             return (fat_ptr_val, fat_ptr_ty);
-        } else if let crate::ast::Type::Scalar(_) = &self.target_ty {
+        } else if let ast::Type::Scalar(_) = &self.target_ty {
             let target_ty_mlir = gen.lower_type(&self.target_ty);
             let coerced_val = gen.coerce_type(block, source_val, _source_ty, target_ty_mlir);
             return (coerced_val, target_ty_mlir);

@@ -24,6 +24,7 @@ use crate::session::{GlobalSession, LocalWorkerState};
 use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.
+use crate::ast;
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     // Phase 1: Parallel Parsing & Local Symbol Generation
     // Each thread parses a file and populates its Thread-Local Arena with structs, enums, etc.
@@ -74,7 +75,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     println!("Resolved {} modules in parallel", parsed_modules.len());
 
     // Phase 2: Sequential Global Registry Build & Cycle Detection
-    // let registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
+    // let registry = registry::ImmutableGlobalRegistry::build_and_validate(all_definitions)?;
     println!("Built Global Immutable Registry");
 
     let global_session = std::sync::Arc::new(GlobalSession::new(1));
@@ -277,8 +278,8 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     // Phase 7: Parallel Module Deduplication & Codegen
     let num_modules = parsed_modules.len();
-    let mut module_buckets: Vec<Vec<crate::ast::Function>> = vec![Vec::new(); num_modules];
-    let mut module_struct_buckets: Vec<Vec<crate::ast::StructDecl>> = vec![Vec::new(); num_modules];
+    let mut module_buckets: Vec<Vec<ast::Function>> = vec![Vec::new(); num_modules];
+    let mut module_struct_buckets: Vec<Vec<ast::StructDecl>> = vec![Vec::new(); num_modules];
 
     // Build the Module Hash to Index map for origin-preserving routing
     let mut module_hash_to_index: std::collections::HashMap<u64, usize> =

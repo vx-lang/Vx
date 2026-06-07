@@ -1,15 +1,16 @@
 use super::*;
 
+use crate::ast;
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<String, (Value<'c, 'c>, Type<'c>)>,
-    pub(crate) ast_env: HashMap<String, crate::ast::Type>,
-    pub(crate) structs: HashMap<String, crate::ast::StructDecl>,
+    pub(crate) ast_env: HashMap<String, ast::Type>,
+    pub(crate) structs: HashMap<String, ast::StructDecl>,
     #[allow(clippy::type_complexity)]
-    pub(crate) enums: HashMap<String, Vec<(String, Option<Vec<crate::ast::Type>>)>>,
+    pub(crate) enums: HashMap<String, Vec<(String, Option<Vec<ast::Type>>)>>,
     pub(crate) functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
-    pub(crate) ast_functions: HashMap<String, crate::ast::Function>,
+    pub(crate) ast_functions: HashMap<String, ast::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     pub current_return_type: Option<Type<'c>>,
@@ -489,7 +490,7 @@ impl<'c> MeliorGenerator<'c> {
                 .build()
                 .unwrap(),
             );
-        } else if let crate::ast::Type::Struct(name, _) = &func.return_type {
+        } else if let ast::Type::Struct(name, _) = &func.return_type {
             if name == "void" {
                 let has_return = func
                     .body
@@ -602,9 +603,9 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    pub(crate) fn lower_type(&self, ty: &crate::ast::Type) -> Type<'c> {
+    pub(crate) fn lower_type(&self, ty: &ast::Type) -> Type<'c> {
         let ty_str = match ty {
-            crate::ast::Type::Tensor(el_ty, dims, top) => {
+            ast::Type::Tensor(el_ty, dims, top) => {
                 let ty_str = match el_ty {
                     ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
@@ -627,7 +628,7 @@ impl<'c> MeliorGenerator<'c> {
                     shape_str = "?x?".to_string();
                 } else {
                     for (i, dim) in dims.iter().enumerate() {
-                        if let crate::ast::Expr::Number(NumberExpr {
+                        if let ast::Expr::Number(NumberExpr {
                             value: n_str,
                             ty: _,
                             span: _,
@@ -650,16 +651,15 @@ impl<'c> MeliorGenerator<'c> {
                 }
 
                 let addr_space = match top {
-                    Some(crate::ast::Topology::Host)
-                    | Some(crate::ast::Topology::Host_AVX512)
-                    | Some(crate::ast::Topology::Host_Neon)
-                    | Some(crate::ast::Topology::Current) => 0,
-                    Some(crate::ast::Topology::NPU(_))
-                    | Some(crate::ast::Topology::Slice(_, _, _)) => 1,
-                    Some(crate::ast::Topology::AccCore(_)) => 2,
-                    Some(crate::ast::Topology::AMX) => 3,
-                    Some(crate::ast::Topology::ANE) => 4,
-                    Some(crate::ast::Topology::GPU) => 5,
+                    Some(ast::Topology::Host)
+                    | Some(ast::Topology::Host_AVX512)
+                    | Some(ast::Topology::Host_Neon)
+                    | Some(ast::Topology::Current) => 0,
+                    Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
+                    Some(ast::Topology::AccCore(_)) => 2,
+                    Some(ast::Topology::AMX) => 3,
+                    Some(ast::Topology::ANE) => 4,
+                    Some(ast::Topology::GPU) => 5,
                     None => 0,
                 };
 
@@ -669,7 +669,7 @@ impl<'c> MeliorGenerator<'c> {
                     format!("memref<{}{}>", shape_str, ty_str)
                 }
             }
-            crate::ast::Type::Scalar(el_ty) => match el_ty {
+            ast::Type::Scalar(el_ty) => match el_ty {
                 ElementType::F16 => "f16",
                 ElementType::F32 => "f32",
                 ElementType::F64 => "f64",
@@ -686,17 +686,16 @@ impl<'c> MeliorGenerator<'c> {
                 }
             }
             .to_string(),
-            crate::ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
-            crate::ast::Type::Ref(inner, _mem) => {
+            ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
+            ast::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            crate::ast::Type::Verified(inner) => return self.lower_type(inner),
-            crate::ast::Type::Pinned(inner, _top) => {
+            ast::Type::Verified(inner) => return self.lower_type(inner),
+            ast::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner).to_string();
                 inner_ty_str
             }
-            crate::ast::Type::Borrow(inner, mem, _, _)
-            | crate::ast::Type::Pointer(inner, mem, _) => {
+            ast::Type::Borrow(inner, mem, _, _) | ast::Type::Pointer(inner, mem, _) => {
                 let inner_str = self.lower_type_str(inner);
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
@@ -709,7 +708,7 @@ impl<'c> MeliorGenerator<'c> {
                     format!("!llvm.ptr<{}>", addr_space)
                 }
             }
-            crate::ast::Type::Struct(name, _) => {
+            ast::Type::Struct(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
@@ -750,8 +749,8 @@ impl<'c> MeliorGenerator<'c> {
                     format!("!llvm.struct<\"{}\">", name)
                 }
             }
-            crate::ast::Type::GenericInstance(base, args) => {
-                if let crate::ast::Type::Struct(name, _) = &**base {
+            ast::Type::GenericInstance(base, args) => {
+                if let ast::Type::Struct(name, _) = &**base {
                     if let Some(decl) = self.structs.get(name).cloned() {
                         let mut field_types = Vec::new();
                         let mut mapping = std::collections::HashMap::new();
@@ -843,13 +842,13 @@ impl<'c> MeliorGenerator<'c> {
                     panic!("GenericInstance base is not a Struct!");
                 }
             }
-            crate::ast::Type::Generic(_, _) => {
+            ast::Type::Generic(_, _) => {
                 panic!(
                     "Generic types should have been monomorphized before codegen! Got type: {:?}",
                     ty
                 );
             }
-            crate::ast::Type::Simd(el_ty, n) => {
+            ast::Type::Simd(el_ty, n) => {
                 let ty_str = match el_ty {
                     ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
@@ -868,7 +867,7 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 format!("vector<{}x{}>", n, ty_str)
             }
-            crate::ast::Type::Enum(name, _) => {
+            ast::Type::Enum(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
@@ -894,45 +893,45 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 "i32".to_string()
             }
-            crate::ast::Type::Function(_, _) => {
+            ast::Type::Function(_, _) => {
                 return Type::parse(self.context, "!llvm.ptr").unwrap();
             }
-            crate::ast::Type::Closure(_, _) => {
+            ast::Type::Closure(_, _) => {
                 return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             }
-            crate::ast::Type::Module(..) => "none".to_string(),
-            crate::ast::Type::Const(expr) => {
+            ast::Type::Module(..) => "none".to_string(),
+            ast::Type::Const(expr) => {
                 format!("{:?}", expr)
             }
-            crate::ast::Type::Unknown => "unknown".to_string(),
+            ast::Type::Unknown => "unknown".to_string(),
         };
 
         Type::parse(self.context, &ty_str)
             .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str))
     }
 
-    pub(crate) fn lower_type_str(&self, ty: &crate::ast::Type) -> String {
-        if let crate::ast::Type::Function(_, _) = ty {
+    pub(crate) fn lower_type_str(&self, ty: &ast::Type) -> String {
+        if let ast::Type::Function(_, _) = ty {
             return "!llvm.ptr".to_string();
         }
         let t = self.lower_type(ty);
         t.to_string()
     }
 
-    pub fn infer_ast_type(&self, expr: &Expr) -> Option<crate::ast::Type> {
+    pub fn infer_ast_type(&self, expr: &Expr) -> Option<ast::Type> {
         match expr {
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
-                if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
+                if let ast::Type::Borrow(inner, _, _, _) = base_ty {
                     base_ty = *inner;
                 }
                 let mut generic_args = None;
-                if let crate::ast::Type::GenericInstance(inner, args) = base_ty {
+                if let ast::Type::GenericInstance(inner, args) = base_ty {
                     base_ty = *inner;
                     generic_args = Some(args);
                 }
-                if let crate::ast::Type::Struct(s_name, _) = base_ty {
+                if let ast::Type::Struct(s_name, _) = base_ty {
                     if let Some(decl) = self.structs.get(&s_name) {
                         for (n, t) in &decl.fields {
                             if n == &ma.member {
@@ -960,13 +959,13 @@ impl<'c> MeliorGenerator<'c> {
                 .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
-                if let crate::ast::Type::Borrow(inner, _, _, _) = base_ty {
+                if let ast::Type::Borrow(inner, _, _, _) = base_ty {
                     base_ty = *inner;
                 }
-                if let crate::ast::Type::GenericInstance(inner, _) = base_ty {
+                if let ast::Type::GenericInstance(inner, _) = base_ty {
                     base_ty = *inner;
                 }
-                if let crate::ast::Type::Struct(s_name, _) = base_ty {
+                if let ast::Type::Struct(s_name, _) = base_ty {
                     let mangled = format!("{}_{}", s_name, mc.method_name);
                     self.ast_functions
                         .get(&mangled)
@@ -985,7 +984,7 @@ impl<'c> MeliorGenerator<'c> {
         block: &melior::ir::Block<'c>,
     ) -> Option<(Value<'c, 'c>, Type<'c>, Vec<Value<'c, 'c>>)> {
         match expr {
-            Expr::IndexAccess(crate::ast::IndexAccessExpr {
+            Expr::IndexAccess(ast::IndexAccessExpr {
                 base,
                 index: idx,
                 span: _,

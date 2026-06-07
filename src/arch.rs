@@ -14,6 +14,7 @@
 use crate::ast::{MemorySpace, Topology, Type};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::ast;
 pub struct HardwareGraph {
     /// Adjacency list for MemorySpace data transfers.
     /// Directed edge from A -> B means memory can be transferred from A to B.
@@ -92,12 +93,14 @@ impl HardwareGraph {
     fn generalize_topology(top: &Topology) -> Topology {
         match top {
             Topology::NPU(_) | Topology::Slice(_, _, _) => {
-                Topology::NPU(Box::new(crate::ast::Expr::Number(
-                    crate::ast::NumberExpr::new("0".to_string(), None, crate::ast::Span::default()),
-                )))
+                Topology::NPU(Box::new(ast::Expr::Number(ast::NumberExpr::new(
+                    "0".to_string(),
+                    None,
+                    ast::Span::default(),
+                ))))
             }
-            Topology::AccCore(_) => Topology::AccCore(Box::new(crate::ast::Expr::Number(
-                crate::ast::NumberExpr::new("0".to_string(), None, crate::ast::Span::default()),
+            Topology::AccCore(_) => Topology::AccCore(Box::new(ast::Expr::Number(
+                ast::NumberExpr::new("0".to_string(), None, ast::Span::default()),
             ))),
             _ => top.clone(),
         }
@@ -116,7 +119,7 @@ impl HardwareGraph {
                 return true;
             }
             let mem = Self::default_memory_for(pinned_top);
-            let mock_ty = Type::Ref(Box::new(Type::Scalar(crate::ast::ElementType::F32)), mem);
+            let mock_ty = Type::Ref(Box::new(Type::Scalar(ast::ElementType::F32)), mem);
             return Self::is_type_accessible(self, active_topology, pinned_top, &mock_ty);
         }
 
@@ -202,7 +205,7 @@ impl HardwareGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{ElementType, Expr, NumberExpr, Span};
+    use ast::{ElementType, Expr, NumberExpr, Span};
 
     fn make_tensor() -> Type {
         Type::Tensor(ElementType::F32, vec![], None)

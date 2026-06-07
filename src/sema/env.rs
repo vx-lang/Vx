@@ -26,6 +26,7 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+use crate::ast;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Bool(bool),

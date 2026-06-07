@@ -1,8 +1,8 @@
 use crate::ast::MacroExpander;
 use crate::ast_printer::AstPrinter;
-use crate::codegen::MeliorGenerator;
 use crate::diagnostic::DiagnosticLevel;
 use clap::{Parser, ValueEnum};
+use codegen::MeliorGenerator;
 use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
 
@@ -10,6 +10,9 @@ use crate::module_loader::ModuleLoader;
 use crate::sema::{GlobalAstEnv, TypeChecker};
 use crate::session::{GlobalSession, LocalWorkerState};
 
+use crate::ast;
+use crate::codegen;
+use crate::sema;
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum Action {
     /// Only run the lexer and parser
@@ -272,7 +275,7 @@ impl CompilerDriver {
             module_asts.insert(p.module_path.clone(), p);
         }
 
-        crate::codegen::register_vx_passes();
+        codegen::register_vx_passes();
 
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
@@ -287,7 +290,7 @@ impl CompilerDriver {
         });
         context.append_dialect_registry(&registry);
         context.load_all_available_dialects();
-        crate::codegen::register_vx_dialect(&context);
+        codegen::register_vx_dialect(&context);
 
         let mut codegen = MeliorGenerator::new(&context);
         codegen.generate(&monomorphized_ast, &module_asts);

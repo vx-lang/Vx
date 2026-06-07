@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::ast;
+use crate::parser;
 pub struct ModuleLoader {
     search_paths: Vec<PathBuf>,
     loaded_modules: HashMap<String, Program>,

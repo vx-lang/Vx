@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
+    use crate::ast;
     use crate::gid::{
         TypeId, ESCAPE_HATCH_MASK, INDEX_MASK, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT,
     };
@@ -22,7 +23,7 @@ pub mod verify_arch {
     use std::collections::HashMap;
     use std::sync::{Arc, Weak};
 
-    pub fn verify_phase_1_parse(file_paths: &[String], parsed_modules: &[crate::ast::VxModule]) {
+    pub fn verify_phase_1_parse(file_paths: &[String], parsed_modules: &[ast::VxModule]) {
         assert_eq!(
             file_paths.len(),
             parsed_modules.len(),
@@ -130,7 +131,7 @@ pub mod verify_arch {
     }
 
     pub fn verify_phase_7_routing(
-        buckets: &[Vec<crate::ast::Function>],
+        buckets: &[Vec<ast::Function>],
         module_index_map: &HashMap<u64, usize>,
     ) {
         // Build a reverse lookup mapping dense indices back to their Module Hashes

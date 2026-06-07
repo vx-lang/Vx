@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use super::*;
 
+use crate::ast;
+use crate::sema;
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
         let mut terminated = false;
@@ -122,8 +124,8 @@ impl<'a> TypeChecker<'a> {
                 if matches!(iterable_ty, Type::GenericInstance(..))
                     || matches!(iterable_ty, Type::Struct(..))
                 {
-                    use crate::ast::expr::{Expr, MethodCallExpr};
-                    use crate::ast::Span;
+                    use ast::expr::{Expr, MethodCallExpr};
+                    use ast::Span;
                     let mut next_call = Expr::MethodCall(MethodCallExpr {
                         base: (*iterable).clone(),
                         method_name: "next".to_string(),
@@ -327,7 +329,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn prove_expr(&self, expr: &Expr) -> bool {
-        let mut prover = crate::sema::prover::SmtProver::new();
+        let mut prover = sema::prover::SmtProver::new();
         for constraint in &self.constraints {
             if let Err(e) = prover.add_constraint(constraint) {
                 // If we can't lower a constraint, we just ignore it or log a warning
