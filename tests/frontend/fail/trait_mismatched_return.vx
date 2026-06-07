@@ -1,0 +1,22 @@
+//===- trait_mismatched_return.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+struct CPU {}
+struct NPU {}
+
+trait TransferDMA<T> {
+  fn transfer_array(self: T, data: Tensor<f32, [4]>) -> Tensor<f32, [4]>;
+}
+
+impl TransferDMA<NPU> for NPU {
+  // CHECK: Type mismatch on return.
+  fn transfer_array(self: NPU, data: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return transfer(data, Memory::NPU_HBM); }
+}
+
+fn main() -> void {}
