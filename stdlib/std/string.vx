@@ -24,7 +24,7 @@ impl String {
   fn new ()->String {
     let ptr = vx_string_new();
     String {
-    ptr:
+      ptr:
       ptr
     }
   }
@@ -32,7 +32,7 @@ impl String {
   fn from_c_str(c_str : *const i8) -> String {
     let ptr = vx_string_from_c_str(c_str);
     String {
-    ptr:
+      ptr:
       ptr
     }
   }

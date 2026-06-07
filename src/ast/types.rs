@@ -111,10 +111,7 @@ impl Type {
                     self.clone()
                 }
             }
-            Type::Const(expr) => {
-                // Technically substitute expressions inside, but for now we clone
-                Type::Const(expr.clone())
-            }
+            Type::Const(expr) => Type::Const(Box::new(expr.substitute(mapping))),
             Type::GenericInstance(base, args) => {
                 let new_base = base.substitute(mapping);
                 let new_args = args.iter().map(|a| a.substitute(mapping)).collect();

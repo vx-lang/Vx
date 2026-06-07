@@ -283,15 +283,19 @@ impl<'a> Parser<'a> {
                         self.advance(); // consume '<'
                         let mut type_args = Vec::new();
                         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
-                            // Try to parse an expression if it's a number literal
-                            if let TokenType::Number(_) = self.peek().kind {
-                                if let Ok(expr) = self.parse_expr() {
+                            let saved_pos = self.pos;
+                            if let Ok(ty) = self.parse_type() {
+                                type_args.push(ty);
+                            } else {
+                                self.pos = saved_pos;
+                                if let Ok(expr) = self.parse_primary_expr() {
                                     type_args.push(Type::Const(Box::new(expr)));
                                 } else {
-                                    type_args.push(self.parse_type()?);
+                                    return Err(
+                                        "Expected type or constant expression in generic arguments"
+                                            .to_string(),
+                                    );
                                 }
-                            } else {
-                                type_args.push(self.parse_type()?);
                             }
                             if !self.match_token(&TokenType::Comma) {
                                 break;

@@ -1,8 +1,7 @@
 //===- cpu_large_matmul_tiled.vx ---------------------------------*- Vx -*-===//
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X
-// mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
-// FileCheck %s RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
 
 fn test_f32() -> i32 {
   let mut a = Tensor<f32>([ 64, 64 ]);

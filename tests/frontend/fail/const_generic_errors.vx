@@ -38,4 +38,4 @@ fn test_4() -> void {
   let mut x : Tensor<f32, [ "invalid", 10 ]>;
 }
 
-// CHECK: Expected type identifier
+// CHECK: Expected '='

@@ -1,6 +1,4 @@
-// RUN: vxc %s --action emit-mlir -X
-// mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))"
-// 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir -X mlir=--pass-pipeline="builtin.module(func.func(convert-linalg-to-affine-loops),func.func(affine-loop-unroll{unroll-factor=4}))" 2>&1 | FileCheck %s
 
 fn test_unroll(a : Tensor<f32, [16]>, b : Tensor<f32, [16]>)
 -> Tensor<f32, [16]> {

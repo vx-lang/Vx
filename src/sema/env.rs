@@ -457,66 +457,68 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {
-        let s = s.trim();
-        match s {
-            "i32" => Type::Scalar(ElementType::I32),
-            "i64" => Type::Scalar(ElementType::I64),
-            "f32" => Type::Scalar(ElementType::F32),
-            "f64" => Type::Scalar(ElementType::F64),
-            "Bool" => Type::Scalar(ElementType::Bool),
-            other => {
-                if let Some(lt) = other.find('<') {
-                    if other.ends_with('>') {
-                        let base_name = other[..lt].trim().to_string();
-                        let args_str = &other[lt + 1..other.len() - 1];
-                        let mut args = Vec::new();
-                        let mut depth = 0;
-                        let mut current = String::new();
-                        for c in args_str.chars() {
-                            if c == '<' {
-                                depth += 1;
-                                current.push(c);
-                            } else if c == '>' {
-                                depth -= 1;
-                                current.push(c);
-                            } else if c == ',' && depth == 0 {
-                                args.push(self.parse_ty_str(&current));
-                                current.clear();
-                            } else {
-                                current.push(c);
-                            }
-                        }
-                        if !current.trim().is_empty() {
-                            args.push(self.parse_ty_str(&current));
-                        }
+        let mut lexer = crate::lexer::Lexer::new(s);
+        let tokens = lexer.tokenize();
 
-                        let base_ty = if self.env.structs.contains_key(&base_name)
-                            || self.generated_structs.iter().any(|s| s.name == base_name)
-                        {
-                            Type::Struct(base_name, None)
-                        } else {
-                            Type::Generic(base_name, None)
-                        };
-                        return Type::GenericInstance(Box::new(base_ty), args);
-                    }
-                }
+        let mut parser = crate::parser::Parser::new(tokens.clone(), s);
+        if let Ok(ty) = parser.parse_type() {
+            if parser.check(&crate::lexer::TokenType::Eof) {
+                return self.resolve_parsed_type(ty);
+            }
+        }
 
-                if other.chars().all(|c| c.is_ascii_digit()) {
-                    return Type::Const(Box::new(Expr::Number(NumberExpr::new(
-                        other.to_string(),
-                        None,
-                        Span::default(),
-                    ))));
-                }
+        let mut expr_parser = crate::parser::Parser::new(tokens, s);
+        if let Ok(expr) = expr_parser.parse_primary_expr() {
+            return Type::Const(Box::new(expr));
+        }
 
-                if self.env.structs.contains_key(other)
-                    || self.generated_structs.iter().any(|s| s.name == other)
+        Type::Unknown
+    }
+
+    fn resolve_parsed_type(&self, ty: Type) -> Type {
+        match ty {
+            Type::Struct(name, id) => {
+                if self.env.structs.contains_key(&name)
+                    || self.generated_structs.iter().any(|s| s.name == name)
                 {
-                    Type::Struct(other.to_string(), None)
+                    Type::Struct(name, id)
                 } else {
-                    Type::Generic(other.to_string(), None)
+                    Type::Generic(name, id)
                 }
             }
+            Type::GenericInstance(base, args) => {
+                let resolved_base = Box::new(self.resolve_parsed_type(*base));
+                let resolved_args = args
+                    .into_iter()
+                    .map(|a| self.resolve_parsed_type(a))
+                    .collect();
+                Type::GenericInstance(resolved_base, resolved_args)
+            }
+            Type::Pointer(inner, mem, mut_flag) => {
+                Type::Pointer(Box::new(self.resolve_parsed_type(*inner)), mem, mut_flag)
+            }
+            Type::Ref(inner, mem) => Type::Ref(Box::new(self.resolve_parsed_type(*inner)), mem),
+            Type::Borrow(inner, mem, mut_flag, r) => {
+                Type::Borrow(Box::new(self.resolve_parsed_type(*inner)), mem, mut_flag, r)
+            }
+            Type::Pinned(inner, top) => {
+                Type::Pinned(Box::new(self.resolve_parsed_type(*inner)), top)
+            }
+            Type::Function(args, ret) => {
+                let resolved_args = args
+                    .into_iter()
+                    .map(|a| self.resolve_parsed_type(a))
+                    .collect();
+                Type::Function(resolved_args, Box::new(self.resolve_parsed_type(*ret)))
+            }
+            Type::Closure(args, ret) => {
+                let resolved_args = args
+                    .into_iter()
+                    .map(|a| self.resolve_parsed_type(a))
+                    .collect();
+                Type::Closure(resolved_args, Box::new(self.resolve_parsed_type(*ret)))
+            }
+            _ => ty,
         }
     }
 }

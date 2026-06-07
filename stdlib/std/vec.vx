@@ -9,9 +9,9 @@ import std::closure;
 import std::iter;
 
 extern "C" {
-fn malloc(size : i64)->*mut i8;
-fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
-fn free(ptr : *mut i8) -> i32;
+  fn malloc(size : i64)->*mut i8;
+  fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
+  fn free(ptr : *mut i8) -> i32;
 }
 
 struct Vec<T>{
@@ -21,7 +21,7 @@ struct Vec<T>{
 }
 
 impl<T>
-    Vec<T> {
+Vec<T> {
   fn new ()->Vec<T> {
     let ptr : *mut T = unsafe{malloc(0)};
     return Vec<T>{data : ptr, len : 0, capacity : 0};
@@ -29,16 +29,16 @@ impl<T>
 
   fn push(self : &mut Vec<T>, val : T) -> i32 {
     if self
-      .len == self.capacity {
-        let mut new_cap : i32 = 4;
-        if self
-          .capacity > 0 { new_cap = self.capacity * 2; }
-        let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
+    .len == self.capacity {
+      let mut new_cap : i32 = 4;
+      if self
+      .capacity > 0 { new_cap = self.capacity * 2; }
+      let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
 
-        let ptr : *mut i8 = self.data;
-        self.data = unsafe{realloc(ptr, size_bytes)};
-        self.capacity = new_cap;
-      }
+      let ptr : *mut i8 = self.data;
+      self.data = unsafe{realloc(ptr, size_bytes)};
+      self.capacity = new_cap;
+    }
     unsafe { self.data[self.len] = val; }
     self.len = self.len + 1;
     return 0;
@@ -61,19 +61,19 @@ impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
     let vec_len : i32 = unsafe{(*self.vec).len};
     let mut ret = Option<T>::None();
     if self
-      .current < vec_len {
-        let val : T = unsafe{(*self.vec).data[self.current]};
-        self.current = self.current + 1;
-        ret = Option<T>::Some(val);
-      }
+    .current < vec_len {
+      let val : T = unsafe{(*self.vec).data[self.current]};
+      self.current = self.current + 1;
+      ret = Option<T>::Some(val);
+    }
     return ret;
   }
 }
 
 impl<T>
-    VecIter<T> {
+VecIter<T> {
   fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
-      -> VecMap<T, NewItem> {
+  -> VecMap<T, NewItem> {
     return VecMap<T, NewItem>{iter : self, f : f};
   }
 }
@@ -89,7 +89,7 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
     let mut opt = self.iter.next();
     loop {
       if opt
-        .is_none() { break; }
+      .is_none() { break; }
       let item = opt.unwrap();
       let f_closure = self.f;
       let f_ptr = f_closure.func;
@@ -102,13 +102,13 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
 }
 
 impl<T, NewItem>
-    VecMap<T, NewItem> {
+VecMap<T, NewItem> {
   fn collect(self : &mut VecMap<T, NewItem>) -> Vec<NewItem> {
     let mut result = Vec<NewItem>::new ();
     loop {
       let mut opt = self.next();
       if opt
-        .is_none() { break; }
+      .is_none() { break; }
       result.push(opt.unwrap());
     }
     return result;

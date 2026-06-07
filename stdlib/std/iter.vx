@@ -16,12 +16,12 @@ impl<I, F, Item, NewItem> Iterator<Map<I, F, Item, NewItem>, NewItem> for Map<I,
     let opt = self.iter.next();
     let mut ret = Option<NewItem>::None();
     if opt
-      .is_some() {
-        let val = opt.unwrap();
-        let func = self.f;
-        let mapped = func(val);
-        ret = Option<NewItem>::Some(mapped);
-      }
+    .is_some() {
+      let val = opt.unwrap();
+      let func = self.f;
+      let mapped = func(val);
+      ret = Option<NewItem>::Some(mapped);
+    }
     return ret;
   }
 }
@@ -32,7 +32,7 @@ impl<I, F, Item, NewItem> Map<I, F, Item, NewItem> {
     let mut opt = self.next();
     loop {
       if opt
-        .is_none() { break; }
+      .is_none() { break; }
       vec.push(opt.unwrap());
       opt = self.next();
     }

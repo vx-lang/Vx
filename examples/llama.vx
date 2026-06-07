@@ -12,72 +12,72 @@ import tests::modules::llama_rt;
 
 struct Config {
   dim : i32,
-        hidden_dim : i32,
-                     n_layers : i32,
-                                n_heads : i32,
-                                          n_kv_heads : i32,
-                                                       vocab_size : i32,
-                                                                    seq_len
-      : i32
+  hidden_dim : i32,
+  n_layers : i32,
+  n_heads : i32,
+  n_kv_heads : i32,
+  vocab_size : i32,
+  seq_len
+  : i32
 }
 
 struct TransformerWeights {
   token_embedding_table : Tensor<f32>,
-                          rms_att_weight : Tensor<f32>,
-                                           rms_ffn_weight : Tensor<f32>,
-                                                            wq : Tensor<f32>,
-                                                                 wk
-      : Tensor<f32>,
-        wv : Tensor<f32>,
-             wo : Tensor<f32>,
-                  w1 : Tensor<f32>,
-                       w2 : Tensor<f32>,
-                            w3 : Tensor<f32>,
-                                 rms_final_weight : Tensor<f32>,
-                                                    wcls : Tensor<f32>
+  rms_att_weight : Tensor<f32>,
+  rms_ffn_weight : Tensor<f32>,
+  wq : Tensor<f32>,
+  wk
+  : Tensor<f32>,
+  wv : Tensor<f32>,
+  wo : Tensor<f32>,
+  w1 : Tensor<f32>,
+  w2 : Tensor<f32>,
+  w3 : Tensor<f32>,
+  rms_final_weight : Tensor<f32>,
+  wcls : Tensor<f32>
 }
 
 struct RunState {
   x : Tensor<f32>,
-      xb : Tensor<f32>,
-           xb2 : Tensor<f32>,
-                 hb : Tensor<f32>,
-                      hb2 : Tensor<f32>,
-                            q : Tensor<f32>,
-                                k : Tensor<f32>,
-                                    v : Tensor<f32>,
-                                        att : Tensor<f32>,
-                                              logits : Tensor<f32>,
-                                                       key_cache : Tensor<f32>,
-                                                                   value_cache
-      : Tensor<f32>
+  xb : Tensor<f32>,
+  xb2 : Tensor<f32>,
+  hb : Tensor<f32>,
+  hb2 : Tensor<f32>,
+  q : Tensor<f32>,
+  k : Tensor<f32>,
+  v : Tensor<f32>,
+  att : Tensor<f32>,
+  logits : Tensor<f32>,
+  key_cache : Tensor<f32>,
+  value_cache
+  : Tensor<f32>
 }
 
 fn ptr_to_tensor_1d(ptr: *mut f32, d1: i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor([d1]);
   for
-    i in 0..d1 {
-      unsafe { t[i] = ptr[i]; }
-    }
+  i in 0..d1 {
+    unsafe { t[i] = ptr[i]; }
+  }
   return t;
 }
 
 fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor([ d1, d2 ]);
   for
-    i in 0..d1 {
+  i in 0..d1 {
     for
-      j in 0..d2 {
-        let idx : i32 = i * d2 + j;
-        unsafe { t[i][j] = ptr[idx]; }
-      }
+    j in 0..d2 {
+      let idx : i32 = i * d2 + j;
+      unsafe { t[i][j] = ptr[idx]; }
     }
+  }
   return t;
 }
 
 fn load_weights(ptr : *mut f32, dim : i32, hidden_dim : i32, n_layers : i32,
-                n_heads : i32, n_kv_heads : i32, seq_len : i32,
-                vocab_size : i32) -> TransformerWeights {
+n_heads : i32, n_kv_heads : i32, seq_len : i32,
+vocab_size : i32) -> TransformerWeights {
   let head_size : i32 = dim / n_heads;
 
   let w = unsafe {
@@ -85,13 +85,13 @@ fn load_weights(ptr : *mut f32, dim : i32, hidden_dim : i32, n_layers : i32,
     let p1 : *mut f32 = vx_advance_ptr(p0, vocab_size * dim);
     let p2 : *mut f32 = vx_advance_ptr(p1, n_layers * dim);
     let p3 : *mut f32 =
-                 vx_advance_ptr(p2, n_layers * dim * n_heads * head_size);
+    vx_advance_ptr(p2, n_layers * dim * n_heads * head_size);
     let p4 : *mut f32 =
-                 vx_advance_ptr(p3, n_layers * dim * n_kv_heads * head_size);
+    vx_advance_ptr(p3, n_layers * dim * n_kv_heads * head_size);
     let p5 : *mut f32 =
-                 vx_advance_ptr(p4, n_layers * dim * n_kv_heads * head_size);
+    vx_advance_ptr(p4, n_layers * dim * n_kv_heads * head_size);
     let p6 : *mut f32 =
-                 vx_advance_ptr(p5, n_layers * n_heads * head_size * dim);
+    vx_advance_ptr(p5, n_layers * n_heads * head_size * dim);
     let p7 : *mut f32 = vx_advance_ptr(p6, n_layers * dim);
     let p8 : *mut f32 = vx_advance_ptr(p7, n_layers * dim * hidden_dim);
     let p9 : *mut f32 = vx_advance_ptr(p8, n_layers * hidden_dim * dim);
@@ -99,30 +99,30 @@ fn load_weights(ptr : *mut f32, dim : i32, hidden_dim : i32, n_layers : i32,
     let p11 : *mut f32 = vx_advance_ptr(p10, dim);
 
     TransformerWeights {
-    token_embedding_table:
+      token_embedding_table:
       ptr_to_tensor_2d(p0, vocab_size, dim),
-          rms_att_weight : ptr_to_tensor_2d(p1, n_layers, dim),
-                           wq : ptr_to_tensor_2d(p2, n_layers * dim, dim),
-                                wk
-          : ptr_to_tensor_2d(p3, n_layers * dim, n_kv_heads * head_size),
-            wv : ptr_to_tensor_2d(p4, n_layers * dim, n_kv_heads * head_size),
-                 wo : ptr_to_tensor_2d(p5, n_layers * dim, dim),
-                      rms_ffn_weight : ptr_to_tensor_2d(p6, n_layers, dim),
-                                       w1
-          : ptr_to_tensor_2d(p7, n_layers * dim, hidden_dim),
-            w2 : ptr_to_tensor_2d(p8, n_layers * hidden_dim, dim),
-                 w3 : ptr_to_tensor_2d(p9, n_layers * dim, hidden_dim),
-                      rms_final_weight : ptr_to_tensor_1d(p10, dim),
-                                         wcls
-          : ptr_to_tensor_2d(p0, vocab_size, dim)
+      rms_att_weight : ptr_to_tensor_2d(p1, n_layers, dim),
+      wq : ptr_to_tensor_2d(p2, n_layers * dim, dim),
+      wk
+      : ptr_to_tensor_2d(p3, n_layers * dim, n_kv_heads * head_size),
+      wv : ptr_to_tensor_2d(p4, n_layers * dim, n_kv_heads * head_size),
+      wo : ptr_to_tensor_2d(p5, n_layers * dim, dim),
+      rms_ffn_weight : ptr_to_tensor_2d(p6, n_layers, dim),
+      w1
+      : ptr_to_tensor_2d(p7, n_layers * dim, hidden_dim),
+      w2 : ptr_to_tensor_2d(p8, n_layers * hidden_dim, dim),
+      w3 : ptr_to_tensor_2d(p9, n_layers * dim, hidden_dim),
+      rms_final_weight : ptr_to_tensor_1d(p10, dim),
+      wcls
+      : ptr_to_tensor_2d(p0, vocab_size, dim)
     }
   };
   return w;
 }
 
 fn init_run_state(dim : i32, hidden_dim : i32, n_layers : i32, n_heads : i32,
-                  n_kv_heads : i32, seq_len : i32, vocab_size : i32)
-    -> RunState {
+n_kv_heads : i32, seq_len : i32, vocab_size : i32)
+-> RunState {
   let kv_dim : i32 = (dim * n_kv_heads) / n_heads;
 
   return RunState{
@@ -150,18 +150,18 @@ fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
 }
 
 fn rmsnorm(o : &Tensor<f32>, x : &Tensor<f32>, weight : &Tensor<f32>,
-           size : i32) -> i32 {
+size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for
-    j in 0..size {
-      let val : f32 = x[j];
-      ss = ss + (val * val);
-    }
+  j in 0..size {
+    let val : f32 = x[j];
+    ss = ss + (val * val);
+  }
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
   ss = 1.0 / safe_sqrtf(add);
   for
-    j in 0..size { o[j] = weight[j] * (ss * x[j]); }
+  j in 0..size { o[j] = weight[j] * (ss * x[j]); }
   return 0;
 }
 
@@ -169,19 +169,19 @@ fn argmax(probabilities : &Tensor<f32>, n : i32) -> i32 {
   let mut max_i : i32 = 0;
   let mut max_p : f32 = probabilities[0];
   for
-    i in 1..n {
-      let p_val : f32 = probabilities[i];
-      if p_val
-        > max_p {
-          max_i = i;
-          max_p = p_val;
-        }
+  i in 1..n {
+    let p_val : f32 = probabilities[i];
+    if p_val
+    > max_p {
+      max_i = i;
+      max_p = p_val;
     }
+  }
   return max_i;
 }
 
 fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
-               w : &TransformerWeights) -> i32 {
+w : &TransformerWeights) -> i32 {
   let dim : i32 = p.dim;
   let hidden_dim : i32 = p.hidden_dim;
   let kv_dim : i32 = (p.dim * p.n_kv_heads) / p.n_heads;
@@ -189,16 +189,16 @@ fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
 
   // 1. Token Embedding
   for
-    i in 0..dim { s.x[i] = w.token_embedding_table[token][i]; }
+  i in 0..dim { s.x[i] = w.token_embedding_table[token][i]; }
 
   // 2. Forward pass over all layers
   for
-    l in 0..p.n_layers {
-      // 2.1 Attention RMSNorm
-      // Extract slice for this layer's RMSNorm weights
-      let mut rms_att : Tensor<f32> = Tensor([dim]);
+  l in 0..p.n_layers {
+    // 2.1 Attention RMSNorm
+    // Extract slice for this layer's RMSNorm weights
+    let mut rms_att : Tensor<f32> = Tensor([dim]);
     for
-      i in 0..dim { rms_att[i] = w.rms_att_weight[l][i]; }
+    i in 0..dim { rms_att[i] = w.rms_att_weight[l][i]; }
     rmsnorm(s.xb, s.x, rms_att, dim);
 
     // 2.2 QKV Projections (using native Tensor matmul `@`)
@@ -208,155 +208,155 @@ fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
     let mut wk_l : Tensor<f32> = Tensor([ dim, kv_dim ]);
     let mut wv_l : Tensor<f32> = Tensor([ dim, kv_dim ]);
     for
-      row in 0..dim {
+    row in 0..dim {
       for
-        col in 0..dim { wq_l[row][col] = w.wq[l * dim + row][col]; }
+      col in 0..dim { wq_l[row][col] = w.wq[l * dim + row][col]; }
       for
-        col in 0..kv_dim { wk_l[row][col] = w.wk[l * dim + row][col]; }
+      col in 0..kv_dim { wk_l[row][col] = w.wk[l * dim + row][col]; }
       for
-        col in 0..kv_dim { wv_l[row][col] = w.wv[l * dim + row][col]; }
-      }
+      col in 0..kv_dim { wv_l[row][col] = w.wv[l * dim + row][col]; }
+    }
 
     // Convert 1D s.xb to 1xN 2D Tensor for matmul (temp workaround until 1D @
     // 2D is native)
     let mut t_xb_2d : Tensor<f32> = Tensor([ 1, dim ]);
     for
-      i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
+    i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
 
     let t_q : Tensor<f32> = t_xb_2d @wq_l;
     let t_k : Tensor<f32> = t_xb_2d @wk_l;
     let t_v : Tensor<f32> = t_xb_2d @wv_l;
 
     for
-      i in 0..dim { s.q[i] = t_q[0][i]; }
+    i in 0..dim { s.q[i] = t_q[0][i]; }
     for
-      i in 0..kv_dim {
-        s.k[i] = t_k[0][i];
-        s.v[i] = t_v[0][i];
-      }
+    i in 0..kv_dim {
+      s.k[i] = t_k[0][i];
+      s.v[i] = t_v[0][i];
+    }
 
     // 2.3 RoPE (Rotary Positional Embeddings)
     for
-      i in 0..dim {
-        let div : i32 = i / 2;
-        let mul : i32 = div * 2;
-        let rem : i32 = i - mul;
-        if rem
-          == 0 {
-            let head_dim_div : i32 = i / head_size;
-            let head_dim_mul : i32 = head_dim_div * head_size;
-            let head_dim : i32 = i - head_dim_mul;
-            let freq : f32 = safe_get_rope_freq(pos, head_dim, head_size);
-            let fcr : f32 = safe_cosf(freq);
-            let fci : f32 = safe_sinf(freq);
+    i in 0..dim {
+      let div : i32 = i / 2;
+      let mul : i32 = div * 2;
+      let rem : i32 = i - mul;
+      if rem
+      == 0 {
+        let head_dim_div : i32 = i / head_size;
+        let head_dim_mul : i32 = head_dim_div * head_size;
+        let head_dim : i32 = i - head_dim_mul;
+        let freq : f32 = safe_get_rope_freq(pos, head_dim, head_size);
+        let fcr : f32 = safe_cosf(freq);
+        let fci : f32 = safe_sinf(freq);
 
-            let rotn_q_r : i32 = i;
-            let rotn_q_i : i32 = i + 1;
-            let q0 : f32 = s.q[rotn_q_r];
-            let q1 : f32 = s.q[rotn_q_i];
-            s.q[rotn_q_r] = q0 * fcr - q1 * fci;
-            s.q[rotn_q_i] = q0 * fci + q1 * fcr;
+        let rotn_q_r : i32 = i;
+        let rotn_q_i : i32 = i + 1;
+        let q0 : f32 = s.q[rotn_q_r];
+        let q1 : f32 = s.q[rotn_q_i];
+        s.q[rotn_q_r] = q0 * fcr - q1 * fci;
+        s.q[rotn_q_i] = q0 * fci + q1 * fcr;
 
-            if i
-              < kv_dim {
-                let rotn_k_r : i32 = i;
-                let rotn_k_i : i32 = i + 1;
-                let k0 : f32 = s.k[rotn_k_r];
-                let k1 : f32 = s.k[rotn_k_i];
-                s.k[rotn_k_r] = k0 * fcr - k1 * fci;
-                s.k[rotn_k_i] = k0 * fci + k1 * fcr;
-              }
-          }
+        if i
+        < kv_dim {
+          let rotn_k_r : i32 = i;
+          let rotn_k_i : i32 = i + 1;
+          let k0 : f32 = s.k[rotn_k_r];
+          let k1 : f32 = s.k[rotn_k_i];
+          s.k[rotn_k_r] = k0 * fcr - k1 * fci;
+          s.k[rotn_k_i] = k0 * fci + k1 * fcr;
+        }
       }
+    }
 
     // 2.4 KV Cache update
     for
-      i in 0..kv_dim {
-        s.key_cache[l][pos][i] = s.k[i];
-        s.value_cache[l][pos][i] = s.v[i];
-      }
+    i in 0..kv_dim {
+      s.key_cache[l][pos][i] = s.k[i];
+      s.value_cache[l][pos][i] = s.v[i];
+    }
 
     // 2.5 Multi-Head Attention
     for
-      h in 0..p.n_heads {
-        let q_offset : i32 = h * head_size;
+    h in 0..p.n_heads {
+      let q_offset : i32 = h * head_size;
 
-        // Calculate attention scores for this head
+      // Calculate attention scores for this head
       for
-        t in 0..(pos + 1) {
-          let mut score : f32 = 0.0;
-          let kv_head_idx : i32 = h / (p.n_heads / p.n_kv_heads);
-          let kv_offset : i32 = kv_head_idx * head_size;
+      t in 0..(pos + 1) {
+        let mut score : f32 = 0.0;
+        let kv_head_idx : i32 = h / (p.n_heads / p.n_kv_heads);
+        let kv_offset : i32 = kv_head_idx * head_size;
 
         for
-          i in 0..head_size {
-            let q_val : f32 = s.q[q_offset + i];
-            let k_val : f32 = s.key_cache[l][t][kv_offset + i];
-            score = score + q_val * k_val;
-          }
+        i in 0..head_size {
+          let q_val : f32 = s.q[q_offset + i];
+          let k_val : f32 = s.key_cache[l][t][kv_offset + i];
+          score = score + q_val * k_val;
+        }
         let hf : f32 = head_size;
         s.att[h][t] = score / safe_sqrtf(hf);
-        }
+      }
 
       // Softmax
       let mut max_val : f32 = s.att[h][0];
       for
-        t in 1..(pos + 1) {
-          let a_val : f32 = s.att[h][t];
-          if a_val
-            > max_val { max_val = a_val; }
-        }
+      t in 1..(pos + 1) {
+        let a_val : f32 = s.att[h][t];
+        if a_val
+        > max_val { max_val = a_val; }
+      }
 
       let mut sum_exp : f32 = 0.0;
       for
-        t in 0..(pos + 1) {
-          let e : f32 = safe_expf(s.att[h][t] - max_val);
-          s.att[h][t] = e;
-          sum_exp = sum_exp + e;
-        }
+      t in 0..(pos + 1) {
+        let e : f32 = safe_expf(s.att[h][t] - max_val);
+        s.att[h][t] = e;
+        sum_exp = sum_exp + e;
+      }
 
       for
-        t in 0..(pos + 1) { s.att[h][t] = s.att[h][t] / sum_exp; }
+      t in 0..(pos + 1) { s.att[h][t] = s.att[h][t] / sum_exp; }
 
       // Weighted sum of values
       let xb_offset : i32 = h * head_size;
       for
-        i in 0..head_size { s.xb[xb_offset + i] = 0.0; }
+      i in 0..head_size { s.xb[xb_offset + i] = 0.0; }
 
       for
-        t in 0..(pos + 1) {
-          let a : f32 = s.att[h][t];
-          let kv_head_idx : i32 = h / (p.n_heads / p.n_kv_heads);
-          let kv_offset : i32 = kv_head_idx * head_size;
+      t in 0..(pos + 1) {
+        let a : f32 = s.att[h][t];
+        let kv_head_idx : i32 = h / (p.n_heads / p.n_kv_heads);
+        let kv_offset : i32 = kv_head_idx * head_size;
 
         for
-          i in 0..head_size {
-            let v_val : f32 = s.value_cache[l][t][kv_offset + i];
-            s.xb[xb_offset + i] = s.xb[xb_offset + i] + a * v_val;
-          }
+        i in 0..head_size {
+          let v_val : f32 = s.value_cache[l][t][kv_offset + i];
+          s.xb[xb_offset + i] = s.xb[xb_offset + i] + a * v_val;
         }
       }
+    }
 
     // 2.6 Output Projection
     let mut wo_l : Tensor<f32> = Tensor([ dim, dim ]);
     for
-      row in 0..dim {
+    row in 0..dim {
       for
-        col in 0..dim { wo_l[row][col] = w.wo[l * dim + row][col]; }
-      }
+      col in 0..dim { wo_l[row][col] = w.wo[l * dim + row][col]; }
+    }
 
     for
-      i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
+    i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
     let t_xb2 : Tensor<f32> = t_xb_2d @wo_l;
 
     // Residual connection
     for
-      i in 0..dim { s.x[i] = s.x[i] + t_xb2[0][i]; }
+    i in 0..dim { s.x[i] = s.x[i] + t_xb2[0][i]; }
 
     // 2.7 FFN RMSNorm
     let mut rms_ffn : Tensor<f32> = Tensor([dim]);
     for
-      i in 0..dim { rms_ffn[i] = w.rms_ffn_weight[l][i]; }
+    i in 0..dim { rms_ffn[i] = w.rms_ffn_weight[l][i]; }
     rmsnorm(s.xb, s.x, rms_ffn, dim);
 
     // 2.8 FFN Projections
@@ -364,42 +364,42 @@ fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
     let mut w2_l : Tensor<f32> = Tensor([ hidden_dim, dim ]);
     let mut w3_l : Tensor<f32> = Tensor([ dim, hidden_dim ]);
     for
-      row in 0..dim {
+    row in 0..dim {
       for
-        col in 0..hidden_dim {
-          w1_l[row][col] = w.w1[l * dim + row][col];
-          w3_l[row][col] = w.w3[l * dim + row][col];
-        }
+      col in 0..hidden_dim {
+        w1_l[row][col] = w.w1[l * dim + row][col];
+        w3_l[row][col] = w.w3[l * dim + row][col];
       }
+    }
     for
-      row in 0..hidden_dim {
+    row in 0..hidden_dim {
       for
-        col in 0..dim { w2_l[row][col] = w.w2[l * hidden_dim + row][col]; }
-      }
+      col in 0..dim { w2_l[row][col] = w.w2[l * hidden_dim + row][col]; }
+    }
 
     for
-      i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
+    i in 0..dim { t_xb_2d[0][i] = s.xb[i]; }
     let t_hb : Tensor<f32> = t_xb_2d @w1_l;
     let t_hb2 : Tensor<f32> = t_xb_2d @w3_l;
 
     // SwiGLU activation
     for
-      i in 0..hidden_dim {
-        let mut val : f32 = t_hb[0][i];
-        val = val * (1.0 / (1.0 + safe_expf(0.0 - val)));
-        val = val * t_hb2[0][i];
-        s.hb[i] = val;
-      }
+    i in 0..hidden_dim {
+      let mut val : f32 = t_hb[0][i];
+      val = val * (1.0 / (1.0 + safe_expf(0.0 - val)));
+      val = val * t_hb2[0][i];
+      s.hb[i] = val;
+    }
 
     let mut t_hb_2d : Tensor<f32> = Tensor([ 1, hidden_dim ]);
     for
-      i in 0..hidden_dim { t_hb_2d[0][i] = s.hb[i]; }
+    i in 0..hidden_dim { t_hb_2d[0][i] = s.hb[i]; }
     let t_xb_out : Tensor<f32> = t_hb_2d @w2_l;
 
     // Residual connection
     for
-      i in 0..dim { s.x[i] = s.x[i] + t_xb_out[0][i]; }
-    }
+    i in 0..dim { s.x[i] = s.x[i] + t_xb_out[0][i]; }
+  }
 
   // 3. Final RMSNorm
   rmsnorm(s.x, s.x, w.rms_final_weight, dim);
@@ -407,18 +407,18 @@ fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
   // 4. Classifier into Logits
   let mut t_x_2d : Tensor<f32> = Tensor([ 1, dim ]);
   for
-    i in 0..dim { t_x_2d[0][i] = s.x[i]; }
+  i in 0..dim { t_x_2d[0][i] = s.x[i]; }
 
   let mut t_wcls_T : Tensor<f32> = Tensor([ dim, p.vocab_size ]);
   for
-    r in 0..p.vocab_size {
+  r in 0..p.vocab_size {
     for
-      c in 0..dim { t_wcls_T[c][r] = w.wcls[r][c]; }
-    }
+    c in 0..dim { t_wcls_T[c][r] = w.wcls[r][c]; }
+  }
 
   let t_logits : Tensor<f32> = t_x_2d @t_wcls_T;
   for
-    i in 0..p.vocab_size { s.logits[i] = t_logits[0][i]; }
+  i in 0..p.vocab_size { s.logits[i] = t_logits[0][i]; }
   return 0;
 }
 
@@ -443,31 +443,31 @@ fn main() -> i32 {
     let seq_ptr : *mut i32 = vx_advance_ptr(config_ptr, 6);
 
     Config {
-    dim:
+      dim:
       dim_ptr[0], hidden_dim : hidden_ptr[0],
-                               n_layers : layers_ptr[0],
-                                          n_heads : heads_ptr[0],
-                                                    n_kv_heads
-          : kv_heads_ptr[0],
-            vocab_size : vocab_size,
-                         seq_len : seq_ptr[0]
+      n_layers : layers_ptr[0],
+      n_heads : heads_ptr[0],
+      n_kv_heads
+      : kv_heads_ptr[0],
+      vocab_size : vocab_size,
+      seq_len : seq_ptr[0]
     }
   };
 
   let steps : i32 = 256;
   if config
-    .seq_len < steps { let s : i32 = config.seq_len; }
+  .seq_len < steps { let s : i32 = config.seq_len; }
 
   // 2. Map weights and allocate native Tensors
   let weights_ptr : *mut f32 = unsafe{vx_load_weights(model_path)};
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
-                             config.n_layers, config.n_heads, config.n_kv_heads,
-                             config.seq_len, config.vocab_size);
+  config.n_layers, config.n_heads, config.n_kv_heads,
+  config.seq_len, config.vocab_size);
   let state = init_run_state(config.dim, config.hidden_dim, config.n_layers,
-                             config.n_heads, config.n_kv_heads, config.seq_len,
-                             config.vocab_size);
+  config.n_heads, config.n_kv_heads, config.seq_len,
+  config.vocab_size);
   let tokenizer_ptr
-      : *mut i8 = unsafe{vx_build_tokenizer(tokenizer_path, config.vocab_size)};
+  : *mut i8 = unsafe{vx_build_tokenizer(tokenizer_path, config.vocab_size)};
 
   let start : f32 = unsafe{vx_get_time()};
   let mut next : i32 = 0;
@@ -475,13 +475,13 @@ fn main() -> i32 {
 
   // 3. Autoregressive Generation Loop
   for
-    pos in 0..steps {
-      transformer(token, pos, &config, &state, &weights);
-      next = argmax(state.logits, config.vocab_size);
-      let piece : *mut i8 = unsafe{vx_decode_token(tokenizer_ptr, token, next)};
-      unsafe { vx_safe_printf(piece); }
-      token = next;
-    }
+  pos in 0..steps {
+    transformer(token, pos, &config, &state, &weights);
+    next = argmax(state.logits, config.vocab_size);
+    let piece : *mut i8 = unsafe{vx_decode_token(tokenizer_ptr, token, next)};
+    unsafe { vx_safe_printf(piece); }
+    token = next;
+  }
 
   unsafe { vx_print_float(0.0); }
   return 0;

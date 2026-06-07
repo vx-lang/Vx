@@ -222,7 +222,7 @@ impl HardwareGraph {
             if let Some(neighbors) = self.transfer_edges.get(&mem) {
                 for (next, edge_cost) in neighbors {
                     let next_cost = cost + edge_cost;
-                    let is_better = dists.get(next).map_or(true, |&c| next_cost < c);
+                    let is_better = dists.get(next).is_none_or(|&c| next_cost < c);
 
                     if is_better {
                         dists.insert(next.clone(), next_cost);
