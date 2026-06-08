@@ -16,7 +16,7 @@ use crate::lexer::{Lexer, TokenType};
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let mut lexer = Lexer::new_with_comments(content);
-    let mut formatted = String::new();
+    let mut formatted = String::with_capacity(content.len() + content.len() / 10);
     let mut indent_level: isize = 0;
     let indent_str = " ".repeat(indent_spaces);
 
@@ -59,16 +59,18 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 }
 
                 if format_enabled && is_new_line {
-                    let current_indent = indent_str.repeat(indent_level as usize);
-                    formatted.push_str(&current_indent);
+                    for _ in 0..indent_level {
+                        formatted.push_str(&indent_str);
+                    }
                 }
                 is_new_line = false;
                 formatted.push('}');
             }
             TokenType::LeftBrace => {
                 if format_enabled && is_new_line {
-                    let current_indent = indent_str.repeat(indent_level as usize);
-                    formatted.push_str(&current_indent);
+                    for _ in 0..indent_level {
+                        formatted.push_str(&indent_str);
+                    }
                 }
                 is_new_line = false;
                 formatted.push('{');
@@ -88,19 +90,22 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 }
 
                 if (format_enabled || turning_off) && is_new_line {
-                    let current_indent = indent_str.repeat(indent_level as usize);
-                    formatted.push_str(&current_indent);
+                    for _ in 0..indent_level {
+                        formatted.push_str(&indent_str);
+                    }
                 }
                 is_new_line = false;
                 formatted.push_str(&c);
             }
             other => {
                 if format_enabled && is_new_line {
-                    let current_indent = indent_str.repeat(indent_level as usize);
-                    formatted.push_str(&current_indent);
+                    for _ in 0..indent_level {
+                        formatted.push_str(&indent_str);
+                    }
                 }
                 is_new_line = false;
-                formatted.push_str(&other.to_string());
+                use std::fmt::Write;
+                write!(&mut formatted, "{}", other).unwrap();
             }
         }
     }
