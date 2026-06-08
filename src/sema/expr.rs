@@ -42,6 +42,7 @@ impl<'a> TypeChecker<'a> {
             Expr::LogicalOp(LogicalOpExpr { .. }) => crate::hir::OP_NOP,
             Expr::FunctionCall(FunctionCallExpr {
                 name: _,
+                type_args: _,
                 args: _,
                 span: _,
             }) => crate::hir::OP_CALL,
@@ -1152,6 +1153,7 @@ impl<'a> TypeChecker<'a> {
 
                     *expr = Expr::FunctionCall(FunctionCallExpr {
                         name: call_name,
+                        type_args: None,
                         args: new_args,
                         span: Span::default(),
                     });
@@ -1218,21 +1220,26 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,
+                type_args,
                 args,
                 span: _,
             }) => {
                 let resolved_name = name.clone();
                 let mut base_name = resolved_name.clone();
-                let mut explicit_generic_args = Vec::new();
-                if let Some(idx) = resolved_name.find('<') {
-                    if resolved_name.ends_with('>') {
-                        base_name = resolved_name[..idx].to_string();
-                        let args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
-                        explicit_generic_args = args_str
-                            .split(',')
-                            .map(|s| self.parse_ty_str(s.trim()))
-                            .collect();
+                let mut explicit_generic_args = type_args.clone().unwrap_or_default();
+                if explicit_generic_args.is_empty() {
+                    if let Some(idx) = resolved_name.find('<') {
+                        if resolved_name.ends_with('>') {
+                            base_name = resolved_name[..idx].to_string();
+                            let args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
+                            explicit_generic_args = args_str
+                                .split(',')
+                                .map(|s| self.parse_ty_str(s.trim()))
+                                .collect();
+                        }
                     }
+                } else if let Some(idx) = resolved_name.find('<') {
+                    base_name = resolved_name[..idx].to_string();
                 }
 
                 // Mocking built-ins
@@ -1283,17 +1290,22 @@ impl<'a> TypeChecker<'a> {
                     && !resolved_name.contains("$")
                     && !resolved_name.contains("__")
                 {
-                    let el_ty =
-                        if resolved_name.starts_with("Tensor<") && resolved_name.ends_with(">") {
-                            let t_name = &resolved_name["Tensor<".len()..resolved_name.len() - 1];
-                            if let Ok(el) = t_name.parse::<ElementType>() {
-                                el
-                            } else {
-                                ElementType::Generic(t_name.to_string())
-                            }
+                    let el_ty = if !explicit_generic_args.is_empty() {
+                        if let Type::Scalar(el) = &explicit_generic_args[0] {
+                            el.clone()
                         } else {
                             ElementType::F32
-                        };
+                        }
+                    } else if resolved_name.starts_with("Tensor<") && resolved_name.ends_with(">") {
+                        let t_name = &resolved_name["Tensor<".len()..resolved_name.len() - 1];
+                        if let Ok(el) = t_name.parse::<ElementType>() {
+                            el
+                        } else {
+                            ElementType::Generic(t_name.to_string())
+                        }
+                    } else {
+                        ElementType::F32
+                    };
                     let mut dims = Vec::new();
                     if !args.is_empty() {
                         if let Expr::Array(arr) = &args[0] {
@@ -1425,6 +1437,7 @@ impl<'a> TypeChecker<'a> {
 
                             *expr = Expr::FunctionCall(FunctionCallExpr {
                                 name: call_name,
+                                type_args: None,
                                 args: new_args,
                                 span: Span::default(),
                             });
@@ -1901,6 +1914,7 @@ impl<'a> TypeChecker<'a> {
             Expr::MethodCall(MethodCallExpr {
                 base: obj,
                 method_name: _method,
+                type_args: _,
                 args,
                 span: _,
             }) => {
@@ -1927,6 +1941,7 @@ impl<'a> TypeChecker<'a> {
                         let mangled_name = format!("{}_{}", prefix, _method);
                         let func_call = Expr::FunctionCall(FunctionCallExpr {
                             name: mangled_name,
+                            type_args: None,
                             args: args.clone(),
                             span: Span::default(),
                         });
@@ -2219,6 +2234,7 @@ impl<'a> TypeChecker<'a> {
 
                     let mut func_call = Expr::FunctionCall(FunctionCallExpr {
                         name: mangled_name,
+                        type_args: None,
                         args: call_args,
                         span: Span::default(),
                     });
@@ -2833,6 +2849,7 @@ impl<'a> TypeChecker<'a> {
 
                 let new_call = Expr::FunctionCall(FunctionCallExpr::new(
                     format!("Vec<{}>::new", element_type),
+                    None,
                     vec![],
                     span.clone(),
                 ));
@@ -2849,11 +2866,16 @@ impl<'a> TypeChecker<'a> {
 
                 for el in elements.clone() {
                     let push_call = Expr::MethodCall(MethodCallExpr::new(
-                        Box::new(Expr::Identifier(IdentifierExpr::new(
-                            var_name.clone(),
-                            span.clone(),
-                        ))),
+                        Box::new(Expr::Borrow(BorrowExpr {
+                            expr: Box::new(Expr::Identifier(IdentifierExpr::new(
+                                var_name.clone(),
+                                Span::default(),
+                            ))),
+                            is_mut: true,
+                            span: Span::default(),
+                        })),
                         "push".to_string(),
+                        None,
                         vec![el],
                         span.clone(),
                     ));

@@ -141,6 +141,7 @@ impl<'a> TypeChecker<'a> {
                     let mut next_call = Expr::MethodCall(MethodCallExpr {
                         base: (*iterable).clone(),
                         method_name: "next".to_string(),
+                        type_args: None,
                         args: vec![],
                         span: Span::default(),
                     });
@@ -486,6 +487,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
+                type_args: None,
                 args,
                 span: _,
             }) => {

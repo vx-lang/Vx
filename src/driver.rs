@@ -308,7 +308,9 @@ impl CompilerDriver {
         codegen::register_vx_dialect(&context);
 
         let mut codegen = MeliorGenerator::new(&context);
-        codegen.generate(&monomorphized_ast, &module_asts);
+        codegen
+            .generate(&monomorphized_ast, &module_asts)
+            .map_err(|e| format!("Codegen Error: {:?}", e))?;
         let mut module = codegen.into_module();
 
         if !module.as_operation().verify() {

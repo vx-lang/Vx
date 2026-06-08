@@ -128,7 +128,7 @@ fn main() -> i32 {
                         vxc::codegen::register_vx_dialect(&context);
 
                         let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-                        codegen.generate(&monomorphized_ast, &module_asts);
+                        let _ = codegen.generate(&monomorphized_ast, &module_asts);
                         let mut module = codegen.into_module();
                         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
                         let mlir_str = format!("{}", module.as_operation());

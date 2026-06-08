@@ -9,10 +9,10 @@
 // Code generator module orchestrating the compilation pipeline from AST to MLIR to binary.
 //
 //===----------------------------------------------------------------------===//
-
 use super::*;
 
 use crate::ast;
+use crate::codegen::lower::{LowerError, LowerToMelior};
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
@@ -226,26 +226,30 @@ impl<'c> MeliorGenerator<'c> {
         self.module
     }
 
-    pub fn generate(&mut self, program: &Program, modules: &HashMap<String, Program>) -> String {
+    pub fn generate(
+        &mut self,
+        program: &Program,
+        modules: &HashMap<String, Program>,
+    ) -> Result<String, LowerError> {
         println!("[CODEGEN] Starting MLIR generation...");
         let location = Location::unknown(self.context);
         self.module = melior::ir::Module::new(location);
 
-        self.generate_module(program, modules);
+        self.generate_module(program, modules)?;
 
         println!("[CODEGEN] Finished generating modules.");
         let op = self.module.as_operation();
         let s = format!("{}", op);
         std::fs::write("mlir_dump.mlir", &s).unwrap();
         println!("[CODEGEN] Formatted MLIR string to mlir_dump.mlir.");
-        s
+        Ok(s)
     }
 
     pub(crate) fn generate_module(
         &mut self,
         program: &Program,
         modules: &HashMap<String, Program>,
-    ) {
+    ) -> Result<(), LowerError> {
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
         }
@@ -343,12 +347,12 @@ impl<'c> MeliorGenerator<'c> {
         // Emit module functions
         for module_prog in modules.values() {
             for func in &module_prog.functions {
-                operations.push(self.generate_function(func));
+                operations.push(self.generate_function(func)?);
             }
         }
 
         for func in &program.functions {
-            operations.push(self.generate_function(func));
+            operations.push(self.generate_function(func)?);
         }
 
         let body = self.module.body();
@@ -415,9 +419,13 @@ impl<'c> MeliorGenerator<'c> {
         for op in operations {
             body.append_operation(op);
         }
+        Ok(())
     }
 
-    pub(crate) fn generate_function(&mut self, func: &Function) -> melior::ir::Operation<'c> {
+    pub(crate) fn generate_function(
+        &mut self,
+        func: &Function,
+    ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
         let is_main = func.name == "main";
@@ -430,17 +438,7 @@ impl<'c> MeliorGenerator<'c> {
 
         let mut arg_tys = Vec::new();
         for (_, ty) in &func.params {
-            let lowered =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.lower_type(ty)));
-            match lowered {
-                Ok(t) => arg_tys.push(t),
-                Err(_e) => {
-                    panic!(
-                        "Failed to lower type for function parameter in {}: {:?}",
-                        func.name, ty
-                    );
-                }
-            }
+            arg_tys.push(self.lower_type(ty));
         }
 
         let mut actual_ret_tys = Vec::new();
@@ -474,7 +472,7 @@ impl<'c> MeliorGenerator<'c> {
                     continue;
                 }
             }
-            self.generate_statement(stmt, &block);
+            self.generate_statement(stmt, &block)?;
         }
 
         if is_main {
@@ -552,23 +550,28 @@ impl<'c> MeliorGenerator<'c> {
         .build()
         .unwrap();
 
-        func_op
+        Ok(func_op)
     }
 
-    pub(crate) fn generate_statement(&mut self, stmt: &Statement, block: &melior::ir::Block<'c>) {
+    pub(crate) fn generate_statement(
+        &mut self,
+        stmt: &Statement,
+        block: &melior::ir::Block<'c>,
+    ) -> Result<(), LowerError> {
         match stmt {
-            Statement::Return(s) => s.lower(self, block),
-            Statement::LetDecl(s) => s.lower(self, block),
-            Statement::Assign(s) => s.lower(self, block),
-            Statement::CompoundAssign(s) => s.lower(self, block),
-            Statement::ExprStmt(s) => s.lower(self, block),
-            Statement::ForLoop(s) => s.lower(self, block),
+            Statement::Return(s) => LowerToMelior::lower(s, self, block),
+            Statement::LetDecl(s) => LowerToMelior::lower(s, self, block),
+            Statement::Assign(s) => LowerToMelior::lower(s, self, block),
+            Statement::CompoundAssign(s) => LowerToMelior::lower(s, self, block),
+            Statement::ExprStmt(s) => LowerToMelior::lower(s, self, block),
+            Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
             Statement::Assert(_) => {
                 // TODO: Lower to `scf.if` with panic/abort for runtime checks
+                Ok(())
             }
-            Statement::Loop(s) => s.lower(self, block),
-            Statement::Break(s) => s.lower(self, block),
-            Statement::Continue(s) => s.lower(self, block),
+            Statement::Loop(s) => LowerToMelior::lower(s, self, block),
+            Statement::Break(s) => LowerToMelior::lower(s, self, block),
+            Statement::Continue(s) => LowerToMelior::lower(s, self, block),
             Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
         }
     }
@@ -577,40 +580,40 @@ impl<'c> MeliorGenerator<'c> {
         &mut self,
         expr: &Expr,
         block: &melior::ir::Block<'c>,
-    ) -> (Value<'c, 'c>, Type<'c>) {
+    ) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
         match expr {
-            Expr::Identifier(e) => e.lower(self, block),
-            Expr::BinaryOp(e) => e.lower(self, block),
-            Expr::RelationalOp(e) => e.lower(self, block),
-            Expr::LogicalOp(e) => e.lower(self, block),
-            Expr::UnaryOp(e) => e.lower(self, block),
-            Expr::StructInit(e) => e.lower(self, block),
-            Expr::MemberAccess(e) => e.lower(self, block),
-            Expr::IndexAccess(e) => e.lower(self, block),
-            Expr::FunctionCall(e) => e.lower(self, block).unwrap_or_else(|err| panic!("Function call codegen error: {:?}", err)),
-            Expr::MethodCall(e) => e.lower(self, block),
-            Expr::SpawnOn(e) => e.lower(self, block),
-            Expr::Array(e) => e.lower(self, block),
-            Expr::If(e) => e.lower(self, block),
-            Expr::EnumVariant(e) => e.lower(self, block),
-            Expr::Match(e) => e.lower(self, block),
-            Expr::Number(e) => e.lower(self, block),
-            Expr::UnsafeBlock(e) => e.lower(self, block),
-            Expr::Grad(e) => e.lower(self, block),
-            Expr::Vjp(e) => e.lower(self, block),
-            Expr::Jvp(e) => e.lower(self, block),
-            Expr::Transfer(e) => e.lower(self, block),
-            Expr::Borrow(e) => e.lower(self, block),
-            Expr::StringLiteral(e) => e.lower(self, block),
-            Expr::Closure(e) => e.lower(self, block),
-            Expr::ComptimeBlock(e) => e.lower(self, block),
-            Expr::Dereference(e) => e.lower(self, block),
-            Expr::AsCast(e) => e.lower(self, block),
-            Expr::IndirectCall(e) => e.lower(self, block),
-            Expr::Print(e) => e.lower(self, block),
-            Expr::Println(e) => e.lower(self, block),
-            Expr::InlineMlir(e) => e.lower(self, block),
-            Expr::Topology(e) => e.lower(self, block),
+            Expr::Identifier(e) => LowerToMelior::lower(e, self, block),
+            Expr::BinaryOp(e) => LowerToMelior::lower(e, self, block),
+            Expr::RelationalOp(e) => LowerToMelior::lower(e, self, block),
+            Expr::LogicalOp(e) => LowerToMelior::lower(e, self, block),
+            Expr::UnaryOp(e) => LowerToMelior::lower(e, self, block),
+            Expr::StructInit(e) => LowerToMelior::lower(e, self, block),
+            Expr::MemberAccess(e) => LowerToMelior::lower(e, self, block),
+            Expr::IndexAccess(e) => LowerToMelior::lower(e, self, block),
+            Expr::FunctionCall(e) => LowerToMelior::lower(e, self, block),
+            Expr::MethodCall(e) => LowerToMelior::lower(e, self, block),
+            Expr::SpawnOn(e) => LowerToMelior::lower(e, self, block),
+            Expr::Array(e) => LowerToMelior::lower(e, self, block),
+            Expr::If(e) => LowerToMelior::lower(e, self, block),
+            Expr::EnumVariant(e) => LowerToMelior::lower(e, self, block),
+            Expr::Match(e) => LowerToMelior::lower(e, self, block),
+            Expr::Number(e) => LowerToMelior::lower(e, self, block),
+            Expr::UnsafeBlock(e) => LowerToMelior::lower(e, self, block),
+            Expr::Grad(e) => LowerToMelior::lower(e, self, block),
+            Expr::Vjp(e) => LowerToMelior::lower(e, self, block),
+            Expr::Jvp(e) => LowerToMelior::lower(e, self, block),
+            Expr::Transfer(e) => LowerToMelior::lower(e, self, block),
+            Expr::Borrow(e) => LowerToMelior::lower(e, self, block),
+            Expr::StringLiteral(e) => LowerToMelior::lower(e, self, block),
+            Expr::Closure(e) => LowerToMelior::lower(e, self, block),
+            Expr::ComptimeBlock(e) => LowerToMelior::lower(e, self, block),
+            Expr::Dereference(e) => LowerToMelior::lower(e, self, block),
+            Expr::AsCast(e) => LowerToMelior::lower(e, self, block),
+            Expr::IndirectCall(e) => LowerToMelior::lower(e, self, block),
+            Expr::Print(e) => LowerToMelior::lower(e, self, block),
+            Expr::Println(e) => LowerToMelior::lower(e, self, block),
+            Expr::InlineMlir(e) => LowerToMelior::lower(e, self, block),
+            Expr::Topology(e) => LowerToMelior::lower(e, self, block),
             _ => todo!("{:?}", expr),
         }
     }
@@ -1018,7 +1021,7 @@ impl<'c> MeliorGenerator<'c> {
                 span: _,
             }) => {
                 let (base_val, base_ty, mut indices) = self.flatten_indices(base, block)?;
-                let (idx_val, _) = self.generate_expr(idx, block);
+                let (idx_val, _) = self.generate_expr(idx, block).ok()?;
 
                 let idx_ty_str = idx_val.r#type().to_string();
                 let actual_idx = if idx_ty_str != "index" {
@@ -1039,7 +1042,7 @@ impl<'c> MeliorGenerator<'c> {
                 Some((base_val, base_ty, indices))
             }
             _ => {
-                let (val, ty) = self.generate_expr(expr, block);
+                let (val, ty) = self.generate_expr(expr, block).ok()?;
                 Some((val, ty, Vec::new()))
             }
         }
