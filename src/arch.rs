@@ -41,6 +41,17 @@ impl Default for TransferCostGraph {
         graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::LocalSRAM, 10);
         graph.add_transfer_edge(MemorySpace::LocalSRAM, MemorySpace::NPUHBM, 10);
 
+        // --- NEW: Complex Topology Simulation Paths ---
+
+        // Host -> RemoteGPU (Cost 300)
+        graph.add_transfer_edge(MemorySpace::CPUDRAM, MemorySpace::Remote_HBM, 300);
+
+        // NPU -> NIC (Cost 5)
+        graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::NIC_RAM, 5);
+
+        // NIC -> RemoteGPU (Cost 20)
+        graph.add_transfer_edge(MemorySpace::NIC_RAM, MemorySpace::Remote_HBM, 20);
+
         // Standard Visibility Paths
         // Host can access DRAM and HBM
         graph.add_visibility_edge(Topology::CPU, MemorySpace::CPUDRAM);

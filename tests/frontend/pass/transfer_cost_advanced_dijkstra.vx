@@ -1,0 +1,64 @@
+// RUN: %vxc %s | FileCheck %s
+
+// Verify that a complex multi-hop transfer across topologies completes successfully
+// and is expanded into the precise intermediate `vx.transfer` operations 
+// dictated by the Dijkstra shortest-path memory algebra graph.
+
+fn test_cpu_to_sram_multi_hop() -> void {
+  // Tensor originates in CPUDRAM (default for CPU topology).
+  let cpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+
+  // Requesting transfer to Local_SRAM. 
+  // There is no direct PCIe-to-SRAM link.
+  // The graph must route: CPUDRAM (cost: 0) -> NPUHBM (cost: 50) -> Local_SRAM (cost: 10). Total Cost: 60.
+  // This should synthetically expand into:
+  // transfer(transfer(cpu_tensor, Memory::NPU_HBM), Memory::Local_SRAM)
+  let sram_tensor = transfer(cpu_tensor, Memory::Local_SRAM);
+}
+
+// CHECK: func.func @test_cpu_to_sram_multi_hop
+// CHECK: %[[ZERO:.*]] = vx.tensor.zeros
+// First hop: CPUDRAM -> NPU_HBM
+// CHECK: %[[HOP1:.*]] = vx.transfer %[[ZERO]] : !vx.tensor<128xf32>
+// Second hop: NPU_HBM -> Local_SRAM
+// CHECK: %{{.*}} = vx.transfer %[[HOP1]] : !vx.tensor<128xf32>
+
+fn test_sram_to_cpu_multi_hop() -> void {
+  // Tensor originates in LocalSRAM.
+  let sram_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let sram_tensor_pinned: Pinned<Tensor<f32, [128]>, Topology::AccCore[0]> = transfer(sram_tensor, Memory::Local_SRAM);
+
+  // Transfer back to CPUDRAM.
+  // Route: Local_SRAM -> NPUHBM -> CPUDRAM.
+  let cpu_tensor2 = transfer(sram_tensor_pinned, Memory::CPU_DRAM);
+}
+
+// CHECK: func.func @test_sram_to_cpu_multi_hop
+// CHECK: %[[ZERO2:.*]] = vx.tensor.zeros
+// Pinned setup:
+// CHECK: %[[PINNED:.*]] = vx.transfer %[[ZERO2]] : !vx.tensor<128xf32>
+// First hop: Local_SRAM -> NPU_HBM
+// CHECK: %[[HOP_BACK1:.*]] = vx.transfer %[[PINNED]] : !vx.tensor<128xf32>
+// CHECK: %{{.*}} = vx.transfer %[[HOP_BACK1]] : !vx.tensor<128xf32>
+
+fn test_3d_parallelism_routing() -> void {
+  // Tensor originates in GPU HBM.
+  let gpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let gpu_tensor_hbm = transfer(gpu_tensor, Memory::NPU_HBM);
+
+  // Request transfer to Remote GPU.
+  // Instead of Host fallback (50 + 300 = 350),
+  // Route should be: NPU_HBM -> NIC (5) -> Remote GPU (20) = 25. Total 2 hops.
+  let remote_tensor = transfer(gpu_tensor_hbm, Memory::Remote_HBM);
+}
+
+// CHECK: func.func @test_3d_parallelism_routing
+// CHECK: %[[ZERO3:.*]] = vx.tensor.zeros
+// Setup GPU:
+// CHECK: %[[GPU:.*]] = vx.transfer %[[ZERO3]] : !vx.tensor<128xf32>
+// Multi-hop starts here: GPU -> NIC -> Remote
+// First hop: NPU_HBM -> NIC_RAM
+// CHECK: %[[HOP_1:.*]] = vx.transfer %[[GPU]] : !vx.tensor<128xf32>
+// Second hop: NIC_RAM -> Remote_HBM
+// CHECK: %{{.*}} = vx.transfer %[[HOP_1]] : !vx.tensor<128xf32>
+

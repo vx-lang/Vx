@@ -61,6 +61,8 @@ impl<'a> Parser<'a> {
             "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
             "NPU_HBM" => Ok(MemorySpace::NPUHBM),
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
+            "NIC_RAM" => Ok(MemorySpace::NIC_RAM),
+            "Remote_HBM" => Ok(MemorySpace::Remote_HBM),
             _ => Err(format!("Unknown memory space {}", ident)),
         }
     }
