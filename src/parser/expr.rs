@@ -277,41 +277,16 @@ impl<'a> Parser<'a> {
             }));
         }
 
-        if matches!(self.peek().kind, TokenType::LeftAngle) {
-            let mut is_generic = true;
-            let mut type_args = Vec::new();
-            let mut j = 1;
-            while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
-                && !matches!(self.peek_n(j).kind, TokenType::Eof)
-            {
-                let kind = &self.peek_n(j).kind;
-                if let TokenType::Identifier(ref s) = kind {
-                    type_args.push(s.clone());
-                    j += 1;
-                } else if let TokenType::Number(v) = kind {
-                    type_args.push(v.clone());
-                    j += 1;
-                } else if let TokenType::StringLiteral(s) = kind {
-                    type_args.push(format!("\"{}\"", s));
-                    j += 1;
-                } else {
-                    is_generic = false;
-                    break;
+        let mut parsed_type_args = None;
+        if self.check(&TokenType::LeftAngle) {
+            let saved_pos = self.pos;
+            self.advance(); // consume '<'
+            if let Ok(type_args) = self.parse_generic_type_args() {
+                if !type_args.is_empty() {
+                    parsed_type_args = Some(type_args);
                 }
-                if matches!(self.peek_n(j).kind, TokenType::Comma) {
-                    j += 1;
-                }
-            }
-            if is_generic
-                && matches!(self.peek_n(j).kind, TokenType::RightAngle)
-                && !type_args.is_empty()
-            {
-                self.advance(); // consume '<'
-                for _ in 0..j {
-                    self.advance();
-                }
-                let ty_args_str = type_args.join(", ");
-                call_name = format!("{}<{}>", call_name, ty_args_str);
+            } else {
+                self.pos = saved_pos;
             }
         }
         if self.check(&TokenType::DoubleColon) {
@@ -324,46 +299,29 @@ impl<'a> Parser<'a> {
             );
 
             if has_paren {
+                if let Some(tys) = parsed_type_args.take() {
+                    let ty_args_str = tys
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    call_name = format!("{}<{}>", call_name, ty_args_str);
+                }
+
                 self.advance(); // consume '::'
                 if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
                     self.advance(); // consume method name
                     call_name = format!("{}::{}", call_name, method_name);
 
-                    if matches!(self.peek().kind, TokenType::LeftAngle) {
-                        let mut is_generic = true;
-                        let mut type_args = Vec::new();
-                        let mut j = 1;
-                        while !matches!(self.peek_n(j).kind, TokenType::RightAngle)
-                            && !matches!(self.peek_n(j).kind, TokenType::Eof)
-                        {
-                            let kind = &self.peek_n(j).kind;
-                            if let TokenType::Identifier(ref s) = kind {
-                                type_args.push(s.clone());
-                                j += 1;
-                            } else if let TokenType::Number(v) = kind {
-                                type_args.push(v.clone());
-                                j += 1;
-                            } else if let TokenType::StringLiteral(s) = kind {
-                                type_args.push(format!("\"{}\"", s));
-                                j += 1;
-                            } else {
-                                is_generic = false;
-                                break;
+                    if self.check(&TokenType::LeftAngle) {
+                        let saved_pos = self.pos;
+                        self.advance(); // consume '<'
+                        if let Ok(type_args) = self.parse_generic_type_args() {
+                            if !type_args.is_empty() {
+                                parsed_type_args = Some(type_args);
                             }
-                            if matches!(self.peek_n(j).kind, TokenType::Comma) {
-                                j += 1;
-                            }
-                        }
-                        if is_generic
-                            && matches!(self.peek_n(j).kind, TokenType::RightAngle)
-                            && !type_args.is_empty()
-                        {
-                            self.advance(); // consume '<'
-                            for _ in 0..j {
-                                self.advance();
-                            }
-                            let ty_args_str = type_args.join(", ");
-                            call_name = format!("{}<{}>", call_name, ty_args_str);
+                        } else {
+                            self.pos = saved_pos;
                         }
                     }
                 }
@@ -382,6 +340,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             Ok(Expr::FunctionCall(FunctionCallExpr {
                 name: call_name,
+                type_args: parsed_type_args,
                 args,
                 span: Span::default(),
             }))
@@ -422,6 +381,14 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
+                if let Some(tys) = parsed_type_args {
+                    let ty_args_str = tys
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    call_name = format!("{}<{}>", call_name, ty_args_str);
+                }
                 Ok(Expr::StructInit(StructInitExpr {
                     name: call_name,
                     fields,
@@ -446,6 +413,14 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
                     payload = Some(args);
                 }
+                if let Some(tys) = parsed_type_args {
+                    let ty_args_str = tys
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    call_name = format!("{}<{}>", call_name, ty_args_str);
+                }
                 Ok(Expr::EnumVariant(EnumVariantExpr {
                     enum_name: call_name,
                     variant_name: variant,
@@ -453,6 +428,14 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 }))
             } else {
+                if let Some(tys) = parsed_type_args {
+                    let ty_args_str = tys
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    call_name = format!("{}<{}>", call_name, ty_args_str);
+                }
                 Ok(Expr::Identifier(IdentifierExpr {
                     name: call_name,
                     span: Span::default(),
@@ -477,6 +460,14 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
                 payload = Some(args);
             }
+            if let Some(tys) = parsed_type_args {
+                let ty_args_str = tys
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                call_name = format!("{}<{}>", call_name, ty_args_str);
+            }
             Ok(Expr::EnumVariant(EnumVariantExpr {
                 enum_name: call_name,
                 variant_name: variant,
@@ -484,6 +475,14 @@ impl<'a> Parser<'a> {
                 span: Span::default(),
             }))
         } else {
+            if let Some(tys) = parsed_type_args {
+                let ty_args_str = tys
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                call_name = format!("{}<{}>", call_name, ty_args_str);
+            }
             Ok(Expr::Identifier(IdentifierExpr {
                 name: call_name,
                 span: Span::default(),
@@ -658,6 +657,7 @@ impl<'a> Parser<'a> {
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
                     name: "Verified".to_string(),
+                    type_args: None,
                     args: vec![inner],
                     span: Span::default(),
                 })
@@ -917,6 +917,7 @@ impl<'a> Parser<'a> {
                     expr = Expr::MethodCall(MethodCallExpr {
                         base: Box::new(expr),
                         method_name: ident,
+                        type_args: None,
                         args,
                         span: Span::default(),
                     });
@@ -1011,6 +1012,7 @@ mod tests {
             name,
             args,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(name, "Option::Some");
@@ -1034,6 +1036,7 @@ mod tests {
             name,
             args,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(name, "Option<i32>::Some");
@@ -1051,6 +1054,7 @@ mod tests {
             name,
             args,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(name, "Vec<i32>::new");
@@ -1069,6 +1073,7 @@ mod tests {
             method_name,
             args,
             span: _,
+            type_args: _,
         }) = expr
         {
             if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &*base {
@@ -1097,6 +1102,7 @@ mod tests {
             method_name,
             args,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(method_name, "map");
@@ -1106,6 +1112,7 @@ mod tests {
                 method_name: inner_method_name,
                 args: inner_args,
                 span: _,
+                type_args: _,
             }) = &*base
             {
                 assert_eq!(inner_method_name, "iter");

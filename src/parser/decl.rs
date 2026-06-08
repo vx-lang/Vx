@@ -609,6 +609,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 name: func_name,
                 args,
                 span: _,
+                type_args: _,
             }) = expr
             {
                 assert_eq!(func_name, "Tensor");
@@ -774,6 +775,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 method_name: method,
                 args,
                 span: _,
+                type_args: _,
             }) = expr
             {
                 assert_eq!(method, "with_memory");
@@ -945,6 +947,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 name,
                 args,
                 span: _,
+                type_args: _,
             }) = expr
             {
                 assert_eq!(name, "vx_stdout_write");
@@ -969,6 +972,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 name,
                 args,
                 span: _,
+                type_args: _,
             }) = expr
             {
                 assert_eq!(name, "vx_stderr_write");

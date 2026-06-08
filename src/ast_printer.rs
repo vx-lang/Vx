@@ -150,6 +150,7 @@ impl AstPrinter {
             }
             Expr::FunctionCall(FunctionCallExpr {
                 name,
+                type_args: _,
                 args,
                 span: _,
             }) => {
@@ -162,6 +163,7 @@ impl AstPrinter {
             Expr::MethodCall(MethodCallExpr {
                 base: expr,
                 method_name: method,
+                type_args: _,
                 args,
                 span: _,
             }) => {

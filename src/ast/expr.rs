@@ -122,12 +122,18 @@ impl TransferExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionCallExpr {
     pub name: String,
+    pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
 }
 impl FunctionCallExpr {
-    pub fn new(name: String, args: Vec<Expr>, span: Span) -> Self {
-        Self { name, args, span }
+    pub fn new(name: String, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
+        Self {
+            name,
+            type_args,
+            args,
+            span,
+        }
     }
 }
 
@@ -202,14 +208,22 @@ impl IndexAccessExpr {
 pub struct MethodCallExpr {
     pub base: Box<Expr>,
     pub method_name: String,
+    pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
 }
 impl MethodCallExpr {
-    pub fn new(base: Box<Expr>, method_name: String, args: Vec<Expr>, span: Span) -> Self {
+    pub fn new(
+        base: Box<Expr>,
+        method_name: String,
+        type_args: Option<Vec<Type>>,
+        args: Vec<Expr>,
+        span: Span,
+    ) -> Self {
         Self {
             base,
             method_name,
+            type_args,
             args,
             span,
         }
@@ -746,8 +760,13 @@ impl Expr {
                             format!("{}<{}>{}", base, substituted_args.join(", "), remainder);
                     }
                 }
+                let substituted_type_args = e
+                    .type_args
+                    .as_ref()
+                    .map(|tys| tys.iter().map(|ty| ty.substitute(mapping)).collect());
                 Expr::FunctionCall(FunctionCallExpr {
                     name: new_name,
+                    type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                     span: e.span.clone(),
                 })
@@ -773,12 +792,19 @@ impl Expr {
                 index: Box::new(e.index.substitute(mapping)),
                 span: e.span.clone(),
             }),
-            Expr::MethodCall(e) => Expr::MethodCall(MethodCallExpr {
-                base: Box::new(e.base.substitute(mapping)),
-                method_name: e.method_name.clone(),
-                args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
-                span: e.span.clone(),
-            }),
+            Expr::MethodCall(e) => {
+                let substituted_type_args = e
+                    .type_args
+                    .as_ref()
+                    .map(|tys| tys.iter().map(|ty| ty.substitute(mapping)).collect());
+                Expr::MethodCall(MethodCallExpr {
+                    base: Box::new(e.base.substitute(mapping)),
+                    method_name: e.method_name.clone(),
+                    type_args: substituted_type_args,
+                    args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
+                    span: e.span.clone(),
+                })
+            }
             Expr::BinaryOp(e) => Expr::BinaryOp(BinaryOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),
                 op: e.op.clone(),
