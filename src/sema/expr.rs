@@ -906,6 +906,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
+                    MemorySpace::NicRam | MemorySpace::RemoteHbm => Topology::Current,
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
@@ -932,6 +933,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
+                    MemorySpace::NicRam | MemorySpace::RemoteHbm => Topology::Current,
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(base, pinned_top)

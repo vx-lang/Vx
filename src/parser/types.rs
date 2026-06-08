@@ -61,8 +61,8 @@ impl<'a> Parser<'a> {
             "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
             "NPU_HBM" => Ok(MemorySpace::NPUHBM),
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
-            "NIC_RAM" => Ok(MemorySpace::NIC_RAM),
-            "Remote_HBM" => Ok(MemorySpace::Remote_HBM),
+            "NIC_RAM" => Ok(MemorySpace::NicRam),
+            "Remote_HBM" => Ok(MemorySpace::RemoteHbm),
             _ => Err(format!("Unknown memory space {}", ident)),
         }
     }
@@ -246,10 +246,8 @@ impl<'a> Parser<'a> {
                     }
 
                     let mut top = None;
-                    if self.match_token(&TokenType::Comma) {
-                        if self.check(&TokenType::Topology) {
-                            top = Some(self.parse_topology()?);
-                        }
+                    if self.match_token(&TokenType::Comma) && self.check(&TokenType::Topology) {
+                        top = Some(self.parse_topology()?);
                     }
 
                     self.consume(

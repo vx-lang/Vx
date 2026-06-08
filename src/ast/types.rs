@@ -42,8 +42,8 @@ pub enum MemorySpace {
     CPUDRAM,
     NPUHBM,
     LocalSRAM,
-    NIC_RAM,
-    Remote_HBM,
+    NicRam,
+    RemoteHbm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

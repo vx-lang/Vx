@@ -718,6 +718,7 @@ impl<'c> MeliorGenerator<'c> {
                     let addr_space = match mem {
                         Some(MemorySpace::NPUHBM) => 1,
                         Some(MemorySpace::LocalSRAM) => 2,
+                        Some(MemorySpace::NicRam) | Some(MemorySpace::RemoteHbm) => 3,
                         Some(MemorySpace::CPUDRAM) | None => 0,
                     };
                     format!("!llvm.ptr<{}>", addr_space)
