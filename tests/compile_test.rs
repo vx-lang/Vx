@@ -818,9 +818,20 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     vxc::codegen::register_vx_dialect(&context);
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-    let mlir_str = codegen
+    codegen
         .generate(&monomorphized_program, &module_asts)
         .unwrap();
+
+    let mut module = codegen.into_module();
+    if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
+        println!("MLIR Before Lowering Error:\n{}", module.as_operation());
+        return Err(format!(
+            "Lowering to LLVM failed for {}: {:?}",
+            path.display(),
+            e
+        ));
+    }
+    let mlir_str = module.as_operation().to_string();
 
     if source.contains("// NO_EXEC") {
         for expect in expect_lines {

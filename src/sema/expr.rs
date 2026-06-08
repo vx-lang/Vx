@@ -831,11 +831,15 @@ impl<'a> TypeChecker<'a> {
         if let Expr::Transfer(t) = expr {
             inner_ty = self.check_expr_type_flag(&mut t.expr, false, silent);
 
-            // Extract source memory space, default to CPUDRAM if it's not explicitly a Ref
-            let source_mem = match &inner_ty {
-                Type::Ref(_, mem) => mem.clone(),
-                Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
-                _ => MemorySpace::CPUDRAM,
+            // Extract source memory space, preferring exact space from an inner transfer if present
+            let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
+                inner_t.space.clone()
+            } else {
+                match &inner_ty {
+                    Type::Ref(_, mem) => mem.clone(),
+                    Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
+                    _ => MemorySpace::CPUDRAM,
+                }
             };
             target_mem = t.space.clone();
 
@@ -906,7 +910,13 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::NicRam | MemorySpace::RemoteHbm => Topology::Current,
+                    MemorySpace::NicRam | MemorySpace::RemoteHbm => {
+                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(ElementType::I32),
+                            span: Span::default(),
+                        })))
+                    }
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
@@ -933,7 +943,13 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::NicRam | MemorySpace::RemoteHbm => Topology::Current,
+                    MemorySpace::NicRam | MemorySpace::RemoteHbm => {
+                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(ElementType::I32),
+                            span: Span::default(),
+                        })))
+                    }
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(base, pinned_top)
