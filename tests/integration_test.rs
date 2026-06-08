@@ -109,7 +109,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
         vxc::codegen::register_vx_dialect(&context);
 
         let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-        codegen.generate(&monomorphized_ast, &module_asts);
+        let _ = codegen.generate(&monomorphized_ast, &module_asts);
         let mut module = codegen.into_module();
         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
         let _mlir_str = module.as_operation();

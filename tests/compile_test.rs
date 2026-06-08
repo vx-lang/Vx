@@ -185,7 +185,9 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let module_asts = std::collections::HashMap::new();
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-    codegen.generate(&monomorphized_program, &module_asts);
+    codegen
+        .generate(&monomorphized_program, &module_asts)
+        .unwrap();
     let mlir_str = codegen.into_module().as_operation().to_string();
 
     // Verify // CHECK: lines in order
@@ -311,7 +313,9 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     vxc::codegen::register_vx_dialect(&context);
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-    codegen.generate(&monomorphized_program, &module_asts);
+    codegen
+        .generate(&monomorphized_program, &module_asts)
+        .unwrap();
     let mut module = codegen.into_module();
     if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
         println!("MLIR Before Lowering Error:\n{}", module.as_operation());
@@ -799,7 +803,9 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     vxc::codegen::register_vx_dialect(&context);
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-    let mlir_str = codegen.generate(&monomorphized_program, &module_asts);
+    let mlir_str = codegen
+        .generate(&monomorphized_program, &module_asts)
+        .unwrap();
 
     if source.contains("// NO_EXEC") {
         for expect in expect_lines {
@@ -982,7 +988,9 @@ fn test_melior_matmul() -> Result<(), String> {
     vxc::codegen::register_vx_dialect(&context);
 
     let mut gen = vxc::codegen::MeliorGenerator::new(&context);
-    let mlir_str = gen.generate(&checked_program, &std::collections::HashMap::new());
+    let mlir_str = gen
+        .generate(&checked_program, &std::collections::HashMap::new())
+        .unwrap();
 
     let mut current_idx = 0;
     for check in check_lines {

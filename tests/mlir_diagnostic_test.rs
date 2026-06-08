@@ -179,7 +179,7 @@ fn test_remark() -> f32 {
     // Generate MLIR
     let module_asts = std::collections::HashMap::new();
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
-    codegen.generate(&ast, &module_asts);
+    let _ = codegen.generate(&ast, &module_asts);
     let mut module = codegen.into_module();
 
     // 2. Trigger an optimization remark using a pass that analyzes the IR and emits remarks
