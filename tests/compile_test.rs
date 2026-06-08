@@ -516,7 +516,11 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&path, &mut hasher);
         let hash = std::hash::Hasher::finish(&hasher);
-        let t_val = std::env::temp_dir().join(format!(
+
+        // Ensure temporary files are completely contained within the project repository
+        let tmp_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_tmp");
+        std::fs::create_dir_all(&tmp_dir).unwrap_or_default();
+        let t_val = tmp_dir.join(format!(
             "vxc_test_{}_{:x}",
             path.file_stem().unwrap().to_string_lossy(),
             hash
@@ -915,7 +919,11 @@ fn run_shell_tests(path: &Path) -> Result<(), String> {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             std::hash::Hash::hash(&path, &mut hasher);
             let hash = std::hash::Hasher::finish(&hasher);
-            let t_val = std::env::temp_dir().join(format!(
+
+            // Ensure temporary files are completely contained within the project repository
+            let tmp_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_tmp");
+            std::fs::create_dir_all(&tmp_dir).unwrap_or_default();
+            let t_val = tmp_dir.join(format!(
                 "vxc_test_{}_{:x}",
                 path.file_stem().unwrap().to_string_lossy(),
                 hash
