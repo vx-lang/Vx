@@ -513,8 +513,19 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
             })
             .collect();
 
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&path, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        let t_val = std::env::temp_dir().join(format!(
+            "vxc_test_{}_{:x}",
+            path.file_stem().unwrap().to_string_lossy(),
+            hash
+        ));
+
         let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
-        let vxc_cmd_str = vxc_cmd_str.replace("%s", path.to_str().unwrap());
+        let vxc_cmd_str = vxc_cmd_str
+            .replace("%s", path.to_str().unwrap())
+            .replace("%t", t_val.to_str().unwrap());
 
         let mut args: Vec<String> = vec![];
         let mut current_arg = String::new();
@@ -901,12 +912,22 @@ fn run_shell_tests(path: &Path) -> Result<(), String> {
         let current_path = std::env::var("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", vxc_dir.display(), current_path);
         for run_line in run_lines {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&path, &mut hasher);
+            let hash = std::hash::Hasher::finish(&hasher);
+            let t_val = std::env::temp_dir().join(format!(
+                "vxc_test_{}_{:x}",
+                path.file_stem().unwrap().to_string_lossy(),
+                hash
+            ));
+
             let cmd = run_line
                 .split_once("RUN:")
                 .unwrap()
                 .1
                 .trim()
-                .replace("%s", path.to_str().unwrap());
+                .replace("%s", path.to_str().unwrap())
+                .replace("%t", t_val.to_str().unwrap());
             let output = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&cmd)
