@@ -17,13 +17,17 @@ echo "======================================"
 
 # Rule 1: Markdown Formatting
 echo "[1/4] Checking Markdown Formatting (mdformat)..."
-if ! command -v mdformat &> /dev/null; then
-    echo "❌ mdformat could not be found. Please install it using: pipx install mdformat"
-    exit 1
+if git status --porcelain | grep -q '\.md$'; then
+    echo "⚠️  Uncommitted Markdown changes detected. Skipping mdformat to prevent accidental data loss."
+else
+    if ! command -v mdformat &> /dev/null; then
+        echo "❌ mdformat could not be found. Please install it using: pipx install mdformat"
+        exit 1
+    fi
+    mdformat docs/ README.md
+    git add docs/ README.md
+    echo "✅ Markdown files formatted perfectly!"
 fi
-mdformat docs/ README.md
-git add docs/ README.md
-echo "✅ Markdown files formatted perfectly!"
 
 # Rule 2: Rust Formatting Check
 echo "[2/5] Checking Code Formatting (cargo fmt)..."

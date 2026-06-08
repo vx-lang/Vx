@@ -24,10 +24,14 @@ cargo build --release --quiet --bin vx-format
 find . -type d \( -name target -o -name .git \) -prune -o -name "*.vx" -exec ./target/release/vx-format {} +
 
 echo "[3/3] Running mdformat for Markdown files..."
-if command -v mdformat &> /dev/null; then
-    mdformat docs/ README.md
+if git status --porcelain | grep -q '\.md$'; then
+    echo "⚠️  Uncommitted Markdown changes detected. Skipping mdformat to prevent accidental data loss."
 else
-    echo "mdformat not found. Skipping markdown formatting. (Install with: pipx install mdformat)"
+    if command -v mdformat &> /dev/null; then
+        mdformat docs/ README.md
+    else
+        echo "mdformat not found. Skipping markdown formatting. (Install with: pipx install mdformat)"
+    fi
 fi
 
 echo "Formatting complete!"
