@@ -1,0 +1,11 @@
+- [x] Phase 1: Formalizing the Syntax and Type System
+  - [x] Create `docs/syntax.md` detailing the lexical and syntactic structure
+  - [x] Create `docs/types.md` detailing topology-aware types and memory ownership
+- [x] Phase 2: Compiler Scaffolding
+  - [x] Initialize C++ `CMake` project for the compiler (`akar_compiler`)
+  - [x] Add basic lexer/parser scaffolding in C++
+- [ ] Phase 3: Semantic Analysis & Topology Checker
+  - [ ] Define basic AST structs in Rust
+  - [ ] Create a skeleton for the Type Checker
+- [ ] Phase 4: Intermediate Representation
+  - [ ] Define the high-level mapping to MLIR

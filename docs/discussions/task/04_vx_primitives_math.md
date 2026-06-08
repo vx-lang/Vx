@@ -1,0 +1,10 @@
+- [x] Update `src/parser.rs` to support `f16`.
+- [x] Update `src/codegen.rs` to map numerics: `I4..I128`, `U4..U128`, `F16, BF16, F32, F64` to MLIR types.
+- [x] Implement `stdlib/rust_core/src/math.rs` with FFI wrappers for libm math functions.
+- [x] Implement `stdlib/rust_core/src/simd.rs` with basic FFI SIMD functions via pointers.
+- [x] Export `math` and `simd` modules in `stdlib/rust_core/src/collections/mod.rs` (or `lib.rs` / `ffi/mod.rs`).
+- [x] Create `stdlib/std/math.vx` with math traits/functions.
+- [x] Create `stdlib/std/simd.vx` with SIMD functions.
+- [x] Add `tests/backend/pass/ffi_math.vx` to verify backend execution.
+- [x] Add `tests/backend/pass/ffi_simd.vx` to verify backend execution.
+- [x] Run backend tests.

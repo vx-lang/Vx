@@ -1,0 +1,8 @@
+- [x] Write `docs/std_library_design.md` detailing the proposal.
+  - [x] Introduction & Vision (MLIR to Rust FFI)
+  - [x] Memory Safety Synergy
+  - [x] Core Data Structures (Option, Vec, HashMap, etc.)
+  - [x] Core Traits & Interfaces
+  - [x] I/O & Networking
+  - [x] FFI Boundary Mechanics (Opaque Pointers)
+- [x] Create walkthrough artifact.
