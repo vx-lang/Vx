@@ -43,13 +43,15 @@ fn test_sram_to_cpu_multi_hop() -> void {
 
 fn test_3d_parallelism_routing() -> void {
   // Tensor originates in GPU HBM.
-  let gpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
-  let gpu_tensor_hbm = transfer(gpu_tensor, Memory::NPU_HBM);
-
+  let cpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let gpu_tensor1 = transfer(cpu_tensor, Memory::NPU_HBM);
+  comptime {
+    assert(gpu_tensor1.topology() == Some(Topology::NPU[0]));
+  }
   // Request transfer to Remote GPU.
   // Instead of Host fallback (50 + 300 = 350),
   // Route should be: NPU_HBM -> NIC (5) -> Remote GPU (20) = 25. Total 2 hops.
-  let remote_tensor = transfer(gpu_tensor_hbm, Memory::Remote_HBM);
+  let remote_tensor = transfer(gpu_tensor1, Memory::Remote_HBM);
 }
 
 // CHECK: func.func @test_3d_parallelism_routing

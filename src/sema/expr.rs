@@ -1361,6 +1361,12 @@ impl<'a> TypeChecker<'a> {
                             .push("Function 'printf' expects at least 1 argument".to_string());
                     }
                     Type::Scalar(ElementType::I32)
+                } else if resolved_name == "Some" || resolved_name == "Option::Some" {
+                    if args.len() != 1 {
+                        self.errors
+                            .push(format!("Function '{}' expects 1 argument", resolved_name));
+                    }
+                    Type::Struct("Option".to_string(), None)
                 } else if let Some((Type::Function(param_types, ret_ty), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
@@ -1975,8 +1981,24 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // --- COMPILER INTRINSICS ---
+                if let Type::Pinned(inner, top) = &base_ty {
+                    if _method == "topology" {
+                        if !args.is_empty() {
+                            self.errors
+                                .push("topology requires 0 arguments".to_string());
+                        }
+                        return Type::Struct("Option".to_string(), None);
+                    }
+                }
+
                 if let Type::Tensor(el_ty, dims, top) = &base_ty {
-                    if _method == "reshape" {
+                    if _method == "topology" {
+                        if !args.is_empty() {
+                            self.errors
+                                .push("topology requires 0 arguments".to_string());
+                        }
+                        return Type::Struct("Option".to_string(), None);
+                    } else if _method == "reshape" {
                         if args.is_empty() || args.len() > 3 {
                             self.errors
                                 .push("reshape requires 1 to 3 arguments".to_string());
