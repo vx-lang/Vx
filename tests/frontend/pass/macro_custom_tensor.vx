@@ -5,7 +5,7 @@ import std::closure;
 
 macro_rules shape_zero { ($t : expr) =>{$t.shape[0]}; }
 fn main() -> i32 {
-  let t : Tensor = Tensor([ 10, 20 ]);
+  let t : Tensor = Tensor<f32>([ 10, 20 ]);
   let s = shape_zero !(t);
   return s;
 }

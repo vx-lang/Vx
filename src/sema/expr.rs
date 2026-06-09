@@ -1246,10 +1246,14 @@ impl<'a> TypeChecker<'a> {
                 let mut base_name = resolved_name.clone();
                 let mut explicit_generic_args = type_args.clone().unwrap_or_default();
                 if explicit_generic_args.is_empty() {
-                    if let Some(idx) = resolved_name.find('<') {
-                        if resolved_name.ends_with('>') {
-                            base_name = resolved_name[..idx].to_string();
-                            let args_str = &resolved_name[idx + 1..resolved_name.len() - 1];
+                    if let Some(start_idx) = resolved_name.find('<') {
+                        if let Some(end_idx) = resolved_name.rfind('>') {
+                            base_name = format!(
+                                "{}{}",
+                                &resolved_name[..start_idx],
+                                &resolved_name[end_idx + 1..]
+                            );
+                            let args_str = &resolved_name[start_idx + 1..end_idx];
                             explicit_generic_args = args_str
                                 .split(',')
                                 .map(|s| self.parse_ty_str(s.trim()))
@@ -1312,16 +1316,14 @@ impl<'a> TypeChecker<'a> {
                         if let Type::Scalar(el) = &explicit_generic_args[0] {
                             el.clone()
                         } else {
+                            self.errors
+                                .push("Generic argument to Tensor must be a scalar type.".to_string());
                             ElementType::F32
                         }
-                    } else if resolved_name.starts_with("Tensor<") && resolved_name.ends_with(">") {
-                        let t_name = &resolved_name["Tensor<".len()..resolved_name.len() - 1];
-                        if let Ok(el) = t_name.parse::<ElementType>() {
-                            el
-                        } else {
-                            ElementType::Generic(t_name.to_string())
-                        }
                     } else {
+                        self.errors.push(
+                            "Missing generic argument for Tensor initialization.".to_string()
+                        );
                         ElementType::F32
                     };
                     let mut dims = Vec::new();

@@ -4,7 +4,7 @@
 import std::tensor;
 
 fn main() -> i32 {
-  let mut x : Tensor = Tensor([ 10, 10 ]);
+  let mut x : Tensor = Tensor<f32>([ 10, 10 ]);
   x.fill(1.0);
   let y = x.map(| val | val * 2.0);
   return 0;

@@ -4,7 +4,7 @@
 // using Dijkstra's algorithm.
 
 fn test_multi_hop_transfer() -> void {
-  let a : Tensor<f32, [10]> = Tensor::zeros([10]);
+  let a : Tensor<f32, [10]> = Tensor<f32>::zeros([10]);
   // Local_SRAM requires routing: CPU_DRAM -> NPU_HBM -> Local_SRAM
   // Costs: 50 + 10 = 60
   let b = transfer(a, Memory::Local_SRAM);

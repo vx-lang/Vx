@@ -121,7 +121,7 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
 }
 
 fn ptr_to_tensor_1d(ptr : *mut f32, d1 : i32) -> Tensor<f32> {
-  let mut t : Tensor<f32> = Tensor([ 1, d1 ]);
+  let mut t : Tensor<f32> = Tensor<f32>([ 1, d1 ]);
   for
   i in 0..d1 {
     unsafe { t[0][i] = ptr[i]; }
@@ -130,7 +130,7 @@ fn ptr_to_tensor_1d(ptr : *mut f32, d1 : i32) -> Tensor<f32> {
 }
 
 fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
-  let mut t : Tensor<f32> = Tensor([ d1, d2 ]);
+  let mut t : Tensor<f32> = Tensor<f32>([ d1, d2 ]);
   for
   i in 0..d1 {
     for
@@ -383,7 +383,7 @@ w : &TransformerWeights) -> *mut f32 {
 
     let t_x : Tensor<f32> = ptr_to_tensor_1d(x, dim);
     let t_wcls : Tensor<f32> = ptr_to_tensor_2d(w.wcls, p.vocab_size, dim);
-    let mut t_wcls_T : Tensor<f32> = Tensor([ dim, p.vocab_size ]);
+    let mut t_wcls_T : Tensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
     for
     r in 0..p.vocab_size {
       for

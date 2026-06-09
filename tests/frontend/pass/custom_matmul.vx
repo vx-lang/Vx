@@ -8,7 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 fn custom_matmul(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
-  let mut result : Tensor<f32> = Tensor([ a.shape[0], b.shape[1] ]);
+  let mut result : Tensor<f32> = Tensor<f32>([ a.shape[0], b.shape[1] ]);
   for
   i in 0..a.shape [0] {
     for

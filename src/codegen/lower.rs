@@ -1514,22 +1514,6 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
     }
 }
 
-fn map_frontend_type_to_mlir(el_ty_str: &str) -> Result<&'static str, String> {
-    match el_ty_str {
-        "f16" => Ok("f16"),
-        "f32" => Ok("f32"),
-        "f64" => Ok("f64"),
-        "bf16" => Ok("bf16"),
-        "i32" => Ok("i32"),
-        "i64" => Ok("i64"),
-        "Bool" | "i1" => Ok("i1"),
-        _ => Err(format!(
-            "Unsupported frontend element type for MLIR lowering: {}",
-            el_ty_str
-        )),
-    }
-}
-
 fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {
     let mut inner = ty_str;
     if inner.starts_with("memref<") && inner.ends_with('>') {
@@ -1574,78 +1558,16 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
-
-        if name.ends_with("$exp")
-            || name.ends_with("$sin")
-            || name.ends_with("$cos")
-            || name.ends_with("$abs")
-            || name.ends_with("$sqrt")
-            || name.ends_with("$ln")
-            || name.ends_with("$log2")
-            || name.ends_with("$log10")
-        {
-            let (arg_val, arg_ty) = gen.generate_expr(&args[0], block)?;
-            let is_int = arg_ty.to_string().starts_with("i");
-            let op_name = if name.ends_with("$exp") {
-                "math.exp"
-            } else if name.ends_with("$sin") {
-                "math.sin"
-            } else if name.ends_with("$cos") {
-                "math.cos"
-            } else if name.ends_with("$abs") {
-                if is_int { "math.absi" } else { "math.absf" }
-            } else if name.ends_with("$sqrt") {
-                "math.sqrt"
-            } else if name.ends_with("$ln") {
-                "math.log"
-            } else if name.ends_with("$log2") {
-                "math.log2"
-            } else if name.ends_with("$log10") {
-                "math.log10"
-            } else {
-                ""
-            };
-
-            if !op_name.is_empty() {
-                let op = OperationBuilder::new(op_name, Location::unknown(gen.context))
-                    .add_operands(&[arg_val])
-                    .add_results(&[arg_ty])
-                    .build()
-                    .unwrap();
-                let op_ref = block.append_operation(op);
-                return Ok((op_ref.result(0).unwrap().into(), arg_ty));
-            }
-        }
-        if (name.starts_with("Tensor<")
-            && name.ends_with(">")
-            && !name.contains("__")
-            && !name.contains("_dim"))
-            || name == "Tensor"
-        {
-            let mut el_ty_str = "f32";
-            if name.starts_with("Tensor<") {
-                el_ty_str = name
-                    .strip_prefix("Tensor<")
-                    .unwrap()
-                    .strip_suffix(">")
-                    .unwrap();
-            } else if let Some(tys) = type_args {
+        if name == "Tensor" {
+            let mlir_ty_str = if let Some(tys) = type_args {
                 if !tys.is_empty() {
-                    if let crate::ast::Type::Scalar(el) = &tys[0] {
-                        el_ty_str = match el {
-                            crate::ast::ElementType::F32 => "f32",
-                            crate::ast::ElementType::F64 => "f64",
-                            crate::ast::ElementType::I32 => "i32",
-                            crate::ast::ElementType::I64 => "i64",
-                            crate::ast::ElementType::BF16 => "bf16",
-                            crate::ast::ElementType::Bool => "i1",
-                            _ => "f32",
-                        };
-                    }
+                    gen.lower_type_str(&tys[0])
+                } else {
+                    panic!("Tensor initialization requires an explicit generic type argument");
                 }
-            }
-            let mlir_ty_str =
-                map_frontend_type_to_mlir(el_ty_str).unwrap_or_else(|e| panic!("{}", e));
+            } else {
+                panic!("Tensor initialization requires an explicit generic type argument");
+            };
             let mut dynamic_sizes = Vec::new();
             let mut dims_count = 2; // Default fallback
 

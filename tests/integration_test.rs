@@ -125,7 +125,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
 #[test]
 fn test_integration_operators() -> Result<(), String> {
     let input = r#"
-    fn math_ops() -> Tensor {
+    fn math_ops() -> Tensor<f32> {
         let mut x = 10;
         let y = x * 5;
         x += y + 2;
@@ -142,7 +142,7 @@ fn test_integration_operators() -> Result<(), String> {
 #[test]
 fn test_integration_loops() -> Result<(), String> {
     let input = r#"
-    fn loop_test() -> Tensor {
+    fn loop_test() -> Tensor<f32> {
         let mut sum = 0;
         for i in 0..10 {
             sum += i;
@@ -177,7 +177,7 @@ fn test_integration_arrays_and_indexing() -> Result<(), String> {
 fn test_integration_method_chaining() -> Result<(), String> {
     let input = r#"
     fn memory_test() -> Ref<Tensor<f32, [10]>, Memory::NPU_HBM> {
-        let mut mem = Tensor([10]).with_memory(Memory::NPU_HBM);
+        let mut mem = Tensor<f32>([10]).with_memory(Memory::NPU_HBM);
         return mem;
     }
     "#;
@@ -191,11 +191,11 @@ fn test_integration_method_chaining() -> Result<(), String> {
 #[test]
 fn test_integration_function_calls() -> Result<(), String> {
     let input = r#"
-    fn helper(x: Tensor) -> Tensor {
+    fn helper(x: Tensor<f32>) -> Tensor<f32> {
         return x + 1;
     }
     
-    fn main() -> Tensor {
+    fn main() -> Tensor<f32> {
         let y = 10;
         let z = helper(y);
         return z;
@@ -211,7 +211,7 @@ fn test_integration_function_calls() -> Result<(), String> {
 #[test]
 fn test_integration_logical_ops() -> Result<(), String> {
     let input = r#"
-    fn logic_test(a: Tensor, b: Tensor) -> Tensor {
+    fn logic_test(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         let is_less = a < b;
         let is_eq = a == b;
         let c = is_less && is_eq;
@@ -228,11 +228,11 @@ fn test_integration_logical_ops() -> Result<(), String> {
 #[test]
 fn test_integration_linear_variable_consumption() -> Result<(), String> {
     let input = r#"
-    fn helper(t: Tensor) -> Tensor {
+    fn helper(t: Tensor<f32>) -> Tensor<f32> {
         return t;
     }
 
-    fn main() -> Tensor {
+    fn main() -> Tensor<f32> {
         let x = Tensor<f32>(2, 2);
         
         let mut sum = 0;

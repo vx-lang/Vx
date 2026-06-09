@@ -15,9 +15,9 @@
 // --emit-llvm
 
 fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
-  let mut a_host = Tensor([ 4, 4 ]);
-  let mut b_host = Tensor([ 4, 4 ]);
-  let mut result_host = Tensor([ 4, 4 ]);
+  let mut a_host = Tensor<f32>([ 4, 4 ]);
+  let mut b_host = Tensor<f32>([ 4, 4 ]);
+  let mut result_host = Tensor<f32>([ 4, 4 ]);
 
   for
   i in 0..4 {

@@ -6,7 +6,7 @@
 
 fn test_cpu_to_sram_multi_hop() -> void {
   // Tensor originates in CPUDRAM (default for CPU topology).
-  let cpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let cpu_tensor : Tensor<f32, [128]> = Tensor<f32>::zeros([128]);
 
   // Requesting transfer to Local_SRAM. 
   // There is no direct PCIe-to-SRAM link.
@@ -25,7 +25,7 @@ fn test_cpu_to_sram_multi_hop() -> void {
 
 fn test_sram_to_cpu_multi_hop() -> void {
   // Tensor originates in LocalSRAM.
-  let sram_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let sram_tensor : Tensor<f32, [128]> = Tensor<f32>::zeros([128]);
   let sram_tensor_pinned: Pinned<Tensor<f32, [128]>, Topology::AccCore[0]> = transfer(sram_tensor, Memory::Local_SRAM);
 
   // Transfer back to CPUDRAM.
@@ -43,7 +43,7 @@ fn test_sram_to_cpu_multi_hop() -> void {
 
 fn test_3d_parallelism_routing() -> void {
   // Tensor originates in GPU HBM.
-  let cpu_tensor : Tensor<f32, [128]> = Tensor::zeros([128]);
+  let cpu_tensor : Tensor<f32, [128]> = Tensor<f32>::zeros([128]);
   let gpu_tensor1 = transfer(cpu_tensor, Memory::NPU_HBM);
   comptime {
     assert(gpu_tensor1.topology() == Some(Topology::NPU[0]));

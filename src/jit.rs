@@ -140,7 +140,11 @@ pub fn execute_mlir(
         lli_cmd.arg(format!("--load={}", lib_npu));
     }
 
-    let profile_dir = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile_dir = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
 
     lli_cmd.args([
         &format!(
