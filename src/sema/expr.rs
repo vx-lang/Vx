@@ -1981,7 +1981,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // --- COMPILER INTRINSICS ---
-                if let Type::Pinned(inner, top) = &base_ty {
+                if let Type::Pinned(_inner, _top) = &base_ty {
                     if _method == "topology" {
                         if !args.is_empty() {
                             self.errors

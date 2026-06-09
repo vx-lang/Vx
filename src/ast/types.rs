@@ -220,6 +220,12 @@ impl Type {
             Type::Unknown => "Unknown".to_string(),
         }
     }
+    pub fn topology(&self) -> Option<Topology> {
+        match self {
+            Type::Tensor(_, _, top) => top.clone(),
+            _ => None,
+        }
+    }
 }
 
 impl ElementType {
