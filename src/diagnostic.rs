@@ -42,6 +42,16 @@ impl DiagnosticsVec {
     }
 
     pub fn push(&mut self, message: String) {
+        // TODO: Parameterize this limit based on a vxc flag (-ferror-limit).
+        if self.inner.len() > 10 {
+            if self.inner.len() <= 11 {
+                self.inner.push(Diagnostic {
+                    level: DiagnosticLevel::Error,
+                    message: "Too many errors. Please fix the errors and try again.".to_string(),
+                });
+            }
+            return;
+        }
         self.inner.push(Diagnostic {
             level: DiagnosticLevel::Error,
             message,

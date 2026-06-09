@@ -1316,13 +1316,14 @@ impl<'a> TypeChecker<'a> {
                         if let Type::Scalar(el) = &explicit_generic_args[0] {
                             el.clone()
                         } else {
-                            self.errors
-                                .push("Generic argument to Tensor must be a scalar type.".to_string());
+                            self.errors.push(
+                                "Generic argument to Tensor must be a scalar type.".to_string(),
+                            );
                             ElementType::F32
                         }
                     } else {
                         self.errors.push(
-                            "Missing generic argument for Tensor initialization.".to_string()
+                            "Missing generic argument for Tensor initialization.".to_string(),
                         );
                         ElementType::F32
                     };
