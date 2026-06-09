@@ -140,6 +140,8 @@ pub fn execute_mlir(
         lli_cmd.arg(format!("--load={}", lib_npu));
     }
 
+    let profile_dir = if cfg!(debug_assertions) { "debug" } else { "release" };
+
     lli_cmd.args([
         &format!(
             "--load=libmlir_c_runner_utils{}",
@@ -150,8 +152,9 @@ pub fn execute_mlir(
             std::env::consts::DLL_SUFFIX
         ),
         &format!(
-            "--load={}/target/debug/{}vx_std_core{}",
+            "--load={}/target/{}/{}vx_std_core{}",
             current_dir.display(),
+            profile_dir,
             std::env::consts::DLL_PREFIX,
             std::env::consts::DLL_SUFFIX
         ),

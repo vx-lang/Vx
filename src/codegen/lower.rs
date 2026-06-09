@@ -1574,6 +1574,48 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if name == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
+
+        if name.ends_with("$exp")
+            || name.ends_with("$sin")
+            || name.ends_with("$cos")
+            || name.ends_with("$abs")
+            || name.ends_with("$sqrt")
+            || name.ends_with("$ln")
+            || name.ends_with("$log2")
+            || name.ends_with("$log10")
+        {
+            let (arg_val, arg_ty) = gen.generate_expr(&args[0], block)?;
+            let is_int = arg_ty.to_string().starts_with("i");
+            let op_name = if name.ends_with("$exp") {
+                "math.exp"
+            } else if name.ends_with("$sin") {
+                "math.sin"
+            } else if name.ends_with("$cos") {
+                "math.cos"
+            } else if name.ends_with("$abs") {
+                if is_int { "math.absi" } else { "math.absf" }
+            } else if name.ends_with("$sqrt") {
+                "math.sqrt"
+            } else if name.ends_with("$ln") {
+                "math.log"
+            } else if name.ends_with("$log2") {
+                "math.log2"
+            } else if name.ends_with("$log10") {
+                "math.log10"
+            } else {
+                ""
+            };
+
+            if !op_name.is_empty() {
+                let op = OperationBuilder::new(op_name, Location::unknown(gen.context))
+                    .add_operands(&[arg_val])
+                    .add_results(&[arg_ty])
+                    .build()
+                    .unwrap();
+                let op_ref = block.append_operation(op);
+                return Ok((op_ref.result(0).unwrap().into(), arg_ty));
+            }
+        }
         if (name.starts_with("Tensor<")
             && name.ends_with(">")
             && !name.contains("__")
