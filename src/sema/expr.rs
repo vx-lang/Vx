@@ -1319,13 +1319,13 @@ impl<'a> TypeChecker<'a> {
                             self.errors.push(
                                 "Generic argument to Tensor must be a scalar type.".to_string(),
                             );
-                            ElementType::F32
+                            ElementType::F32 // Placeholder to continue analysis.
                         }
                     } else {
                         self.errors.push(
                             "Missing generic argument for Tensor initialization.".to_string(),
                         );
-                        ElementType::F32
+                        ElementType::F32 // Placeholder to continue analysis.
                     };
                     let mut dims = Vec::new();
                     if !args.is_empty() {
