@@ -17,16 +17,21 @@ echo "======================================"
 
 # Rule 1: Markdown Formatting
 echo "[1/4] Checking Markdown Formatting (mdformat)..."
-if git status --porcelain | grep -q '\.md$'; then
-    echo "⚠️  Uncommitted Markdown changes detected. Skipping mdformat to prevent accidental data loss."
-else
-    if ! command -v mdformat &> /dev/null; then
-        echo "❌ mdformat could not be found. Please install it using: pipx install mdformat"
-        exit 1
+STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
+if [ -n "$STAGED_MD" ]; then
+    if git diff --name-only | grep -q '\.md$'; then
+        echo "⚠️  Unstaged Markdown changes detected. Skipping mdformat to prevent accidental data loss."
+    else
+        if ! command -v mdformat &> /dev/null; then
+            echo "❌ mdformat could not be found. Please install it using: pipx install mdformat"
+            exit 1
+        fi
+        mdformat $STAGED_MD
+        git add $STAGED_MD
+        echo "✅ Markdown files formatted perfectly!"
     fi
-    mdformat docs/ README.md
-    git add docs/ README.md
-    echo "✅ Markdown files formatted perfectly!"
+else
+    echo "✅ No markdown files to format."
 fi
 
 # Rule 2: Rust Formatting Check
@@ -36,10 +41,21 @@ echo "✅ Rust Formatting is perfect!"
 
 # Rule 3: Vx Formatting Check
 echo "[3/5] Checking Vx Formatting (vx-format)..."
-cargo build --bin vx-format
-find tests stdlib -name "*.vx" -exec ./target/debug/vx-format {} +
-git add tests/ stdlib/
-echo "✅ Vx Formatting is perfect!"
+STAGED_VX=$(git diff --cached --name-only --diff-filter=ACM | grep '\.vx$' || true)
+if [ -n "$STAGED_VX" ]; then
+    if git diff --name-only | grep -q '\.vx$'; then
+        echo "⚠️  Unstaged Vx changes detected. Skipping vx-format to prevent accidental data loss."
+    else
+        cargo build --bin vx-format
+        for file in $STAGED_VX; do
+            ./target/debug/vx-format "$file"
+        done
+        git add $STAGED_VX
+        echo "✅ Vx Formatting is perfect!"
+    fi
+else
+    echo "✅ No Vx files to format."
+fi
 
 # Rule 4: Linting Check
 echo "[4/5] Checking Lints (cargo clippy)..."
