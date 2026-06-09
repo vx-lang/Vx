@@ -201,4 +201,46 @@ fn bad_matmul() -> Tensor {
             checker.errors
         );
     }
+
+    #[test]
+    fn test_sema_tensor_generic_errors() {
+        let input = r#"
+        fn test_bad_tensor_init() -> Tensor<f32> {
+            let a = Tensor([10]); // Missing generic
+            let b = Tensor<Tensor<f32>>([10]); // Generic is not scalar
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer.tokenize(), input);
+        let mut program = parser.parse().unwrap();
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+
+        assert!(!checker.errors.is_empty());
+        let has_missing_generic = checker.errors.iter().any(|e| {
+            e.message
+                .contains("Missing generic argument for Tensor initialization.")
+        });
+        let has_not_scalar = checker.errors.iter().any(|e| {
+            e.message
+                .contains("Generic argument to Tensor must be a scalar type.")
+        });
+
+        assert!(
+            has_missing_generic,
+            "Expected 'Missing generic argument' error"
+        );
+        assert!(
+            has_not_scalar,
+            "Expected 'Generic argument must be a scalar' error"
+        );
+    }
 }
