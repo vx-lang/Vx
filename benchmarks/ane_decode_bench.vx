@@ -13,38 +13,48 @@ extern {
   fn vx_get_rope_freq(pos: i32, i: i32, d: i32) -> f32;
 }
 
-fn benchmark_attention_proj() -> i32 {
-  // Q, K, V, O projections (1x288 * 288x288)
-  let mut x_host = Tensor<f32>([1, 288]);
-  let mut w_host = Tensor<f32>([288, 288]);
-  let mut out_cpu_host = Tensor<f32>([1, 288]);
-  let mut out_ane_host = Tensor<f32>([1, 288]);
+fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
+  let mut x_host = Tensor<f32>([m, k]);
+  let mut w_host = Tensor<f32>([k, n]);
+  let mut out_cpu_host = Tensor<f32>([m, n]);
+  let mut out_ane_host = Tensor<f32>([m, n]);
 
-  for i in 0..1 {
-    for j in 0..288 {
+  // Use a bounds tensor to safely pass parameters to the NPU topology
+  let mut bounds_host = Tensor<f32>([1, 3]);
+  bounds_host[0][0] = m as f32;
+  bounds_host[0][1] = k as f32;
+  bounds_host[0][2] = n as f32;
+
+  for i in 0..m {
+    for j in 0..k {
       x_host[i][j] = 0.5;
-      out_cpu_host[i][j] = 0.0;
-      out_ane_host[i][j] = 0.0;
     }
   }
-  for i in 0..288 {
-    for j in 0..288 {
+  for i in 0..k {
+    for j in 0..n {
       w_host[i][j] = 0.1;
+    }
+  }
+  for i in 0..m {
+    for j in 0..n {
+      out_cpu_host[i][j] = 0.0;
+      out_ane_host[i][j] = 0.0;
     }
   }
 
   let x = transfer(x_host, Memory::NPU_HBM);
   let w = transfer(w_host, Memory::NPU_HBM);
   let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
+  let bounds = transfer(bounds_host, Memory::NPU_HBM);
 
   unsafe {
     let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
-      for i in 0..1 {
-        for j in 0..288 {
+    for _iter in 0..iters {
+      for i in 0..m {
+        for j in 0..n {
           let mut sum = 0.0;
-          for k in 0..288 {
-            sum += x_host[i][k] * w_host[k][j];
+          for c in 0..k {
+            sum += x_host[i][c] * w_host[c][j];
           }
           out_cpu_host[i][j] = sum;
         }
@@ -55,25 +65,32 @@ fn benchmark_attention_proj() -> i32 {
   }
 
   unsafe {
+    // Warmup NPU kernel
     spawn on(Topology::NPU[0]) {
-      for i in 0..1 {
-        for j in 0..288 {
+      let m_npu = bounds[0][0] as i32;
+      let k_npu = bounds[0][1] as i32;
+      let n_npu = bounds[0][2] as i32;
+      for i in 0..m_npu {
+        for j in 0..n_npu {
           let mut sum = 0.0;
-          for k in 0..288 {
-            sum += x[i][k] * w[k][j];
+          for c in 0..k_npu {
+            sum += x[i][c] * w[c][j];
           }
           out_ane[i][j] = sum;
         }
       }
     }
     let t_ane_start = vx_get_time();
-    for _iter in 0..1000 {
+    for _iter in 0..iters {
       spawn on(Topology::NPU[0]) {
-        for i in 0..1 {
-          for j in 0..288 {
+        let m_npu = bounds[0][0] as i32;
+        let k_npu = bounds[0][1] as i32;
+        let n_npu = bounds[0][2] as i32;
+        for i in 0..m_npu {
+          for j in 0..n_npu {
             let mut sum = 0.0;
-            for k in 0..288 {
-              sum += x[i][k] * w[k][j];
+            for c in 0..k_npu {
+              sum += x[i][c] * w[c][j];
             }
             out_ane[i][j] = sum;
           }
@@ -84,10 +101,10 @@ fn benchmark_attention_proj() -> i32 {
     print !(t_ane_end - t_ane_start);
     
     let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
-    for i in 0..1 {
-      for j in 0..288 {
+    for i in 0..m {
+      for j in 0..n {
         let diff = out_cpu_host[i][j] - out_ane_res[i][j];
-        assert(diff * diff < 0.001, "Mismatch QKV");
+        assert(diff * diff < 0.001, "Mismatch MatMul");
       }
     }
     assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
@@ -95,281 +112,30 @@ fn benchmark_attention_proj() -> i32 {
   return 0;
 }
 
-fn benchmark_ffn_up_gate() -> i32 {
-  // FFN Up/Gate projections (1x288 * 288x768)
-  let mut x_host = Tensor<f32>([1, 288]);
-  let mut w_host = Tensor<f32>([288, 768]);
-  let mut out_cpu_host = Tensor<f32>([1, 768]);
-  let mut out_ane_host = Tensor<f32>([1, 768]);
+fn benchmark_rmsnorm(dim: i32, iters: i32) -> i32 {
+  let mut x_host = Tensor<f32>([1, dim]);
+  let mut w_host = Tensor<f32>([1, dim]);
+  let mut out_cpu_host = Tensor<f32>([1, dim]);
 
-  for i in 0..1 {
-    for j in 0..288 {
-      x_host[i][j] = 0.5;
-    }
-    for j in 0..768 {
-      out_cpu_host[i][j] = 0.0;
-      out_ane_host[i][j] = 0.0;
-    }
-  }
-  for i in 0..288 {
-    for j in 0..768 {
-      w_host[i][j] = 0.1;
-    }
-  }
-
-  let x = transfer(x_host, Memory::NPU_HBM);
-  let w = transfer(w_host, Memory::NPU_HBM);
-  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
-
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
-      for i in 0..1 {
-        for j in 0..768 {
-          let mut sum = 0.0;
-          for k in 0..288 {
-            sum += x_host[i][k] * w_host[k][j];
-          }
-          out_cpu_host[i][j] = sum;
-        }
-      }
-    }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-  }
-
-  unsafe {
-    spawn on(Topology::NPU[0]) {
-      for i in 0..1 {
-        for j in 0..768 {
-          let mut sum = 0.0;
-          for k in 0..288 {
-            sum += x[i][k] * w[k][j];
-          }
-          out_ane[i][j] = sum;
-        }
-      }
-    }
-    let t_ane_start = vx_get_time();
-    for _iter in 0..1000 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1 {
-          for j in 0..768 {
-            let mut sum = 0.0;
-            for k in 0..288 {
-              sum += x[i][k] * w[k][j];
-            }
-            out_ane[i][j] = sum;
-          }
-        }
-      }
-    }
-    let t_ane_end = vx_get_time();
-    print !(t_ane_end - t_ane_start);
-    
-    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
-    for i in 0..1 {
-      for j in 0..768 {
-        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
-        assert(diff * diff < 0.001, "Mismatch FFN UP");
-      }
-    }
-    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
-  }
-  return 0;
-}
-
-fn benchmark_ffn_down() -> i32 {
-  // FFN Down projection (1x768 * 768x288)
-  let mut x_host = Tensor<f32>([1, 768]);
-  let mut w_host = Tensor<f32>([768, 288]);
-  let mut out_cpu_host = Tensor<f32>([1, 288]);
-  let mut out_ane_host = Tensor<f32>([1, 288]);
-
-  for i in 0..1 {
-    for j in 0..768 {
-      x_host[i][j] = 0.5;
-    }
-    for j in 0..288 {
-      out_cpu_host[i][j] = 0.0;
-      out_ane_host[i][j] = 0.0;
-    }
-  }
-  for i in 0..768 {
-    for j in 0..288 {
-      w_host[i][j] = 0.1;
-    }
-  }
-
-  let x = transfer(x_host, Memory::NPU_HBM);
-  let w = transfer(w_host, Memory::NPU_HBM);
-  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
-
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
-      for i in 0..1 {
-        for j in 0..288 {
-          let mut sum = 0.0;
-          for k in 0..768 {
-            sum += x_host[i][k] * w_host[k][j];
-          }
-          out_cpu_host[i][j] = sum;
-        }
-      }
-    }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-  }
-
-  unsafe {
-    spawn on(Topology::NPU[0]) {
-      for i in 0..1 {
-        for j in 0..288 {
-          let mut sum = 0.0;
-          for k in 0..768 {
-            sum += x[i][k] * w[k][j];
-          }
-          out_ane[i][j] = sum;
-        }
-      }
-    }
-    let t_ane_start = vx_get_time();
-    for _iter in 0..1000 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1 {
-          for j in 0..288 {
-            let mut sum = 0.0;
-            for k in 0..768 {
-              sum += x[i][k] * w[k][j];
-            }
-            out_ane[i][j] = sum;
-          }
-        }
-      }
-    }
-    let t_ane_end = vx_get_time();
-    print !(t_ane_end - t_ane_start);
-    
-    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
-    for i in 0..1 {
-      for j in 0..288 {
-        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
-        assert(diff * diff < 0.001, "Mismatch FFN DOWN");
-      }
-    }
-    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
-  }
-  return 0;
-}
-
-fn benchmark_attention_scores() -> i32 {
-  // Attention Scores (1x1024 * 1024x48)
-  let mut x_host = Tensor<f32>([1, 1024]);
-  let mut w_host = Tensor<f32>([1024, 48]);
-  let mut out_cpu_host = Tensor<f32>([1, 48]);
-  let mut out_ane_host = Tensor<f32>([1, 48]);
-
-  for i in 0..1 {
-    for j in 0..1024 {
-      x_host[i][j] = 0.5;
-    }
-    for j in 0..48 {
-      out_cpu_host[i][j] = 0.0;
-      out_ane_host[i][j] = 0.0;
-    }
-  }
-  for i in 0..1024 {
-    for j in 0..48 {
-      w_host[i][j] = 0.1;
-    }
-  }
-
-  let x = transfer(x_host, Memory::NPU_HBM);
-  let w = transfer(w_host, Memory::NPU_HBM);
-  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
-
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
-      for i in 0..1 {
-        for j in 0..48 {
-          let mut sum = 0.0;
-          for k in 0..1024 {
-            sum += x_host[i][k] * w_host[k][j];
-          }
-          out_cpu_host[i][j] = sum;
-        }
-      }
-    }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-  }
-
-  unsafe {
-    spawn on(Topology::NPU[0]) {
-      for i in 0..1 {
-        for j in 0..48 {
-          let mut sum = 0.0;
-          for k in 0..1024 {
-            sum += x[i][k] * w[k][j];
-          }
-          out_ane[i][j] = sum;
-        }
-      }
-    }
-    let t_ane_start = vx_get_time();
-    for _iter in 0..1000 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..1 {
-          for j in 0..48 {
-            let mut sum = 0.0;
-            for k in 0..1024 {
-              sum += x[i][k] * w[k][j];
-            }
-            out_ane[i][j] = sum;
-          }
-        }
-      }
-    }
-    let t_ane_end = vx_get_time();
-    print !(t_ane_end - t_ane_start);
-    
-    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
-    for i in 0..1 {
-      for j in 0..48 {
-        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
-        assert(diff * diff < 0.001, "Mismatch ATTN SCORES");
-      }
-    }
-    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
-  }
-  return 0;
-}
-
-fn benchmark_rmsnorm() -> i32 {
-  // RMSNorm (1x288) on CPU
-  let mut x_host = Tensor<f32>([1, 288]);
-  let mut w_host = Tensor<f32>([1, 288]);
-  let mut out_cpu_host = Tensor<f32>([1, 288]);
-
-  for j in 0..288 {
+  for j in 0..dim {
     x_host[0][j] = 0.5;
     w_host[0][j] = 1.0;
   }
 
   unsafe {
     let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
+    for _iter in 0..iters {
       let mut ss: f32 = 0.0;
-      for j in 0..288 {
+      for j in 0..dim {
         let val = x_host[0][j];
         ss += val * val;
       }
-      ss = ss / 288.0 + 0.00001;
+      
+      let dim_f = dim as f32;
+      ss = ss / dim_f + 0.00001; 
       ss = 1.0 / vx_sqrtf(ss);
 
-      for j in 0..288 {
+      for j in 0..dim {
         let val = x_host[0][j];
         let w = w_host[0][j];
         out_cpu_host[0][j] = w * (ss * val);
@@ -382,30 +148,29 @@ fn benchmark_rmsnorm() -> i32 {
   return 0;
 }
 
-fn benchmark_softmax() -> i32 {
-  // Softmax over sequence length 1024
-  let mut x_host = Tensor<f32>([1, 1024]);
-  for j in 0..1024 {
+fn benchmark_softmax(seq_len: i32, iters: i32) -> i32 {
+  let mut x_host = Tensor<f32>([1, seq_len]);
+  for j in 0..seq_len {
     x_host[0][j] = 0.5;
   }
 
   unsafe {
     let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
+    for _iter in 0..iters {
       let mut max_val = x_host[0][0];
-      for j in 1..1024 {
+      for j in 1..seq_len {
         let val = x_host[0][j];
         if val > max_val { max_val = val; }
       }
       let mut sum = 0.0;
-      for j in 0..1024 {
+      for j in 0..seq_len {
         let val = x_host[0][j];
         let diff = val - max_val;
         let exp_val = vx_expf(diff);
         x_host[0][j] = exp_val;
         sum += exp_val;
       }
-      for j in 0..1024 {
+      for j in 0..seq_len {
         let val = x_host[0][j];
         x_host[0][j] = val / sum;
       }
@@ -417,25 +182,24 @@ fn benchmark_softmax() -> i32 {
   return 0;
 }
 
-fn benchmark_rope() -> i32 {
-  // RoPE applied to a single head's Q and K (48 dimensions)
-  let mut q = Tensor<f32>([1, 48]);
-  let mut k = Tensor<f32>([1, 48]);
-  for j in 0..48 {
+fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
+  let mut q = Tensor<f32>([1, head_dim]);
+  let mut k = Tensor<f32>([1, head_dim]);
+  for j in 0..head_dim {
     q[0][j] = 0.5;
     k[0][j] = 0.5;
   }
 
   unsafe {
     let t_cpu_start = vx_get_time();
-    for _iter in 0..1000 {
+    for _iter in 0..iters {
       let pos = 100;
-      for i in 0..48 {
+      for i in 0..head_dim {
         let div = i / 2;
         let mul = div * 2;
         let rem = i - mul;
         if rem == 0 {
-          let fcr = vx_get_rope_freq(pos, i, 48);
+          let fcr = vx_get_rope_freq(pos, i, head_dim);
           let fci = vx_cosf(fcr);
           let fsi = vx_sinf(fcr);
 
@@ -462,16 +226,30 @@ fn benchmark_rope() -> i32 {
 }
 
 fn main() -> i32 {
+  let iters = 1000;
+
   // Matmuls
-  benchmark_attention_proj();
-  benchmark_ffn_up_gate();
-  benchmark_ffn_down();
-  benchmark_attention_scores();
+  // 1. Q, K, V, O projections (1x288 * 288x288)
+  benchmark_matmul(1, 288, 288, iters);
+  
+  // 2. FFN Up/Gate (1x288 * 288x768)
+  benchmark_matmul(1, 288, 768, iters);
+  
+  // 3. FFN Down (1x768 * 768x288)
+  benchmark_matmul(1, 768, 288, iters);
+  
+  // 4. Attention Scores (1x1024 * 1024x48)
+  benchmark_matmul(1, 1024, 48, iters);
   
   // Element-wise ops
-  benchmark_rmsnorm();
-  benchmark_softmax();
-  benchmark_rope();
+  // 5. RMSNorm (288-dim)
+  benchmark_rmsnorm(288, iters);
+  
+  // 6. Softmax (1024 seq_len)
+  benchmark_softmax(1024, iters);
+  
+  // 7. RoPE (48 head_dim)
+  benchmark_rope(48, iters);
   
   return 0;
 }
