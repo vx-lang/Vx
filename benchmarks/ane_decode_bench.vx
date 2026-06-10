@@ -4,12 +4,10 @@
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
+import std::math;
+
 extern {
   fn vx_get_time() -> f32;
-  fn vx_sqrtf(v: f32) -> f32;
-  fn vx_expf(v: f32) -> f32;
-  fn vx_sinf(v: f32) -> f32;
-  fn vx_cosf(v: f32) -> f32;
   fn vx_get_rope_freq(pos: i32, i: i32, d: i32) -> f32;
 }
 
@@ -130,7 +128,7 @@ fn benchmark_rmsnorm(dim: i32, iters: i32) -> i32 {
     
     let dim_f = dim as f32;
     ss = ss / dim_f + 0.00001; 
-    let sqrt_ss: f32 = unsafe { vx_sqrtf(ss) };
+    let sqrt_ss = ss.sqrt();
     ss = 1.0 / sqrt_ss;
 
     for j in 0..dim {
@@ -163,7 +161,7 @@ fn benchmark_softmax(seq_len: i32, iters: i32) -> i32 {
     for j in 0..seq_len {
       let val = x_host[0][j];
       let diff = val - max_val;
-      let exp_val: f32 = unsafe { vx_expf(diff) };
+      let exp_val = diff.exp();
       x_host[0][j] = exp_val;
       sum += exp_val;
     }
@@ -196,8 +194,8 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
       let rem = i - mul;
       if rem == 0 {
         let fcr: f32 = unsafe { vx_get_rope_freq(pos, i, head_dim) };
-        let fci: f32 = unsafe { vx_cosf(fcr) };
-        let fsi: f32 = unsafe { vx_sinf(fcr) };
+        let fci = fcr.cos();
+        let fsi = fcr.sin();
 
         let roff = i;
         let roff_1 = i + 1;
