@@ -1,0 +1,477 @@
+//===- ane_decode_bench.vx ---------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+extern {
+  fn vx_get_time() -> f32;
+  fn vx_sqrtf(v: f32) -> f32;
+  fn vx_expf(v: f32) -> f32;
+  fn vx_sinf(v: f32) -> f32;
+  fn vx_cosf(v: f32) -> f32;
+  fn vx_get_rope_freq(pos: i32, i: i32, d: i32) -> f32;
+}
+
+fn benchmark_attention_proj() -> i32 {
+  // Q, K, V, O projections (1x288 * 288x288)
+  let mut x_host = Tensor<f32>([1, 288]);
+  let mut w_host = Tensor<f32>([288, 288]);
+  let mut out_cpu_host = Tensor<f32>([1, 288]);
+  let mut out_ane_host = Tensor<f32>([1, 288]);
+
+  for i in 0..1 {
+    for j in 0..288 {
+      x_host[i][j] = 0.5;
+      out_cpu_host[i][j] = 0.0;
+      out_ane_host[i][j] = 0.0;
+    }
+  }
+  for i in 0..288 {
+    for j in 0..288 {
+      w_host[i][j] = 0.1;
+    }
+  }
+
+  let x = transfer(x_host, Memory::NPU_HBM);
+  let w = transfer(w_host, Memory::NPU_HBM);
+  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      for i in 0..1 {
+        for j in 0..288 {
+          let mut sum = 0.0;
+          for k in 0..288 {
+            sum += x_host[i][k] * w_host[k][j];
+          }
+          out_cpu_host[i][j] = sum;
+        }
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+  }
+
+  unsafe {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..1 {
+        for j in 0..288 {
+          let mut sum = 0.0;
+          for k in 0..288 {
+            sum += x[i][k] * w[k][j];
+          }
+          out_ane[i][j] = sum;
+        }
+      }
+    }
+    let t_ane_start = vx_get_time();
+    for _iter in 0..1000 {
+      spawn on(Topology::NPU[0]) {
+        for i in 0..1 {
+          for j in 0..288 {
+            let mut sum = 0.0;
+            for k in 0..288 {
+              sum += x[i][k] * w[k][j];
+            }
+            out_ane[i][j] = sum;
+          }
+        }
+      }
+    }
+    let t_ane_end = vx_get_time();
+    print !(t_ane_end - t_ane_start);
+    
+    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
+    for i in 0..1 {
+      for j in 0..288 {
+        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
+        assert(diff * diff < 0.001, "Mismatch QKV");
+      }
+    }
+    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_ffn_up_gate() -> i32 {
+  // FFN Up/Gate projections (1x288 * 288x768)
+  let mut x_host = Tensor<f32>([1, 288]);
+  let mut w_host = Tensor<f32>([288, 768]);
+  let mut out_cpu_host = Tensor<f32>([1, 768]);
+  let mut out_ane_host = Tensor<f32>([1, 768]);
+
+  for i in 0..1 {
+    for j in 0..288 {
+      x_host[i][j] = 0.5;
+    }
+    for j in 0..768 {
+      out_cpu_host[i][j] = 0.0;
+      out_ane_host[i][j] = 0.0;
+    }
+  }
+  for i in 0..288 {
+    for j in 0..768 {
+      w_host[i][j] = 0.1;
+    }
+  }
+
+  let x = transfer(x_host, Memory::NPU_HBM);
+  let w = transfer(w_host, Memory::NPU_HBM);
+  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      for i in 0..1 {
+        for j in 0..768 {
+          let mut sum = 0.0;
+          for k in 0..288 {
+            sum += x_host[i][k] * w_host[k][j];
+          }
+          out_cpu_host[i][j] = sum;
+        }
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+  }
+
+  unsafe {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..1 {
+        for j in 0..768 {
+          let mut sum = 0.0;
+          for k in 0..288 {
+            sum += x[i][k] * w[k][j];
+          }
+          out_ane[i][j] = sum;
+        }
+      }
+    }
+    let t_ane_start = vx_get_time();
+    for _iter in 0..1000 {
+      spawn on(Topology::NPU[0]) {
+        for i in 0..1 {
+          for j in 0..768 {
+            let mut sum = 0.0;
+            for k in 0..288 {
+              sum += x[i][k] * w[k][j];
+            }
+            out_ane[i][j] = sum;
+          }
+        }
+      }
+    }
+    let t_ane_end = vx_get_time();
+    print !(t_ane_end - t_ane_start);
+    
+    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
+    for i in 0..1 {
+      for j in 0..768 {
+        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
+        assert(diff * diff < 0.001, "Mismatch FFN UP");
+      }
+    }
+    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_ffn_down() -> i32 {
+  // FFN Down projection (1x768 * 768x288)
+  let mut x_host = Tensor<f32>([1, 768]);
+  let mut w_host = Tensor<f32>([768, 288]);
+  let mut out_cpu_host = Tensor<f32>([1, 288]);
+  let mut out_ane_host = Tensor<f32>([1, 288]);
+
+  for i in 0..1 {
+    for j in 0..768 {
+      x_host[i][j] = 0.5;
+    }
+    for j in 0..288 {
+      out_cpu_host[i][j] = 0.0;
+      out_ane_host[i][j] = 0.0;
+    }
+  }
+  for i in 0..768 {
+    for j in 0..288 {
+      w_host[i][j] = 0.1;
+    }
+  }
+
+  let x = transfer(x_host, Memory::NPU_HBM);
+  let w = transfer(w_host, Memory::NPU_HBM);
+  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      for i in 0..1 {
+        for j in 0..288 {
+          let mut sum = 0.0;
+          for k in 0..768 {
+            sum += x_host[i][k] * w_host[k][j];
+          }
+          out_cpu_host[i][j] = sum;
+        }
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+  }
+
+  unsafe {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..1 {
+        for j in 0..288 {
+          let mut sum = 0.0;
+          for k in 0..768 {
+            sum += x[i][k] * w[k][j];
+          }
+          out_ane[i][j] = sum;
+        }
+      }
+    }
+    let t_ane_start = vx_get_time();
+    for _iter in 0..1000 {
+      spawn on(Topology::NPU[0]) {
+        for i in 0..1 {
+          for j in 0..288 {
+            let mut sum = 0.0;
+            for k in 0..768 {
+              sum += x[i][k] * w[k][j];
+            }
+            out_ane[i][j] = sum;
+          }
+        }
+      }
+    }
+    let t_ane_end = vx_get_time();
+    print !(t_ane_end - t_ane_start);
+    
+    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
+    for i in 0..1 {
+      for j in 0..288 {
+        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
+        assert(diff * diff < 0.001, "Mismatch FFN DOWN");
+      }
+    }
+    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_attention_scores() -> i32 {
+  // Attention Scores (1x1024 * 1024x48)
+  let mut x_host = Tensor<f32>([1, 1024]);
+  let mut w_host = Tensor<f32>([1024, 48]);
+  let mut out_cpu_host = Tensor<f32>([1, 48]);
+  let mut out_ane_host = Tensor<f32>([1, 48]);
+
+  for i in 0..1 {
+    for j in 0..1024 {
+      x_host[i][j] = 0.5;
+    }
+    for j in 0..48 {
+      out_cpu_host[i][j] = 0.0;
+      out_ane_host[i][j] = 0.0;
+    }
+  }
+  for i in 0..1024 {
+    for j in 0..48 {
+      w_host[i][j] = 0.1;
+    }
+  }
+
+  let x = transfer(x_host, Memory::NPU_HBM);
+  let w = transfer(w_host, Memory::NPU_HBM);
+  let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      for i in 0..1 {
+        for j in 0..48 {
+          let mut sum = 0.0;
+          for k in 0..1024 {
+            sum += x_host[i][k] * w_host[k][j];
+          }
+          out_cpu_host[i][j] = sum;
+        }
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+  }
+
+  unsafe {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..1 {
+        for j in 0..48 {
+          let mut sum = 0.0;
+          for k in 0..1024 {
+            sum += x[i][k] * w[k][j];
+          }
+          out_ane[i][j] = sum;
+        }
+      }
+    }
+    let t_ane_start = vx_get_time();
+    for _iter in 0..1000 {
+      spawn on(Topology::NPU[0]) {
+        for i in 0..1 {
+          for j in 0..48 {
+            let mut sum = 0.0;
+            for k in 0..1024 {
+              sum += x[i][k] * w[k][j];
+            }
+            out_ane[i][j] = sum;
+          }
+        }
+      }
+    }
+    let t_ane_end = vx_get_time();
+    print !(t_ane_end - t_ane_start);
+    
+    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
+    for i in 0..1 {
+      for j in 0..48 {
+        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
+        assert(diff * diff < 0.001, "Mismatch ATTN SCORES");
+      }
+    }
+    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_rmsnorm() -> i32 {
+  // RMSNorm (1x288) on CPU
+  let mut x_host = Tensor<f32>([1, 288]);
+  let mut w_host = Tensor<f32>([1, 288]);
+  let mut out_cpu_host = Tensor<f32>([1, 288]);
+
+  for j in 0..288 {
+    x_host[0][j] = 0.5;
+    w_host[0][j] = 1.0;
+  }
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      let mut ss: f32 = 0.0;
+      for j in 0..288 {
+        let val = x_host[0][j];
+        ss += val * val;
+      }
+      ss = ss / 288.0 + 0.00001;
+      ss = 1.0 / vx_sqrtf(ss);
+
+      for j in 0..288 {
+        let val = x_host[0][j];
+        let w = w_host[0][j];
+        out_cpu_host[0][j] = w * (ss * val);
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_softmax() -> i32 {
+  // Softmax over sequence length 1024
+  let mut x_host = Tensor<f32>([1, 1024]);
+  for j in 0..1024 {
+    x_host[0][j] = 0.5;
+  }
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      let mut max_val = x_host[0][0];
+      for j in 1..1024 {
+        let val = x_host[0][j];
+        if val > max_val { max_val = val; }
+      }
+      let mut sum = 0.0;
+      for j in 0..1024 {
+        let val = x_host[0][j];
+        let diff = val - max_val;
+        let exp_val = vx_expf(diff);
+        x_host[0][j] = exp_val;
+        sum += exp_val;
+      }
+      for j in 0..1024 {
+        let val = x_host[0][j];
+        x_host[0][j] = val / sum;
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+    assert(x_host[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn benchmark_rope() -> i32 {
+  // RoPE applied to a single head's Q and K (48 dimensions)
+  let mut q = Tensor<f32>([1, 48]);
+  let mut k = Tensor<f32>([1, 48]);
+  for j in 0..48 {
+    q[0][j] = 0.5;
+    k[0][j] = 0.5;
+  }
+
+  unsafe {
+    let t_cpu_start = vx_get_time();
+    for _iter in 0..1000 {
+      let pos = 100;
+      for i in 0..48 {
+        let div = i / 2;
+        let mul = div * 2;
+        let rem = i - mul;
+        if rem == 0 {
+          let fcr = vx_get_rope_freq(pos, i, 48);
+          let fci = vx_cosf(fcr);
+          let fsi = vx_sinf(fcr);
+
+          let roff = i;
+          let roff_1 = i + 1;
+
+          let q0 = q[0][roff];
+          let q1 = q[0][roff_1];
+          q[0][roff] = q0 * fci - q1 * fsi;
+          q[0][roff_1] = q0 * fsi + q1 * fci;
+
+          let k0 = k[0][roff];
+          let k1 = k[0][roff_1];
+          k[0][roff] = k0 * fci - k1 * fsi;
+          k[0][roff_1] = k0 * fsi + k1 * fci;
+        }
+      }
+    }
+    let t_cpu_end = vx_get_time();
+    print !(t_cpu_end - t_cpu_start);
+    assert(q[0][0] != -9999.0, "Prevent DCE");
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // Matmuls
+  benchmark_attention_proj();
+  benchmark_ffn_up_gate();
+  benchmark_ffn_down();
+  benchmark_attention_scores();
+  
+  // Element-wise ops
+  benchmark_rmsnorm();
+  benchmark_softmax();
+  benchmark_rope();
+  
+  return 0;
+}
