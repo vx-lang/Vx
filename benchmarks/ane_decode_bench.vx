@@ -47,25 +47,39 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
   let mut out_ane = transfer(out_ane_host, Memory::NPU_HBM);
   let bounds = transfer(bounds_host, Memory::NPU_HBM);
 
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..iters {
-      for i in 0..m {
-        for j in 0..n {
-          let mut sum = 0.0;
-          for c in 0..k {
-            sum += x_host[i][c] * w_host[c][j];
-          }
-          out_cpu_host[i][j] = sum;
+  let t_cpu_start: f32 = unsafe { vx_get_time() };
+  for _iter in 0..iters {
+    for i in 0..m {
+      for j in 0..n {
+        let mut sum = 0.0;
+        for c in 0..k {
+          sum += x_host[i][c] * w_host[c][j];
         }
+        out_cpu_host[i][j] = sum;
       }
     }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
+  }
+  let t_cpu_end: f32 = unsafe { vx_get_time() };
+  print !(t_cpu_end - t_cpu_start);
+
+  // Warmup NPU kernel
+  spawn on(Topology::NPU[0]) {
+    let m_npu = bounds[0][0] as i32;
+    let k_npu = bounds[0][1] as i32;
+    let n_npu = bounds[0][2] as i32;
+    for i in 0..m_npu {
+      for j in 0..n_npu {
+        let mut sum = 0.0;
+        for c in 0..k_npu {
+          sum += x[i][c] * w[c][j];
+        }
+        out_ane[i][j] = sum;
+      }
+    }
   }
 
-  unsafe {
-    // Warmup NPU kernel
+  let t_ane_start: f32 = unsafe { vx_get_time() };
+  for _iter in 0..iters {
     spawn on(Topology::NPU[0]) {
       let m_npu = bounds[0][0] as i32;
       let k_npu = bounds[0][1] as i32;
@@ -80,35 +94,19 @@ fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
         }
       }
     }
-    let t_ane_start = vx_get_time();
-    for _iter in 0..iters {
-      spawn on(Topology::NPU[0]) {
-        let m_npu = bounds[0][0] as i32;
-        let k_npu = bounds[0][1] as i32;
-        let n_npu = bounds[0][2] as i32;
-        for i in 0..m_npu {
-          for j in 0..n_npu {
-            let mut sum = 0.0;
-            for c in 0..k_npu {
-              sum += x[i][c] * w[c][j];
-            }
-            out_ane[i][j] = sum;
-          }
-        }
-      }
-    }
-    let t_ane_end = vx_get_time();
-    print !(t_ane_end - t_ane_start);
-    
-    let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
-    for i in 0..m {
-      for j in 0..n {
-        let diff = out_cpu_host[i][j] - out_ane_res[i][j];
-        assert(diff * diff < 0.001, "Mismatch MatMul");
-      }
-    }
-    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
   }
+  let t_ane_end: f32 = unsafe { vx_get_time() };
+  print !(t_ane_end - t_ane_start);
+  
+  let out_ane_res = transfer(out_ane, Memory::CPU_DRAM);
+  for i in 0..m {
+    for j in 0..n {
+      let diff = out_cpu_host[i][j] - out_ane_res[i][j];
+      assert(diff * diff < 0.001, "Mismatch MatMul");
+    }
+  }
+  assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+
   return 0;
 }
 
@@ -122,29 +120,29 @@ fn benchmark_rmsnorm(dim: i32, iters: i32) -> i32 {
     w_host[0][j] = 1.0;
   }
 
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..iters {
-      let mut ss: f32 = 0.0;
-      for j in 0..dim {
-        let val = x_host[0][j];
-        ss += val * val;
-      }
-      
-      let dim_f = dim as f32;
-      ss = ss / dim_f + 0.00001; 
-      ss = 1.0 / vx_sqrtf(ss);
-
-      for j in 0..dim {
-        let val = x_host[0][j];
-        let w = w_host[0][j];
-        out_cpu_host[0][j] = w * (ss * val);
-      }
+  let t_cpu_start: f32 = unsafe { vx_get_time() };
+  for _iter in 0..iters {
+    let mut ss: f32 = 0.0;
+    for j in 0..dim {
+      let val = x_host[0][j];
+      ss += val * val;
     }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-    assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+    
+    let dim_f = dim as f32;
+    ss = ss / dim_f + 0.00001; 
+    let sqrt_ss: f32 = unsafe { vx_sqrtf(ss) };
+    ss = 1.0 / sqrt_ss;
+
+    for j in 0..dim {
+      let val = x_host[0][j];
+      let w = w_host[0][j];
+      out_cpu_host[0][j] = w * (ss * val);
+    }
   }
+  let t_cpu_end: f32 = unsafe { vx_get_time() };
+  print !(t_cpu_end - t_cpu_start);
+  assert(out_cpu_host[0][0] != -9999.0, "Prevent DCE");
+
   return 0;
 }
 
@@ -154,31 +152,30 @@ fn benchmark_softmax(seq_len: i32, iters: i32) -> i32 {
     x_host[0][j] = 0.5;
   }
 
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..iters {
-      let mut max_val = x_host[0][0];
-      for j in 1..seq_len {
-        let val = x_host[0][j];
-        if val > max_val { max_val = val; }
-      }
-      let mut sum = 0.0;
-      for j in 0..seq_len {
-        let val = x_host[0][j];
-        let diff = val - max_val;
-        let exp_val = vx_expf(diff);
-        x_host[0][j] = exp_val;
-        sum += exp_val;
-      }
-      for j in 0..seq_len {
-        let val = x_host[0][j];
-        x_host[0][j] = val / sum;
-      }
+  let t_cpu_start: f32 = unsafe { vx_get_time() };
+  for _iter in 0..iters {
+    let mut max_val = x_host[0][0];
+    for j in 1..seq_len {
+      let val = x_host[0][j];
+      if val > max_val { max_val = val; }
     }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-    assert(x_host[0][0] != -9999.0, "Prevent DCE");
+    let mut sum = 0.0;
+    for j in 0..seq_len {
+      let val = x_host[0][j];
+      let diff = val - max_val;
+      let exp_val: f32 = unsafe { vx_expf(diff) };
+      x_host[0][j] = exp_val;
+      sum += exp_val;
+    }
+    for j in 0..seq_len {
+      let val = x_host[0][j];
+      x_host[0][j] = val / sum;
+    }
   }
+  let t_cpu_end: f32 = unsafe { vx_get_time() };
+  print !(t_cpu_end - t_cpu_start);
+  assert(x_host[0][0] != -9999.0, "Prevent DCE");
+
   return 0;
 }
 
@@ -190,38 +187,37 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
     k[0][j] = 0.5;
   }
 
-  unsafe {
-    let t_cpu_start = vx_get_time();
-    for _iter in 0..iters {
-      let pos = 100;
-      for i in 0..head_dim {
-        let div = i / 2;
-        let mul = div * 2;
-        let rem = i - mul;
-        if rem == 0 {
-          let fcr = vx_get_rope_freq(pos, i, head_dim);
-          let fci = vx_cosf(fcr);
-          let fsi = vx_sinf(fcr);
+  let t_cpu_start: f32 = unsafe { vx_get_time() };
+  for _iter in 0..iters {
+    let pos = 100;
+    for i in 0..head_dim {
+      let div = i / 2;
+      let mul = div * 2;
+      let rem = i - mul;
+      if rem == 0 {
+        let fcr: f32 = unsafe { vx_get_rope_freq(pos, i, head_dim) };
+        let fci: f32 = unsafe { vx_cosf(fcr) };
+        let fsi: f32 = unsafe { vx_sinf(fcr) };
 
-          let roff = i;
-          let roff_1 = i + 1;
+        let roff = i;
+        let roff_1 = i + 1;
 
-          let q0 = q[0][roff];
-          let q1 = q[0][roff_1];
-          q[0][roff] = q0 * fci - q1 * fsi;
-          q[0][roff_1] = q0 * fsi + q1 * fci;
+        let q0 = q[0][roff];
+        let q1 = q[0][roff_1];
+        q[0][roff] = q0 * fci - q1 * fsi;
+        q[0][roff_1] = q0 * fsi + q1 * fci;
 
-          let k0 = k[0][roff];
-          let k1 = k[0][roff_1];
-          k[0][roff] = k0 * fci - k1 * fsi;
-          k[0][roff_1] = k0 * fsi + k1 * fci;
-        }
+        let k0 = k[0][roff];
+        let k1 = k[0][roff_1];
+        k[0][roff] = k0 * fci - k1 * fsi;
+        k[0][roff_1] = k0 * fsi + k1 * fci;
       }
     }
-    let t_cpu_end = vx_get_time();
-    print !(t_cpu_end - t_cpu_start);
-    assert(q[0][0] != -9999.0, "Prevent DCE");
   }
+  let t_cpu_end: f32 = unsafe { vx_get_time() };
+  print !(t_cpu_end - t_cpu_start);
+  assert(q[0][0] != -9999.0, "Prevent DCE");
+
   return 0;
 }
 
@@ -229,26 +225,21 @@ fn main() -> i32 {
   let iters = 1000;
 
   // Matmuls
-  // 1. Q, K, V, O projections (1x288 * 288x288)
+  // 1. Q, K, V, O projections
   benchmark_matmul(1, 288, 288, iters);
   
-  // 2. FFN Up/Gate (1x288 * 288x768)
+  // 2. FFN Up/Gate
   benchmark_matmul(1, 288, 768, iters);
   
-  // 3. FFN Down (1x768 * 768x288)
+  // 3. FFN Down
   benchmark_matmul(1, 768, 288, iters);
   
-  // 4. Attention Scores (1x1024 * 1024x48)
+  // 4. Attention Scores
   benchmark_matmul(1, 1024, 48, iters);
   
   // Element-wise ops
-  // 5. RMSNorm (288-dim)
   benchmark_rmsnorm(288, iters);
-  
-  // 6. Softmax (1024 seq_len)
   benchmark_softmax(1024, iters);
-  
-  // 7. RoPE (48 head_dim)
   benchmark_rope(48, iters);
   
   return 0;
