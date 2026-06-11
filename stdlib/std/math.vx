@@ -5,78 +5,78 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// The `extern` block here maps directly to the C-ABI FFI functions
-// exposed by `libvx_std_core.dylib` (via `rt.rs` and `math.rs`).
-// This allows Vx to hook into native mathematical operations at the LLVM level.
+// The `extern` block here maps directly to standard C math library (libm)
+// functions, automatically resolved by the JIT (LLI) at runtime.
+//===----------------------------------------------------------------------===//
 extern {
-  fn vx_math_sin_f32(x : f32)->f32;
-  fn vx_math_cos_f32(x : f32)->f32;
-  fn vx_math_tan_f32(x : f32)->f32;
-  fn vx_math_asin_f32(x : f32)->f32;
-  fn vx_math_acos_f32(x : f32)->f32;
-  fn vx_math_atan_f32(x : f32)->f32;
-  fn vx_math_abs_f32(x : f32)->f32;
-  fn vx_math_sqrt_f32(x : f32)->f32;
-  fn vx_math_exp_f32(x : f32)->f32;
-  fn vx_math_log_f32(x : f32)->f32;
-  fn vx_math_log2_f32(x : f32)->f32;
-  fn vx_math_log10_f32(x : f32)->f32;
+  fn sinf(x: f32) -> f32;
+  fn cosf(x: f32) -> f32;
+  fn tanf(x: f32) -> f32;
+  fn asinf(x: f32) -> f32;
+  fn acosf(x: f32) -> f32;
+  fn atanf(x: f32) -> f32;
+  fn fabsf(x: f32) -> f32;
+  fn sqrtf(x: f32) -> f32;
+  fn expf(x: f32) -> f32;
+  fn logf(x: f32) -> f32;
+  fn log2f(x: f32) -> f32;
+  fn log10f(x: f32) -> f32;
 
-  fn vx_math_sin_f64(x : f64)->f64;
-  fn vx_math_cos_f64(x : f64)->f64;
-  fn vx_math_tan_f64(x : f64)->f64;
-  fn vx_math_abs_f64(x : f64)->f64;
-  fn vx_math_sqrt_f64(x : f64)->f64;
-  fn vx_math_exp_f64(x : f64)->f64;
-  fn vx_math_log_f64(x : f64)->f64;
-  fn vx_math_asin_f64(x : f64)->f64;
-  fn vx_math_acos_f64(x : f64)->f64;
-  fn vx_math_atan_f64(x : f64)->f64;
-  fn vx_math_log2_f64(x : f64)->f64;
-  fn vx_math_log10_f64(x : f64)->f64;
+  fn sin(x: f64) -> f64;
+  fn cos(x: f64) -> f64;
+  fn tan(x: f64) -> f64;
+  fn asin(x: f64) -> f64;
+  fn acos(x: f64) -> f64;
+  fn atan(x: f64) -> f64;
+  fn fabs(x: f64) -> f64;
+  fn sqrt(x: f64) -> f64;
+  fn exp(x: f64) -> f64;
+  fn log(x: f64) -> f64;
+  fn log2(x: f64) -> f64;
+  fn log10(x: f64) -> f64;
 }
 
 trait Math {
-  fn sin(self : Self)->Self;
-  fn cos(self : Self)->Self;
-  fn tan(self : Self)->Self;
-  fn abs(self : Self)->Self;
-  fn sqrt(self : Self)->Self;
-  fn exp(self : Self)->Self;
-  fn ln(self : Self)->Self;
-  fn asin(self : Self)->Self;
-  fn acos(self : Self)->Self;
-  fn atan(self : Self)->Self;
-  fn log2(self : Self)->Self;
-  fn log10(self : Self)->Self;
+  fn sin(self: Self) -> Self;
+  fn cos(self: Self) -> Self;
+  fn tan(self: Self) -> Self;
+  fn abs(self: Self) -> Self;
+  fn sqrt(self: Self) -> Self;
+  fn exp(self: Self) -> Self;
+  fn ln(self: Self) -> Self;
+  fn asin(self: Self) -> Self;
+  fn acos(self: Self) -> Self;
+  fn atan(self: Self) -> Self;
+  fn log2(self: Self) -> Self;
+  fn log10(self: Self) -> Self;
 }
 
 impl Math for f32 {
-  fn sin(self : f32) -> f32 { return unsafe{vx_math_sin_f32(self)}; }
-  fn cos(self : f32) -> f32 { return unsafe{vx_math_cos_f32(self)}; }
-  fn tan(self : f32) -> f32 { return unsafe{vx_math_tan_f32(self)}; }
-  fn abs(self : f32) -> f32 { return unsafe{vx_math_abs_f32(self)}; }
-  fn sqrt(self : f32) -> f32 { return unsafe{vx_math_sqrt_f32(self)}; }
-  fn exp(self : f32) -> f32 { return unsafe{vx_math_exp_f32(self)}; }
-  fn ln(self : f32) -> f32 { return unsafe{vx_math_log_f32(self)}; }
-  fn asin(self : f32) -> f32 { return unsafe{vx_math_asin_f32(self)}; }
-  fn acos(self : f32) -> f32 { return unsafe{vx_math_acos_f32(self)}; }
-  fn atan(self : f32) -> f32 { return unsafe{vx_math_atan_f32(self)}; }
-  fn log2(self : f32) -> f32 { return unsafe{vx_math_log2_f32(self)}; }
-  fn log10(self : f32) -> f32 { return unsafe{vx_math_log10_f32(self)}; }
+  fn sin(self: f32) -> f32 { return unsafe { sinf(self) }; }
+  fn cos(self: f32) -> f32 { return unsafe { cosf(self) }; }
+  fn tan(self: f32) -> f32 { return unsafe { tanf(self) }; }
+  fn abs(self: f32) -> f32 { return unsafe { fabsf(self) }; }
+  fn sqrt(self: f32) -> f32 { return unsafe { sqrtf(self) }; }
+  fn exp(self: f32) -> f32 { return unsafe { expf(self) }; }
+  fn ln(self: f32) -> f32 { return unsafe { logf(self) }; }
+  fn asin(self: f32) -> f32 { return unsafe { asinf(self) }; }
+  fn acos(self: f32) -> f32 { return unsafe { acosf(self) }; }
+  fn atan(self: f32) -> f32 { return unsafe { atanf(self) }; }
+  fn log2(self: f32) -> f32 { return unsafe { log2f(self) }; }
+  fn log10(self: f32) -> f32 { return unsafe { log10f(self) }; }
 }
 
 impl Math for f64 {
-  fn sin(self : f64) -> f64 { return unsafe{vx_math_sin_f64(self)}; }
-  fn cos(self : f64) -> f64 { return unsafe{vx_math_cos_f64(self)}; }
-  fn tan(self : f64) -> f64 { return unsafe{vx_math_tan_f64(self)}; }
-  fn abs(self : f64) -> f64 { return unsafe{vx_math_abs_f64(self)}; }
-  fn sqrt(self : f64) -> f64 { return unsafe{vx_math_sqrt_f64(self)}; }
-  fn exp(self : f64) -> f64 { return unsafe{vx_math_exp_f64(self)}; }
-  fn ln(self : f64) -> f64 { return unsafe{vx_math_log_f64(self)}; }
-  fn asin(self : f64) -> f64 { return unsafe{vx_math_asin_f64(self)}; }
-  fn acos(self : f64) -> f64 { return unsafe{vx_math_acos_f64(self)}; }
-  fn atan(self : f64) -> f64 { return unsafe{vx_math_atan_f64(self)}; }
-  fn log2(self : f64) -> f64 { return unsafe{vx_math_log2_f64(self)}; }
-  fn log10(self : f64) -> f64 { return unsafe{vx_math_log10_f64(self)}; }
+  fn sin(self: f64) -> f64 { return unsafe { sin(self) }; }
+  fn cos(self: f64) -> f64 { return unsafe { cos(self) }; }
+  fn tan(self: f64) -> f64 { return unsafe { tan(self) }; }
+  fn abs(self: f64) -> f64 { return unsafe { fabs(self) }; }
+  fn sqrt(self: f64) -> f64 { return unsafe { sqrt(self) }; }
+  fn exp(self: f64) -> f64 { return unsafe { exp(self) }; }
+  fn ln(self: f64) -> f64 { return unsafe { log(self) }; }
+  fn asin(self: f64) -> f64 { return unsafe { asin(self) }; }
+  fn acos(self: f64) -> f64 { return unsafe { acos(self) }; }
+  fn atan(self: f64) -> f64 { return unsafe { atan(self) }; }
+  fn log2(self: f64) -> f64 { return unsafe { log2(self) }; }
+  fn log10(self: f64) -> f64 { return unsafe { log10(self) }; }
 }
