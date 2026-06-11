@@ -128,17 +128,4 @@ pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> 
     0
 }
 
-#[no_mangle]
-pub extern "C" fn vx_print(tensor_id: i64) {
-    println!(
-        "[Vx Runtime] Computation finished! Final tensor ID: {}",
-        tensor_id
-    );
-}
 
-#[no_mangle]
-pub extern "C" fn printMemrefBF16(_rank: *mut c_void, _ptr: *mut c_void) {
-    println!("[[24.0,   24.0,   24.0,   24.0], ");
-    println!(" [24.0,   24.0,   24.0,   24.0], ");
-    println!(" [24.0,   24.0,   24.0,   24.0]]");
-}
