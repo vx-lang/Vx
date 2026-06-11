@@ -27,11 +27,6 @@ pub extern "C" fn vx_load_config(filepath: *const c_char) -> *mut i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn vx_malloc_f32(num_elements: i32) -> *mut f32 {
-    unsafe { libc::malloc((num_elements as usize) * std::mem::size_of::<f32>()) as *mut f32 }
-}
-
-#[no_mangle]
 pub extern "C" fn vx_load_weights(filepath: *const c_char) -> *mut f32 {
     if filepath.is_null() {
         return ptr::null_mut();
@@ -50,15 +45,7 @@ pub extern "C" fn vx_load_weights(filepath: *const c_char) -> *mut f32 {
     ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
-    unsafe { p.add(offset as usize) }
-}
 
-#[no_mangle]
-pub extern "C" fn vx_advance_ptr_f32(p: *mut f32, offset: i32) -> *mut f32 {
-    unsafe { p.add(offset as usize) }
-}
 
 #[no_mangle]
 pub extern "C" fn vx_get_env_int(name: *const c_char, default_val: i32) -> i32 {

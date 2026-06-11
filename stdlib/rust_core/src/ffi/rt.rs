@@ -12,7 +12,7 @@
 // a compiled Vx program.
 //
 //===----------------------------------------------------------------------===//
-use std::ffi::c_void;
+
 use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -106,8 +106,23 @@ pub extern "C" fn trace_end() {
 }
 
 // ============================================================================
-// Memory & Printing
+// Memory & Pointers
 // ============================================================================
+
+#[no_mangle]
+pub extern "C" fn vx_malloc_f32(num_elements: i32) -> *mut f32 {
+    unsafe { libc::malloc((num_elements as usize) * std::mem::size_of::<f32>()) as *mut f32 }
+}
+
+#[no_mangle]
+pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
+    unsafe { p.add(offset as usize) }
+}
+
+#[no_mangle]
+pub extern "C" fn vx_advance_ptr_f32(p: *mut f32, offset: i32) -> *mut f32 {
+    unsafe { p.add(offset as usize) }
+}
 
 #[no_mangle]
 pub extern "C" fn free_mem(ptr: *mut f32) {
@@ -127,5 +142,3 @@ pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> 
     }
     0
 }
-
-
