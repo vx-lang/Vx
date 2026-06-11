@@ -11,6 +11,16 @@ extern {
   fn vx_file_write(ptr : *mut i8, buffer : *const u8, len : i64) -> i64;
   fn vx_file_seek(ptr : *mut i8, offset : i64, whence : i32) -> i64;
   fn vx_file_drop(ptr : *mut i8) -> i32;
+
+  // libc bindings for high-level I/O
+  fn fopen(path: *const i8, mode: *const i8) -> *mut i8;
+  fn fread(ptr: *mut u8, size: i64, nmemb: i64, stream: *mut i8) -> i64;
+  fn fclose(stream: *mut i8) -> i32;
+  fn fileno(f: *mut i8) -> i32;
+  fn fseek(f: *mut i8, offset: i64, whence: i32) -> i32;
+  fn ftell(f: *mut i8) -> i64;
+  fn mmap(addr: *mut i8, len: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut i8;
+  fn munmap(addr: *mut i8, len: i64) -> i32;
 }
 
 struct File {
@@ -22,22 +32,23 @@ impl File {
   fn open(path : *const i8, mode : i32) -> File {
     let ptr = vx_file_open(path, mode);
     File {
-      ptr:
-      ptr
+      ptr: ptr
     }
   }
 
-  fn read(self : *mut File, buffer : *mut u8, len : i64)
-  -> i64{vx_file_read(self.ptr, buffer, len)}
+  fn read(self : *mut File, buffer : *mut u8, len : i64) -> i64 {
+    vx_file_read(self.ptr, buffer, len)
+  }
 
-  fn write(self : *mut File, buffer : *const u8, len : i64)
-  ->i64{vx_file_write(self.ptr, buffer, len)}
+  fn write(self : *mut File, buffer : *const u8, len : i64) -> i64 {
+    vx_file_write(self.ptr, buffer, len)
+  }
 
-  fn seek(self : *mut File, offset : i64, whence : i32)
-  ->i64 {
+  fn seek(self : *mut File, offset : i64, whence : i32) -> i64 {
     vx_file_seek(self.ptr, offset, whence)
   }
 }
 
-// Ideally we would want a Drop trait, but for now we expose it manually.
-fn file_drop(file : *mut File) { vx_file_drop(file.ptr); }
+fn file_drop(file : *mut File) {
+  vx_file_drop(file.ptr);
+}

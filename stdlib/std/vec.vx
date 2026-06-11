@@ -24,8 +24,12 @@ Vec<T> {
 
   fn with_capacity(capacity : i32) -> Vec<T> {
     let size_bytes : i64 = (capacity as i64) * sizeof<T>();
-    let ptr : *mut T = unsafe{malloc(size_bytes)};
-    return Vec<T>{data : ptr, len : 0, capacity : capacity};
+    let ptr : *mut T = unsafe{
+      malloc(size_bytes)
+    };
+    return Vec<T>{
+      data : ptr, len : 0, capacity : capacity
+    };
   }
 
   fn free(self : &mut Vec<T>) -> i32 {
@@ -39,21 +43,43 @@ Vec<T> {
     return 0;
   }
 
-  fn as_mut_ptr(self : &Vec<T>) -> *mut T { return self.data; }
+  fn as_mut_ptr(self : &Vec<T>) -> *mut T {
+    return self.data;
+  }
+
+  fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
+    let ptr : *mut T = self.data;
+    return unsafe {
+      &mut *ptr
+    };
+  }
+
+  fn as_slice(self : &Vec<T>) -> &T {
+    let ptr : *mut T = self.data;
+    return unsafe {
+      &*ptr
+    };
+  }
 
   fn push(self : &mut Vec<T>, val : T) -> i32 {
     if self
     .len == self.capacity {
       let mut new_cap : i32 = 4;
       if self
-      .capacity > 0 { new_cap = self.capacity * 2; }
+      .capacity > 0 {
+        new_cap = self.capacity * 2;
+      }
       let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
 
       let ptr : *mut i8 = self.data;
-      self.data = unsafe{realloc(ptr, size_bytes)};
+      self.data = unsafe{
+        realloc(ptr, size_bytes)
+      };
       self.capacity = new_cap;
     }
-    unsafe { self.data[self.len] = val; }
+    unsafe {
+      self.data[self.len] = val;
+    }
     self.len = self.len + 1;
     return 0;
   }
@@ -61,20 +87,28 @@ Vec<T> {
   fn get(self : &Vec<T>, index: i32) -> T {
     assert(index >= 0, "Index out of bounds");
     assert(index < self.len, "Index out of bounds");
-    return unsafe { self.data[index] };
+    return unsafe {
+      self.data[index]
+    };
   }
 
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     assert(index >= 0, "Index out of bounds");
     assert(index < self.len, "Index out of bounds");
-    unsafe { self.data[index] = val; }
+    unsafe {
+      self.data[index] = val;
+    }
     return 0;
   }
 
-  fn len(self : &Vec<T>) -> i32 { return self.len; }
+  fn len(self : &Vec<T>) -> i32 {
+    return self.len;
+  }
 
   fn iter(self : &Vec<T>) -> VecIter<T> {
-    return VecIter<T>{vec : self, current : 0};
+    return VecIter<T>{
+      vec : self, current : 0
+    };
   }
 }
 
@@ -85,11 +119,15 @@ struct VecIter<T> {
 
 impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
   fn next(self : &mut VecIter<T>) -> Option<T> {
-    let vec_len : i32 = unsafe{(*self.vec).len};
+    let vec_len : i32 = unsafe{
+      (*self.vec).len
+    };
     let mut ret = Option<T>::None();
     if self
     .current < vec_len {
-      let val : T = unsafe{(*self.vec).data[self.current]};
+      let val : T = unsafe{
+        (*self.vec).data[self.current]
+      };
       self.current = self.current + 1;
       ret = Option<T>::Some(val);
     }
@@ -101,7 +139,9 @@ impl<T>
 VecIter<T> {
   fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
   -> VecMap<T, NewItem> {
-    return VecMap<T, NewItem>{iter : self, f : f};
+    return VecMap<T, NewItem>{
+      iter : self, f : f
+    };
   }
 }
 
@@ -116,7 +156,9 @@ impl<T, NewItem> Iterator<VecMap<T, NewItem>, NewItem> for VecMap<T, NewItem> {
     let mut opt = self.iter.next();
     loop {
       if opt
-      .is_none() { break; }
+      .is_none() {
+        break;
+      }
       let item = opt.unwrap();
       let f_closure = self.f;
       let f_ptr = f_closure.func;
@@ -135,7 +177,9 @@ VecMap<T, NewItem> {
     loop {
       let mut opt = self.next();
       if opt
-      .is_none() { break; }
+      .is_none() {
+        break;
+      }
       result.push(opt.unwrap());
     }
     return result;
