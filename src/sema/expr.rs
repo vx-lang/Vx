@@ -547,14 +547,16 @@ impl<'a> TypeChecker<'a> {
                     return Type::Scalar(ElementType::Bool);
                 }
 
-                if let Some(borrows) = self.active_borrows.get(name) {
-                    for b in borrows {
-                        if b.is_mut && !silent {
-                            self.errors.push(format!(
-                                "Cannot access '{}' because it is mutably borrowed.",
-                                name
-                            ));
-                            break;
+                if !self.skip_borrow_check {
+                    if let Some(borrows) = self.active_borrows.get(name) {
+                        for b in borrows {
+                            if b.is_mut && !silent {
+                                self.errors.push(format!(
+                                    "Cannot access '{}' because it is mutably borrowed.",
+                                    name
+                                ));
+                                break;
+                            }
                         }
                     }
                 }
@@ -1837,7 +1839,37 @@ impl<'a> TypeChecker<'a> {
                 struct_name: struct_name_field,
                 span: _,
             }) => {
+                let old_skip = self.skip_borrow_check;
+                self.skip_borrow_check = true;
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
+                self.skip_borrow_check = old_skip;
+
+                if !self.skip_borrow_check {
+                    if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
+                        path.push(member.clone());
+                        if let Some(borrows) = self.active_borrows.get(&name) {
+                            for b in borrows {
+                                if b.is_mut && !silent {
+                                    let mut overlap = true;
+                                    let min_len = std::cmp::min(path.len(), b.path.len());
+                                    for (i, p) in path.iter().enumerate().take(min_len) {
+                                        if p != &b.path[i] {
+                                            overlap = false;
+                                            break;
+                                        }
+                                    }
+                                    if overlap {
+                                        self.errors.push(format!(
+                                            "Cannot access '{}' because it is mutably borrowed.",
+                                            name
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut base_ty = obj_ty.clone();
                 if let Type::Borrow(t, _, _, _) | Type::Pointer(t, _, _) = base_ty {
                     base_ty = *t;
@@ -1969,6 +2001,13 @@ impl<'a> TypeChecker<'a> {
 
                 for arg in args.iter_mut() {
                     self.check_expr_type(arg);
+                }
+
+                if _method == "drop" && args.is_empty() {
+                    if let Expr::Identifier(id) = &**obj {
+                        self.consume(&id.name);
+                    }
+                    return Type::Scalar(ElementType::I32); // Return a dummy type
                 }
 
                 if let Type::Module(ref path, ref exports) = base_ty {
@@ -2488,10 +2527,40 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
 
-                // If the inner expression is an identifier, track the borrow
-                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**inner {
-                    if let Some(borrows) = self.active_borrows.get(name) {
-                        for b in borrows {
+                if let Some((name, path)) = Self::extract_base_and_path(inner) {
+                    let mut dead_borrowers = std::collections::HashSet::new();
+                    if let Some(borrows) = self.active_borrows.get(&name) {
+                        for b in borrows.iter() {
+                            if let Some(borrower) = &b.borrower_name {
+                                if !self.is_variable_used_after(borrower) {
+                                    dead_borrowers.insert(borrower.clone());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(borrows) = self.active_borrows.get_mut(&name) {
+                        // NLL: Remove dead borrows
+                        borrows.retain(|b| {
+                            if let Some(borrower) = &b.borrower_name {
+                                !dead_borrowers.contains(borrower)
+                            } else {
+                                true
+                            }
+                        });
+
+                        for b in borrows.iter() {
+                            // Split borrows check
+                            let mut overlap = true;
+                            for (i, p) in path.iter().enumerate() {
+                                if i < b.path.len() && b.path[i] != *p {
+                                    overlap = false;
+                                    break;
+                                }
+                            }
+                            if !overlap {
+                                continue;
+                            }
+
                             if b.is_mut {
                                 if !silent {
                                     self.errors.push(format!("Cannot borrow '{}' because it is already borrowed as mutable.", name));
@@ -2508,7 +2577,8 @@ impl<'a> TypeChecker<'a> {
                             .push(BorrowRecord {
                                 is_mut: *is_mut,
                                 scope_depth: self.scopes.len(),
-                                borrower_name: None,
+                                borrower_name: self.current_assignment_target.clone(),
+                                path,
                             });
                     }
                 }
@@ -2516,6 +2586,22 @@ impl<'a> TypeChecker<'a> {
                 Type::Borrow(Box::new(inner_ty), None, *is_mut, self.scopes.len())
             }
             _ => unreachable!(),
+        }
+    }
+
+    fn extract_base_and_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+        match expr {
+            Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
+            Expr::MemberAccess(ma) => {
+                if let Some((base_name, mut path)) = Self::extract_base_and_path(&ma.base) {
+                    path.push(ma.member.clone());
+                    Some((base_name, path))
+                } else {
+                    None
+                }
+            }
+            Expr::IndexAccess(idx) => Self::extract_base_and_path(&idx.base),
+            _ => None,
         }
     }
 

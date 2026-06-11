@@ -120,6 +120,7 @@ pub struct BorrowRecord {
     pub is_mut: bool,
     pub scope_depth: usize,
     pub borrower_name: Option<String>,
+    pub path: Vec<String>,
 }
 
 pub struct TypeChecker<'a> {
@@ -144,6 +145,9 @@ pub struct TypeChecker<'a> {
     #[allow(dead_code)]
     pub(crate) closure_captures_stack: Vec<HashMap<String, Type>>,
     pub generated_structs: Vec<StructDecl>,
+    pub(crate) current_assignment_target: Option<String>,
+    pub(crate) lookahead_stack: Vec<Vec<Statement>>,
+    pub skip_borrow_check: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -171,6 +175,9 @@ impl<'a> TypeChecker<'a> {
             closure_depths: Vec::new(),
             closure_captures_stack: Vec::new(),
             generated_structs: Vec::new(),
+            current_assignment_target: None,
+            lookahead_stack: Vec::new(),
+            skip_borrow_check: false,
         }
     }
 
@@ -221,6 +228,129 @@ impl<'a> TypeChecker<'a> {
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, (ty, current_top));
+        }
+    }
+
+    pub fn is_variable_used_after(&self, name: &str) -> bool {
+        // Scan the remaining statements in the current block
+        if let Some(lookahead) = self.lookahead_stack.last() {
+            for stmt in lookahead {
+                if Self::stmt_uses_var(stmt, name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn stmt_uses_var(stmt: &Statement, name: &str) -> bool {
+        match stmt {
+            Statement::ExprStmt(e) => Self::expr_uses_var(&e.expr, name),
+            Statement::Return(ReturnStmt { expr: e, .. }) => Self::expr_uses_var(e, name),
+            Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
+                Self::expr_uses_var(lhs, name) || Self::expr_uses_var(rhs, name)
+            }
+            Statement::LetDecl(LetDeclStmt { expr, .. }) => Self::expr_uses_var(expr, name),
+            Statement::ForLoop(ForLoopStmt { iterable, body, .. }) => {
+                if Self::expr_uses_var(iterable, name) {
+                    return true;
+                }
+                for s in body {
+                    if Self::stmt_uses_var(s, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn expr_uses_var(expr: &Expr, name: &str) -> bool {
+        match expr {
+            Expr::Identifier(id) => id.name == name,
+            Expr::MemberAccess(m) => Self::expr_uses_var(&m.base, name),
+            Expr::MethodCall(m) => {
+                if Self::expr_uses_var(&m.base, name) {
+                    return true;
+                }
+                for a in &m.args {
+                    if Self::expr_uses_var(a, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::FunctionCall(f) => {
+                if f.name == name {
+                    return true;
+                }
+                for a in &f.args {
+                    if Self::expr_uses_var(a, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::BinaryOp(b) => {
+                Self::expr_uses_var(&b.lhs, name) || Self::expr_uses_var(&b.rhs, name)
+            }
+            Expr::RelationalOp(r) => {
+                Self::expr_uses_var(&r.lhs, name) || Self::expr_uses_var(&r.rhs, name)
+            }
+            Expr::LogicalOp(l) => {
+                Self::expr_uses_var(&l.lhs, name) || Self::expr_uses_var(&l.rhs, name)
+            }
+            Expr::UnaryOp(u) => Self::expr_uses_var(&u.expr, name),
+            Expr::IndexAccess(i) => {
+                Self::expr_uses_var(&i.base, name) || Self::expr_uses_var(&i.index, name)
+            }
+            Expr::Borrow(b) => Self::expr_uses_var(&b.expr, name),
+            Expr::Dereference(d) => Self::expr_uses_var(&d.expr, name),
+            Expr::StructInit(s) => {
+                for f in &s.fields {
+                    if Self::expr_uses_var(&f.1, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::Array(a) => {
+                for e in &a.elements {
+                    if Self::expr_uses_var(e, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::If(i) => {
+                if Self::expr_uses_var(&i.cond, name) {
+                    return true;
+                }
+                for s in &i.then_block {
+                    if Self::stmt_uses_var(s, name) {
+                        return true;
+                    }
+                }
+                if let Some(eb) = &i.else_block {
+                    for s in eb {
+                        if Self::stmt_uses_var(s, name) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            Expr::UnsafeBlock(u) => {
+                for s in &u.stmts {
+                    if Self::stmt_uses_var(s, name) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::AsCast(c) => Self::expr_uses_var(&c.expr, name),
+            _ => false,
         }
     }
 

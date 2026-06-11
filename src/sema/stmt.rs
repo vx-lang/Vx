@@ -17,15 +17,26 @@ use super::*;
 use crate::ast;
 use crate::sema;
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
+    pub(crate) fn check_block(&mut self, body: &mut [Statement], return_type: &Type) {
         let mut terminated = false;
-        for stmt in body {
+        self.lookahead_stack.push(Vec::new());
+        for i in 0..body.len() {
+            let mut stmt = body[i].clone();
             if terminated {
                 self.errors
                     .push_warning("Unreachable code after return, break, or continue".to_string());
                 break; // Only warn once per block
             }
-            self.check_statement(stmt, return_type, true, false);
+
+            // Set up lookahead for NLL
+            self.lookahead_stack.last_mut().unwrap().clear();
+            self.lookahead_stack
+                .last_mut()
+                .unwrap()
+                .extend_from_slice(&body[i + 1..]);
+
+            self.check_statement(&mut stmt, return_type, true, false);
+            body[i] = stmt.clone();
             match stmt {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
                     terminated = true;
@@ -33,6 +44,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        self.lookahead_stack.pop();
     }
 
     pub(crate) fn check_statement(
@@ -44,12 +56,17 @@ impl<'a> TypeChecker<'a> {
     ) {
         // Intercept for HIR lowering
         match stmt {
-            Statement::Assign(AssignStmt {
-                lhs: _lhs,
-                rhs,
-                span: _,
-            }) => {
+            Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
+                // Determine target name for NLL
+                if let Expr::Identifier(id) = lhs {
+                    self.current_assignment_target = Some(id.name.clone());
+                } else if let Expr::MemberAccess(ma) = lhs {
+                    if let Expr::Identifier(id) = &*ma.base {
+                        self.current_assignment_target = Some(id.name.clone());
+                    }
+                }
                 let (ty, rhs_reg) = self.check_expr(rhs);
+                self.current_assignment_target = None;
                 let type_idx = self.emit_type(&ty);
                 self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
                 // Fallthrough to standard semantic checks
@@ -82,7 +99,9 @@ impl<'a> TypeChecker<'a> {
                 expr,
                 span: _,
             }) => {
+                self.current_assignment_target = Some(name.clone());
                 let ty = self.check_expr_type_flag(expr, consume, silent);
+                self.current_assignment_target = None;
 
                 let mut tmp_env = HashMap::new();
                 for env in &self.eval_env {
