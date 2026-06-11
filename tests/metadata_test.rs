@@ -19,7 +19,7 @@ use vxc::metadata::VxMetadata;
 #[test]
 fn test_zero_copy_metadata_serialization() -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join("test_module.vxm");
+    let file_path = temp_dir.join(format!("test_module_{}.vxm", std::process::id()));
 
     // 1. Generate a large synthetic dictionary of 10,000 TypeIds (320 KB)
     let mut original_dict = Vec::new();
