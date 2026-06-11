@@ -4732,14 +4732,12 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
         } else if let ast::Type::Pointer(..) = &self.target_ty {
             if let Some(ast::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-                let cast_op = OperationBuilder::new(
-                    "llvm.inttoptr",
-                    Location::unknown(gen.context),
-                )
-                .add_operands(&[source_val])
-                .add_results(&[ptr_ty])
-                .build()
-                .unwrap();
+                let cast_op =
+                    OperationBuilder::new("llvm.inttoptr", Location::unknown(gen.context))
+                        .add_operands(&[source_val])
+                        .add_results(&[ptr_ty])
+                        .build()
+                        .unwrap();
                 let cast_ref = block.append_operation(cast_op);
                 return Ok((cast_ref.result(0).unwrap().into(), ptr_ty));
             }
