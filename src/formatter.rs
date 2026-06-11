@@ -18,80 +18,69 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let mut lexer = Lexer::new_with_comments(content);
     let mut tokens = lexer.tokenize();
 
-    // Pass 1: Token Stream Normalization
+    // Pass 1: Token Stream Normalization - Expand single-line blocks
     let mut i = 0;
     while i < tokens.len() {
-        if let TokenType::Else = tokens[i].kind {
-            // Find preceding RightBrace (skip whitespace/comments)
-            let mut rb_idx = None;
-            for j in (0..i).rev() {
+        if let TokenType::RightBrace = tokens[i].kind {
+            let rb_idx = i;
+            let mut lb_idx = None;
+            let mut depth = 1;
+            for j in (0..rb_idx).rev() {
                 match tokens[j].kind {
-                    TokenType::Whitespace(_) | TokenType::Comment(_) => continue,
-                    TokenType::RightBrace => {
-                        rb_idx = Some(j);
-                        break;
+                    TokenType::RightBrace => depth += 1,
+                    TokenType::LeftBrace => {
+                        depth -= 1;
+                        if depth == 0 {
+                            lb_idx = Some(j);
+                            break;
+                        }
                     }
-                    _ => break,
+                    _ => {}
                 }
             }
-            if let Some(rb_idx) = rb_idx {
-                // Find matching LeftBrace
-                let mut lb_idx = None;
-                let mut depth = 1;
-                for j in (0..rb_idx).rev() {
-                    match tokens[j].kind {
-                        TokenType::RightBrace => depth += 1,
-                        TokenType::LeftBrace => {
-                            depth -= 1;
-                            if depth == 0 {
-                                lb_idx = Some(j);
-                                break;
-                            }
-                        }
-                        _ => {}
+
+            if let Some(lb_idx) = lb_idx {
+                let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
+                    if let TokenType::Whitespace(ref ws) = t.kind {
+                        ws.contains('\n')
+                    } else {
+                        false
                     }
-                }
+                });
+                let has_non_ws = tokens[(lb_idx + 1)..rb_idx]
+                    .iter()
+                    .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
 
-                if let Some(lb_idx) = lb_idx {
-                    // Check if there are any newlines between lb_idx and rb_idx
-                    let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
-                        if let TokenType::Whitespace(ref ws) = t.kind {
-                            ws.contains('\n')
-                        } else {
-                            false
-                        }
-                    });
-                    if !has_newline {
-                        // Expand the block by inserting newlines after { and before }
-                        if matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
-                            tokens[rb_idx - 1].kind = TokenType::Whitespace("\n".to_string());
-                        } else {
-                            tokens.insert(
-                                rb_idx,
-                                crate::lexer::Token {
-                                    kind: TokenType::Whitespace("\n".to_string()),
-                                    line: 0,
-                                    column: 0,
-                                    length: 1,
-                                },
-                            );
-                            i += 1;
-                        }
+                if !has_newline && has_non_ws {
+                    // Expand the block by inserting newlines after { and before }
+                    if matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
+                        tokens[rb_idx - 1].kind = TokenType::Whitespace("\n".to_string());
+                    } else {
+                        tokens.insert(
+                            rb_idx,
+                            crate::lexer::Token {
+                                kind: TokenType::Whitespace("\n".to_string()),
+                                line: 0,
+                                column: 0,
+                                length: 1,
+                            },
+                        );
+                        i += 1;
+                    }
 
-                        if matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                            tokens[lb_idx + 1].kind = TokenType::Whitespace("\n".to_string());
-                        } else {
-                            tokens.insert(
-                                lb_idx + 1,
-                                crate::lexer::Token {
-                                    kind: TokenType::Whitespace("\n".to_string()),
-                                    line: 0,
-                                    column: 0,
-                                    length: 1,
-                                },
-                            );
-                            i += 1;
-                        }
+                    if matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
+                        tokens[lb_idx + 1].kind = TokenType::Whitespace("\n".to_string());
+                    } else {
+                        tokens.insert(
+                            lb_idx + 1,
+                            crate::lexer::Token {
+                                kind: TokenType::Whitespace("\n".to_string()),
+                                line: 0,
+                                column: 0,
+                                length: 1,
+                            },
+                        );
+                        i += 1;
                     }
                 }
             }
@@ -279,7 +268,7 @@ mod tests {
     #[test]
     fn test_format_newline_stripping() {
         let input = "for \n i in 0..10 {\n  if sum_idx\n == 0 { a = 1; }\n}";
-        let expected = "for i in 0..10 {\n  if sum_idx == 0 { a = 1; }\n}";
+        let expected = "for i in 0..10 {\n  if sum_idx == 0 {\n    a = 1;\n  }\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, expected);
     }
