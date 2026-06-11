@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 import std::io;
+import std::vec;
 import tests::modules::llama_rt;
 import std::math;
 import std::time;
@@ -58,17 +59,19 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   let kv_dim : i32 = div_kv / n_heads;
 
   let state = unsafe {
-    let s_x : *mut f32 = vx_malloc_f32(dim);
-    let s_xb : *mut f32 = vx_malloc_f32(dim);
-    let s_xb2 : *mut f32 = vx_malloc_f32(dim);
-    let s_hb : *mut f32 = vx_malloc_f32(hidden_dim);
-    let s_hb2 : *mut f32 = vx_malloc_f32(hidden_dim);
-    let s_q : *mut f32 = vx_malloc_f32(dim);
-    let s_k : *mut f32 = vx_malloc_f32(dim);
-    let s_v : *mut f32 = vx_malloc_f32(dim);
-    let s_logits : *mut f32 = vx_malloc_f32(vocab_size);
-    let s_key_cache : *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
-    let s_value_cache : *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
+    let s_x : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_xb : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_xb2 : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_hb : *mut f32 = Vec<f32>::with_capacity(hidden_dim).data;
+    let s_hb2 : *mut f32 = Vec<f32>::with_capacity(hidden_dim).data;
+    let s_q : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_k : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_v : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_logits : *mut f32 = Vec<f32>::with_capacity(vocab_size).data;
+    let s_key_cache
+    : *mut f32 = Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data;
+    let s_value_cache
+    : *mut f32 = Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data;
 
     RunState {
       x:
@@ -80,9 +83,9 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
       k : s_k,
       v : s_v,
       logits : s_logits,
-      key_cache
-      : s_key_cache,
-      value_cache : s_value_cache
+      key_cache : s_key_cache,
+      value_cache
+      : s_value_cache
     }
   };
   return state;
@@ -132,14 +135,15 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
   return w;
 }
 
-fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32, value_cache : *mut f32,
-        seq_len : i32, pos : i32, n_heads : i32, n_kv_heads : i32, head_size : i32,
-        kv_dim : i32, l : i32) -> i32 {
+fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32,
+value_cache : *mut f32, seq_len : i32, pos : i32, n_heads : i32,
+n_kv_heads : i32, head_size : i32, kv_dim : i32, l : i32) -> i32 {
   unsafe {
     let kv_mul : i32 = n_heads / n_kv_heads;
     let pos_1 : i32 = pos + 1;
 
-    for h in 0..n_heads {
+    for
+    h in 0..n_heads {
       let q_off : i32 = h * head_size;
       let xb_off : i32 = h * head_size;
       let h_kv_mul : i32 = h / kv_mul;
@@ -147,17 +151,19 @@ fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32, value_cache : *mut f3
       let mut m : f32 = -999999.0;
       let mut l_sum : f32 = 0.0;
 
-      for i in 0..head_size {
-        xb[xb_off + i] = 0.0;
-      }
+      for
+      i in 0..head_size { xb[xb_off + i] = 0.0; }
 
-      for t in 0..pos_1 {
-        let cache_off : i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
+      for
+      t in 0..pos_1 {
+        let cache_off
+        : i32 = l * seq_len * kv_dim + t * kv_dim + h_kv_mul * head_size;
         let k_t : *mut f32 = vx_advance_ptr(key_cache, cache_off);
         let v_t : *mut f32 = vx_advance_ptr(value_cache, cache_off);
 
         let mut score : f32 = 0.0;
-        for i in 0..head_size {
+        for
+        i in 0..head_size {
           let qv : f32 = q[q_off + i];
           let kv : f32 = k_t[i];
           score += qv * kv;
@@ -168,9 +174,8 @@ fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32, value_cache : *mut f3
         score = score * factor;
 
         let mut m_new : f32 = m;
-        if score > m {
-          m_new = score;
-        }
+        if score
+        > m { m_new = score; }
 
         let diff : f32 = m - m_new;
         let correction : f32 = diff.exp();
@@ -180,7 +185,8 @@ fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32, value_cache : *mut f3
 
         l_sum = l_sum * correction + exp_val;
 
-        for i in 0..head_size {
+        for
+        i in 0..head_size {
           let old_val : f32 = xb[xb_off + i];
           let v_val : f32 = v_t[i];
           xb[xb_off + i] = old_val * correction + exp_val * v_val;
@@ -190,7 +196,8 @@ fn attn(xb : *mut f32, q : *mut f32, key_cache : *mut f32, value_cache : *mut f3
       }
 
       let inv_l : f32 = 1.0 / l_sum;
-      for i in 0..head_size {
+      for
+      i in 0..head_size {
         let val : f32 = xb[xb_off + i];
         xb[xb_off + i] = val * inv_l;
       }
@@ -275,7 +282,9 @@ w : &TransformerWeights) -> *mut f32 {
       }
 
       // Multi-head self-attention
-      let status_attn : i32 = attn(s.xb, s.q, s.key_cache, s.value_cache, seq_len, pos, p.n_heads, p.n_kv_heads, head_size, kv_dim, l);
+      let status_attn
+      : i32 = attn(s.xb, s.q, s.key_cache, s.value_cache, seq_len, pos,
+      p.n_heads, p.n_kv_heads, head_size, kv_dim, l);
 
       // final matmul
       let wo_off : i32 = l * dim * dim;
@@ -514,15 +523,18 @@ fn main() -> i32 {
       let div : i32 = pos / 1000;
       let mul : i32 = div * 1000;
       let remainder : i32 = pos - mul;
-      if remainder == 0 {
+      if remainder
+      == 0 {
         let curr_time : f32 = now();
         let elapsed : f32 = curr_time - start_time;
         unsafe {
-          print !("\n[");
+          print !("
+[");
           print !(pos);
           print !(" tokens] Time elapsed: ");
           print !(elapsed);
-          print !(" seconds\n");
+          print !(" seconds
+");
         }
       }
     }

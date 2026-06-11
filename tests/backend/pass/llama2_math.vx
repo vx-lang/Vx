@@ -39,7 +39,6 @@ struct TransformerWeights {
 
 extern {
   fn malloc(size : i64)->*mut f32;
-  fn free(ptr : *mut f32) -> i32;
 }
 
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32,

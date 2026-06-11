@@ -45,8 +45,6 @@ pub extern "C" fn vx_load_weights(filepath: *const c_char) -> *mut f32 {
     ptr::null_mut()
 }
 
-
-
 #[no_mangle]
 pub extern "C" fn vx_get_env_int(name: *const c_char, default_val: i32) -> i32 {
     if name.is_null() {

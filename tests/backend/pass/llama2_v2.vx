@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 import tests::modules::llama_rt;
+import std::io;
+import std::vec;
 import std::math;
 import std::time;
 
@@ -61,20 +63,20 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   let div_kv : i32 = dim * n_kv_heads;
   let kv_dim : i32 = div_kv / n_heads;
 
-  let state = unsafe{RunState{
-      x : vx_malloc_f32(dim),
-      xb : vx_malloc_f32(dim),
-      xb2 : vx_malloc_f32(dim),
-      hb : vx_malloc_f32(hidden_dim),
-      hb2 : vx_malloc_f32(hidden_dim),
-      q : vx_malloc_f32(dim),
-      k : vx_malloc_f32(dim),
-      v : vx_malloc_f32(dim),
-      att : vx_malloc_f32(n_heads * seq_len),
-      logits : vx_malloc_f32(vocab_size),
-      key_cache : vx_malloc_f32(n_layers * seq_len * kv_dim),
-      value_cache : vx_malloc_f32(n_layers * seq_len * kv_dim)
-    }};
+  let state = RunState{
+    x : Vec<f32>::with_capacity(dim).data,
+    xb : Vec<f32>::with_capacity(dim).data,
+    xb2 : Vec<f32>::with_capacity(dim).data,
+    hb : Vec<f32>::with_capacity(hidden_dim).data,
+    hb2 : Vec<f32>::with_capacity(hidden_dim).data,
+    q : Vec<f32>::with_capacity(dim).data,
+    k : Vec<f32>::with_capacity(dim).data,
+    v : Vec<f32>::with_capacity(dim).data,
+    att : Vec<f32>::with_capacity(n_heads * seq_len).data,
+    logits : Vec<f32>::with_capacity(vocab_size).data,
+    key_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data,
+    value_cache : Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data
+  };
   return state;
 }
 

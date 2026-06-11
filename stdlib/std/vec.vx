@@ -27,6 +27,22 @@ Vec<T> {
     return Vec<T>{data : ptr, len : 0, capacity : 0};
   }
 
+  fn with_capacity(capacity : i32) -> Vec<T> {
+    let size_bytes : i64 = (capacity as i64) * sizeof<T>();
+    let ptr : *mut T = unsafe{malloc(size_bytes)};
+    return Vec<T>{data : ptr, len : 0, capacity : capacity};
+  }
+
+  fn free(self : &mut Vec<T>) -> i32 {
+    unsafe {
+      let ptr_i8 : *mut i8 = self.data;
+      free(ptr_i8);
+    }
+    return 0;
+  }
+
+  fn as_mut_ptr(self : &Vec<T>) -> *mut T { return self.data; }
+
   fn push(self : &mut Vec<T>, val : T) -> i32 {
     if self
     .len == self.capacity {

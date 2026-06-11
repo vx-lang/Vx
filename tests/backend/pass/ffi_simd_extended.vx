@@ -10,15 +10,15 @@
 import std::simd;
 
 import std::io;
-extern { fn vx_malloc_f32(num_elements : i32)->*mut f32; }
+import std::vec;
 
 fn main() -> i32 {
   let mut ret : i32 = 1;
   unsafe {
-    let a = vx_malloc_f32(4);
-    let b = vx_malloc_f32(4);
-    let c = vx_malloc_f32(4);
-    let out = vx_malloc_f32(4);
+    let a = Vec<f32>::with_capacity(4).data;
+    let b = Vec<f32>::with_capacity(4).data;
+    let c = Vec<f32>::with_capacity(4).data;
+    let out = Vec<f32>::with_capacity(4).data;
 
     // Ideally we would initialize these, but in Vx doing pointer offset is
     // tricky without pointer arithmetic enabled in stdlib, which it might be

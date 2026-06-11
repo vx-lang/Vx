@@ -110,11 +110,6 @@ pub extern "C" fn trace_end() {
 // ============================================================================
 
 #[no_mangle]
-pub extern "C" fn vx_malloc_f32(num_elements: i32) -> *mut f32 {
-    unsafe { libc::malloc((num_elements as usize) * std::mem::size_of::<f32>()) as *mut f32 }
-}
-
-#[no_mangle]
 pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
     unsafe { p.add(offset as usize) }
 }
@@ -122,17 +117,6 @@ pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn vx_advance_ptr_f32(p: *mut f32, offset: i32) -> *mut f32 {
     unsafe { p.add(offset as usize) }
-}
-
-#[no_mangle]
-pub extern "C" fn free_mem(ptr: *mut f32) {
-    if !ptr.is_null() {
-        // Warning: This assumes the pointer was allocated by us in a specific way!
-        // To properly free, we need to know the length or use libc::free.
-        unsafe {
-            libc::free(ptr as *mut libc::c_void);
-        }
-    }
 }
 
 #[no_mangle]

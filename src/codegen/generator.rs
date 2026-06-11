@@ -614,6 +614,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Println(e) => LowerToMelior::lower(e, self, block),
             Expr::InlineMlir(e) => LowerToMelior::lower(e, self, block),
             Expr::Topology(e) => LowerToMelior::lower(e, self, block),
+            Expr::SizeOf(e) => LowerToMelior::lower(e, self, block),
             _ => todo!("{:?}", expr),
         }
     }

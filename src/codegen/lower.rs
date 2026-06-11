@@ -4588,12 +4588,48 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
     }
 }
 
+impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
+    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+
+    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+        let size: i64 = match &self.target_ty {
+            ast::Type::Scalar(ast::ElementType::F32)
+            | ast::Type::Scalar(ast::ElementType::I32)
+            | ast::Type::Scalar(ast::ElementType::U32) => 4,
+            ast::Type::Scalar(ast::ElementType::F64)
+            | ast::Type::Scalar(ast::ElementType::I64)
+            | ast::Type::Scalar(ast::ElementType::U64) => 8,
+            ast::Type::Scalar(ast::ElementType::I8)
+            | ast::Type::Scalar(ast::ElementType::U8)
+            | ast::Type::Scalar(ast::ElementType::Bool) => 1,
+            ast::Type::Scalar(ast::ElementType::I16)
+            | ast::Type::Scalar(ast::ElementType::U16)
+            | ast::Type::Scalar(ast::ElementType::BF16)
+            | ast::Type::Scalar(ast::ElementType::F16) => 2,
+            ast::Type::Pointer(..) | ast::Type::Borrow(..) | ast::Type::Ref(..) => 8,
+            _ => 8,
+        };
+
+        let size_ty = Type::parse(gen.context, "i64").unwrap();
+        let const_op = OperationBuilder::new("arith.constant", Location::unknown(gen.context))
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(size_ty, size).into(),
+            )])
+            .add_results(&[size_ty])
+            .build()
+            .unwrap();
+
+        let const_op = block.append_operation(const_op);
+        Ok((const_op.result(0).unwrap().into(), size_ty))
+    }
+}
+
 impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
 
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let (source_val, _source_ty) = gen.generate_expr(&self.expr, block)?;
-
         if let ast::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {
                 Some(ast::Type::Struct(name, _)) => name.clone(),

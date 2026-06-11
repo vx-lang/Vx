@@ -10,6 +10,8 @@
 //===----------------------------------------------------------------------===//
 
 import tests::modules::llama_rt;
+import std::io;
+import std::vec;
 import std::math;
 
 struct Config {
@@ -60,18 +62,20 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   let kv_dim : i32 = div_kv / n_heads;
 
   let state = unsafe {
-    let s_x : *mut f32 = vx_malloc_f32(dim);
-    let s_xb : *mut f32 = vx_malloc_f32(dim);
-    let s_xb2 : *mut f32 = vx_malloc_f32(dim);
-    let s_hb : *mut f32 = vx_malloc_f32(hidden_dim);
-    let s_hb2 : *mut f32 = vx_malloc_f32(hidden_dim);
-    let s_q : *mut f32 = vx_malloc_f32(dim);
-    let s_k : *mut f32 = vx_malloc_f32(dim);
-    let s_v : *mut f32 = vx_malloc_f32(dim);
-    let s_att : *mut f32 = vx_malloc_f32(n_heads * seq_len);
-    let s_logits : *mut f32 = vx_malloc_f32(vocab_size);
-    let s_key_cache : *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
-    let s_value_cache : *mut f32 = vx_malloc_f32(n_layers * seq_len * kv_dim);
+    let s_x : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_xb : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_xb2 : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_hb : *mut f32 = Vec<f32>::with_capacity(hidden_dim).data;
+    let s_hb2 : *mut f32 = Vec<f32>::with_capacity(hidden_dim).data;
+    let s_q : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_k : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_v : *mut f32 = Vec<f32>::with_capacity(dim).data;
+    let s_att : *mut f32 = Vec<f32>::with_capacity(n_heads * seq_len).data;
+    let s_logits : *mut f32 = Vec<f32>::with_capacity(vocab_size).data;
+    let s_key_cache
+    : *mut f32 = Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data;
+    let s_value_cache
+    : *mut f32 = Vec<f32>::with_capacity(n_layers * seq_len * kv_dim).data;
 
     RunState {
       x:
