@@ -19,8 +19,7 @@ struct Vec<T>{
 impl<T>
 Vec<T> {
   fn new ()->Vec<T> {
-    let ptr : *mut T = unsafe{malloc(0)};
-    return Vec<T>{data : ptr, len : 0, capacity : 0};
+    return Vec<T>::with_capacity(2);
   }
 
   fn with_capacity(capacity : i32) -> Vec<T> {
@@ -34,6 +33,8 @@ Vec<T> {
       let ptr_i8 : *mut i8 = self.data;
       free(ptr_i8);
     }
+    self.len = 0;
+    self.capacity = 0;
     return 0;
   }
 

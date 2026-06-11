@@ -30,12 +30,11 @@ Option<T> {
   }
 
   fn unwrap(self : Option<T>) -> T {
-    let ptr : *mut T = unsafe{malloc(0)};
-    let mut ret : T = unsafe{*ptr};
     match self {
-      Option<T>::Some(v) => { ret = v; }
-      Option<T>::None() => {}
+      Option<T>::Some(v) => { return v; }
+      Option<T>::None() => {
+        assert(false, "unwrap called on None");
+      }
     }
-    return ret;
   }
 }
