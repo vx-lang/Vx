@@ -56,6 +56,6 @@ fn main() -> i32 {
   // x(32) + cap.i(10) + i(10) = 52
   assert(apply_lambda(cp_lambda, 32) == 52);
 
-  unsafe { print !(1); }
+  print !(1);
   return 1;
 }

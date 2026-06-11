@@ -37,12 +37,10 @@ fn main() -> i32 {
   let vec : PointVec = PointVec{len : 3};
   for
   p in vec.iter() {
-    unsafe {
-      print !("Point x: ");
-      print !(p.x);
-      print !("Point y: ");
-      print !(p.y);
-    }
+    print !("Point x: ");
+    print !(p.x);
+    print !("Point y: ");
+    print !(p.y);
   }
   return 0;
 }

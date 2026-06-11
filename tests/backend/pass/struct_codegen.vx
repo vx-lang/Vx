@@ -30,7 +30,7 @@ fn main() -> i32 {
     norm_eps : 0.00001,
   };
 
-  unsafe { print !(conf.norm_eps); }
+  print !(conf.norm_eps);
   return 0;
 }
 
