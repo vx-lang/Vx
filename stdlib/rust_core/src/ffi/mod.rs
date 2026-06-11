@@ -11,5 +11,7 @@
 // statically compiled Rust standard library, ensuring safe data boundary crossings.
 //
 //===----------------------------------------------------------------------===//
+pub mod llama;
 pub mod macros;
+pub mod network;
 pub mod rt;
