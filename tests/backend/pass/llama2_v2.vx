@@ -215,8 +215,7 @@ w : &TransformerWeights) -> *mut f32 {
         let div : i32 = i / 2;
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
-        if rem
-        == 0 {
+        if rem == 0 {
           let head_dim_div : i32 = i / head_size;
           let head_dim_mul : i32 = head_dim_div * head_size;
           let head_dim : i32 = i - head_dim_mul;
@@ -231,8 +230,7 @@ w : &TransformerWeights) -> *mut f32 {
           s.q[rotn_q_r] = q0 * fcr - q1 * fci;
           s.q[rotn_q_i] = q0 * fci + q1 * fcr;
 
-          if i
-          < kv_dim {
+          if i < kv_dim {
             let rotn_k_r : i32 = i;
             let rotn_k_i : i32 = i + 1;
             let k0 : f32 = s.k[rotn_k_r];
@@ -276,8 +274,7 @@ w : &TransformerWeights) -> *mut f32 {
         let mut max_val : f32 = att_head[0];
         for t in 1..(pos + 1) {
           let a_val : f32 = att_head[t];
-          if a_val
-          > max_val { max_val = a_val; }
+          if a_val > max_val { max_val = a_val; }
         }
 
         let mut sum_exp : f32 = 0.0;
@@ -376,8 +373,7 @@ fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   for i in 0..n {
     unsafe {
       let p_val : f32 = probabilities[i];
-      if p_val
-      > max_p {
+      if p_val > max_p {
         max_i = i;
         max_p = p_val;
       }

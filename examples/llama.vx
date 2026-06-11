@@ -160,8 +160,7 @@ fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_p : f32 = unsafe{probabilities[0]};
   for i in 1..n {
     let p_val : f32 = unsafe{probabilities[i]};
-    if p_val
-    > max_p {
+    if p_val > max_p {
       max_i = i;
       max_p = p_val;
     }
@@ -222,8 +221,7 @@ w : &TransformerWeights) -> i32 {
         let div : i32 = i / 2;
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
-        if rem
-        == 0 {
+        if rem == 0 {
           let head_dim_div : i32 = i / head_size;
           let head_dim_mul : i32 = head_dim_div * head_size;
           let head_dim : i32 = i - head_dim_mul;
@@ -238,8 +236,7 @@ w : &TransformerWeights) -> i32 {
           s.q[rotn_q_r] = q0 * fcr - q1 * fci;
           s.q[rotn_q_i] = q0 * fci + q1 * fcr;
 
-          if i
-          < kv_dim {
+          if i < kv_dim {
             let rotn_k_r : i32 = i;
             let rotn_k_i : i32 = i + 1;
             let k0 : f32 = s.k[rotn_k_r];
@@ -282,8 +279,7 @@ w : &TransformerWeights) -> i32 {
           score = score / hf.sqrt();
 
           let mut m_new : f32 = m;
-          if score
-          > m { m_new = score; }
+          if score > m { m_new = score; }
 
           let diff : f32 = m - m_new;
           let correction : f32 = diff.exp();

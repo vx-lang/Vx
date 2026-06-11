@@ -191,8 +191,7 @@ w : &TransformerWeights) -> *mut f32 {
         let div : i32 = i / 2;
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
-        if rem
-        == 0 {
+        if rem == 0 {
           let fcr : f32 = vx_get_rope_freq(pos, i, head_size);
           let fci : f32 = fcr.cos();
           let fsi : f32 = fcr.sin();
@@ -240,8 +239,7 @@ w : &TransformerWeights) -> *mut f32 {
         let mut max_val : f32 = att_h[0];
         for t in 1..pos_1 {
           let val : f32 = att_h[t];
-          if val
-          > max_val { max_val = val; }
+          if val > max_val { max_val = val; }
         }
 
         let mut sum : f32 = 0.0;
@@ -331,8 +329,7 @@ fn sample_argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_p : f32 = probabilities[0];
   for i in 1..n {
     let prob : f32 = probabilities[i];
-    if prob
-    > max_p {
+    if prob > max_p {
       max_i = i;
       max_p = prob;
     }
@@ -365,8 +362,7 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
   let mut max_val : f32 = x[0];
   for i in 1..size {
     let val : f32 = x[i];
-    if val
-    > max_val { max_val = val; }
+    if val > max_val { max_val = val; }
   }
 
   let mut sum : f32 = 0.0;
@@ -476,14 +472,12 @@ fn main() -> i32 {
       transformer(token, pos, &config, &state, &weights);
 
       let mut next : i32 = 0;
-      if pos
-      < num_prompt_tokens - 1 {
+      if pos < num_prompt_tokens - 1 {
         // PREFILL: Take the next token from the prompt (shifted by 1 due to
         // length at index 0)
         let next_idx : i32 = pos + 2;
         next = prompt_tokens[next_idx];
-      }
-      else {
+      } else {
         // GENERATE: Sample from logits
         next = sample_argmax(logits, config.vocab_size);
       }

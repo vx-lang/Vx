@@ -15,8 +15,7 @@ impl Iterator<Range, i32> for Range {
       let val = self.current;
       self.current = self.current + 1;
       ret = Option<i32>::Some(val);
-    }
-    else {
+    } else {
       ret = Option<i32>::None;
     }
     return ret;

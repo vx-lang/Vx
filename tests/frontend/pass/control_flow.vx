@@ -4,8 +4,7 @@ fn test_loop() -> i32 {
   let mut sum = 0;
   loop {
     sum += 1;
-    if sum
-    >= 10 { break; }
+    if sum >= 10 { break; }
   }
   return sum;
 }

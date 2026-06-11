@@ -17,12 +17,10 @@ fn main() -> i32 {
   for i in 0..128 {
     for j in 0..128 {
       let sum_idx = i + j;
-      if sum_idx
-      == 0 {
+      if sum_idx == 0 {
         a_host[i][j] = 1.0;
         bias_host[i][j] = 0.0 - 150.0;
-      }
-      else {
+      } else {
         a_host[i][j] = 0.0 - 1.0;
         bias_host[i][j] = 50.0;
       }
@@ -64,9 +62,9 @@ fn main() -> i32 {
     for i in 0..128 {
       for j in 0..128 {
         let val = temp_bias_npu[i][j];
-        if val
-        > 0.0 { out_unfused[i][j] = val; }
-        else {
+        if val > 0.0 {
+          out_unfused[i][j] = val;
+        } else {
           out_unfused[i][j] = 0.0;
         }
       }
@@ -80,9 +78,9 @@ fn main() -> i32 {
         let mut sum = 0.0;
         for k in 0..128 { sum += a[i][k] * b[k][j]; }
         sum += bias[i][j];
-        if sum
-        > 0.0 { out_fused[i][j] = sum; }
-        else {
+        if sum > 0.0 {
+          out_fused[i][j] = sum;
+        } else {
           out_fused[i][j] = 0.0;
         }
       }
@@ -122,9 +120,9 @@ fn main() -> i32 {
         for i in 0..128 {
           for j in 0..128 {
             let val = temp_bias_npu[i][j];
-            if val
-            > 0.0 { out_unfused[i][j] = val; }
-            else {
+            if val > 0.0 {
+              out_unfused[i][j] = val;
+            } else {
               out_unfused[i][j] = 0.0;
             }
           }
@@ -143,9 +141,9 @@ fn main() -> i32 {
             let mut sum = 0.0;
             for k in 0..128 { sum += a[i][k] * b[k][j]; }
             sum += bias[i][j];
-            if sum
-            > 0.0 { out_fused[i][j] = sum; }
-            else {
+            if sum > 0.0 {
+              out_fused[i][j] = sum;
+            } else {
               out_fused[i][j] = 0.0;
             }
           }

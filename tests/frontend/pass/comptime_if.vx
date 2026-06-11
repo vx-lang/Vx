@@ -13,8 +13,7 @@ fn main() -> i32 {
     val = 2;
     invalid_function_that_does_not_exist(); // Semantic analysis should
     // completely skip this if pruned!
-  }
-  else {
+  } else {
     val = 3;
   }
 

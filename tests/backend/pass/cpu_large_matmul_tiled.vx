@@ -21,8 +21,7 @@ fn test_f32() -> i32 {
       for kk in 0..4 {
         for i in 0..16 {
           for j in 0..16 {
-            if kk
-            == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+            if kk == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
             for k in 0..16 {
               c[ii * 16 + i][jj * 16 + j] =
               c[ii * 16 + i][jj * 16 + j] +
@@ -58,8 +57,7 @@ fn test_bf16() -> i32 {
       for kk in 0..4 {
         for i in 0..16 {
           for j in 0..16 {
-            if kk
-            == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
+            if kk == 0 { c[ii * 16 + i][jj * 16 + j] = 0.0; }
             for k in 0..16 {
               c[ii * 16 + i][jj * 16 + j] =
               c[ii * 16 + i][jj * 16 + j] +

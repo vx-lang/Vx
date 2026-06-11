@@ -43,8 +43,7 @@ fn main() -> i32 {
   let sum : f64 = s64_abs + c64_abs + l2 + l10; // ~ 1.0 + 1.0 + 2.0 + 2.0 = 6.0
   let mut ret : i32 = 1;
 
-  if sum
-  > 5.9 { ret = 0; }
+  if sum > 5.9 { ret = 0; }
 
   // Ensure all FFI math bindings we added work
   return ret;

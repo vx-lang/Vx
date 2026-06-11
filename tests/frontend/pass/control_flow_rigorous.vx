@@ -9,12 +9,10 @@ fn test_loop_nested() -> i32 {
   let mut i = 0;
   let mut sum = 0;
   loop {
-    if i
-    >= 5 { break; }
+    if i >= 5 { break; }
     let mut j = 0;
     loop {
-      if j
-      >= 5 { break; }
+      if j >= 5 { break; }
       sum += 1;
       j += 1;
     }

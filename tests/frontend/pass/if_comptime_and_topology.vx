@@ -17,8 +17,7 @@ fn check_top() on Topology::NPU[0] -> void {
 }
 
 fn check_top2() on Topology::GPU -> void {
-  let t = if comptime true { Topology::Current }
-  else {Topology::CPU};
+  let t = if comptime true { Topology::Current } else {Topology::CPU};
   comptime { assert(t == Topology::GPU); }
 }
 

@@ -41,8 +41,7 @@ impl<T : Float> Tensor<T> {
         linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
         macro.yield
       };
-    }
-    else {
+    } else {
       mlir!(
       inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
       clobbers: [self],
@@ -76,8 +75,7 @@ impl<T : Float> Tensor<T> {
         linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
         macro.yield
       };
-    }
-    else {
+    } else {
       mlir!(
       inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
       clobbers: [self],
@@ -145,8 +143,7 @@ impl<T : Float> Tensor<T> {
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
       }
-    }
-    else {
+    } else {
       mlir!(
       inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
       clobbers: [],
@@ -189,8 +186,7 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
         linalg
         .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
         macro.yield};
-    }
-    else {
+    } else {
       mlir !(
       inputs : (% arg_t = self : memref<N x M x f32>, % arg_v = val : f32),
       clobbers : [self], dialects : ["linalg"]){

@@ -66,8 +66,7 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
   let mut max_val : f32 = x[0];
   for i in 1..size {
     let val : f32 = x[i];
-    if val
-    > max_val { max_val = val; }
+    if val > max_val { max_val = val; }
   }
 
   let mut sum : f32 = 0.0;
