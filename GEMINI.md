@@ -7,9 +7,12 @@ Keep all your attention on this repository and the tasks related to it. If I nee
 - **CRITICAL** You are not allowed to `git push`
 - **CRITICAL** You are not allowed to edit .git/config
 - Commit changes whenever you make a meaningful change and it builds cleanly.
-- Try to commit as often whenever you think that there is some logical completion of the task.
 - Always write detailed commit messages.
-- Always run formatters: 'clang-format' for C++ code, and `cargo run --bin vx-format -- <file>` for .vx code. Do NOT run clang-format on .vx files. Fix all the warnings/errors before commiting.
+- Always run formatters after doing `git add` and before `git commit`:
+  - 'clang-format' for C++ code
+  - 'cargo run --bin vx-format -- <file>' for .vx code.
+    Do NOT run clang-format on .vx files. Fix all the warnings/errors before commiting.
+- Try to commit as often whenever you think that there is some logical completion of the task.
 - Make sure there is a github issue ID attached to each commit unless the commit is cleanup (formatting, minor fixes). If the issue is fixed by the issue add 'Fixes: #\<ISSUE_ID>' to auto-close the issue on github.
 - If you have finished a walkthrough then save the Walkthrough, Task.md, and Implementation Plan in the docs/discussions/ directory. Create a new file, do not overwrite an existing file.
 - When planning to add TODO to make progress: better add a `assert` to prevent accidental usage of the feature (prefer adding a github issue ID to it as well).
