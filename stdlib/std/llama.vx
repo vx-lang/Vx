@@ -1,0 +1,191 @@
+//===- llama.vx - LLaMa High-Level Abstractions --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// This module hides the low-level FFI C-stubs behind high-level, safe, object-oriented abstractions.
+// The raw C FFI calls are completely hidden from user code.
+
+import std::tensor;
+import std::string;
+
+extern {
+  fn vx_load_config(filepath : *const i8) -> *mut i32;
+  fn vx_load_weights(filepath : *const i8) -> *mut f32;
+
+  fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
+  fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32) -> *const i8;
+  fn vx_encode_prompt(tokenizer_ptr : *mut i8, text_ptr : *const i8) -> *mut i32;
+  fn vx_read_prompt_file(filepath : *const i8) -> *const i8;
+  fn vx_get_llama_config() -> *mut i32;
+}
+
+struct LlamaConfig {
+  dim : i32,
+  hidden_dim : i32,
+  n_layers : i32,
+  n_heads : i32,
+  n_kv_heads : i32,
+  vocab_size : i32,
+  seq_len : i32
+}
+
+impl LlamaConfig {
+  fn load(filepath: *const i8) -> LlamaConfig {
+    let config_ptr = unsafe {
+      vx_load_config(filepath)
+    };
+
+    let config = unsafe {
+      LlamaConfig {
+        dim: config_ptr[0],
+        hidden_dim: config_ptr[1],
+        n_layers: config_ptr[2],
+        n_heads: config_ptr[3],
+        n_kv_heads: config_ptr[4],
+        vocab_size: config_ptr[5],
+        seq_len: config_ptr[6]
+      }
+    };
+    return config;
+  }
+}
+
+struct TransformerWeightOffsets {
+  token_embedding_table: i32,
+  rms_att_weight: i32,
+  wq: i32,
+  wk: i32,
+  wv: i32,
+  wo: i32,
+  rms_ffn_weight: i32,
+  w1: i32,
+  w2: i32,
+  w3: i32,
+  rms_final_weight: i32,
+  wcls: i32
+}
+
+impl TransformerWeightOffsets {
+  fn calculate(c: &LlamaConfig) -> TransformerWeightOffsets {
+    let dim = c.dim;
+    let n_layers = c.n_layers;
+    let n_heads = c.n_heads;
+    let n_kv_heads = c.n_kv_heads;
+    let hidden_dim = c.hidden_dim;
+    let vocab_size = c.vocab_size;
+    let head_size = dim / n_heads;
+
+    let mut offset = 0;
+
+    let token_embedding_table = offset;
+    offset = offset + vocab_size * dim;
+
+    let rms_att_weight = offset;
+    offset = offset + n_layers * dim;
+
+    let wq = offset;
+    offset = offset + n_layers * dim * dim;
+
+    let wk = offset;
+    offset = offset + n_layers * dim * n_kv_heads * head_size;
+
+    let wv = offset;
+    offset = offset + n_layers * dim * n_kv_heads * head_size;
+
+    let wo = offset;
+    offset = offset + n_layers * n_heads * head_size * dim;
+
+    let rms_ffn_weight = offset;
+    offset = offset + n_layers * dim;
+
+    let w1 = offset;
+    offset = offset + n_layers * dim * hidden_dim;
+
+    let w2 = offset;
+    offset = offset + n_layers * hidden_dim * dim;
+
+    let w3 = offset;
+    offset = offset + n_layers * dim * hidden_dim;
+
+    let rms_final_weight = offset;
+    offset = offset + dim;
+
+    let wcls = 0;
+
+    return TransformerWeightOffsets {
+      token_embedding_table: token_embedding_table,
+      rms_att_weight: rms_att_weight,
+      wq: wq,
+      wk: wk,
+      wv: wv,
+      wo: wo,
+      rms_ffn_weight: rms_ffn_weight,
+      w1: w1,
+      w2: w2,
+      w3: w3,
+      rms_final_weight: rms_final_weight,
+      wcls: wcls
+    };
+  }
+
+  fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> Tensor<f32> {
+    let ptr = unsafe {
+      vx_load_weights(filepath)
+    };
+    let dim = c.dim;
+    let n_layers = c.n_layers;
+    let n_heads = c.n_heads;
+    let n_kv_heads = c.n_kv_heads;
+    let hidden_dim = c.hidden_dim;
+    let vocab_size = c.vocab_size;
+    let head_size = dim / n_heads;
+
+    let total_floats = vocab_size * dim +
+    n_layers * dim +
+    n_layers * dim * dim +
+    n_layers * dim * n_kv_heads * head_size +
+    n_layers * dim * n_kv_heads * head_size +
+    n_layers * n_heads * head_size * dim +
+    n_layers * dim +
+    n_layers * dim * hidden_dim +
+    n_layers * hidden_dim * dim +
+    n_layers * dim * hidden_dim +
+    dim +
+    c.seq_len * head_size;
+
+    let mut all_weights = Tensor<f32>([1, total_floats]);
+    for i in 0..total_floats {
+      unsafe {
+        all_weights[0][i] = ptr[i];
+      }
+    }
+    return all_weights;
+  }
+}
+
+struct Tokenizer {
+  ptr : *mut i8,
+}
+
+impl Tokenizer {
+  fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {
+    let ptr = unsafe {
+      vx_build_tokenizer(filepath, vocab_size)
+    };
+    return Tokenizer {
+      ptr: ptr
+    };
+  }
+
+  fn decode(self: &Tokenizer, prev_token: i32, token: i32) -> String {
+    let piece_ptr = unsafe {
+      vx_decode_token(self.ptr, prev_token, token)
+    };
+    return unsafe {
+      String::from_c_str(piece_ptr)
+    };
+  }
+}

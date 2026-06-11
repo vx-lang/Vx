@@ -26,6 +26,7 @@ extern {
 
   fn vx_load_config(filepath : *const i8) -> *mut i32;
   fn vx_load_weights(filepath : *const i8) -> *mut f32;
+  fn vx_advance_ptr_const(ptr : *const f32, offset : i32) -> *const f32;
   fn vx_advance_ptr(ptr : *mut f32, offset : i32) -> *mut f32;
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)

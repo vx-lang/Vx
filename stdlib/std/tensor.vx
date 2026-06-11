@@ -7,6 +7,52 @@
 //
 //===----------------------------------------------------------------------===//
 impl<T : Float> Tensor<T> {
+  fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T> {
+    let mut t = Tensor<T>([ 1, d1 ]);
+    for i in 0..d1 {
+      unsafe { t[0][i] = ptr[i]; }
+    }
+    return t;
+  }
+
+  fn from_ptr_2d(ptr: *mut T, d1: i32, d2: i32) -> Tensor<T> {
+    let mut t = Tensor<T>([ d1, d2 ]);
+    for i in 0..d1 {
+      for j in 0..d2 {
+        unsafe { t[i][j] = ptr[i * d2 + j]; }
+      }
+    }
+    return t;
+  }
+
+  fn slice_2d(self: &Tensor<T>, row: i32, d1: i32, d2: i32) -> Tensor<T> {
+    let mut t = Tensor<T>([ d1, d2 ]);
+    for i in 0..d1 {
+      for j in 0..d2 {
+        unsafe { t[i][j] = self[row][i * d2 + j]; }
+      }
+    }
+    return t;
+  }
+
+  fn slice_2d_from_1d(self: &Tensor<T>, start: i32, d1: i32, d2: i32) -> Tensor<T> {
+    let mut t = Tensor<T>([ d1, d2 ]);
+    for i in 0..d1 {
+      for j in 0..d2 {
+        t[i][j] = self[0][start + i * d2 + j];
+      }
+    }
+    return t;
+  }
+
+  fn slice_1d(self: &Tensor<T>, start: i32, d1: i32) -> Tensor<T> {
+    let mut t = Tensor<T>([ 1, d1 ]);
+    for i in 0..d1 {
+      t[0][i] = self[0][start + i];
+    }
+    return t;
+  }
+
   // Fills the tensor with a constant value using Linalg
   fn fill(self : &mut Tensor<T>, val : T) -> void {
     mlir!(
