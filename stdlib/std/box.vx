@@ -6,10 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-extern "C" {
-  fn malloc(size : i64)->*mut i8;
-  fn free(ptr : *mut i8) -> i32;
-}
+import std::alloc;
 
 struct Box<T>{
   ptr : *mut T,

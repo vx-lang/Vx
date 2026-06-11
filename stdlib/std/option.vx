@@ -2,9 +2,7 @@
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
-extern "C" {
-  fn malloc(size : i64)->*mut i8;
-}
+import std::alloc;
 
 enum Option<T> {
   Some(T),

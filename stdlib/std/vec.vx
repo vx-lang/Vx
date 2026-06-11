@@ -8,11 +8,7 @@
 import std::closure;
 import std::iter;
 
-extern "C" {
-  fn malloc(size : i64)->*mut i8;
-  fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
-  fn free(ptr : *mut i8) -> i32;
-}
+import std::alloc;
 
 struct Vec<T>{
   data : *mut T,
