@@ -7,7 +7,7 @@ Keep all your attention on this repository and the tasks related to it. If I nee
 - **CRITICAL** You are not allowed to `git push`
 - **CRITICAL** You are not allowed to edit .git/config
 - Commit changes whenever you make a meaningful change and it builds cleanly.
-- Always write detailed commit messages.
+- Always write detailed commit messages with a commit message body. If the change fixes a bug, indicate that this bug is fixed by the commit using 'Fixes: #<BUG-ID>' in the commit message body.
 - Always run formatters after doing `git add` and before `git commit`:
   - 'clang-format' for C++ code
   - 'cargo run --bin vx-format -- <file>' for .vx code.
