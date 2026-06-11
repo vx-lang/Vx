@@ -65,11 +65,9 @@ fn ptr_to_tensor_1d(ptr : &mut f32, d1 : i32) -> Tensor<f32> {
   return t;
 }
 
-fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : *mut f32, d1 : i32) -> i32 {
+fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : &mut f32, d1 : i32) -> i32 {
   for i in 0..d1 {
-    unsafe {
-      ptr[i] = t[0][i];
-    }
+    ptr[i] = t[0][i];
   }
   return 0;
 }
