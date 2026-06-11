@@ -1,0 +1,34 @@
+//===- pointer_cast.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+// This file checks 4 invalid pointer casts.
+// CHECK-COUNT-4: Casting an integer to a raw pointer requires an unsafe block
+
+struct Box {
+  data: *mut i32,
+}
+
+fn takes_ptr(p: *mut i32) -> i32 { return 0; }
+
+fn main() -> i32 {
+  // FAILING 1: Direct literal cast without unsafe
+  let ptr1: *mut i32 = 0 as *mut i32;
+
+  // FAILING 2: Variable cast without unsafe
+  let null_val: i32 = 0;
+  let ptr2: *mut f32 = null_val as *mut f32;
+
+  // FAILING 3: Struct initialization without unsafe
+  let b = Box { data: 0 as *mut i32 };
+
+  // FAILING 4: Function argument without unsafe
+  takes_ptr(0 as *mut i32);
+
+  return 0;
+}
