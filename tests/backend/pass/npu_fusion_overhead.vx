@@ -47,7 +47,9 @@ fn main() -> i32 {
     for i in 0..128 {
       for j in 0..128 {
         temp_matmul_npu[i][j] = 0.0;
-        for k in 0..128 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
+        for k in 0..128 {
+          temp_matmul_npu[i][j] += a[i][k] * b[k][j];
+        }
       }
     }
   }
@@ -76,7 +78,9 @@ fn main() -> i32 {
     for i in 0..128 {
       for j in 0..128 {
         let mut sum = 0.0;
-        for k in 0..128 { sum += a[i][k] * b[k][j]; }
+        for k in 0..128 {
+          sum += a[i][k] * b[k][j];
+        }
         sum += bias[i][j];
         if sum > 0.0 {
           out_fused[i][j] = sum;
@@ -97,66 +101,68 @@ fn main() -> i32 {
     }
   }
 
-  unsafe {
-    // Benchmark Unfused
-    let t1 = now();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
-            temp_matmul_npu[i][j] = 0.0;
-            for k in 0..128 { temp_matmul_npu[i][j] += a[i][k] * b[k][j]; }
-          }
-        }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
-            temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
-          }
-        }
-      }
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
-            let val = temp_bias_npu[i][j];
-            if val > 0.0 {
-              out_unfused[i][j] = val;
-            } else {
-              out_unfused[i][j] = 0.0;
-            }
+  // Benchmark Unfused
+  let t1 = now();
+  for _iter in 0..10 {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_matmul_npu[i][j] = 0.0;
+          for k in 0..128 {
+            temp_matmul_npu[i][j] += a[i][k] * b[k][j];
           }
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
-
-    // Benchmark Fused
-    let t3 = now();
-    for _iter in 0..10 {
-      spawn on(Topology::NPU[0]) {
-        for i in 0..128 {
-          for j in 0..128 {
-            let mut sum = 0.0;
-            for k in 0..128 { sum += a[i][k] * b[k][j]; }
-            sum += bias[i][j];
-            if sum > 0.0 {
-              out_fused[i][j] = sum;
-            } else {
-              out_fused[i][j] = 0.0;
-            }
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          temp_bias_npu[i][j] = temp_matmul_npu[i][j] + bias[i][j];
+        }
+      }
+    }
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          let val = temp_bias_npu[i][j];
+          if val > 0.0 {
+            out_unfused[i][j] = val;
+          } else {
+            out_unfused[i][j] = 0.0;
           }
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
-
-    print !(time_unfused);
-    print !(time_fused);
-    assert(time_fused <= time_unfused);
   }
+  let t2 = now();
+  let time_unfused = t2 - t1;
+
+  // Benchmark Fused
+  let t3 = now();
+  for _iter in 0..10 {
+    spawn on(Topology::NPU[0]) {
+      for i in 0..128 {
+        for j in 0..128 {
+          let mut sum = 0.0;
+          for k in 0..128 {
+            sum += a[i][k] * b[k][j];
+          }
+          sum += bias[i][j];
+          if sum > 0.0 {
+            out_fused[i][j] = sum;
+          } else {
+            out_fused[i][j] = 0.0;
+          }
+        }
+      }
+    }
+  }
+  let t4 = now();
+  let time_fused = t4 - t3;
+
+  print !(time_unfused);
+  print !(time_fused);
+  assert(time_fused <= time_unfused);
 
   return 0;
 }
