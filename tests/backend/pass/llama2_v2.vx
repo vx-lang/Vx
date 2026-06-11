@@ -12,6 +12,7 @@
 
 import tests::modules::llama_rt;
 import std::math;
+import std::time;
 
 struct Config {
   dim : i32,
@@ -453,7 +454,7 @@ fn main() -> i32 {
   let tokenizer_ptr
   : *mut i8 = unsafe{vx_build_tokenizer(tokenizer_path, config.vocab_size)};
 
-  let start : f32 = unsafe{vx_get_time()};
+  let start : f32 = now();
   let mut next : i32 = 0;
   let mut token : i32 = 1;
   for

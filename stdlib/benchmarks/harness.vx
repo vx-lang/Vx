@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+import std::time;
 extern {
-  fn vx_get_time() -> f32;
+  
   fn vx_print_float(val : f32)->i32;
 }
 
@@ -26,12 +27,12 @@ fn run_heavy_workload() -> i32 {
 
 fn main() -> i32 {
   unsafe {
-    let start_time = vx_get_time();
+    let start_time = now();
 
     // Call the function we want to benchmark
     let status = run_heavy_workload();
 
-    let end_time = vx_get_time();
+    let end_time = now();
     let elapsed = end_time - start_time;
 
     // Print the elapsed time natively from Vx

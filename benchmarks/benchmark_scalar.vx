@@ -5,11 +5,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+import std::time;
 extern "C" {
   fn vx_advance_ptr_f32(base : *mut f32, offset : i32) -> *mut f32;
   fn vx_malloc_f32(size : i32)->*mut f32;
   fn free(ptr : *mut f32) -> i32;
-  fn vx_get_time() -> f32;
+  
   fn vx_print_float(v : f32)->i32;
 }
 
@@ -20,7 +21,7 @@ fn main() -> i32 {
     let p2 : *mut f32 = vx_malloc_f32(N);
     let p3 : *mut f32 = vx_malloc_f32(N);
 
-    let start : f32 = vx_get_time();
+    let start : f32 = now();
 
     let mut i : i32 = 0;
     for
@@ -35,7 +36,7 @@ fn main() -> i32 {
       *ptr3 = v3;
     }
 
-    let end : f32 = vx_get_time();
+    let end : f32 = now();
     let elapsed : f32 = end - start;
     vx_print_float(elapsed);
   }

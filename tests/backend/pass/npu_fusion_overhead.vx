@@ -5,8 +5,9 @@
 // RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 import std::io;
+import std::time;
 extern "C" {
-  fn vx_get_time() -> f32;
+  
 }
 
 fn main() -> i32 {
@@ -117,7 +118,7 @@ fn main() -> i32 {
 
   unsafe {
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
@@ -155,11 +156,11 @@ fn main() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       spawn on(Topology::NPU[0]) {
@@ -180,7 +181,7 @@ fn main() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);

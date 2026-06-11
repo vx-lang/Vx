@@ -1,7 +1,8 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
 
+import std::time;
 extern "C" {
-  fn vx_get_time() -> f32;
+  
 }
 
 fn run_benchmark_128() -> i32 {
@@ -64,7 +65,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       for
@@ -94,7 +95,7 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
@@ -115,7 +116,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       for
@@ -134,7 +135,7 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);
@@ -214,7 +215,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       for
@@ -244,7 +245,7 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
@@ -265,7 +266,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       for
@@ -284,7 +285,7 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);
@@ -364,7 +365,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       for
@@ -394,7 +395,7 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
@@ -415,7 +416,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       for
@@ -434,7 +435,7 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);
@@ -514,7 +515,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       for
@@ -544,7 +545,7 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
@@ -565,7 +566,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       for
@@ -584,7 +585,7 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);
@@ -664,7 +665,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = vx_get_time();
+    let t1 = now();
     for
     _iter in 0..10 {
       for
@@ -694,7 +695,7 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t2 = vx_get_time();
+    let t2 = now();
     let time_unfused = t2 - t1;
 
     // Warmup Fused immediately before benchmark
@@ -715,7 +716,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = vx_get_time();
+    let t3 = now();
     for
     _iter in 0..10 {
       for
@@ -734,7 +735,7 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t4 = vx_get_time();
+    let t4 = now();
     let time_fused = t4 - t3;
 
     print !(time_unfused);
