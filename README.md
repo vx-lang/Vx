@@ -97,13 +97,15 @@ cargo run --release --bin vxc -- --run source_file.vx
 
 ### Testing the Compiler
 
-The test suite relies on Apple Silicon AMX (NPU) dispatchers and Enzyme MLIR plugins. To run the tests, you must specify the corresponding `CARGO_HOME`, `RUSTUP_HOME`, and `ENZYME_LIB` paths manually.
+The test suite relies on Apple Silicon AMX (NPU) dispatchers and Enzyme MLIR plugins. You must configure your environment before running tests by sourcing the local toolchain config:
 
 ```bash
-export CARGO_HOME=$(pwd)/.cargo
-export RUSTUP_HOME=$(pwd)/.rustup
+# Generate config.local (only needed once)
+./setup.sh
+
+# Load environment variables
+source config.local
 export ENZYME_LIB="$(pwd)/.cargo/enzyme/LLVMEnzyme-22.dylib"
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
 cargo test
 ```

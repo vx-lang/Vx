@@ -12,3 +12,4 @@ scratch/
 *.mlir
 test_log.txt
 ast.txt
+config.local

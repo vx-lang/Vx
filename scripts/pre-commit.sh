@@ -11,6 +11,15 @@
 
 set -e
 
+# Export paths required for llvm-config and Cargo during pre-commit compilation
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CONFIG_FILE="$PROJECT_ROOT/config.local"
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+else
+    echo "Error: config.local not found. Paths may be missing. Please run $PROJECT_ROOT/setup.sh."
+    exit 1
+fi
 echo "======================================"
 echo "Running Pre-commit Checks for Vx..."
 echo "======================================"
