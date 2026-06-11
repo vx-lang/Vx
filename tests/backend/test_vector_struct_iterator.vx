@@ -35,8 +35,7 @@ impl Iterator<PointVecIter, Point> for PointVecIter {
 
 fn main() -> i32 {
   let vec : PointVec = PointVec{len : 3};
-  for
-  p in vec.iter() {
+  for p in vec.iter() {
     print !("Point x: ");
     print !(p.x);
     print !("Point y: ");

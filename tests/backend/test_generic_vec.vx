@@ -16,8 +16,7 @@ fn main() -> i32 {
     print !(sizeof<i32>());
   }
 
-  for
-  x in v.iter() {
+  for x in v.iter() {
     unsafe {
       print !("x is: ");
       print !(x);

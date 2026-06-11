@@ -31,8 +31,7 @@ impl Iterator<MyListIter, i32> for MyListIter {
 
 fn main() -> i32 {
   let list : MyList = MyList{len : 5};
-  for
-  item in list.iter() {
+  for item in list.iter() {
     print !("Custom Struct Item: ");
     print !(item);
   }

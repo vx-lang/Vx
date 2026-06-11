@@ -126,8 +126,7 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
 
 fn ptr_to_tensor_1d(ptr : *mut f32, d1 : i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor<f32>([ 1, d1 ]);
-  for
-  i in 0..d1 {
+  for i in 0..d1 {
     unsafe { t[0][i] = ptr[i]; }
   }
   return t;
@@ -135,10 +134,8 @@ fn ptr_to_tensor_1d(ptr : *mut f32, d1 : i32) -> Tensor<f32> {
 
 fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor<f32>([ d1, d2 ]);
-  for
-  i in 0..d1 {
-    for
-    j in 0..d2 {
+  for i in 0..d1 {
+    for j in 0..d2 {
       let idx : i32 = i * d2 + j;
       unsafe { t[i][j] = ptr[idx]; }
     }
@@ -147,8 +144,7 @@ fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
 }
 
 fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : *mut f32, d1 : i32) -> i32 {
-  for
-  i in 0..d1 {
+  for i in 0..d1 {
     unsafe { ptr[i] = t[0][i]; }
   }
   return 0;
@@ -159,8 +155,7 @@ fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
 
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
-  for
-  j in 0..size {
+  for j in 0..size {
     unsafe {
       let val : f32 = x[j];
       ss = ss + (val * val);
@@ -169,8 +164,7 @@ fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
-  for
-  j in 0..size {
+  for j in 0..size {
     unsafe {
       let weight_val : f32 = weight[j];
       let x_val : f32 = x[j];
@@ -193,11 +187,9 @@ w : &TransformerWeights) -> *mut f32 {
 
     let content_row : *mut f32 =
     vx_advance_ptr(w.token_embedding_table, token * dim);
-    for
-    i in 0..dim { x[i] = content_row[i]; }
+    for i in 0..dim { x[i] = content_row[i]; }
 
-    for
-    l in 0..p.n_layers {
+    for l in 0..p.n_layers {
       let rms_w : *mut f32 = vx_advance_ptr(w.rms_att_weight, l * dim);
       rmsnorm(s.xb, x, rms_w, dim);
 
@@ -219,8 +211,7 @@ w : &TransformerWeights) -> *mut f32 {
       tensor_to_ptr_1d(t_k, s.k, kv_dim);
       tensor_to_ptr_1d(t_v, s.v, kv_dim);
 
-      for
-      i in 0..dim {
+      for i in 0..dim {
         let div : i32 = i / 2;
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
@@ -257,26 +248,22 @@ w : &TransformerWeights) -> *mut f32 {
       vx_advance_ptr(s.key_cache, loff + pos * kv_dim);
       let value_cache_row
       : *mut f32 = vx_advance_ptr(s.value_cache, loff + pos * kv_dim);
-      for
-      i in 0..kv_dim {
+      for i in 0..kv_dim {
         key_cache_row[i] = s.k[i];
         value_cache_row[i] = s.v[i];
       }
 
-      for
-      h in 0..p.n_heads {
+      for h in 0..p.n_heads {
         let q_offset : i32 = h * head_size;
         let q_head : *mut f32 = vx_advance_ptr(s.q, q_offset);
         let att_offset : i32 = h * p.seq_len;
         let att_head : *mut f32 = vx_advance_ptr(s.att, att_offset);
 
-        for
-        t in 0..(pos + 1) {
+        for t in 0..(pos + 1) {
           let koff : i32 = loff + t * kv_dim + (h / kv_mul) * head_size;
           let k_head : *mut f32 = vx_advance_ptr(s.key_cache, koff);
           let mut score : f32 = 0.0;
-          for
-          i in 0..head_size {
+          for i in 0..head_size {
             let q_val : f32 = q_head[i];
             let k_val : f32 = k_head[i];
             score = score + q_val * k_val;
@@ -287,40 +274,34 @@ w : &TransformerWeights) -> *mut f32 {
         }
 
         let mut max_val : f32 = att_head[0];
-        for
-        t in 1..(pos + 1) {
+        for t in 1..(pos + 1) {
           let a_val : f32 = att_head[t];
           if a_val
           > max_val { max_val = a_val; }
         }
 
         let mut sum_exp : f32 = 0.0;
-        for
-        t in 0..(pos + 1) {
+        for t in 0..(pos + 1) {
           let a_val : f32 = att_head[t];
           let e : f32 = a_val - max_val.exp();
           att_head[t] = e;
           sum_exp = sum_exp + e;
         }
 
-        for
-        t in 0..(pos + 1) {
+        for t in 0..(pos + 1) {
           let a_val : f32 = att_head[t];
           att_head[t] = a_val / sum_exp;
         }
 
         let xb_offset : i32 = h * head_size;
         let xb_head : *mut f32 = vx_advance_ptr(s.xb, xb_offset);
-        for
-        i in 0..head_size { xb_head[i] = 0.0; }
+        for i in 0..head_size { xb_head[i] = 0.0; }
 
-        for
-        t in 0..(pos + 1) {
+        for t in 0..(pos + 1) {
           let voff : i32 = loff + t * kv_dim + (h / kv_mul) * head_size;
           let v_head : *mut f32 = vx_advance_ptr(s.value_cache, voff);
           let a : f32 = att_head[t];
-          for
-          i in 0..head_size {
+          for i in 0..head_size {
             let v_val : f32 = v_head[i];
             let xb_val : f32 = xb_head[i];
             xb_head[i] = xb_val + a * v_val;
@@ -334,8 +315,7 @@ w : &TransformerWeights) -> *mut f32 {
       let t_xb2 : Tensor<f32> = t_xb_v2 @t_wo;
       tensor_to_ptr_1d(t_xb2, s.xb2, dim);
 
-      for
-      i in 0..dim {
+      for i in 0..dim {
         let x_val : f32 = x[i];
         let xb2_val : f32 = s.xb2[i];
         x[i] = x_val + xb2_val;
@@ -355,8 +335,7 @@ w : &TransformerWeights) -> *mut f32 {
       tensor_to_ptr_1d(t_hb, s.hb, hidden_dim);
       tensor_to_ptr_1d(t_hb2, s.hb2, hidden_dim);
 
-      for
-      i in 0..hidden_dim {
+      for i in 0..hidden_dim {
         let mut val : f32 = s.hb[i];
         val = val * (1.0 / (1.0 + 0.0 - val.exp()));
         let hb2_val : f32 = s.hb2[i];
@@ -370,8 +349,7 @@ w : &TransformerWeights) -> *mut f32 {
       let t_xb_out : Tensor<f32> = t_hb_v @t_w2;
       tensor_to_ptr_1d(t_xb_out, s.xb, dim);
 
-      for
-      i in 0..dim {
+      for i in 0..dim {
         let x_val : f32 = x[i];
         let xb_val : f32 = s.xb[i];
         x[i] = x_val + xb_val;
@@ -383,10 +361,8 @@ w : &TransformerWeights) -> *mut f32 {
     let t_x : Tensor<f32> = ptr_to_tensor_1d(x, dim);
     let t_wcls : Tensor<f32> = ptr_to_tensor_2d(w.wcls, p.vocab_size, dim);
     let mut t_wcls_T : Tensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
-    for
-    r in 0..p.vocab_size {
-      for
-      c in 0..dim { t_wcls_T[c][r] = t_wcls[r][c]; }
+    for r in 0..p.vocab_size {
+      for c in 0..dim { t_wcls_T[c][r] = t_wcls[r][c]; }
     }
     let t_logits : Tensor<f32> = t_x @t_wcls_T;
     tensor_to_ptr_1d(t_logits, s.logits, p.vocab_size);
@@ -397,8 +373,7 @@ w : &TransformerWeights) -> *mut f32 {
 fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_i : i32 = 0;
   let mut max_p : f32 = 0.0;
-  for
-  i in 0..n {
+  for i in 0..n {
     unsafe {
       let p_val : f32 = probabilities[i];
       if p_val
@@ -459,8 +434,7 @@ fn main() -> i32 {
   let start : f32 = now();
   let mut next : i32 = 0;
   let mut token : i32 = 1;
-  for
-  pos in 0..steps {
+  for pos in 0..steps {
     let logits : *mut f32 =
     transformer(token, pos, &config, &state, &weights);
     next = argmax(logits, config.vocab_size);

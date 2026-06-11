@@ -3,7 +3,7 @@
 import std::io;
 import std::time;
 extern "C" {
-  
+
 }
 
 fn main() -> i32 {
@@ -13,10 +13,8 @@ fn main() -> i32 {
   let mut out_unfused = Tensor<f32>(128, 128);
   let mut out_fused = Tensor<f32>(128, 128);
 
-  for
-  i in 0..128 {
-    for
-    j in 0..128 {
+  for i in 0..128 {
+    for j in 0..128 {
       let sum_idx = i + j;
       if sum_idx
       == 0 {
@@ -37,24 +35,17 @@ fn main() -> i32 {
   let mut temp_bias = Tensor<f32>(128, 128);
 
   // Warmup Unfused
-  for
-  i in 0..128 {
-    for
-    j in 0..128 {
+  for i in 0..128 {
+    for j in 0..128 {
       temp_matmul[i][j] = 0.0;
-      for
-      k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
+      for k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
     }
   }
-  for
-  i in 0..128 {
-    for
-    j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
+  for i in 0..128 {
+    for j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
   }
-  for
-  i in 0..128 {
-    for
-    j in 0..128 {
+  for i in 0..128 {
+    for j in 0..128 {
       let val = temp_bias[i][j];
       if val
       > 0.0 { out_unfused[i][j] = val; }
@@ -65,13 +56,10 @@ fn main() -> i32 {
   }
 
   // Warmup Fused
-  for
-  i in 0..128 {
-    for
-    j in 0..128 {
+  for i in 0..128 {
+    for j in 0..128 {
       let mut sum = 0.0;
-      for
-      k in 0..128 { sum += a[i][k] * b[k][j]; }
+      for k in 0..128 { sum += a[i][k] * b[k][j]; }
       sum += bias[i][j];
       if sum
       > 0.0 { out_fused[i][j] = sum; }
@@ -82,10 +70,8 @@ fn main() -> i32 {
   }
 
   // Verification
-  for
-  i in 0..128 {
-    for
-    j in 0..128 {
+  for i in 0..128 {
+    for j in 0..128 {
       assert(out_unfused[i][j] == out_fused[i][j],
       "Mismatch between fused and unfused CPU results");
     }
@@ -94,26 +80,18 @@ fn main() -> i32 {
   unsafe {
     // Benchmark Unfused
     let t1 = now();
-    for
-    _iter in 0..10 {
-      for
-      i in 0..128 {
-        for
-        j in 0..128 {
+    for _iter in 0..10 {
+      for i in 0..128 {
+        for j in 0..128 {
           temp_matmul[i][j] = 0.0;
-          for
-          k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
+          for k in 0..128 { temp_matmul[i][j] += a[i][k] * b[k][j]; }
         }
       }
-      for
-      i in 0..128 {
-        for
-        j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
+      for i in 0..128 {
+        for j in 0..128 { temp_bias[i][j] = temp_matmul[i][j] + bias[i][j]; }
       }
-      for
-      i in 0..128 {
-        for
-        j in 0..128 {
+      for i in 0..128 {
+        for j in 0..128 {
           let val = temp_bias[i][j];
           if val
           > 0.0 { out_unfused[i][j] = val; }
@@ -128,15 +106,11 @@ fn main() -> i32 {
 
     // Benchmark Fused
     let t3 = now();
-    for
-    _iter in 0..10 {
-      for
-      i in 0..128 {
-        for
-        j in 0..128 {
+    for _iter in 0..10 {
+      for i in 0..128 {
+        for j in 0..128 {
           let mut sum = 0.0;
-          for
-          k in 0..128 { sum += a[i][k] * b[k][j]; }
+          for k in 0..128 { sum += a[i][k] * b[k][j]; }
           sum += bias[i][j];
           if sum
           > 0.0 { out_fused[i][j] = sum; }

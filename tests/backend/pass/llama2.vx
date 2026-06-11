@@ -153,14 +153,12 @@ w : &TransformerWeights) -> *mut f32 {
 
     let content_row : *mut f32 =
     vx_advance_ptr(w.token_embedding_table, token * dim);
-    for
-    i in 0..dim { x[i] = content_row[i]; }
+    for i in 0..dim { x[i] = content_row[i]; }
 
     let n_layers : i32 = p.n_layers;
     let seq_len : i32 = p.seq_len;
 
-    for
-    l in 0..n_layers {
+    for l in 0..n_layers {
       let rms_w_off : i32 = l * dim;
       let rms_w : *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
 
@@ -189,8 +187,7 @@ w : &TransformerWeights) -> *mut f32 {
       let status4 : i32 = matmul(s_v, s.xb, wv_l, dim, kv_dim);
 
       // RoPE relative positional encoding
-      for
-      i in 0..kv_dim {
+      for i in 0..kv_dim {
         let div : i32 = i / 2;
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
@@ -217,21 +214,18 @@ w : &TransformerWeights) -> *mut f32 {
 
       // Multi-head self-attention
       let pos_1 : i32 = pos + 1;
-      for
-      h in 0..p.n_heads {
+      for h in 0..p.n_heads {
         let q_off : i32 = h * head_size;
         let att_off : i32 = h * seq_len;
         let att_h : *mut f32 = vx_advance_ptr(s.att, att_off);
 
-        for
-        t in 0..pos_1 {
+        for t in 0..pos_1 {
           let h_kv_mul : i32 = h / kv_mul;
           let k_cache_off : i32 = l * seq_len * kv_dim + t * kv_dim +
           h_kv_mul * head_size;
           let k_t : *mut f32 = vx_advance_ptr(s.key_cache, k_cache_off);
           let mut score : f32 = 0.0;
-          for
-          i in 0..head_size {
+          for i in 0..head_size {
             let qv : f32 = s.q[q_off + i];
             let kv : f32 = k_t[i];
             score += qv * kv;
@@ -244,34 +238,29 @@ w : &TransformerWeights) -> *mut f32 {
         }
 
         let mut max_val : f32 = att_h[0];
-        for
-        t in 1..pos_1 {
+        for t in 1..pos_1 {
           let val : f32 = att_h[t];
           if val
           > max_val { max_val = val; }
         }
 
         let mut sum : f32 = 0.0;
-        for
-        t in 0..pos_1 {
+        for t in 0..pos_1 {
           let val : f32 = att_h[t];
           let exp_val : f32 = val - max_val.exp();
           att_h[t] = exp_val;
           sum += exp_val;
         }
 
-        for
-        t in 0..pos_1 {
+        for t in 0..pos_1 {
           let val : f32 = att_h[t];
           att_h[t] = val / sum;
         }
 
         let xb_off : i32 = h * head_size;
-        for
-        i in 0..head_size {
+        for i in 0..head_size {
           let mut val : f32 = 0.0;
-          for
-          t in 0..pos_1 {
+          for t in 0..pos_1 {
             let h_kv_mul : i32 = h / kv_mul;
             let v_cache_off : i32 = l * seq_len * kv_dim + t * kv_dim +
             h_kv_mul * head_size;
@@ -289,8 +278,7 @@ w : &TransformerWeights) -> *mut f32 {
       let wo_l : *mut f32 = vx_advance_ptr(w.wo, wo_off);
       let status5 : i32 = matmul(s.xb2, s.xb, wo_l, dim, dim);
 
-      for
-      i in 0..dim {
+      for i in 0..dim {
         let x_val : f32 = x[i];
         let xb2_val : f32 = s.xb2[i];
         x[i] = x_val + xb2_val;
@@ -308,8 +296,7 @@ w : &TransformerWeights) -> *mut f32 {
       let status8 : i32 = matmul_ane(s.hb2, s.xb, w3_l, dim, hidden_dim);
 
       // SwiGLU
-      for
-      i in 0..hidden_dim {
+      for i in 0..hidden_dim {
         let mut val : f32 = s.hb[i];
         let neg_val : f32 = 0.0 - val;
         let exp_val : f32 = neg_val.exp();
@@ -324,8 +311,7 @@ w : &TransformerWeights) -> *mut f32 {
       let w2_l : *mut f32 = vx_advance_ptr(w.w2, w2_off);
       let status9 : i32 = matmul_ane(s.xb, s.hb, w2_l, hidden_dim, dim);
 
-      for
-      i in 0..dim {
+      for i in 0..dim {
         let x_val : f32 = x[i];
         let xb_val : f32 = s.xb[i];
         x[i] = x_val + xb_val;
@@ -343,8 +329,7 @@ w : &TransformerWeights) -> *mut f32 {
 fn sample_argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_i : i32 = 0;
   let mut max_p : f32 = probabilities[0];
-  for
-  i in 1..n {
+  for i in 1..n {
     let prob : f32 = probabilities[i];
     if prob
     > max_p {
@@ -358,8 +343,7 @@ fn sample_argmax(probabilities : *mut f32, n : i32) -> i32 {
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32,
 size_f : f32) -> i32 {
   let mut ss : f32 = 0.0;
-  for
-  j in 0..size {
+  for j in 0..size {
     let val : f32 = x[j];
     ss += val * val;
   }
@@ -367,8 +351,7 @@ size_f : f32) -> i32 {
   ss = ss / size_f + 0.00001;
   ss = 1.0 / ss.sqrt();
 
-  for
-  j in 0..size {
+  for j in 0..size {
     let val : f32 = x[j];
     let w : f32 = weight[j];
     let temp : f32 = ss * val;
@@ -380,16 +363,14 @@ size_f : f32) -> i32 {
 
 fn softmax(x : *mut f32, size : i32) -> i32 {
   let mut max_val : f32 = x[0];
-  for
-  i in 1..size {
+  for i in 1..size {
     let val : f32 = x[i];
     if val
     > max_val { max_val = val; }
   }
 
   let mut sum : f32 = 0.0;
-  for
-  i in 0..size {
+  for i in 0..size {
     let val : f32 = x[i];
     let diff : f32 = val - max_val;
     x[i] = diff.exp();
@@ -397,8 +378,7 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
     sum += exp_val;
   }
 
-  for
-  i in 0..size {
+  for i in 0..size {
     let val : f32 = x[i];
     x[i] = val / sum;
   }
@@ -408,11 +388,9 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
 fn matmul(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
 -> i32 {
   spawn on(Topology::GPU) {
-    for
-    i in 0..d {
+    for i in 0..d {
       let mut val : f32 = 0.0;
-      for
-      j in 0..n {
+      for j in 0..n {
         let idx : i32 = i * n + j;
         let w_val : f32 = w[idx];
         let x_val : f32 = x[j];
@@ -427,11 +405,9 @@ fn matmul(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
 fn matmul_ane(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
 -> i32 {
   spawn on(Topology::ANE) {
-    for
-    i in 0..d {
+    for i in 0..d {
       let mut val : f32 = 0.0;
-      for
-      j in 0..n {
+      for j in 0..n {
         let idx : i32 = i * n + j;
         let w_val : f32 = w[idx];
         let x_val : f32 = x[j];
@@ -495,8 +471,7 @@ fn main() -> i32 {
 
     // We'll generate max_tokens for testing to avoid slowing down cargo test
     let iterations : i32 = max_tokens / steps;
-    for
-    step in 0..iterations {
+    for step in 0..iterations {
       let logits : *mut f32 =
       transformer(token, pos, &config, &state, &weights);
 

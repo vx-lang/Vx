@@ -5,8 +5,7 @@ import std::io;
 fn main() -> i32 {
   let strs = [ "red", "green", "blue" ];
 
-  for
-  sptr in strs.iter() {
+  for sptr in strs.iter() {
     print !(sptr);
     print !(0);
   }
