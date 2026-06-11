@@ -9,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 import tests::modules::llama_rt;
+import std::math;
 
 struct Config {
   dim : i32,
@@ -140,11 +141,6 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
     value_cache : Tensor([ n_layers, seq_len, kv_dim ])
   };
 }
-
-fn safe_sqrtf(x : f32) -> f32 { return unsafe{vx_sqrtf(x)}; }
-fn safe_cosf(x : f32) -> f32 { return unsafe{vx_cosf(x)}; }
-fn safe_sinf(x : f32) -> f32 { return unsafe{vx_sinf(x)}; }
-fn safe_expf(x : f32) -> f32 { return unsafe{vx_expf(x)}; }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
   return unsafe{vx_get_rope_freq(pos, i, head_size)};
 }
@@ -159,7 +155,7 @@ size : i32) -> i32 {
   }
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
-  ss = 1.0 / safe_sqrtf(add);
+  ss = 1.0 / add.sqrt();
   for
   j in 0..size { o[j] = weight[j] * (ss * x[j]); }
   return 0;
@@ -247,8 +243,8 @@ w : &TransformerWeights) -> i32 {
         let head_dim_mul : i32 = head_dim_div * head_size;
         let head_dim : i32 = i - head_dim_mul;
         let freq : f32 = safe_get_rope_freq(pos, head_dim, head_size);
-        let fcr : f32 = safe_cosf(freq);
-        let fci : f32 = safe_sinf(freq);
+        let fcr : f32 = freq.cos();
+        let fci : f32 = freq.sin();
 
         let rotn_q_r : i32 = i;
         let rotn_q_i : i32 = i + 1;
@@ -295,7 +291,7 @@ w : &TransformerWeights) -> i32 {
           score = score + q_val * k_val;
         }
         let hf : f32 = head_size;
-        s.att[h][t] = score / safe_sqrtf(hf);
+        s.att[h][t] = score / hf.sqrt();
       }
 
       // Softmax
@@ -310,7 +306,7 @@ w : &TransformerWeights) -> i32 {
       let mut sum_exp : f32 = 0.0;
       for
       t in 0..(pos + 1) {
-        let e : f32 = safe_expf(s.att[h][t] - max_val);
+        let e : f32 = s.att[h][t] - max_val.exp();
         s.att[h][t] = e;
         sum_exp = sum_exp + e;
       }
@@ -386,7 +382,7 @@ w : &TransformerWeights) -> i32 {
     for
     i in 0..hidden_dim {
       let mut val : f32 = t_hb[0][i];
-      val = val * (1.0 / (1.0 + safe_expf(0.0 - val)));
+      val = val * (1.0 / (1.0 + 0.0 - val.exp()));
       val = val * t_hb2[0][i];
       s.hb[i] = val;
     }

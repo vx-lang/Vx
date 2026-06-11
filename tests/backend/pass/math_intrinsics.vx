@@ -9,9 +9,8 @@
 // RUN: %t 2>&1 | FileCheck %s
 
 import std::io;
+import std::math;
 extern "C" {
-  fn vx_sqrtf(x : f32)->f32;
-  fn vx_expf(x : f32)->f32;
 }
 
 fn main() -> i32 {
@@ -19,8 +18,8 @@ fn main() -> i32 {
   let b : f32 = 0.0;
 
   unsafe {
-    let root = vx_sqrtf(a);
-    let exp = vx_expf(b);
+    let root = a.sqrt();
+    let exp = b.exp();
     print !(root);
     print !(exp);
   }

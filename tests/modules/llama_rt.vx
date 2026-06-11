@@ -13,15 +13,11 @@
 // exposed as C-compatible symbols.
 
 import std::io;
+import std::math;
 extern {
   fn vx_malloc_f32(num_elements : i32)->*mut f32;
   fn free(ptr : *mut f32) -> i32;
   fn putchar(char : i32) -> i32;
-
-  fn vx_sqrtf(x : f32)->f32;
-  fn vx_expf(x : f32)->f32;
-  fn vx_cosf(x : f32)->f32;
-  fn vx_sinf(x : f32)->f32;
   fn vx_simd_reduce_add(v : <4 x f32>)->f32;
   fn vx_powf(x : f32, y : f32)->f32;
   fn vx_get_rope_freq(pos : i32, i : i32, head_size : i32)->f32;

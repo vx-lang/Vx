@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 import tests::modules::llama_rt;
+import std::math;
 
 struct Config {
   dim : i32,
@@ -189,8 +190,8 @@ w : &TransformerWeights) -> *mut f32 {
         if rem
         == 0 {
           let fcr : f32 = vx_get_rope_freq(pos, i, head_size);
-          let fci : f32 = vx_cosf(fcr);
-          let fsi : f32 = vx_sinf(fcr);
+          let fci : f32 = fcr.cos();
+          let fsi : f32 = fcr.sin();
 
           let roff : i32 = i;
           let roff_1 : i32 = i + 1;
@@ -230,7 +231,7 @@ w : &TransformerWeights) -> *mut f32 {
           }
 
           let head_size_f : f32 = 32.0; // 256/8 = 32
-          let factor : f32 = 1.0 / vx_sqrtf(head_size_f);
+          let factor : f32 = 1.0 / head_size_f.sqrt();
           score = score * factor;
           att_h[t] = score;
         }
@@ -247,7 +248,7 @@ w : &TransformerWeights) -> *mut f32 {
         for
         t in 0..pos_1 {
           let val : f32 = att_h[t];
-          let exp_val : f32 = vx_expf(val - max_val);
+          let exp_val : f32 = val - max_val.exp();
           att_h[t] = exp_val;
           sum += exp_val;
         }
@@ -304,7 +305,7 @@ w : &TransformerWeights) -> *mut f32 {
       i in 0..hidden_dim {
         let mut val : f32 = s.hb[i];
         let neg_val : f32 = 0.0 - val;
-        let exp_val : f32 = vx_expf(neg_val);
+        let exp_val : f32 = neg_val.exp();
         let denom : f32 = 1.0 + exp_val;
         let factor : f32 = 1.0 / denom;
         val = val * factor;
@@ -357,7 +358,7 @@ size_f : f32) -> i32 {
   }
 
   ss = ss / size_f + 0.00001;
-  unsafe { ss = 1.0 / vx_sqrtf(ss); }
+  ss = 1.0 / ss.sqrt();
 
   for
   j in 0..size {
@@ -384,7 +385,7 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
   i in 0..size {
     let val : f32 = x[i];
     let diff : f32 = val - max_val;
-    unsafe { x[i] = vx_expf(diff); }
+    x[i] = diff.exp();
     let exp_val : f32 = x[i];
     sum += exp_val;
   }

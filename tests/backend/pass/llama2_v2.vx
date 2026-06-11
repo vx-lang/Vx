@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 import tests::modules::llama_rt;
+import std::math;
 
 struct Config {
   dim : i32,
@@ -149,11 +150,6 @@ fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : *mut f32, d1 : i32) -> i32 {
   }
   return 0;
 }
-
-fn safe_sqrtf(x : f32) -> f32 { return unsafe{vx_sqrtf(x)}; }
-fn safe_cosf(x : f32) -> f32 { return unsafe{vx_cosf(x)}; }
-fn safe_sinf(x : f32) -> f32 { return unsafe{vx_sinf(x)}; }
-fn safe_expf(x : f32) -> f32 { return unsafe{vx_expf(x)}; }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
   return unsafe{vx_get_rope_freq(pos, i, head_size)};
 }
@@ -169,7 +165,7 @@ fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   }
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
-  ss = 1.0 / safe_sqrtf(add);
+  ss = 1.0 / add.sqrt();
   for
   j in 0..size {
     unsafe {
@@ -231,8 +227,8 @@ w : &TransformerWeights) -> *mut f32 {
           let head_dim_mul : i32 = head_dim_div * head_size;
           let head_dim : i32 = i - head_dim_mul;
           let freq : f32 = safe_get_rope_freq(pos, head_dim, head_size);
-          let fcr : f32 = safe_cosf(freq);
-          let fci : f32 = safe_sinf(freq);
+          let fcr : f32 = freq.cos();
+          let fci : f32 = freq.sin();
 
           let rotn_q_r : i32 = i;
           let rotn_q_i : i32 = i + 1;
@@ -283,7 +279,7 @@ w : &TransformerWeights) -> *mut f32 {
             score = score + q_val * k_val;
           }
           let hf : f32 = head_size;
-          score = score / safe_sqrtf(hf);
+          score = score / hf.sqrt();
           att_head[t] = score;
         }
 
@@ -299,7 +295,7 @@ w : &TransformerWeights) -> *mut f32 {
         for
         t in 0..(pos + 1) {
           let a_val : f32 = att_head[t];
-          let e : f32 = safe_expf(a_val - max_val);
+          let e : f32 = a_val - max_val.exp();
           att_head[t] = e;
           sum_exp = sum_exp + e;
         }
@@ -359,7 +355,7 @@ w : &TransformerWeights) -> *mut f32 {
       for
       i in 0..hidden_dim {
         let mut val : f32 = s.hb[i];
-        val = val * (1.0 / (1.0 + safe_expf(0.0 - val)));
+        val = val * (1.0 / (1.0 + 0.0 - val.exp()));
         let hb2_val : f32 = s.hb2[i];
         val = val * hb2_val;
         s.hb[i] = val;
