@@ -4729,6 +4729,20 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             let target_ty_mlir = gen.lower_type(&self.target_ty);
             let coerced_val = gen.coerce_type(block, source_val, _source_ty, target_ty_mlir);
             return Ok((coerced_val, target_ty_mlir));
+        } else if let ast::Type::Pointer(..) = &self.target_ty {
+            if let Some(ast::Type::Scalar(_)) = self.source_ty.as_ref() {
+                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                let cast_op = OperationBuilder::new(
+                    "llvm.inttoptr",
+                    Location::unknown(gen.context),
+                )
+                .add_operands(&[source_val])
+                .add_results(&[ptr_ty])
+                .build()
+                .unwrap();
+                let cast_ref = block.append_operation(cast_op);
+                return Ok((cast_ref.result(0).unwrap().into(), ptr_ty));
+            }
         }
 
         panic!("Unsupported cast operation in codegen");

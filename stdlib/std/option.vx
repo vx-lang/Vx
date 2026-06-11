@@ -33,7 +33,8 @@ Option<T> {
     match self {
       Option<T>::Some(v) => { return v; }
       Option<T>::None() => {
-        assert(false, "unwrap called on None");
+        let is_some = self.is_some();
+        assert(is_some, "unwrap called on None");
       }
     }
   }

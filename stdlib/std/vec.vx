@@ -32,6 +32,7 @@ Vec<T> {
     unsafe {
       let ptr_i8 : *mut i8 = self.data;
       free(ptr_i8);
+      self.data = 0 as *mut T;
     }
     self.len = 0;
     self.capacity = 0;
@@ -54,6 +55,19 @@ Vec<T> {
     }
     unsafe { self.data[self.len] = val; }
     self.len = self.len + 1;
+    return 0;
+  }
+
+  fn get(self : &Vec<T>, index: i32) -> T {
+    assert(index >= 0, "Index out of bounds");
+    assert(index < self.len, "Index out of bounds");
+    return unsafe { self.data[index] };
+  }
+
+  fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
+    assert(index >= 0, "Index out of bounds");
+    assert(index < self.len, "Index out of bounds");
+    unsafe { self.data[index] = val; }
     return 0;
   }
 
