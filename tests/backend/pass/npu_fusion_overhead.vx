@@ -6,9 +6,6 @@
 
 import std::io;
 import std::time;
-extern "C" {
-  
-}
 
 fn main() -> i32 {
   let mut a_host = Tensor<f32>(128, 128);
