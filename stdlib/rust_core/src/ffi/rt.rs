@@ -16,8 +16,8 @@ use std::ffi::{c_char, c_void, CStr};
 use std::fs::File;
 use std::io::Read;
 use std::ptr;
-use std::time::Instant;
-
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ============================================================================
 // Math & Core Functions
 // ============================================================================
@@ -44,7 +44,7 @@ pub extern "C" fn vx_sinf(x: f32) -> f32 {
 
 #[no_mangle]
 pub extern "C" fn vx_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32 {
-    let freq = 1.0 / (10000.0_f32).powf(i as f32 / head_size as f32);
+    let freq = 10000.0f32.powf(-(i as f32) / (head_size as f32));
     (pos as f32) * freq
 }
 
@@ -84,6 +84,19 @@ pub extern "C" fn vx_get_time() -> f32 {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn vx_sleep(seconds: f32) -> i32 {
+    thread::sleep(Duration::from_secs_f32(seconds));
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn vx_unix_timestamp() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs_f64()
+}
 #[no_mangle]
 pub extern "C" fn trace_start() {
     println!("[TRACE START] Event ID: 100");

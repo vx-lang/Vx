@@ -10,8 +10,18 @@
 
 extern {
   fn vx_get_time() -> f32;
+  fn vx_sleep(seconds: f32) -> i32;
+  fn vx_unix_timestamp() -> f64;
 }
 
 fn now() -> f32 {
   return unsafe { vx_get_time() };
+}
+
+fn sleep(seconds: f32) -> i32 {
+  return unsafe { vx_sleep(seconds) };
+}
+
+fn unix_timestamp() -> f64 {
+  return unsafe { vx_unix_timestamp() };
 }
