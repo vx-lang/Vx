@@ -387,14 +387,10 @@ fn main() -> i32 {
     transformer(token, pos, &config, &state, &weights, &all_weights);
     next = argmax(logits, config.vocab_size);
     let piece : String = tokenizer.decode(token, next);
-    unsafe {
-      print!(piece);
-    }
+    print!(piece);
     token = next;
   }
-  unsafe {
-    print !(0.0);
-  }
+  print!(0.0);
   return 0;
 }
 
