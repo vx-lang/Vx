@@ -13,5 +13,4 @@
 //===----------------------------------------------------------------------===//
 pub mod llama;
 pub mod macros;
-pub mod network;
 pub mod rt;
