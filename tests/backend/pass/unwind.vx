@@ -1,0 +1,39 @@
+extern {
+  fn vx_panic() -> i32;
+  fn vx_catch_unwind(f: fn() -> i32) -> i32;
+}
+
+struct Resource {
+  val: i32,
+}
+
+impl Resource {
+  fn drop(self: &mut Resource) -> i32 {
+    printf("%d
+", self.val);
+    return 0;
+  }
+}
+
+fn trigger_panic() -> i32 {
+  unsafe {
+    vx_panic();
+  }
+  return 0;
+}
+
+fn do_test() -> i32 {
+  let mut res = Resource {
+    val: 42
+  };
+  trigger_panic();
+  res.drop();
+  return 0;
+}
+
+fn main() -> i32 {
+  unsafe {
+    vx_catch_unwind(do_test);
+  }
+  return 0;
+}

@@ -131,3 +131,21 @@ pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> 
     }
     0
 }
+
+#[no_mangle]
+pub extern "C-unwind" fn vx_panic() -> i32 {
+    println!("Vx runtime panic occurred!");
+    panic!("vx_panic");
+}
+
+#[no_mangle]
+pub extern "C-unwind" fn vx_catch_unwind(f: extern "C-unwind" fn() -> i32) -> i32 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
+    match result {
+        Ok(v) => v,
+        Err(_) => {
+            println!("Caught panic!");
+            1
+        }
+    }
+}
