@@ -568,6 +568,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 
         let output = std::process::Command::new(bin_path)
             .args(&args)
+            .env("RUST_BACKTRACE", "1")
             .output()
             .expect("Failed to execute vxc");
 
@@ -602,7 +603,11 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
             ));
         }
 
-        let out = String::from_utf8_lossy(&output.stdout);
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let mut current_idx = 0;
         for check in check_lines {
@@ -643,6 +648,7 @@ fn test_middle_end_fail() -> Result<(), String> {
 
 #[test]
 fn test_backend() -> Result<(), String> {
+    std::env::set_var("RUST_BACKTRACE", "1");
     run_directory_tests(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {

@@ -1,3 +1,13 @@
+// EXPECT: Vx runtime panic occurred!
+// EXPECT: Caught panic!
+// EXPECT: thread '<unnamed>'
+// EXPECT: vx_panic
+// EXPECT: stack backtrace:
+// EXPECT: vx_panic
+// EXPECT: <unknown>
+// EXPECT: vx_std_core::ffi::rt::vx_catch_unwind
+// EXPECT: vx_catch_unwind
+
 extern {
   fn vx_panic() -> i32;
   fn vx_catch_unwind(f: fn() -> i32) -> i32;
