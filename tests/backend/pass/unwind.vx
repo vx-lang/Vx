@@ -1,49 +1,74 @@
 // EXPECT: Vx runtime panic occurred!
 // EXPECT: Caught panic!
+// EXPECT: Vx runtime panic occurred!
+// EXPECT: Caught panic!
+
 // EXPECT: thread '<unnamed>'
 // EXPECT: vx_panic
 // EXPECT: stack backtrace:
 // EXPECT: vx_panic
 // EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
 // EXPECT: vx_std_core::ffi::rt::vx_catch_unwind
-// EXPECT: vx_catch_unwind
+
+// EXPECT: thread '<unnamed>'
+// EXPECT: vx_panic
+// EXPECT: stack backtrace:
+// EXPECT: vx_panic
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: <unknown>
+// EXPECT: vx_std_core::ffi::rt::vx_catch_unwind
 
 extern {
   fn vx_panic() -> i32;
   fn vx_catch_unwind(f: fn() -> i32) -> i32;
 }
 
-struct Resource {
-  val: i32,
-}
-
-impl Resource {
-  fn drop(self: &mut Resource) -> i32 {
-    printf("%d
-", self.val);
-    return 0;
-  }
-}
-
-fn trigger_panic() -> i32 {
+fn f5() -> i32 {
   unsafe {
     vx_panic();
   }
   return 0;
 }
 
-fn do_test() -> i32 {
-  let mut res = Resource {
-    val: 42
-  };
-  trigger_panic();
-  res.drop();
+fn f4() -> i32 {
+  return f5();
+}
+fn f3() -> i32 {
+  return f4();
+}
+fn f2() -> i32 {
+  return f3();
+}
+fn f1() -> i32 {
+  return f2();
+}
+
+fn do_test_chain() -> i32 {
+  f1();
+  return 0;
+}
+
+fn do_test_lambda() -> i32 {
+  let capture = 42;
+  let my_lambda = || f1() + capture;
+  my_lambda();
   return 0;
 }
 
 fn main() -> i32 {
   unsafe {
-    vx_catch_unwind(do_test);
+    vx_catch_unwind(do_test_chain);
+    vx_catch_unwind(do_test_lambda);
   }
   return 0;
 }

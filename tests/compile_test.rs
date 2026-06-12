@@ -284,6 +284,9 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
+    monomorphized_program
+        .structs
+        .extend(checker.generated_structs);
     let mut module_asts = std::collections::HashMap::new();
     for mut p in program_arr {
         let before = p.functions.len();
