@@ -1,0 +1,7 @@
+- `[x]` Replace `lli` with `llc` and `clang` in `execute_mlir` (`src/jit.rs`)
+  - `[x]` Update `src/jit.rs` to run `llc`
+  - `[x]` Update `src/jit.rs` to run `clang` to link the executable
+  - `[x]` Update `src/jit.rs` to run the resulting executable
+- `[x]` Update `tests/backend/pass/unwind.vx` to match actual symbol names instead of `<unknown>`
+- `[x]` Verify that the `unwind.vx` test passes
+- `[x]` Format code and commit
