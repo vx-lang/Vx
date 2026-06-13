@@ -132,46 +132,108 @@ pub fn execute_mlir(
         return Err(format!("opt failed:\n{}", err_str));
     }
 
-    println!("[JIT] Executing via LLI...");
-    let current_dir = std::env::current_dir().unwrap();
-    let mut lli_cmd = Command::new("lli");
+    println!(
+        "[JIT] Compiling to native object (-O{})...",
+        actual_opt_level
+    );
+    let temp_obj = format!("target/jit/temp_opt_{}.o", uid);
+    let llc_out = Command::new("llc")
+        .args([
+            &format!("-O={}", actual_opt_level),
+            "-filetype=obj",
+            "-relocation-model=pic",
+            &temp_opt_ll,
+            "-o",
+            &temp_obj,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
 
-    if cfg!(target_os = "macos") {
-        lli_cmd.arg(format!("--load={}", lib_npu));
+    if !llc_out.status.success() {
+        let err_str = String::from_utf8_lossy(&llc_out.stderr);
+        return Err(format!("llc failed:\n{}", err_str));
     }
 
+    println!("[JIT] Linking native executable...");
+    let temp_exe = format!("target/jit/temp_{}.out", uid);
+    let current_dir = std::env::current_dir().unwrap();
     let profile_dir = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
 
-    lli_cmd.args([
+    let llvm_libdir_out = Command::new("/opt/homebrew/opt/llvm/bin/llvm-config")
+        .arg("--libdir")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let llvm_libdir = String::from_utf8_lossy(&llvm_libdir_out.stdout)
+        .trim()
+        .to_string();
+
+    let mut clang_cmd = Command::new("clang");
+
+    // Rpaths
+    clang_cmd.args([
+        &format!("-Wl,-rpath,{}", llvm_libdir),
         &format!(
-            "--load=libmlir_c_runner_utils{}",
+            "-Wl,-rpath,{}/target/{}",
+            current_dir.display(),
+            profile_dir
+        ),
+        &format!("-Wl,-rpath,{}/target/jit", current_dir.display()),
+    ]);
+
+    // Input obj and output exe
+    clang_cmd.args([&temp_obj, "-o", &temp_exe]);
+
+    // Libraries
+    clang_cmd.args([
+        &format!(
+            "{}/libmlir_c_runner_utils{}",
+            llvm_libdir,
             std::env::consts::DLL_SUFFIX
         ),
         &format!(
-            "--load=libmlir_runner_utils{}",
+            "{}/libmlir_runner_utils{}",
+            llvm_libdir,
             std::env::consts::DLL_SUFFIX
         ),
         &format!(
-            "--load={}/target/{}/{}vx_std_core{}",
+            "{}/target/{}/{}vx_std_core{}",
             current_dir.display(),
             profile_dir,
             std::env::consts::DLL_PREFIX,
             std::env::consts::DLL_SUFFIX
         ),
-        &temp_opt_ll,
     ]);
 
-    lli_cmd.args(program_args);
+    if cfg!(target_os = "macos") {
+        clang_cmd.args([&format!(
+            "{}/target/jit/libnpu_shared.dylib",
+            current_dir.display()
+        )]);
+    }
 
-    let lli_out = lli_cmd.output().map_err(|e| e.to_string())?;
+    let clang_out = clang_cmd.output().map_err(|e| e.to_string())?;
 
-    if !lli_out.status.success() {
-        let err_str = String::from_utf8_lossy(&lli_out.stderr);
-        let code = lli_out.status.code().unwrap_or(-1);
+    if !clang_out.status.success() {
+        let err_str = String::from_utf8_lossy(&clang_out.stderr);
+        return Err(format!("clang failed:\n{}", err_str));
+    }
+
+    println!("[JIT] Executing native binary...");
+    let mut exe_cmd = Command::new(&temp_exe);
+    exe_cmd.args(program_args);
+    if std::env::var("RUST_BACKTRACE").is_err() {
+        exe_cmd.env("RUST_BACKTRACE", "1");
+    }
+
+    let exe_out = exe_cmd.output().map_err(|e| e.to_string())?;
+
+    if !exe_out.status.success() {
+        let err_str = String::from_utf8_lossy(&exe_out.stderr);
+        let code = exe_out.status.code().unwrap_or(-1);
         println!("[JIT] Program exited with code: {}", code);
         if !err_str.is_empty() {
             println!("[JIT] Error output:\n{}", err_str);
@@ -180,8 +242,8 @@ pub fn execute_mlir(
 
     let output_str = format!(
         "{}{}",
-        String::from_utf8_lossy(&lli_out.stdout),
-        String::from_utf8_lossy(&lli_out.stderr)
+        String::from_utf8_lossy(&exe_out.stdout),
+        String::from_utf8_lossy(&exe_out.stderr)
     );
 
     Ok(output_str)

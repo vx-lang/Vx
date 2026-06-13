@@ -7,26 +7,24 @@
 // EXPECT: vx_panic
 // EXPECT: stack backtrace:
 // EXPECT: vx_panic
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: vx_std_core::ffi::rt::vx_catch_unwind
+// EXPECT: f5
+// EXPECT: f4
+// EXPECT: f3
+// EXPECT: f2
+// EXPECT: f1
+// EXPECT: do_test_chain
 
 // EXPECT: thread '<unnamed>'
 // EXPECT: vx_panic
 // EXPECT: stack backtrace:
 // EXPECT: vx_panic
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: <unknown>
-// EXPECT: vx_std_core::ffi::rt::vx_catch_unwind
+// EXPECT: f5
+// EXPECT: f4
+// EXPECT: f3
+// EXPECT: f2
+// EXPECT: f1
+// EXPECT: Closure
+// EXPECT: do_test_lambda
 
 extern {
   fn vx_panic() -> i32;
