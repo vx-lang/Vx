@@ -2,6 +2,8 @@
 // EXPECT: Caught panic!
 // EXPECT: Vx runtime panic occurred!
 // EXPECT: Caught panic!
+// EXPECT: Vx runtime panic occurred!
+// EXPECT: Caught panic!
 
 // EXPECT: thread '<unnamed>'
 // EXPECT: vx_panic
@@ -25,6 +27,13 @@
 // EXPECT: f1
 // EXPECT: Closure
 // EXPECT: do_test_lambda
+
+// EXPECT: thread '<unnamed>'
+// EXPECT: vx_panic
+// EXPECT: stack backtrace:
+// EXPECT: vx_panic
+// EXPECT: Closure
+// EXPECT: do_test_direct_panic_lambda
 
 extern {
   fn vx_panic() -> i32;
@@ -63,10 +72,17 @@ fn do_test_lambda() -> i32 {
   return 0;
 }
 
+fn do_test_direct_panic_lambda() -> i32 {
+  let my_lambda = || f5();
+  my_lambda();
+  return 0;
+}
+
 fn main() -> i32 {
   unsafe {
     vx_catch_unwind(do_test_chain);
     vx_catch_unwind(do_test_lambda);
+    vx_catch_unwind(do_test_direct_panic_lambda);
   }
   return 0;
 }
