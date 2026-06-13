@@ -92,7 +92,11 @@ pub fn execute_mlir(
 
     if !mlir_translate_out.status.success() {
         let err_str = String::from_utf8_lossy(&mlir_translate_out.stderr);
-        return Err(format!("mlir-translate failed:\n{}", err_str));
+        return Err(format!(
+            "mlir-translate failed:
+{}",
+            err_str
+        ));
     }
 
     let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
@@ -129,7 +133,11 @@ pub fn execute_mlir(
 
     if !opt_out.status.success() {
         let err_str = String::from_utf8_lossy(&opt_out.stderr);
-        return Err(format!("opt failed:\n{}", err_str));
+        return Err(format!(
+            "opt failed:
+{}",
+            err_str
+        ));
     }
 
     println!(
@@ -151,7 +159,11 @@ pub fn execute_mlir(
 
     if !llc_out.status.success() {
         let err_str = String::from_utf8_lossy(&llc_out.stderr);
-        return Err(format!("llc failed:\n{}", err_str));
+        return Err(format!(
+            "llc failed:
+{}",
+            err_str
+        ));
     }
 
     println!("[JIT] Linking native executable...");
@@ -219,7 +231,11 @@ pub fn execute_mlir(
 
     if !clang_out.status.success() {
         let err_str = String::from_utf8_lossy(&clang_out.stderr);
-        return Err(format!("clang failed:\n{}", err_str));
+        return Err(format!(
+            "clang failed:
+{}",
+            err_str
+        ));
     }
 
     println!("[JIT] Executing native binary...");
@@ -236,8 +252,13 @@ pub fn execute_mlir(
         let code = exe_out.status.code().unwrap_or(-1);
         println!("[JIT] Program exited with code: {}", code);
         if !err_str.is_empty() {
-            println!("[JIT] Error output:\n{}", err_str);
+            println!(
+                "[JIT] Error output:
+{}",
+                err_str
+            );
         }
+        return Err(format!("Program exited with non-zero code: {}", code));
     }
 
     let output_str = format!(

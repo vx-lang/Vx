@@ -4,7 +4,7 @@ fn main() -> i32 {
   unsafe {
     let ptr : *mut i32 = 0 as *mut i32;
     let val = *ptr;
-    std::io::print_i32(val);
+    print !(val);
   }
   return 0;
 }
