@@ -1,0 +1,14 @@
+// RUN: not vxc %s
+
+import std::box;
+
+fn main() -> i32 {
+  let mut b = Box<i32>::new(42);
+  unsafe {
+    let ptr = b.ptr;
+    // deref past the allocation
+    let bad = ptr[100];
+    std::io::print_i32(bad);
+  }
+  return 0;
+}

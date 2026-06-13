@@ -1,0 +1,15 @@
+// RUN: not vxc %s
+
+import std::vec;
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  v.push(2);
+  unsafe {
+    let ptr = v.as_mut_ptr();
+    let bad = ptr[1000];
+    std::io::print_i32(bad);
+  }
+  return 0;
+}
