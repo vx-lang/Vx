@@ -6,3 +6,6 @@
 - `[ ]` Rewrite `vx_build_tokenizer` and `vx_decode_token` using native file reading and string operations.
 - `[ ]` Rewrite `vx_encode_prompt` and `vx_read_prompt_file`.
 - `[ ]` Build and run the `llama2_v2.vx` test to verify correctness without C FFI.
+- `[ ]` Design unwinding runtime (DWARF / custom).
+- `[ ]` Implement backend compiler logic to emit landing pads and cleanup routines.
+- `[ ]` Wire unwinder to panic handlers for clean exits and resource deallocation.

@@ -54,6 +54,14 @@ We will replace the FFI declarations with native Vx implementations for:
 > **Codegen / MLIR**
 > You mentioned "let our codegen write a proper mlir that handles this." Do you mean we should ensure the AST-to-MLIR generation fully supports compiling these new `File` and `String` methods down to `libc` calls, or is there a specific MLIR dialect (like `llvm.intrinsics` or `pdl`) you had in mind for file I/O?
 
+## Pillar 5: Stack Unwinding Support
+
+**Goal:** Implement stack unwinding to safely and deterministically clean up resources (e.g. `drop` calls) and surface error states when a panic or failure occurs during runtime execution.
+
+- Design the unwinding strategy for Vx (e.g. zero-cost DWARF unwinding vs setjmp/longjmp).
+- Introduce a runtime unwinder routine to walk back the stack frames.
+- Tie unwinding hooks into the compiler backend to emit landing pads for `drop()` boundaries.
+
 ## Verification Plan
 
 We will build the `llama2_v2.vx` test and ensure it still passes and produces the correct story generation output without relying on `llama.rs` FFI bindings.
