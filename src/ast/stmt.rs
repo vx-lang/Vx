@@ -283,4 +283,20 @@ impl Statement {
             }),
         }
     }
+
+    pub fn span(&self) -> Span {
+        match self {
+            Statement::LetDecl(s) => s.span.clone(),
+            Statement::Return(s) => s.span.clone(),
+            Statement::ExprStmt(s) => s.span.clone(),
+            Statement::ForLoop(s) => s.span.clone(),
+            Statement::Assign(s) => s.span.clone(),
+            Statement::CompoundAssign(s) => s.span.clone(),
+            Statement::Assert(s) => s.span.clone(),
+            Statement::Loop(s) => s.span.clone(),
+            Statement::Break(s) => s.span.clone(),
+            Statement::Continue(s) => s.span.clone(),
+            Statement::MacroCall(s) => s.span.clone(),
+        }
+    }
 }

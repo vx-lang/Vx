@@ -18,15 +18,27 @@ trait ExecuteArith<T> {
 }
 
 impl ExecuteArith<CPU> for CPU {
-  fn add_array(self: CPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
-  fn add_vector(self: CPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
-  fn add_tensor(self: CPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+  fn add_array(self: CPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+    return a + b;
+  }
+  fn add_vector(self: CPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> {
+    return a + b;
+  }
+  fn add_tensor(self: CPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a + b;
+  }
 }
 
 impl ExecuteArith<NPU> for NPU {
-  fn add_array(self: NPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
-  fn add_vector(self: NPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
-  fn add_tensor(self: NPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+  fn add_array(self: NPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+    return a + b;
+  }
+  fn add_vector(self: NPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> {
+    return a + b;
+  }
+  fn add_tensor(self: NPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a + b;
+  }
 }
 trait TransferDMA<T> {
   fn transfer_array_to_npu(self: T, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]>;
@@ -37,45 +49,97 @@ trait TransferDMA<T> {
 }
 
 impl TransferDMA<CPU> for CPU {
-  fn transfer_array_to_npu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_array_to_cpu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
-  fn transfer_vector(self: CPU, data: <4 x f32>) -> <4 x f32> { return data; }
-  fn transfer_tensor_to_npu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_tensor_to_cpu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
+  fn transfer_array_to_npu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> {
+    return transfer(data, Memory::NPU_HBM);
+  }
+  fn transfer_array_to_cpu(self: CPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> {
+    return transfer(data, Memory::CPU_DRAM);
+  }
+  fn transfer_vector(self: CPU, data: <4 x f32>) -> <4 x f32> {
+    return data;
+  }
+  fn transfer_tensor_to_npu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
+    return transfer(data, Memory::NPU_HBM);
+  }
+  fn transfer_tensor_to_cpu(self: CPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> {
+    return transfer(data, Memory::CPU_DRAM);
+  }
 }
 
 impl TransferDMA<NPU> for NPU {
-  fn transfer_array_to_npu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_array_to_cpu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
-  fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> { return data; }
-  fn transfer_tensor_to_npu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_tensor_to_cpu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> { return transfer(data, Memory::CPU_DRAM); }
+  fn transfer_array_to_npu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::NPU[0]> {
+    return transfer(data, Memory::NPU_HBM);
+  }
+  fn transfer_array_to_cpu(self: NPU, data: Tensor<f32, [4]>) -> Pinned<Tensor<f32, [4]>, Topology::CPU> {
+    return transfer(data, Memory::CPU_DRAM);
+  }
+  fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> {
+    return data;
+  }
+  fn transfer_tensor_to_npu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::NPU[0]> {
+    return transfer(data, Memory::NPU_HBM);
+  }
+  fn transfer_tensor_to_cpu(self: NPU, data: Tensor<f32>) -> Pinned<Tensor<f32>, Topology::CPU> {
+    return transfer(data, Memory::CPU_DRAM);
+  }
 }
-fn test_cpu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void { CPU{}.add_vector(x, y); }
-fn test_npu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void { NPU{}.add_vector(x, y); }
+fn test_cpu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void {
+  CPU{}.add_vector(x, y);
+}
+fn test_npu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void {
+  NPU{}.add_vector(x, y);
+}
 
-fn test_cpu_transfer_vec(x: <4 x f32>) -> void { CPU{}.transfer_vector(x); }
-fn test_npu_transfer_vec(x: <4 x f32>) -> void { NPU{}.transfer_vector(x); }
+fn test_cpu_transfer_vec(x: <4 x f32>) -> void {
+  CPU{}.transfer_vector(x);
+}
+fn test_npu_transfer_vec(x: <4 x f32>) -> void {
+  NPU{}.transfer_vector(x);
+}
 
-fn test_cpu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void { CPU{}.add_array(x, y); }
-fn test_cpu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void { CPU{}.add_tensor(x, y); }
+fn test_cpu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void {
+  CPU{}.add_array(x, y);
+}
+fn test_cpu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void {
+  CPU{}.add_tensor(x, y);
+}
 
-fn test_npu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void { NPU{}.add_array(x, y); }
-fn test_npu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void { NPU{}.add_tensor(x, y); }
+fn test_npu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void {
+  NPU{}.add_array(x, y);
+}
+fn test_npu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void {
+  NPU{}.add_tensor(x, y);
+}
 
-fn test_cpu_t_npu_arr(x: Tensor<f32, [4]>) -> void { CPU{}.transfer_array_to_npu(x); }
-fn test_cpu_t_cpu_arr(x: Tensor<f32, [4]>) -> void { CPU{}.transfer_array_to_cpu(x); }
-fn test_cpu_t_npu_tensor(x: Tensor<f32>) -> void { CPU{}.transfer_tensor_to_npu(x); }
-fn test_cpu_t_cpu_tensor(x: Tensor<f32>) -> void { CPU{}.transfer_tensor_to_cpu(x); }
+fn test_cpu_t_npu_arr(x: Tensor<f32, [4]>) -> void {
+  CPU{}.transfer_array_to_npu(x);
+}
+fn test_cpu_t_cpu_arr(x: Tensor<f32, [4]>) -> void {
+  CPU{}.transfer_array_to_cpu(x);
+}
+fn test_cpu_t_npu_tensor(x: Tensor<f32>) -> void {
+  CPU{}.transfer_tensor_to_npu(x);
+}
+fn test_cpu_t_cpu_tensor(x: Tensor<f32>) -> void {
+  CPU{}.transfer_tensor_to_cpu(x);
+}
 
-fn test_npu_t_npu_arr(x: Tensor<f32, [4]>) -> void { NPU{}.transfer_array_to_npu(x); }
-fn test_npu_t_cpu_arr(x: Tensor<f32, [4]>) -> void { NPU{}.transfer_array_to_cpu(x); }
-fn test_npu_t_npu_tensor(x: Tensor<f32>) -> void { NPU{}.transfer_tensor_to_npu(x); }
-fn test_npu_t_cpu_tensor(x: Tensor<f32>) -> void { NPU{}.transfer_tensor_to_cpu(x); }
+fn test_npu_t_npu_arr(x: Tensor<f32, [4]>) -> void {
+  NPU{}.transfer_array_to_npu(x);
+}
+fn test_npu_t_cpu_arr(x: Tensor<f32, [4]>) -> void {
+  NPU{}.transfer_array_to_cpu(x);
+}
+fn test_npu_t_npu_tensor(x: Tensor<f32>) -> void {
+  NPU{}.transfer_tensor_to_npu(x);
+}
+fn test_npu_t_cpu_tensor(x: Tensor<f32>) -> void {
+  NPU{}.transfer_tensor_to_cpu(x);
+}
 
 fn main() -> void {}
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func private @printMemrefF32(memref<*xf32>)
 // CHECK:   func.func private @printMemrefF64(memref<*xf64>)
 // CHECK:   func.func private @printMemrefI32(memref<*xi32>)

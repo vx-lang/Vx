@@ -178,7 +178,7 @@ fn test_remark() -> f32 {
 
     // Generate MLIR
     let module_asts = std::collections::HashMap::new();
-    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     let _ = codegen.generate(&ast, &module_asts);
     let mut module = codegen.into_module();
 

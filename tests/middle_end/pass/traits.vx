@@ -7,10 +7,14 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-trait Dimension { fn dim(self : Tensor<f32>)->Tensor<i32>; }
+trait Dimension {
+  fn dim(self : Tensor<f32>)->Tensor<i32>;
+}
 
 impl Dimension for Tensor<f32> {
-  fn dim(self : Tensor<f32>) -> Tensor<i32> { return 2; }
+  fn dim(self : Tensor<f32>) -> Tensor<i32> {
+    return 2;
+  }
 }
 
 fn process<T : Dimension>(val : T) -> Tensor<i32> {
@@ -24,7 +28,7 @@ fn main() -> Tensor<i32> {
   return res;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @Tensor$f32$0$dim(%arg0: memref<?x?xf32>) ->
 // memref<?x?xi32> { CHECK:     arith.constant 2 : i32 CHECK:     return CHECK:
 // func.func @process$Tensor$f32$0(%arg0: memref<?x?xf32>) -> memref<?x?xi32> {

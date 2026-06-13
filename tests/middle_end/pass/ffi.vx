@@ -12,11 +12,13 @@ extern "C" {
 }
 
 fn main() -> Tensor<i32> {
-  unsafe { let ptr = malloc(1024); }
+  unsafe {
+    let ptr = malloc(1024);
+  }
   return 0;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func private @malloc(memref<?x?xi32>) ->
 // memref<memref<?x?xf32>> CHECK:   func.func @main() -> i32 attributes
 // {llvm.emit_c_interface} { CHECK:     %c1024_i32 = arith.constant 1024 : i32

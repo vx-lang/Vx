@@ -27,7 +27,7 @@ fn test_primitives() -> i32 {
   return 0;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @test_primitives() -> i32 {
 // CHECK:     %c10_i32 = arith.constant 10 : i32
 // CHECK:     %c20_i32 = arith.constant 20 : i32

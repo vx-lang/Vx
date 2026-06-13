@@ -8,7 +8,9 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // Generic function with implicit type deduction
-fn process<T>(val : T) -> T { return val; }
+fn process<T>(val : T) -> T {
+  return val;
+}
 
 fn main() -> Tensor<i32> {
   let t1 : Tensor<f32> = 1;
@@ -21,7 +23,7 @@ fn main() -> Tensor<i32> {
   return res2;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @process$Tensor$f32$0(%arg0: memref<?x?xf32>) ->
 // memref<?x?xf32> { CHECK:     return %arg0 : memref<?x?xf32> CHECK:   } CHECK:
 // func.func @process_TensorI32_(%arg0: memref<?x?xi32>) -> memref<?x?xi32> {

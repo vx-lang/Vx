@@ -14,7 +14,7 @@ fn main() -> i32 {
     return 0;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @my_matmul(%arg0: memref<128x64xf32>, %arg1: memref<64x256xf32>) -> memref<128x256xf32> {
 // CHECK:     %alloc = memref.alloc() : memref<128x256xf32>
 // CHECK:     %cst = arith.constant 0.000000e+00 : f32

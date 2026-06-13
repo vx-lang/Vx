@@ -12,16 +12,20 @@ struct Point {
 }
 
 impl Point {
-  fn distance(self : Point) -> f32 { return self.x + self.y; }
+  fn distance(self : Point) -> f32 {
+    return self.x + self.y;
+  }
 }
 
 fn main() -> i32 {
-  let p = Point{x : 3.0, y : 4.0};
+  let p = Point{
+    x : 3.0, y : 4.0
+  };
   let d = p.distance();
   return 0;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @Point$distance(%arg0: !llvm.struct<"Point", (f32, f32)>)
 // -> f32 { CHECK:     %0 = llvm.extractvalue %arg0[0] : !llvm.struct<"Point",
 // (f32, f32)> CHECK:     %1 = llvm.extractvalue %arg0[1] :

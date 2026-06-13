@@ -23,7 +23,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: module {
+// CHECK: module
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"Config", (i32, f32)>
 // CHECK:     %c288_i32 = arith.constant 288 : i32

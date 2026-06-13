@@ -184,7 +184,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
 
     let module_asts = std::collections::HashMap::new();
 
-    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     codegen
         .generate(&monomorphized_program, &module_asts)
         .unwrap();
@@ -315,7 +315,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
-    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     codegen
         .generate(&monomorphized_program, &module_asts)
         .unwrap();
@@ -826,7 +826,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
-    let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+    let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     codegen
         .generate(&monomorphized_program, &module_asts)
         .unwrap();
@@ -1036,7 +1036,7 @@ fn test_melior_matmul() -> Result<(), String> {
     melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
-    let mut gen = vxc::codegen::MeliorGenerator::new(&context);
+    let mut gen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     let mlir_str = gen
         .generate(&checked_program, &std::collections::HashMap::new())
         .unwrap();

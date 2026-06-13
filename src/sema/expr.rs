@@ -2007,7 +2007,6 @@ impl<'a> TypeChecker<'a> {
                     if let Expr::Identifier(id) = &**obj {
                         self.consume(&id.name);
                     }
-                    return Type::Scalar(ElementType::I32); // Return a dummy type
                 }
 
                 if let Type::Module(ref path, ref exports) = base_ty {

@@ -108,7 +108,8 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
         context.load_all_available_dialects();
         vxc::codegen::register_vx_dialect(&context);
 
-        let mut codegen = vxc::codegen::MeliorGenerator::new(&context);
+        let mut codegen =
+            vxc::codegen::MeliorGenerator::new(&context, "integration_test".to_string());
         let _ = codegen.generate(&monomorphized_ast, &module_asts);
         let mut module = codegen.into_module();
         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();

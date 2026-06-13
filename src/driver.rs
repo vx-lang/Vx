@@ -307,7 +307,7 @@ impl CompilerDriver {
         context.load_all_available_dialects();
         codegen::register_vx_dialect(&context);
 
-        let mut codegen = MeliorGenerator::new(&context);
+        let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.clone());
         codegen
             .generate(&monomorphized_ast, &module_asts)
             .map_err(|e| format!("Codegen Error: {:?}", e))?;
