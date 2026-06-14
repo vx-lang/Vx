@@ -19,7 +19,8 @@ use std::collections::HashMap;
 
 /// A global read-only map generated during Phase 1.25.
 /// Maps module_path -> (symbol_name -> TypeId)
-pub type SymbolMap = HashMap<String, HashMap<String, TypeId>>;
+pub type SymbolTable = HashMap<String, TypeId>;
+pub type SymbolMap = HashMap<String, SymbolTable>;
 
 /// Iterates through all parsed modules sequentially and computes their deterministic
 /// 256-bit TypeId for every top-level struct, enum, and trait.
