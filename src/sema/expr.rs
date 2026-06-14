@@ -319,21 +319,49 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Type::GenericInstance(inner_target, _args_target) = target {
+        if let Type::GenericInstance(inner_target, args_target) = target {
             if let Type::Enum(n_source, _) = source {
                 if let Type::Struct(n_target, _) = &**inner_target {
                     if n_source.starts_with(n_target) && n_source.contains('<') {
-                        return true; // Weak check for Option<T>
+                        let parsed_source = self.parse_ty_str(n_source);
+                        if let Type::GenericInstance(_, args_source) = parsed_source {
+                            if args_target.len() == args_source.len() {
+                                let mut all_match = true;
+                                for (at, asrc) in args_target.iter().zip(args_source.iter()) {
+                                    if !self.is_assignable(at, asrc) {
+                                        all_match = false;
+                                        break;
+                                    }
+                                }
+                                if all_match {
+                                    return true;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        if let Type::GenericInstance(inner_source, _args_source) = source {
+        if let Type::GenericInstance(inner_source, args_source) = source {
             if let Type::Enum(n_target, _) = target {
                 if let Type::Struct(n_source, _) = &**inner_source {
                     if n_target.starts_with(n_source) && n_target.contains('<') {
-                        return true; // Weak check for Option<T>
+                        let parsed_target = self.parse_ty_str(n_target);
+                        if let Type::GenericInstance(_, args_target) = parsed_target {
+                            if args_target.len() == args_source.len() {
+                                let mut all_match = true;
+                                for (at, asrc) in args_target.iter().zip(args_source.iter()) {
+                                    if !self.is_assignable(at, asrc) {
+                                        all_match = false;
+                                        break;
+                                    }
+                                }
+                                if all_match {
+                                    return true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -632,9 +660,9 @@ impl<'a> TypeChecker<'a> {
                                 && matches!(self.active_topology, Topology::CPU);
                             if !is_pinned_on_host && !silent {
                                 let msg = format!(
-                                                "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                                name, top, ty, self.active_topology
-                                            );
+                                    "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                    name, top, ty, self.active_topology
+                                );
                                 self.errors.push(msg);
                             }
                         }
@@ -1283,105 +1311,16 @@ impl<'a> TypeChecker<'a> {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
-                if resolved_name == "Verified" {
-                    if args.len() != 1 {
-                        self.errors.push(format!(
-                            "Function 'Verified' expects 1 argument, got {}",
-                            args.len()
-                        ));
-                    }
-                    let inner_ty = arg_types[0].clone();
-                    Type::Verified(Box::new(inner_ty))
-                } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
-                    if args.len() != 2 {
-                        self.errors.push(format!(
-                            "Function '{}' expects 2 arguments (pointer, shape), got {}",
-                            resolved_name,
-                            args.len()
-                        ));
-                    }
-                    if !self.in_unsafe_block {
-                        self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
-                    }
-                    // Types already checked
-                    let mut el_ty = ElementType::F32;
-                    if resolved_name.contains("_i32") {
-                        el_ty = ElementType::I32;
-                    } else if resolved_name.contains("_i64") {
-                        el_ty = ElementType::I64;
-                    } else if resolved_name.contains("_f64") {
-                        el_ty = ElementType::F64;
-                    }
-                    let mut dims = Vec::new();
-                    if args.len() == 2 {
-                        if let Expr::Array(arr) = &args[1] {
-                            dims = arr.elements.clone();
-                        }
-                    }
-                    Type::Tensor(el_ty, dims, None)
-                } else if resolved_name.starts_with("Tensor")
-                    && !resolved_name.contains("$")
-                    && !resolved_name.contains("__")
-                {
-                    let el_ty = if !explicit_generic_args.is_empty() {
-                        if let Type::Scalar(el) = &explicit_generic_args[0] {
-                            el.clone()
-                        } else {
-                            self.errors.push(
-                                "Generic argument to Tensor must be a scalar type.".to_string(),
-                            );
-                            ElementType::F32 // Placeholder to continue analysis.
-                        }
-                    } else {
-                        self.errors.push(
-                            "Missing generic argument for Tensor initialization.".to_string(),
-                        );
-                        ElementType::F32 // Placeholder to continue analysis.
-                    };
-                    let mut dims = Vec::new();
-                    if !args.is_empty() {
-                        if let Expr::Array(arr) = &args[0] {
-                            dims = arr.elements.clone();
-                        } else {
-                            dims = args.clone();
-                        }
-                    }
-                    Type::Tensor(el_ty, dims, None)
-                } else if resolved_name.starts_with("Math::") {
-                    if args.len() != 1 {
-                        self.errors.push(format!(
-                            "Function '{}' expects 1 argument, got {}",
-                            resolved_name,
-                            args.len()
-                        ));
-                    }
-                    let inner_ty = arg_types[0].clone();
-                    if inner_ty != Type::Scalar(ElementType::F32) {
-                        self.errors.push(format!(
-                            "Function '{}' expects f32 argument, got {:?}",
-                            resolved_name, inner_ty
-                        ));
-                    }
-                    Type::Scalar(ElementType::F32)
-                } else if resolved_name == "print" {
-                    if args.len() != 1 {
-                        self.errors
-                            .push("Function 'print' expects 1 argument".to_string());
-                    }
-                    Type::Tensor(ElementType::F32, vec![], None)
-                } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
-                    if args.is_empty() {
-                        self.errors
-                            .push("Function 'printf' expects at least 1 argument".to_string());
-                    }
-                    Type::Scalar(ElementType::I32)
-                } else if resolved_name == "Some" || resolved_name == "Option::Some" {
-                    if args.len() != 1 {
-                        self.errors
-                            .push(format!("Function '{}' expects 1 argument", resolved_name));
-                    }
-                    Type::Struct("Option".to_string(), None)
-                } else if let Some((Type::Function(param_types, ret_ty), _)) =
+                if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
+                    &resolved_name,
+                    args,
+                    &arg_types,
+                    &explicit_generic_args,
+                ) {
+                    return intrinsic_ty;
+                }
+
+                if let Some((Type::Function(param_types, ret_ty), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
                     if args.len() != param_types.len() && !silent {
@@ -1567,100 +1506,17 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((generic_func, origin_hash)) =
                     self.env.generic_functions.get(&base_name).cloned()
                 {
-                    // Type deduction
-                    let mut mapping = HashMap::new();
-                    let mut success = true;
-                    if args.len() != generic_func.params.len() {
-                        if !silent {
-                            self.errors.push(format!(
-                                "Generic function '{}' expects {} arguments, got {}",
-                                resolved_name,
-                                generic_func.params.len(),
-                                args.len()
-                            ));
-                        }
-                        success = false;
-                    } else {
-                        for (i, param) in generic_func.generics.iter().enumerate() {
-                            if i < explicit_generic_args.len() {
-                                mapping.insert(
-                                    param.name().to_string(),
-                                    explicit_generic_args[i].clone(),
-                                );
-                            }
-                        }
-                        for (i, _arg) in args.iter_mut().enumerate() {
-                            let arg_ty = arg_types[i].clone();
-                            let param_ty = &generic_func.params[i].1;
-                            if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
-                                if !silent {
-                                    self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
-                                }
-                                success = false;
-                            }
-                        }
-                    }
-
-                    if success {
-                        // Trait Bounds Checking
-                        for param in &generic_func.generics {
-                            let g_name = param.name().to_string();
-                            let bound_opt = match param {
-                                decl::GenericParam::Type { bound, .. } => bound.clone(),
-                                _ => None,
-                            };
-                            if let Some(bound_name) = bound_opt {
-                                if let Some(concrete_ty) = mapping.get(&g_name) {
-                                    let mut implements_trait = false;
-                                    if let Some(impl_blocks) = self.env.impls.get(&bound_name) {
-                                        for ib in impl_blocks {
-                                            if self.unify_types(
-                                                &ib.target_type,
-                                                concrete_ty,
-                                                &mut HashMap::new(),
-                                            ) {
-                                                implements_trait = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if !implements_trait {
-                                        if !silent {
-                                            self.errors.push(format!(
-                                                        "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
-                                                        concrete_ty, bound_name, g_name
-                                                    ));
-                                        }
-                                        success = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if success {
-                        // Instantiate
-                        let mut inst_func = self.instantiate_function(generic_func, &mapping);
-                        let inst_ret = inst_func.return_type.clone();
-                        let inst_name = inst_func.name.clone();
-
-                        // Rewrite AST name
-                        *name = inst_name.clone();
-
-                        if !self.env.functions.contains_key(&inst_name)
-                            && !self
-                                .monomorphized_functions
-                                .iter()
-                                .any(|(f, _)| f.name == inst_name)
-                        {
-                            // self.env is immutable, monomorphization tracks functions internally
-                            self.check_function(&mut inst_func);
-                            self.monomorphized_functions.push((inst_func, origin_hash));
-                        }
-                        inst_ret
-                    } else {
-                        Type::Tensor(ElementType::F32, vec![], None)
-                    }
+                    self.instantiate_generic_function_call(
+                        generic_func,
+                        origin_hash,
+                        &resolved_name,
+                        name,
+                        args,
+                        &arg_types,
+                        &explicit_generic_args,
+                        silent,
+                    )
+                    .unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
                 } else if let Some(idx) = resolved_name.find("::") {
                     let mut struct_name = resolved_name[..idx].to_string();
                     let mut method_name = resolved_name[idx + 2..].to_string();
@@ -1816,6 +1672,213 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => unreachable!(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_generic_function_call(
+        &mut self,
+        generic_func: &Function,
+        origin_hash: u64,
+        resolved_name: &str,
+        name: &mut String,
+        args: &[Expr],
+        arg_types: &[Type],
+        explicit_generic_args: &[Type],
+        silent: bool,
+    ) -> Option<Type> {
+        let mut mapping = HashMap::new();
+        let mut success = true;
+        if args.len() != generic_func.params.len() {
+            if !silent {
+                self.errors.push(format!(
+                    "Generic function '{}' expects {} arguments, got {}",
+                    resolved_name,
+                    generic_func.params.len(),
+                    args.len()
+                ));
+            }
+            success = false;
+        } else {
+            for (i, param) in generic_func.generics.iter().enumerate() {
+                if i < explicit_generic_args.len() {
+                    mapping.insert(param.name().to_string(), explicit_generic_args[i].clone());
+                }
+            }
+            for (i, _arg) in args.iter().enumerate() {
+                let arg_ty = arg_types[i].clone();
+                let param_ty = &generic_func.params[i].1;
+                if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
+                    if !silent {
+                        self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
+                    }
+                    success = false;
+                }
+            }
+        }
+
+        if success {
+            for param in &generic_func.generics {
+                let g_name = param.name().to_string();
+                let bound_opt = match param {
+                    decl::GenericParam::Type { bound, .. } => bound.clone(),
+                    _ => None,
+                };
+                if let Some(bound_name) = bound_opt {
+                    if let Some(concrete_ty) = mapping.get(&g_name) {
+                        let mut implements_trait = false;
+                        if let Some(impl_blocks) = self.env.impls.get(&bound_name) {
+                            for ib in impl_blocks {
+                                if self.unify_types(
+                                    &ib.target_type,
+                                    concrete_ty,
+                                    &mut HashMap::new(),
+                                ) {
+                                    implements_trait = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !implements_trait {
+                            if !silent {
+                                self.errors.push(format!(
+                                    "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
+                                    concrete_ty, bound_name, g_name
+                                ));
+                            }
+                            success = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if success {
+            let mut inst_func = self.instantiate_function(generic_func, &mapping);
+            let inst_ret = inst_func.return_type.clone();
+            let inst_name = inst_func.name.clone();
+
+            *name = inst_name.clone();
+
+            if !self.env.functions.contains_key(&inst_name)
+                && !self
+                    .monomorphized_functions
+                    .iter()
+                    .any(|(f, _)| f.name == inst_name)
+            {
+                self.check_function(&mut inst_func);
+                self.monomorphized_functions.push((inst_func, origin_hash));
+            }
+            Some(inst_ret)
+        } else {
+            None
+        }
+    }
+
+    fn resolve_intrinsic_function(
+        &mut self,
+        resolved_name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        explicit_generic_args: &[Type],
+    ) -> Option<Type> {
+        if resolved_name == "Verified" {
+            if args.len() != 1 {
+                self.errors.push(format!(
+                    "Function 'Verified' expects 1 argument, got {}",
+                    args.len()
+                ));
+            }
+            let inner_ty = arg_types[0].clone();
+            Some(Type::Verified(Box::new(inner_ty)))
+        } else if resolved_name.starts_with("Tensor") && resolved_name.ends_with("::from") {
+            if args.len() != 2 {
+                self.errors.push(format!(
+                    "Function '{}' expects 2 arguments (pointer, shape), got {}",
+                    resolved_name,
+                    args.len()
+                ));
+            }
+            if !self.in_unsafe_block {
+                self.errors.push(format!("Call to '{}' is unsafe because it interprets raw memory. Requires unsafe block.", resolved_name));
+            }
+            let mut el_ty = ElementType::F32;
+            if resolved_name.contains("_i32") {
+                el_ty = ElementType::I32;
+            } else if resolved_name.contains("_i64") {
+                el_ty = ElementType::I64;
+            } else if resolved_name.contains("_f64") {
+                el_ty = ElementType::F64;
+            }
+            let mut dims = Vec::new();
+            if args.len() == 2 {
+                if let Expr::Array(arr) = &args[1] {
+                    dims = arr.elements.clone();
+                }
+            }
+            Some(Type::Tensor(el_ty, dims, None))
+        } else if resolved_name.starts_with("Tensor")
+            && !resolved_name.contains("$")
+            && !resolved_name.contains("__")
+        {
+            let el_ty = if !explicit_generic_args.is_empty() {
+                if let Type::Scalar(el) = &explicit_generic_args[0] {
+                    el.clone()
+                } else {
+                    self.errors
+                        .push("Generic argument to Tensor must be a scalar type.".to_string());
+                    ElementType::F32
+                }
+            } else {
+                self.errors
+                    .push("Missing generic argument for Tensor initialization.".to_string());
+                ElementType::F32
+            };
+            let mut dims = Vec::new();
+            if !args.is_empty() {
+                if let Expr::Array(arr) = &args[0] {
+                    dims = arr.elements.clone();
+                } else {
+                    dims = args.to_vec();
+                }
+            }
+            Some(Type::Tensor(el_ty, dims, None))
+        } else if resolved_name.starts_with("Math::") {
+            if args.len() != 1 {
+                self.errors.push(format!(
+                    "Function '{}' expects 1 argument, got {}",
+                    resolved_name,
+                    args.len()
+                ));
+            }
+            let inner_ty = arg_types[0].clone();
+            if inner_ty != Type::Scalar(ElementType::F32) {
+                self.errors.push(format!(
+                    "Function '{}' expects f32 argument, got {:?}",
+                    resolved_name, inner_ty
+                ));
+            }
+            Some(Type::Scalar(ElementType::F32))
+        } else if resolved_name == "print" {
+            if args.len() != 1 {
+                self.errors
+                    .push("Function 'print' expects 1 argument".to_string());
+            }
+            Some(Type::Tensor(ElementType::F32, vec![], None))
+        } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
+            if args.is_empty() {
+                self.errors
+                    .push("Function 'printf' expects at least 1 argument".to_string());
+            }
+            Some(Type::Scalar(ElementType::I32))
+        } else if resolved_name == "Some" || resolved_name == "Option::Some" {
+            if args.len() != 1 {
+                self.errors
+                    .push(format!("Function '{}' expects 1 argument", resolved_name));
+            }
+            Some(Type::Struct("Option".to_string(), None))
+        } else {
+            None
         }
     }
 
@@ -2030,190 +2093,14 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // --- COMPILER INTRINSICS ---
-                if let Type::Pinned(_inner, _top) = &base_ty {
-                    if _method == "topology" {
-                        if !args.is_empty() {
-                            self.errors
-                                .push("topology requires 0 arguments".to_string());
-                        }
-                        return Type::Struct("Option".to_string(), None);
-                    }
-                }
-
-                if let Type::Tensor(el_ty, dims, top) = &base_ty {
-                    if _method == "topology" {
-                        if !args.is_empty() {
-                            self.errors
-                                .push("topology requires 0 arguments".to_string());
-                        }
-                        return Type::Struct("Option".to_string(), None);
-                    } else if _method == "reshape" {
-                        if args.is_empty() || args.len() > 3 {
-                            self.errors
-                                .push("reshape requires 1 to 3 arguments".to_string());
-                            return base_ty;
-                        }
-
-                        let mut is_exact = true;
-                        if args.len() >= 2 {
-                            if let Expr::EnumVariant(EnumVariantExpr {
-                                enum_name,
-                                variant_name: variant,
-                                payload: _,
-                                span: _,
-                            }) = &args[1]
-                            {
-                                if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim")
-                                {
-                                    is_exact = false;
-                                } else {
-                                    self.errors.push(
-                                        "reshape mode must be PadMode::Pad or PadMode::Trim"
-                                            .to_string(),
-                                    );
-                                }
-                            } else {
-                                self.errors.push(
-                                    "reshape mode must be an enum variant (e.g. PadMode::Pad)"
-                                        .to_string(),
-                                );
-                            }
-                        }
-
-                        if let Expr::Array(ArrayExpr {
-                            elements: new_dims,
-                            span: _,
-                        }) = &args[0]
-                        {
-                            let empty_env = HashMap::new();
-                            let mut src_elements = 1.0;
-                            for d in dims {
-                                if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
-                                    src_elements *= v;
-                                } else {
-                                    self.errors.push(
-                                        "Cannot statically evaluate source dimension for reshape"
-                                            .to_string(),
-                                    );
-                                    return base_ty;
-                                }
-                            }
-
-                            let mut target_elements = 1.0;
-                            for d in new_dims {
-                                if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
-                                    target_elements *= v;
-                                } else {
-                                    self.errors.push(
-                                        "Cannot statically evaluate target dimension for reshape"
-                                            .to_string(),
-                                    );
-                                    return base_ty;
-                                }
-                            }
-
-                            if is_exact && (src_elements - target_elements).abs() > 1e-6 {
-                                self.errors.push(format!("reshape arithmetic mismatch: source has {} elements, target has {}", src_elements, target_elements));
-                                return base_ty;
-                            }
-
-                            return Type::Tensor(el_ty.clone(), new_dims.clone(), top.clone());
-                        } else {
-                            self.errors.push(
-                                "reshape requires an array of dimensions as the first argument"
-                                    .to_string(),
-                            );
-                            return base_ty;
-                        }
-                    } else if _method == "iter" {
-                        if !args.is_empty() {
-                            self.errors.push("iter requires 0 arguments".to_string());
-                        }
-                        // We lower .iter() on Tensors to just evaluate to the tensor itself
-                        // so the ForLoopStmt can catch it and emit a native scf.for loop
+                if let Some((ty, replace_with_obj)) =
+                    self.resolve_intrinsic_method(&base_ty, _method, args)
+                {
+                    if replace_with_obj {
                         *expr = *obj.clone();
-                        return base_ty;
-                    } else if _method == "map" {
-                        if args.len() != 1 {
-                            self.errors
-                                .push("map requires exactly 1 argument (the closure)".to_string());
-                            return base_ty;
-                        }
-
-                        let arg_ty = self.check_expr_type(&mut args[0]);
-                        if let Type::Struct(name, _) = &arg_ty {
-                            if !name.starts_with("Closure_") {
-                                self.errors
-                                    .push(format!("map expects a closure, got {:?}", arg_ty));
-                            }
-                        } else {
-                            self.errors
-                                .push(format!("map expects a closure, got {:?}", arg_ty));
-                        }
-                        return base_ty;
-                    } else if _method == "transpose" {
-                        if args.len() != 1 {
-                            self.errors.push("transpose requires exactly 1 argument (an array of permutation indices)".to_string());
-                            return base_ty;
-                        }
-                        if let Expr::Array(ArrayExpr {
-                            elements: perm,
-                            span: _,
-                        }) = &args[0]
-                        {
-                            let empty_env = HashMap::new();
-                            let mut new_dims = vec![
-                                Expr::Number(NumberExpr {
-                                    value: "0".to_string(),
-                                    ty: Some(ElementType::I32),
-                                    span: Span::default()
-                                });
-                                dims.len()
-                            ];
-                            if perm.len() != dims.len() {
-                                self.errors.push(
-                                    "transpose permutation map length must match tensor rank"
-                                        .to_string(),
-                                );
-                                return base_ty;
-                            }
-                            let mut seen = vec![false; dims.len()];
-                            for (i, p) in perm.iter().enumerate() {
-                                if let Some(Value::Number(v)) = self.eval_expr(p, &empty_env) {
-                                    let v = v as usize;
-                                    if v >= dims.len() {
-                                        self.errors
-                                            .push("transpose index out of bounds".to_string());
-                                        return base_ty;
-                                    }
-                                    if seen[v] {
-                                        self.errors.push(
-                                            "transpose permutation map must not contain duplicates"
-                                                .to_string(),
-                                        );
-                                        return base_ty;
-                                    }
-                                    seen[v] = true;
-                                    new_dims[i] = dims[v].clone();
-                                } else {
-                                    self.errors.push(
-                                        "Cannot statically evaluate transpose permutation index"
-                                            .to_string(),
-                                    );
-                                    return base_ty;
-                                }
-                            }
-                            return Type::Tensor(el_ty.clone(), new_dims, top.clone());
-                        } else {
-                            self.errors.push(
-                                "transpose requires an array of permutation indices".to_string(),
-                            );
-                            return base_ty;
-                        }
                     }
+                    return ty;
                 }
-                // --- END INTRINSICS ---
 
                 // Dynamic Method Resolution
                 let mut found_method = None;
@@ -3160,5 +3047,196 @@ impl<'a> TypeChecker<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn resolve_intrinsic_method(
+        &mut self,
+        base_ty: &Type,
+        _method: &str,
+        args: &mut [Expr],
+    ) -> Option<(Type, bool)> {
+        if let Type::Pinned(_inner, _top) = base_ty {
+            if _method == "topology" {
+                if !args.is_empty() {
+                    self.errors
+                        .push("topology requires 0 arguments".to_string());
+                }
+                return Some((Type::Struct("Option".to_string(), None), false));
+            }
+        }
+
+        if let Type::Tensor(el_ty, dims, top) = base_ty {
+            if _method == "topology" {
+                if !args.is_empty() {
+                    self.errors
+                        .push("topology requires 0 arguments".to_string());
+                }
+                return Some((Type::Struct("Option".to_string(), None), false));
+            } else if _method == "reshape" {
+                if args.is_empty() || args.len() > 3 {
+                    self.errors
+                        .push("reshape requires 1 to 3 arguments".to_string());
+                    return Some((base_ty.clone(), false));
+                }
+
+                let mut is_exact = true;
+                if args.len() >= 2 {
+                    if let Expr::EnumVariant(EnumVariantExpr {
+                        enum_name,
+                        variant_name: variant,
+                        payload: _,
+                        span: _,
+                    }) = &args[1]
+                    {
+                        if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim") {
+                            is_exact = false;
+                        } else {
+                            self.errors.push(
+                                "reshape mode must be PadMode::Pad or PadMode::Trim".to_string(),
+                            );
+                        }
+                    } else {
+                        self.errors.push(
+                            "reshape mode must be an enum variant (e.g. PadMode::Pad)".to_string(),
+                        );
+                    }
+                }
+
+                if let Expr::Array(ArrayExpr {
+                    elements: new_dims,
+                    span: _,
+                }) = &args[0]
+                {
+                    let empty_env = HashMap::new();
+                    let mut src_elements = 1.0;
+                    for d in dims {
+                        if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                            src_elements *= v;
+                        } else {
+                            self.errors.push(
+                                "Cannot statically evaluate source dimension for reshape"
+                                    .to_string(),
+                            );
+                            return Some((base_ty.clone(), false));
+                        }
+                    }
+
+                    let mut target_elements = 1.0;
+                    for d in new_dims {
+                        if let Some(Value::Number(v)) = self.eval_expr(d, &empty_env) {
+                            target_elements *= v;
+                        } else {
+                            self.errors.push(
+                                "Cannot statically evaluate target dimension for reshape"
+                                    .to_string(),
+                            );
+                            return Some((base_ty.clone(), false));
+                        }
+                    }
+
+                    if is_exact && (src_elements - target_elements).abs() > 1e-6 {
+                        self.errors.push(format!(
+                            "reshape arithmetic mismatch: source has {} elements, target has {}",
+                            src_elements, target_elements
+                        ));
+                        return Some((base_ty.clone(), false));
+                    }
+
+                    return Some((
+                        Type::Tensor(el_ty.clone(), new_dims.clone(), top.clone()),
+                        false,
+                    ));
+                } else {
+                    self.errors.push(
+                        "reshape requires an array of dimensions as the first argument".to_string(),
+                    );
+                    return Some((base_ty.clone(), false));
+                }
+            } else if _method == "iter" {
+                if !args.is_empty() {
+                    self.errors.push("iter requires 0 arguments".to_string());
+                }
+                return Some((base_ty.clone(), true));
+            } else if _method == "map" {
+                if args.len() != 1 {
+                    self.errors
+                        .push("map requires exactly 1 argument (the closure)".to_string());
+                    return Some((base_ty.clone(), false));
+                }
+
+                let arg_ty = self.check_expr_type(&mut args[0]);
+                if let Type::Struct(name, _) = &arg_ty {
+                    if !name.starts_with("Closure_") {
+                        self.errors
+                            .push(format!("map expects a closure, got {:?}", arg_ty));
+                    }
+                } else {
+                    self.errors
+                        .push(format!("map expects a closure, got {:?}", arg_ty));
+                }
+                return Some((base_ty.clone(), false));
+            } else if _method == "transpose" {
+                if args.len() != 1 {
+                    self.errors.push(
+                        "transpose requires exactly 1 argument (an array of permutation indices)"
+                            .to_string(),
+                    );
+                    return Some((base_ty.clone(), false));
+                }
+                if let Expr::Array(ArrayExpr {
+                    elements: perm,
+                    span: _,
+                }) = &args[0]
+                {
+                    let empty_env = HashMap::new();
+                    let mut new_dims = vec![
+                        Expr::Number(NumberExpr {
+                            value: "0".to_string(),
+                            ty: Some(ElementType::I32),
+                            span: Span::default()
+                        });
+                        dims.len()
+                    ];
+                    if perm.len() != dims.len() {
+                        self.errors.push(
+                            "transpose permutation map length must match tensor rank".to_string(),
+                        );
+                        return Some((base_ty.clone(), false));
+                    }
+                    let mut seen = vec![false; dims.len()];
+                    for (i, p) in perm.iter().enumerate() {
+                        if let Some(Value::Number(v)) = self.eval_expr(p, &empty_env) {
+                            let v = v as usize;
+                            if v >= dims.len() {
+                                self.errors
+                                    .push("transpose index out of bounds".to_string());
+                                return Some((base_ty.clone(), false));
+                            }
+                            if seen[v] {
+                                self.errors.push(
+                                    "transpose permutation map must not contain duplicates"
+                                        .to_string(),
+                                );
+                                return Some((base_ty.clone(), false));
+                            }
+                            seen[v] = true;
+                            new_dims[i] = dims[v].clone();
+                        } else {
+                            self.errors.push(
+                                "Cannot statically evaluate transpose permutation index"
+                                    .to_string(),
+                            );
+                            return Some((base_ty.clone(), false));
+                        }
+                    }
+                    return Some((Type::Tensor(el_ty.clone(), new_dims, top.clone()), false));
+                } else {
+                    self.errors
+                        .push("transpose requires an array of permutation indices".to_string());
+                    return Some((base_ty.clone(), false));
+                }
+            }
+        }
+        None
     }
 }
