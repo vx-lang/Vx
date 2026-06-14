@@ -249,8 +249,12 @@ pub fn execute_mlir(
 
     if !exe_out.status.success() {
         let err_str = String::from_utf8_lossy(&exe_out.stderr);
+        let out_str = String::from_utf8_lossy(&exe_out.stdout);
         let code = exe_out.status.code().unwrap_or(-1);
         println!("[JIT] Program exited with code: {}", code);
+        if !out_str.is_empty() {
+            println!("{}", out_str);
+        }
         if !err_str.is_empty() {
             println!(
                 "[JIT] Error output:

@@ -1,10 +1,11 @@
-// RUN: not vxc %s
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Caught SIGSEGV: Segmentation Fault!
+// CHECK: Backtrace:
 
 fn main() -> i32 {
   unsafe {
-    let ptr : *mut i32 = 0 as *mut i32;
-    let val = *ptr;
-    print!(val);
+    let ptr: *mut i32 = 0 as *mut i32;
+    ptr[0] = 42;
   }
   return 0;
 }

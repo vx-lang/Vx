@@ -318,6 +318,29 @@ impl<'c> MeliorGenerator<'c> {
             self.module.body().append_operation(decl);
         }
 
+        // Declare vx_init_signals
+        let sig_init_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
+        let sig_init_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
+            .add_attributes(&[
+                (
+                    melior::ir::Identifier::new(self.context, "sym_name"),
+                    melior::ir::attribute::StringAttribute::new(self.context, "vx_init_signals")
+                        .into(),
+                ),
+                (
+                    melior::ir::Identifier::new(self.context, "function_type"),
+                    melior::ir::attribute::TypeAttribute::new(sig_init_ty.into()).into(),
+                ),
+                (
+                    melior::ir::Identifier::new(self.context, "sym_visibility"),
+                    melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()
+            .unwrap();
+        self.module.body().append_operation(sig_init_decl);
+
         for module_prog in modules.values() {
             for ext in &module_prog.externs {
                 let ret_ty = self.lower_type(&ext.return_type);
@@ -489,6 +512,24 @@ impl<'c> MeliorGenerator<'c> {
             let arg_val = block.argument(i).unwrap().into();
             self.env.insert(name.clone(), (arg_val, arg_tys[i]));
             self.ast_env.insert(name.clone(), ast_ty.clone());
+        }
+
+        if is_main {
+            // Call vx_init_signals
+            let sig_init_call =
+                melior::ir::operation::OperationBuilder::new("func.call", self.loc())
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "callee"),
+                        melior::ir::attribute::FlatSymbolRefAttribute::new(
+                            self.context,
+                            "vx_init_signals",
+                        )
+                        .into(),
+                    )])
+                    .add_results(&[])
+                    .build()
+                    .unwrap();
+            block.append_operation(sig_init_call);
         }
 
         self.current_return_type = Some(ret_ty);

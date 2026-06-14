@@ -21,6 +21,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ============================================================================
 
 #[no_mangle]
+pub extern "C" fn vx_sigsegv_handler(_sig: libc::c_int) {
+    println!("Caught SIGSEGV: Segmentation Fault!");
+    println!(
+        "Backtrace:\n{:#?}",
+        std::backtrace::Backtrace::force_capture()
+    );
+    std::process::abort();
+}
+
+#[no_mangle]
+pub extern "C" fn vx_init_signals() {
+    unsafe {
+        libc::signal(
+            libc::SIGSEGV,
+            vx_sigsegv_handler as *const () as libc::sighandler_t,
+        );
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn vx_sqrtf(x: f32) -> f32 {
     x.sqrt()
 }
