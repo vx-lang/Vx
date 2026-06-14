@@ -38,6 +38,13 @@ pub struct MeliorGenerator<'c> {
     pub(crate) di_compile_unit: Option<melior::ir::Attribute<'c>>,
     pub(crate) di_subprogram: Option<melior::ir::Attribute<'c>>,
     pub current_span: ast::types::Span,
+    pub(crate) index_ty: Type<'c>,
+    pub(crate) i32_ty: Type<'c>,
+    pub(crate) i64_ty: Type<'c>,
+    pub(crate) f32_ty: Type<'c>,
+    pub(crate) f64_ty: Type<'c>,
+    pub(crate) f16_ty: Type<'c>,
+    pub(crate) bf16_ty: Type<'c>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -60,11 +67,92 @@ impl<'c> MeliorGenerator<'c> {
         if from_ty == to_ty {
             return val;
         }
+
+        if from_ty == self.i32_ty && to_ty == self.i64_ty {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extsi", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+        if from_ty == self.i64_ty && to_ty == self.i32_ty {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.trunci", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+        if from_ty == self.f32_ty && to_ty == self.f64_ty {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+        if from_ty == self.f32_ty && (to_ty == self.bf16_ty || to_ty == self.f16_ty) {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+        if (from_ty == self.bf16_ty || from_ty == self.f16_ty) && to_ty == self.f32_ty {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+        if (from_ty == self.f64_ty || from_ty == self.f32_ty)
+            && (to_ty == self.f32_ty || to_ty == self.f16_ty || to_ty == self.bf16_ty)
+        {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+
+        if (from_ty == self.bf16_ty || from_ty == self.f16_ty)
+            && (to_ty == self.f32_ty || to_ty == self.f64_ty)
+        {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+
+        if from_ty == self.i32_ty && (to_ty == self.f32_ty || to_ty == self.f64_ty) {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+
+        if (from_ty == self.f32_ty || from_ty == self.f64_ty) && to_ty == self.i32_ty {
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
+                .add_operands(&[val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
+        }
+
         let from_str = from_ty.to_string();
         let to_str = to_ty.to_string();
 
-        if (from_str == "index" && (to_str.starts_with("i") || to_str.starts_with("u")))
-            || ((from_str.starts_with("i") || from_str.starts_with("u")) && to_str == "index")
+        if (from_ty == self.index_ty && (to_str.starts_with("i") || to_str.starts_with("u")))
+            || ((from_str.starts_with("i") || from_str.starts_with("u")) && to_ty == self.index_ty)
         {
             let cast_op =
                 melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
@@ -75,94 +163,18 @@ impl<'c> MeliorGenerator<'c> {
             return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
-        if from_str == "i32" && to_str == "i64" {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extsi", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-        if from_str == "i64" && to_str == "i32" {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.trunci", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-        if from_str == "f32" && to_str == "f64" {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-        if from_str == "f32" && (to_str == "bf16" || to_str == "f16") {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-        if (from_str == "bf16" || from_str == "f16") && to_str == "f32" {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-        if (from_str == "f64" || from_str == "f32")
-            && (to_str == "f32" || to_str == "f16" || to_str == "bf16")
-        {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-
-        if (from_str == "bf16" || from_str == "f16") && (to_str == "f32" || to_str == "f64") {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-
-        if from_str == "i32" && (to_str == "f32" || to_str == "f64") {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-
-        if (from_str == "f32" || from_str == "f64") && to_str == "i32" {
-            let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
-                .add_operands(&[val])
-                .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
-        }
-
         if val.r#type() == to_ty {
             return val;
         }
 
-        println!(
-            "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",
-            from_str,
-            to_str,
-            std::backtrace::Backtrace::force_capture()
-        );
+        if cfg!(debug_assertions) {
+            println!(
+                "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",
+                from_str,
+                to_str,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         // Default to unrealized_conversion_cast if nothing matches but we need a cast
         let cast_op = melior::ir::operation::OperationBuilder::new(
             "builtin.unrealized_conversion_cast",
@@ -182,6 +194,14 @@ impl<'c> MeliorGenerator<'c> {
 
         let location = Location::unknown(context);
         let module = Module::new(location);
+
+        let index_ty = Type::parse(context, "index").unwrap();
+        let i32_ty = Type::parse(context, "i32").unwrap();
+        let i64_ty = Type::parse(context, "i64").unwrap();
+        let f32_ty = Type::parse(context, "f32").unwrap();
+        let f64_ty = Type::parse(context, "f64").unwrap();
+        let f16_ty = Type::parse(context, "f16").unwrap();
+        let bf16_ty = Type::parse(context, "bf16").unwrap();
 
         Self {
             context,
@@ -211,6 +231,13 @@ impl<'c> MeliorGenerator<'c> {
                 column: 1,
                 length: 1,
             },
+            index_ty,
+            i32_ty,
+            i64_ty,
+            f32_ty,
+            f64_ty,
+            f16_ty,
+            bf16_ty,
         }
     }
 
@@ -742,23 +769,28 @@ impl<'c> MeliorGenerator<'c> {
                     format!("memref<{}{}>", shape_str, ty_str)
                 }
             }
-            ast::Type::Scalar(el_ty) => match el_ty {
-                ElementType::F16 => "f16",
-                ElementType::F32 => "f32",
-                ElementType::F64 => "f64",
-                ElementType::BF16 => "bf16",
-                ElementType::I4 | ElementType::U4 => "i4",
-                ElementType::I8 | ElementType::U8 => "i8",
-                ElementType::I16 | ElementType::U16 => "i16",
-                ElementType::I32 | ElementType::U32 => "i32",
-                ElementType::I64 | ElementType::U64 => "i64",
-                ElementType::I128 | ElementType::U128 => "i128",
-                ElementType::Bool => "i1",
-                ElementType::Generic(_) => {
-                    panic!("Generic element type should be instantiated before codegen")
+            ast::Type::Scalar(el_ty) => {
+                return match el_ty {
+                    ElementType::F16 => self.f16_ty,
+                    ElementType::F32 => self.f32_ty,
+                    ElementType::F64 => self.f64_ty,
+                    ElementType::BF16 => self.bf16_ty,
+                    ElementType::I32 | ElementType::U32 => self.i32_ty,
+                    ElementType::I64 | ElementType::U64 => self.i64_ty,
+                    ElementType::I4 | ElementType::U4 => Type::parse(self.context, "i4").unwrap(),
+                    ElementType::I8 | ElementType::U8 => Type::parse(self.context, "i8").unwrap(),
+                    ElementType::I16 | ElementType::U16 => {
+                        Type::parse(self.context, "i16").unwrap()
+                    }
+                    ElementType::I128 | ElementType::U128 => {
+                        Type::parse(self.context, "i128").unwrap()
+                    }
+                    ElementType::Bool => Type::parse(self.context, "i1").unwrap(),
+                    ElementType::Generic(_) => {
+                        panic!("Generic element type should be instantiated before codegen")
+                    }
                 }
             }
-            .to_string(),
             ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
             ast::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
