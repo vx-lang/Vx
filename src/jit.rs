@@ -84,17 +84,20 @@ pub fn execute_mlir(
         });
     }
 
+    let mlir_translate_path =
+        std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());
     println!("[JIT] Translating to LLVM IR...");
-    let mlir_translate_out = Command::new("mlir-translate")
+    let mlir_translate_out = Command::new(&mlir_translate_path)
         .args(["--mlir-to-llvmir", &temp_mlir])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to execute {}: {}", mlir_translate_path, e))?;
 
     if !mlir_translate_out.status.success() {
         let err_str = String::from_utf8_lossy(&mlir_translate_out.stderr);
         return Err(format!(
             "mlir-translate failed:
-{}",
+{}
+",
             err_str
         ));
     }
@@ -125,11 +128,12 @@ pub fn execute_mlir(
     opt_args.push("-o".to_string());
     opt_args.push(temp_opt_ll.clone());
 
+    let opt_path = std::env::var("OPT_PATH").unwrap_or_else(|_| "opt".to_string());
     println!("[JIT] Optimizing LLVM IR (-O{})...", actual_opt_level);
-    let opt_out = Command::new("opt")
+    let opt_out = Command::new(&opt_path)
         .args(&opt_args)
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to execute {}: {}", opt_path, e))?;
 
     if !opt_out.status.success() {
         let err_str = String::from_utf8_lossy(&opt_out.stderr);
@@ -140,12 +144,13 @@ pub fn execute_mlir(
         ));
     }
 
+    let llc_path = std::env::var("LLC_PATH").unwrap_or_else(|_| "llc".to_string());
     println!(
         "[JIT] Compiling to native object (-O{})...",
         actual_opt_level
     );
     let temp_obj = format!("target/jit/temp_opt_{}.o", uid);
-    let llc_out = Command::new("llc")
+    let llc_out = Command::new(&llc_path)
         .args([
             &format!("-O={}", actual_opt_level),
             "-filetype=obj",
@@ -155,13 +160,14 @@ pub fn execute_mlir(
             &temp_obj,
         ])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to execute {}: {}", llc_path, e))?;
 
     if !llc_out.status.success() {
         let err_str = String::from_utf8_lossy(&llc_out.stderr);
         return Err(format!(
             "llc failed:
-{}",
+{}
+",
             err_str
         ));
     }
@@ -195,7 +201,8 @@ pub fn execute_mlir(
         .trim()
         .to_string();
 
-    let mut clang_cmd = Command::new("clang");
+    let clang_path = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
+    let mut clang_cmd = Command::new(&clang_path);
 
     // Rpaths
     clang_cmd.args([

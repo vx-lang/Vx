@@ -59,6 +59,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --release --workspace --verbose
+        env:
+          LLVM_CONFIG_PATH: llvm-config-22
+          MLIR_TRANSLATE_PATH: mlir-translate-22
+          OPT_PATH: opt-22
+          LLC_PATH: llc-22
+          CLANG_PATH: clang-22
 
       - name: Run stress tests (Every 10th Commit)
         run: |
