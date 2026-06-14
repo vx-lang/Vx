@@ -16,7 +16,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_topology(&mut self) -> ParseResult<Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
-        let ident = match self.advance().kind.clone() {
+        let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
@@ -53,7 +53,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_memory_space(&mut self) -> ParseResult<MemorySpace> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
-        let ident = match self.advance().kind.clone() {
+        let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
@@ -104,23 +104,21 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightAngle, "Expected '>'")?;
             Ok(Type::Pinned(Box::new(inner), top))
         } else if self.match_token(&TokenType::LeftAngle) {
-            let n_token = self.advance().clone();
-            let n = match n_token.kind {
+            let n = match &self.advance().kind {
                 TokenType::Number(s) => s
                     .parse::<usize>()
                     .map_err(|_| self.error("Expected integer for SIMD size"))?,
                 _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
-            let x_token = self.advance().clone();
-            match x_token.kind {
-                TokenType::Identifier("x") => {}
+            match &self.advance().kind {
+                TokenType::Identifier(s) if *s == "x" => {}
                 _ => return Err(self.error("Expected 'x' after size in SIMD type")),
             }
-            let el_ty_ident = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
+            let el_ty_ident = match &self.advance().kind {
+                TokenType::Identifier(s) => *s,
                 _ => return Err(self.error("Expected element type after 'x' in SIMD type")),
             };
-            let el_ty = std::str::FromStr::from_str(el_ty_ident.as_str())
+            let el_ty = std::str::FromStr::from_str(el_ty_ident)
                 .map_err(|_| self.error(&format!("Unknown SIMD element type {}", el_ty_ident)))?;
             self.consume(
                 &TokenType::RightAngle,
@@ -165,11 +163,11 @@ impl<'a> Parser<'a> {
             let ret = self.parse_type()?;
             Ok(Type::Closure(params, Box::new(ret)))
         } else {
-            let token = self.peek().clone();
-            if let TokenType::Identifier(ref s) = token.kind {
+            if let TokenType::Identifier(s) = &self.peek().kind {
                 if self.generic_params.iter().any(|p| p == *s) {
+                    let s = s.to_string();
                     self.advance();
-                    return Ok(Type::Generic(s.to_string(), None));
+                    return Ok(Type::Generic(s, None));
                 }
             }
 
@@ -180,19 +178,31 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_generic_type_args(&mut self) -> ParseResult<Vec<Type>> {
         let mut type_args = Vec::new();
         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
-            let saved_pos = self.pos;
-            if let Ok(ty) = self.parse_type() {
-                type_args.push(ty);
+            let is_expr = match &self.peek().kind {
+                TokenType::Number(_) | TokenType::StringLiteral(_) => true,
+                TokenType::Identifier(s) if *s == "true" || *s == "false" => true,
+                _ => false,
+            };
+
+            if is_expr {
+                let expr = self.parse_primary_expr()?;
+                type_args.push(Type::Const(Box::new(expr)));
             } else {
-                self.pos = saved_pos;
-                if let Ok(expr) = self.parse_primary_expr() {
-                    type_args.push(Type::Const(Box::new(expr)));
+                let saved_pos = self.pos;
+                if let Ok(ty) = self.parse_type() {
+                    type_args.push(ty);
                 } else {
-                    return Err(
-                        self.error("Expected type or constant expression in generic arguments")
-                    );
+                    self.pos = saved_pos;
+                    if let Ok(expr) = self.parse_primary_expr() {
+                        type_args.push(Type::Const(Box::new(expr)));
+                    } else {
+                        return Err(
+                            self.error("Expected type or constant expression in generic arguments")
+                        );
+                    }
                 }
             }
+
             if !self.match_token(&TokenType::Comma) {
                 break;
             }
@@ -205,7 +215,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<Type> {
-        let ident = match self.advance().kind.clone() {
+        let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
@@ -260,12 +270,12 @@ impl<'a> Parser<'a> {
             }
             "Matrix" => Ok(Type::Matrix),
             _ => {
-                if let Ok(el_ty) = std::str::FromStr::from_str(ident.as_str()) {
+                if let Ok(el_ty) = std::str::FromStr::from_str(&ident) {
                     return Ok(Type::Scalar(el_ty));
                 }
 
                 // Check for GenericInstance like Config<f32>
-                let base_type = Type::Struct(ident, None);
+                let base_type = Type::Struct(ident.to_string(), None);
                 if self.match_token(&TokenType::LeftAngle) {
                     let type_args = self.parse_generic_type_args()?;
                     Ok(Type::GenericInstance(Box::new(base_type), type_args))
