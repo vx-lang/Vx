@@ -398,6 +398,21 @@ impl<'a> TypeChecker<'a> {
         concrete_ty: &Type,
         mapping: &mut std::collections::HashMap<String, Type>,
     ) -> bool {
+        let mut temp_mapping = mapping.clone();
+        if self.unify_types_internal(generic_ty, concrete_ty, &mut temp_mapping) {
+            *mapping = temp_mapping;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn unify_types_internal(
+        &mut self,
+        generic_ty: &Type,
+        concrete_ty: &Type,
+        mapping: &mut std::collections::HashMap<String, Type>,
+    ) -> bool {
         match (generic_ty, concrete_ty) {
             (Type::Generic(name, _), _) => {
                 if let Some(existing) = mapping.get(name) {
@@ -437,21 +452,23 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
             (Type::Borrow(t1, m1, mut1, _r1), Type::Borrow(t2, m2, mut2, _r2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types(t1, t2, mapping)
+                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
-            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => m1 == m2 && self.unify_types(t1, t2, mapping),
+            (Type::Ref(t1, m1), Type::Ref(t2, m2)) => {
+                m1 == m2 && self.unify_types_internal(t1, t2, mapping)
+            }
             (Type::GenericInstance(b1, args1), Type::GenericInstance(b2, args2)) => {
                 if args1.len() != args2.len() {
                     return false;
                 }
-                if !self.unify_types(b1, b2, mapping) {
+                if !self.unify_types_internal(b1, b2, mapping) {
                     return false;
                 }
                 for (a1, a2) in args1.iter().zip(args2.iter()) {
-                    if !self.unify_types(a1, a2, mapping) {
+                    if !self.unify_types_internal(a1, a2, mapping) {
                         return false;
                     }
                 }
@@ -461,11 +478,11 @@ impl<'a> TypeChecker<'a> {
                 if p1.len() != p2.len() {
                     return false;
                 }
-                if !self.unify_types(r1, r2, mapping) {
+                if !self.unify_types_internal(r1, r2, mapping) {
                     return false;
                 }
                 for (a1, a2) in p1.iter().zip(p2.iter()) {
-                    if !self.unify_types(a1, a2, mapping) {
+                    if !self.unify_types_internal(a1, a2, mapping) {
                         return false;
                     }
                 }
