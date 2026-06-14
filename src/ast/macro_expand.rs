@@ -336,7 +336,7 @@ impl<'a> MacroExpander<'a> {
                     length: 0,
                 });
                 let mut parser = parser::Parser::new(&transcribed, "");
-                return parser.parse_expr();
+                return parser.parse_expr().map_err(|e| e.format(""));
             }
         }
 
@@ -511,7 +511,7 @@ impl<'a> MacroExpander<'a> {
         let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
-            exprs.push(parser.parse_expr()?);
+            exprs.push(parser.parse_expr().map_err(|e| e.format(""))?);
             if !parser.match_token(&TokenType::Comma) {
                 break;
             }
@@ -543,7 +543,7 @@ impl<'a> MacroExpander<'a> {
         let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
-            exprs.push(parser.parse_expr()?);
+            exprs.push(parser.parse_expr().map_err(|e| e.format(""))?);
             if !parser.match_token(&TokenType::Comma) {
                 break;
             }
@@ -575,7 +575,7 @@ impl<'a> MacroExpander<'a> {
         let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
-            exprs.push(parser.parse_expr()?);
+            exprs.push(parser.parse_expr().map_err(|e| e.format(""))?);
             if !parser.match_token(&TokenType::Comma) {
                 break;
             }
@@ -625,11 +625,15 @@ impl<'a> MacroExpander<'a> {
                     )
                 }
             };
-            parser.consume(&TokenType::Colon, "Expected ':'")?;
+            parser
+                .consume(&TokenType::Colon, "Expected ':'")
+                .map_err(|e| e.format(""))?;
 
             match field_name.as_str() {
                 "inputs" => {
-                    parser.consume(&TokenType::LeftParen, "Expected '('")?;
+                    parser
+                        .consume(&TokenType::LeftParen, "Expected '('")
+                        .map_err(|e| e.format(""))?;
                     if !parser.check(&TokenType::RightParen) {
                         loop {
                             let is_percent = match parser.peek().kind {
@@ -649,9 +653,13 @@ impl<'a> MacroExpander<'a> {
                                 }
                                 _ => return Err("Expected identifier in inputs".to_string()),
                             };
-                            parser.consume(&TokenType::Equals, "Expected '='")?;
-                            let expr = parser.parse_expr()?;
-                            parser.consume(&TokenType::Colon, "Expected ':'")?;
+                            parser
+                                .consume(&TokenType::Equals, "Expected '='")
+                                .map_err(|e| e.format(""))?;
+                            let expr = parser.parse_expr().map_err(|e| e.format(""))?;
+                            parser
+                                .consume(&TokenType::Colon, "Expected ':'")
+                                .map_err(|e| e.format(""))?;
 
                             let mut ty_str = String::new();
                             let mut angle_depth = 0;
@@ -677,29 +685,37 @@ impl<'a> MacroExpander<'a> {
                             }
                         }
                     }
-                    parser.consume(&TokenType::RightParen, "Expected ')'")?;
+                    parser
+                        .consume(&TokenType::RightParen, "Expected ')'")
+                        .map_err(|e| e.format(""))?;
                 }
                 "clobbers" => {
-                    parser.consume(&TokenType::LeftBracket, "Expected '['")?;
+                    parser
+                        .consume(&TokenType::LeftBracket, "Expected '['")
+                        .map_err(|e| e.format(""))?;
                     if !parser.check(&TokenType::RightBracket) {
                         loop {
-                            clobbers.push(parser.parse_expr()?);
+                            clobbers.push(parser.parse_expr().map_err(|e| e.format(""))?);
                             if !parser.match_token(&TokenType::Comma) {
                                 break;
                             }
                         }
                     }
-                    parser.consume(&TokenType::RightBracket, "Expected ']'")?;
+                    parser
+                        .consume(&TokenType::RightBracket, "Expected ']'")
+                        .map_err(|e| e.format(""))?;
                 }
                 "returns" => {
                     if parser.match_token(&TokenType::Identifier("void".to_string())) {
                         returns = None;
                     } else {
-                        returns = Some(parser.parse_type()?);
+                        returns = Some(parser.parse_type().map_err(|e| e.format(""))?);
                     }
                 }
                 "dialects" => {
-                    parser.consume(&TokenType::LeftBracket, "Expected '['")?;
+                    parser
+                        .consume(&TokenType::LeftBracket, "Expected '['")
+                        .map_err(|e| e.format(""))?;
                     if !parser.check(&TokenType::RightBracket) {
                         loop {
                             match &parser.advance().kind {
@@ -713,7 +729,9 @@ impl<'a> MacroExpander<'a> {
                             }
                         }
                     }
-                    parser.consume(&TokenType::RightBracket, "Expected ']'")?;
+                    parser
+                        .consume(&TokenType::RightBracket, "Expected ']'")
+                        .map_err(|e| e.format(""))?;
                 }
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }

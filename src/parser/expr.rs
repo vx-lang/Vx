@@ -53,11 +53,11 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
     Ok((num_str, el_ty))
 }
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_expr(&mut self) -> Result<Expr, String> {
+    pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
         self.parse_binary_expr(0)
     }
 
-    pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> Result<Expr, String> {
+    pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<Expr> {
         let mut left = self.parse_primary_expr()?;
 
         while let Some(op_prec) = self.get_operator_precedence(&self.peek().kind) {
@@ -214,7 +214,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_pattern(&mut self) -> Result<Pattern, String> {
+    pub(crate) fn parse_pattern(&mut self) -> ParseResult<Pattern> {
         if self.match_token(&TokenType::Identifier("_".to_string())) {
             return Ok(Pattern::Wildcard);
         }
@@ -260,11 +260,11 @@ impl<'a> Parser<'a> {
                     Ok(Pattern::Identifier(enum_name))
                 }
             }
-            _ => Err(format!("Unexpected token in pattern: {:?}", token.kind)),
+            _ => Err(self.error(&format!("Unexpected token in pattern: {:?}", token.kind))),
         }
     }
 
-    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> Result<Expr, String> {
+    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> ParseResult<Expr> {
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;
@@ -367,10 +367,10 @@ impl<'a> Parser<'a> {
                     let f_name = match token_kind {
                         TokenType::Identifier(f) => f,
                         _ => {
-                            return Err(format!(
+                            return Err(self.error(&format!(
                                 "Expected field name in struct init, found {:?}",
                                 token_kind
-                            ))
+                            )))
                         }
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
@@ -490,7 +490,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_primary_expr(&mut self) -> Result<Expr, String> {
+    pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<Expr> {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
@@ -669,7 +669,7 @@ impl<'a> Parser<'a> {
                     TokenType::Identifier(s) => s,
                     _ => {
                         return Err(
-                            "Expected function identifier as first argument to grad".to_string()
+                            self.error("Expected function identifier as first argument to grad")
                         )
                     }
                 };
@@ -696,7 +696,7 @@ impl<'a> Parser<'a> {
                     TokenType::Identifier(s) => s,
                     _ => {
                         return Err(
-                            "Expected function identifier as first argument to vjp".to_string()
+                            self.error("Expected function identifier as first argument to vjp")
                         )
                     }
                 };
@@ -729,7 +729,7 @@ impl<'a> Parser<'a> {
                     TokenType::Identifier(s) => s,
                     _ => {
                         return Err(
-                            "Expected function identifier as first argument to jvp".to_string()
+                            self.error("Expected function identifier as first argument to jvp")
                         )
                     }
                 };
@@ -796,7 +796,8 @@ impl<'a> Parser<'a> {
                     }
                     TokenType::Return => self.parse_identifier_expr("return".to_string())?,
                     TokenType::Number(s) => {
-                        let (num_str, el_ty) = infer_number_literal(&s)?;
+                        let (num_str, el_ty) =
+                            infer_number_literal(&s).map_err(|e| self.error(&e))?;
 
                         Expr::Number(NumberExpr {
                             value: num_str,
@@ -846,7 +847,7 @@ impl<'a> Parser<'a> {
                                         TokenType::Identifier(s) => s,
                                         _ => {
                                             return Err(
-                                                "Expected identifier in closure params".to_string()
+                                                self.error("Expected identifier in closure params")
                                             )
                                         }
                                     };
@@ -905,7 +906,11 @@ impl<'a> Parser<'a> {
                             span: Span::default(),
                         })
                     }
-                    _ => return Err(format!("Expected expression, found {:?}", token.kind)),
+                    _ => {
+                        return Err(
+                            self.error(&format!("Expected expression, found {:?}", token.kind))
+                        )
+                    }
                 }
             }
         };

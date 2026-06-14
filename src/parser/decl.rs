@@ -13,7 +13,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_generic_params(&mut self) -> Result<Vec<GenericParam>, String> {
+    pub(crate) fn parse_generic_params(&mut self) -> ParseResult<Vec<GenericParam>> {
         let mut generics = Vec::new();
         if self.match_token(&TokenType::LeftAngle) {
             while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
         Ok(generics)
     }
 
-    pub fn parse_function(&mut self) -> Result<Function, String> {
+    pub fn parse_function(&mut self) -> ParseResult<Function> {
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
         let name = match self.advance().kind.clone() {
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
+    pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
         let name = match self.advance().kind.clone() {
@@ -181,7 +181,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_enum_decl(&mut self) -> Result<EnumDecl, String> {
+    pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<EnumDecl> {
         self.consume(&TokenType::Enum, "Expected 'enum'")?;
 
         let name = match self.advance().kind.clone() {
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_extern_block(&mut self) -> Result<Vec<ExternDecl>, String> {
+    pub(crate) fn parse_extern_block(&mut self) -> ParseResult<Vec<ExternDecl>> {
         self.consume(&TokenType::Extern, "Expected 'extern'")?;
 
         // Optional "C" ABI string literal (we ignore it for now but parse it if it exists)
@@ -290,7 +290,7 @@ impl<'a> Parser<'a> {
         Ok(externs)
     }
 
-    pub(crate) fn parse_trait_decl(&mut self) -> Result<TraitDecl, String> {
+    pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<TraitDecl> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
         let name = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
@@ -342,7 +342,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_impl_block(&mut self) -> Result<ImplBlock, String> {
+    pub(crate) fn parse_impl_block(&mut self) -> ParseResult<ImplBlock> {
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
 
         let generics = self.parse_generic_params()?;
@@ -393,7 +393,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_import_decl(&mut self) -> Result<ImportDecl, String> {
+    pub(crate) fn parse_import_decl(&mut self) -> ParseResult<ImportDecl> {
         self.consume(&TokenType::Import, "Expected 'import'")?;
         let mut path = Vec::new();
         loop {
@@ -412,7 +412,7 @@ impl<'a> Parser<'a> {
         Ok(ImportDecl { path })
     }
 
-    pub(crate) fn parse_macro_def(&mut self) -> Result<MacroDefDecl, String> {
+    pub(crate) fn parse_macro_def(&mut self) -> ParseResult<MacroDefDecl> {
         let span_start = self.peek().clone();
         self.consume(&TokenType::MacroRules, "Expected 'macro_rules!'")?;
 
@@ -469,7 +469,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse(&mut self) -> Result<Program, String> {
+    pub fn parse(&mut self) -> ParseResult<Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
         let mut structs = Vec::new();
@@ -497,7 +497,7 @@ impl<'a> Parser<'a> {
                 functions.push(self.parse_function()?);
             } else {
                 return Err(self.error(&format!(
-                    "Unexpected token at program root: {:?}",
+                    "Unexpected token at top level: {:?}",
                     self.peek().kind
                 )));
             }

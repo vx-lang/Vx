@@ -13,7 +13,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_topology(&mut self) -> Result<Topology, String> {
+    pub(crate) fn parse_topology(&mut self) -> ParseResult<Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match self.advance().kind.clone() {
@@ -46,11 +46,11 @@ impl<'a> Parser<'a> {
             "GPU" => Ok(Topology::GPU),
             "CPU_AVX512" => Ok(Topology::CPU_AVX512),
             "CPU_Neon" => Ok(Topology::CPU_Neon),
-            _ => Err(format!("Unknown topology {}", ident)),
+            _ => Err(self.error(&format!("Unknown topology {}", ident))),
         }
     }
 
-    pub(crate) fn parse_memory_space(&mut self) -> Result<MemorySpace, String> {
+    pub(crate) fn parse_memory_space(&mut self) -> ParseResult<MemorySpace> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
         let ident = match self.advance().kind.clone() {
@@ -63,11 +63,11 @@ impl<'a> Parser<'a> {
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
             "NIC_RAM" => Ok(MemorySpace::NicRam),
             "Remote_HBM" => Ok(MemorySpace::RemoteHbm),
-            _ => Err(format!("Unknown memory space {}", ident)),
+            _ => Err(self.error(&format!("Unknown memory space {}", ident))),
         }
     }
 
-    pub(crate) fn parse_type(&mut self) -> Result<Type, String> {
+    pub(crate) fn parse_type(&mut self) -> ParseResult<Type> {
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_type()?;
@@ -108,7 +108,7 @@ impl<'a> Parser<'a> {
             let n = match n_token.kind {
                 TokenType::Number(s) => s
                     .parse::<usize>()
-                    .map_err(|_| "Expected integer for SIMD size".to_string())?,
+                    .map_err(|_| self.error("Expected integer for SIMD size"))?,
                 _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
             let x_token = self.advance().clone();
@@ -121,7 +121,7 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.error("Expected element type after 'x' in SIMD type")),
             };
             let el_ty = std::str::FromStr::from_str(el_ty_ident.as_str())
-                .map_err(|_| format!("Unknown SIMD element type {}", el_ty_ident))?;
+                .map_err(|_| self.error(&format!("Unknown SIMD element type {}", el_ty_ident)))?;
             self.consume(
                 &TokenType::RightAngle,
                 "Expected '>' after SIMD element type",
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_generic_type_args(&mut self) -> Result<Vec<Type>, String> {
+    pub(crate) fn parse_generic_type_args(&mut self) -> ParseResult<Vec<Type>> {
         let mut type_args = Vec::new();
         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
             let saved_pos = self.pos;
@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
                     type_args.push(Type::Const(Box::new(expr)));
                 } else {
                     return Err(
-                        "Expected type or constant expression in generic arguments".to_string()
+                        self.error("Expected type or constant expression in generic arguments")
                     );
                 }
             }
@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
         Ok(type_args)
     }
 
-    pub(crate) fn parse_named_type(&mut self) -> Result<Type, String> {
+    pub(crate) fn parse_named_type(&mut self) -> ParseResult<Type> {
         let ident = match self.advance().kind.clone() {
             TokenType::Identifier(s) => s,
             _ => return Err(self.error("Expected type identifier")),
@@ -223,7 +223,7 @@ impl<'a> Parser<'a> {
                     } else if self.generic_params.contains(&ty_ident) {
                         ElementType::Generic(ty_ident)
                     } else {
-                        return Err(format!("Unknown element type {}", ty_ident));
+                        return Err(self.error(&format!("Unknown element type {}", ty_ident)));
                     };
                     let mut dims = Vec::new();
                     if self.match_token(&TokenType::Comma) {

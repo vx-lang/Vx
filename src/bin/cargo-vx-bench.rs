@@ -107,7 +107,7 @@ fn main() -> i32 {
             let tokens = lexer.tokenize();
             let mut parser = parser::Parser::new(&tokens, &final_source);
 
-            match parser.parse() {
+            match parser.parse().map_err(|e| e.format(&final_source)) {
                 Ok(mut ast) => {
                     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
                     let program_arr = [ast.clone()];

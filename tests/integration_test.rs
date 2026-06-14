@@ -81,7 +81,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
     let mut program = parser.parse().map_err(|e| {
         vec![vxc::diagnostic::Diagnostic {
             level: vxc::diagnostic::DiagnosticLevel::Error,
-            message: e,
+            message: e.format(input),
         }]
     })?;
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));

@@ -49,7 +49,7 @@ impl ModuleLoader {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, &source);
 
-        let mut main_program = parser.parse()?;
+        let mut main_program = parser.parse().map_err(|e| e.format(&source))?;
         main_program.module_path = filename.to_string();
 
         let imports = main_program.imports.clone();
@@ -113,7 +113,7 @@ impl ModuleLoader {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, &source);
 
-        let mut program = parser.parse()?;
+        let mut program = parser.parse().map_err(|e| e.format(&source))?;
         program.module_path = module_name.clone();
 
         let imports = program.imports.clone();

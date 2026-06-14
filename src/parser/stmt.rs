@@ -13,7 +13,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_statement(&mut self) -> Result<Statement, String> {
+    pub(crate) fn parse_statement(&mut self) -> ParseResult<Statement> {
         let token = self.peek().clone();
         match token.kind {
             TokenType::Let => {
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                     } else {
                         return Err(
-                            "Expected string literal message after comma in assert".to_string()
+                            self.error("Expected string literal message after comma in assert")
                         );
                     }
                 }

@@ -40,7 +40,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             let mut parser = Parser::new(&tokens, &source);
             let mut program = parser
                 .parse()
-                .map_err(|e| format!("Failed to parse {}: {}", path, e))?;
+                .map_err(|e| format!("Failed to parse {}:\n{}", path, e.format(&source)))?;
             program.module_path = path.clone();
             Ok(program)
         })

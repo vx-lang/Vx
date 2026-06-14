@@ -20,6 +20,41 @@ pub mod types;
 use crate::ast::*;
 use crate::lexer::{Token, TokenType};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParserError {
+    UnexpectedToken { expected: String, found: Token },
+    Custom { message: String, token: Token },
+    EndOfFile { expected: String },
+}
+
+impl ParserError {
+    pub fn format(&self, source: &str) -> String {
+        match self {
+            ParserError::UnexpectedToken { expected, found } => {
+                crate::error::format_compiler_error(
+                    source,
+                    found.line,
+                    found.column,
+                    found.length.max(1),
+                    &format!("Unexpected token {:?}. Expected {}", found.kind, expected),
+                )
+            }
+            ParserError::Custom { message, token } => crate::error::format_compiler_error(
+                source,
+                token.line,
+                token.column,
+                token.length.max(1),
+                message,
+            ),
+            ParserError::EndOfFile { expected } => {
+                format!("Unexpected end of file. Expected {}", expected)
+            }
+        }
+    }
+}
+
+pub(crate) type ParseResult<T> = Result<T, ParserError>;
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
@@ -38,6 +73,7 @@ impl From<&str> for Function {
         let mut parser = Parser::new(&tokens, cleaned_source);
         parser
             .parse_function()
+            .map_err(|e| e.format(cleaned_source))
             .expect("Failed to parse function source")
     }
 }
@@ -87,26 +123,30 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn consume(&mut self, kind: &TokenType, msg: &str) -> Result<&Token, String> {
+    pub(crate) fn consume(&mut self, kind: &TokenType, msg: &str) -> ParseResult<&Token> {
         if self.check(kind) {
             Ok(self.advance())
+        } else if self.peek().kind == TokenType::Eof {
+            Err(ParserError::EndOfFile {
+                expected: msg.to_string(),
+            })
         } else {
-            Err(self.error(msg))
+            Err(ParserError::UnexpectedToken {
+                expected: msg.to_string(),
+                found: self.peek().clone(),
+            })
         }
     }
 
-    pub(crate) fn error(&self, msg: &str) -> String {
+    pub(crate) fn error(&self, msg: &str) -> ParserError {
         let token = self.peek();
-        crate::error::format_compiler_error(
-            self.source,
-            token.line,
-            token.column,
-            token.length.max(1),
-            msg,
-        )
+        ParserError::Custom {
+            message: msg.to_string(),
+            token: token.clone(),
+        }
     }
 
-    pub(crate) fn parse_token_tree(&mut self) -> Result<TokenTree, String> {
+    pub(crate) fn parse_token_tree(&mut self) -> ParseResult<TokenTree> {
         let peek = self.peek();
         match &peek.kind {
             TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
@@ -132,18 +172,66 @@ impl<'a> Parser<'a> {
             }
             TokenType::Eof => {
                 let token = self.peek();
-                Err(crate::error::format_compiler_error(
-                    self.source,
-                    token.line,
-                    token.column,
-                    token.length.max(1),
-                    "Unexpected EOF while parsing token tree",
-                ))
+                Err(ParserError::Custom {
+                    message: "Unexpected EOF while parsing token tree".to_string(),
+                    token: token.clone(),
+                })
             }
             _ => {
                 let token = self.advance().clone();
                 Ok(TokenTree::Token(token))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    #[test]
+    fn test_parser_error_unexpected_token() {
+        let input = "fn foo +";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+
+        let err = parser
+            .consume(&TokenType::LeftParen, "Expected '('")
+            .unwrap_err();
+        match &err {
+            ParserError::UnexpectedToken { expected, found } => {
+                assert!(expected.contains("("));
+                assert_eq!(found.kind, TokenType::Fn);
+            }
+            _ => panic!("Expected UnexpectedToken error, got {:?}", err),
+        }
+
+        let formatted = err.format(input);
+        assert!(formatted.contains("("));
+        assert!(formatted.contains("fn foo +"));
+    }
+
+    #[test]
+    fn test_parser_error_eof() {
+        let input = "";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+
+        let err = parser
+            .consume(&TokenType::LeftParen, "Expected '('")
+            .unwrap_err();
+        match &err {
+            ParserError::EndOfFile { expected } => {
+                assert!(expected.contains("("));
+            }
+            _ => panic!("Expected EndOfFile error, got {:?}", err),
+        }
+
+        let formatted = err.format(input);
+        assert!(formatted.contains("Unexpected end of file"));
+        assert!(formatted.contains("("));
     }
 }
