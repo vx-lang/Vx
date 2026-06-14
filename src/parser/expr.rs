@@ -12,35 +12,33 @@
 
 use super::*;
 
-pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementType>), String> {
-    let mut num_str = s.to_string();
-    let mut suffix_str = String::new();
+pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>), String> {
+    let idx = s.find(|c: char| c.is_alphabetic() || c == '_');
+    let (num_part, suffix_part) = match idx {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    };
 
-    if let Some(idx) = s.find(|c: char| c.is_alphabetic() || c == '_') {
-        num_str = s[..idx].to_string();
-        suffix_str = s[idx..].to_string();
-    }
-
-    let el_ty = if !suffix_str.is_empty() {
-        match suffix_str.parse::<ElementType>() {
+    let el_ty = if !suffix_part.is_empty() {
+        match suffix_part.parse::<ElementType>() {
             Ok(el) => Some(el),
             Err(e) => return Err(e),
         }
     } else {
-        if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
-            if let Ok(f32_val) = num_str.parse::<f32>() {
+        if num_part.contains('.') || num_part.contains('e') || num_part.contains('E') {
+            if let Ok(f32_val) = num_part.parse::<f32>() {
                 if f32_val.is_infinite() {
-                    if let Ok(f64_val) = num_str.parse::<f64>() {
+                    if let Ok(f64_val) = num_part.parse::<f64>() {
                         if f64_val.is_finite() {
-                            return Ok((num_str, Some(ElementType::F64)));
+                            return Ok((num_part, Some(ElementType::F64)));
                         }
                     }
                 }
             }
             Some(ElementType::F32)
         } else {
-            if num_str.parse::<i32>().is_err() {
-                if num_str.parse::<i64>().is_ok() {
+            if num_part.parse::<i32>().is_err() {
+                if num_part.parse::<i64>().is_ok() {
                     Some(ElementType::I64)
                 } else {
                     Some(ElementType::I128)
@@ -50,7 +48,7 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
             }
         }
     };
-    Ok((num_str, el_ty))
+    Ok((num_part, el_ty))
 }
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
@@ -237,8 +235,8 @@ impl<'a> Parser<'a> {
                     enum_name = format!("{}<{}>", enum_name, ty_ident);
                 }
                 if self.match_token(&TokenType::DoubleColon) {
-                    let variant_name = match &self.advance().kind {
-                        TokenType::Identifier(v) => v.clone(),
+                    let variant_name = match self.advance().kind.clone() {
+                        TokenType::Identifier(v) => v.to_string(),
                         _ => return Err(self.error("Expected variant name")),
                     };
                     let mut payload = None;
@@ -255,11 +253,7 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         payload = Some(p);
                     }
-                    Ok(Pattern::EnumVariant(
-                        enum_name,
-                        variant_name.to_string(),
-                        payload,
-                    ))
+                    Ok(Pattern::EnumVariant(enum_name, variant_name, payload))
                 } else {
                     Ok(Pattern::Identifier(enum_name))
                 }
@@ -801,10 +795,10 @@ impl<'a> Parser<'a> {
                     TokenType::Return => self.parse_identifier_expr("return".to_string())?,
                     TokenType::Number(s) => {
                         let (num_str, el_ty) =
-                            infer_number_literal(&s).map_err(|e| self.error(&e))?;
+                            infer_number_literal(s).map_err(|e| self.error(&e))?;
 
                         Expr::Number(NumberExpr {
-                            value: num_str,
+                            value: num_str.to_string(),
                             ty: el_ty,
                             span: Span::default(),
                         })
