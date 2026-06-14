@@ -13,16 +13,64 @@
 use super::*;
 
 impl<'a> Parser<'a> {
+    fn parse_expr_or_assign_stmt(&mut self, expr: Expr) -> ParseResult<Statement> {
+        if self.match_token(&TokenType::Equals) {
+            let rhs = self.parse_expr()?;
+            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            Ok(Statement::Assign(AssignStmt {
+                lhs: expr,
+                rhs,
+                span: Span::default(),
+            }))
+        } else if self.match_token(&TokenType::PlusEquals) {
+            let rhs = self.parse_expr()?;
+            self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            Ok(Statement::CompoundAssign(CompoundAssignStmt {
+                lhs: expr,
+                op: BinaryOp::Add,
+                rhs,
+                span: Span::default(),
+            }))
+        } else {
+            let mut has_semicolon = true;
+            match &expr {
+                Expr::UnsafeBlock(UnsafeBlockExpr { .. })
+                | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
+                | Expr::SpawnOn(SpawnOnExpr { .. })
+                | Expr::If(IfExpr { .. })
+                | Expr::Match(MatchExpr { .. }) => {
+                    has_semicolon = self.match_token(&TokenType::Semicolon);
+                }
+                _ => {
+                    if self.check(&TokenType::RightBrace) {
+                        has_semicolon = false; // Optional at end of block
+                    } else {
+                        self.consume(&TokenType::Semicolon, "Expected ';'")?;
+                    }
+                }
+            }
+            Ok(Statement::ExprStmt(ExprStmtStmt {
+                expr,
+                has_semi: has_semicolon,
+                span: Span::default(),
+            }))
+        }
+    }
+
     pub(crate) fn parse_statement(&mut self) -> ParseResult<Statement> {
-        let token = self.peek().clone();
-        match token.kind {
+        let token = self.peek();
+        let token_line = token.line;
+        let token_col = token.column;
+        let token_len = token.length;
+
+        match &token.kind {
             TokenType::Let => {
                 self.advance();
                 let mut is_mut = false;
                 if self.match_token(&TokenType::Mut) {
                     is_mut = true;
                 }
-                let name = match self.advance().kind.clone() {
+                let name = match &self.advance().kind {
                     TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after let")),
                 };
@@ -51,15 +99,12 @@ impl<'a> Parser<'a> {
                     stmts.push(self.parse_statement()?);
                 }
                 let mut ret = None;
-                if let Some(Statement::ExprStmt(ExprStmtStmt {
-                    expr,
-                    has_semi,
-                    span: _,
-                })) = stmts.last().cloned()
-                {
-                    if !has_semi {
-                        stmts.pop();
-                        ret = Some(Box::new(expr));
+                if let Some(Statement::ExprStmt(stmt)) = stmts.last() {
+                    if !stmt.has_semi {
+                        let last = stmts.pop().unwrap();
+                        if let Statement::ExprStmt(expr_stmt) = last {
+                            ret = Some(Box::new(expr_stmt.expr));
+                        }
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}' after comptime block")?;
@@ -79,7 +124,7 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 let mut msg = None;
                 if self.match_token(&TokenType::Comma) {
-                    if let TokenType::StringLiteral(s) = self.peek().kind.clone() {
+                    if let TokenType::StringLiteral(s) = &self.peek().kind {
                         msg = Some(s.to_string());
                         self.advance();
                     } else {
@@ -147,7 +192,7 @@ impl<'a> Parser<'a> {
             }
             TokenType::For => {
                 self.advance();
-                let iter = match self.advance().kind.clone() {
+                let iter = match &self.advance().kind {
                     TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after 'for'")),
                 };
@@ -176,9 +221,9 @@ impl<'a> Parser<'a> {
                     span: Span::default(),
                 }))
             }
-            TokenType::Identifier(ref s) => {
-                let ident_line = token.line;
-                let ident_end_col = token.column + token.length;
+            TokenType::Identifier(s) => {
+                let ident_line = token_line;
+                let ident_end_col = token_col + token_len;
                 let next_token = self.peek_n(1);
 
                 let mut is_macro = false;
@@ -210,91 +255,11 @@ impl<'a> Parser<'a> {
                 }
                 // fallback to expression parsing
                 let expr = self.parse_expr()?;
-                if self.match_token(&TokenType::Equals) {
-                    let rhs = self.parse_expr()?;
-                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::Assign(AssignStmt {
-                        lhs: expr,
-                        rhs,
-                        span: Span::default(),
-                    }))
-                } else if self.match_token(&TokenType::PlusEquals) {
-                    let rhs = self.parse_expr()?;
-                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::CompoundAssign(CompoundAssignStmt {
-                        lhs: expr,
-                        op: BinaryOp::Add,
-                        rhs,
-                        span: Span::default(),
-                    }))
-                } else {
-                    let mut has_semicolon = true;
-                    match &expr {
-                        Expr::UnsafeBlock(UnsafeBlockExpr { .. })
-                        | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
-                        | Expr::SpawnOn(SpawnOnExpr { .. })
-                        | Expr::If(IfExpr { .. })
-                        | Expr::Match(MatchExpr { .. }) => {
-                            has_semicolon = self.match_token(&TokenType::Semicolon);
-                        }
-                        _ => {
-                            if self.check(&TokenType::RightBrace) {
-                                has_semicolon = false; // Optional at end of block
-                            } else {
-                                self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                            }
-                        }
-                    }
-                    Ok(Statement::ExprStmt(ExprStmtStmt {
-                        expr,
-                        has_semi: has_semicolon,
-                        span: Span::default(),
-                    }))
-                }
+                self.parse_expr_or_assign_stmt(expr)
             }
             _ => {
                 let expr = self.parse_expr()?;
-                if self.match_token(&TokenType::Equals) {
-                    let rhs = self.parse_expr()?;
-                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::Assign(AssignStmt {
-                        lhs: expr,
-                        rhs,
-                        span: Span::default(),
-                    }))
-                } else if self.match_token(&TokenType::PlusEquals) {
-                    let rhs = self.parse_expr()?;
-                    self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                    Ok(Statement::CompoundAssign(CompoundAssignStmt {
-                        lhs: expr,
-                        op: BinaryOp::Add,
-                        rhs,
-                        span: Span::default(),
-                    }))
-                } else {
-                    let mut has_semicolon = true;
-                    match &expr {
-                        Expr::UnsafeBlock(UnsafeBlockExpr { .. })
-                        | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
-                        | Expr::SpawnOn(SpawnOnExpr { .. })
-                        | Expr::If(IfExpr { .. })
-                        | Expr::Match(MatchExpr { .. }) => {
-                            has_semicolon = self.match_token(&TokenType::Semicolon);
-                        }
-                        _ => {
-                            if self.check(&TokenType::RightBrace) {
-                                has_semicolon = false; // Optional at end of block
-                            } else {
-                                self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                            }
-                        }
-                    }
-                    Ok(Statement::ExprStmt(ExprStmtStmt {
-                        expr,
-                        has_semi: has_semicolon,
-                        span: Span::default(),
-                    }))
-                }
+                self.parse_expr_or_assign_stmt(expr)
             }
         }
     }

@@ -90,17 +90,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn peek(&self) -> &Token<'a> {
+    pub(crate) fn peek(&self) -> &'a Token<'a> {
         self.peek_n(0)
     }
 
-    pub(crate) fn peek_n(&self, offset: usize) -> &Token<'a> {
+    pub(crate) fn peek_n(&self, offset: usize) -> &'a Token<'a> {
         self.tokens
             .get(self.pos + offset)
             .unwrap_or_else(|| self.tokens.last().expect("Token stream cannot be empty"))
     }
 
-    pub(crate) fn advance(&mut self) -> &Token<'a> {
+    pub(crate) fn advance(&mut self) -> &'a Token<'a> {
         let token = &self.tokens[self.pos];
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
@@ -123,7 +123,11 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn consume(&mut self, kind: &TokenType<'a>, msg: &str) -> ParseResult<&Token<'a>> {
+    pub(crate) fn consume(
+        &mut self,
+        kind: &TokenType<'a>,
+        msg: &str,
+    ) -> ParseResult<&'a Token<'a>> {
         if self.check(kind) {
             Ok(self.advance())
         } else if self.peek().kind == TokenType::Eof {
