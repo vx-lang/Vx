@@ -90,6 +90,15 @@ pub enum Type {
     Unknown,
 }
 
+pub trait Mangle {
+    fn mangle_to(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result;
+    fn mangle(&self) -> String {
+        let mut s = String::new();
+        let _ = self.mangle_to(&mut s);
+        s
+    }
+}
+
 impl Type {
     pub fn is_linear(&self) -> bool {
         matches!(
@@ -173,53 +182,8 @@ impl Type {
         }
     }
 
-    pub fn mangle(&self) -> String {
-        match self {
-            Type::Scalar(el) => el.mangle(),
-            Type::Simd(el, n) => format!("Simd${}${}", el.mangle(), n),
-            Type::Pointer(inner, _, is_mut) => {
-                format!(
-                    "ptr${}${}",
-                    if *is_mut { "mut" } else { "const" },
-                    inner.mangle()
-                )
-            }
-            Type::Borrow(inner, _, is_mut, _) => {
-                format!(
-                    "ref${}${}",
-                    if *is_mut { "mut" } else { "const" },
-                    inner.mangle()
-                )
-            }
-            Type::Ref(inner, _) => format!("ref${}", inner.mangle()),
-            Type::Tensor(el, dims, _) => format!("Tensor${}${}", el.mangle(), dims.len()),
-            Type::Matrix => "Matrix".to_string(),
-            Type::Struct(name, _) => name.clone(),
-            Type::Enum(name, _) => name.clone(),
-            Type::Generic(name, _) => name.clone(),
-            Type::GenericInstance(base, args) => {
-                let mut s = base.mangle();
-                for arg in args {
-                    s.push_str(&format!("${}", arg.mangle()));
-                }
-                s
-            }
-            Type::Function(_, _) => "fn".to_string(),
-            Type::Closure(_, _) => "closure".to_string(),
-            Type::Verified(inner) => format!("Verified${}", inner.mangle()),
-            Type::Pinned(inner, _) => format!("Pinned${}", inner.mangle()),
-            Type::Const(expr) => {
-                let debug_str = format!("{:?}", expr);
-                let sanitized: String = debug_str
-                    .chars()
-                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                    .collect();
-                format!("const${}", sanitized)
-            }
-            Type::Module(name, _) => format!("Module${}", name),
-            Type::Unknown => "Unknown".to_string(),
-        }
-    }
+    // Mangle trait is implemented below
+
     pub fn topology(&self) -> Option<Topology> {
         match self {
             Type::Tensor(_, _, top) => top.clone(),
@@ -228,14 +192,7 @@ impl Type {
     }
 }
 
-impl ElementType {
-    pub fn mangle(&self) -> String {
-        match self {
-            ElementType::Generic(g) => g.clone(),
-            _ => self.to_string(),
-        }
-    }
-}
+impl ElementType {}
 
 impl std::fmt::Display for ElementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -351,6 +308,77 @@ impl std::fmt::Display for Type {
                 write!(f, "| -> {}", ret)
             }
             _ => write!(f, "{:?}", self), // Fallback for complex types
+        }
+    }
+}
+
+impl Mangle for Type {
+    fn mangle_to(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match self {
+            Type::Scalar(el) => el.mangle_to(w),
+            Type::Simd(el, n) => {
+                write!(w, "Simd$")?;
+                el.mangle_to(w)?;
+                write!(w, "${}", n)
+            }
+            Type::Pointer(inner, _, is_mut) => {
+                write!(w, "ptr${}$", if *is_mut { "mut" } else { "const" })?;
+                inner.mangle_to(w)
+            }
+            Type::Borrow(inner, _, is_mut, _) => {
+                write!(w, "ref${}$", if *is_mut { "mut" } else { "const" })?;
+                inner.mangle_to(w)
+            }
+            Type::Ref(inner, _) => {
+                write!(w, "ref$")?;
+                inner.mangle_to(w)
+            }
+            Type::Tensor(el, dims, _) => {
+                write!(w, "Tensor$")?;
+                el.mangle_to(w)?;
+                write!(w, "${}", dims.len())
+            }
+            Type::Matrix => write!(w, "Matrix"),
+            Type::Struct(name, _) => write!(w, "{}", name),
+            Type::Enum(name, _) => write!(w, "{}", name),
+            Type::Generic(name, _) => write!(w, "{}", name),
+            Type::GenericInstance(base, args) => {
+                base.mangle_to(w)?;
+                for arg in args {
+                    write!(w, "$")?;
+                    arg.mangle_to(w)?;
+                }
+                Ok(())
+            }
+            Type::Function(_, _) => write!(w, "fn"),
+            Type::Closure(_, _) => write!(w, "closure"),
+            Type::Verified(inner) => {
+                write!(w, "Verified$")?;
+                inner.mangle_to(w)
+            }
+            Type::Pinned(inner, _) => {
+                write!(w, "Pinned$")?;
+                inner.mangle_to(w)
+            }
+            Type::Const(expr) => {
+                let debug_str = format!("{:?}", expr);
+                let sanitized: String = debug_str
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                write!(w, "const${}", sanitized)
+            }
+            Type::Module(name, _) => write!(w, "Module${}", name),
+            Type::Unknown => write!(w, "Unknown"),
+        }
+    }
+}
+
+impl Mangle for ElementType {
+    fn mangle_to(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match self {
+            ElementType::Generic(g) => write!(w, "{}", g),
+            _ => write!(w, "{}", self),
         }
     }
 }
