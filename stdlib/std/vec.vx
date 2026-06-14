@@ -10,7 +10,7 @@ import std::iter;
 
 import std::alloc;
 
-struct Vec<T>{
+struct Vec<T> {
   data : *mut T,
   len : i32,
   capacity : i32,
@@ -24,10 +24,10 @@ Vec<T> {
 
   fn with_capacity(capacity : i32) -> Vec<T> {
     let size_bytes : i64 = (capacity as i64) * sizeof<T>();
-    let ptr : *mut T = unsafe{
+    let ptr : *mut T = unsafe {
       malloc(size_bytes)
     };
-    return Vec<T>{
+    return Vec<T> {
       data : ptr, len : 0, capacity : capacity
     };
   }
@@ -72,7 +72,7 @@ Vec<T> {
       let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
 
       let ptr : *mut i8 = self.data;
-      self.data = unsafe{
+      self.data = unsafe {
         realloc(ptr, size_bytes)
       };
       self.capacity = new_cap;
@@ -106,7 +106,7 @@ Vec<T> {
   }
 
   fn iter(self : &Vec<T>) -> VecIter<T> {
-    return VecIter<T>{
+    return VecIter<T> {
       vec : self, current : 0
     };
   }
@@ -119,13 +119,13 @@ struct VecIter<T> {
 
 impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
   fn next(self : &mut VecIter<T>) -> Option<T> {
-    let vec_len : i32 = unsafe{
+    let vec_len : i32 = unsafe {
       (*self.vec).len
     };
     let mut ret = Option<T>::None();
     if self
     .current < vec_len {
-      let val : T = unsafe{
+      let val : T = unsafe {
         (*self.vec).data[self.current]
       };
       self.current = self.current + 1;
@@ -139,7 +139,7 @@ impl<T>
 VecIter<T> {
   fn map<NewItem>(self : VecIter<T>, f : Closure1<T, NewItem>)
   -> VecMap<T, NewItem> {
-    return VecMap<T, NewItem>{
+    return VecMap<T, NewItem> {
       iter : self, f : f
     };
   }

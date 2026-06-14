@@ -126,7 +126,7 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
 -> RunState {
   let kv_dim : i32 = (dim * n_kv_heads) / n_heads;
 
-  return unsafe{RunState{
+  return unsafe {RunState {
       x : Vec<f32>::with_capacity(dim).data,
       xb : Vec<f32>::with_capacity(dim).data,
       xb2 : Vec<f32>::with_capacity(dim).data,
@@ -141,7 +141,7 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
     }};
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe{
+  return unsafe {
     vx_get_rope_freq(pos, i, head_size)
   };
 }
@@ -149,7 +149,7 @@ fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for j in 0..size {
-    let val : f32 = unsafe{
+    let val : f32 = unsafe {
       x[j]
     };
     ss = ss + (val * val);
@@ -167,11 +167,11 @@ fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
 
 fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_i : i32 = 0;
-  let mut max_p : f32 = unsafe{
+  let mut max_p : f32 = unsafe {
     probabilities[0]
   };
   for i in 1..n {
-    let p_val : f32 = unsafe{
+    let p_val : f32 = unsafe {
       probabilities[i]
     };
     if p_val > max_p {
@@ -434,7 +434,7 @@ fn main() -> i32 {
   let temperature : f32 = 0.0;
 
   // 1. Initialize configuration via FFI
-  let config_ptr : *mut i32 = unsafe{
+  let config_ptr : *mut i32 = unsafe {
     vx_load_config(model_path)
   };
   let vocab_size : i32 = unsafe {
@@ -469,7 +469,7 @@ fn main() -> i32 {
   }
 
   // 2. Map weights and allocate native Tensors
-  let weights_ptr : *mut f32 = unsafe{
+  let weights_ptr : *mut f32 = unsafe {
     vx_load_weights(model_path)
   };
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
@@ -479,7 +479,7 @@ fn main() -> i32 {
   config.n_heads, config.n_kv_heads, config.seq_len,
   config.vocab_size);
   let tokenizer_ptr
-  : *mut i8 = unsafe{
+  : *mut i8 = unsafe {
     vx_build_tokenizer(tokenizer_path, config.vocab_size)
   };
 
@@ -491,7 +491,7 @@ fn main() -> i32 {
   for pos in 0..steps {
     transformer(token, pos, &config, &state, &weights);
     next = argmax(state.logits, config.vocab_size);
-    let piece : *mut i8 = unsafe{
+    let piece : *mut i8 = unsafe {
       vx_decode_token(tokenizer_ptr, token, next)
     };
     unsafe {

@@ -1,7 +1,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 // From const_generic_arg_count.vx
-struct Foo_0<const N : i32, const M : i32>{
+struct Foo_0<const N : i32, const M : i32> {
   x : i32,
 } fn test_0()
 ->void {
@@ -9,7 +9,7 @@ struct Foo_0<const N : i32, const M : i32>{
 }
 
 // From const_generic_impl_mismatch.vx
-struct Foo_1<const N : i32>{
+struct Foo_1<const N : i32> {
   x : i32,
 } impl Foo_1<const N : f32> { // Mismatch here
   fn bar(self : &Foo_1<N>) -> void {}
@@ -17,7 +17,7 @@ struct Foo_1<const N : i32>{
 }
 
 // From const_generic_runtime_expr.vx
-struct Foo_2<const N : i32>{
+struct Foo_2<const N : i32> {
   x : i32,
 } fn test_2()
 ->void {

@@ -436,7 +436,7 @@ fn main() -> i32 {
     let vocab_size_f : f32 = config_ptr[5];
     let seq_len_f : f32 = config_ptr[6];
 
-    let config = Config{
+    let config = Config {
       dim : 288,
       hidden_dim : 768,
       n_layers : 6,

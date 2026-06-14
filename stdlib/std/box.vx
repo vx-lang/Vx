@@ -8,7 +8,7 @@
 
 import std::alloc;
 
-struct Box<T>{
+struct Box<T> {
   ptr : *mut T,
 }
 
@@ -16,13 +16,13 @@ impl<T>
 Box<T> {
   fn new (val : T)->Box<T> {
     let size_bytes : i64 = sizeof<T>();
-    let p : *mut T = unsafe{
+    let p : *mut T = unsafe {
       malloc(size_bytes)
     };
     unsafe {
       *p = val;
     }
-    return Box<T>{
+    return Box<T> {
       ptr : p
     };
   }

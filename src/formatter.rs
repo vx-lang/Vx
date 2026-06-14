@@ -18,7 +18,26 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let mut lexer = Lexer::new_with_comments(content);
     let mut tokens = lexer.tokenize();
 
-    // Pass 1: Token Stream Normalization - Expand single-line blocks
+    // Pass 1: Token Stream Normalization - Expand single-line blocks and spacing
+    let mut i = 0;
+    while i < tokens.len() {
+        if let TokenType::LeftBrace = tokens[i].kind {
+            if i > 0 && !matches!(tokens[i - 1].kind, TokenType::Whitespace(_)) {
+                tokens.insert(
+                    i,
+                    crate::lexer::Token {
+                        kind: TokenType::Whitespace(" ".to_string()),
+                        line: tokens[i].line,
+                        column: tokens[i].column,
+                        length: 1,
+                    },
+                );
+                i += 1; // skip the newly inserted whitespace
+            }
+        }
+        i += 1;
+    }
+
     let mut i = 0;
     while i < tokens.len() {
         if let TokenType::RightBrace = tokens[i].kind {

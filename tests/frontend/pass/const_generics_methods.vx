@@ -5,7 +5,7 @@
 // CHECK: %c25_i32 = arith.constant 25 : i32
 // CHECK: return %c25_i32 : i32
 
-struct Buffer<T, const N : i32>{
+struct Buffer<T, const N : i32> {
   val : T
 }
 
@@ -17,7 +17,7 @@ Buffer<T, N> {
 }
 
 fn test_const_generics_methods() -> void {
-  let b = Buffer<f32, 25>{
+  let b = Buffer<f32, 25> {
     val : 3.14
   };
   let sz = b.get_size();

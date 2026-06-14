@@ -20,7 +20,7 @@ struct Config {
 }
 
 fn main() -> i32 {
-  let conf = Config{
+  let conf = Config {
     dim : 288,
     hidden_dim : 768,
     n_layers : 6,

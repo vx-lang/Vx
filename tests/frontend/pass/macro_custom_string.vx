@@ -3,7 +3,7 @@
 import std::vec;
 import std::closure;
 
-macro_rules get_str { ($s : expr) =>{
+macro_rules get_str { ($s : expr) => {
     $s
   }; }
 fn main() -> i32 {

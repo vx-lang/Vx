@@ -84,57 +84,57 @@ impl TransferDMA<NPU> for NPU {
   }
 }
 fn test_cpu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void {
-  CPU{}.add_vector(x, y);
+  CPU {}.add_vector(x, y);
 }
 fn test_npu_add_vec(x: <4 x f32>, y: <4 x f32>) -> void {
-  NPU{}.add_vector(x, y);
+  NPU {}.add_vector(x, y);
 }
 
 fn test_cpu_transfer_vec(x: <4 x f32>) -> void {
-  CPU{}.transfer_vector(x);
+  CPU {}.transfer_vector(x);
 }
 fn test_npu_transfer_vec(x: <4 x f32>) -> void {
-  NPU{}.transfer_vector(x);
+  NPU {}.transfer_vector(x);
 }
 
 fn test_cpu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void {
-  CPU{}.add_array(x, y);
+  CPU {}.add_array(x, y);
 }
 fn test_cpu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void {
-  CPU{}.add_tensor(x, y);
+  CPU {}.add_tensor(x, y);
 }
 
 fn test_npu_add_arr(x: Tensor<f32, [4]>, y: Tensor<f32, [4]>) -> void {
-  NPU{}.add_array(x, y);
+  NPU {}.add_array(x, y);
 }
 fn test_npu_add_tensor(x: Tensor<f32>, y: Tensor<f32>) -> void {
-  NPU{}.add_tensor(x, y);
+  NPU {}.add_tensor(x, y);
 }
 
 fn test_cpu_t_npu_arr(x: Tensor<f32, [4]>) -> void {
-  CPU{}.transfer_array_to_npu(x);
+  CPU {}.transfer_array_to_npu(x);
 }
 fn test_cpu_t_cpu_arr(x: Tensor<f32, [4]>) -> void {
-  CPU{}.transfer_array_to_cpu(x);
+  CPU {}.transfer_array_to_cpu(x);
 }
 fn test_cpu_t_npu_tensor(x: Tensor<f32>) -> void {
-  CPU{}.transfer_tensor_to_npu(x);
+  CPU {}.transfer_tensor_to_npu(x);
 }
 fn test_cpu_t_cpu_tensor(x: Tensor<f32>) -> void {
-  CPU{}.transfer_tensor_to_cpu(x);
+  CPU {}.transfer_tensor_to_cpu(x);
 }
 
 fn test_npu_t_npu_arr(x: Tensor<f32, [4]>) -> void {
-  NPU{}.transfer_array_to_npu(x);
+  NPU {}.transfer_array_to_npu(x);
 }
 fn test_npu_t_cpu_arr(x: Tensor<f32, [4]>) -> void {
-  NPU{}.transfer_array_to_cpu(x);
+  NPU {}.transfer_array_to_cpu(x);
 }
 fn test_npu_t_npu_tensor(x: Tensor<f32>) -> void {
-  NPU{}.transfer_tensor_to_npu(x);
+  NPU {}.transfer_tensor_to_npu(x);
 }
 fn test_npu_t_cpu_tensor(x: Tensor<f32>) -> void {
-  NPU{}.transfer_tensor_to_cpu(x);
+  NPU {}.transfer_tensor_to_cpu(x);
 }
 
 fn main() -> void {}

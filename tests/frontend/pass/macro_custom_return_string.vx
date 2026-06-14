@@ -1,6 +1,6 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-macro_rules get_str { () =>{
+macro_rules get_str { () => {
     "hello from macro!"
   }; }
 

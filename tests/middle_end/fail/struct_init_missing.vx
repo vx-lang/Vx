@@ -5,7 +5,7 @@ struct MyStruct {
 }
 
 fn main() -> MyStruct {
-  return MyStruct{
+  return MyStruct {
     a : 1
   };
 }

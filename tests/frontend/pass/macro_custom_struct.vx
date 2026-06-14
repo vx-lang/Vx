@@ -6,7 +6,7 @@ import std::closure;
 struct Point {
   x : i32, y : i32
 } macro_rules new_point {
-  ($x : expr) =>{Point{
+  ($x : expr) => {Point {
       x : $x, y : 0
     }};
 }

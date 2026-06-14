@@ -56,10 +56,10 @@ impl String {
 
 impl i32 {
   fn to_string(self : i32) -> String {
-    let ptr = unsafe{
+    let ptr = unsafe {
       vx_i32_to_string(self)
     };
-    return String{
+    return String {
       ptr : ptr
     };
   }

@@ -3,7 +3,7 @@
 import std::vec;
 import std::closure;
 
-macro_rules get_val { ($v : expr) =>{
+macro_rules get_val { ($v : expr) => {
     $v + 10
   }; }
 fn main() -> i32 {

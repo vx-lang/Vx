@@ -122,7 +122,7 @@ fn matmul_ane(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
 }
 
 fn main() -> i32 {
-  let config = Config{
+  let config = Config {
     dim : 256,
     hidden_dim : 512,
     n_layers : 4,

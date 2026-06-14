@@ -24,7 +24,7 @@ fn mutate_config(conf: Config) -> Config {
 }
 
 fn main() -> i32 {
-  let conf = Config{
+  let conf = Config {
     dim : 256,
     hidden_dim : 1024,
     n_layers : 8,

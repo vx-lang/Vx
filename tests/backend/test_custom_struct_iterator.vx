@@ -13,7 +13,7 @@ struct MyListIter {
 
 impl MyList {
   fn iter(self : MyList) -> MyListIter {
-    return MyListIter{
+    return MyListIter {
       len : self.len, current : 0
     };
   }
@@ -32,7 +32,7 @@ impl Iterator<MyListIter, i32> for MyListIter {
 }
 
 fn main() -> i32 {
-  let list : MyList = MyList{
+  let list : MyList = MyList {
     len : 5
   };
   for item in list.iter() {

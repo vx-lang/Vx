@@ -231,14 +231,14 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
       // Linalg for demonstration)
       mlir!(inputs : (% arg_t = self : memref<N x M x f32>,
       % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]){
+      clobbers : [self], dialects : ["linalg"]) {
         linalg
         .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
         macro.yield};
     } else {
       mlir!(
       inputs : (% arg_t = self : memref<N x M x f32>, % arg_v = val : f32),
-      clobbers : [self], dialects : ["linalg"]){
+      clobbers : [self], dialects : ["linalg"]) {
         linalg
         .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
         macro.yield};

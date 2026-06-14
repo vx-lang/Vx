@@ -11,16 +11,16 @@ struct Array<T, const N : i32> {
   val : T
 }
 
-struct Wrapper<const N : i32>{
+struct Wrapper<const N : i32> {
   inner : Array<f32, N>
 }
 
 fn create_wrapper<const N : i32>()
 ->Wrapper<N> {
-  let a = Array<f32, N>{
+  let a = Array<f32, N> {
     val : 1.0
   };
-  let w = Wrapper<N>{
+  let w = Wrapper<N> {
     inner : a
   };
 

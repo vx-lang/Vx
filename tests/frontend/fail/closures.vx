@@ -14,7 +14,7 @@ fn apply_lambda_bad_args<F>(f : F) -> i32 {
 fn main() -> i32 {
   // Test 1: Move closures
   let i = 10;
-  let cap = Captures{
+  let cap = Captures {
     i : 10
   };
   let cp_lambda = | x : i32 | x + cap.i + i;

@@ -40,7 +40,7 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   let div_kv : i32 = dim * n_kv_heads;
   let kv_dim : i32 = div_kv / n_heads;
 
-  let state = RunState{
+  let state = RunState {
     x : Vec<f32>::with_capacity(dim).as_mut_slice(),
     xb : Vec<f32>::with_capacity(dim).as_mut_slice(),
     xb2 : Vec<f32>::with_capacity(dim).as_mut_slice(),
@@ -72,7 +72,7 @@ fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : &mut f32, d1 : i32) -> i32 {
   return 0;
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe{
+  return unsafe {
     vx_get_rope_freq(pos, i, head_size)
   };
 }

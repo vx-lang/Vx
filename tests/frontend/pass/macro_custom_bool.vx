@@ -3,7 +3,7 @@
 import std::vec;
 import std::closure;
 
-macro_rules is_equal { ($x : expr) =>{
+macro_rules is_equal { ($x : expr) => {
     $x == 10
   }; }
 fn main() -> i32 {

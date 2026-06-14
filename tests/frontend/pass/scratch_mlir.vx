@@ -6,12 +6,12 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
     let res = mlir!(inputs : (% lhs = self : memref<N x M x f32>,
     % rhs = other : memref<N x M x f32>),
     clobbers : [], returns : bool,
-    dialects : [ "linalg", "arith", "memref", "func" ]){
+    dialects : [ "linalg", "arith", "memref", "func" ]) {
       ^bb0(% lhs : memref<N x M x f32>, % rhs : memref<N x M x f32>) : % true =
       arith.constant 1 : i1 % res =
       memref.alloca() : memref<i1> memref.store % true,
       %
-      res[] : memref<i1> linalg.generic{
+      res[] : memref<i1> linalg.generic {
         indexing_maps =
         [
         affine_map<(d0, d1)->(d0, d1)>,
@@ -21,7 +21,7 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
         [ "reduction", "reduction" ]} ins(% lhs,
       % rhs : memref<N x M x f32>,
       memref<N x M x f32>)
-      outs(% res : memref<i1>){
+      outs(% res : memref<i1>) {
         ^bb0(% a : f32, % b : f32, % out : i1) : % cmp = arith.cmpf oeq,
         % a,
         % b : f32 % and = arith.andi % out,

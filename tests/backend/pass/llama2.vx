@@ -438,7 +438,7 @@ fn main() -> i32 {
     let max_tokens : i32 = llama_config[0];
     let steps : i32 = llama_config[1];
 
-    let config = Config{
+    let config = Config {
       dim : 288,
       hidden_dim : 768,
       n_layers : 6,

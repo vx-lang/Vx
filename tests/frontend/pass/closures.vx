@@ -53,7 +53,7 @@ fn main() -> i32 {
 
   // closure_passed
   let i = 10;
-  let cap = Captures{
+  let cap = Captures {
     i : 10
   };
   let cp_lambda = | x : i32 | x + cap.i + i;

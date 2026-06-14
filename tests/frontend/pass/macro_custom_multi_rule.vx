@@ -3,7 +3,7 @@
 import std::vec;
 import std::closure;
 
-macro_rules do_thing { ($x : expr) =>{
+macro_rules do_thing { ($x : expr) => {
     $x + 1
   }; }
 fn main() -> i32 {

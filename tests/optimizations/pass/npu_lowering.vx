@@ -10,7 +10,7 @@ fn dummy(x : i32) on Topology::NPU[0] -> i32 {
 
 fn process(t : Tensor<f32>) -> Tensor<f32> {
   let mut res = Tensor<i32>([ 4, 4 ]).with_memory(Memory::NPU_HBM);
-  let val = spawn on(Topology::NPU[0]){
+  let val = spawn on(Topology::NPU[0]) {
     dummy(0)
   };
   return t;

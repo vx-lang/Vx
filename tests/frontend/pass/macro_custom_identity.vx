@@ -3,7 +3,7 @@
 import std::vec;
 import std::closure;
 
-macro_rules identity { ($x : expr) =>{
+macro_rules identity { ($x : expr) => {
     $x
   }; }
 fn main() -> i32 {

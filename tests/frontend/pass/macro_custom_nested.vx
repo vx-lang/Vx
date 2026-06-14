@@ -3,10 +3,10 @@
 import std::vec;
 import std::closure;
 
-macro_rules add_one { ($x : expr) =>{
+macro_rules add_one { ($x : expr) => {
     $x + 1
   }; }
-macro_rules add_two { ($x : expr) =>{
+macro_rules add_two { ($x : expr) => {
     add_one!(add_one!($x))
   }; }
 fn main() -> i32 {

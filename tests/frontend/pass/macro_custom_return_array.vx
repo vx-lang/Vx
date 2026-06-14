@@ -1,6 +1,6 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-macro_rules create_arr { ($x : expr, $y : expr) =>{
+macro_rules create_arr { ($x : expr, $y : expr) => {
     [$x, $y]
   }; }
 
