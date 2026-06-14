@@ -1,0 +1,46 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+// Note: On macOS, `libunwind` from a signal handler truncates the stack trace 
+// when crossing JIT frames. It usually stops after capturing the faulting frame 
+// (or the frame it got inlined into, like `_f4` here). Therefore, we only check 
+// what is actually reliably captured.
+
+// CHECK: Caught SIGSEGV: Segmentation Fault!
+// CHECK: Backtrace
+// CHECK: vx_sigsegv_handler
+// CHECK: _f4
+// CHECK: Program exited with non-zero code: -1
+
+import std::box;
+
+fn f5(ptr: *mut i32) -> i32 {
+  unsafe {
+    let val = ptr[0];
+    print!(val);
+  }
+  return 0;
+}
+
+fn f4(ptr: *mut i32) -> i32 {
+  return f5(ptr);
+}
+
+fn f3(ptr: *mut i32) -> i32 {
+  return f4(ptr);
+}
+
+fn f2(ptr: *mut i32) -> i32 {
+  return f3(ptr);
+}
+
+fn f1(ptr: *mut i32) -> i32 {
+  return f2(ptr);
+}
+
+fn main() -> i32 {
+  let mut ptr: *mut i32 = unsafe {
+    0 as *mut i32
+  };
+  f1(ptr);
+  return 0;
+}
