@@ -663,47 +663,53 @@ pub enum Expr {
     InlineMlir(InlineMlirExpr),
 }
 
+macro_rules! delegate_expr {
+    ($self:ident, $method:ident) => {
+        match $self {
+            Expr::Identifier(e) => e.$method.clone(),
+            Expr::EnumVariant(e) => e.$method.clone(),
+            Expr::Number(e) => e.$method.clone(),
+            Expr::StringLiteral(e) => e.$method.clone(),
+            Expr::Transfer(e) => e.$method.clone(),
+            Expr::FunctionCall(e) => e.$method.clone(),
+            Expr::IndirectCall(e) => e.$method.clone(),
+            Expr::Array(e) => e.$method.clone(),
+            Expr::MemberAccess(e) => e.$method.clone(),
+            Expr::IndexAccess(e) => e.$method.clone(),
+            Expr::MethodCall(e) => e.$method.clone(),
+            Expr::BinaryOp(e) => e.$method.clone(),
+            Expr::RelationalOp(e) => e.$method.clone(),
+            Expr::LogicalOp(e) => e.$method.clone(),
+            Expr::UnaryOp(e) => e.$method.clone(),
+            Expr::Borrow(e) => e.$method.clone(),
+            Expr::Dereference(e) => e.$method.clone(),
+            Expr::UnsafeBlock(e) => e.$method.clone(),
+            Expr::ComptimeBlock(e) => e.$method.clone(),
+            Expr::StructInit(e) => e.$method.clone(),
+            Expr::MemorySpace(e) => e.$method.clone(),
+            Expr::Topology(e) => e.$method.clone(),
+            Expr::If(e) => e.$method.clone(),
+            Expr::Range(e) => e.$method.clone(),
+            Expr::Match(e) => e.$method.clone(),
+            Expr::Grad(e) => e.$method.clone(),
+            Expr::Vjp(e) => e.$method.clone(),
+            Expr::Jvp(e) => e.$method.clone(),
+            Expr::SpawnOn(e) => e.$method.clone(),
+            Expr::VecMacro(e) => e.$method.clone(),
+            Expr::Closure(e) => e.$method.clone(),
+            Expr::MacroCall(e) => e.$method.clone(),
+            Expr::AsCast(e) => e.$method.clone(),
+            Expr::Print(e) => e.$method.clone(),
+            Expr::Println(e) => e.$method.clone(),
+            Expr::SizeOf(e) => e.$method.clone(),
+            Expr::InlineMlir(e) => e.$method.clone(),
+        }
+    };
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
-        match self {
-            Expr::Identifier(e) => e.span.clone(),
-            Expr::EnumVariant(e) => e.span.clone(),
-            Expr::Number(e) => e.span.clone(),
-            Expr::StringLiteral(e) => e.span.clone(),
-            Expr::Transfer(e) => e.span.clone(),
-            Expr::FunctionCall(e) => e.span.clone(),
-            Expr::IndirectCall(e) => e.span.clone(),
-            Expr::Array(e) => e.span.clone(),
-            Expr::MemberAccess(e) => e.span.clone(),
-            Expr::IndexAccess(e) => e.span.clone(),
-            Expr::MethodCall(e) => e.span.clone(),
-            Expr::BinaryOp(e) => e.span.clone(),
-            Expr::RelationalOp(e) => e.span.clone(),
-            Expr::LogicalOp(e) => e.span.clone(),
-            Expr::UnaryOp(e) => e.span.clone(),
-            Expr::Borrow(e) => e.span.clone(),
-            Expr::Dereference(e) => e.span.clone(),
-            Expr::UnsafeBlock(e) => e.span.clone(),
-            Expr::ComptimeBlock(e) => e.span.clone(),
-            Expr::StructInit(e) => e.span.clone(),
-            Expr::MemorySpace(e) => e.span.clone(),
-            Expr::Topology(e) => e.span.clone(),
-            Expr::If(e) => e.span.clone(),
-            Expr::Range(e) => e.span.clone(),
-            Expr::Match(e) => e.span.clone(),
-            Expr::Grad(e) => e.span.clone(),
-            Expr::Vjp(e) => e.span.clone(),
-            Expr::Jvp(e) => e.span.clone(),
-            Expr::SpawnOn(e) => e.span.clone(),
-            Expr::VecMacro(e) => e.span.clone(),
-            Expr::Closure(e) => e.span.clone(),
-            Expr::MacroCall(e) => e.span.clone(),
-            Expr::AsCast(e) => e.span.clone(),
-            Expr::Print(e) => e.span.clone(),
-            Expr::Println(e) => e.span.clone(),
-            Expr::SizeOf(e) => e.span.clone(),
-            Expr::InlineMlir(e) => e.span.clone(),
-        }
+        delegate_expr!(self, span)
     }
 
     pub fn is_binary_operator(&self) -> bool {
@@ -1011,9 +1017,22 @@ impl Expr {
             }),
             Expr::InlineMlir(e) => {
                 let mut new_block_str = e.block_str.clone();
-                for (k, v) in mapping {
-                    if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(k))) {
-                        new_block_str = re.replace_all(&new_block_str, v.to_string()).to_string();
+                if !mapping.is_empty() {
+                    let pattern = mapping
+                        .keys()
+                        .map(|k| regex::escape(k))
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    if let Ok(re) = regex::Regex::new(&format!(r"\b({})\b", pattern)) {
+                        new_block_str = re
+                            .replace_all(&new_block_str, |caps: &regex::Captures| {
+                                let key = caps.get(1).unwrap().as_str();
+                                mapping
+                                    .get(key)
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| key.to_string())
+                            })
+                            .to_string();
                     }
                 }
                 Expr::InlineMlir(InlineMlirExpr {
