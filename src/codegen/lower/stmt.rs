@@ -16,9 +16,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         gen.expected_type = None;
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
-                if expr_ty.to_string().starts_with("memref<")
-                    && ret_ty.to_string().starts_with("memref<")
-                {
+                if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
                     let mut cast_op_name = "memref.cast";
                     let expr_parts = expr_ty.to_string();
                     let ret_parts = ret_ty.to_string();
@@ -36,8 +34,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                         .build()
                         .unwrap();
                     val = block.append_operation(cast_op).result(0).unwrap().into();
-                } else if ret_ty.to_string() == "i32" && expr_ty.to_string().starts_with("memref<")
-                {
+                } else if ret_ty.to_string() == "i32" && gen.is_memref(&expr_ty) {
                     let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                         .add_results(&[ret_ty])
                         .add_attributes(&[(
@@ -99,7 +96,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             let ty_str = ty.to_string();
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
                 let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-                let i32_ty = Type::parse(gen.context, "i32").unwrap();
+                let i32_ty = gen.i32_ty;
                 let one_attr = IntegerAttribute::new(i32_ty, 1).into();
                 let const_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
                     .add_results(&[i32_ty])
@@ -237,7 +234,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             ) {
                 let base_ty_str = base_ty.to_string();
                 if base_ty_str.starts_with("!llvm.ptr") {
-                    let i64_ty = Type::parse(gen.context, "i64").unwrap();
+                    let i64_ty = gen.i64_ty;
                     let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                         .add_operands(&[indices[0]])
                         .add_results(&[i64_ty])

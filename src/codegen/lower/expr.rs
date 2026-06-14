@@ -122,7 +122,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
             if gen.allocs.contains(&id.name) {
                 if let Some((val, val_ty)) = gen.env.get(&id.name) {
                     let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-                    if val_ty.to_string().starts_with("memref<") {
+                    if gen.is_memref(val_ty) {
                         return Ok((*val, *val_ty));
                     } else if *val_ty == ptr_ty {
                         return Ok((*val, ptr_ty));
@@ -144,7 +144,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         if ty.to_string().starts_with("memref<memref<") {
             return Ok((val, ty));
         }
-        if ty.to_string().starts_with("memref<") {
+        if gen.is_memref(&ty) {
             // Allocate a pointer to the memref
             let alloca_op = block.append_operation(
                 OperationBuilder::new("memref.alloca", gen.loc())
@@ -166,7 +166,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
             ));
         }
 
-        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let i32_ty = gen.i32_ty;
         let c1_op = block.append_operation(
             OperationBuilder::new("llvm.mlir.constant", gen.loc())
                 .add_results(&[i32_ty])
@@ -333,7 +333,7 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
             let inner_ty = Type::parse(gen.context, &inner_ty_str)
                 .unwrap_or_else(|| panic!("Failed to parse inner ptr type: {}", inner_ty_str));
 
-            let i64_ty = Type::parse(gen.context, "i64").unwrap();
+            let i64_ty = gen.i64_ty;
             let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                 .add_operands(&[indices[0]])
                 .add_results(&[i64_ty])
@@ -426,8 +426,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             final_ty = lhs_ty;
         }
 
-        let is_memref =
-            lhs_ty.to_string().starts_with("memref<") && rhs_ty.to_string().starts_with("memref<");
+        let is_memref = gen.is_memref(&lhs_ty) && gen.is_memref(&rhs_ty);
 
         let mut is_matmul = false;
         let mut lhs_parts = Vec::new();
@@ -468,7 +467,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             // Determine dynamic dimensions for alloc
             let mut alloc_operands = Vec::new();
-            let index_ty = Type::parse(gen.context, "index").unwrap();
+            let index_ty = gen.index_ty;
 
             if m_str == "?" {
                 let m_idx_attr = IntegerAttribute::new(Type::index(gen.context), 0).into();
@@ -623,7 +622,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             let out_ty = Type::parse(gen.context, &lhs_ty_str).unwrap();
 
             let mut alloc_operands = Vec::new();
-            let index_ty = Type::parse(gen.context, "index").unwrap();
+            let index_ty = gen.index_ty;
 
             let rank = lhs_parts.len() - 1; // Last part is element type
             let el_ty_str = lhs_parts.last().unwrap();
@@ -750,7 +749,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
-            let i64_ty = Type::parse(gen.context, "i64").unwrap();
+            let i64_ty = gen.i64_ty;
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(
                 Identifier::new(gen.context, "predicate"),
                 IntegerAttribute::new(i64_ty, pred_val).into(),
@@ -805,7 +804,7 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
 
         let ret_ty = if let Some(pred_val) = op.get_predicate(is_float) {
             let i1_ty = Type::parse(gen.context, "i1").unwrap();
-            let i64_ty = Type::parse(gen.context, "i64").unwrap();
+            let i64_ty = gen.i64_ty;
             builder = builder.add_results(&[i1_ty]).add_attributes(&[(
                 Identifier::new(gen.context, "predicate"),
                 IntegerAttribute::new(i64_ty, pred_val).into(),
@@ -1026,7 +1025,7 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
             gen.generate_expr(ret_expr, block)
         } else {
             // Return an i32 0 or something empty if no return type is expected.
-            let i32_ty = Type::parse(gen.context, "i32").unwrap();
+            let i32_ty = gen.i32_ty;
             let zero_attr = IntegerAttribute::new(i32_ty, 0).into();
             let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[i32_ty])
@@ -1378,7 +1377,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 gen.functions.insert(
                     "llvm_printf_decl".to_string(),
                     (
-                        Type::parse(gen.context, "i32").unwrap(),
+                        gen.i32_ty,
                         vec![Type::parse(gen.context, "!llvm.ptr").unwrap()],
                     ),
                 );
@@ -1406,15 +1405,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             DenseI32ArrayAttribute::new(gen.context, &[]).into(),
                         ),
                     ])
-                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                    .add_results(&[gen.i32_ty])
                     .build()
                     .unwrap(),
             );
 
-            return Ok((
-                call_op.result(0).unwrap().into(),
-                Type::parse(gen.context, "i32").unwrap(),
-            ));
+            return Ok((call_op.result(0).unwrap().into(), gen.i32_ty));
         }
 
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
@@ -1423,9 +1419,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 let (mut arg_val, expr_ty) = gen.generate_expr(arg, block)?;
                 let field_ty = arg_tys[i];
                 if expr_ty != field_ty {
-                    if expr_ty.to_string().starts_with("memref<")
-                        && field_ty.to_string().starts_with("memref<")
-                    {
+                    if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
                         let cast_op = OperationBuilder::new("memref.cast", gen.loc())
                             .add_operands(&[arg_val])
                             .add_results(&[field_ty])
@@ -1455,10 +1449,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 let none_ty = Type::parse(gen.context, "none").unwrap();
                 // this value shouldn't be used
                 let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
-                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                    .add_results(&[gen.i32_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0).into(),
+                        IntegerAttribute::new(gen.i32_ty, 0).into(),
                     )])
                     .build()
                     .unwrap();
@@ -1571,11 +1565,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     block.append_operation(call_op);
                     let none_ty = Type::parse(gen.context, "none").unwrap();
                     let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
-                        .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                        .add_results(&[gen.i32_ty])
                         .add_attributes(&[(
                             Identifier::new(gen.context, "value"),
-                            IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0)
-                                .into(),
+                            IntegerAttribute::new(gen.i32_ty, 0).into(),
                         )])
                         .build()
                         .unwrap();
@@ -1689,10 +1682,10 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                 block.append_operation(call_op);
                 let none_ty = Type::parse(gen.context, "none").unwrap();
                 let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
-                    .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                    .add_results(&[gen.i32_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0).into(),
+                        IntegerAttribute::new(gen.i32_ty, 0).into(),
                     )])
                     .build()
                     .unwrap();
@@ -1891,9 +1884,9 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
         let ty = if let Some(ast_ty) = ast_ty_opt {
             gen.lower_type(&ast::Type::Scalar(ast_ty.clone()))
         } else if val_str.contains('.') {
-            Type::parse(gen.context, "f32").unwrap()
+            gen.f32_ty
         } else {
-            Type::parse(gen.context, "i32").unwrap()
+            gen.i32_ty
         };
         let ty_str = ty.to_string();
         if ty_str.contains("f32")
@@ -1999,7 +1992,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             }
         }
 
-        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let i32_ty = gen.i32_ty;
         let tag_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[i32_ty])
             .add_attributes(&[(
@@ -2115,7 +2108,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
 
         let (vec_val, vec_ty) = gen.generate_expr(&new_call, block)?;
 
-        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let i32_ty = gen.i32_ty;
         let c1_op = block.append_operation(
             OperationBuilder::new("llvm.mlir.constant", gen.loc())
                 .add_results(&[i32_ty])
@@ -2246,7 +2239,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
                 gen.functions.insert(
                     func_name.to_string(),
                     (
-                        Type::parse(gen.context, "i32").unwrap(),
+                        gen.i32_ty,
                         vec![if func_name == "print_str" {
                             Type::parse(gen.context, "!llvm.ptr").unwrap()
                         } else {
@@ -2259,7 +2252,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
             let name_attr = FlatSymbolRefAttribute::new(gen.context, func_name);
             let call_op = OperationBuilder::new("func.call", gen.loc())
                 .add_operands(&[arg_val])
-                .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+                .add_results(&[gen.i32_ty])
                 .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
                 .build()
                 .unwrap();
@@ -2268,17 +2261,17 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
         }
 
         let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
-            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+            .add_results(&[gen.i32_ty])
             .add_attributes(&[(
                 Identifier::new(gen.context, "value"),
-                IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), 0).into(),
+                IntegerAttribute::new(gen.i32_ty, 0).into(),
             )])
             .build()
             .unwrap();
 
         Ok((
             block.append_operation(dummy_op).result(0).unwrap().into(),
-            Type::parse(gen.context, "i32").unwrap(),
+            gen.i32_ty,
         ))
     }
 }
@@ -2319,22 +2312,20 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
                 .unwrap();
 
             gen.module.body().append_operation(func_decl);
-            gen.functions.insert(
-                "println".to_string(),
-                (Type::parse(gen.context, "i32").unwrap(), vec![]),
-            );
+            gen.functions
+                .insert("println".to_string(), (gen.i32_ty, vec![]));
         }
 
         let name_attr = FlatSymbolRefAttribute::new(gen.context, "println");
         let call_op = OperationBuilder::new("func.call", gen.loc())
-            .add_results(&[Type::parse(gen.context, "i32").unwrap()])
+            .add_results(&[gen.i32_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
             .build()
             .unwrap();
 
         Ok((
             block.append_operation(call_op).result(0).unwrap().into(),
-            Type::parse(gen.context, "i32").unwrap(),
+            gen.i32_ty,
         ))
     }
 }
@@ -2361,7 +2352,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
             _ => 8,
         };
 
-        let size_ty = Type::parse(gen.context, "i64").unwrap();
+        let size_ty = gen.i64_ty;
         let const_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_attributes(&[(
                 Identifier::new(gen.context, "value"),

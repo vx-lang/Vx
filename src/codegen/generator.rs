@@ -57,6 +57,16 @@ impl<'c> MeliorGenerator<'c> {
         )
     }
 
+    pub fn is_memref(&self, ty: &Type<'c>) -> bool {
+        let ty_str = ty.to_string();
+        ty_str.starts_with("memref<")
+    }
+
+    pub fn is_llvm_ptr(&self, ty: &Type<'c>) -> bool {
+        let ty_str = ty.to_string();
+        ty_str.starts_with("!llvm.ptr") || ty_str.starts_with("!llvm.array")
+    }
+
     pub fn coerce_type(
         &mut self,
         block: &melior::ir::Block<'c>,

@@ -53,9 +53,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 return Ok((val, ty));
             }
 
-            let ret_ty = gen
-                .expected_type
-                .unwrap_or_else(|| Type::parse(gen.context, "f32").unwrap());
+            let ret_ty = gen.expected_type.unwrap_or(gen.f32_ty);
             let dummy_op = if ret_ty.to_string() == "f32" {
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_attributes(&[(
@@ -124,7 +122,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
 
         block.append_operation(if_op);
 
-        let ty = Type::parse(gen.context, "i32").unwrap();
+        let ty = gen.i32_ty;
         let op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[ty])
             .add_attributes(&[(
@@ -158,7 +156,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let (start_val, start_ty) = gen.generate_expr(start, block)?;
             let (end_val, end_ty) = gen.generate_expr(end, block)?;
 
-            let ty_index = Type::parse(gen.context, "index").unwrap();
+            let ty_index = gen.index_ty;
 
             // cast start/end to index if necessary
             let start_idx = if start_ty == ty_index {
@@ -235,7 +233,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         let iter_ty_str = iter_ty.to_string();
 
         if iter_ty_str.starts_with("tensor<") {
-            let ty_index = Type::parse(gen.context, "index").unwrap();
+            let ty_index = gen.index_ty;
             let start_idx = block
                 .append_operation(
                     OperationBuilder::new("arith.constant", gen.loc())
@@ -356,7 +354,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             }
         }
 
-        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let i32_ty = gen.i32_ty;
         let c1_op_alloc = before_block.append_operation(
             OperationBuilder::new("llvm.mlir.constant", gen.loc())
                 .add_results(&[i32_ty])
@@ -454,8 +452,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .add_attributes(&[(
                     Identifier::new(gen.context, "predicate"),
                     IntegerAttribute::new(
-                        Type::parse(gen.context, "i64").unwrap(),
-                        0, // eq
+                        gen.i64_ty, 0, // eq
                     )
                     .into(),
                 )])
@@ -570,10 +567,10 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
 
         let c0_op = block.append_operation(
             OperationBuilder::new("arith.constant", gen.loc())
-                .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                .add_results(&[gen.index_ty])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),
-                    IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                    IntegerAttribute::new(gen.index_ty, 0).into(),
                 )])
                 .build()
                 .unwrap(),
@@ -691,10 +688,10 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
 
             let c0_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
-                    .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                    .add_results(&[gen.index_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                        IntegerAttribute::new(gen.index_ty, 0).into(),
                     )])
                     .build()
                     .unwrap(),
@@ -734,10 +731,10 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
 
             let c0_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
-                    .add_results(&[Type::parse(gen.context, "index").unwrap()])
+                    .add_results(&[gen.index_ty])
                     .add_attributes(&[(
                         Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(Type::parse(gen.context, "index").unwrap(), 0).into(),
+                        IntegerAttribute::new(gen.index_ty, 0).into(),
                     )])
                     .build()
                     .unwrap(),

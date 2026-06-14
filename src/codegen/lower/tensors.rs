@@ -48,9 +48,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         region.append_block(body_block);
 
         let topology_id = topology_to_i32(&self.top);
-        let top_attr =
-            IntegerAttribute::new(Type::parse(gen.context, "i32").unwrap(), topology_id as i64)
-                .into();
+        let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
 
         let mut spawn_builder = OperationBuilder::new("vx.spawn", location)
             .add_attributes(&[(Identifier::new(gen.context, "topology"), top_attr)])
@@ -108,11 +106,7 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
             ast::MemorySpace::NicRam | ast::MemorySpace::RemoteHbm => 300,
         };
 
-        let top_attr = IntegerAttribute::new(
-            melior::ir::Type::parse(gen.context, "i32").unwrap(),
-            target_topology_id as i64,
-        )
-        .into();
+        let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();
 
         let mut target_ty = src_ty;
         let src_ty_str = src_ty.to_string();

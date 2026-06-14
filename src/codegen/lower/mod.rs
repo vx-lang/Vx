@@ -553,7 +553,7 @@ pub(crate) fn lower_map_call<'c>(
 
         // 1. Allocate output memref
         let mut alloc_operands = Vec::new();
-        let index_ty = Type::parse(gen.context, "index").unwrap();
+        let index_ty = gen.index_ty;
         for (i, dim_str) in parts.iter().take(rank).enumerate() {
             if *dim_str == "?" {
                 let idx_attr = IntegerAttribute::new(Type::index(gen.context), i as i64).into();
@@ -597,7 +597,7 @@ pub(crate) fn lower_map_call<'c>(
 
         // Allocate it on stack to get a pointer
         let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
-        let i32_ty = Type::parse(gen.context, "i32").unwrap();
+        let i32_ty = gen.i32_ty;
         let c1_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[i32_ty])
             .add_attributes(&[(
