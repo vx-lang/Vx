@@ -2,5 +2,9 @@
 // CHECK: module
 import std::vec;
 import std::closure;
-macro_rules square { ($x : expr) =>{$x * $x}; }
-fn main() -> i32 { return square !(5); }
+macro_rules square { ($x : expr) =>{
+    $x * $x
+  }; }
+fn main() -> i32 {
+  return square!(5);
+}

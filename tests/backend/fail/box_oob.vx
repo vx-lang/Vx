@@ -8,7 +8,7 @@ fn main() -> i32 {
     let ptr = b.ptr;
     // deref past the allocation
     let bad = ptr[100000000];
-    print !(bad);
+    print!(bad);
   }
   return 0;
 }

@@ -1,8 +1,10 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-macro_rules get_str { () =>{"hello from macro!"}; }
+macro_rules get_str { () =>{
+    "hello from macro!"
+  }; }
 
 fn main() -> i32 {
-  let s = get_str !();
+  let s = get_str!();
   return 0;
 }

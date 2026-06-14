@@ -14,15 +14,17 @@ fn main() -> i32 {
   let mut b = Box<i32>::new (42);
 
   unsafe {
-    print !("Value: ");
-    print !(*b.ptr);
+    print!("Value: ");
+    print!(*b.ptr);
   }
 
-  unsafe { *b.ptr = 100; }
+  unsafe {
+    *b.ptr = 100;
+  }
 
   unsafe {
-    print !("Updated: ");
-    print !(*b.ptr);
+    print!("Updated: ");
+    print!(*b.ptr);
   }
 
   b.free();

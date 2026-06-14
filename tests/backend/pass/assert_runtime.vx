@@ -7,9 +7,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-fn foo() -> i32 { return 10; }
+fn foo() -> i32 {
+  return 10;
+}
 
-fn bar() -> i32 { return 20; }
+fn bar() -> i32 {
+  return 20;
+}
 
 fn main() -> i32 {
   let x : i32 = 10;
@@ -20,7 +24,7 @@ fn main() -> i32 {
   assert(bar() > foo(), "less");
   assert(bar() >= foo(), "less or equal");
   assert(true == true, "true is not true");
-  assert(true != false, "true is false");
+  assert(true!= false, "true is false");
   assert(true && true == true, "true and true is not true");
   assert(true || false == true, "true or false is not true");
   return 0;

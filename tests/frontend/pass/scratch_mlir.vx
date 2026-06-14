@@ -3,7 +3,7 @@
 impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
   fn compare(self : &Tensor<T, [ N, M ]>, other : &Tensor<T, [ N, M ]>)
   -> bool {
-    let res = mlir !(inputs : (% lhs = self : memref<N x M x f32>,
+    let res = mlir!(inputs : (% lhs = self : memref<N x M x f32>,
     % rhs = other : memref<N x M x f32>),
     clobbers : [], returns : bool,
     dialects : [ "linalg", "arith", "memref", "func" ]){

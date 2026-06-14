@@ -6,8 +6,8 @@ fn main() -> i32 {
   let strs = [ "red", "green", "blue" ];
 
   for sptr in strs.iter() {
-    print !(sptr);
-    print !(0);
+    print!(sptr);
+    print!(0);
   }
   return 0;
 }

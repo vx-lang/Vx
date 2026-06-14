@@ -16,11 +16,13 @@ return <= 20 {
 }
 
 fn test_negated_logic(A : i32) -> i32
-requires !(A < 10)
+requires!(A < 10)
 ensures return >= 10 {
   return A;
 }
 
-fn main() -> i32 { return 0; }
+fn main() -> i32 {
+  return 0;
+}
 
 // CHECK: module

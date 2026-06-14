@@ -10,7 +10,9 @@ impl<T : Float> Tensor<T> {
   fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
-      unsafe { t[0][i] = ptr[i]; }
+      unsafe {
+        t[0][i] = ptr[i];
+      }
     }
     return t;
   }
@@ -19,7 +21,9 @@ impl<T : Float> Tensor<T> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
-        unsafe { t[i][j] = ptr[i * d2 + j]; }
+        unsafe {
+          t[i][j] = ptr[i * d2 + j];
+        }
       }
     }
     return t;
@@ -29,7 +33,9 @@ impl<T : Float> Tensor<T> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
-        unsafe { t[i][j] = self[row][i * d2 + j]; }
+        unsafe {
+          t[i][j] = self[row][i * d2 + j];
+        }
       }
     }
     return t;
@@ -76,8 +82,7 @@ impl<T : Float> Tensor<T> {
         linalg.copy ins(%src : memref<?x?xf32>) outs(%dst : memref<?x?xf32>)
         macro.yield
       };
-    }
-    else if comptime
+    } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%dst = self: memref<?x?xf32>, %src = src: memref<?x?xf32>),
@@ -110,8 +115,7 @@ impl<T : Float> Tensor<T> {
         linalg.fill ins(%arg_v : f32) outs(%arg_t : memref<?x?xf32>)
         macro.yield
       };
-    }
-    else if comptime
+    } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%arg_t = self: memref<?x?xf32>, %arg_v = val: f32),
@@ -161,8 +165,7 @@ impl<T : Float> Tensor<T> {
         %val = memref.load %res[] : memref<i1>
         func.return %val : i1
       }
-    }
-    else if comptime
+    } else if comptime
     Topology::Current == Topology::ANE {
       mlir!(
       inputs: (%lhs = self: memref<?x?xf32>, %rhs = other: memref<?x?xf32>),
@@ -226,14 +229,14 @@ impl<T : Float, const N : i32, const M : i32> Tensor<T, [N, M]> {
     Topology::Current == Topology::CPU_AVX512 {
       // Demonstrate optimized code path for AVX512 (fallback to standard
       // Linalg for demonstration)
-      mlir !(inputs : (% arg_t = self : memref<N x M x f32>,
+      mlir!(inputs : (% arg_t = self : memref<N x M x f32>,
       % arg_v = val : f32),
       clobbers : [self], dialects : ["linalg"]){
         linalg
         .fill ins(% arg_v : f32) outs(% arg_t : memref<N x M x f32>)
         macro.yield};
     } else {
-      mlir !(
+      mlir!(
       inputs : (% arg_t = self : memref<N x M x f32>, % arg_v = val : f32),
       clobbers : [self], dialects : ["linalg"]){
         linalg

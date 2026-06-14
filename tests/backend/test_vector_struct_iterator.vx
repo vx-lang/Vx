@@ -17,7 +17,9 @@ struct PointVecIter {
 
 impl PointVec {
   fn iter(self : PointVec) -> PointVecIter {
-    return PointVecIter{len : self.len, current : 0};
+    return PointVecIter{
+      len : self.len, current : 0
+    };
   }
 }
 
@@ -25,7 +27,9 @@ impl Iterator<PointVecIter, Point> for PointVecIter {
   fn next(self : PointVecIter) -> Option<Point> {
     if self
     .current < self.len {
-      let p : Point = Point{x : self.current, y : self.current * 10};
+      let p : Point = Point{
+        x : self.current, y : self.current * 10
+      };
       self.current = self.current + 1;
       return Option::Some(Point)(p);
     }
@@ -34,12 +38,14 @@ impl Iterator<PointVecIter, Point> for PointVecIter {
 }
 
 fn main() -> i32 {
-  let vec : PointVec = PointVec{len : 3};
+  let vec : PointVec = PointVec{
+    len : 3
+  };
   for p in vec.iter() {
-    print !("Point x: ");
-    print !(p.x);
-    print !("Point y: ");
-    print !(p.y);
+    print!("Point x: ");
+    print!(p.x);
+    print!("Point y: ");
+    print!(p.y);
   }
   return 0;
 }

@@ -129,8 +129,8 @@ fn main() -> i32 {
   let t4 = now();
   let time_fused = t4 - t3;
 
-  print !(time_unfused);
-  print !(time_fused);
+  print!(time_unfused);
+  print!(time_fused);
 
   // We expect fused to be faster or equal, but let's just log it and not
   // assert because caching effects could sometimes make them close, or O3

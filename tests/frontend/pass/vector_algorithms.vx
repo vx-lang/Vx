@@ -15,7 +15,7 @@ fn main() -> void {
   };
 
   t2.copy(&t1);
-  if !t1.compare(&t2) {
+  if!t1.compare(&t2) {
     print!("Error: Tensors should be equal after copy
 ");
   };

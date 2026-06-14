@@ -1,7 +1,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
 fn main() -> i32 {
-  println !("Hello Vx!");
-  println !("Printing a number: %d", 42);
+  println!("Hello Vx!");
+  println!("Printing a number: %d", 42);
   return 0;
 }

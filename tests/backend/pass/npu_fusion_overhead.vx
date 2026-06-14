@@ -160,8 +160,8 @@ fn main() -> i32 {
   let t4 = now();
   let time_fused = t4 - t3;
 
-  print !(time_unfused);
-  print !(time_fused);
+  print!(time_unfused);
+  print!(time_fused);
   assert(time_fused <= time_unfused);
 
   return 0;

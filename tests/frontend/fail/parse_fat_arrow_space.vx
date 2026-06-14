@@ -18,7 +18,7 @@ fn verify_permissions(age: u32, has_id: bool, is_banned: bool) -> void {
     }
 
     // Use of `!=`, `<=`, and `||`
-    if age <= 17 || is_banned != false {
+    if age <= 17 || is_banned!= false {
         println!("Access denied.");
     }
 }

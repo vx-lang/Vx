@@ -3,7 +3,7 @@
 import std::vec;
 
 fn main() -> i32 {
-  let mut v : Vec<i32> = vec ![ 10, 20, 30 ];
+  let mut v : Vec<i32> = vec![ 10, 20, 30 ];
   assert(v.len == 3);
   assert(v[0] == 10);
   assert(v[1] == 20);

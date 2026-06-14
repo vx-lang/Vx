@@ -3,9 +3,11 @@
 import std::vec;
 import std::closure;
 
-macro_rules first { ($arr : expr) =>{$arr[0]}; }
+macro_rules first { ($arr : expr) =>{
+    $arr[0]
+  }; }
 fn main() -> i32 {
   let arr = [ 10, 20, 30 ];
-  let f = first !(arr);
+  let f = first!(arr);
   return f;
 }

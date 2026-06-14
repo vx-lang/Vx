@@ -3,7 +3,9 @@
 // EXPECT: 1
 
 import std::io;
-fn apply_lambda<F>(f : F, val : i32) -> i32 { return f(val); }
+fn apply_lambda<F>(f : F, val : i32) -> i32 {
+  return f(val);
+}
 
 struct Captures {
   i : i32,
@@ -51,11 +53,13 @@ fn main() -> i32 {
 
   // closure_passed
   let i = 10;
-  let cap = Captures{i : 10};
+  let cap = Captures{
+    i : 10
+  };
   let cp_lambda = | x : i32 | x + cap.i + i;
   // x(32) + cap.i(10) + i(10) = 52
   assert(apply_lambda(cp_lambda, 32) == 52);
 
-  print !(1);
+  print!(1);
   return 1;
 }

@@ -3,9 +3,11 @@
 import std::vec;
 import std::closure;
 
-macro_rules is_equal { ($x : expr) =>{$x == 10}; }
+macro_rules is_equal { ($x : expr) =>{
+    $x == 10
+  }; }
 fn main() -> i32 {
-  let b = is_equal !(10);
+  let b = is_equal!(10);
   if b {
     return 1;
   }

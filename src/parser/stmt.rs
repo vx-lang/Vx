@@ -177,7 +177,20 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenType::Identifier(ref s) => {
-                if self.peek_n(1).kind == TokenType::Bang {
+                let ident_line = token.line;
+                let ident_end_col = token.column + token.length;
+                let next_token = self.peek_n(1);
+
+                let mut is_macro = false;
+                if next_token.kind == TokenType::Bang {
+                    if next_token.line == ident_line && next_token.column == ident_end_col {
+                        is_macro = true;
+                    } else {
+                        return Err(self.error(&format!("Macro invocations must not have spaces between the macro name and '!'. Did you mean `{}!`?", s)));
+                    }
+                }
+
+                if is_macro {
                     let name = s.clone();
                     self.advance(); // consume identifier
                     self.advance(); // consume '!'

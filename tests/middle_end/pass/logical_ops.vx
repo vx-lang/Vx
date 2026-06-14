@@ -18,7 +18,7 @@ fn main(d : Tensor<i32>) -> Tensor<i32> {
   let is_eq = a2 == c;
   let b2 : Tensor<i32> = 20;
   let c2 : Tensor<i32> = 10;
-  let is_neq = b2 != c2;
+  let is_neq = b2!= c2;
 
   let compound = is_less && is_eq;
   let a3 : Tensor<i32> = 10;

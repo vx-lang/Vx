@@ -59,7 +59,9 @@ struct RunState {
 fn ptr_to_tensor_1d(ptr: *mut f32, d1: i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor<f32>([ 1, d1 ]);
   for i in 0..d1 {
-    unsafe { t[0][i] = ptr[i]; }
+    unsafe {
+      t[0][i] = ptr[i];
+    }
   }
   return t;
 }
@@ -69,7 +71,9 @@ fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
   for i in 0..d1 {
     for j in 0..d2 {
       let idx : i32 = i * d2 + j;
-      unsafe { t[i][j] = ptr[idx]; }
+      unsafe {
+        t[i][j] = ptr[idx];
+      }
     }
   }
   return t;
@@ -137,29 +141,39 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
     }};
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe{vx_get_rope_freq(pos, i, head_size)};
+  return unsafe{
+    vx_get_rope_freq(pos, i, head_size)
+  };
 }
 
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for j in 0..size {
-    let val : f32 = unsafe{x[j]};
+    let val : f32 = unsafe{
+      x[j]
+    };
     ss = ss + (val * val);
   }
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
   for j in 0..size {
-    unsafe { o[j] = weight[j] * (ss * x[j]); }
+    unsafe {
+      o[j] = weight[j] * (ss * x[j]);
+    }
   }
   return 0;
 }
 
 fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_i : i32 = 0;
-  let mut max_p : f32 = unsafe{probabilities[0]};
+  let mut max_p : f32 = unsafe{
+    probabilities[0]
+  };
   for i in 1..n {
-    let p_val : f32 = unsafe{probabilities[i]};
+    let p_val : f32 = unsafe{
+      probabilities[i]
+    };
     if p_val > max_p {
       max_i = i;
       max_p = p_val;
@@ -177,7 +191,9 @@ w : &TransformerWeights) -> i32 {
 
   unsafe {
     // 1. Token Embedding
-    for i in 0..dim { s.x[i] = w.token_embedding_table[token * dim + i]; }
+    for i in 0..dim {
+      s.x[i] = w.token_embedding_table[token * dim + i];
+    }
 
     // 2. Forward pass over all layers
     for l in 0..p.n_layers {
@@ -189,7 +205,9 @@ w : &TransformerWeights) -> i32 {
       let mut wk_l : Tensor<f32> = Tensor<f32>([ dim, kv_dim ]);
       let mut wv_l : Tensor<f32> = Tensor<f32>([ dim, kv_dim ]);
       for row in 0..dim {
-        for col in 0..dim { wq_l[row][col] = w.wq[(l * dim + row) * dim + col]; }
+        for col in 0..dim {
+          wq_l[row][col] = w.wq[(l * dim + row) * dim + col];
+        }
         for col in 0..kv_dim {
           wk_l[row][col] = w.wk[(l * dim + row) * kv_dim + col];
         }
@@ -199,18 +217,26 @@ w : &TransformerWeights) -> i32 {
       }
 
       let mut t_xb_q : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_q[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_q[0][i] = s.xb[i];
+      }
       let t_q : Tensor<f32> = t_xb_q @wq_l;
 
       let mut t_xb_k : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_k[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_k[0][i] = s.xb[i];
+      }
       let t_k : Tensor<f32> = t_xb_k @wk_l;
 
       let mut t_xb_v : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_v[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_v[0][i] = s.xb[i];
+      }
       let t_v : Tensor<f32> = t_xb_v @wv_l;
 
-      for i in 0..dim { s.q[i] = t_q[0][i]; }
+      for i in 0..dim {
+        s.q[i] = t_q[0][i];
+      }
       for i in 0..kv_dim {
         s.k[i] = t_k[0][i];
         s.v[i] = t_v[0][i];
@@ -265,7 +291,9 @@ w : &TransformerWeights) -> i32 {
         let mut m : f32 = -999999.0;
         let mut l_sum : f32 = 0.0;
 
-        for i in 0..head_size { s.xb[q_offset + i] = 0.0; }
+        for i in 0..head_size {
+          s.xb[q_offset + i] = 0.0;
+        }
 
         for t in 0..(pos + 1) {
           let mut score : f32 = 0.0;
@@ -279,7 +307,9 @@ w : &TransformerWeights) -> i32 {
           score = score / hf.sqrt();
 
           let mut m_new : f32 = m;
-          if score > m { m_new = score; }
+          if score > m {
+            m_new = score;
+          }
 
           let diff : f32 = m - m_new;
           let correction : f32 = diff.exp();
@@ -299,21 +329,29 @@ w : &TransformerWeights) -> i32 {
         }
 
         let inv_l : f32 = 1.0 / l_sum;
-        for i in 0..head_size { s.xb[q_offset + i] = s.xb[q_offset + i] * inv_l; }
+        for i in 0..head_size {
+          s.xb[q_offset + i] = s.xb[q_offset + i] * inv_l;
+        }
       }
 
       // 2.6 Output Projection
       let mut wo_l : Tensor<f32> = Tensor<f32>([ dim, dim ]);
       for row in 0..dim {
-        for col in 0..dim { wo_l[row][col] = w.wo[(l * dim + row) * dim + col]; }
+        for col in 0..dim {
+          wo_l[row][col] = w.wo[(l * dim + row) * dim + col];
+        }
       }
 
       let mut t_xb_wo : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_wo[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_wo[0][i] = s.xb[i];
+      }
       let t_xb2 : Tensor<f32> = t_xb_wo @wo_l;
 
       // Residual connection
-      for i in 0..dim { s.x[i] = s.x[i] + t_xb2[0][i]; }
+      for i in 0..dim {
+        s.x[i] = s.x[i] + t_xb2[0][i];
+      }
 
       // 2.7 FFN RMSNorm
       rmsnorm(s.xb, s.x, vx_advance_ptr(w.rms_ffn_weight, l * dim), dim);
@@ -335,11 +373,15 @@ w : &TransformerWeights) -> i32 {
       }
 
       let mut t_xb_w1 : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_w1[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_w1[0][i] = s.xb[i];
+      }
       let t_hb : Tensor<f32> = t_xb_w1 @w1_l;
 
       let mut t_xb_w3 : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-      for i in 0..dim { t_xb_w3[0][i] = s.xb[i]; }
+      for i in 0..dim {
+        t_xb_w3[0][i] = s.xb[i];
+      }
       let t_hb2 : Tensor<f32> = t_xb_w3 @w3_l;
 
       // SwiGLU activation
@@ -351,11 +393,15 @@ w : &TransformerWeights) -> i32 {
       }
 
       let mut t_hb_2d : Tensor<f32> = Tensor<f32>([ 1, hidden_dim ]);
-      for i in 0..hidden_dim { t_hb_2d[0][i] = s.hb[i]; }
+      for i in 0..hidden_dim {
+        t_hb_2d[0][i] = s.hb[i];
+      }
       let t_xb_out : Tensor<f32> = t_hb_2d @w2_l;
 
       // Residual connection
-      for i in 0..dim { s.x[i] = s.x[i] + t_xb_out[0][i]; }
+      for i in 0..dim {
+        s.x[i] = s.x[i] + t_xb_out[0][i];
+      }
     }
 
     // 3. Final RMSNorm
@@ -363,15 +409,21 @@ w : &TransformerWeights) -> i32 {
 
     // 4. Classifier into Logits
     let mut t_x_2d : Tensor<f32> = Tensor<f32>([ 1, dim ]);
-    for i in 0..dim { t_x_2d[0][i] = s.x[i]; }
+    for i in 0..dim {
+      t_x_2d[0][i] = s.x[i];
+    }
 
     let mut t_wcls_T : Tensor<f32> = Tensor<f32>([ dim, p.vocab_size ]);
     for r in 0..p.vocab_size {
-      for c in 0..dim { t_wcls_T[c][r] = w.wcls[r * dim + c]; }
+      for c in 0..dim {
+        t_wcls_T[c][r] = w.wcls[r * dim + c];
+      }
     }
 
     let t_logits : Tensor<f32> = t_x_2d @t_wcls_T;
-    for i in 0..p.vocab_size { s.logits[i] = t_logits[0][i]; }
+    for i in 0..p.vocab_size {
+      s.logits[i] = t_logits[0][i];
+    }
   }
   return 0;
 }
@@ -382,7 +434,9 @@ fn main() -> i32 {
   let temperature : f32 = 0.0;
 
   // 1. Initialize configuration via FFI
-  let config_ptr : *mut i32 = unsafe{vx_load_config(model_path)};
+  let config_ptr : *mut i32 = unsafe{
+    vx_load_config(model_path)
+  };
   let vocab_size : i32 = unsafe {
     let p_vocab : *mut i32 = vx_advance_ptr(config_ptr, 5);
     p_vocab[0]
@@ -410,10 +464,14 @@ fn main() -> i32 {
 
   let steps : i32 = 256;
   if config
-  .seq_len < steps { let s : i32 = config.seq_len; }
+  .seq_len < steps {
+    let s : i32 = config.seq_len;
+  }
 
   // 2. Map weights and allocate native Tensors
-  let weights_ptr : *mut f32 = unsafe{vx_load_weights(model_path)};
+  let weights_ptr : *mut f32 = unsafe{
+    vx_load_weights(model_path)
+  };
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
   config.n_layers, config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);
@@ -421,7 +479,9 @@ fn main() -> i32 {
   config.n_heads, config.n_kv_heads, config.seq_len,
   config.vocab_size);
   let tokenizer_ptr
-  : *mut i8 = unsafe{vx_build_tokenizer(tokenizer_path, config.vocab_size)};
+  : *mut i8 = unsafe{
+    vx_build_tokenizer(tokenizer_path, config.vocab_size)
+  };
 
   let start : f32 = now();
   let mut next : i32 = 0;
@@ -431,11 +491,17 @@ fn main() -> i32 {
   for pos in 0..steps {
     transformer(token, pos, &config, &state, &weights);
     next = argmax(state.logits, config.vocab_size);
-    let piece : *mut i8 = unsafe{vx_decode_token(tokenizer_ptr, token, next)};
-    unsafe { print !(piece); }
+    let piece : *mut i8 = unsafe{
+      vx_decode_token(tokenizer_ptr, token, next)
+    };
+    unsafe {
+      print!(piece);
+    }
     token = next;
   }
 
-  unsafe { print !(0.0); }
+  unsafe {
+    print!(0.0);
+  }
   return 0;
 }

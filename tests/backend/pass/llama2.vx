@@ -153,7 +153,9 @@ w : &TransformerWeights) -> *mut f32 {
 
     let content_row : *mut f32 =
     vx_advance_ptr(w.token_embedding_table, token * dim);
-    for i in 0..dim { x[i] = content_row[i]; }
+    for i in 0..dim {
+      x[i] = content_row[i];
+    }
 
     let n_layers : i32 = p.n_layers;
     let seq_len : i32 = p.seq_len;
@@ -239,7 +241,9 @@ w : &TransformerWeights) -> *mut f32 {
         let mut max_val : f32 = att_h[0];
         for t in 1..pos_1 {
           let val : f32 = att_h[t];
-          if val > max_val { max_val = val; }
+          if val > max_val {
+            max_val = val;
+          }
         }
 
         let mut sum : f32 = 0.0;
@@ -362,7 +366,9 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
   let mut max_val : f32 = x[0];
   for i in 1..size {
     let val : f32 = x[i];
-    if val > max_val { max_val = val; }
+    if val > max_val {
+      max_val = val;
+    }
   }
 
   let mut sum : f32 = 0.0;
@@ -483,7 +489,7 @@ fn main() -> i32 {
       }
 
       let piece : *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
-      let print_status : i32 = print !(piece);
+      let print_status : i32 = print!(piece);
 
       token = next;
       pos += steps;

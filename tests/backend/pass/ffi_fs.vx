@@ -41,10 +41,14 @@ fn main() -> i32 {
     vx_free_temp_file(path);
 
     let mut success : i32 = 0;
-    if bytes_written != 5 { success = 1; }
-    if bytes_read != 5 { success = 2; }
-    print !("Success: ");
-    print !(success);
+    if bytes_written!= 5 {
+      success = 1;
+    }
+    if bytes_read!= 5 {
+      success = 2;
+    }
+    print!("Success: ");
+    print!(success);
   }
   return 0;
 }

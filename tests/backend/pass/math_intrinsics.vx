@@ -20,8 +20,8 @@ fn main() -> i32 {
   unsafe {
     let root = a.sqrt();
     let exp = b.exp();
-    print !(root);
-    print !(exp);
+    print!(root);
+    print!(exp);
   }
   return 0;
 }

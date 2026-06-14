@@ -20,8 +20,8 @@ fn main() -> i32 {
     vx_vec_push_i32(vec, 42);
     vx_vec_push_i32(vec, 100);
     let len = vx_vec_len_i32(vec);
-    print !("Length: ");
-    print !(len);
+    print!("Length: ");
+    print!(len);
     vx_vec_drop_i32(vec);
   }
   return 0;
