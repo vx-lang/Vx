@@ -43,7 +43,7 @@ fn test_parse_module_api() -> Result<(), String> {
     Ok(())
 }
 
-use vxc::ast::{VxFunction, VxModule};
+use vxc::ast::VxModule;
 
 #[test]
 fn test_ak_module_add_function() -> Result<(), String> {
@@ -60,7 +60,9 @@ fn test_ak_module_add_function() -> Result<(), String> {
     };
 
     // The 'pub' keyword is automatically stripped by our From<&str> implementation
-    module.add(VxFunction::from("pub fn foo() -> i64 { return 10; }"));
+    module.add(vxc::parser::Parser::parse_fn_from_str(
+        "pub fn foo() -> i64 { return 10; }",
+    ));
 
     if module.functions.len() != 1 {
         return Err(format!(

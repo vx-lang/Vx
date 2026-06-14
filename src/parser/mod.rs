@@ -70,12 +70,9 @@ pub struct Parser<'a> {
     source: &'a str,
 }
 
-impl From<&str> for Function {
-    fn from(source: &str) -> Self {
-        // Strip out 'pub' keyword if the user provided it as an example,
-        // since Vx currently expects functions to start with 'fn'.
+impl<'a> Parser<'a> {
+    pub fn parse_fn_from_str(source: &'a str) -> Function {
         let cleaned_source = source.trim().trim_start_matches("pub ");
-
         let mut lexer = crate::lexer::Lexer::new(cleaned_source);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, cleaned_source);
@@ -84,9 +81,6 @@ impl From<&str> for Function {
             .map_err(|e| e.format(cleaned_source))
             .expect("Failed to parse function source")
     }
-}
-
-impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token<'a>], source: &'a str) -> Self {
         Self {
             tokens,
@@ -101,11 +95,9 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn peek_n(&self, offset: usize) -> &Token<'a> {
-        if self.pos + offset < self.tokens.len() {
-            &self.tokens[self.pos + offset]
-        } else {
-            &self.tokens[self.tokens.len() - 1] // return EOF
-        }
+        self.tokens
+            .get(self.pos + offset)
+            .unwrap_or_else(|| self.tokens.last().expect("Token stream cannot be empty"))
     }
 
     pub(crate) fn advance(&mut self) -> &Token<'a> {
