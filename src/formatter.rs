@@ -142,6 +142,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                             );
                             i += 1;
                         }
+                        i += 1;
                         continue;
                     }
                 }

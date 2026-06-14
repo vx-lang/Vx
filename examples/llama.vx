@@ -59,9 +59,7 @@ struct RunState {
 fn ptr_to_tensor_1d(ptr: *mut f32, d1: i32) -> Tensor<f32> {
   let mut t : Tensor<f32> = Tensor<f32>([ 1, d1 ]);
   for i in 0..d1 {
-    unsafe {
-      t[0][i] = ptr[i];
-    }
+    unsafe { t[0][i] = ptr[i]; }
   }
   return t;
 }
@@ -71,9 +69,7 @@ fn ptr_to_tensor_2d(ptr : *mut f32, d1 : i32, d2 : i32) -> Tensor<f32> {
   for i in 0..d1 {
     for j in 0..d2 {
       let idx : i32 = i * d2 + j;
-      unsafe {
-        t[i][j] = ptr[idx];
-      }
+      unsafe { t[i][j] = ptr[idx]; }
     }
   }
   return t;
@@ -141,39 +137,29 @@ n_kv_heads : i32, seq_len : i32, vocab_size : i32)
     }};
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe {
-    vx_get_rope_freq(pos, i, head_size)
-  };
+  return unsafe { vx_get_rope_freq(pos, i, head_size) };
 }
 
 fn rmsnorm(o : *mut f32, x : *mut f32, weight : *mut f32, size : i32) -> i32 {
   let mut ss : f32 = 0.0;
   for j in 0..size {
-    let val : f32 = unsafe {
-      x[j]
-    };
+    let val : f32 = unsafe { x[j] };
     ss = ss + (val * val);
   }
   let div : f32 = ss / size;
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
   for j in 0..size {
-    unsafe {
-      o[j] = weight[j] * (ss * x[j]);
-    }
+    unsafe { o[j] = weight[j] * (ss * x[j]); }
   }
   return 0;
 }
 
 fn argmax(probabilities : *mut f32, n : i32) -> i32 {
   let mut max_i : i32 = 0;
-  let mut max_p : f32 = unsafe {
-    probabilities[0]
-  };
+  let mut max_p : f32 = unsafe { probabilities[0] };
   for i in 1..n {
-    let p_val : f32 = unsafe {
-      probabilities[i]
-    };
+    let p_val : f32 = unsafe { probabilities[i] };
     if p_val > max_p {
       max_i = i;
       max_p = p_val;
@@ -434,9 +420,7 @@ fn main() -> i32 {
   let temperature : f32 = 0.0;
 
   // 1. Initialize configuration via FFI
-  let config_ptr : *mut i32 = unsafe {
-    vx_load_config(model_path)
-  };
+  let config_ptr : *mut i32 = unsafe { vx_load_config(model_path) };
   let vocab_size : i32 = unsafe {
     let p_vocab : *mut i32 = vx_advance_ptr(config_ptr, 5);
     p_vocab[0]
@@ -469,9 +453,7 @@ fn main() -> i32 {
   }
 
   // 2. Map weights and allocate native Tensors
-  let weights_ptr : *mut f32 = unsafe {
-    vx_load_weights(model_path)
-  };
+  let weights_ptr : *mut f32 = unsafe { vx_load_weights(model_path) };
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
   config.n_layers, config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);
@@ -479,9 +461,7 @@ fn main() -> i32 {
   config.n_heads, config.n_kv_heads, config.seq_len,
   config.vocab_size);
   let tokenizer_ptr
-  : *mut i8 = unsafe {
-    vx_build_tokenizer(tokenizer_path, config.vocab_size)
-  };
+  : *mut i8 = unsafe { vx_build_tokenizer(tokenizer_path, config.vocab_size) };
 
   let start : f32 = now();
   let mut next : i32 = 0;
@@ -494,14 +474,10 @@ fn main() -> i32 {
     let piece : *mut i8 = unsafe {
       vx_decode_token(tokenizer_ptr, token, next)
     };
-    unsafe {
-      print!(piece);
-    }
+    unsafe { print!(piece); }
     token = next;
   }
 
-  unsafe {
-    print!(0.0);
-  }
+  unsafe { print!(0.0); }
   return 0;
 }

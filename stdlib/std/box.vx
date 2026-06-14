@@ -16,22 +16,15 @@ impl<T>
 Box<T> {
   fn new (val : T)->Box<T> {
     let size_bytes : i64 = sizeof<T>();
-    let p : *mut T = unsafe {
-      malloc(size_bytes)
-    };
-    unsafe {
-      *p = val;
-    }
+    let p : *mut T = unsafe { malloc(size_bytes) };
+    unsafe { *p = val; }
     return Box<T> {
       ptr : p
     };
   }
 
   fn free(self : &mut Box<T>) -> i32 {
-    unsafe {
-      let ptr_i8 : *mut i8 = self.ptr;
-      free(ptr_i8);
-    }
+    unsafe { let ptr_i8 : *mut i8 = self.ptr; free(ptr_i8); }
     return 0;
   }
 }

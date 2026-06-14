@@ -196,9 +196,7 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
       let mul = div * 2;
       let rem = i - mul;
       if rem == 0 {
-        let fcr: f32 = unsafe {
-          vx_get_rope_freq(pos, i, head_dim)
-        };
+        let fcr: f32 = unsafe { vx_get_rope_freq(pos, i, head_dim) };
         let fci = fcr.cos();
         let fsi = fcr.sin();
 

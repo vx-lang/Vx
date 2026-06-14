@@ -15,14 +15,14 @@ extern {
   fn vx_unix_timestamp() -> f64;
 }
 
-fn now() -> f32 { return unsafe {
-    vx_get_time()
-  }; }
+fn now() -> f32 {
+  return unsafe { vx_get_time() };
+}
 
-fn sleep(seconds : f32) -> i32 { return unsafe {
-    vx_sleep(seconds)
-  }; }
+fn sleep(seconds : f32) -> i32 {
+  return unsafe { vx_sleep(seconds) };
+}
 
-fn unix_timestamp() -> f64 { return unsafe {
-    vx_unix_timestamp()
-  }; }
+fn unix_timestamp() -> f64 {
+  return unsafe { vx_unix_timestamp() };
+}

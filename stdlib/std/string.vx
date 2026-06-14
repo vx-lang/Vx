@@ -56,9 +56,7 @@ impl String {
 
 impl i32 {
   fn to_string(self : i32) -> String {
-    let ptr = unsafe {
-      vx_i32_to_string(self)
-    };
+    let ptr = unsafe { vx_i32_to_string(self) };
     return String {
       ptr : ptr
     };

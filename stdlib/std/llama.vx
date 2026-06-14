@@ -34,9 +34,7 @@ struct LlamaConfig {
 
 impl LlamaConfig {
   fn load(filepath: *const i8) -> LlamaConfig {
-    let config_ptr = unsafe {
-      vx_load_config(filepath)
-    };
+    let config_ptr = unsafe { vx_load_config(filepath) };
 
     let config = unsafe {
       LlamaConfig {
@@ -132,9 +130,7 @@ impl TransformerWeightOffsets {
   }
 
   fn load_all_weights(filepath: *const i8, c: &LlamaConfig) -> Tensor<f32> {
-    let ptr = unsafe {
-      vx_load_weights(filepath)
-    };
+    let ptr = unsafe { vx_load_weights(filepath) };
     let dim = c.dim;
     let n_layers = c.n_layers;
     let n_heads = c.n_heads;
@@ -158,9 +154,7 @@ impl TransformerWeightOffsets {
 
     let mut all_weights = Tensor<f32>([1, total_floats]);
     for i in 0..total_floats {
-      unsafe {
-        all_weights[0][i] = ptr[i];
-      }
+      unsafe { all_weights[0][i] = ptr[i]; }
     }
     return all_weights;
   }
@@ -172,20 +166,14 @@ struct Tokenizer {
 
 impl Tokenizer {
   fn load(filepath: *const i8, vocab_size: i32) -> Tokenizer {
-    let ptr = unsafe {
-      vx_build_tokenizer(filepath, vocab_size)
-    };
+    let ptr = unsafe { vx_build_tokenizer(filepath, vocab_size) };
     return Tokenizer {
       ptr: ptr
     };
   }
 
   fn decode(self: &Tokenizer, prev_token: i32, token: i32) -> String {
-    let piece_ptr = unsafe {
-      vx_decode_token(self.ptr, prev_token, token)
-    };
-    return unsafe {
-      String::from_c_str(piece_ptr)
-    };
+    let piece_ptr = unsafe { vx_decode_token(self.ptr, prev_token, token) };
+    return unsafe { String::from_c_str(piece_ptr) };
   }
 }

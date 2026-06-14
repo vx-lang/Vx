@@ -14,10 +14,7 @@
 import std::box;
 
 fn f5(ptr: *mut i32) -> i32 {
-  unsafe {
-    let val = ptr[0];
-    print!(val);
-  }
+  unsafe { let val = ptr[0]; print!(val); }
   return 0;
 }
 
@@ -38,9 +35,7 @@ fn f1(ptr: *mut i32) -> i32 {
 }
 
 fn main() -> i32 {
-  let mut ptr: *mut i32 = unsafe {
-    0 as *mut i32
-  };
+  let mut ptr: *mut i32 = unsafe { 0 as *mut i32 };
   f1(ptr);
   return 0;
 }

@@ -3,9 +3,6 @@
 // CHECK: Backtrace:
 
 fn main() -> i32 {
-  unsafe {
-    let ptr: *mut i32 = 0 as *mut i32;
-    ptr[0] = 42;
-  }
+  unsafe { let ptr: *mut i32 = 0 as *mut i32; ptr[0] = 42; }
   return 0;
 }

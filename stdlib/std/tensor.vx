@@ -10,9 +10,7 @@ impl<T : Float> Tensor<T> {
   fn from_ptr_1d(ptr: *mut T, d1: i32) -> Tensor<T> {
     let mut t = Tensor<T>([ 1, d1 ]);
     for i in 0..d1 {
-      unsafe {
-        t[0][i] = ptr[i];
-      }
+      unsafe { t[0][i] = ptr[i]; }
     }
     return t;
   }
@@ -21,9 +19,7 @@ impl<T : Float> Tensor<T> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
-        unsafe {
-          t[i][j] = ptr[i * d2 + j];
-        }
+        unsafe { t[i][j] = ptr[i * d2 + j]; }
       }
     }
     return t;
@@ -33,9 +29,7 @@ impl<T : Float> Tensor<T> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
-        unsafe {
-          t[i][j] = self[row][i * d2 + j];
-        }
+        unsafe { t[i][j] = self[row][i * d2 + j]; }
       }
     }
     return t;

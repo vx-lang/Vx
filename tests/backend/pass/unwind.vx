@@ -41,9 +41,7 @@ extern {
 }
 
 fn f5() -> i32 {
-  unsafe {
-    vx_panic();
-  }
+  unsafe { vx_panic(); }
   return 0;
 }
 

@@ -18,12 +18,7 @@ fn main() -> i32 {
   let e : f32 = a * b;
   let f : f32 = a / b;
 
-  unsafe {
-    print!(c);
-    print!(d);
-    print!(e);
-    print!(f);
-  }
+  unsafe { print!(c); print!(d); print!(e); print!(f); }
 
   return 0;
 }

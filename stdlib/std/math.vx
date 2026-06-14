@@ -52,79 +52,79 @@ trait Math {
 }
 
 impl Math for f32 {
-  fn sin(self : f32) -> f32 { return unsafe {
-      sinf(self)
-    }; }
-  fn cos(self : f32) -> f32 { return unsafe {
-      cosf(self)
-    }; }
-  fn tan(self : f32) -> f32 { return unsafe {
-      tanf(self)
-    }; }
-  fn abs(self : f32) -> f32 { return unsafe {
-      fabsf(self)
-    }; }
-  fn sqrt(self : f32) -> f32 { return unsafe {
-      sqrtf(self)
-    }; }
-  fn exp(self : f32) -> f32 { return unsafe {
-      expf(self)
-    }; }
-  fn ln(self : f32) -> f32 { return unsafe {
-      logf(self)
-    }; }
-  fn asin(self : f32) -> f32 { return unsafe {
-      asinf(self)
-    }; }
-  fn acos(self : f32) -> f32 { return unsafe {
-      acosf(self)
-    }; }
-  fn atan(self : f32) -> f32 { return unsafe {
-      atanf(self)
-    }; }
-  fn log2(self : f32) -> f32 { return unsafe {
-      log2f(self)
-    }; }
-  fn log10(self : f32) -> f32 { return unsafe {
-      log10f(self)
-    }; }
+  fn sin(self : f32) -> f32 {
+    return unsafe { sinf(self) };
+  }
+  fn cos(self : f32) -> f32 {
+    return unsafe { cosf(self) };
+  }
+  fn tan(self : f32) -> f32 {
+    return unsafe { tanf(self) };
+  }
+  fn abs(self : f32) -> f32 {
+    return unsafe { fabsf(self) };
+  }
+  fn sqrt(self : f32) -> f32 {
+    return unsafe { sqrtf(self) };
+  }
+  fn exp(self : f32) -> f32 {
+    return unsafe { expf(self) };
+  }
+  fn ln(self : f32) -> f32 {
+    return unsafe { logf(self) };
+  }
+  fn asin(self : f32) -> f32 {
+    return unsafe { asinf(self) };
+  }
+  fn acos(self : f32) -> f32 {
+    return unsafe { acosf(self) };
+  }
+  fn atan(self : f32) -> f32 {
+    return unsafe { atanf(self) };
+  }
+  fn log2(self : f32) -> f32 {
+    return unsafe { log2f(self) };
+  }
+  fn log10(self : f32) -> f32 {
+    return unsafe { log10f(self) };
+  }
 }
 
 impl Math for f64 {
-  fn sin(self : f64) -> f64 { return unsafe {
-      sin(self)
-    }; }
-  fn cos(self : f64) -> f64 { return unsafe {
-      cos(self)
-    }; }
-  fn tan(self : f64) -> f64 { return unsafe {
-      tan(self)
-    }; }
-  fn abs(self : f64) -> f64 { return unsafe {
-      fabs(self)
-    }; }
-  fn sqrt(self : f64) -> f64 { return unsafe {
-      sqrt(self)
-    }; }
-  fn exp(self : f64) -> f64 { return unsafe {
-      exp(self)
-    }; }
-  fn ln(self : f64) -> f64 { return unsafe {
-      log(self)
-    }; }
-  fn asin(self : f64) -> f64 { return unsafe {
-      asin(self)
-    }; }
-  fn acos(self : f64) -> f64 { return unsafe {
-      acos(self)
-    }; }
-  fn atan(self : f64) -> f64 { return unsafe {
-      atan(self)
-    }; }
-  fn log2(self : f64) -> f64 { return unsafe {
-      log2(self)
-    }; }
-  fn log10(self : f64) -> f64 { return unsafe {
-      log10(self)
-    }; }
+  fn sin(self : f64) -> f64 {
+    return unsafe { sin(self) };
+  }
+  fn cos(self : f64) -> f64 {
+    return unsafe { cos(self) };
+  }
+  fn tan(self : f64) -> f64 {
+    return unsafe { tan(self) };
+  }
+  fn abs(self : f64) -> f64 {
+    return unsafe { fabs(self) };
+  }
+  fn sqrt(self : f64) -> f64 {
+    return unsafe { sqrt(self) };
+  }
+  fn exp(self : f64) -> f64 {
+    return unsafe { exp(self) };
+  }
+  fn ln(self : f64) -> f64 {
+    return unsafe { log(self) };
+  }
+  fn asin(self : f64) -> f64 {
+    return unsafe { asin(self) };
+  }
+  fn acos(self : f64) -> f64 {
+    return unsafe { acos(self) };
+  }
+  fn atan(self : f64) -> f64 {
+    return unsafe { atan(self) };
+  }
+  fn log2(self : f64) -> f64 {
+    return unsafe { log2(self) };
+  }
+  fn log10(self : f64) -> f64 {
+    return unsafe { log10(self) };
+  }
 }

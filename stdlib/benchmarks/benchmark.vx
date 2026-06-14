@@ -11,13 +11,9 @@ extern "C" {
 }
 
 fn start() -> Tensor<f32> {
-  return unsafe {
-    start_benchmark()
-  };
+  return unsafe { start_benchmark() };
 }
 
 fn end() -> Tensor<i32> {
-  return unsafe {
-    end_benchmark()
-  };
+  return unsafe { end_benchmark() };
 }

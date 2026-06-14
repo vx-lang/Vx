@@ -11,13 +11,9 @@ extern "C" {
 }
 
 fn start() -> Tensor<i32> {
-  return unsafe {
-    trace_start()
-  };
+  return unsafe { trace_start() };
 }
 
 fn end() -> Tensor<i32> {
-  return unsafe {
-    trace_end()
-  };
+  return unsafe { trace_end() };
 }

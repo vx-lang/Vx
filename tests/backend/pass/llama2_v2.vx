@@ -72,9 +72,7 @@ fn tensor_to_ptr_1d(t : Tensor<f32>, ptr : &mut f32, d1 : i32) -> i32 {
   return 0;
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe {
-    vx_get_rope_freq(pos, i, head_size)
-  };
+  return unsafe { vx_get_rope_freq(pos, i, head_size) };
 }
 
 fn rmsnorm(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, l: i32, size : i32) -> i32 {
@@ -112,9 +110,7 @@ fn rmsnorm_1d(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, size : i32) -> 
 }
 
 fn advance_f32_ptr(ptr: &mut f32, offset: i32) -> &mut f32 {
-  return unsafe {
-    vx_advance_ptr(ptr, offset)
-  };
+  return unsafe { vx_advance_ptr(ptr, offset) };
 }
 
 fn transformer(token : i32, pos : i32, p : &LlamaConfig, s : &RunState,

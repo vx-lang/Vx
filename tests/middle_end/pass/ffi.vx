@@ -12,9 +12,7 @@ extern "C" {
 }
 
 fn main() -> Tensor<i32> {
-  unsafe {
-    let ptr = malloc(1024);
-  }
+  unsafe { let ptr = malloc(1024); }
   return 0;
 }
 

@@ -24,9 +24,7 @@ Vec<T> {
 
   fn with_capacity(capacity : i32) -> Vec<T> {
     let size_bytes : i64 = (capacity as i64) * sizeof<T>();
-    let ptr : *mut T = unsafe {
-      malloc(size_bytes)
-    };
+    let ptr : *mut T = unsafe { malloc(size_bytes) };
     return Vec<T> {
       data : ptr, len : 0, capacity : capacity
     };
@@ -49,16 +47,12 @@ Vec<T> {
 
   fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
     let ptr : *mut T = self.data;
-    return unsafe {
-      &mut *ptr
-    };
+    return unsafe { &mut *ptr };
   }
 
   fn as_slice(self : &Vec<T>) -> &T {
     let ptr : *mut T = self.data;
-    return unsafe {
-      &*ptr
-    };
+    return unsafe { &*ptr };
   }
 
   fn push(self : &mut Vec<T>, val : T) -> i32 {
@@ -72,14 +66,10 @@ Vec<T> {
       let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
 
       let ptr : *mut i8 = self.data;
-      self.data = unsafe {
-        realloc(ptr, size_bytes)
-      };
+      self.data = unsafe { realloc(ptr, size_bytes) };
       self.capacity = new_cap;
     }
-    unsafe {
-      self.data[self.len] = val;
-    }
+    unsafe { self.data[self.len] = val; }
     self.len = self.len + 1;
     return 0;
   }
@@ -87,17 +77,13 @@ Vec<T> {
   fn get(self : &Vec<T>, index: i32) -> T {
     assert(index >= 0, "Index out of bounds");
     assert(index < self.len, "Index out of bounds");
-    return unsafe {
-      self.data[index]
-    };
+    return unsafe { self.data[index] };
   }
 
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     assert(index >= 0, "Index out of bounds");
     assert(index < self.len, "Index out of bounds");
-    unsafe {
-      self.data[index] = val;
-    }
+    unsafe { self.data[index] = val; }
     return 0;
   }
 
@@ -119,15 +105,11 @@ struct VecIter<T> {
 
 impl<T> Iterator<VecIter<T>, T> for VecIter<T> {
   fn next(self : &mut VecIter<T>) -> Option<T> {
-    let vec_len : i32 = unsafe {
-      (*self.vec).len
-    };
+    let vec_len : i32 = unsafe { (*self.vec).len };
     let mut ret = Option<T>::None();
     if self
     .current < vec_len {
-      let val : T = unsafe {
-        (*self.vec).data[self.current]
-      };
+      let val : T = unsafe { (*self.vec).data[self.current] };
       self.current = self.current + 1;
       ret = Option<T>::Some(val);
     }

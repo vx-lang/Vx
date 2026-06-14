@@ -133,10 +133,7 @@ fn main() -> i32 {
   };
 
   let dim_f : f32 = 256.0;
-  unsafe {
-    print!("Dim: %f");
-    print!(dim_f);
-  }
+  unsafe { print!("Dim: %f"); print!(dim_f); }
   return 0;
 }
 
