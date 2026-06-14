@@ -15,47 +15,6 @@ use std::collections::HashMap;
 use super::*;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_expr(&mut self, expr: &mut Expr) -> (Type, u32) {
-        // First perform semantic validation silently for HIR lowering
-        let ty = self.check_expr_type_flag(expr, false, true);
-
-        // Then perform AST to HIR lowering
-        let type_idx = self.emit_type(&ty);
-
-        // Determine opcode based on the AST expression
-        let opcode = match expr {
-            Expr::Number(NumberExpr { .. }) => crate::hir::OP_CONST,
-            Expr::Identifier(IdentifierExpr { name: _, span: _ }) => crate::hir::OP_LOAD,
-            Expr::BinaryOp(BinaryOpExpr {
-                lhs: _,
-                op,
-                rhs: _,
-                span: _,
-            }) => match op {
-                BinaryOp::Add => crate::hir::OP_ADD,
-                BinaryOp::Sub => crate::hir::OP_SUB,
-                BinaryOp::Mul => crate::hir::OP_MUL,
-                BinaryOp::MatMul => crate::hir::OP_MATMUL,
-                BinaryOp::Div => crate::hir::OP_DIV,
-            },
-            Expr::RelationalOp(RelationalOpExpr { .. }) => crate::hir::OP_NOP,
-            Expr::LogicalOp(LogicalOpExpr { .. }) => crate::hir::OP_NOP,
-            Expr::FunctionCall(FunctionCallExpr {
-                name: _,
-                type_args: _,
-                args: _,
-                span: _,
-            }) => crate::hir::OP_CALL,
-            _ => crate::hir::OP_NOP,
-        };
-
-        // In a full implementation, we would recursively call check_expr here
-        // to get operand registers. For this bridge proof-of-concept, we emit
-        // dummy operands and assign the result register.
-        let reg = self.emit_inst(opcode, 0, 0, type_idx);
-        (ty, reg)
-    }
-
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         self.check_expr_type_flag(expr, true, false)
     }
@@ -2868,8 +2827,8 @@ impl<'a> TypeChecker<'a> {
                     element_type = self.check_expr_type(&mut first);
                 }
 
-                let var_name = format!("_vec_macro_tmp_{}", self.next_reg);
-                self.next_reg += 1;
+                let var_name = format!("_vec_macro_tmp_{}", self.next_id);
+                self.next_id += 1;
 
                 let new_call = Expr::FunctionCall(FunctionCallExpr::new(
                     format!("Vec<{}>::new", element_type),
@@ -2923,9 +2882,9 @@ impl<'a> TypeChecker<'a> {
     fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool, silent: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
-                let struct_name = format!("Closure_{}", self.next_reg);
+                let struct_name = format!("Closure_{}", self.next_id);
                 let func_name = format!("{}_call", struct_name);
-                self.next_reg += 1;
+                self.next_id += 1;
 
                 let cloned_params = e.params.clone();
 

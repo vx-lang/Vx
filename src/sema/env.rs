@@ -135,8 +135,7 @@ pub struct TypeChecker<'a> {
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
     pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
     pub constraints: Vec<Expr>,
-    pub(crate) next_reg: u32,
-    pub(crate) var_regs: Vec<HashMap<String, u32>>,
+    pub(crate) next_id: u32,
     pub(crate) moved_vars: Vec<std::collections::HashSet<String>>,
     pub eval_env: Vec<HashMap<String, Value>>,
     pub current_return_type: Option<Type>,
@@ -167,8 +166,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             active_borrows: HashMap::new(),
             constraints: Vec::new(),
-            next_reg: 1,
-            var_regs: vec![HashMap::new()],
+            next_id: 1,
             moved_vars: vec![std::collections::HashSet::new()],
             eval_env: vec![HashMap::new()],
             current_return_type: None,
@@ -181,30 +179,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub fn emit_type(&mut self, _ty: &Type) -> u32 {
-        // Dummy conversion for now: Create a synthetic TypeId and push it.
-        // In reality, this would hash the struct name, etc.
-        let tid = crate::gid::TypeId::new(0, 0, 0, 0);
-        let idx = self.worker.local_type_stream.len() as u32;
-        self.worker.local_type_stream.push(tid);
-        idx
-    }
-
-    pub fn emit_inst(&mut self, opcode: u32, operand1: u32, operand2: u32, type_idx: u32) -> u32 {
-        let inst = crate::hir::HirInstruction::new(opcode, operand1, operand2, type_idx);
-        self.worker.local_hir_stream.push(inst);
-        let reg = self.next_reg;
-        self.next_reg += 1;
-        reg
-    }
-
-    pub fn push_reg_scope(&mut self) {
-        self.var_regs.push(HashMap::new());
-    }
-
-    pub fn pop_reg_scope(&mut self) {
-        self.var_regs.pop();
-    }
     pub fn push_scope(&mut self) {
         self.scopes.push(std::collections::HashMap::new());
         self.moved_vars.push(std::collections::HashSet::new());
@@ -214,7 +188,6 @@ impl<'a> TypeChecker<'a> {
     pub fn pop_scope(&mut self) {
         let depth = self.scopes.len();
         self.scopes.pop();
-        self.var_regs.pop();
         self.moved_vars.pop();
         self.eval_env.pop();
 

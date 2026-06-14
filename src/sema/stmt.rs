@@ -54,42 +54,7 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
         silent: bool,
     ) {
-        // Intercept for HIR lowering
-        match stmt {
-            Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
-                // Determine target name for NLL
-                if let Expr::Identifier(id) = lhs {
-                    self.current_assignment_target = Some(id.name.clone());
-                } else if let Expr::MemberAccess(ma) = lhs {
-                    if let Expr::Identifier(id) = &*ma.base {
-                        self.current_assignment_target = Some(id.name.clone());
-                    }
-                }
-                let (ty, rhs_reg) = self.check_expr(rhs);
-                self.current_assignment_target = None;
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_STORE, rhs_reg, 0, type_idx);
-                // Fallthrough to standard semantic checks
-            }
-            Statement::Return(ReturnStmt { expr, span: _ }) => {
-                let (ty, ret_reg) = self.check_expr(expr);
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_RET, ret_reg, 0, type_idx);
-                // Fallthrough to standard semantic checks
-            }
-            Statement::LetDecl(LetDeclStmt {
-                name: _name,
-                is_mut: _,
-                ty_ann: _,
-                expr,
-                span: _,
-            }) => {
-                let (ty, val_reg) = self.check_expr(expr);
-                let type_idx = self.emit_type(&ty);
-                self.emit_inst(crate::hir::OP_STORE, val_reg, 0, type_idx);
-            }
-            _ => {}
-        }
+        // No more HIR interception block needed.
 
         match stmt {
             Statement::LetDecl(LetDeclStmt {
@@ -166,21 +131,25 @@ impl<'a> TypeChecker<'a> {
                     });
                     // This will resolve and monomorphize `next`!
                     let opt_ty = self.check_expr_type_flag(&mut next_call, consume, silent);
-                    if let Type::Enum(ref name, _) = opt_ty {
-                        if name.starts_with("Option<") {
-                            // The Option enum is generic, we can get T from its arguments!
-                            // Wait, if it's a GenericInstance(Enum("Option"), [T]), we can extract it!
-                        }
-                    }
-                    if let Type::GenericInstance(_, args) = opt_ty {
-                        if args.len() == 1 {
-                            iter_ty = args[0].clone();
+                    if let Type::GenericInstance(base, args) = opt_ty {
+                        if let Type::Enum(name, _) = &*base {
+                            if name == "Option" && args.len() == 1 {
+                                iter_ty = args[0].clone();
+                            }
                         }
                     }
                 } else {
                     iter_ty = match iterable_ty {
-                        Type::Enum(name, _) if name.starts_with("Option<") => {
-                            Type::Scalar(ElementType::I64)
+                        Type::GenericInstance(base, args) => {
+                            if let Type::Enum(name, _) = &*base {
+                                if name == "Option" && args.len() == 1 {
+                                    args[0].clone()
+                                } else {
+                                    Type::Scalar(ElementType::I64)
+                                }
+                            } else {
+                                Type::Scalar(ElementType::I64)
+                            }
                         }
                         Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
                         _ => Type::Scalar(ElementType::I64),
@@ -252,7 +221,18 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
+
+                // Determine target name for NLL
+                if let Expr::Identifier(id) = lhs {
+                    self.current_assignment_target = Some(id.name.clone());
+                } else if let Expr::MemberAccess(ma) = lhs {
+                    if let Expr::Identifier(id) = &*ma.base {
+                        self.current_assignment_target = Some(id.name.clone());
+                    }
+                }
+
                 let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
+                self.current_assignment_target = None;
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
                 }
@@ -360,12 +340,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn prove_expr(&self, expr: &Expr) -> bool {
+    pub(crate) fn prove_expr(&mut self, expr: &Expr) -> bool {
         let mut prover = sema::prover::SmtProver::new();
         for constraint in &self.constraints {
             if let Err(e) = prover.add_constraint(constraint) {
-                // If we can't lower a constraint, we just ignore it or log a warning
-                println!("Warning: Could not add constraint to SMT solver: {}", e);
+                // If we can't lower a constraint, we log a warning
+                self.errors
+                    .push_warning(format!("Could not add constraint to SMT solver: {}", e));
             }
         }
 
@@ -377,14 +358,15 @@ impl<'a> TypeChecker<'a> {
         });
 
         if let Err(e) = prover.add_constraint(&negated_expr) {
-            println!("Warning: Could not lower expression to SMT solver: {}", e);
+            self.errors
+                .push_warning(format!("Could not lower expression to SMT solver: {}", e));
             return false; // Can't prove
         }
 
         match prover.prove() {
             Ok(is_sat) => !is_sat, // If unsat, then the expression is proven (valid)
             Err(e) => {
-                println!("Warning: SMT solver error: {}", e);
+                self.errors.push_warning(format!("SMT solver error: {}", e));
                 false
             }
         }
