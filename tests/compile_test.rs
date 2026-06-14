@@ -14,6 +14,22 @@
 //===----------------------------------------------------------------------===//
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, Once};
+
+static INIT_RAYON: Once = Once::new();
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+fn init_rayon() {
+    INIT_RAYON.call_once(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let threads = if cores > 2 { cores - 2 } else { 1 };
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global();
+    });
+}
 
 use rayon::prelude::*;
 
@@ -888,6 +904,9 @@ fn run_directory_tests<F>(dir: std::path::PathBuf, test_fn: F) -> Result<(), Str
 where
     F: Fn(&std::path::Path) -> Result<(), String> + Sync + Send,
 {
+    init_rayon();
+    let _guard = TEST_MUTEX.lock().unwrap();
+
     if dir.exists() {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
         let errors: Vec<String> = entries
