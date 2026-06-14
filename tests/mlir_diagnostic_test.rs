@@ -153,7 +153,7 @@ fn test_remark() -> f32 {
 "#;
     let mut lexer = vxc::lexer::Lexer::new(input);
     let tokens = lexer.tokenize();
-    let mut parser = vxc::parser::Parser::new(tokens, input);
+    let mut parser = vxc::parser::Parser::new(&tokens, input);
     let mut ast = parser.parse().unwrap();
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));

@@ -579,14 +579,14 @@ impl<'a> TypeChecker<'a> {
         let mut lexer = crate::lexer::Lexer::new(s);
         let tokens = lexer.tokenize();
 
-        let mut parser = crate::parser::Parser::new(tokens.clone(), s);
+        let mut parser = crate::parser::Parser::new(&tokens, s);
         if let Ok(ty) = parser.parse_type() {
             if parser.check(&crate::lexer::TokenType::Eof) {
                 return self.resolve_parsed_type(ty);
             }
         }
 
-        let mut expr_parser = crate::parser::Parser::new(tokens, s);
+        let mut expr_parser = crate::parser::Parser::new(&tokens, s);
         if let Ok(expr) = expr_parser.parse_primary_expr() {
             return Type::Const(Box::new(expr));
         }

@@ -335,7 +335,7 @@ impl<'a> MacroExpander<'a> {
                     column: 0,
                     length: 0,
                 });
-                let mut parser = parser::Parser::new(transcribed, "");
+                let mut parser = parser::Parser::new(&transcribed, "");
                 return parser.parse_expr();
             }
         }
@@ -508,7 +508,7 @@ impl<'a> MacroExpander<'a> {
             length: 0,
         });
 
-        let mut parser = parser::Parser::new(tokens, "");
+        let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
@@ -540,7 +540,7 @@ impl<'a> MacroExpander<'a> {
             length: 0,
         });
 
-        let mut parser = parser::Parser::new(tokens, "");
+        let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
@@ -572,7 +572,7 @@ impl<'a> MacroExpander<'a> {
             length: 0,
         });
 
-        let mut parser = parser::Parser::new(tokens, "");
+        let mut parser = parser::Parser::new(&tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&TokenType::Eof) {
             exprs.push(parser.parse_expr()?);
@@ -614,7 +614,7 @@ impl<'a> MacroExpander<'a> {
             _ => return Err("Expected delimited token tree for mlir!".to_string()),
         };
 
-        let mut parser = parser::Parser::new(tokens, "");
+        let mut parser = parser::Parser::new(&tokens, "");
 
         while !parser.check(&TokenType::Eof) {
             let field_name = match &parser.advance().kind {

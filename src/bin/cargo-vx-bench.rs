@@ -105,7 +105,7 @@ fn main() -> i32 {
             // Run the compiler
             let mut lexer = Lexer::new(&final_source);
             let tokens = lexer.tokenize();
-            let mut parser = parser::Parser::new(tokens, &final_source);
+            let mut parser = parser::Parser::new(&tokens, &final_source);
 
             match parser.parse() {
                 Ok(mut ast) => {

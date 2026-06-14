@@ -37,7 +37,7 @@ fn test_stress_broad_ast_core_saturation() -> Result<(), String> {
     }
 
     // 2. Parsing
-    let mut parser = Parser::new(tokens, &input);
+    let mut parser = Parser::new(&tokens, &input);
     let mut ast = parser
         .parse()
         .map_err(|e| format!("Failed to parse the massive AST: {:?}", e))?;
@@ -99,7 +99,7 @@ fn test_stress_deep_control_flow_nesting() -> Result<(), String> {
     let tokens = lexer.tokenize();
 
     // 2. Parsing
-    let mut parser = Parser::new(tokens, &input);
+    let mut parser = Parser::new(&tokens, &input);
     let mut ast = parser
         .parse()
         .map_err(|e| format!("Failed to parse deeply nested control flow: {:?}", e))?;
@@ -138,7 +138,7 @@ fn test_stress_massive_struct_definitions() -> Result<(), String> {
     let input = module.build();
     let mut lexer = Lexer::new(&input);
     let tokens = lexer.tokenize();
-    let mut parser = Parser::new(tokens, &input);
+    let mut parser = Parser::new(&tokens, &input);
     let ast = parser
         .parse()
         .map_err(|e| format!("Failed to parse massive struct definitions: {:?}", e))?;

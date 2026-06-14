@@ -37,7 +37,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
                 .map_err(|e| format!("Failed to read {}: {}", path, e))?;
             let mut lexer = Lexer::new(&source);
             let tokens = lexer.tokenize();
-            let mut parser = Parser::new(tokens, &source);
+            let mut parser = Parser::new(&tokens, &source);
             let mut program = parser
                 .parse()
                 .map_err(|e| format!("Failed to parse {}: {}", path, e))?;

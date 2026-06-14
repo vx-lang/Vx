@@ -993,7 +993,7 @@ mod tests {
     fn parse_expr(input: &str) -> Expr {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         parser.parse_expr().expect("Failed to parse expression")
     }
 

@@ -40,7 +40,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     }
 
     // 2. Parsing
-    let mut parser = Parser::new(tokens, input);
+    let mut parser = Parser::new(&tokens, input);
     let mut ast = parser.parse().expect("Failed to parse AST");
     if ast.functions.len() != 2 {
         return Err(format!(
@@ -77,7 +77,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
 fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::Diagnostic>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
-    let mut parser = Parser::new(tokens, input);
+    let mut parser = Parser::new(&tokens, input);
     let mut program = parser.parse().map_err(|e| {
         vec![vxc::diagnostic::Diagnostic {
             level: vxc::diagnostic::DiagnosticLevel::Error,

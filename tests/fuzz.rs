@@ -7,7 +7,7 @@ fn fuzz_parser(input: &str) {
     let _ = panic::catch_unwind(|| {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         let _ = parser.parse();
     });
 }

@@ -526,7 +526,7 @@ mod tests {
     fn test_parse_empty_function(#[case] input: &str) {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name, "main");
@@ -546,7 +546,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
 
@@ -591,7 +591,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     #[test]
     fn test_parse_let_mut_with_type() {
         let input = "fn main() -> Tensor { let mut x: Tensor = Tensor([1, 2]); }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         let func = &program.functions[0];
         if let Statement::LetDecl(LetDeclStmt {
@@ -630,7 +631,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     #[test]
     fn test_parse_for_loop() {
         let input = "fn main() -> Tensor { for i in 0..10 { x = 5; } }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         if let Statement::ForLoop(ForLoopStmt {
             iter,
@@ -694,7 +696,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     #[test]
     fn test_parse_compound_assign() {
         let input = "fn main() -> Tensor { x[0] += y * z; }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         if let Statement::CompoundAssign(CompoundAssignStmt {
             lhs,
@@ -762,7 +765,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
     #[test]
     fn test_parse_member_and_method() {
         let input = "fn main() -> Tensor { x.shape.with_memory(Memory::NPU_HBM); }";
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         if let Statement::ExprStmt(ExprStmtStmt {
             expr,
@@ -824,7 +828,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             }
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         let func = &program.functions[0];
@@ -862,7 +867,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             return c.value < 20;
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
 
         assert_eq!(program.structs.len(), 1);
@@ -911,7 +917,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             fn malloc(size: Tensor<i32>) -> *mut Tensor<f32>;
         }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
 
         assert_eq!(program.externs.len(), 1);
@@ -935,7 +942,8 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
     vx_stderr_write(buffer, len);
 }
         "#;
-        let mut parser = Parser::new(Lexer::new(input).tokenize(), input);
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
 
         assert_eq!(program.functions.len(), 2);

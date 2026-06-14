@@ -21,7 +21,7 @@ use crate::ast::*;
 use crate::lexer::{Token, TokenType};
 
 pub struct Parser<'a> {
-    tokens: Vec<Token>,
+    tokens: &'a [Token],
     pos: usize,
     generic_params: Vec<String>, // Tracks generic parameters in scope
     source: &'a str,
@@ -35,7 +35,7 @@ impl From<&str> for Function {
 
         let mut lexer = crate::lexer::Lexer::new(cleaned_source);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, cleaned_source);
+        let mut parser = Parser::new(&tokens, cleaned_source);
         parser
             .parse_function()
             .expect("Failed to parse function source")
@@ -43,7 +43,7 @@ impl From<&str> for Function {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: Vec<Token>, source: &'a str) -> Self {
+    pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
         Self {
             tokens,
             pos: 0,
@@ -110,14 +110,13 @@ impl<'a> Parser<'a> {
         let peek = self.peek();
         match &peek.kind {
             TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
-                let delim_kind = peek.kind.clone();
-                let delim = match delim_kind {
+                let delim = match &peek.kind {
                     TokenType::LeftParen => Delimiter::Parenthesis,
                     TokenType::LeftBrace => Delimiter::Brace,
                     TokenType::LeftBracket => Delimiter::Bracket,
                     _ => unreachable!(),
                 };
-                let closing_delim = match delim_kind {
+                let closing_delim = match &peek.kind {
                     TokenType::LeftParen => TokenType::RightParen,
                     TokenType::LeftBrace => TokenType::RightBrace,
                     TokenType::LeftBracket => TokenType::RightBracket,

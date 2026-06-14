@@ -8,9 +8,7 @@ fn main() -> i32 {
   v.push(1);
   v.push(2);
   unsafe {
-    let ptr = v.as_mut_ptr();
-    let bad = ptr[100000000];
-    print!(bad);
+    let ptr = v.as_mut_ptr(); let bad = ptr[100000000]; print!(bad);
   }
   return 0;
 }

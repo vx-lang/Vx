@@ -42,7 +42,7 @@ pub mod session;
 pub fn parse_module(source: &str) -> Result<ast::VxModule, String> {
     let mut lexer = lexer::Lexer::new(source);
     let tokens = lexer.tokenize();
-    let mut parser = parser::Parser::new(tokens, source);
+    let mut parser = parser::Parser::new(&tokens, source);
     parser.parse()
 }
 pub mod scratch;

@@ -44,7 +44,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
 
         let program_arr = [program.clone()];
@@ -76,7 +76,7 @@ fn bad_matmul() -> Tensor {
         "#;
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
-        let mut parser = Parser::new(tokens, input);
+        let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
 
         let program_arr = [program.clone()];
@@ -111,7 +111,8 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
@@ -149,7 +150,8 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
@@ -181,7 +183,8 @@ fn bad_matmul() -> Tensor {
         }
         "#;
         let mut lexer = Lexer::new(input);
-        let mut parser = Parser::new(lexer.tokenize(), input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
         let mut program = parser.parse().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);

@@ -66,6 +66,86 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                         false
                     }
                 });
+                let mut is_unsafe_block = false;
+                for j in (0..lb_idx).rev() {
+                    match tokens[j].kind {
+                        TokenType::Whitespace(_) | TokenType::Comment(_) => continue,
+                        TokenType::Unsafe => {
+                            is_unsafe_block = true;
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+
+                if is_unsafe_block {
+                    // Try to measure the total length if we collapsed it to a single line
+                    let mut collapsed_len = 0;
+                    // measure before the block until a newline
+                    for j in (0..lb_idx).rev() {
+                        if let TokenType::Whitespace(ref ws) = tokens[j].kind {
+                            if let Some(pos) = ws.rfind('\n') {
+                                collapsed_len += ws.len() - pos - 1;
+                                break;
+                            } else {
+                                collapsed_len += tokens[j].length;
+                            }
+                        } else {
+                            collapsed_len += tokens[j].length;
+                        }
+                    }
+                    // measure inside the block, stripping newlines
+                    for t in &tokens[lb_idx..=rb_idx] {
+                        if let TokenType::Whitespace(ref ws) = t.kind {
+                            if ws.contains('\n') {
+                                collapsed_len += 1; // will become a single space
+                            } else {
+                                collapsed_len += t.length;
+                            }
+                        } else {
+                            collapsed_len += t.length;
+                        }
+                    }
+
+                    if collapsed_len + 2 <= 80 {
+                        // Collapse it! Replace all newlines inside with spaces.
+                        for t in &mut tokens[lb_idx..rb_idx] {
+                            if let TokenType::Whitespace(ref mut ws) = t.kind {
+                                if ws.contains('\n') {
+                                    *ws = " ".to_string();
+                                }
+                            }
+                        }
+
+                        // Ensure spaces inside { and }
+                        if !matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
+                            tokens.insert(
+                                rb_idx,
+                                crate::lexer::Token {
+                                    kind: TokenType::Whitespace(" ".to_string()),
+                                    line: tokens[rb_idx].line,
+                                    column: tokens[rb_idx].column,
+                                    length: 1,
+                                },
+                            );
+                            i += 1;
+                        }
+                        if !matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
+                            tokens.insert(
+                                lb_idx + 1,
+                                crate::lexer::Token {
+                                    kind: TokenType::Whitespace(" ".to_string()),
+                                    line: tokens[lb_idx].line,
+                                    column: tokens[lb_idx].column,
+                                    length: 1,
+                                },
+                            );
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+
                 let has_non_ws = tokens[(lb_idx + 1)..rb_idx]
                     .iter()
                     .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
