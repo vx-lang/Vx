@@ -62,12 +62,17 @@ pub struct ExternDecl {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct MethodSignature {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct TraitDecl {
     pub name: String,
     pub generics: Vec<GenericParam>,
-    // (method_name, params, return_type)
-    #[allow(clippy::type_complexity)]
-    pub methods: Vec<(String, Vec<(String, Type)>, Type)>,
+    pub methods: Vec<MethodSignature>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

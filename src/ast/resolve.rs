@@ -229,11 +229,11 @@ impl EnumDecl {
 
 impl TraitDecl {
     pub fn resolve_names(&mut self, current_module: &str, symbol_map: &crate::resolver::SymbolMap) {
-        for (_, params, ret_ty) in &mut self.methods {
-            for (_, ty) in params {
-                ty.resolve_names(current_module, symbol_map);
+        for method in &mut self.methods {
+            for (_, p_ty) in &mut method.params {
+                p_ty.resolve_names(current_module, symbol_map);
             }
-            ret_ty.resolve_names(current_module, symbol_map);
+            method.return_type.resolve_names(current_module, symbol_map);
         }
     }
 }

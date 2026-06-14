@@ -327,7 +327,11 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_type()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
-            methods.push((method_name, params, return_type));
+            methods.push(MethodSignature {
+                name: method_name,
+                params,
+                return_type,
+            });
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
