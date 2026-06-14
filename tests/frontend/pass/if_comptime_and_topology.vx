@@ -2,13 +2,19 @@
 // CHECK: module
 fn check_top() on Topology::NPU[0] -> void {
   // If comptime returns an expression
-  let a = if comptime true {1} else {0};
+  let a = if comptime true {
+    1
+  } else {
+    0
+  };
 
   // Topology::Current should evaluate to NPU here
   let t = Topology::Current;
   let t2 = Topology::NPU[0];
 
-  spawn on(Topology::Current) { let mut x = 10; };
+  spawn on(Topology::Current) {
+    let mut x = 10;
+  };
 
   comptime {
     assert(t == Topology::NPU[0]);
@@ -17,11 +23,21 @@ fn check_top() on Topology::NPU[0] -> void {
 }
 
 fn check_top2() on Topology::GPU -> void {
-  let t = if comptime true { Topology::Current } else {Topology::CPU};
-  comptime { assert(t == Topology::GPU); }
+  let t = if comptime true {
+    Topology::Current
+  } else {
+    Topology::CPU
+  };
+  comptime {
+    assert(t == Topology::GPU);
+  }
 }
 
 fn main() -> void {
-  spawn on(Topology::NPU[0]) { check_top(); };
-  spawn on(Topology::GPU) { check_top2(); };
+  spawn on(Topology::NPU[0]) {
+    check_top();
+  };
+  spawn on(Topology::GPU) {
+    check_top2();
+  };
 }

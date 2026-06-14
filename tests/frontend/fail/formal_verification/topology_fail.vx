@@ -9,8 +9,7 @@ fn test_topology_npu_fail(T : i32)
   return 1;
 }
 
-fn test_topology_host_fail(T : i32) -> i32 ensures Topology::CPU
-== Topology::GPU {
+fn test_topology_host_fail(T : i32) -> i32 ensures Topology::CPU == Topology::GPU {
   // FAILS because Host is distinct from GPU
   return 1;
 }
@@ -21,4 +20,6 @@ fn test_topology_acc_core_fail(T : i32)
   return 1;
 }
 
-fn main() -> i32 { return 0; }
+fn main() -> i32 {
+  return 0;
+}

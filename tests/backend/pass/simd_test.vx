@@ -21,7 +21,9 @@ fn test_simd(p1 : *mut f32, p2 : *mut f32, p3 : *mut f32) -> i32 {
   return 0;
 }
 
-fn main() -> i32 { return 0; }
+fn main() -> i32 {
+  return 0;
+}
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32

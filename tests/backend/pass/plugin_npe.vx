@@ -8,7 +8,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-extern { fn vx_malloc_f32(num_elements : i32)->*mut f32; }
+extern {
+  fn vx_malloc_f32(num_elements : i32)->*mut f32;
+}
 
 fn main() -> i32 {
   unsafe {

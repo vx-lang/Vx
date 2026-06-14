@@ -7,12 +7,16 @@ fn apply_lambda_ok<F>(f: F, val: i32) -> i32 {
   return f(val);
 }
 
-fn apply_lambda_bad_args<F>(f : F) -> i32 { return f(10, 20); }
+fn apply_lambda_bad_args<F>(f : F) -> i32 {
+  return f(10, 20);
+}
 
 fn main() -> i32 {
   // Test 1: Move closures
   let i = 10;
-  let cap = Captures{i : 10};
+  let cap = Captures{
+    i : 10
+  };
   let cp_lambda = | x : i32 | x + cap.i + i;
   assert(apply_lambda_ok(cp_lambda, 32) == 52);
 

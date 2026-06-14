@@ -15,32 +15,48 @@ struct Box {
   data: *mut i32,
 }
 
-fn takes_ptr(p: *mut i32) -> i32 { return 0; }
+fn takes_ptr(p: *mut i32) -> i32 {
+  return 0;
+}
 
 fn returns_ptr() -> *mut i32 {
-  return unsafe { 0 as *mut i32 };
+  return unsafe {
+    0 as *mut i32
+  };
 }
 
 fn main() -> i32 {
   // PASSING 1: Using unsafe block for direct assignment
-  let ptr1: *mut i32 = unsafe { 0 as *mut i32 };
+  let ptr1: *mut i32 = unsafe {
+    0 as *mut i32
+  };
 
   // PASSING 2: Passing as a function argument inside unsafe
-  takes_ptr(unsafe { 0 as *mut i32 });
+  takes_ptr(unsafe {
+    0 as *mut i32
+  });
 
   // PASSING 3: Returning from a function
   let ptr3: *mut i32 = returns_ptr();
 
   // PASSING 4: Assigning inside a struct
-  let b = Box { data: unsafe { 0 as *mut i32 } };
+  let b = Box { data: unsafe {
+      0 as *mut i32
+    } };
 
   // PASSING 5: Using variable as source
   let null_val: i32 = 0;
-  let ptr5: *mut f32 = unsafe { null_val as *mut f32 };
+  let ptr5: *mut f32 = unsafe {
+    null_val as *mut f32
+  };
 
   // PASSING 6: Reassigning existing pointer
-  let mut ptr6: *mut i32 = unsafe { 123 as *mut i32 };
-  ptr6 = unsafe { 0 as *mut i32 };
+  let mut ptr6: *mut i32 = unsafe {
+    123 as *mut i32
+  };
+  ptr6 = unsafe {
+    0 as *mut i32
+  };
 
   return 0;
 }

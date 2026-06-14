@@ -5,6 +5,8 @@ struct MyStruct {
 }
 
 fn main() -> i32 {
-  let s = MyStruct{a : 1};
+  let s = MyStruct{
+    a : 1
+  };
   return s.b;
 }

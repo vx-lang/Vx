@@ -17,7 +17,9 @@ fn test_0() on Topology::CPU -> void {
 // From comptime_if_not_bool.vx
 fn test_1() -> void {
   if comptime
-  5 { let x = 1; }
+  5 {
+    let x = 1;
+  }
 }
 
 // From comptime_if_pruned_syntax_error.vx
@@ -32,7 +34,9 @@ fn test_2() -> void {
 fn test_3() -> void {
   let condition = true;
   if comptime
-  condition { let x = 1; }
+  condition {
+    let x = 1;
+  }
 }
 
 // CHECK: Expected expression, found Semicolon

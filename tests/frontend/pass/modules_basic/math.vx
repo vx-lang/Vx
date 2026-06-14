@@ -7,7 +7,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-fn add(a : f32, b : f32) -> f32 { return a + b; }
+fn add(a : f32, b : f32) -> f32 {
+  return a + b;
+}
 
 struct Matrix {
   data : f32

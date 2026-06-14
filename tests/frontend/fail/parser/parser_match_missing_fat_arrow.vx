@@ -11,5 +11,7 @@
 
 fn main() -> i32 {
   let x = 1;
-  match x { 1 10, _ 0, }
+  match x {
+    1 10, _ 0,
+  }
 }

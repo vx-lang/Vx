@@ -5,11 +5,15 @@ fn test_nested_loops() -> i32 {
   let mut sum = 0;
 
   loop {
-    if i == 5 { break; }
+    if i == 5 {
+      break;
+    }
 
     let mut j = 0;
     loop {
-      if j == 3 { break; }
+      if j == 3 {
+        break;
+      }
       if j == 1 {
         j = j + 1;
         continue;
@@ -26,11 +30,15 @@ fn test_nested_loops() -> i32 {
 fn test_early_return() -> i32 {
   let mut i = 0;
   loop {
-    if i == 10 { return 42; }
+    if i == 10 {
+      return 42;
+    }
 
     let mut j = 0;
     loop {
-      if j == 5 { return i + j; }
+      if j == 5 {
+        return i + j;
+      }
       j = j + 1;
     }
   }

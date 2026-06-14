@@ -17,15 +17,27 @@ trait ExecuteArith<T> {
 }
 
 impl ExecuteArith<CPU> for CPU {
-  fn add_array(self: CPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
-  fn add_vector(self: CPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
-  fn add_tensor(self: CPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+  fn add_array(self: CPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+    return a + b;
+  }
+  fn add_vector(self: CPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> {
+    return a + b;
+  }
+  fn add_tensor(self: CPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a + b;
+  }
 }
 
 impl ExecuteArith<NPU> for NPU {
-  fn add_array(self: NPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a + b; }
-  fn add_vector(self: NPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> { return a + b; }
-  fn add_tensor(self: NPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> { return a + b; }
+  fn add_array(self: NPU, a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+    return a + b;
+  }
+  fn add_vector(self: NPU, a: <4 x f32>, b: <4 x f32>) -> <4 x f32> {
+    return a + b;
+  }
+  fn add_tensor(self: NPU, a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
+    return a + b;
+  }
 }
 
 trait TransferDMA<T> {
@@ -36,9 +48,15 @@ trait TransferDMA<T> {
 
 impl TransferDMA<NPU> for NPU {
   // CHECK: Type mismatch on return.
-  fn transfer_array(self: NPU, data: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return transfer(data, Memory::NPU_HBM); }
-  fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> { return data; }
-  fn transfer_tensor(self: NPU, data: Tensor<f32>) -> Tensor<f32> { return data; }
+  fn transfer_array(self: NPU, data: Tensor<f32, [4]>) -> Tensor<f32, [4]> {
+    return transfer(data, Memory::NPU_HBM);
+  }
+  fn transfer_vector(self: NPU, data: <4 x f32>) -> <4 x f32> {
+    return data;
+  }
+  fn transfer_tensor(self: NPU, data: Tensor<f32>) -> Tensor<f32> {
+    return data;
+  }
 }
 
 fn main() -> void {}

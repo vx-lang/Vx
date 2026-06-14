@@ -8,7 +8,9 @@
 // Span { line: 0, column: 0, length: 0 } }), Number(NumberExpr { value: "10",
 // ty: Some(I32), span: Span { line: 0, column: 0, length: 0 } })], None))
 
-fn requires_unverified(x : Tensor<f32, [ 10, 10 ]>) -> i32 { return 0; }
+fn requires_unverified(x : Tensor<f32, [ 10, 10 ]>) -> i32 {
+  return 0;
+}
 
 fn test() -> i32 {
   let unverified : Tensor<f32, [ 10, 10 ]> = Tensor<f32>(10, 10);
@@ -18,4 +20,6 @@ fn test() -> i32 {
   return requires_unverified(verified);
 }
 
-fn main() -> i32 { return test(); }
+fn main() -> i32 {
+  return test();
+}

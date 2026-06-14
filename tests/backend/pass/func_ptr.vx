@@ -1,8 +1,12 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-fn square(x : i32) -> i32 { return x * x; }
+fn square(x : i32) -> i32 {
+  return x * x;
+}
 
-fn apply_func(f : fn(i32)->i32, val : i32) -> i32 { return f(val); }
+fn apply_func(f : fn(i32)->i32, val : i32) -> i32 {
+  return f(val);
+}
 
 fn main() -> i32 {
   let result = apply_func(square, 5);

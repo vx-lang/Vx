@@ -12,18 +12,24 @@ extern {
   fn vx_googletest_expect_eq_i32(actual : i32, expected : i32)->i32;
 }
 
-trait GoogletestEq { fn expect_eq(self : Self, expected : Self)->i32; }
+trait GoogletestEq {
+  fn expect_eq(self : Self, expected : Self)->i32;
+}
 
 impl GoogletestEq for f32 {
   fn expect_eq(self : f32, expected : f32) -> i32 {
-    let res : i32 = unsafe{vx_googletest_expect_eq_f32(self, expected)};
+    let res : i32 = unsafe{
+      vx_googletest_expect_eq_f32(self, expected)
+    };
     return res;
   }
 }
 
 impl GoogletestEq for i32 {
   fn expect_eq(self : i32, expected : i32) -> i32 {
-    let res : i32 = unsafe{vx_googletest_expect_eq_i32(self, expected)};
+    let res : i32 = unsafe{
+      vx_googletest_expect_eq_i32(self, expected)
+    };
     return res;
   }
 }

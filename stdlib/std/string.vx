@@ -41,18 +41,26 @@ impl String {
     return vx_string_push_c_str(self.ptr, c_str);
   }
 
-  fn len(self : *mut String) -> i32 { return vx_string_len(self.ptr); }
+  fn len(self : *mut String) -> i32 {
+    return vx_string_len(self.ptr);
+  }
 
   fn as_c_str(self : *mut String) -> *const i8 {
     return vx_string_as_c_str(self.ptr);
   }
 
-  fn drop(self : *mut String) -> i32 { return vx_string_drop(self.ptr); }
+  fn drop(self : *mut String) -> i32 {
+    return vx_string_drop(self.ptr);
+  }
 }
 
 impl i32 {
   fn to_string(self : i32) -> String {
-    let ptr = unsafe{vx_i32_to_string(self)};
-    return String{ptr : ptr};
+    let ptr = unsafe{
+      vx_i32_to_string(self)
+    };
+    return String{
+      ptr : ptr
+    };
   }
 }

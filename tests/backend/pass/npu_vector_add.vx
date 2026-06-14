@@ -20,7 +20,9 @@ fn test_f32() -> i32 {
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
-    for i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
+    for i in 0..4 {
+      c[i] = a_npu[i] + b_npu[i];
+    }
   }
 
   let c_host = transfer(c, Memory::CPU_DRAM);
@@ -46,7 +48,9 @@ fn test_bf16() -> i32 {
   let b_npu = transfer(b, Memory::NPU_HBM);
 
   spawn on(Topology::NPU[0]) {
-    for i in 0..4 { c[i] = a_npu[i] + b_npu[i]; }
+    for i in 0..4 {
+      c[i] = a_npu[i] + b_npu[i];
+    }
   }
 
   let c_host = transfer(c, Memory::CPU_DRAM);

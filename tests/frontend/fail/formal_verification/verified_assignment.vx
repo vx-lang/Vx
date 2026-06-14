@@ -9,4 +9,6 @@ fn test_unverified_to_verified() -> i32 {
   return 0;
 }
 
-fn main() -> i32 { return test_unverified_to_verified(); }
+fn main() -> i32 {
+  return test_unverified_to_verified();
+}

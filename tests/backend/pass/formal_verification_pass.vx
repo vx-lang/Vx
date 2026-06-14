@@ -3,7 +3,9 @@
 fn tile(N : i32) -> i32
 requires N > 0
 ensures return > 0 {
-  for i in 0..10 invariant(N > 0) { let x = N; }
+  for i in 0..10 invariant(N > 0) {
+    let x = N;
+  }
   return N;
 }
 

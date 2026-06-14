@@ -381,8 +381,9 @@ fn main() -> i32 {
 
   let mut next : i32 = 0;
   let mut token : i32 = 1;
-  
-  print!("\n[Assistant]: ");
+
+  print!("
+[Assistant]: ");
   for pos in 0..steps {
     let logits : &mut f32 =
     transformer(token, pos, &config, &state, &weights, &all_weights);
@@ -391,7 +392,8 @@ fn main() -> i32 {
     print!(piece);
     token = next;
   }
-  print!("\n");
+  print!("
+");
   return 0;
 }
 

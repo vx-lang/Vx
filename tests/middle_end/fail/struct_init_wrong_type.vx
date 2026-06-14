@@ -7,5 +7,7 @@ struct MyStruct {
 
 fn main() -> MyStruct {
   let b : bool = true;
-  return MyStruct{a : b};
+  return MyStruct{
+    a : b
+  };
 }

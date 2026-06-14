@@ -35,28 +35,40 @@ impl Iterator<Map, i32> for Map {
         let f_ptr = self.f;
         ret = Option<i32>::Some(f_ptr(v));
       }
-      Option<i32>::None => { ret = Option<i32>::None; }
+      Option<i32>::None => {
+        ret = Option<i32>::None;
+      }
     }
     return ret;
   }
 }
 
 fn map_range(iter : Range, f : fn(i32)->i32) -> Map {
-  return Map{iter : iter, f : f};
+  return Map{
+    iter : iter, f : f
+  };
 }
 
-fn square(x : i32) -> i32 { return x * x; }
+fn square(x : i32) -> i32 {
+  return x * x;
+}
 
 fn main() -> i32 {
-  let mut r = Range{current : 0, end : 5};
+  let mut r = Range{
+    current : 0, end : 5
+  };
   let mut m = map_range(r, square);
 
   let mut sum = 0;
   loop {
     let val = m.next();
     match val {
-      Option<i32>::Some(v) => { sum = sum + v; }
-      Option<i32>::None => { break; }
+      Option<i32>::Some(v) => {
+        sum = sum + v;
+      }
+      Option<i32>::None => {
+        break;
+      }
     }
   }
   return sum; // 0 + 1 + 4 + 9 + 16 = 30

@@ -24,7 +24,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub extern "C" fn vx_sigsegv_handler(_sig: libc::c_int) {
     println!("Caught SIGSEGV: Segmentation Fault!");
     println!(
-        "Backtrace:\n{:#?}",
+        "Backtrace:
+{:#?}",
         std::backtrace::Backtrace::force_capture()
     );
     std::process::abort();

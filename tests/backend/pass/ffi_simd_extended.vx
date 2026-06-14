@@ -32,7 +32,9 @@ fn main() -> i32 {
     let res5 = simd_fma_f32x4(a, b, c, out);
 
     let sum = res1 + res2 + res3 + res4 + res5;
-    if sum == 0 { ret = 0; }
+    if sum == 0 {
+      ret = 0;
+    }
   }
   return ret;
 }

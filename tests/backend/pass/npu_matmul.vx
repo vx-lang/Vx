@@ -24,7 +24,9 @@ fn test_f32() -> i32 {
     for i in 0..4 {
       for j in 0..4 {
         c[i][j] = 0.0;
-        for k in 0..4 { c[i][j] = c[i][j] + a_npu[i][k] * b_npu[k][j]; }
+        for k in 0..4 {
+          c[i][j] = c[i][j] + a_npu[i][k] * b_npu[k][j];
+        }
       }
     }
   }
@@ -56,7 +58,9 @@ fn test_bf16() -> i32 {
     for i in 0..4 {
       for j in 0..4 {
         c[i][j] = 0.0;
-        for k in 0..4 { c[i][j] = c[i][j] + a_npu[i][k] * b_npu[k][j]; }
+        for k in 0..4 {
+          c[i][j] = c[i][j] + a_npu[i][k] * b_npu[k][j];
+        }
       }
     }
   }

@@ -21,7 +21,9 @@ fn test_f32() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
-      for j in 0..4 { c[j][i] = a_npu[i][j]; }
+      for j in 0..4 {
+        c[j][i] = a_npu[i][j];
+      }
     }
   }
 
@@ -48,7 +50,9 @@ fn test_bf16() -> i32 {
 
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
-      for j in 0..4 { c[j][i] = a_npu[i][j]; }
+      for j in 0..4 {
+        c[j][i] = a_npu[i][j];
+      }
     }
   }
 

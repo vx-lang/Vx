@@ -12,6 +12,8 @@ Topology::NPU[0] ensures return == X {
   return X;
 }
 
-fn main() -> i32 { return 0; }
+fn main() -> i32 {
+  return 0;
+}
 
 // CHECK: module

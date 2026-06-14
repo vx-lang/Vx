@@ -12,7 +12,9 @@ fn custom_matmul(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
   for i in 0..a.shape [0] {
     for j in 0..b.shape [1] {
       result[i][j] = 0;
-      for k in 0..a.shape [1] { result[i][j] += a[i][k] * b[k][j]; }
+      for k in 0..a.shape [1] {
+        result[i][j] += a[i][k] * b[k][j];
+      }
     }
   }
   return result;

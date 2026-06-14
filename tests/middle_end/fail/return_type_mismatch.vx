@@ -4,5 +4,7 @@
 struct MyStruct {
   a : i32
 } fn main() -> i32 {
-  return MyStruct{a : 1};
+  return MyStruct{
+    a : 1
+  };
 }
