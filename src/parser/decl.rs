@@ -13,25 +13,43 @@
 use super::*;
 
 impl<'a> Parser<'a> {
+    fn expect_identifier(&mut self, msg: &str) -> ParseResult<String> {
+        match self.advance().kind {
+            TokenType::Identifier(s) => Ok(s.to_string()),
+            _ => Err(self.error(msg)),
+        }
+    }
+
+    fn parse_comma_separated_params(&mut self) -> ParseResult<Vec<(String, Type)>> {
+        let mut params = Vec::new();
+        if !self.check(&TokenType::RightParen) {
+            loop {
+                let name = self.expect_identifier("Expected parameter name")?;
+                self.consume(&TokenType::Colon, "Expected ':'")?;
+                let ty = self.parse_type()?;
+                params.push((name, ty));
+
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        Ok(params)
+    }
+
     pub(crate) fn parse_generic_params(&mut self) -> ParseResult<Vec<GenericParam>> {
         let mut generics = Vec::new();
         if self.match_token(&TokenType::LeftAngle) {
             while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
                 if self.check(&TokenType::Identifier("const")) {
                     self.advance(); // consume const
-                    let name = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s.to_string(),
-                        _ => return Err(self.error("Expected const parameter name")),
-                    };
+                    let name = self.expect_identifier("Expected const parameter name")?;
                     self.consume(&TokenType::Colon, "Expected ':' after const parameter name")?;
                     let ty = self.parse_type()?;
                     self.generic_params.push(name.clone());
                     generics.push(GenericParam::Const { name, ty });
                 } else {
-                    let name = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s.to_string(),
-                        _ => return Err(self.error("Expected generic parameter name")),
-                    };
+                    let name = self.expect_identifier("Expected generic parameter name")?;
                     self.generic_params.push(name.clone());
                     let mut bound = None;
                     if self.match_token(&TokenType::Colon) {
@@ -57,30 +75,12 @@ impl<'a> Parser<'a> {
     pub fn parse_function(&mut self) -> ParseResult<Function> {
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
-        let name = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected function name")),
-        };
+        let name = self.expect_identifier("Expected function name")?;
 
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftParen, "Expected '(' after function name")?;
-        let mut params = Vec::new();
-        if !self.check(&TokenType::RightParen) {
-            loop {
-                let p_name = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s.to_string(),
-                    _ => return Err(self.error("Expected parameter name")),
-                };
-                self.consume(&TokenType::Colon, "Expected ':'")?;
-                let p_type = self.parse_type()?;
-                params.push((p_name, p_type));
-
-                if !self.match_token(&TokenType::Comma) {
-                    break;
-                }
-            }
-        }
+        let params = self.parse_comma_separated_params()?;
         self.consume(&TokenType::RightParen, "Expected ')'")?;
 
         let mut topology = Topology::CPU;
@@ -145,20 +145,14 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
-        let name = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected struct name")),
-        };
+        let name = self.expect_identifier("Expected struct name")?;
 
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut fields = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let f_name = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
-                _ => return Err(self.error("Expected field name")),
-            };
+            let f_name = self.expect_identifier("Expected field name")?;
             self.consume(&TokenType::Colon, "Expected ':'")?;
             let f_type = self.parse_type()?;
             fields.push((f_name, f_type));
@@ -184,20 +178,14 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<EnumDecl> {
         self.consume(&TokenType::Enum, "Expected 'enum'")?;
 
-        let name = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected enum name")),
-        };
+        let name = self.expect_identifier("Expected enum name")?;
 
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut variants = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            let v_name = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
-                _ => return Err(self.error("Expected enum variant name")),
-            };
+            let v_name = self.expect_identifier("Expected enum variant name")?;
 
             let mut payload = None;
             if self.match_token(&TokenType::LeftParen) {
@@ -250,28 +238,10 @@ impl<'a> Parser<'a> {
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
-            let name = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
-                _ => return Err(self.error("Expected function name")),
-            };
+            let name = self.expect_identifier("Expected function name")?;
 
             self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let mut params = Vec::new();
-            if !self.check(&TokenType::RightParen) {
-                loop {
-                    let p_name = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s.to_string(),
-                        _ => return Err(self.error("Expected parameter name")),
-                    };
-                    self.consume(&TokenType::Colon, "Expected ':'")?;
-                    let p_type = self.parse_type()?;
-                    params.push((p_name, p_type));
-
-                    if !self.match_token(&TokenType::Comma) {
-                        break;
-                    }
-                }
-            }
+            let params = self.parse_comma_separated_params()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
 
             self.consume(&TokenType::Arrow, "Expected '->'")?;
@@ -292,37 +262,16 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<TraitDecl> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
-        let name = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected trait name")),
-        };
+        let name = self.expect_identifier("Expected trait name")?;
         let generics = self.parse_generic_params()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
 
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
-            let method_name = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
-                _ => return Err(self.error("Expected method name")),
-            };
+            let method_name = self.expect_identifier("Expected method name")?;
             self.consume(&TokenType::LeftParen, "Expected '('")?;
-            let mut params = Vec::new();
-            if !self.check(&TokenType::RightParen) {
-                loop {
-                    let p_name = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s.to_string(),
-                        _ => return Err(self.error("Expected parameter name")),
-                    };
-                    self.consume(&TokenType::Colon, "Expected ':'")?;
-                    let p_type = self.parse_type()?;
-                    params.push((p_name, p_type));
-
-                    if !self.match_token(&TokenType::Comma) {
-                        break;
-                    }
-                }
-            }
+            let params = self.parse_comma_separated_params()?;
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_type()?;
@@ -401,10 +350,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::Import, "Expected 'import'")?;
         let mut path = Vec::new();
         loop {
-            let ident = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s.to_string(),
-                _ => return Err(self.error("Expected identifier in import path")),
-            };
+            let ident = self.expect_identifier("Expected identifier in import path")?;
             path.push(ident);
             if self.match_token(&TokenType::DoubleColon) {
                 continue;
@@ -421,10 +367,7 @@ impl<'a> Parser<'a> {
         let span_start_column = self.peek().column;
         self.consume(&TokenType::MacroRules, "Expected 'macro_rules!'")?;
 
-        let name = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s.to_string(),
-            _ => return Err(self.error("Expected macro name")),
-        };
+        let name = self.expect_identifier("Expected macro name")?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{' for macro rules body")?;
 
