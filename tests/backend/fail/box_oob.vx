@@ -1,5 +1,6 @@
-// RUN: not vxc %s
-
+// RUN: not vxc %s | FileCheck %s
+// CHECK: Caught SIGSEGV
+// CHECK: Backtrace:
 import std::box;
 
 fn main() -> i32 {
