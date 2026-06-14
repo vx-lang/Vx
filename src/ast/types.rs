@@ -15,7 +15,7 @@ use super::*;
 //
 //===----------------------------------------------------------------------===//
 use crate::ast;
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash)]
 pub struct Span {
     pub line: usize,
     pub column: usize,

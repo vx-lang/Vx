@@ -102,6 +102,24 @@ impl StringLiteralExpr {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct SpawnOnExpr {
+    pub top: Topology,
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+impl SpawnOnExpr {
+    pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
+        Self {
+            top,
+            stmts,
+            ret,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
@@ -734,12 +752,12 @@ impl Expr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 space: e.space.clone(),
                 cost: e.cost,
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::ComptimeBlock(e) => Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::FunctionCall(e) => {
                 let mut new_name = e.name.clone();
@@ -774,29 +792,29 @@ impl Expr {
                     name: new_name,
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
-                    span: e.span.clone(),
+                    span: e.span,
                 })
             }
             Expr::IndirectCall(e) => Expr::IndirectCall(IndirectCallExpr {
                 callee: Box::new(e.callee.substitute(mapping)),
                 args: e.args.iter().map(|arg| arg.substitute(mapping)).collect(),
                 target_func_ty: e.target_func_ty.clone(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Array(e) => Expr::Array(ArrayExpr {
                 elements: e.elements.iter().map(|a| a.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::MemberAccess(e) => Expr::MemberAccess(MemberAccessExpr {
                 base: Box::new(e.base.substitute(mapping)),
                 member: e.member.clone(),
                 struct_name: e.struct_name.clone(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::IndexAccess(e) => Expr::IndexAccess(IndexAccessExpr {
                 base: Box::new(e.base.substitute(mapping)),
                 index: Box::new(e.index.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::MethodCall(e) => {
                 let substituted_type_args = e
@@ -808,46 +826,46 @@ impl Expr {
                     method_name: e.method_name.clone(),
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
-                    span: e.span.clone(),
+                    span: e.span,
                 })
             }
             Expr::BinaryOp(e) => Expr::BinaryOp(BinaryOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::RelationalOp(e) => Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::LogicalOp(e) => Expr::LogicalOp(LogicalOpExpr {
                 lhs: Box::new(e.lhs.substitute(mapping)),
                 op: e.op.clone(),
                 rhs: Box::new(e.rhs.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::UnaryOp(e) => Expr::UnaryOp(UnaryOpExpr {
                 op: e.op.clone(),
                 expr: Box::new(e.expr.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Borrow(e) => Expr::Borrow(BorrowExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 is_mut: e.is_mut,
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Dereference(e) => Expr::Dereference(DereferenceExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 ty: e.ty.as_ref().map(|t| t.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::UnsafeBlock(e) => Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();
@@ -872,14 +890,14 @@ impl Expr {
                         .iter()
                         .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
                         .collect(),
-                    span: e.span.clone(),
+                    span: e.span,
                 })
             }
             Expr::AsCast(e) => Expr::AsCast(AsCastExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
                 target_ty: e.target_ty.substitute(mapping),
                 source_ty: e.source_ty.as_ref().map(|t| t.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::If(e) => Expr::If(IfExpr {
                 is_comptime: e.is_comptime,
@@ -889,12 +907,12 @@ impl Expr {
                     .else_block
                     .as_ref()
                     .map(|b| b.iter().map(|s| s.substitute(mapping)).collect()),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Range(e) => Expr::Range(RangeExpr {
                 start: Box::new(e.start.substitute(mapping)),
                 end: Box::new(e.end.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Match(e) => Expr::Match(MatchExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
@@ -906,30 +924,30 @@ impl Expr {
                         body: arm.body.iter().map(|s| s.substitute(mapping)).collect(),
                     })
                     .collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Grad(e) => Expr::Grad(GradExpr {
                 target_fn: e.target_fn.clone(),
                 args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Vjp(e) => Expr::Vjp(VjpExpr {
                 target_fn: e.target_fn.clone(),
                 args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                 cotangent: Box::new(e.cotangent.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Jvp(e) => Expr::Jvp(JvpExpr {
                 target_fn: e.target_fn.clone(),
                 args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
                 tangent: Box::new(e.tangent.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::SpawnOn(e) => Expr::SpawnOn(SpawnOnExpr {
                 top: e.top.clone(),
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Identifier(id) => {
                 if let Some(mapped_ty) = mapping.get(&id.name) {
@@ -938,12 +956,12 @@ impl Expr {
                             return Expr::Number(ast::NumberExpr {
                                 value: val_str.clone(),
                                 ty: None,
-                                span: id.span.clone(),
+                                span: id.span,
                             });
                         } else {
                             return Expr::Identifier(ast::IdentifierExpr {
                                 name: val_str.clone(),
-                                span: id.span.clone(),
+                                span: id.span,
                             });
                         }
                     } else if let Type::Const(expr) = mapped_ty {
@@ -975,12 +993,12 @@ impl Expr {
                         .payload
                         .as_ref()
                         .map(|p| p.iter().map(|ex| ex.substitute(mapping)).collect()),
-                    span: e.span.clone(),
+                    span: e.span,
                 })
             }
             Expr::VecMacro(e) => Expr::VecMacro(VecMacroExpr {
                 elements: e.elements.iter().map(|ex| ex.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Closure(e) => Expr::Closure(ClosureExpr {
                 params: e
@@ -995,25 +1013,25 @@ impl Expr {
                     .map(|(n, t)| (n.clone(), t.substitute(mapping)))
                     .collect(),
                 ret_ty: e.ret_ty.as_ref().map(|t| t.substitute(mapping)),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::MacroCall(e) => Expr::MacroCall(MacroCallExpr {
                 name: e.name.clone(),
                 token_tree: e.token_tree.clone(),
                 block_tree: e.block_tree.clone(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Print(e) => Expr::Print(PrintExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::Println(e) => Expr::Println(PrintlnExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::SizeOf(e) => Expr::SizeOf(SizeOfExpr {
                 target_ty: e.target_ty.substitute(mapping),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Expr::InlineMlir(e) => {
                 let mut new_block_str = e.block_str.clone();
@@ -1045,7 +1063,7 @@ impl Expr {
                     returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
                     dialects: e.dialects.clone(),
                     block_str: new_block_str,
-                    span: e.span.clone(),
+                    span: e.span,
                 })
             }
             Expr::Number(_) | Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::Topology(_) => {

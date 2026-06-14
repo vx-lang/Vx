@@ -637,7 +637,7 @@ impl<'c> MeliorGenerator<'c> {
         expr: &Expr,
         block: &melior::ir::Block<'c>,
     ) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
-        self.current_span = expr.span().clone();
+        self.current_span = expr.span();
         match expr {
             Expr::Identifier(e) => LowerToMelior::lower(e, self, block),
             Expr::BinaryOp(e) => LowerToMelior::lower(e, self, block),

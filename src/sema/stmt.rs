@@ -294,13 +294,13 @@ impl<'a> TypeChecker<'a> {
                 // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
                 let return_ident = Expr::Identifier(IdentifierExpr {
                     name: "return".to_string(),
-                    span: span.clone(),
+                    span: *span,
                 });
                 let return_eq = Expr::RelationalOp(RelationalOpExpr {
                     lhs: Box::new(return_ident),
                     op: RelationalOp::Eq,
                     rhs: Box::new(expr.clone()),
-                    span: span.clone(),
+                    span: *span,
                 });
                 self.constraints.push(return_eq);
             }

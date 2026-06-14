@@ -113,7 +113,7 @@ impl<'a> Parser<'a> {
             };
             let x_token = self.advance().clone();
             match x_token.kind {
-                TokenType::Identifier(s) if s == "x" => {}
+                TokenType::Identifier("x") => {}
                 _ => return Err(self.error("Expected 'x' after size in SIMD type")),
             }
             let el_ty_ident = match self.advance().kind.clone() {

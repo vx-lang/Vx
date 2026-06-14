@@ -44,24 +44,6 @@ impl ReturnStmt {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct SpawnOnExpr {
-    pub top: Topology,
-    pub stmts: Vec<Statement>,
-    pub ret: Option<Box<Expr>>,
-    pub span: Span,
-}
-impl SpawnOnExpr {
-    pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
-        Self {
-            top,
-            stmts,
-            ret,
-            span,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone)]
 pub struct ExprStmtStmt {
     pub expr: Expr,
     pub has_semi: bool,
@@ -217,6 +199,24 @@ pub enum Statement {
     MacroCall(MacroCallStmt),
 }
 
+macro_rules! delegate_stmt {
+    ($self:ident, $inner:ident => $expr:expr) => {
+        match $self {
+            Statement::LetDecl($inner) => $expr,
+            Statement::Return($inner) => $expr,
+            Statement::ExprStmt($inner) => $expr,
+            Statement::ForLoop($inner) => $expr,
+            Statement::Assign($inner) => $expr,
+            Statement::CompoundAssign($inner) => $expr,
+            Statement::Assert($inner) => $expr,
+            Statement::Loop($inner) => $expr,
+            Statement::Break($inner) => $expr,
+            Statement::Continue($inner) => $expr,
+            Statement::MacroCall($inner) => $expr,
+        }
+    };
+}
+
 impl Statement {
     pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Statement {
         match self {
@@ -225,16 +225,16 @@ impl Statement {
                 is_mut: e.is_mut,
                 ty_ann: e.ty_ann.as_ref().map(|t| t.substitute(mapping)),
                 expr: e.expr.substitute(mapping),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::Return(e) => Statement::Return(ReturnStmt {
                 expr: e.expr.substitute(mapping),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::ExprStmt(e) => Statement::ExprStmt(ExprStmtStmt {
                 expr: e.expr.substitute(mapping),
                 has_semi: e.has_semi,
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::ForLoop(e) => Statement::ForLoop(ForLoopStmt {
                 iter: e.iter.clone(),
@@ -245,23 +245,23 @@ impl Statement {
                     .map(|expr| expr.substitute(mapping))
                     .collect(),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),
                 rhs: e.rhs.substitute(mapping),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::CompoundAssign(e) => Statement::CompoundAssign(CompoundAssignStmt {
                 lhs: e.lhs.substitute(mapping),
                 op: e.op.clone(),
                 rhs: e.rhs.substitute(mapping),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::Assert(e) => Statement::Assert(AssertStmt {
                 expr: Box::new(e.expr.substitute(mapping)),
                 msg: e.msg.clone(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::Loop(e) => Statement::Loop(LoopStmt {
                 invariants: e
@@ -270,7 +270,7 @@ impl Statement {
                     .map(|expr| expr.substitute(mapping))
                     .collect(),
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
-                span: e.span.clone(),
+                span: e.span,
             }),
             Statement::Break(e) => Statement::Break(e.clone()),
             Statement::Continue(e) => Statement::Continue(e.clone()),
@@ -279,24 +279,12 @@ impl Statement {
                 token_tree: e.token_tree.clone(),
                 block_tree: e.block_tree.clone(),
                 has_semi: e.has_semi,
-                span: e.span.clone(),
+                span: e.span,
             }),
         }
     }
 
     pub fn span(&self) -> Span {
-        match self {
-            Statement::LetDecl(s) => s.span.clone(),
-            Statement::Return(s) => s.span.clone(),
-            Statement::ExprStmt(s) => s.span.clone(),
-            Statement::ForLoop(s) => s.span.clone(),
-            Statement::Assign(s) => s.span.clone(),
-            Statement::CompoundAssign(s) => s.span.clone(),
-            Statement::Assert(s) => s.span.clone(),
-            Statement::Loop(s) => s.span.clone(),
-            Statement::Break(s) => s.span.clone(),
-            Statement::Continue(s) => s.span.clone(),
-            Statement::MacroCall(s) => s.span.clone(),
-        }
+        delegate_stmt!(self, s => s.span)
     }
 }

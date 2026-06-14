@@ -2024,7 +2024,7 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
                 name: method_name.clone(),
                 type_args: None,
                 args: new_args,
-                span: span.clone(),
+                span: *span,
             }),
             block,
         )
@@ -2855,7 +2855,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                         _ => unreachable!(),
                     },
                     span: match lhs {
-                        Expr::IndexAccess(i) => i.span.clone(),
+                        Expr::IndexAccess(i) => i.span,
                         _ => unreachable!(),
                     },
                 }),
@@ -4227,7 +4227,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             name: format!("Vec_{}::new", type_suffix),
             args: vec![],
             type_args: None,
-            span: self.span.clone(),
+            span: self.span,
         });
 
         let (vec_val, vec_ty) = gen.generate_expr(&new_call, block)?;
@@ -4286,7 +4286,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                     el.clone(),
                 ],
                 type_args: None,
-                span: self.span.clone(),
+                span: self.span,
             });
             gen.generate_expr(&push_call, block)?;
         }
@@ -4407,7 +4407,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
         if !self.args.is_empty() {
             let print_expr = ast::expr::PrintExpr {
                 args: self.args.clone(),
-                span: self.span.clone(),
+                span: self.span,
             };
             print_expr.lower(gen, block)?;
         }

@@ -356,7 +356,7 @@ impl<'a> Lexer<'a> {
             kind,
             line: self.line,
             column: start_col,
-            length: self.column - start_col,
+            length: self.current_byte_offset() - start_byte,
         }
     }
 
@@ -383,7 +383,7 @@ impl<'a> Lexer<'a> {
             kind: TokenType::Number(text),
             line: self.line,
             column: start_col,
-            length: self.column - start_col,
+            length: self.current_byte_offset() - start_byte,
         }
     }
 
@@ -421,7 +421,7 @@ impl<'a> Lexer<'a> {
                     kind: TokenType::Whitespace(ws),
                     line: self.line,
                     column: start_col,
-                    length: self.column - start_col,
+                    length: self.current_byte_offset() - start_byte,
                 };
             }
 
@@ -443,7 +443,7 @@ impl<'a> Lexer<'a> {
                         kind: TokenType::Comment(comment),
                         line: self.line,
                         column: start_col,
-                        length: self.column - start_col,
+                        length: self.current_byte_offset() - start_byte,
                     };
                 }
             }
@@ -514,7 +514,7 @@ impl<'a> Lexer<'a> {
                 kind: TokenType::StringLiteral(literal),
                 line: self.line,
                 column: start_col,
-                length: self.column - start_col,
+                length: self.current_byte_offset() - start_byte,
             };
         }
 
@@ -622,7 +622,7 @@ impl<'a> Lexer<'a> {
             kind,
             line: self.line,
             column: start_col,
-            length: self.column - start_col,
+            length: self.current_byte_offset() - start_byte,
         }
     }
 

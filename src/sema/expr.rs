@@ -132,7 +132,7 @@ impl<'a> TypeChecker<'a> {
                         enum_name: enum_name.to_string(),
                         variant_name: variant.to_string(),
                         payload,
-                        span: fc.span.clone(),
+                        span: fc.span,
                     });
                 }
             }
@@ -892,14 +892,14 @@ impl<'a> TypeChecker<'a> {
                     expr: Box::new(current_expr),
                     space: intermediate_space,
                     cost: None,
-                    span: t.span.clone(),
+                    span: t.span,
                 });
             }
             *expr = Expr::Transfer(TransferExpr {
                 expr: Box::new(current_expr),
                 space: target_mem.clone(),
                 cost: None,
-                span: t.span.clone(),
+                span: t.span,
             });
             // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!
             return self.check_transfer_expr(expr, consume, silent);
@@ -2988,7 +2988,7 @@ impl<'a> TypeChecker<'a> {
                     format!("Vec<{}>::new", element_type),
                     None,
                     vec![],
-                    span.clone(),
+                    *span,
                 ));
 
                 let decl = Statement::LetDecl(LetDeclStmt::new(
@@ -2996,7 +2996,7 @@ impl<'a> TypeChecker<'a> {
                     true,
                     None,
                     new_call,
-                    span.clone(),
+                    *span,
                 ));
 
                 let mut stmts = vec![decl];
@@ -3014,23 +3014,17 @@ impl<'a> TypeChecker<'a> {
                         "push".to_string(),
                         None,
                         vec![el],
-                        span.clone(),
+                        *span,
                     ));
                     stmts.push(Statement::ExprStmt(ExprStmtStmt::new(
-                        push_call,
-                        true,
-                        span.clone(),
+                        push_call, true, *span,
                     )));
                 }
 
-                let ret_expr =
-                    Expr::Identifier(IdentifierExpr::new(var_name.clone(), span.clone()));
+                let ret_expr = Expr::Identifier(IdentifierExpr::new(var_name.clone(), *span));
 
-                let block = Expr::UnsafeBlock(UnsafeBlockExpr::new(
-                    stmts,
-                    Some(Box::new(ret_expr)),
-                    span.clone(),
-                ));
+                let block =
+                    Expr::UnsafeBlock(UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span));
 
                 *expr = block;
                 self.check_expr_type(expr)
@@ -3115,24 +3109,24 @@ impl<'a> TypeChecker<'a> {
                     let env_access = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(Expr::Identifier(IdentifierExpr::new(
                             "_env".to_string(),
-                            e.span.clone(),
+                            e.span,
                         ))),
                         member: cap_name.clone(),
                         struct_name: Some(struct_name.clone()),
-                        span: e.span.clone(),
+                        span: e.span,
                     });
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
                         is_mut: true,
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
-                        span: e.span.clone(),
+                        span: e.span,
                     }));
                 }
 
                 body_stmts.push(Statement::Return(ReturnStmt {
                     expr: *b,
-                    span: e.span.clone(),
+                    span: e.span,
                 }));
 
                 let call_func = decl::Function {
@@ -3152,14 +3146,14 @@ impl<'a> TypeChecker<'a> {
                 for (cap_name, _) in &captured_vars {
                     fields.push((
                         cap_name.clone(),
-                        Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span.clone())),
+                        Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span)),
                     ));
                 }
 
                 *expr = Expr::StructInit(StructInitExpr {
                     name: struct_name.clone(),
                     fields,
-                    span: e.span.clone(),
+                    span: e.span,
                 });
 
                 Type::Struct(struct_name, None)

@@ -26,7 +26,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 tokens.insert(
                     i,
                     crate::lexer::Token {
-                        kind: TokenType::Whitespace(" ".to_string()),
+                        kind: TokenType::Whitespace(" "),
                         line: tokens[i].line,
                         column: tokens[i].column,
                         length: 1,
@@ -60,7 +60,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
 
             if let Some(lb_idx) = lb_idx {
                 let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
-                    if let TokenType::Whitespace(ref ws) = t.kind {
+                    if let TokenType::Whitespace(ws) = t.kind {
                         ws.contains('\n')
                     } else {
                         false
@@ -83,7 +83,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     let mut collapsed_len = 0;
                     // measure before the block until a newline
                     for j in (0..lb_idx).rev() {
-                        if let TokenType::Whitespace(ref ws) = tokens[j].kind {
+                        if let TokenType::Whitespace(ws) = tokens[j].kind {
                             if let Some(pos) = ws.rfind('\n') {
                                 collapsed_len += ws.len() - pos - 1;
                                 break;
@@ -96,7 +96,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     }
                     // measure inside the block, stripping newlines
                     for t in &tokens[lb_idx..=rb_idx] {
-                        if let TokenType::Whitespace(ref ws) = t.kind {
+                        if let TokenType::Whitespace(ws) = t.kind {
                             if ws.contains('\n') {
                                 collapsed_len += 1; // will become a single space
                             } else {
@@ -112,7 +112,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                         for t in &mut tokens[lb_idx..rb_idx] {
                             if let TokenType::Whitespace(ref mut ws) = t.kind {
                                 if ws.contains('\n') {
-                                    *ws = " ".to_string();
+                                    *ws = " ";
                                 }
                             }
                         }
@@ -122,7 +122,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                             tokens.insert(
                                 rb_idx,
                                 crate::lexer::Token {
-                                    kind: TokenType::Whitespace(" ".to_string()),
+                                    kind: TokenType::Whitespace(" "),
                                     line: tokens[rb_idx].line,
                                     column: tokens[rb_idx].column,
                                     length: 1,
@@ -134,7 +134,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                             tokens.insert(
                                 lb_idx + 1,
                                 crate::lexer::Token {
-                                    kind: TokenType::Whitespace(" ".to_string()),
+                                    kind: TokenType::Whitespace(" "),
                                     line: tokens[lb_idx].line,
                                     column: tokens[lb_idx].column,
                                     length: 1,
@@ -154,12 +154,12 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 if !has_newline && has_non_ws {
                     // Expand the block by inserting newlines after { and before }
                     if matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
-                        tokens[rb_idx - 1].kind = TokenType::Whitespace("\n".to_string());
+                        tokens[rb_idx - 1].kind = TokenType::Whitespace("\n");
                     } else {
                         tokens.insert(
                             rb_idx,
                             crate::lexer::Token {
-                                kind: TokenType::Whitespace("\n".to_string()),
+                                kind: TokenType::Whitespace("\n"),
                                 line: 0,
                                 column: 0,
                                 length: 1,
@@ -169,12 +169,12 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     }
 
                     if matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                        tokens[lb_idx + 1].kind = TokenType::Whitespace("\n".to_string());
+                        tokens[lb_idx + 1].kind = TokenType::Whitespace("\n");
                     } else {
                         tokens.insert(
                             lb_idx + 1,
                             crate::lexer::Token {
-                                kind: TokenType::Whitespace("\n".to_string()),
+                                kind: TokenType::Whitespace("\n"),
                                 line: 0,
                                 column: 0,
                                 length: 1,
@@ -215,7 +215,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 if ws.contains('\n') {
                     if let Some(prev) = &prev_non_ws {
                         if matches!(prev, TokenType::For | TokenType::If) {
-                            *ws = " ".to_string();
+                            *ws = " ";
                         }
                     }
                     if let Some(next) = &next_non_ws {
@@ -230,7 +230,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                                 | TokenType::AndAnd
                                 | TokenType::OrOr
                         ) {
-                            *ws = " ".to_string();
+                            *ws = " ";
                         }
                     }
                 }
@@ -239,12 +239,12 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 if let (Some(TokenType::RightBrace), Some(TokenType::Else)) =
                     (&prev_non_ws, &next_non_ws)
                 {
-                    *ws = " ".to_string();
+                    *ws = " ";
                 }
                 if let (Some(TokenType::Else), Some(TokenType::LeftBrace)) =
                     (&prev_non_ws, &next_non_ws)
                 {
-                    *ws = " ".to_string();
+                    *ws = " ";
                 }
             }
         }
@@ -265,7 +265,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
         match token.kind {
             TokenType::Whitespace(ws) => {
                 if !format_enabled {
-                    formatted.push_str(&ws);
+                    formatted.push_str(ws);
                     if ws.contains('\n') {
                         is_new_line = true;
                     }
@@ -280,7 +280,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     } else {
                         // Only output inline spaces if we aren't at the very start of a line
                         if !is_new_line {
-                            formatted.push_str(&ws);
+                            formatted.push_str(ws);
                         }
                     }
                 }
@@ -328,7 +328,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     }
                 }
                 is_new_line = false;
-                formatted.push_str(&c);
+                formatted.push_str(c);
             }
             other => {
                 if format_enabled && is_new_line {
