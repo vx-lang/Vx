@@ -1,0 +1,7 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Macro invocations must not have spaces between the macro name and '!'. Did you mean `print!`?
+
+fn main() -> i32 {
+  let x = print !("test");
+  return 0;
+}
