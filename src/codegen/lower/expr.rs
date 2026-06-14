@@ -1473,7 +1473,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             if func_ty.to_string() == "!llvm.ptr" {
                 if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
-                    let r = gen.lower_type(ret);
+                    let r = gen.lower_type(ret.as_ref());
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
                     actual_func_ty =
                         melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
@@ -1482,7 +1482,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 }
             } else if is_closure {
                 if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
-                    let r = gen.lower_type(ret);
+                    let r = gen.lower_type(ret.as_ref());
                     let mut a: Vec<_> = vec![Type::parse(gen.context, "!llvm.ptr").unwrap()];
                     a.extend(func_args.iter().map(|t| gen.lower_type(t)));
                     actual_func_ty =
