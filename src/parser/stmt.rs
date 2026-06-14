@@ -23,7 +23,7 @@ impl<'a> Parser<'a> {
                     is_mut = true;
                 }
                 let name = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after let")),
                 };
                 let mut type_annotation = None;
@@ -80,7 +80,7 @@ impl<'a> Parser<'a> {
                 let mut msg = None;
                 if self.match_token(&TokenType::Comma) {
                     if let TokenType::StringLiteral(s) = self.peek().kind.clone() {
-                        msg = Some(s);
+                        msg = Some(s.to_string());
                         self.advance();
                     } else {
                         return Err(
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
             TokenType::For => {
                 self.advance();
                 let iter = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after 'for'")),
                 };
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
                 }
 
                 if is_macro {
-                    let name = s.clone();
+                    let name = s.to_string();
                     self.advance(); // consume identifier
                     self.advance(); // consume '!'
                     let token_tree = self.parse_token_tree()?;

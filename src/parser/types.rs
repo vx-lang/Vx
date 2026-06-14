@@ -17,7 +17,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s,
+            TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
         match ident.as_str() {
@@ -54,7 +54,7 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
         let ident = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s,
+            TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
         match ident.as_str() {
@@ -76,7 +76,7 @@ impl<'a> Parser<'a> {
             let is_mut = if self.check(&TokenType::Mut) {
                 self.advance();
                 true
-            } else if self.check(&TokenType::Identifier("const".to_string())) {
+            } else if self.check(&TokenType::Identifier("const")) {
                 self.advance();
                 false
             } else {
@@ -113,11 +113,11 @@ impl<'a> Parser<'a> {
             };
             let x_token = self.advance().clone();
             match x_token.kind {
-                TokenType::Identifier(ref s) if s == "x" => {}
+                TokenType::Identifier(s) if s == "x" => {}
                 _ => return Err(self.error("Expected 'x' after size in SIMD type")),
             }
             let el_ty_ident = match self.advance().kind.clone() {
-                TokenType::Identifier(s) => s,
+                TokenType::Identifier(s) => s.to_string(),
                 _ => return Err(self.error("Expected element type after 'x' in SIMD type")),
             };
             let el_ty = std::str::FromStr::from_str(el_ty_ident.as_str())
@@ -167,9 +167,9 @@ impl<'a> Parser<'a> {
         } else {
             let token = self.peek().clone();
             if let TokenType::Identifier(ref s) = token.kind {
-                if self.generic_params.contains(s) {
+                if self.generic_params.iter().any(|p| p == *s) {
                     self.advance();
-                    return Ok(Type::Generic(s.clone(), None));
+                    return Ok(Type::Generic(s.to_string(), None));
                 }
             }
 
@@ -206,7 +206,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_named_type(&mut self) -> ParseResult<Type> {
         let ident = match self.advance().kind.clone() {
-            TokenType::Identifier(s) => s,
+            TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
         match ident.as_str() {
@@ -215,12 +215,12 @@ impl<'a> Parser<'a> {
                 if let TokenType::LeftAngle = &self.peek().kind {
                     self.advance(); // consume '<'
                     let ty_ident = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s,
+                        TokenType::Identifier(s) => s.to_string(),
                         _ => return Err(self.error("Expected element type after '<'")),
                     };
                     el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
                         parsed_ty
-                    } else if self.generic_params.contains(&ty_ident) {
+                    } else if self.generic_params.contains(&ty_ident.to_string()) {
                         ElementType::Generic(ty_ident)
                     } else {
                         return Err(self.error(&format!("Unknown element type {}", ty_ident)));

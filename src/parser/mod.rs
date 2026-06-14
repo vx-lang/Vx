@@ -22,9 +22,17 @@ use crate::lexer::{Token, TokenType};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParserError {
-    UnexpectedToken { expected: String, found: Token },
-    Custom { message: String, token: Token },
-    EndOfFile { expected: String },
+    UnexpectedToken {
+        expected: String,
+        found: crate::lexer::OwnedToken,
+    },
+    Custom {
+        message: String,
+        token: crate::lexer::OwnedToken,
+    },
+    EndOfFile {
+        expected: String,
+    },
 }
 
 impl ParserError {
@@ -56,7 +64,7 @@ impl ParserError {
 pub(crate) type ParseResult<T> = Result<T, ParserError>;
 
 pub struct Parser<'a> {
-    tokens: &'a [Token],
+    tokens: &'a [Token<'a>],
     pos: usize,
     generic_params: Vec<String>, // Tracks generic parameters in scope
     source: &'a str,
@@ -79,7 +87,7 @@ impl From<&str> for Function {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [Token], source: &'a str) -> Self {
+    pub fn new(tokens: &'a [Token<'a>], source: &'a str) -> Self {
         Self {
             tokens,
             pos: 0,
@@ -88,11 +96,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn peek(&self) -> &Token {
+    pub(crate) fn peek(&self) -> &Token<'a> {
         self.peek_n(0)
     }
 
-    pub(crate) fn peek_n(&self, offset: usize) -> &Token {
+    pub(crate) fn peek_n(&self, offset: usize) -> &Token<'a> {
         if self.pos + offset < self.tokens.len() {
             &self.tokens[self.pos + offset]
         } else {
@@ -100,7 +108,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn advance(&mut self) -> &Token {
+    pub(crate) fn advance(&mut self) -> &Token<'a> {
         let token = &self.tokens[self.pos];
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
@@ -108,12 +116,12 @@ impl<'a> Parser<'a> {
         token
     }
 
-    pub(crate) fn check(&self, kind: &TokenType) -> bool {
+    pub(crate) fn check(&self, kind: &TokenType<'a>) -> bool {
         &self.peek().kind == kind
     }
 
     #[allow(dead_code)]
-    pub(crate) fn match_token(&mut self, kind: &TokenType) -> bool {
+    pub(crate) fn match_token(&mut self, kind: &TokenType<'a>) -> bool {
         if self.check(kind) {
             self.advance();
             true
@@ -123,7 +131,7 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn consume(&mut self, kind: &TokenType, msg: &str) -> ParseResult<&Token> {
+    pub(crate) fn consume(&mut self, kind: &TokenType<'a>, msg: &str) -> ParseResult<&Token<'a>> {
         if self.check(kind) {
             Ok(self.advance())
         } else if self.peek().kind == TokenType::Eof {
@@ -133,7 +141,7 @@ impl<'a> Parser<'a> {
         } else {
             Err(ParserError::UnexpectedToken {
                 expected: msg.to_string(),
-                found: self.peek().clone(),
+                found: self.peek().clone().into_owned(),
             })
         }
     }
@@ -142,7 +150,7 @@ impl<'a> Parser<'a> {
         let token = self.peek();
         ParserError::Custom {
             message: msg.to_string(),
-            token: token.clone(),
+            token: token.clone().into_owned(),
         }
     }
 
@@ -174,11 +182,11 @@ impl<'a> Parser<'a> {
                 let token = self.peek();
                 Err(ParserError::Custom {
                     message: "Unexpected EOF while parsing token tree".to_string(),
-                    token: token.clone(),
+                    token: token.clone().into_owned(),
                 })
             }
             _ => {
-                let token = self.advance().clone();
+                let token = self.advance().clone().into_owned();
                 Ok(TokenTree::Token(token))
             }
         }
@@ -203,7 +211,7 @@ mod tests {
         match &err {
             ParserError::UnexpectedToken { expected, found } => {
                 assert!(expected.contains("("));
-                assert_eq!(found.kind, TokenType::Fn);
+                assert_eq!(found.kind, crate::lexer::OwnedTokenType::Fn);
             }
             _ => panic!("Expected UnexpectedToken error, got {:?}", err),
         }

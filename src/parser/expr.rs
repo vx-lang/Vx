@@ -215,7 +215,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_pattern(&mut self) -> ParseResult<Pattern> {
-        if self.match_token(&TokenType::Identifier("_".to_string())) {
+        if self.match_token(&TokenType::Identifier("_")) {
             return Ok(Pattern::Wildcard);
         }
         let token = self.peek().clone();
@@ -225,12 +225,12 @@ impl<'a> Parser<'a> {
                 Ok(Pattern::Literal(expr))
             }
             TokenType::Identifier(s) => {
-                let mut enum_name = s.clone();
+                let mut enum_name = s.to_string();
                 self.advance();
                 if self.check(&TokenType::LeftAngle) {
                     self.advance(); // consume '<'
                     let ty_ident = match &self.advance().kind {
-                        TokenType::Identifier(s) => s.clone(),
+                        TokenType::Identifier(s) => s.to_string(),
                         _ => return Err(self.error("Expected type identifier in generic pattern")),
                     };
                     self.consume(&TokenType::RightAngle, "Expected '>' in generic pattern")?;
@@ -255,7 +255,11 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         payload = Some(p);
                     }
-                    Ok(Pattern::EnumVariant(enum_name, variant_name, payload))
+                    Ok(Pattern::EnumVariant(
+                        enum_name,
+                        variant_name.to_string(),
+                        payload,
+                    ))
                 } else {
                     Ok(Pattern::Identifier(enum_name))
                 }
@@ -365,7 +369,7 @@ impl<'a> Parser<'a> {
                 while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                     let token_kind = self.advance().kind.clone();
                     let f_name = match token_kind {
-                        TokenType::Identifier(f) => f,
+                        TokenType::Identifier(f) => f.to_string(),
                         _ => {
                             return Err(self.error(&format!(
                                 "Expected field name in struct init, found {:?}",
@@ -423,7 +427,7 @@ impl<'a> Parser<'a> {
                 }
                 Ok(Expr::EnumVariant(EnumVariantExpr {
                     enum_name: call_name,
-                    variant_name: variant,
+                    variant_name: variant.to_string(),
                     payload,
                     span: Span::default(),
                 }))
@@ -470,7 +474,7 @@ impl<'a> Parser<'a> {
             }
             Ok(Expr::EnumVariant(EnumVariantExpr {
                 enum_name: call_name,
-                variant_name: variant,
+                variant_name: variant.to_string(),
                 payload,
                 span: Span::default(),
             }))
@@ -666,7 +670,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'grad'")?;
                 let target_fn = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to grad")
@@ -693,7 +697,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'vjp'")?;
                 let target_fn = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to vjp")
@@ -726,7 +730,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.consume(&TokenType::LeftParen, "Expected '(' after 'jvp'")?;
                 let target_fn = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to jvp")
@@ -785,13 +789,13 @@ impl<'a> Parser<'a> {
                                 block_tree = Some(self.parse_token_tree()?);
                             }
                             Expr::MacroCall(MacroCallExpr {
-                                name: s,
+                                name: s.to_string(),
                                 token_tree,
                                 block_tree,
                                 span: Span::default(),
                             })
                         } else {
-                            self.parse_identifier_expr(s)?
+                            self.parse_identifier_expr(s.to_string())?
                         }
                     }
                     TokenType::Return => self.parse_identifier_expr("return".to_string())?,
@@ -806,7 +810,7 @@ impl<'a> Parser<'a> {
                         })
                     }
                     TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {
-                        value: s,
+                        value: s.to_string(),
                         span: Span::default(),
                     }),
 
@@ -844,7 +848,7 @@ impl<'a> Parser<'a> {
                             if !self.check(&TokenType::Pipe) {
                                 loop {
                                     let name = match self.advance().kind.clone() {
-                                        TokenType::Identifier(s) => s,
+                                        TokenType::Identifier(s) => s.to_string(),
                                         _ => {
                                             return Err(
                                                 self.error("Expected identifier in closure params")
@@ -919,7 +923,7 @@ impl<'a> Parser<'a> {
         loop {
             if self.match_token(&TokenType::Dot) {
                 let ident = match self.advance().kind.clone() {
-                    TokenType::Identifier(s) => s,
+                    TokenType::Identifier(s) => s.to_string(),
                     _ => return Err(self.error("Expected identifier after '.'")),
                 };
                 if self.match_token(&TokenType::LeftParen) {
@@ -935,7 +939,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightParen, "Expected ')'")?;
                     expr = Expr::MethodCall(MethodCallExpr {
                         base: Box::new(expr),
-                        method_name: ident,
+                        method_name: ident.to_string(),
                         type_args: None,
                         args,
                         span: Span::default(),

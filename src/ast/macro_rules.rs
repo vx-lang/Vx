@@ -10,11 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::lexer::Token;
+use crate::lexer::OwnedToken;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenTree {
-    Token(Token),
+    Token(OwnedToken),
     Group(Vec<TokenTree>),
     Delimited(Delimiter, Vec<TokenTree>),
 }
