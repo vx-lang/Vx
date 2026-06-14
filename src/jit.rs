@@ -175,10 +175,22 @@ pub fn execute_mlir(
         "release"
     };
 
-    let llvm_libdir_out = Command::new("/opt/homebrew/opt/llvm/bin/llvm-config")
+    let llvm_config_path =
+        std::env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".to_string());
+
+    let llvm_libdir_out = Command::new(&llvm_config_path)
         .arg("--libdir")
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "Compiler toolchain error: '{}' was not found. Please ensure LLVM is installed and in your PATH, or set LLVM_CONFIG_PATH.",
+                    llvm_config_path
+                )
+            } else {
+                format!("Failed to run {}: {}", llvm_config_path, e)
+            }
+        })?;
     let llvm_libdir = String::from_utf8_lossy(&llvm_libdir_out.stdout)
         .trim()
         .to_string();

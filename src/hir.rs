@@ -16,10 +16,26 @@
 /// Flat Array Bytecode replacing the AST.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Opcode {
+    Nop = 0,
+    Const = 1,
+    Load = 2,
+    Store = 3,
+    Add = 4,
+    Sub = 5,
+    Mul = 6,
+    Div = 7,
+    Call = 8,
+    Ret = 9,
+    Matmul = 10,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct HirInstruction {
     /// The specific operation (e.g. Add, Call, Store, Branch)
-    pub opcode: u32,
+    pub opcode: Opcode,
     /// Register index for the first operand
     pub operand1: u32,
     /// Register index for the second operand
@@ -27,27 +43,18 @@ pub struct HirInstruction {
     /// Lightweight 32-bit index pointing into the `LOCAL_TYPE_STREAM`
     /// to fetch the resolved 256-bit GID for this instruction's type.
     pub type_idx: u32,
+    /// Inline scalar immediate value (e.g. f64 or i64)
+    pub imm: u64,
 }
 
 impl HirInstruction {
-    pub fn new(opcode: u32, operand1: u32, operand2: u32, type_idx: u32) -> Self {
+    pub fn new(opcode: Opcode, operand1: u32, operand2: u32, type_idx: u32, imm: u64) -> Self {
         Self {
             opcode,
             operand1,
             operand2,
             type_idx,
+            imm,
         }
     }
 }
-
-pub const OP_NOP: u32 = 0;
-pub const OP_CONST: u32 = 1;
-pub const OP_LOAD: u32 = 2;
-pub const OP_STORE: u32 = 3;
-pub const OP_ADD: u32 = 4;
-pub const OP_SUB: u32 = 5;
-pub const OP_MUL: u32 = 6;
-pub const OP_DIV: u32 = 7;
-pub const OP_MATMUL: u32 = 10;
-pub const OP_CALL: u32 = 8;
-pub const OP_RET: u32 = 9;
