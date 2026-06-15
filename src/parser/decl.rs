@@ -13,14 +13,14 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    fn expect_identifier(&mut self, msg: &str) -> ParseResult<String> {
+    fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         match self.advance().kind {
             TokenType::Identifier(s) => Ok(s.to_string()),
             _ => Err(self.error(msg)),
         }
     }
 
-    fn parse_comma_separated_params(&mut self) -> ParseResult<Vec<(String, Type)>> {
+    fn parse_comma_separated_params(&mut self) -> ParseResult<'a, Vec<(String, Type)>> {
         let mut params = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    pub(crate) fn parse_generic_params(&mut self) -> ParseResult<Vec<GenericParam>> {
+    pub(crate) fn parse_generic_params(&mut self) -> ParseResult<'a, Vec<GenericParam>> {
         let mut generics = Vec::new();
         if self.match_token(&TokenType::LeftAngle) {
             while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
@@ -72,7 +72,7 @@ impl<'a> Parser<'a> {
         Ok(generics)
     }
 
-    pub fn parse_function(&mut self) -> ParseResult<Function> {
+    pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
         let name = self.expect_identifier("Expected function name")?;
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<StructDecl> {
+    pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
         let name = self.expect_identifier("Expected struct name")?;
@@ -175,7 +175,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<EnumDecl> {
+    pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
         self.consume(&TokenType::Enum, "Expected 'enum'")?;
 
         let name = self.expect_identifier("Expected enum name")?;
@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_extern_block(&mut self) -> ParseResult<Vec<ExternDecl>> {
+    pub(crate) fn parse_extern_block(&mut self) -> ParseResult<'a, Vec<ExternDecl>> {
         self.consume(&TokenType::Extern, "Expected 'extern'")?;
 
         // Optional "C" ABI string literal (we ignore it for now but parse it if it exists)
@@ -260,7 +260,7 @@ impl<'a> Parser<'a> {
         Ok(externs)
     }
 
-    pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<TraitDecl> {
+    pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<'a, TraitDecl> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
         let name = self.expect_identifier("Expected trait name")?;
         let generics = self.parse_generic_params()?;
@@ -295,7 +295,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_impl_block(&mut self) -> ParseResult<ImplBlock> {
+    pub(crate) fn parse_impl_block(&mut self) -> ParseResult<'a, ImplBlock> {
         self.consume(&TokenType::Impl, "Expected 'impl'")?;
 
         let generics = self.parse_generic_params()?;
@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn parse_import_decl(&mut self) -> ParseResult<ImportDecl> {
+    pub(crate) fn parse_import_decl(&mut self) -> ParseResult<'a, ImportDecl> {
         self.consume(&TokenType::Import, "Expected 'import'")?;
         let mut path = Vec::new();
         loop {
@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
         Ok(ImportDecl { path })
     }
 
-    pub(crate) fn parse_macro_def(&mut self) -> ParseResult<MacroDefDecl> {
+    pub(crate) fn parse_macro_def(&mut self) -> ParseResult<'a, MacroDefDecl> {
         let span_start_line = self.peek().line;
         let span_start_column = self.peek().column;
         self.consume(&TokenType::MacroRules, "Expected 'macro_rules!'")?;
@@ -417,7 +417,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse(&mut self) -> ParseResult<Program> {
+    pub fn parse(&mut self) -> ParseResult<'a, Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
         let mut structs = Vec::new();

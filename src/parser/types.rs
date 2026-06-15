@@ -13,7 +13,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_topology(&mut self) -> ParseResult<Topology> {
+    pub(crate) fn parse_topology(&mut self) -> ParseResult<'a, Topology> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Topology'")?;
         let ident = match &self.advance().kind {
@@ -50,7 +50,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_memory_space(&mut self) -> ParseResult<MemorySpace> {
+    pub(crate) fn parse_memory_space(&mut self) -> ParseResult<'a, MemorySpace> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
         let ident = match &self.advance().kind {
@@ -67,7 +67,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_type(&mut self) -> ParseResult<Type> {
+    pub(crate) fn parse_type(&mut self) -> ParseResult<'a, Type> {
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_type()?;
@@ -175,7 +175,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_generic_type_args(&mut self) -> ParseResult<Vec<Type>> {
+    pub(crate) fn parse_generic_type_args(&mut self) -> ParseResult<'a, Vec<Type>> {
         let mut type_args = Vec::new();
         while !self.check(&TokenType::RightAngle) && !self.check(&TokenType::Eof) {
             let is_expr = match &self.peek().kind {
@@ -214,7 +214,7 @@ impl<'a> Parser<'a> {
         Ok(type_args)
     }
 
-    pub(crate) fn parse_named_type(&mut self) -> ParseResult<Type> {
+    pub(crate) fn parse_named_type(&mut self) -> ParseResult<'a, Type> {
         let ident = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),

@@ -12,10 +12,9 @@
 // basic syntax validation.
 //
 //===----------------------------------------------------------------------===//
-use std::borrow::Cow;
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum TokenType<'a> {
+#[derive(Debug, PartialEq, Clone, Eq)]
+pub enum TokenTypeBase<S, C> {
     // Keywords
     Fn,
     Let,
@@ -62,9 +61,9 @@ pub enum TokenType<'a> {
     HardwareState,
 
     // Identifiers & Literals
-    Identifier(&'a str),
-    Number(&'a str),
-    StringLiteral(Cow<'a, str>),
+    Identifier(S),
+    Number(S),
+    StringLiteral(C),
 
     // Symbols
     LeftParen,
@@ -106,111 +105,167 @@ pub enum TokenType<'a> {
     // Special
     Eof,
     Unknown(char),
-    Comment(&'a str),
-    Whitespace(&'a str),
+    Comment(S),
+    Whitespace(S),
 }
 
-impl<'a> std::fmt::Display for TokenType<'a> {
+pub type TokenType<'a> = TokenTypeBase<&'a str, std::borrow::Cow<'a, str>>;
+pub type OwnedTokenType = TokenTypeBase<String, String>;
+
+impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenTypeBase<S, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenType::Fn => write!(f, "fn"),
-            TokenType::Let => write!(f, "let"),
-            TokenType::Mut => write!(f, "mut"),
-            TokenType::For => write!(f, "for"),
-            TokenType::In => write!(f, "in"),
-            TokenType::If => write!(f, "if"),
-            TokenType::Else => write!(f, "else"),
-            TokenType::Loop => write!(f, "loop"),
-            TokenType::Break => write!(f, "break"),
-            TokenType::Continue => write!(f, "continue"),
-            TokenType::Return => write!(f, "return"),
-            TokenType::Spawn => write!(f, "spawn"),
-            TokenType::On => write!(f, "on"),
-            TokenType::Transfer => write!(f, "transfer"),
-            TokenType::Unroll => write!(f, "unroll"),
-            TokenType::Across => write!(f, "across"),
-            TokenType::Match => write!(f, "match"),
-            TokenType::Struct => write!(f, "struct"),
-            TokenType::Unsafe => write!(f, "unsafe"),
-            TokenType::Safe => write!(f, "safe"),
-            TokenType::Extern => write!(f, "extern"),
-            TokenType::Trait => write!(f, "trait"),
-            TokenType::Impl => write!(f, "impl"),
-            TokenType::Comptime => write!(f, "comptime"),
-            TokenType::Import => write!(f, "import"),
-            TokenType::Assert => write!(f, "assert"),
-            TokenType::Enum => write!(f, "enum"),
-            TokenType::As => write!(f, "as"),
-            TokenType::Grad => write!(f, "grad"),
-            TokenType::Vjp => write!(f, "vjp"),
-            TokenType::Jvp => write!(f, "jvp"),
-            TokenType::Requires => write!(f, "requires"),
-            TokenType::Ensures => write!(f, "ensures"),
-            TokenType::Invariant => write!(f, "invariant"),
+            TokenTypeBase::Fn => write!(f, "fn"),
+            TokenTypeBase::Let => write!(f, "let"),
+            TokenTypeBase::Mut => write!(f, "mut"),
+            TokenTypeBase::For => write!(f, "for"),
+            TokenTypeBase::In => write!(f, "in"),
+            TokenTypeBase::If => write!(f, "if"),
+            TokenTypeBase::Else => write!(f, "else"),
+            TokenTypeBase::Loop => write!(f, "loop"),
+            TokenTypeBase::Break => write!(f, "break"),
+            TokenTypeBase::Continue => write!(f, "continue"),
+            TokenTypeBase::Return => write!(f, "return"),
+            TokenTypeBase::Spawn => write!(f, "spawn"),
+            TokenTypeBase::On => write!(f, "on"),
+            TokenTypeBase::Transfer => write!(f, "transfer"),
+            TokenTypeBase::Unroll => write!(f, "unroll"),
+            TokenTypeBase::Across => write!(f, "across"),
+            TokenTypeBase::Match => write!(f, "match"),
+            TokenTypeBase::Struct => write!(f, "struct"),
+            TokenTypeBase::Unsafe => write!(f, "unsafe"),
+            TokenTypeBase::Safe => write!(f, "safe"),
+            TokenTypeBase::Extern => write!(f, "extern"),
+            TokenTypeBase::Trait => write!(f, "trait"),
+            TokenTypeBase::Impl => write!(f, "impl"),
+            TokenTypeBase::Comptime => write!(f, "comptime"),
+            TokenTypeBase::Import => write!(f, "import"),
+            TokenTypeBase::Assert => write!(f, "assert"),
+            TokenTypeBase::Enum => write!(f, "enum"),
+            TokenTypeBase::As => write!(f, "as"),
+            TokenTypeBase::Grad => write!(f, "grad"),
+            TokenTypeBase::Vjp => write!(f, "vjp"),
+            TokenTypeBase::Jvp => write!(f, "jvp"),
+            TokenTypeBase::Requires => write!(f, "requires"),
+            TokenTypeBase::Ensures => write!(f, "ensures"),
+            TokenTypeBase::Invariant => write!(f, "invariant"),
 
-            TokenType::Topology => write!(f, "Topology"),
-            TokenType::Memory => write!(f, "Memory"),
-            TokenType::Ref => write!(f, "Ref"),
-            TokenType::Verified => write!(f, "Verified"),
-            TokenType::Pinned => write!(f, "Pinned"),
-            TokenType::HardwareState => write!(f, "HardwareState"),
+            TokenTypeBase::Topology => write!(f, "Topology"),
+            TokenTypeBase::Memory => write!(f, "Memory"),
+            TokenTypeBase::Ref => write!(f, "Ref"),
+            TokenTypeBase::Verified => write!(f, "Verified"),
+            TokenTypeBase::Pinned => write!(f, "Pinned"),
+            TokenTypeBase::HardwareState => write!(f, "HardwareState"),
 
-            TokenType::MacroRules => write!(f, "macro_rules"),
+            TokenTypeBase::MacroRules => write!(f, "macro_rules"),
 
-            TokenType::Identifier(s) => write!(f, "{}", s),
-            TokenType::Number(s) => write!(f, "{}", s),
-            TokenType::StringLiteral(s) => write!(f, "\"{}\"", s),
+            TokenTypeBase::Identifier(s) => write!(f, "{}", s),
+            TokenTypeBase::Number(s) => write!(f, "{}", s),
+            TokenTypeBase::StringLiteral(s) => write!(f, "\"{}\"", s),
 
-            TokenType::LeftParen => write!(f, "("),
-            TokenType::RightParen => write!(f, ")"),
-            TokenType::LeftBrace => write!(f, "{{"),
-            TokenType::RightBrace => write!(f, "}}"),
-            TokenType::LeftBracket => write!(f, "["),
-            TokenType::RightBracket => write!(f, "]"),
-            TokenType::LeftAngle => write!(f, "<"),
-            TokenType::RightAngle => write!(f, ">"),
-            TokenType::Colon => write!(f, ":"),
-            TokenType::DoubleColon => write!(f, "::"),
-            TokenType::Semicolon => write!(f, ";"),
-            TokenType::Comma => write!(f, ","),
-            TokenType::Equals => write!(f, "="),
-            TokenType::PlusEquals => write!(f, "+="),
-            TokenType::Arrow => write!(f, "->"),
-            TokenType::FatArrow => write!(f, "=>"),
-            TokenType::Plus => write!(f, "+"),
-            TokenType::Minus => write!(f, "-"),
-            TokenType::Star => write!(f, "*"),
-            TokenType::Slash => write!(f, "/"),
-            TokenType::Dot => write!(f, "."),
-            TokenType::DoubleDot => write!(f, ".."),
-            TokenType::Ampersand => write!(f, "&"),
-            TokenType::At => write!(f, "@"),
-            TokenType::Dollar => write!(f, "$"),
+            TokenTypeBase::LeftParen => write!(f, "("),
+            TokenTypeBase::RightParen => write!(f, ")"),
+            TokenTypeBase::LeftBrace => write!(f, "{{"),
+            TokenTypeBase::RightBrace => write!(f, "}}"),
+            TokenTypeBase::LeftBracket => write!(f, "["),
+            TokenTypeBase::RightBracket => write!(f, "]"),
+            TokenTypeBase::LeftAngle => write!(f, "<"),
+            TokenTypeBase::RightAngle => write!(f, ">"),
+            TokenTypeBase::Colon => write!(f, ":"),
+            TokenTypeBase::DoubleColon => write!(f, "::"),
+            TokenTypeBase::Semicolon => write!(f, ";"),
+            TokenTypeBase::Comma => write!(f, ","),
+            TokenTypeBase::Equals => write!(f, "="),
+            TokenTypeBase::PlusEquals => write!(f, "+="),
+            TokenTypeBase::Arrow => write!(f, "->"),
+            TokenTypeBase::FatArrow => write!(f, "=>"),
+            TokenTypeBase::Plus => write!(f, "+"),
+            TokenTypeBase::Minus => write!(f, "-"),
+            TokenTypeBase::Star => write!(f, "*"),
+            TokenTypeBase::Slash => write!(f, "/"),
+            TokenTypeBase::Dot => write!(f, "."),
+            TokenTypeBase::DoubleDot => write!(f, ".."),
+            TokenTypeBase::Ampersand => write!(f, "&"),
+            TokenTypeBase::At => write!(f, "@"),
+            TokenTypeBase::Dollar => write!(f, "$"),
 
-            TokenType::EqEq => write!(f, "=="),
-            TokenType::NotEq => write!(f, "!="),
-            TokenType::LessEq => write!(f, "<="),
-            TokenType::GreaterEq => write!(f, ">="),
-            TokenType::AndAnd => write!(f, "&&"),
-            TokenType::OrOr => write!(f, "||"),
-            TokenType::Bang => write!(f, "!"),
-            TokenType::Pipe => write!(f, "|"),
+            TokenTypeBase::EqEq => write!(f, "=="),
+            TokenTypeBase::NotEq => write!(f, "!="),
+            TokenTypeBase::LessEq => write!(f, "<="),
+            TokenTypeBase::GreaterEq => write!(f, ">="),
+            TokenTypeBase::AndAnd => write!(f, "&&"),
+            TokenTypeBase::OrOr => write!(f, "||"),
+            TokenTypeBase::Bang => write!(f, "!"),
+            TokenTypeBase::Pipe => write!(f, "|"),
 
-            TokenType::Comment(s) => write!(f, "{}", s),
-            TokenType::Whitespace(s) => write!(f, "{}", s),
-            TokenType::Unknown(c) => write!(f, "{}", c),
-            TokenType::Eof => write!(f, ""),
+            TokenTypeBase::Comment(s) => write!(f, "{}", s),
+            TokenTypeBase::Whitespace(s) => write!(f, "{}", s),
+            TokenTypeBase::Unknown(c) => write!(f, "{}", c),
+            TokenTypeBase::Eof => write!(f, ""),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token<'a> {
-    pub kind: TokenType<'a>,
+pub struct TokenBase<S, C> {
+    pub kind: TokenTypeBase<S, C>,
     pub line: usize,
     pub column: usize,
     pub length: usize,
 }
+
+pub type Token<'a> = TokenBase<&'a str, std::borrow::Cow<'a, str>>;
+pub type OwnedToken = TokenBase<String, String>;
+
+use once_cell::sync::Lazy;
+use rustc_hash::FxHashMap;
+
+static KEYWORDS: Lazy<
+    FxHashMap<&'static str, TokenTypeBase<&'static str, std::borrow::Cow<'static, str>>>,
+> = Lazy::new(|| {
+    let mut m = FxHashMap::default();
+    m.insert("fn", TokenTypeBase::Fn);
+    m.insert("let", TokenTypeBase::Let);
+    m.insert("mut", TokenTypeBase::Mut);
+    m.insert("for", TokenTypeBase::For);
+    m.insert("in", TokenTypeBase::In);
+    m.insert("if", TokenTypeBase::If);
+    m.insert("else", TokenTypeBase::Else);
+    m.insert("loop", TokenTypeBase::Loop);
+    m.insert("break", TokenTypeBase::Break);
+    m.insert("continue", TokenTypeBase::Continue);
+    m.insert("return", TokenTypeBase::Return);
+    m.insert("spawn", TokenTypeBase::Spawn);
+    m.insert("on", TokenTypeBase::On);
+    m.insert("transfer", TokenTypeBase::Transfer);
+    m.insert("unroll", TokenTypeBase::Unroll);
+    m.insert("across", TokenTypeBase::Across);
+    m.insert("match", TokenTypeBase::Match);
+    m.insert("Topology", TokenTypeBase::Topology);
+    m.insert("Memory", TokenTypeBase::Memory);
+    m.insert("Ref", TokenTypeBase::Ref);
+    m.insert("Verified", TokenTypeBase::Verified);
+    m.insert("Pinned", TokenTypeBase::Pinned);
+    m.insert("HardwareState", TokenTypeBase::HardwareState);
+    m.insert("struct", TokenTypeBase::Struct);
+    m.insert("unsafe", TokenTypeBase::Unsafe);
+    m.insert("safe", TokenTypeBase::Safe);
+    m.insert("extern", TokenTypeBase::Extern);
+    m.insert("trait", TokenTypeBase::Trait);
+    m.insert("impl", TokenTypeBase::Impl);
+    m.insert("comptime", TokenTypeBase::Comptime);
+    m.insert("import", TokenTypeBase::Import);
+    m.insert("assert", TokenTypeBase::Assert);
+    m.insert("enum", TokenTypeBase::Enum);
+    m.insert("as", TokenTypeBase::As);
+    m.insert("grad", TokenTypeBase::Grad);
+    m.insert("vjp", TokenTypeBase::Vjp);
+    m.insert("jvp", TokenTypeBase::Jvp);
+    m.insert("requires", TokenTypeBase::Requires);
+    m.insert("ensures", TokenTypeBase::Ensures);
+    m.insert("invariant", TokenTypeBase::Invariant);
+    m
+});
 
 pub struct Lexer<'a> {
     source: &'a str,
@@ -267,15 +322,20 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
-        while let Some(&(_idx, c)) = self.peek() {
-            if c.is_whitespace() {
-                self.advance();
-            } else if c == '/' {
-                // Peek ahead to check for comments
-                let mut temp = self.iter.clone();
-                temp.next(); // consume '/'
-                if let Some(&(_, '/')) = temp.peek() {
+        loop {
+            let offset = self.current_byte_offset();
+            if offset >= self.source.len() {
+                break;
+            }
+
+            let mut chars = self.source[offset..].chars();
+            if let Some(c) = chars.next() {
+                if c.is_whitespace() {
+                    self.advance();
+                } else if c == '/' && chars.next() == Some('/') {
                     // Line comment
+                    self.advance(); // consume first '/'
+                    self.advance(); // consume second '/'
                     while let Some((_, c)) = self.advance() {
                         if c == '\n' {
                             break;
@@ -302,57 +362,18 @@ impl<'a> Lexer<'a> {
         let end_byte = self.current_byte_offset();
         let text = &self.source[start_byte..end_byte];
 
-        let kind = match text {
-            "fn" => TokenType::Fn,
-            "let" => TokenType::Let,
-            "mut" => TokenType::Mut,
-            "for" => TokenType::For,
-            "in" => TokenType::In,
-            "if" => TokenType::If,
-            "else" => TokenType::Else,
-            "loop" => TokenType::Loop,
-            "break" => TokenType::Break,
-            "continue" => TokenType::Continue,
-            "return" => TokenType::Return,
-            "spawn" => TokenType::Spawn,
-            "on" => TokenType::On,
-            "transfer" => TokenType::Transfer,
-            "unroll" => TokenType::Unroll,
-            "across" => TokenType::Across,
-            "match" => TokenType::Match,
-            "Topology" => TokenType::Topology,
-            "Memory" => TokenType::Memory,
-            "Ref" => TokenType::Ref,
-            "Verified" => TokenType::Verified,
-            "Pinned" => TokenType::Pinned,
-            "HardwareState" => TokenType::HardwareState,
-            "struct" => TokenType::Struct,
-            "unsafe" => TokenType::Unsafe,
-            "safe" => TokenType::Safe,
-            "extern" => TokenType::Extern,
-            "trait" => TokenType::Trait,
-            "impl" => TokenType::Impl,
-            "comptime" => TokenType::Comptime,
-            "import" => TokenType::Import,
-            "assert" => TokenType::Assert,
-            "enum" => TokenType::Enum,
-            "as" => TokenType::As,
-            "grad" => TokenType::Grad,
-            "vjp" => TokenType::Vjp,
-            "jvp" => TokenType::Jvp,
-            "requires" => TokenType::Requires,
-            "ensures" => TokenType::Ensures,
-            "invariant" => TokenType::Invariant,
-            "macro_rules" => {
-                if self.peek_char() == Some('!') {
-                    self.advance(); // consume '!'
-                }
-                TokenType::MacroRules
+        let kind = if let Some(k) = KEYWORDS.get(text) {
+            k.clone()
+        } else if text == "macro_rules" {
+            if self.peek_char() == Some('!') {
+                self.advance(); // consume '!'
             }
-            _ => TokenType::Identifier(text),
+            TokenTypeBase::MacroRules
+        } else {
+            TokenTypeBase::Identifier(text)
         };
 
-        Token {
+        TokenBase {
             kind,
             line: self.line,
             column: start_col,
@@ -365,9 +386,9 @@ impl<'a> Lexer<'a> {
             if c.is_ascii_digit() || c.is_alphabetic() || c == '_' {
                 self.advance();
             } else if c == '.' {
-                let mut temp = self.iter.clone();
-                temp.next();
-                if let Some(&(_, '.')) = temp.peek() {
+                let offset = self.current_byte_offset();
+                let mut chars = self.source[offset + 1..].chars();
+                if chars.next() == Some('.') {
                     break;
                 }
                 self.advance();
@@ -379,8 +400,71 @@ impl<'a> Lexer<'a> {
         let end_byte = self.current_byte_offset();
         let text = &self.source[start_byte..end_byte];
 
-        Token {
-            kind: TokenType::Number(text),
+        TokenBase {
+            kind: TokenTypeBase::Number(text),
+            line: self.line,
+            column: start_col,
+            length: self.current_byte_offset() - start_byte,
+        }
+    }
+
+    fn string_literal(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
+        let mut text: Option<String> = None;
+        let mut raw_len = 0;
+        while let Some(next_c) = self.peek_char() {
+            if next_c == '"' {
+                self.advance();
+                break;
+            }
+            let mut char_to_push = self.advance().unwrap().1;
+            if char_to_push == '\\' {
+                if text.is_none() {
+                    let mut initial_text = String::with_capacity(raw_len + 4);
+                    initial_text.push_str(&self.source[start_byte + 1..start_byte + 1 + raw_len]);
+                    text = Some(initial_text);
+                }
+                if let Some(esc_c) = self.peek_char() {
+                    match esc_c {
+                        'n' => {
+                            self.advance();
+                            char_to_push = '\n';
+                        }
+                        't' => {
+                            self.advance();
+                            char_to_push = '\t';
+                        }
+                        'r' => {
+                            self.advance();
+                            char_to_push = '\r';
+                        }
+                        '"' => {
+                            self.advance();
+                            char_to_push = '"';
+                        }
+                        '\\' => {
+                            self.advance();
+                            char_to_push = '\\';
+                        }
+                        _ => {}
+                    }
+                }
+            } else if text.is_none() {
+                raw_len += char_to_push.len_utf8();
+            }
+            if let Some(ref mut t) = text {
+                t.push(char_to_push);
+            }
+        }
+
+        let end_byte = self.current_byte_offset();
+        let literal = if let Some(t) = text {
+            std::borrow::Cow::Owned(t)
+        } else {
+            std::borrow::Cow::Borrowed(&self.source[start_byte + 1..end_byte - 1])
+        };
+
+        TokenBase {
+            kind: TokenTypeBase::StringLiteral(literal),
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
@@ -397,8 +481,8 @@ impl<'a> Lexer<'a> {
         let (start_byte, c) = match self.peek() {
             Some(&(idx, c)) => (idx, c),
             None => {
-                return Token {
-                    kind: TokenType::Eof,
+                return TokenBase {
+                    kind: TokenTypeBase::Eof,
                     line: self.line,
                     column: self.column,
                     length: 0,
@@ -417,8 +501,8 @@ impl<'a> Lexer<'a> {
                 }
                 let end_byte = self.current_byte_offset();
                 let ws = &self.source[start_byte..end_byte];
-                return Token {
-                    kind: TokenType::Whitespace(ws),
+                return TokenBase {
+                    kind: TokenTypeBase::Whitespace(ws),
                     line: self.line,
                     column: start_col,
                     length: self.current_byte_offset() - start_byte,
@@ -426,9 +510,9 @@ impl<'a> Lexer<'a> {
             }
 
             if c == '/' {
-                let mut temp = self.iter.clone();
-                temp.next();
-                if let Some(&(_, '/')) = temp.peek() {
+                let offset = self.current_byte_offset();
+                let mut chars = self.source[offset + 1..].chars();
+                if chars.next() == Some('/') {
                     self.advance(); // '/'
                     self.advance(); // '/'
                     while let Some(next_c) = self.peek_char() {
@@ -439,8 +523,8 @@ impl<'a> Lexer<'a> {
                     }
                     let end_byte = self.current_byte_offset();
                     let comment = &self.source[start_byte..end_byte];
-                    return Token {
-                        kind: TokenType::Comment(comment),
+                    return TokenBase {
+                        kind: TokenTypeBase::Comment(comment),
                         line: self.line,
                         column: start_col,
                         length: self.current_byte_offset() - start_byte,
@@ -460,165 +544,110 @@ impl<'a> Lexer<'a> {
         }
 
         if c == '"' {
-            let mut text = String::new();
-            let mut has_escapes = false;
-            while let Some(next_c) = self.peek_char() {
-                if next_c == '"' {
-                    self.advance();
-                    break;
-                }
-                let mut char_to_push = self.advance().unwrap().1;
-                if char_to_push == '\\' {
-                    has_escapes = true;
-                    if let Some(esc_c) = self.peek_char() {
-                        match esc_c {
-                            'n' => {
-                                self.advance();
-                                char_to_push = '\n';
-                            }
-                            't' => {
-                                self.advance();
-                                char_to_push = '\t';
-                            }
-                            'r' => {
-                                self.advance();
-                                char_to_push = '\r';
-                            }
-                            '"' => {
-                                self.advance();
-                                char_to_push = '"';
-                            }
-                            '\\' => {
-                                self.advance();
-                                char_to_push = '\\';
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if has_escapes {
-                    text.push(char_to_push);
-                }
-            }
-
-            let end_byte = self.current_byte_offset();
-            let raw_text = &self.source[start_byte + 1..end_byte - 1]; // exclude quotes
-
-            let literal = if has_escapes {
-                Cow::Owned(text)
-            } else {
-                Cow::Borrowed(raw_text)
-            };
-
-            return Token {
-                kind: TokenType::StringLiteral(literal),
-                line: self.line,
-                column: start_col,
-                length: self.current_byte_offset() - start_byte,
-            };
+            return self.string_literal(start_byte, start_col);
         }
 
         let kind = match c {
-            '(' => TokenType::LeftParen,
-            ')' => TokenType::RightParen,
-            '{' => TokenType::LeftBrace,
-            '}' => TokenType::RightBrace,
-            '[' => TokenType::LeftBracket,
-            ']' => TokenType::RightBracket,
+            '(' => TokenTypeBase::LeftParen,
+            ')' => TokenTypeBase::RightParen,
+            '{' => TokenTypeBase::LeftBrace,
+            '}' => TokenTypeBase::RightBrace,
+            '[' => TokenTypeBase::LeftBracket,
+            ']' => TokenTypeBase::RightBracket,
 
-            ';' => TokenType::Semicolon,
-            ',' => TokenType::Comma,
+            ';' => TokenTypeBase::Semicolon,
+            ',' => TokenTypeBase::Comma,
             '+' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
-                    TokenType::PlusEquals
+                    TokenTypeBase::PlusEquals
                 } else {
-                    TokenType::Plus
+                    TokenTypeBase::Plus
                 }
             }
-            '*' => TokenType::Star,
-            '@' => TokenType::At,
-            '$' => TokenType::Dollar,
-            '/' => TokenType::Slash,
+            '*' => TokenTypeBase::Star,
+            '@' => TokenTypeBase::At,
+            '$' => TokenTypeBase::Dollar,
+            '/' => TokenTypeBase::Slash,
             '=' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
-                    TokenType::EqEq
+                    TokenTypeBase::EqEq
                 } else if self.peek_char() == Some('>') {
                     self.advance();
-                    TokenType::FatArrow
+                    TokenTypeBase::FatArrow
                 } else {
-                    TokenType::Equals
+                    TokenTypeBase::Equals
                 }
             }
             '!' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
-                    TokenType::NotEq
+                    TokenTypeBase::NotEq
                 } else {
-                    TokenType::Bang
+                    TokenTypeBase::Bang
                 }
             }
             '<' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
-                    TokenType::LessEq
+                    TokenTypeBase::LessEq
                 } else {
-                    TokenType::LeftAngle
+                    TokenTypeBase::LeftAngle
                 }
             }
             '>' => {
                 if self.peek_char() == Some('=') {
                     self.advance();
-                    TokenType::GreaterEq
+                    TokenTypeBase::GreaterEq
                 } else {
-                    TokenType::RightAngle
+                    TokenTypeBase::RightAngle
                 }
             }
             '&' => {
                 if self.peek_char() == Some('&') {
                     self.advance();
-                    TokenType::AndAnd
+                    TokenTypeBase::AndAnd
                 } else {
-                    TokenType::Ampersand
+                    TokenTypeBase::Ampersand
                 }
             }
             '|' => {
                 if self.peek_char() == Some('|') {
                     self.advance();
-                    TokenType::OrOr
+                    TokenTypeBase::OrOr
                 } else {
-                    TokenType::Pipe
+                    TokenTypeBase::Pipe
                 }
             }
             '.' => {
                 if self.peek_char() == Some('.') {
                     self.advance();
-                    TokenType::DoubleDot
+                    TokenTypeBase::DoubleDot
                 } else {
-                    TokenType::Dot
+                    TokenTypeBase::Dot
                 }
             }
             '-' => {
                 if self.peek_char() == Some('>') {
                     self.advance();
-                    TokenType::Arrow
+                    TokenTypeBase::Arrow
                 } else {
-                    TokenType::Minus
+                    TokenTypeBase::Minus
                 }
             }
             ':' => {
                 if self.peek_char() == Some(':') {
                     self.advance();
-                    TokenType::DoubleColon
+                    TokenTypeBase::DoubleColon
                 } else {
-                    TokenType::Colon
+                    TokenTypeBase::Colon
                 }
             }
-            _ => TokenType::Unknown(c),
+            _ => TokenTypeBase::Unknown(c),
         };
 
-        Token {
+        TokenBase {
             kind,
             line: self.line,
             column: start_col,
@@ -630,7 +659,7 @@ impl<'a> Lexer<'a> {
         let mut tokens = Vec::new();
         loop {
             let t = self.next_token();
-            let is_eof = t.kind == TokenType::Eof;
+            let is_eof = t.kind == TokenTypeBase::Eof;
             tokens.push(t);
             if is_eof {
                 break;
@@ -640,277 +669,96 @@ impl<'a> Lexer<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum OwnedTokenType {
-    Fn,
-    Let,
-    Mut,
-    For,
-    In,
-    If,
-    Else,
-    Loop,
-    Break,
-    Continue,
-    Return,
-    Spawn,
-    On,
-    Transfer,
-    Unroll,
-    Across,
-    Match,
-    Struct,
-    Unsafe,
-    Safe,
-    Extern,
-    Trait,
-    Impl,
-    Comptime,
-    Import,
-    Assert,
-    Enum,
-    As,
-    Grad,
-    Vjp,
-    Jvp,
-    Requires,
-    Ensures,
-    Invariant,
-    MacroRules,
-    Topology,
-    Memory,
-    Ref,
-    Verified,
-    Pinned,
-    HardwareState,
-    Identifier(String),
-    Number(String),
-    StringLiteral(String),
-    LeftParen,
-    RightParen,
-    LeftBrace,
-    RightBrace,
-    LeftBracket,
-    RightBracket,
-    LeftAngle,
-    RightAngle,
-    Colon,
-    DoubleColon,
-    Semicolon,
-    Comma,
-    Equals,
-    PlusEquals,
-    Arrow,
-    FatArrow,
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Dot,
-    DoubleDot,
-    Ampersand,
-    At,
-    Dollar,
-    EqEq,
-    NotEq,
-    LessEq,
-    GreaterEq,
-    AndAnd,
-    OrOr,
-    Bang,
-    Pipe,
-    Eof,
-    Unknown(char),
-    Comment(String),
-    Whitespace(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct OwnedToken {
-    pub kind: OwnedTokenType,
-    pub line: usize,
-    pub column: usize,
-    pub length: usize,
-}
-
 impl<'a> Token<'a> {
     pub fn into_owned(self) -> OwnedToken {
         let kind = match self.kind {
-            TokenType::Fn => OwnedTokenType::Fn,
-            TokenType::Let => OwnedTokenType::Let,
-            TokenType::Mut => OwnedTokenType::Mut,
-            TokenType::For => OwnedTokenType::For,
-            TokenType::In => OwnedTokenType::In,
-            TokenType::If => OwnedTokenType::If,
-            TokenType::Else => OwnedTokenType::Else,
-            TokenType::Loop => OwnedTokenType::Loop,
-            TokenType::Break => OwnedTokenType::Break,
-            TokenType::Continue => OwnedTokenType::Continue,
-            TokenType::Return => OwnedTokenType::Return,
-            TokenType::Spawn => OwnedTokenType::Spawn,
-            TokenType::On => OwnedTokenType::On,
-            TokenType::Transfer => OwnedTokenType::Transfer,
-            TokenType::Unroll => OwnedTokenType::Unroll,
-            TokenType::Across => OwnedTokenType::Across,
-            TokenType::Match => OwnedTokenType::Match,
-            TokenType::Struct => OwnedTokenType::Struct,
-            TokenType::Unsafe => OwnedTokenType::Unsafe,
-            TokenType::Safe => OwnedTokenType::Safe,
-            TokenType::Extern => OwnedTokenType::Extern,
-            TokenType::Trait => OwnedTokenType::Trait,
-            TokenType::Impl => OwnedTokenType::Impl,
-            TokenType::Comptime => OwnedTokenType::Comptime,
-            TokenType::Import => OwnedTokenType::Import,
-            TokenType::Assert => OwnedTokenType::Assert,
-            TokenType::Enum => OwnedTokenType::Enum,
-            TokenType::As => OwnedTokenType::As,
-            TokenType::Grad => OwnedTokenType::Grad,
-            TokenType::Vjp => OwnedTokenType::Vjp,
-            TokenType::Jvp => OwnedTokenType::Jvp,
-            TokenType::Requires => OwnedTokenType::Requires,
-            TokenType::Ensures => OwnedTokenType::Ensures,
-            TokenType::Invariant => OwnedTokenType::Invariant,
-            TokenType::MacroRules => OwnedTokenType::MacroRules,
-            TokenType::Topology => OwnedTokenType::Topology,
-            TokenType::Memory => OwnedTokenType::Memory,
-            TokenType::Ref => OwnedTokenType::Ref,
-            TokenType::Verified => OwnedTokenType::Verified,
-            TokenType::Pinned => OwnedTokenType::Pinned,
-            TokenType::HardwareState => OwnedTokenType::HardwareState,
-            TokenType::Identifier(s) => OwnedTokenType::Identifier(s.to_string()),
-            TokenType::Number(s) => OwnedTokenType::Number(s.to_string()),
-            TokenType::StringLiteral(s) => OwnedTokenType::StringLiteral(s.to_string()),
-            TokenType::LeftParen => OwnedTokenType::LeftParen,
-            TokenType::RightParen => OwnedTokenType::RightParen,
-            TokenType::LeftBrace => OwnedTokenType::LeftBrace,
-            TokenType::RightBrace => OwnedTokenType::RightBrace,
-            TokenType::LeftBracket => OwnedTokenType::LeftBracket,
-            TokenType::RightBracket => OwnedTokenType::RightBracket,
-            TokenType::LeftAngle => OwnedTokenType::LeftAngle,
-            TokenType::RightAngle => OwnedTokenType::RightAngle,
-            TokenType::Colon => OwnedTokenType::Colon,
-            TokenType::DoubleColon => OwnedTokenType::DoubleColon,
-            TokenType::Semicolon => OwnedTokenType::Semicolon,
-            TokenType::Comma => OwnedTokenType::Comma,
-            TokenType::Equals => OwnedTokenType::Equals,
-            TokenType::PlusEquals => OwnedTokenType::PlusEquals,
-            TokenType::Arrow => OwnedTokenType::Arrow,
-            TokenType::FatArrow => OwnedTokenType::FatArrow,
-            TokenType::Plus => OwnedTokenType::Plus,
-            TokenType::Minus => OwnedTokenType::Minus,
-            TokenType::Star => OwnedTokenType::Star,
-            TokenType::Slash => OwnedTokenType::Slash,
-            TokenType::Dot => OwnedTokenType::Dot,
-            TokenType::DoubleDot => OwnedTokenType::DoubleDot,
-            TokenType::Ampersand => OwnedTokenType::Ampersand,
-            TokenType::At => OwnedTokenType::At,
-            TokenType::Dollar => OwnedTokenType::Dollar,
-            TokenType::EqEq => OwnedTokenType::EqEq,
-            TokenType::NotEq => OwnedTokenType::NotEq,
-            TokenType::LessEq => OwnedTokenType::LessEq,
-            TokenType::GreaterEq => OwnedTokenType::GreaterEq,
-            TokenType::AndAnd => OwnedTokenType::AndAnd,
-            TokenType::OrOr => OwnedTokenType::OrOr,
-            TokenType::Bang => OwnedTokenType::Bang,
-            TokenType::Pipe => OwnedTokenType::Pipe,
-            TokenType::Eof => OwnedTokenType::Eof,
-            TokenType::Unknown(c) => OwnedTokenType::Unknown(c),
-            TokenType::Comment(s) => OwnedTokenType::Comment(s.to_string()),
-            TokenType::Whitespace(s) => OwnedTokenType::Whitespace(s.to_string()),
+            TokenTypeBase::Fn => TokenTypeBase::Fn,
+            TokenTypeBase::Let => TokenTypeBase::Let,
+            TokenTypeBase::Mut => TokenTypeBase::Mut,
+            TokenTypeBase::For => TokenTypeBase::For,
+            TokenTypeBase::In => TokenTypeBase::In,
+            TokenTypeBase::If => TokenTypeBase::If,
+            TokenTypeBase::Else => TokenTypeBase::Else,
+            TokenTypeBase::Loop => TokenTypeBase::Loop,
+            TokenTypeBase::Break => TokenTypeBase::Break,
+            TokenTypeBase::Continue => TokenTypeBase::Continue,
+            TokenTypeBase::Return => TokenTypeBase::Return,
+            TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::On => TokenTypeBase::On,
+            TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::Unroll => TokenTypeBase::Unroll,
+            TokenTypeBase::Across => TokenTypeBase::Across,
+            TokenTypeBase::Match => TokenTypeBase::Match,
+            TokenTypeBase::Struct => TokenTypeBase::Struct,
+            TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
+            TokenTypeBase::Safe => TokenTypeBase::Safe,
+            TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Trait => TokenTypeBase::Trait,
+            TokenTypeBase::Impl => TokenTypeBase::Impl,
+            TokenTypeBase::Comptime => TokenTypeBase::Comptime,
+            TokenTypeBase::Import => TokenTypeBase::Import,
+            TokenTypeBase::Assert => TokenTypeBase::Assert,
+            TokenTypeBase::Enum => TokenTypeBase::Enum,
+            TokenTypeBase::As => TokenTypeBase::As,
+            TokenTypeBase::Grad => TokenTypeBase::Grad,
+            TokenTypeBase::Vjp => TokenTypeBase::Vjp,
+            TokenTypeBase::Jvp => TokenTypeBase::Jvp,
+            TokenTypeBase::Requires => TokenTypeBase::Requires,
+            TokenTypeBase::Ensures => TokenTypeBase::Ensures,
+            TokenTypeBase::Invariant => TokenTypeBase::Invariant,
+            TokenTypeBase::MacroRules => TokenTypeBase::MacroRules,
+            TokenTypeBase::Topology => TokenTypeBase::Topology,
+            TokenTypeBase::Memory => TokenTypeBase::Memory,
+            TokenTypeBase::Ref => TokenTypeBase::Ref,
+            TokenTypeBase::Verified => TokenTypeBase::Verified,
+            TokenTypeBase::Pinned => TokenTypeBase::Pinned,
+            TokenTypeBase::HardwareState => TokenTypeBase::HardwareState,
+            TokenTypeBase::Identifier(s) => TokenTypeBase::Identifier(s.to_string()),
+            TokenTypeBase::Number(s) => TokenTypeBase::Number(s.to_string()),
+            TokenTypeBase::StringLiteral(s) => TokenTypeBase::StringLiteral(s.into_owned()),
+            TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
+            TokenTypeBase::RightParen => TokenTypeBase::RightParen,
+            TokenTypeBase::LeftBrace => TokenTypeBase::LeftBrace,
+            TokenTypeBase::RightBrace => TokenTypeBase::RightBrace,
+            TokenTypeBase::LeftBracket => TokenTypeBase::LeftBracket,
+            TokenTypeBase::RightBracket => TokenTypeBase::RightBracket,
+            TokenTypeBase::LeftAngle => TokenTypeBase::LeftAngle,
+            TokenTypeBase::RightAngle => TokenTypeBase::RightAngle,
+            TokenTypeBase::Colon => TokenTypeBase::Colon,
+            TokenTypeBase::DoubleColon => TokenTypeBase::DoubleColon,
+            TokenTypeBase::Semicolon => TokenTypeBase::Semicolon,
+            TokenTypeBase::Comma => TokenTypeBase::Comma,
+            TokenTypeBase::Equals => TokenTypeBase::Equals,
+            TokenTypeBase::PlusEquals => TokenTypeBase::PlusEquals,
+            TokenTypeBase::Arrow => TokenTypeBase::Arrow,
+            TokenTypeBase::FatArrow => TokenTypeBase::FatArrow,
+            TokenTypeBase::Plus => TokenTypeBase::Plus,
+            TokenTypeBase::Minus => TokenTypeBase::Minus,
+            TokenTypeBase::Star => TokenTypeBase::Star,
+            TokenTypeBase::Slash => TokenTypeBase::Slash,
+            TokenTypeBase::Dot => TokenTypeBase::Dot,
+            TokenTypeBase::DoubleDot => TokenTypeBase::DoubleDot,
+            TokenTypeBase::Ampersand => TokenTypeBase::Ampersand,
+            TokenTypeBase::At => TokenTypeBase::At,
+            TokenTypeBase::Dollar => TokenTypeBase::Dollar,
+            TokenTypeBase::EqEq => TokenTypeBase::EqEq,
+            TokenTypeBase::NotEq => TokenTypeBase::NotEq,
+            TokenTypeBase::LessEq => TokenTypeBase::LessEq,
+            TokenTypeBase::GreaterEq => TokenTypeBase::GreaterEq,
+            TokenTypeBase::AndAnd => TokenTypeBase::AndAnd,
+            TokenTypeBase::OrOr => TokenTypeBase::OrOr,
+            TokenTypeBase::Bang => TokenTypeBase::Bang,
+            TokenTypeBase::Pipe => TokenTypeBase::Pipe,
+            TokenTypeBase::Eof => TokenTypeBase::Eof,
+            TokenTypeBase::Unknown(c) => TokenTypeBase::Unknown(c),
+            TokenTypeBase::Comment(s) => TokenTypeBase::Comment(s.to_string()),
+            TokenTypeBase::Whitespace(s) => TokenTypeBase::Whitespace(s.to_string()),
         };
         OwnedToken {
             kind,
             line: self.line,
             column: self.column,
             length: self.length,
-        }
-    }
-}
-
-impl std::fmt::Display for OwnedTokenType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OwnedTokenType::Fn => write!(f, "fn"),
-            OwnedTokenType::Let => write!(f, "let"),
-            OwnedTokenType::Mut => write!(f, "mut"),
-            OwnedTokenType::For => write!(f, "for"),
-            OwnedTokenType::In => write!(f, "in"),
-            OwnedTokenType::If => write!(f, "if"),
-            OwnedTokenType::Else => write!(f, "else"),
-            OwnedTokenType::Loop => write!(f, "loop"),
-            OwnedTokenType::Break => write!(f, "break"),
-            OwnedTokenType::Continue => write!(f, "continue"),
-            OwnedTokenType::Return => write!(f, "return"),
-            OwnedTokenType::Spawn => write!(f, "spawn"),
-            OwnedTokenType::On => write!(f, "on"),
-            OwnedTokenType::Transfer => write!(f, "transfer"),
-            OwnedTokenType::Unroll => write!(f, "unroll"),
-            OwnedTokenType::Across => write!(f, "across"),
-            OwnedTokenType::Match => write!(f, "match"),
-            OwnedTokenType::Struct => write!(f, "struct"),
-            OwnedTokenType::Unsafe => write!(f, "unsafe"),
-            OwnedTokenType::Safe => write!(f, "safe"),
-            OwnedTokenType::Extern => write!(f, "extern"),
-            OwnedTokenType::Trait => write!(f, "trait"),
-            OwnedTokenType::Impl => write!(f, "impl"),
-            OwnedTokenType::Comptime => write!(f, "comptime"),
-            OwnedTokenType::Import => write!(f, "import"),
-            OwnedTokenType::Assert => write!(f, "assert"),
-            OwnedTokenType::Enum => write!(f, "enum"),
-            OwnedTokenType::As => write!(f, "as"),
-            OwnedTokenType::Grad => write!(f, "grad"),
-            OwnedTokenType::Vjp => write!(f, "vjp"),
-            OwnedTokenType::Jvp => write!(f, "jvp"),
-            OwnedTokenType::Requires => write!(f, "requires"),
-            OwnedTokenType::Ensures => write!(f, "ensures"),
-            OwnedTokenType::Invariant => write!(f, "invariant"),
-            OwnedTokenType::Topology => write!(f, "Topology"),
-            OwnedTokenType::Memory => write!(f, "Memory"),
-            OwnedTokenType::Ref => write!(f, "Ref"),
-            OwnedTokenType::Verified => write!(f, "Verified"),
-            OwnedTokenType::Pinned => write!(f, "Pinned"),
-            OwnedTokenType::HardwareState => write!(f, "HardwareState"),
-            OwnedTokenType::MacroRules => write!(f, "macro_rules"),
-            OwnedTokenType::Identifier(s) => write!(f, "{}", s),
-            OwnedTokenType::Number(s) => write!(f, "{}", s),
-            OwnedTokenType::StringLiteral(s) => write!(f, "\"{}\"", s),
-            OwnedTokenType::LeftParen => write!(f, "("),
-            OwnedTokenType::RightParen => write!(f, ")"),
-            OwnedTokenType::LeftBrace => write!(f, "{{"),
-            OwnedTokenType::RightBrace => write!(f, "}}"),
-            OwnedTokenType::LeftBracket => write!(f, "["),
-            OwnedTokenType::RightBracket => write!(f, "]"),
-            OwnedTokenType::LeftAngle => write!(f, "<"),
-            OwnedTokenType::RightAngle => write!(f, ">"),
-            OwnedTokenType::Colon => write!(f, ":"),
-            OwnedTokenType::DoubleColon => write!(f, "::"),
-            OwnedTokenType::Semicolon => write!(f, ";"),
-            OwnedTokenType::Comma => write!(f, ","),
-            OwnedTokenType::Equals => write!(f, "="),
-            OwnedTokenType::PlusEquals => write!(f, "+="),
-            OwnedTokenType::Arrow => write!(f, "->"),
-            OwnedTokenType::FatArrow => write!(f, "=>"),
-            OwnedTokenType::Plus => write!(f, "+"),
-            OwnedTokenType::Minus => write!(f, "-"),
-            OwnedTokenType::Star => write!(f, "*"),
-            OwnedTokenType::Slash => write!(f, "/"),
-            OwnedTokenType::Dot => write!(f, "."),
-            OwnedTokenType::DoubleDot => write!(f, ".."),
-            OwnedTokenType::Ampersand => write!(f, "&"),
-            OwnedTokenType::At => write!(f, "@"),
-            OwnedTokenType::Dollar => write!(f, "$"),
-            OwnedTokenType::EqEq => write!(f, "=="),
-            OwnedTokenType::NotEq => write!(f, "!="),
-            OwnedTokenType::LessEq => write!(f, "<="),
-            OwnedTokenType::GreaterEq => write!(f, ">="),
-            OwnedTokenType::AndAnd => write!(f, "&&"),
-            OwnedTokenType::OrOr => write!(f, "||"),
-            OwnedTokenType::Bang => write!(f, "!"),
-            OwnedTokenType::Pipe => write!(f, "|"),
-            OwnedTokenType::Comment(s) => write!(f, "{}", s),
-            OwnedTokenType::Whitespace(s) => write!(f, "{}", s),
-            OwnedTokenType::Unknown(c) => write!(f, "{}", c),
-            OwnedTokenType::Eof => write!(f, ""),
         }
     }
 }

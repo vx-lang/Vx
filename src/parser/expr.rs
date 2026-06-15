@@ -51,11 +51,11 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>
     Ok((num_part, el_ty))
 }
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
+    pub(crate) fn parse_expr(&mut self) -> ParseResult<'a, Expr> {
         self.parse_binary_expr(0)
     }
 
-    pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<Expr> {
+    pub(crate) fn parse_binary_expr(&mut self, precedence: u8) -> ParseResult<'a, Expr> {
         let mut left = self.parse_primary_expr()?;
 
         while let Some(op_prec) = self.get_operator_precedence(&self.peek().kind) {
@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_pattern(&mut self) -> ParseResult<Pattern> {
+    pub(crate) fn parse_pattern(&mut self) -> ParseResult<'a, Pattern> {
         if self.match_token(&TokenType::Identifier("_")) {
             return Ok(Pattern::Wildcard);
         }
@@ -262,7 +262,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> ParseResult<Expr> {
+    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> ParseResult<'a, Expr> {
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;
@@ -488,7 +488,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<Expr> {
+    pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
         if self.match_token(&TokenType::Bang) {
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {

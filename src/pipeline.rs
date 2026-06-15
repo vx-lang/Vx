@@ -372,13 +372,18 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
 
     // Save the zero-copy metadata file to disk
     let metadata_path = std::path::Path::new("output.vxm");
-    VxMetadata::save_to_file(&master_type_dictionary, metadata_path)
+    
+    // Create a unique path for the test
+    let test_path_str = format!("output_{}.vxm", std::process::id());
+    let test_path = std::path::Path::new(&test_path_str);
+    
+    VxMetadata::save_to_file(&master_type_dictionary, test_path)
         .map_err(|e| format!("Failed to save metadata: {}", e))?;
 
     println!(
         "Saved {} unique TypeIds to {:?}",
         master_type_dictionary.len(),
-        metadata_path
+        test_path
     );
 
     #[cfg(debug_assertions)]
@@ -387,7 +392,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
         drop(global_session);
         verify_phase_5_epoch_advance(weak_session);
 
-        let bytes = std::fs::read(metadata_path).unwrap();
+        let bytes = std::fs::read(test_path).unwrap();
         verify_phase_8_serialization(&bytes, master_type_dictionary.len());
     }
 

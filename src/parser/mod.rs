@@ -21,21 +21,21 @@ use crate::ast::*;
 use crate::lexer::{Token, TokenType};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParserError {
+pub enum ParserError<'a> {
     UnexpectedToken {
         expected: String,
-        found: crate::lexer::OwnedToken,
+        found: crate::lexer::Token<'a>,
     },
     Custom {
         message: String,
-        token: crate::lexer::OwnedToken,
+        token: crate::lexer::Token<'a>,
     },
     EndOfFile {
         expected: String,
     },
 }
 
-impl ParserError {
+impl<'a> ParserError<'a> {
     pub fn format(&self, source: &str) -> String {
         match self {
             ParserError::UnexpectedToken { expected, found } => {
@@ -61,7 +61,7 @@ impl ParserError {
     }
 }
 
-pub(crate) type ParseResult<T> = Result<T, ParserError>;
+pub(crate) type ParseResult<'a, T> = Result<T, ParserError<'a>>;
 
 pub struct Parser<'a> {
     tokens: &'a [Token<'a>],
@@ -95,9 +95,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn peek_n(&self, offset: usize) -> &'a Token<'a> {
-        self.tokens
-            .get(self.pos + offset)
-            .unwrap_or_else(|| self.tokens.last().expect("Token stream cannot be empty"))
+        let index = self.pos + offset;
+        if index < self.tokens.len() {
+            &self.tokens[index]
+        } else {
+            self.tokens.last().expect("Token stream cannot be empty")
+        }
     }
 
     pub(crate) fn advance(&mut self) -> &'a Token<'a> {
@@ -127,7 +130,7 @@ impl<'a> Parser<'a> {
         &mut self,
         kind: &TokenType<'a>,
         msg: &str,
-    ) -> ParseResult<&'a Token<'a>> {
+    ) -> ParseResult<'a, &'a Token<'a>> {
         if self.check(kind) {
             Ok(self.advance())
         } else if self.peek().kind == TokenType::Eof {
@@ -137,20 +140,20 @@ impl<'a> Parser<'a> {
         } else {
             Err(ParserError::UnexpectedToken {
                 expected: msg.to_string(),
-                found: self.peek().clone().into_owned(),
+                found: self.peek().clone(),
             })
         }
     }
 
-    pub(crate) fn error(&self, msg: &str) -> ParserError {
+    pub(crate) fn error(&self, msg: &str) -> ParserError<'a> {
         let token = self.peek();
         ParserError::Custom {
             message: msg.to_string(),
-            token: token.clone().into_owned(),
+            token: token.clone(),
         }
     }
 
-    pub(crate) fn parse_token_tree(&mut self) -> ParseResult<TokenTree> {
+    pub(crate) fn parse_token_tree(&mut self) -> ParseResult<'a, TokenTree> {
         let peek = self.peek();
         match &peek.kind {
             TokenType::LeftParen | TokenType::LeftBrace | TokenType::LeftBracket => {
@@ -178,7 +181,7 @@ impl<'a> Parser<'a> {
                 let token = self.peek();
                 Err(ParserError::Custom {
                     message: "Unexpected EOF while parsing token tree".to_string(),
-                    token: token.clone().into_owned(),
+                    token: token.clone(),
                 })
             }
             _ => {
@@ -207,7 +210,7 @@ mod tests {
         match &err {
             ParserError::UnexpectedToken { expected, found } => {
                 assert!(expected.contains("("));
-                assert_eq!(found.kind, crate::lexer::OwnedTokenType::Fn);
+                assert_eq!(found.kind, crate::lexer::TokenTypeBase::Fn);
             }
             _ => panic!("Expected UnexpectedToken error, got {:?}", err),
         }

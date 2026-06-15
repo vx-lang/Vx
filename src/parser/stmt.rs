@@ -13,7 +13,7 @@
 use super::*;
 
 impl<'a> Parser<'a> {
-    fn parse_expr_or_assign_stmt(&mut self, expr: Expr) -> ParseResult<Statement> {
+    fn parse_expr_or_assign_stmt(&mut self, expr: Expr) -> ParseResult<'a, Statement> {
         if self.match_token(&TokenType::Equals) {
             let rhs = self.parse_expr()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
@@ -57,7 +57,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_statement(&mut self) -> ParseResult<Statement> {
+    pub(crate) fn parse_statement(&mut self) -> ParseResult<'a, Statement> {
         let token = self.peek();
         let token_line = token.line;
         let token_col = token.column;
