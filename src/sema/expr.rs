@@ -279,48 +279,19 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Type::GenericInstance(inner_target, args_target) = target {
-            if let Type::Enum(n_source, _) = source {
-                if let Type::Struct(n_target, _) = &**inner_target {
-                    if n_source.starts_with(n_target) && n_source.contains('<') {
-                        let parsed_source = self.parse_ty_str(n_source);
-                        if let Type::GenericInstance(_, args_source) = parsed_source {
-                            if args_target.len() == args_source.len() {
-                                let mut all_match = true;
-                                for (at, asrc) in args_target.iter().zip(args_source.iter()) {
-                                    if !self.is_assignable(at, asrc) {
-                                        all_match = false;
-                                        break;
-                                    }
-                                }
-                                if all_match {
-                                    return true;
-                                }
-                            }
+            if let Type::GenericInstance(inner_source, args_source) = source {
+                if self.is_assignable(inner_target, inner_source)
+                    && args_target.len() == args_source.len()
+                {
+                    let mut all_match = true;
+                    for (at, asrc) in args_target.iter().zip(args_source.iter()) {
+                        if !self.is_assignable(at, asrc) {
+                            all_match = false;
+                            break;
                         }
                     }
-                }
-            }
-        }
-
-        if let Type::GenericInstance(inner_source, args_source) = source {
-            if let Type::Enum(n_target, _) = target {
-                if let Type::Struct(n_source, _) = &**inner_source {
-                    if n_target.starts_with(n_source) && n_target.contains('<') {
-                        let parsed_target = self.parse_ty_str(n_target);
-                        if let Type::GenericInstance(_, args_target) = parsed_target {
-                            if args_target.len() == args_source.len() {
-                                let mut all_match = true;
-                                for (at, asrc) in args_target.iter().zip(args_source.iter()) {
-                                    if !self.is_assignable(at, asrc) {
-                                        all_match = false;
-                                        break;
-                                    }
-                                }
-                                if all_match {
-                                    return true;
-                                }
-                            }
-                        }
+                    if all_match {
+                        return true;
                     }
                 }
             }
