@@ -371,12 +371,10 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
     master_type_dictionary.dedup_by(|a, b| a.words == b.words);
 
     // Save the zero-copy metadata file to disk
-    let metadata_path = std::path::Path::new("output.vxm");
-    
     // Create a unique path for the test
     let test_path_str = format!("output_{}.vxm", std::process::id());
     let test_path = std::path::Path::new(&test_path_str);
-    
+
     VxMetadata::save_to_file(&master_type_dictionary, test_path)
         .map_err(|e| format!("Failed to save metadata: {}", e))?;
 
