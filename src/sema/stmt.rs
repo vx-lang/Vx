@@ -43,14 +43,7 @@ impl<'a> TypeChecker<'a> {
         let mut terminated = false;
 
         // 1. Liveness Analysis Pass
-        let mut last_use = HashMap::new();
-        for (i, stmt) in body.iter().enumerate() {
-            let mut uses = std::collections::HashSet::new();
-            Self::extract_uses_stmt(stmt, &mut uses);
-            for var in uses {
-                last_use.insert(var, i);
-            }
-        }
+        let last_use = Self::compute_block_liveness(body);
 
         self.block_liveness.push(last_use);
         self.current_stmt_idx.push(0);
@@ -76,6 +69,18 @@ impl<'a> TypeChecker<'a> {
         }
         self.block_liveness.pop();
         self.current_stmt_idx.pop();
+    }
+
+    pub(crate) fn compute_block_liveness(body: &[Statement]) -> HashMap<String, usize> {
+        let mut last_use = HashMap::new();
+        for (i, stmt) in body.iter().enumerate() {
+            let mut uses = std::collections::HashSet::new();
+            Self::extract_uses_stmt(stmt, &mut uses);
+            for var in uses {
+                last_use.insert(var, i);
+            }
+        }
+        last_use
     }
 
     pub(crate) fn check_statement(

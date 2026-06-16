@@ -204,4 +204,50 @@ fn bad_matmul() -> Tensor {
             checker.errors
         );
     }
+    #[test]
+    fn test_sema_liveness_analysis() {
+        let input = r#"
+        fn test_liveness() -> i32 {
+            let a = 1;
+            let b = a + 2;
+            print(a);
+            print(b);
+            let c = 3;
+            return c;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().unwrap();
+
+        // Grab the body of the first function
+        let body = &program.functions[0].body;
+
+        // The block is:
+        // 0: let a = 1;
+        // 1: let b = a + 2;
+        // 2: print(a);
+        // 3: print(b);
+        // 4: let c = 3;
+        // 5: return c;
+
+        let liveness = TypeChecker::compute_block_liveness(body);
+
+        assert_eq!(
+            liveness.get("a"),
+            Some(&2),
+            "a is last used in print(a) at index 2"
+        );
+        assert_eq!(
+            liveness.get("b"),
+            Some(&3),
+            "b is last used in print(b) at index 3"
+        );
+        assert_eq!(
+            liveness.get("c"),
+            Some(&5),
+            "c is last used in return c at index 5"
+        );
+    }
 }
