@@ -33,6 +33,7 @@ Use the virtualenv created inside venv. Stop you dont find a venv virtual enviro
 ## General coding guidelines
 
 - Remove trailing whitespaces
+- Remove redundant files/scripts that you create for making code changes
 
 ## Rust Toolchain Environment
 

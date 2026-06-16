@@ -28,7 +28,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let const_ref = block.append_operation(const_op);
             return Ok((const_ref.result(0).unwrap().into(), i1_ty));
         }
-        if let Some((val, ty)) = gen.env.get(&*name) {
+        if let Some((val, ty)) = gen.env.get(name) {
             let ty_str = ty.to_string();
             if gen.allocs.contains(name.as_ref()) {
                 if ty_str.starts_with("memref<") {
@@ -86,8 +86,8 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             } else {
                 Ok((*val, *ty))
             }
-        } else if gen.functions.contains_key(&*name) {
-            let (ret_ty, arg_tys) = gen.functions.get(&*name).unwrap();
+        } else if gen.functions.contains_key(name) {
+            let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
             let func_ty = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[*ret_ty]);
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
@@ -1413,7 +1413,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((call_op.result(0).unwrap().into(), gen.i32_ty));
         }
 
-        if let Some((ret_ty, arg_tys)) = gen.functions.get(&*name).cloned() {
+        if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
             let mut arg_vals = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 let (mut arg_val, expr_ty) = gen.generate_expr(arg, block)?;
@@ -1461,11 +1461,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     none_ty,
                 ))
             }
-        } else if let Some((ptr_val, func_ty)) = gen.env.get(&*name).cloned() {
+        } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
             let mut actual_func_ty = func_ty;
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
-                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(&*name) {
+                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret.as_ref());
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
@@ -1475,7 +1475,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
             } else if is_closure {
-                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(&*name) {
+                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
                     let r = gen.lower_type(ret.as_ref());
                     let mut a: Vec<_> = vec![gen.ptr_ty];
                     a.extend(func_args.iter().map(|t| gen.lower_type(t)));

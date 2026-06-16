@@ -144,7 +144,7 @@ impl<'c> LowerToMelior<'c> for GradExpr {
         } = self;
         let (ret_ty, orig_arg_types) = gen
             .functions
-            .get(&*target_fn)
+            .get(target_fn)
             .cloned()
             .expect("Function not found");
 
@@ -195,7 +195,7 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         } = self;
         let (ret_ty, orig_arg_types) = gen
             .functions
-            .get(&*target_fn)
+            .get(target_fn)
             .cloned()
             .expect("Function not found");
 
@@ -265,7 +265,7 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         } = self;
         let (ret_ty, orig_arg_types) = gen
             .functions
-            .get(&*target_fn)
+            .get(target_fn)
             .cloned()
             .expect("Function not found");
 

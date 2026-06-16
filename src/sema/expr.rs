@@ -30,11 +30,8 @@ impl<'a> TypeChecker<'a> {
 
         for s in stmts.iter_mut() {
             if terminated && !silent {
-                self.errors.push_warning(
-                    "Unreachable code after return, break, or continue"
-                        .to_string()
-                        .into(),
-                );
+                self.errors
+                    .push_warning("Unreachable code after return, break, or continue".to_string());
                 break;
             }
 
@@ -1051,11 +1048,8 @@ impl<'a> TypeChecker<'a> {
 
         let cond_ty = self.check_expr_type(&mut if_expr.cond);
         if cond_ty != Type::Scalar(ElementType::Bool) {
-            self.errors.push(
-                "Condition in if expression must be of type bool (i1)"
-                    .to_string()
-                    .into(),
-            );
+            self.errors
+                .push("Condition in if expression must be of type bool (i1)".to_string());
         }
 
         if if_expr.is_comptime {
@@ -1072,11 +1066,8 @@ impl<'a> TypeChecker<'a> {
                     if_expr.then_block.clear();
                 }
             } else {
-                self.errors.push(
-                    "Cannot statically evaluate comptime if condition"
-                        .to_string()
-                        .into(),
-                );
+                self.errors
+                    .push("Cannot statically evaluate comptime if condition".to_string());
             }
         }
 
@@ -1695,7 +1686,7 @@ impl<'a> TypeChecker<'a> {
                     _ => None,
                 };
                 if let Some(bound_name) = bound_opt {
-                    if let Some(concrete_ty) = mapping.get(&*g_name) {
+                    if let Some(concrete_ty) = mapping.get(g_name) {
                         let mut implements_trait = false;
                         if let Some(impl_blocks) = self.env.impls.get(bound_name.as_ref()) {
                             for ib in impl_blocks {
@@ -1795,19 +1786,13 @@ impl<'a> TypeChecker<'a> {
                 if let Type::Scalar(el) = &explicit_generic_args[0] {
                     el.clone()
                 } else {
-                    self.errors.push(
-                        "Generic argument to Tensor must be a scalar type."
-                            .to_string()
-                            .into(),
-                    );
+                    self.errors
+                        .push("Generic argument to Tensor must be a scalar type.".to_string());
                     ElementType::F32
                 }
             } else {
-                self.errors.push(
-                    "Missing generic argument for Tensor initialization."
-                        .to_string()
-                        .into(),
-                );
+                self.errors
+                    .push("Missing generic argument for Tensor initialization.".to_string());
                 ElementType::F32
             };
             let mut dims = Vec::new();
@@ -1843,11 +1828,8 @@ impl<'a> TypeChecker<'a> {
             Some(Type::Tensor(ElementType::F32, vec![], None))
         } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
             if args.is_empty() {
-                self.errors.push(
-                    "Function 'printf' expects at least 1 argument"
-                        .to_string()
-                        .into(),
-                );
+                self.errors
+                    .push("Function 'printf' expects at least 1 argument".to_string());
             }
             Some(Type::Scalar(ElementType::I32))
         } else if resolved_name == "Some" || resolved_name == "Option::Some" {
@@ -3146,11 +3128,8 @@ impl<'a> TypeChecker<'a> {
                 return Some((base_ty.clone(), true));
             } else if _method == "map" {
                 if args.len() != 1 {
-                    self.errors.push(
-                        "map requires exactly 1 argument (the closure)"
-                            .to_string()
-                            .into(),
-                    );
+                    self.errors
+                        .push("map requires exactly 1 argument (the closure)".to_string());
                     return Some((base_ty.clone(), false));
                 }
 
@@ -3221,11 +3200,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Some((Type::Tensor(el_ty.clone(), new_dims, top.clone()), false));
                 } else {
-                    self.errors.push(
-                        "transpose requires an array of permutation indices"
-                            .to_string()
-                            .into(),
-                    );
+                    self.errors
+                        .push("transpose requires an array of permutation indices".to_string());
                     return Some((base_ty.clone(), false));
                 }
             }

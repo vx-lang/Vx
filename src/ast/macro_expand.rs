@@ -568,11 +568,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_print_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
-            _ => {
-                return Err("Expected delimited token tree for print!"
-                    .to_string()
-                    .into())
-            }
+            _ => return Err("Expected delimited token tree for print!".to_string()),
         };
         let mut tokens = Vec::new();
         for t in elements {
@@ -594,11 +590,7 @@ impl<'a> MacroExpander<'a> {
     fn expand_println_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
-            _ => {
-                return Err("Expected delimited token tree for println!"
-                    .to_string()
-                    .into())
-            }
+            _ => return Err("Expected delimited token tree for println!".to_string()),
         };
         let mut tokens = Vec::new();
         for t in elements {
@@ -767,11 +759,7 @@ impl<'a> MacroExpander<'a> {
                                 crate::lexer::TokenType::StringLiteral(lit) => {
                                     dialects.push(lit.to_string());
                                 }
-                                _ => {
-                                    return Err("Expected string literal in dialects"
-                                        .to_string()
-                                        .into())
-                                }
+                                _ => return Err("Expected string literal in dialects".to_string()),
                             }
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;

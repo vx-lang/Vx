@@ -83,9 +83,7 @@ impl ImmutableGlobalRegistry {
                     cyclic_def.name
                 ));
             }
-            return Err("Infinite-sized recursive layout detected."
-                .to_string()
-                .into());
+            return Err("Infinite-sized recursive layout detected.".to_string());
         }
 
         Ok(Self {

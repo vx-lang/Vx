@@ -467,7 +467,7 @@ impl<'c> MeliorGenerator<'c> {
             if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
                 continue;
             }
-            let (ret_ty, arg_tys) = self.functions.get(&*name).unwrap();
+            let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
 
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
@@ -849,7 +849,7 @@ impl<'c> MeliorGenerator<'c> {
                 }
             }
             ast::Type::Struct(name, _) => {
-                if let Some(enum_def) = self.enums.get(&*name) {
+                if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
@@ -873,7 +873,7 @@ impl<'c> MeliorGenerator<'c> {
                     }
                     return Type::parse(self.context, "i32").unwrap();
                 }
-                if let Some(decl) = self.structs.get(&*name).cloned() {
+                if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
                         let mut lowered = self.lower_type_str(ty);
@@ -891,7 +891,7 @@ impl<'c> MeliorGenerator<'c> {
             }
             ast::Type::GenericInstance(base, args) => {
                 if let ast::Type::Struct(name, _) = &**base {
-                    if let Some(decl) = self.structs.get(&*name).cloned() {
+                    if let Some(decl) = self.structs.get(name).cloned() {
                         let mut field_types = Vec::new();
                         let mut mapping: std::collections::HashMap<
                             crate::symbol::Symbol,
@@ -933,7 +933,7 @@ impl<'c> MeliorGenerator<'c> {
                             args_str.join("_"),
                             field_types.join(", ")
                         )
-                    } else if let Some(enum_def) = self.enums.get(&*name).cloned() {
+                    } else if let Some(enum_def) = self.enums.get(name).cloned() {
                         let ty_arg = args.first().unwrap();
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
@@ -1014,7 +1014,7 @@ impl<'c> MeliorGenerator<'c> {
                 format!("vector<{}x{}>", n, ty_str)
             }
             ast::Type::Enum(name, _) => {
-                if let Some(enum_def) = self.enums.get(&*name) {
+                if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
@@ -1082,7 +1082,7 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<ast::Type> {
         match expr {
-            Expr::Identifier(id) => self.ast_env.get(&*id.name).cloned(),
+            Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
                 if let ast::Type::Borrow { inner, .. } = base_ty {
@@ -1094,7 +1094,7 @@ impl<'c> MeliorGenerator<'c> {
                     generic_args = Some(args);
                 }
                 if let ast::Type::Struct(s_name, _) = base_ty {
-                    if let Some(decl) = self.structs.get(&*s_name) {
+                    if let Some(decl) = self.structs.get(&s_name) {
                         for (n, t) in &decl.fields {
                             if n == &ma.member {
                                 let mut resolved_ty = t.clone();
@@ -1119,7 +1119,7 @@ impl<'c> MeliorGenerator<'c> {
             }
             Expr::FunctionCall(fc) => self
                 .ast_functions
-                .get(&*fc.name)
+                .get(&fc.name)
                 .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;

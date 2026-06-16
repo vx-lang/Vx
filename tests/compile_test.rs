@@ -41,7 +41,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let _source = fs::read_to_string(path).expect("Failed to read test file");
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap().into()) {
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
         Err(e) => {
             if !expect_pass {
@@ -53,7 +53,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
 
     let ast_idx = program_arr
         .iter()
-        .position(|p| p.module_path == path.to_str().unwrap().into())
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
@@ -130,12 +130,12 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
     let mut program_arr = loader
-        .load_main(path.to_str().unwrap().into())
+        .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
 
     let ast_idx = program_arr
         .iter()
-        .position(|p| p.module_path == path.to_str().unwrap().into())
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
@@ -230,7 +230,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap().into()) {
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
         Err(e) => {
             return Err(format!(
@@ -243,7 +243,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
 
     let ast_idx = program_arr
         .iter()
-        .position(|p| p.module_path == path.to_str().unwrap().into())
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
@@ -547,7 +547,7 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 
         let vxc_cmd_str = run_cmd.split('|').next().unwrap().trim();
         let vxc_cmd_str = vxc_cmd_str
-            .replace("%s", path.to_str().unwrap().into())
+            .replace("%s", path.to_str().unwrap())
             .replace("%t", t_val.to_str().unwrap());
 
         let mut args: Vec<String> = vec![];
@@ -757,7 +757,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap().into()) {
+    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
         Ok(p) => p,
         Err(e) => {
             return Err(format!(
@@ -770,7 +770,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
 
     let ast_idx = program_arr
         .iter()
-        .position(|p| p.module_path == path.to_str().unwrap().into())
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 
@@ -973,7 +973,7 @@ fn run_shell_tests(path: &Path) -> Result<(), String> {
                 .unwrap()
                 .1
                 .trim()
-                .replace("%s", path.to_str().unwrap().into())
+                .replace("%s", path.to_str().unwrap())
                 .replace("%t", t_val.to_str().unwrap());
             let output = std::process::Command::new("sh")
                 .arg("-c")
@@ -1010,12 +1010,12 @@ fn test_melior_matmul() -> Result<(), String> {
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
     let mut program_arr = loader
-        .load_main(path.to_str().unwrap().into())
+        .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
 
     let ast_idx = program_arr
         .iter()
-        .position(|p| p.module_path == path.to_str().unwrap().into())
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
     let mut program = program_arr.remove(ast_idx);
 

@@ -386,7 +386,7 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         match (generic_ty, concrete_ty) {
             (Type::Generic(name, _), _) => {
-                if let Some(existing) = mapping.get(&*name) {
+                if let Some(existing) = mapping.get(name) {
                     existing == concrete_ty
                 } else {
                     mapping.insert(name.clone(), concrete_ty.clone());
@@ -395,7 +395,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
                 let e1_match = if let ElementType::Generic(ref name) = e1 {
-                    if let Some(existing) = mapping.get(&*name) {
+                    if let Some(existing) = mapping.get(name) {
                         existing == &Type::Scalar(e2.clone())
                     } else {
                         mapping.insert(name.clone(), Type::Scalar(e2.clone()));
@@ -599,7 +599,7 @@ impl<'a> TypeChecker<'a> {
     fn resolve_parsed_type(&self, ty: Type) -> Type {
         match ty {
             Type::Struct(name, id) => {
-                if self.env.structs.contains_key(&*name)
+                if self.env.structs.contains_key(&name)
                     || self.generated_structs.iter().any(|s| s.name == name)
                 {
                     Type::Struct(name, id)

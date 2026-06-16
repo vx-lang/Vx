@@ -53,11 +53,8 @@ impl<'a> TypeChecker<'a> {
             *self.current_stmt_idx.last_mut().unwrap() = i;
             let mut stmt = body[i].clone();
             if terminated {
-                self.errors.push_warning(
-                    "Unreachable code after return, break, or continue"
-                        .to_string()
-                        .into(),
-                );
+                self.errors
+                    .push_warning("Unreachable code after return, break, or continue".to_string());
                 break; // Only warn once per block
             }
 
@@ -206,11 +203,8 @@ impl<'a> TypeChecker<'a> {
                 let prev_constraints_len = self.constraints.len();
                 for inv in invariants.iter() {
                     if !self.prove_expr(inv) {
-                        self.errors.push(
-                            "Loop invariant cannot be proven on entry"
-                                .to_string()
-                                .into(),
-                        );
+                        self.errors
+                            .push("Loop invariant cannot be proven on entry".to_string());
                     }
                     self.constraints.push(inv.clone());
                 }
@@ -239,11 +233,8 @@ impl<'a> TypeChecker<'a> {
                 let prev_constraints_len = self.constraints.len();
                 for inv in invariants.iter() {
                     if !self.prove_expr(inv) {
-                        self.errors.push(
-                            "Loop invariant cannot be proven on entry"
-                                .to_string()
-                                .into(),
-                        );
+                        self.errors
+                            .push("Loop invariant cannot be proven on entry".to_string());
                     }
                     self.constraints.push(inv.clone());
                 }

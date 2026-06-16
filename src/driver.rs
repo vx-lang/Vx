@@ -451,11 +451,7 @@ fn get_optimization_pipeline(
 
     if llvm_lower {
         passes.push("vx-to-llvm".to_string());
-        passes.push(
-            "func.func(convert-linalg-to-loops,lower-affine)"
-                .to_string()
-                .into(),
-        );
+        passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
         passes.push("finalize-memref-to-llvm".to_string());
@@ -518,9 +514,7 @@ pub fn apply_mlir_opt(
     let _ = std::fs::remove_file(&temp_in);
     if status != 0 {
         let _ = std::fs::remove_file(&temp_out);
-        return Err("vx-opt failed. Check stderr for details."
-            .to_string()
-            .into());
+        return Err("vx-opt failed. Check stderr for details.".to_string());
     }
 
     let out_str = std::fs::read_to_string(&temp_out).unwrap_or_default();
@@ -547,7 +541,5 @@ pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Resu
             String::from_utf8_lossy(&mlir_translate_out.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout)
-        .to_string()
-        .into())
+    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout).to_string())
 }

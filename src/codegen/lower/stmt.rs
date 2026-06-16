@@ -163,7 +163,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
         let mut expected_ty = None;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((_, mem_ty)) = gen.env.get(&*name) {
+            if let Some((_, mem_ty)) = gen.env.get(name) {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
@@ -182,7 +182,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         gen.expected_type = prev_expected;
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((mem_val, mem_ty)) = gen.env.get(&*name).cloned() {
+            if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let mut store_val = rhs_val;
@@ -416,7 +416,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let new_struct_val =
                                     block.append_operation(insert_op).result(0).unwrap().into();
 
-                                if let Some((mem_val, mem_ty)) = gen.env.get(&*base_name).cloned() {
+                                if let Some((mem_val, mem_ty)) = gen.env.get(base_name).cloned() {
                                     let mem_ty_str = mem_ty.to_string();
                                     if mem_ty_str.starts_with("memref<") {
                                         let store_op =
@@ -483,7 +483,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let result_val = bin_ref.result(0).unwrap().into();
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((mem_val, mem_ty)) = gen.env.get(&*name).cloned() {
+            if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let store_op = OperationBuilder::new("memref.store", gen.loc())

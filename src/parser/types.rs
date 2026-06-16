@@ -233,7 +233,7 @@ impl<'a> Parser<'a> {
                         TokenType::Identifier(s) => s,
                         _ => return Err(self.error("Expected element type after '<'")),
                     };
-                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_ref()) {
+                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident) {
                         parsed_ty
                     } else if self.generic_params.iter().any(|p| p.as_str() == ty_ident) {
                         ElementType::Generic(ty_ident.into())
