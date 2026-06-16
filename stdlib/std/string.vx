@@ -66,12 +66,7 @@ impl i32 {
 // Returns the length of a null-terminated string
 fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
-  unsafe {
-    loop {
-      if s[len] == 0 { break; }
-      len = len + 1;
-    }
-  }
+  unsafe { loop { if s[len] == 0 { break; } len = len + 1; } }
   return len;
 }
 
@@ -81,7 +76,9 @@ fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut result: i32 = 0;
   unsafe {
     loop {
-      if s1[i] == 0 || s1[i] != s2[i] { break; }
+      if s1[i] == 0 || s1[i] != s2[i] {
+        break;
+      }
       i = i + 1;
     }
     result = (s1[i] as i32) - (s2[i] as i32);
@@ -95,7 +92,9 @@ fn parse_int(s: *const i8) -> i32 {
   let mut i: i32 = 0;
   unsafe {
     loop {
-      if s[i] < 48 || s[i] > 57 { break; }
+      if s[i] < 48 || s[i] > 57 {
+        break;
+      }
       let digit: i32 = (s[i] - 48) as i32;
       val = val * 10 + digit;
       i = i + 1;
