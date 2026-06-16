@@ -22,7 +22,7 @@ struct String {
 
 impl String {
   fn new ()->String {
-    let ptr = vx_string_new();
+    let ptr = unsafe { vx_string_new() };
     String {
       ptr:
       ptr
@@ -30,7 +30,7 @@ impl String {
   }
 
   fn from_c_str(c_str : *const i8) -> String {
-    let ptr = vx_string_from_c_str(c_str);
+    let ptr = unsafe { vx_string_from_c_str(c_str) };
     String {
       ptr:
       ptr
@@ -38,19 +38,19 @@ impl String {
   }
 
   fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
-    return vx_string_push_c_str(self.ptr, c_str);
+    return unsafe { vx_string_push_c_str(self.ptr, c_str) };
   }
 
   fn len(self : *mut String) -> i32 {
-    return vx_string_len(self.ptr);
+    return unsafe { vx_string_len(self.ptr) };
   }
 
   fn as_c_str(self : *mut String) -> *const i8 {
-    return vx_string_as_c_str(self.ptr);
+    return unsafe { vx_string_as_c_str(self.ptr) };
   }
 
   fn drop(self : *mut String) -> i32 {
-    return vx_string_drop(self.ptr);
+    return unsafe { vx_string_drop(self.ptr) };
   }
 }
 
@@ -64,7 +64,7 @@ impl i32 {
 }
 
 // Returns the length of a null-terminated string
-fn string_length(s: *const u8) -> i32 {
+fn string_length(s: *const i8) -> i32 {
   let mut len: i32 = 0;
   unsafe {
     loop {
@@ -76,7 +76,7 @@ fn string_length(s: *const u8) -> i32 {
 }
 
 // Compares two null-terminated strings
-fn string_compare(s1: *const u8, s2: *const u8) -> i32 {
+fn string_compare(s1: *const i8, s2: *const i8) -> i32 {
   let mut i: i32 = 0;
   let mut result: i32 = 0;
   unsafe {
@@ -90,7 +90,7 @@ fn string_compare(s1: *const u8, s2: *const u8) -> i32 {
 }
 
 // Parses a simple integer from a string slice
-fn parse_int(s: *const u8) -> i32 {
+fn parse_int(s: *const i8) -> i32 {
   let mut val: i32 = 0;
   let mut i: i32 = 0;
   unsafe {

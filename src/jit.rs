@@ -16,10 +16,8 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Once;
 
 static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static COMPILE_NPU_ONCE: Once = Once::new();
 
 pub fn execute_mlir(
     mlir_src: &str,
@@ -40,8 +38,6 @@ pub fn execute_mlir(
     let temp_mlir = format!("target/jit/temp_{}.mlir", uid);
     let temp_ll = format!("target/jit/temp_{}.ll", uid);
 
-    let lib_npu = "target/jit/libnpu_shared.dylib".to_string();
-
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
     mlir_file
@@ -50,39 +46,7 @@ pub fn execute_mlir(
 
     // Runtime functions are now loaded via libvx_std_core.dylib
 
-    if cfg!(target_os = "macos") {
-        COMPILE_NPU_ONCE.call_once(|| {
-            println!("[JIT] Compiling Objective-C++ NPU Dispatcher (Shared)...");
-            let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
-            let cxxflags_env = std::env::var("CXXFLAGS").unwrap_or_else(|_| {
-                "-shared -fPIC -fobjc-arc -O3 -Wno-deprecated-declarations".to_string()
-            });
-            let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
-
-            let mut cxx_cmd = Command::new(&cxx);
-            cxx_cmd.args(&cxxflags);
-            cxx_cmd.args([
-                "runtime/npu_dispatch.mm",
-                "-framework",
-                "Accelerate",
-                "-framework",
-                "Foundation",
-                "-framework",
-                "Metal",
-                "-framework",
-                "MetalPerformanceShaders",
-                "-framework",
-                "CoreML",
-                "-o",
-                &lib_npu,
-            ]);
-
-            let npu_status = cxx_cmd.status().expect("Failed to execute clang++");
-            if !npu_status.success() {
-                panic!("Failed to compile Objective-C++ NPU Dispatcher");
-            }
-        });
-    }
+    let lib_npu = std::env!("NPU_SHARED_LIB_PATH").to_string();
 
     let mlir_translate_path =
         std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());
@@ -240,10 +204,7 @@ pub fn execute_mlir(
     ]);
 
     if cfg!(target_os = "macos") {
-        clang_cmd.args([&format!(
-            "{}/target/jit/libnpu_shared.dylib",
-            current_dir.display()
-        )]);
+        clang_cmd.args([&lib_npu]);
     }
 
     let clang_out = clang_cmd.output().map_err(|e| e.to_string())?;

@@ -70,7 +70,7 @@ fn main() {
             env::var("CXXFLAGS").unwrap_or_else(|_| "-O3 -Wno-deprecated-declarations".to_string());
         let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
 
-        // Compile the Objective-C++ runtime file
+        // Compile the Objective-C++ runtime file for AOT (Static Archive)
         let mut clang_cmd = Command::new(&cxx);
         clang_cmd.args([
             "-c",
@@ -103,7 +103,45 @@ fn main() {
 
         assert!(status.success(), "{} archiving failed", ar);
 
-        // Tell cargo to link against the generated library
+        // --- Compile the Objective-C++ runtime file for JIT (Shared Library) ---
+        let lib_shared_path = PathBuf::from(&out_dir).join("libnpu_shared.dylib");
+        let mut clang_shared_cmd = Command::new(&cxx);
+        clang_shared_cmd.args([
+            "-shared",
+            "-fPIC",
+            "-fobjc-arc",
+            "runtime/npu_dispatch.mm",
+            "-framework",
+            "Accelerate",
+            "-framework",
+            "Foundation",
+            "-framework",
+            "Metal",
+            "-framework",
+            "MetalPerformanceShaders",
+            "-framework",
+            "CoreML",
+            "-o",
+            lib_shared_path.to_str().unwrap(),
+        ]);
+        clang_shared_cmd.args(&cxxflags);
+
+        let status = clang_shared_cmd
+            .status()
+            .unwrap_or_else(|_| panic!("Failed to execute clang++ for shared library"));
+
+        assert!(
+            status.success(),
+            "clang++ compilation failed for shared library"
+        );
+
+        // Pass the path to the shared library to the Rust compiler
+        println!(
+            "cargo:rustc-env=NPU_SHARED_LIB_PATH={}",
+            lib_shared_path.display()
+        );
+
+        // Tell cargo to link against the generated static library
         println!("cargo:rustc-link-search=native={}", out_dir);
         println!("cargo:rustc-link-lib=static=npu_dispatch");
 
@@ -115,6 +153,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
         println!("cargo:rustc-link-lib=framework=CoreML");
     } else {
+        println!("cargo:rustc-env=NPU_SHARED_LIB_PATH=");
         println!("cargo:warning=Vx v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Skipping NPU dispatcher compilation on this OS.");
     }
 
