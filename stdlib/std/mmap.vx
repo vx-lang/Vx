@@ -1,0 +1,6 @@
+
+
+extern {
+  fn mmap(addr: *mut i8, length: i64, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut i8;
+  fn munmap(addr: *mut i8, length: i64) -> i32;
+}

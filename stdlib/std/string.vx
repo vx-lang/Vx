@@ -1,64 +1,31 @@
-//===- string.vx - Vx Compiler -----------------------------------*- Vx -*-===//
-//
-// Part of the Vx Project, under the BSD 3-Clause License.
-// See LICENSE for license information.
-// SPDX-License-Identifier: BSD-3-Clause
-//
-//===----------------------------------------------------------------------===//
-extern {
-  fn vx_string_new() -> *mut i8;
-  fn vx_string_from_c_str(ptr : *const i8) -> *mut i8;
-  fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
-  fn vx_string_len(ptr : *mut i8) -> i32;
-  fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
-  fn vx_string_free_c_str(ptr : *const i8) -> i32;
-  fn vx_string_drop(ptr : *mut i8) -> i32;
-  fn vx_i32_to_string(val : i32)->*mut i8;
+// Returns the length of a null-terminated string
+fn string_length(s: *const u8) -> i32 {
+  let mut len: i32 = 0;
+  unsafe { while s[len] != 0 { len = len + 1; } }
+  return len;
 }
 
-struct String {
-  ptr : *mut i8,
+// Compares two null-terminated strings
+fn string_compare(s1: *const u8, s2: *const u8) -> i32 {
+  let mut i: i32 = 0;
+  unsafe {
+    while s1[i] != 0 && s1[i] == s2[i] {
+      i = i + 1;
+    }
+    return (s1[i] as i32) - (s2[i] as i32);
+  }
 }
 
-impl String {
-  fn new ()->String {
-    let ptr = vx_string_new();
-    String {
-      ptr:
-      ptr
+// Parses a simple integer from a string slice
+fn parse_int(s: *const u8) -> i32 {
+  let mut val: i32 = 0;
+  let mut i: i32 = 0;
+  unsafe {
+    while s[i] >= 48 && s[i] <= 57 {
+      let digit: i32 = (s[i] - 48) as i32;
+      val = val * 10 + digit;
+      i = i + 1;
     }
   }
-
-  fn from_c_str(c_str : *const i8) -> String {
-    let ptr = vx_string_from_c_str(c_str);
-    String {
-      ptr:
-      ptr
-    }
-  }
-
-  fn push_c_str(self : *mut String, c_str : *const i8) -> i32 {
-    return vx_string_push_c_str(self.ptr, c_str);
-  }
-
-  fn len(self : *mut String) -> i32 {
-    return vx_string_len(self.ptr);
-  }
-
-  fn as_c_str(self : *mut String) -> *const i8 {
-    return vx_string_as_c_str(self.ptr);
-  }
-
-  fn drop(self : *mut String) -> i32 {
-    return vx_string_drop(self.ptr);
-  }
-}
-
-impl i32 {
-  fn to_string(self : i32) -> String {
-    let ptr = unsafe { vx_i32_to_string(self) };
-    return String {
-      ptr : ptr
-    };
-  }
+  return val;
 }

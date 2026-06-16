@@ -10,6 +10,8 @@
 
 import std::io;
 import std::vec;
+import std::libc;
+import std::mmap;
 import tests::modules::llama_rt;
 import std::math;
 import std::time;
@@ -419,41 +421,37 @@ fn main() -> i32 {
   let tokenizer_path : *const i8 = "tests/backend/pass/tokenizer.bin";
   let temperature : f32 = 0.0;
 
-  // 1. Initialize configuration via FFI
-  let config_ptr : *mut i32 = unsafe { vx_load_config(model_path) };
-  let vocab_size : i32 = unsafe {
-    let p_vocab : *mut i32 = vx_advance_ptr(config_ptr, 5);
-    p_vocab[0]
+  // 1. Open model file and map it into memory
+  let mapped_ptr: *mut i8 = unsafe {
+    let fd: i32 = open(model_path, 0); // O_RDONLY = 0
+    let file_size: i64 = lseek(fd, 0, 2); // SEEK_END = 2
+    lseek(fd, 0, 0); // SEEK_SET = 0
+    mmap(0 as *mut i8, file_size, 1, 1, fd, 0)
   };
+  let config_ptr: *mut i32 = mapped_ptr;
+
+  let vocab_size : i32 = unsafe { config_ptr[5] };
 
   let config = unsafe {
-    let dim_ptr : *mut i32 = config_ptr;
-    let hidden_ptr : *mut i32 = vx_advance_ptr(config_ptr, 1);
-    let layers_ptr : *mut i32 = vx_advance_ptr(config_ptr, 2);
-    let heads_ptr : *mut i32 = vx_advance_ptr(config_ptr, 3);
-    let kv_heads_ptr : *mut i32 = vx_advance_ptr(config_ptr, 4);
-    let seq_ptr : *mut i32 = vx_advance_ptr(config_ptr, 6);
-
     Config {
-      dim:
-      dim_ptr[0], hidden_dim : hidden_ptr[0],
-      n_layers : layers_ptr[0],
-      n_heads : heads_ptr[0],
-      n_kv_heads
-      : kv_heads_ptr[0],
-      vocab_size : vocab_size,
-      seq_len : seq_ptr[0]
+      dim: config_ptr[0],
+      hidden_dim : config_ptr[1],
+      n_layers : config_ptr[2],
+      n_heads : config_ptr[3],
+      n_kv_heads: config_ptr[4],
+      vocab_size : config_ptr[5],
+      seq_len : config_ptr[6]
     }
   };
 
   let steps : i32 = 256;
-  if config
-  .seq_len < steps {
+  if config.seq_len < steps {
     let s : i32 = config.seq_len;
   }
 
   // 2. Map weights and allocate native Tensors
-  let weights_ptr : *mut f32 = unsafe { vx_load_weights(model_path) };
+  // Weights immediately follow the 7-integer config header (28 bytes)
+  let weights_ptr : *mut f32 = unsafe { vx_advance_ptr(mapped_ptr, 7) };
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
   config.n_layers, config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);
