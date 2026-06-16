@@ -135,12 +135,12 @@ fn test_nested_type_resolution() -> Result<(), String> {
             params: vec![(
                 "m".to_string(),
                 // &mut Matrix
-                Type::Borrow(
-                    Box::new(Type::Struct("Matrix".to_string(), None)),
-                    Some(MemorySpace::CPUDRAM),
-                    true,
-                    0,
-                ),
+                Type::Borrow {
+                    inner: Box::new(Type::Struct("Matrix".to_string(), None)),
+                    mem_space: Some(MemorySpace::CPUDRAM),
+                    is_mut: true,
+                    region_id: 0,
+                },
             )],
             return_type: Type::Scalar(vxc::ast::ElementType::Bool),
             requires: Vec::new(),
@@ -152,7 +152,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
     let symbol_map = build_symbol_map(&[module.clone()]);
     module.resolve_names(&symbol_map);
 
-    if let Type::Borrow(inner, _, _, _) = &module.functions[0].params[0].1 {
+    if let Type::Borrow { inner, .. } = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
             if name != "Matrix" {
                 return Err(format!("Assertion failed: {} != {}", name, "Matrix"));

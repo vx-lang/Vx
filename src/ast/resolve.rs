@@ -33,7 +33,7 @@ impl Type {
                 }
             }
             Type::Ref(inner, _)
-            | Type::Borrow(inner, _, _, _)
+            | Type::Borrow { inner, .. }
             | Type::Pointer(inner, _, _)
             | Type::Verified(inner)
             | Type::Pinned(inner, _) => {

@@ -827,7 +827,12 @@ impl<'c> MeliorGenerator<'c> {
                 let inner_ty_str = self.lower_type(inner).to_string();
                 inner_ty_str
             }
-            ast::Type::Borrow(inner, mem, _, _) | ast::Type::Pointer(inner, mem, _) => {
+            ast::Type::Borrow {
+                inner,
+                mem_space: mem,
+                ..
+            }
+            | ast::Type::Pointer(inner, mem, _) => {
                 let inner_str = self.lower_type_str(inner);
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
@@ -1072,7 +1077,7 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
-                if let ast::Type::Borrow(inner, _, _, _) = base_ty {
+                if let ast::Type::Borrow { inner, .. } = base_ty {
                     base_ty = *inner;
                 }
                 let mut generic_args = None;
@@ -1108,7 +1113,7 @@ impl<'c> MeliorGenerator<'c> {
                 .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
-                if let ast::Type::Borrow(inner, _, _, _) = base_ty {
+                if let ast::Type::Borrow { inner, .. } = base_ty {
                     base_ty = *inner;
                 }
                 if let ast::Type::GenericInstance(inner, _) = base_ty {

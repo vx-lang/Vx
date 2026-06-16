@@ -73,8 +73,13 @@ pub enum Type {
     Tensor(ElementType, Vec<Expr>, Option<Topology>),
     Matrix,
     Ref(Box<Type>, MemorySpace),
-    Borrow(Box<Type>, Option<MemorySpace>, bool, usize), // (type, mem_space, is_mut, region_id)
-    Pointer(Box<Type>, Option<MemorySpace>, bool),       // (type, mem_space, is_mut)
+    Borrow {
+        inner: Box<Type>,
+        mem_space: Option<MemorySpace>,
+        is_mut: bool,
+        region_id: usize,
+    }, // (type, mem_space, is_mut, region_id)
+    Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Scalar(ElementType),
     Struct(String, Option<crate::gid::TypeId>),
     Enum(String, Option<crate::gid::TypeId>),
@@ -128,12 +133,17 @@ impl Type {
                 let new_args = args.iter().map(|a| a.substitute(mapping)).collect();
                 Type::GenericInstance(Box::new(new_base), new_args)
             }
-            Type::Borrow(inner, mem, is_mut, region) => Type::Borrow(
-                Box::new(inner.substitute(mapping)),
-                mem.clone(),
-                *is_mut,
-                *region,
-            ),
+            Type::Borrow {
+                inner,
+                mem_space,
+                is_mut,
+                region_id,
+            } => Type::Borrow {
+                inner: Box::new(inner.substitute(mapping)),
+                mem_space: mem_space.clone(),
+                is_mut: *is_mut,
+                region_id: *region_id,
+            },
             Type::Pointer(inner, mem, is_mut) => {
                 Type::Pointer(Box::new(inner.substitute(mapping)), mem.clone(), *is_mut)
             }
@@ -259,7 +269,7 @@ impl std::fmt::Display for Type {
                     write!(f, "*const {}", inner)
                 }
             }
-            Type::Borrow(inner, _, is_mut, _) => {
+            Type::Borrow { inner, is_mut, .. } => {
                 if *is_mut {
                     write!(f, "&mut {}", inner)
                 } else {
@@ -325,7 +335,7 @@ impl Mangle for Type {
                 write!(w, "ptr${}$", if *is_mut { "mut" } else { "const" })?;
                 inner.mangle_to(w)
             }
-            Type::Borrow(inner, _, is_mut, _) => {
+            Type::Borrow { inner, is_mut, .. } => {
                 write!(w, "ref${}$", if *is_mut { "mut" } else { "const" })?;
                 inner.mangle_to(w)
             }

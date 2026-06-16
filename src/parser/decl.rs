@@ -830,7 +830,13 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
 
         // Param should be &mut Config
         let param_ty = &func.params[0].1;
-        if let Type::Borrow(inner, None, true, _) = param_ty {
+        if let Type::Borrow {
+            inner,
+            mem_space: None,
+            is_mut: true,
+            ..
+        } = param_ty
+        {
             if let Type::Struct(s, _) = &**inner {
                 assert_eq!(s, "Config");
             } else {

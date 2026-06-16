@@ -424,9 +424,20 @@ impl<'a> TypeChecker<'a> {
             (Type::Pointer(t1, m1, mut1), Type::Pointer(t2, m2, mut2)) => {
                 m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
             }
-            (Type::Borrow(t1, m1, mut1, _r1), Type::Borrow(t2, m2, mut2, _r2)) => {
-                m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping)
-            }
+            (
+                Type::Borrow {
+                    inner: t1,
+                    mem_space: m1,
+                    is_mut: mut1,
+                    ..
+                },
+                Type::Borrow {
+                    inner: t2,
+                    mem_space: m2,
+                    is_mut: mut2,
+                    ..
+                },
+            ) => m1 == m2 && mut1 == mut2 && self.unify_types_internal(t1, t2, mapping),
             (Type::Ref(t1, m1), Type::Ref(t2, m2)) => {
                 m1 == m2 && self.unify_types_internal(t1, t2, mapping)
             }
@@ -604,9 +615,17 @@ impl<'a> TypeChecker<'a> {
                 Type::Pointer(Box::new(self.resolve_parsed_type(*inner)), mem, mut_flag)
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(self.resolve_parsed_type(*inner)), mem),
-            Type::Borrow(inner, mem, mut_flag, r) => {
-                Type::Borrow(Box::new(self.resolve_parsed_type(*inner)), mem, mut_flag, r)
-            }
+            Type::Borrow {
+                inner,
+                mem_space: mem,
+                is_mut: mut_flag,
+                region_id: r,
+            } => Type::Borrow {
+                inner: Box::new(self.resolve_parsed_type(*inner)),
+                mem_space: mem.clone(),
+                is_mut: mut_flag,
+                region_id: r,
+            },
             Type::Pinned(inner, top) => {
                 Type::Pinned(Box::new(self.resolve_parsed_type(*inner)), top)
             }

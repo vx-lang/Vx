@@ -71,7 +71,12 @@ impl<'a> Parser<'a> {
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_type()?;
-            Ok(Type::Borrow(Box::new(inner), None, is_mut, 4095))
+            Ok(Type::Borrow {
+                inner: Box::new(inner),
+                mem_space: None,
+                is_mut,
+                region_id: 4095,
+            })
         } else if self.match_token(&TokenType::Star) {
             let is_mut = if self.check(&TokenType::Mut) {
                 self.advance();

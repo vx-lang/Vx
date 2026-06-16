@@ -2345,7 +2345,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
             | ast::Type::Scalar(ast::ElementType::U16)
             | ast::Type::Scalar(ast::ElementType::BF16)
             | ast::Type::Scalar(ast::ElementType::F16) => 2,
-            ast::Type::Pointer(..) | ast::Type::Borrow(..) | ast::Type::Ref(..) => 8,
+            ast::Type::Pointer(..) | ast::Type::Borrow { .. } | ast::Type::Ref(..) => 8,
             _ => 8,
         };
 
@@ -2372,7 +2372,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
         if let ast::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {
                 Some(ast::Type::Struct(name, _)) => name.clone(),
-                Some(ast::Type::Borrow(inner, _, _, _)) => {
+                Some(ast::Type::Borrow { inner, .. }) => {
                     if let ast::Type::Struct(name, _) = &**inner {
                         name.clone()
                     } else {
