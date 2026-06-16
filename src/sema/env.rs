@@ -145,7 +145,8 @@ pub struct TypeChecker<'a> {
     pub(crate) closure_captures_stack: Vec<HashMap<String, Type>>,
     pub generated_structs: Vec<StructDecl>,
     pub(crate) current_assignment_target: Option<String>,
-    pub(crate) lookahead_stack: Vec<Vec<Statement>>,
+    pub(crate) block_liveness: Vec<HashMap<String, usize>>,
+    pub(crate) current_stmt_idx: Vec<usize>,
     pub skip_borrow_check: bool,
 }
 
@@ -174,7 +175,8 @@ impl<'a> TypeChecker<'a> {
             closure_captures_stack: Vec::new(),
             generated_structs: Vec::new(),
             current_assignment_target: None,
-            lookahead_stack: Vec::new(),
+            block_liveness: Vec::new(),
+            current_stmt_idx: Vec::new(),
             skip_borrow_check: false,
         }
     }
@@ -205,125 +207,120 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn is_variable_used_after(&self, name: &str) -> bool {
-        // Scan the remaining statements in the current block
-        if let Some(lookahead) = self.lookahead_stack.last() {
-            for stmt in lookahead {
-                if Self::stmt_uses_var(stmt, name) {
-                    return true;
-                }
-            }
+        if let (Some(liveness), Some(&current_idx)) =
+            (self.block_liveness.last(), self.current_stmt_idx.last())
+        {
+            return liveness
+                .get(name)
+                .map(|&u| u > current_idx)
+                .unwrap_or(false);
         }
         false
     }
 
-    fn stmt_uses_var(stmt: &Statement, name: &str) -> bool {
+    pub fn extract_uses_stmt(stmt: &Statement, uses: &mut std::collections::HashSet<String>) {
         match stmt {
-            Statement::ExprStmt(e) => Self::expr_uses_var(&e.expr, name),
-            Statement::Return(ReturnStmt { expr: e, .. }) => Self::expr_uses_var(e, name),
-            Statement::Assign(AssignStmt { lhs, rhs, .. }) => {
-                Self::expr_uses_var(lhs, name) || Self::expr_uses_var(rhs, name)
+            Statement::ExprStmt(e) => Self::extract_uses_expr(&e.expr, uses),
+            Statement::Return(r) => Self::extract_uses_expr(&r.expr, uses),
+            Statement::Assign(a) => {
+                Self::extract_uses_expr(&a.lhs, uses);
+                Self::extract_uses_expr(&a.rhs, uses);
             }
-            Statement::LetDecl(LetDeclStmt { expr, .. }) => Self::expr_uses_var(expr, name),
-            Statement::ForLoop(ForLoopStmt { iterable, body, .. }) => {
-                if Self::expr_uses_var(iterable, name) {
-                    return true;
-                }
-                for s in body {
-                    if Self::stmt_uses_var(s, name) {
-                        return true;
-                    }
-                }
-                false
+            Statement::CompoundAssign(ca) => {
+                Self::extract_uses_expr(&ca.lhs, uses);
+                Self::extract_uses_expr(&ca.rhs, uses);
             }
-            _ => false,
+            Statement::LetDecl(l) => Self::extract_uses_expr(&l.expr, uses),
+            Statement::ForLoop(f) => {
+                Self::extract_uses_expr(&f.iterable, uses);
+                for inv in &f.invariants {
+                    Self::extract_uses_expr(inv, uses);
+                }
+                for s in &f.body {
+                    Self::extract_uses_stmt(s, uses);
+                }
+            }
+            Statement::Loop(l) => {
+                for inv in &l.invariants {
+                    Self::extract_uses_expr(inv, uses);
+                }
+                for s in &l.body {
+                    Self::extract_uses_stmt(s, uses);
+                }
+            }
+            Statement::Assert(a) => Self::extract_uses_expr(&a.expr, uses),
+            _ => {}
         }
     }
 
-    fn expr_uses_var(expr: &Expr, name: &str) -> bool {
+    pub fn extract_uses_expr(expr: &Expr, uses: &mut std::collections::HashSet<String>) {
         match expr {
-            Expr::Identifier(id) => id.name == name,
-            Expr::MemberAccess(m) => Self::expr_uses_var(&m.base, name),
+            Expr::Identifier(id) => {
+                uses.insert(id.name.clone());
+            }
+            Expr::MemberAccess(m) => Self::extract_uses_expr(&m.base, uses),
             Expr::MethodCall(m) => {
-                if Self::expr_uses_var(&m.base, name) {
-                    return true;
-                }
+                Self::extract_uses_expr(&m.base, uses);
                 for a in &m.args {
-                    if Self::expr_uses_var(a, name) {
-                        return true;
-                    }
+                    Self::extract_uses_expr(a, uses);
                 }
-                false
             }
             Expr::FunctionCall(f) => {
-                if f.name == name {
-                    return true;
-                }
+                uses.insert(f.name.clone());
                 for a in &f.args {
-                    if Self::expr_uses_var(a, name) {
-                        return true;
-                    }
+                    Self::extract_uses_expr(a, uses);
                 }
-                false
             }
             Expr::BinaryOp(b) => {
-                Self::expr_uses_var(&b.lhs, name) || Self::expr_uses_var(&b.rhs, name)
+                Self::extract_uses_expr(&b.lhs, uses);
+                Self::extract_uses_expr(&b.rhs, uses);
             }
             Expr::RelationalOp(r) => {
-                Self::expr_uses_var(&r.lhs, name) || Self::expr_uses_var(&r.rhs, name)
+                Self::extract_uses_expr(&r.lhs, uses);
+                Self::extract_uses_expr(&r.rhs, uses);
             }
             Expr::LogicalOp(l) => {
-                Self::expr_uses_var(&l.lhs, name) || Self::expr_uses_var(&l.rhs, name)
+                Self::extract_uses_expr(&l.lhs, uses);
+                Self::extract_uses_expr(&l.rhs, uses);
             }
-            Expr::UnaryOp(u) => Self::expr_uses_var(&u.expr, name),
+            Expr::UnaryOp(u) => Self::extract_uses_expr(&u.expr, uses),
             Expr::IndexAccess(i) => {
-                Self::expr_uses_var(&i.base, name) || Self::expr_uses_var(&i.index, name)
+                Self::extract_uses_expr(&i.base, uses);
+                Self::extract_uses_expr(&i.index, uses);
             }
-            Expr::Borrow(b) => Self::expr_uses_var(&b.expr, name),
-            Expr::Dereference(d) => Self::expr_uses_var(&d.expr, name),
+            Expr::Borrow(b) => Self::extract_uses_expr(&b.expr, uses),
+            Expr::Dereference(d) => Self::extract_uses_expr(&d.expr, uses),
             Expr::StructInit(s) => {
                 for f in &s.fields {
-                    if Self::expr_uses_var(&f.1, name) {
-                        return true;
-                    }
+                    Self::extract_uses_expr(&f.1, uses);
                 }
-                false
             }
             Expr::Array(a) => {
                 for e in &a.elements {
-                    if Self::expr_uses_var(e, name) {
-                        return true;
-                    }
+                    Self::extract_uses_expr(e, uses);
                 }
-                false
             }
             Expr::If(i) => {
-                if Self::expr_uses_var(&i.cond, name) {
-                    return true;
-                }
+                Self::extract_uses_expr(&i.cond, uses);
                 for s in &i.then_block {
-                    if Self::stmt_uses_var(s, name) {
-                        return true;
-                    }
+                    Self::extract_uses_stmt(s, uses);
                 }
                 if let Some(eb) = &i.else_block {
                     for s in eb {
-                        if Self::stmt_uses_var(s, name) {
-                            return true;
-                        }
+                        Self::extract_uses_stmt(s, uses);
                     }
                 }
-                false
             }
             Expr::UnsafeBlock(u) => {
                 for s in &u.stmts {
-                    if Self::stmt_uses_var(s, name) {
-                        return true;
-                    }
+                    Self::extract_uses_stmt(s, uses);
                 }
-                false
             }
-            Expr::AsCast(c) => Self::expr_uses_var(&c.expr, name),
-            _ => false,
+            Expr::AsCast(c) => Self::extract_uses_expr(&c.expr, uses),
+            Expr::Closure(c) => {
+                Self::extract_uses_expr(&c.body, uses);
+            }
+            _ => {}
         }
     }
 

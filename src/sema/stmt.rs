@@ -19,21 +19,29 @@ use crate::sema;
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_block(&mut self, body: &mut [Statement], return_type: &Type) {
         let mut terminated = false;
-        self.lookahead_stack.push(Vec::new());
+
+        // 1. Liveness Analysis Pass
+        let mut last_use = HashMap::new();
+        for (i, stmt) in body.iter().enumerate() {
+            let mut uses = std::collections::HashSet::new();
+            Self::extract_uses_stmt(stmt, &mut uses);
+            for var in uses {
+                last_use.insert(var, i);
+            }
+        }
+
+        self.block_liveness.push(last_use);
+        self.current_stmt_idx.push(0);
+
+        #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
+            *self.current_stmt_idx.last_mut().unwrap() = i;
             let mut stmt = body[i].clone();
             if terminated {
                 self.errors
                     .push_warning("Unreachable code after return, break, or continue".to_string());
                 break; // Only warn once per block
             }
-
-            // Set up lookahead for NLL
-            self.lookahead_stack.last_mut().unwrap().clear();
-            self.lookahead_stack
-                .last_mut()
-                .unwrap()
-                .extend_from_slice(&body[i + 1..]);
 
             self.check_statement(&mut stmt, return_type, true, false);
             body[i] = stmt.clone();
@@ -44,7 +52,8 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        self.lookahead_stack.pop();
+        self.block_liveness.pop();
+        self.current_stmt_idx.pop();
     }
 
     pub(crate) fn check_statement(
