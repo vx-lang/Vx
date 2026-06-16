@@ -338,7 +338,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         gen.string_counter += 1;
         gen.env.insert(iter_name.clone(), (iter_arg, iter_ty));
 
-        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let ptr_ty = gen.ptr_ty;
         let mut actual_next_name = "next".to_string();
         for (name, (_, _args)) in &gen.functions {
             // Find the mangled next function that takes a pointer
@@ -448,7 +448,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         let cmpi_op = before_block.append_operation(
             OperationBuilder::new("arith.cmpi", gen.loc())
                 .add_operands(&[tag_val, c1_val])
-                .add_results(&[Type::parse(gen.context, "i1").unwrap()])
+                .add_results(&[gen.i1_ty])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "predicate"),
                     IntegerAttribute::new(
@@ -534,7 +534,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 impl<'c> LowerToMelior<'c> for LoopStmt {
     type Output = Result<(), LowerError>;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let i1_ty = Type::parse(gen.context, "i1").unwrap();
+        let i1_ty = gen.i1_ty;
         let memref_ty = Type::parse(gen.context, "memref<1xi1>").unwrap();
 
         let alloca_op = block.append_operation(
@@ -673,7 +673,7 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
     type Output = Result<(), LowerError>;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         if let Some(&break_ptr) = gen.break_flags.last() {
-            let i1_ty = Type::parse(gen.context, "i1").unwrap();
+            let i1_ty = gen.i1_ty;
             let true_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[i1_ty])
@@ -716,7 +716,7 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
     type Output = Result<(), LowerError>;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         if let Some(&continue_ptr) = gen.continue_flags.last() {
-            let i1_ty = Type::parse(gen.context, "i1").unwrap();
+            let i1_ty = gen.i1_ty;
             let true_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[i1_ty])

@@ -73,8 +73,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         if !result_types.is_empty() {
             Ok((spawn_ref.result(0).unwrap().into(), result_types[0]))
         } else {
-            let _none_ty =
-                Type::parse(gen.context, "none").unwrap_or_else(|| Type::index(gen.context));
+            let _none_ty = gen.none_ty;
             let dummy_op = OperationBuilder::new("arith.constant", location)
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),

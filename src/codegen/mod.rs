@@ -51,15 +51,18 @@ pub fn enable_optimization_remarks(context: &Context) {
     }
 }
 
-pub fn parse_command_line_options(args: &[String]) {
-    let c_args: Vec<std::ffi::CString> = args
-        .iter()
-        .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
-        .collect();
+pub fn parse_command_line_options(args: &[String]) -> Result<(), String> {
+    let mut c_args = Vec::new();
+    for arg in args {
+        let c_str = std::ffi::CString::new(arg.as_str())
+            .map_err(|_| format!("Invalid CLI argument (contains null byte): {}", arg))?;
+        c_args.push(c_str);
+    }
     let c_args_ptrs: Vec<*const std::ffi::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
     unsafe {
         parseCommandLineOptions(c_args_ptrs.len() as std::ffi::c_int, c_args_ptrs.as_ptr());
     }
+    Ok(())
 }
 
 pub fn register_vx_passes() {
@@ -86,33 +89,36 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // Check if an external plugin is specified via ENZYME_LIB (for MLIR Enzyme)
     let mut has_enzyme = false;
     if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
-        let c_path = std::ffi::CString::new(enzyme_lib.clone()).unwrap();
-        let loaded = unsafe { loadMlirPassPlugin(c_path.as_ptr()) };
-        if loaded {
-            println!("[CodeGen] Loaded MLIR Pass Plugin: {}", enzyme_lib);
-            has_enzyme = true;
-        } else {
-            eprintln!(
-                "[CodeGen] Failed to load MLIR Pass Plugin (may not export MLIR plugin hooks): {}",
-                enzyme_lib
-            );
+        match std::ffi::CString::new(enzyme_lib.clone()) {
+            Ok(c_path) => {
+                let loaded = unsafe { loadMlirPassPlugin(c_path.as_ptr()) };
+                if loaded {
+                    println!("[CodeGen] Loaded MLIR Pass Plugin: {}", enzyme_lib);
+                    has_enzyme = true;
+                } else {
+                    eprintln!(
+                        "[CodeGen] Failed to load MLIR Pass Plugin (may not export MLIR plugin hooks): {}",
+                        enzyme_lib
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[CodeGen] Invalid ENZYME_LIB path (contains null byte): {}",
+                    e
+                );
+            }
         }
     }
 
-    // Instead of overwriting with parse_pass_pipeline, we append passes manually
-    // or we parse a pipeline into an empty manager and nest it?
-    // Let's just use pass_manager.add_pass() for standard passes!
-    // But `parse_pass_pipeline` is easier. So we can just parse the rest of the pipeline
-    // by appending our pass name to the string!
-    // Note: the pass name is not registered as a string! ConvertVxToStandardPass has no String name unless we give it one!
-    // We can just add the passes one by one using the string API, or `pass_manager.add_pass`.
-    // Actually, `parse_pass_pipeline` adds to the pass manager, it doesn't necessarily clear it?
-    // Wait! `melior::utility::parse_pass_pipeline` DOES clear or overwrite if it's top level!
-    // Note: add the C++ pass AFTER parse_pass_pipeline.
-    // NO, VxLowering must happen FIRST because it removes custom `vx` ops.
-    // So let's parse the standard pipeline, but wait, `addVxLoweringPass` is a C API.
-    // If we call `addVxLoweringPass` BEFORE, and `parse_pass_pipeline` clears it, that's bad.
-    // Let's just use a separate PassManager for VxLowering!
+    // Architectural Note on PassManagers:
+    // We use a separate `vx_pm` PassManager for our custom lowering passes first,
+    // before running the standard string-based pass pipeline.
+    // This is because `melior::utility::parse_pass_pipeline` directly overwrites
+    // or clears the manager it is applied to. If we appended standard passes to
+    // the same manager using the string API, it could conflict or drop the custom
+    // passes we added via the raw C API `addVxLoweringPass`.
+    // Running them in two separate sequences guarantees safety.
     let vx_pm = melior::pass::PassManager::new(context);
     unsafe {
         addVxLoweringPass(vx_pm.to_raw());

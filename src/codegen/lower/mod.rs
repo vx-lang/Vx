@@ -596,7 +596,7 @@ pub(crate) fn lower_map_call<'c>(
         let (closure_val, closure_ty) = gen.generate_expr(&args[1], block)?;
 
         // Allocate it on stack to get a pointer
-        let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+        let ptr_ty = gen.ptr_ty;
         let i32_ty = gen.i32_ty;
         let c1_op = OperationBuilder::new("arith.constant", gen.loc())
             .add_results(&[i32_ty])
@@ -781,7 +781,6 @@ pub(crate) fn lower_print_call<'c>(
 
     Ok((
         cast_val, // Dummy return value, caller ignores it
-        Type::parse(gen.context, "none")
-            .ok_or_else(|| LowerError::ParseType("none".to_string()))?,
+        Some(gen.none_ty).ok_or_else(|| LowerError::ParseType("none".to_string()))?,
     ))
 }

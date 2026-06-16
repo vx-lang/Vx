@@ -45,6 +45,13 @@ pub struct MeliorGenerator<'c> {
     pub(crate) f64_ty: Type<'c>,
     pub(crate) f16_ty: Type<'c>,
     pub(crate) bf16_ty: Type<'c>,
+    pub(crate) i1_ty: Type<'c>,
+    pub(crate) i4_ty: Type<'c>,
+    pub(crate) i8_ty: Type<'c>,
+    pub(crate) i16_ty: Type<'c>,
+    pub(crate) i128_ty: Type<'c>,
+    pub(crate) ptr_ty: Type<'c>,
+    pub(crate) none_ty: Type<'c>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -212,6 +219,13 @@ impl<'c> MeliorGenerator<'c> {
         let f64_ty = Type::parse(context, "f64").unwrap();
         let f16_ty = Type::parse(context, "f16").unwrap();
         let bf16_ty = Type::parse(context, "bf16").unwrap();
+        let i1_ty = Type::parse(context, "i1").unwrap();
+        let i4_ty = Type::parse(context, "i4").unwrap();
+        let i8_ty = Type::parse(context, "i8").unwrap();
+        let i16_ty = Type::parse(context, "i16").unwrap();
+        let i128_ty = Type::parse(context, "i128").unwrap();
+        let ptr_ty = Type::parse(context, "!llvm.ptr").unwrap();
+        let none_ty = Type::parse(context, "none").unwrap();
 
         Self {
             context,
@@ -248,6 +262,13 @@ impl<'c> MeliorGenerator<'c> {
             f64_ty,
             f16_ty,
             bf16_ty,
+            i1_ty,
+            i4_ty,
+            i8_ty,
+            i16_ty,
+            i128_ty,
+            ptr_ty,
+            none_ty,
         }
     }
 
@@ -787,15 +808,11 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::BF16 => self.bf16_ty,
                     ElementType::I32 | ElementType::U32 => self.i32_ty,
                     ElementType::I64 | ElementType::U64 => self.i64_ty,
-                    ElementType::I4 | ElementType::U4 => Type::parse(self.context, "i4").unwrap(),
-                    ElementType::I8 | ElementType::U8 => Type::parse(self.context, "i8").unwrap(),
-                    ElementType::I16 | ElementType::U16 => {
-                        Type::parse(self.context, "i16").unwrap()
-                    }
-                    ElementType::I128 | ElementType::U128 => {
-                        Type::parse(self.context, "i128").unwrap()
-                    }
-                    ElementType::Bool => Type::parse(self.context, "i1").unwrap(),
+                    ElementType::I4 | ElementType::U4 => self.i4_ty,
+                    ElementType::I8 | ElementType::U8 => self.i8_ty,
+                    ElementType::I16 | ElementType::U16 => self.i16_ty,
+                    ElementType::I128 | ElementType::U128 => self.i128_ty,
+                    ElementType::Bool => self.i1_ty,
                     ElementType::Generic(_) => {
                         panic!("Generic element type should be instantiated before codegen")
                     }
@@ -1010,7 +1027,7 @@ impl<'c> MeliorGenerator<'c> {
                 "i32".to_string()
             }
             ast::Type::Function(_, _) => {
-                return Type::parse(self.context, "!llvm.ptr").unwrap();
+                return self.ptr_ty;
             }
             ast::Type::Closure(_, _) => {
                 return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();

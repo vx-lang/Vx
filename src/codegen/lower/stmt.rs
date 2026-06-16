@@ -95,7 +95,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         if *is_mut {
             let ty_str = ty.to_string();
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
-                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                let ptr_ty = gen.ptr_ty;
                 let i32_ty = gen.i32_ty;
                 let one_attr = IntegerAttribute::new(i32_ty, 1).into();
                 let const_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
@@ -349,7 +349,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                             }
 
                             if is_ptr {
-                                let ptr_ty = Type::parse(gen.context, "!llvm.ptr").unwrap();
+                                let ptr_ty = gen.ptr_ty;
                                 let mut field_types = Vec::new();
                                 for (_, ty) in &struct_decl.fields {
                                     let mut lowered = gen.lower_type_str(ty);
