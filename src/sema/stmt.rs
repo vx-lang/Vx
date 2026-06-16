@@ -17,6 +17,28 @@ use super::*;
 use crate::ast;
 use crate::sema;
 impl<'a> TypeChecker<'a> {
+    /// Performs semantic analysis on a block of statements.
+    ///
+    /// A **block** is a sequence of statements enclosed in `{ ... }` that defines a new lexical scope.
+    /// This includes function bodies, `if` branches, loop bodies, and raw blocks. Variables declared
+    /// inside a block are dropped when the block ends.
+    ///
+    /// # Liveness Analysis (Block-Local)
+    /// Before type-checking and executing the statements, we perform a single O(N) forward
+    /// pass over the block to precompute the liveness of all variables within this lexical scope.
+    ///
+    /// **The Algorithm:**
+    /// 1. We instantiate a `last_use` map (`HashMap<String, usize>`).
+    /// 2. We iterate over the block's statements from `0` to `N-1`.
+    /// 3. For each statement, we recursively extract all variable identifiers used in that
+    ///    statement (`extract_uses_stmt`) and insert them into `last_use` with the current statement index `i`.
+    /// 4. By the end of the pass, `last_use[var]` holds the exact index of the *last* statement
+    ///    that references `var` within this block.
+    /// 5. We push this map onto `self.block_liveness`, and we track the current execution index
+    ///    using `self.current_stmt_idx`.
+    ///
+    /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query `is_variable_used_after`
+    /// in O(1) time instead of performing an O(N^2) AST tree-walk!
     pub(crate) fn check_block(&mut self, body: &mut [Statement], return_type: &Type) {
         let mut terminated = false;
 
