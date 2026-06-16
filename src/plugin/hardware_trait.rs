@@ -12,6 +12,9 @@
 // systems.
 //
 //===----------------------------------------------------------------------===//
+use std::borrow::Cow;
+use std::fmt;
+
 // Mock MLIR types since Vx currently uses string-based codegen instead of a Rust MLIR crate.
 pub mod mlir {
     pub struct Operation {
@@ -33,9 +36,26 @@ pub enum TensorLayout {
     Contiguous,
 }
 
+#[derive(Debug)]
+pub enum PluginError {
+    LoweringFailed(String),
+    UnsupportedOperation(String),
+}
+
+impl fmt::Display for PluginError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PluginError::LoweringFailed(msg) => write!(f, "Lowering failed: {}", msg),
+            PluginError::UnsupportedOperation(msg) => write!(f, "Unsupported operation: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PluginError {}
+
 pub trait VxHardwarePlugin: Send + Sync {
-    /// The vendor's identifier
-    fn plugin_name(&self) -> &str;
+    /// The vendor's identifier. Cow allows for static or dynamic strings.
+    fn plugin_name(&self) -> Cow<'static, str>;
 
     /// The topology this plugin claims responsibility for
     fn target_topology(&self) -> TopologyID;
@@ -44,12 +64,14 @@ pub trait VxHardwarePlugin: Send + Sync {
     fn preferred_tensor_layout(&self) -> TensorLayout;
     fn required_alignment(&self) -> usize;
 
-    /// Verification Contract
+    /// Verification Contract: Returns true if the hardware can execute this specific operation.
+    /// Default implementation accepts all ops.
     fn is_op_supported(&self, _op: &mlir::Operation) -> bool {
         true
     }
 
-    /// Compile-Time Escape Hatch (Metadata Annotation)
+    /// Compile-Time Escape Hatch: Allows the plugin to attach hardware-specific metadata
+    /// or attributes to the operation before the lowering phase.
     fn annotate_operation(&self, _op: &mut mlir::Operation) {}
 
     /// The Pass Pipeline
@@ -57,5 +79,5 @@ pub trait VxHardwarePlugin: Send + Sync {
 
     /// Final Lowering
     /// Takes the optimized MLIR module and emits the final hardware-specific payload.
-    fn lower_to_binary(&self, module: mlir::Module) -> Result<Vec<u8>, String>;
+    fn lower_to_binary(&self, module: mlir::Module) -> Result<Vec<u8>, PluginError>;
 }

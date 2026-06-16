@@ -12,6 +12,12 @@
 // heterogeneous compute resources.
 //
 //===----------------------------------------------------------------------===//
+
+#[cfg(target_os = "macos")]
 pub mod apple_npe;
+
 pub mod hardware_trait;
 pub mod registry;
+
+pub use hardware_trait::VxHardwarePlugin;
+pub use registry::PluginRegistry;
