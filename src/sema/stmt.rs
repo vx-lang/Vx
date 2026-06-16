@@ -28,7 +28,7 @@ impl<'a> TypeChecker<'a> {
     /// pass over the block to precompute the liveness of all variables within this lexical scope.
     ///
     /// **The Algorithm:**
-    /// 1. We instantiate a `last_use` map (`HashMap<String, usize>`).
+    /// 1. We instantiate a `last_use` map (`HashMap<crate::symbol::Symbol, usize>`).
     /// 2. We iterate over the block's statements from `0` to `N-1`.
     /// 3. For each statement, we recursively extract all variable identifiers used in that
     ///    statement (`extract_uses_stmt`) and insert them into `last_use` with the current statement index `i`.
@@ -53,8 +53,11 @@ impl<'a> TypeChecker<'a> {
             *self.current_stmt_idx.last_mut().unwrap() = i;
             let mut stmt = body[i].clone();
             if terminated {
-                self.errors
-                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                self.errors.push_warning(
+                    "Unreachable code after return, break, or continue"
+                        .to_string()
+                        .into(),
+                );
                 break; // Only warn once per block
             }
 
@@ -71,13 +74,15 @@ impl<'a> TypeChecker<'a> {
         self.current_stmt_idx.pop();
     }
 
-    pub(crate) fn compute_block_liveness(body: &[Statement]) -> HashMap<String, usize> {
+    pub(crate) fn compute_block_liveness(
+        body: &[Statement],
+    ) -> HashMap<crate::symbol::Symbol, usize> {
         let mut last_use = HashMap::new();
         for (i, stmt) in body.iter().enumerate() {
             let mut uses = std::collections::HashSet::new();
             Self::extract_uses_stmt(stmt, &mut uses);
             for var in uses {
-                last_use.insert(var, i);
+                last_use.insert(var.into(), i);
             }
         }
         last_use
@@ -100,7 +105,7 @@ impl<'a> TypeChecker<'a> {
                 expr,
                 span: _,
             }) => {
-                self.current_assignment_target = Some(name.clone());
+                self.current_assignment_target = Some(name.to_string());
                 let ty = self.check_expr_type_flag(expr, consume, silent);
                 self.current_assignment_target = None;
 
@@ -111,7 +116,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 if let Some(val) = self.eval_expr(expr, &tmp_env) {
-                    self.eval_env.last_mut().unwrap().insert(name.clone(), val);
+                    self.eval_env
+                        .last_mut()
+                        .unwrap()
+                        .insert(name.to_string().into(), val);
                 }
 
                 if let Some(ann) = ty_ann {
@@ -119,9 +127,9 @@ impl<'a> TypeChecker<'a> {
                         self.errors
                             .push(format!("Type mismatch in variable declaration '{}'", name));
                     }
-                    self.insert(name.clone(), ann.clone());
+                    self.insert(name.to_string(), ann.clone());
                 } else {
-                    self.insert(name.clone(), ty);
+                    self.insert(name.to_string(), ty);
                 }
 
                 if !*_is_mut {
@@ -160,7 +168,7 @@ impl<'a> TypeChecker<'a> {
                     use ast::Span;
                     let mut next_call = Expr::MethodCall(MethodCallExpr {
                         base: (*iterable).clone(),
-                        method_name: "next".to_string(),
+                        method_name: "next".to_string().into(),
                         type_args: None,
                         args: vec![],
                         span: Span::default(),
@@ -169,7 +177,7 @@ impl<'a> TypeChecker<'a> {
                     let opt_ty = self.check_expr_type_flag(&mut next_call, consume, silent);
                     if let Type::GenericInstance(base, args) = opt_ty {
                         if let Type::Enum(name, _) = &*base {
-                            if name == "Option" && args.len() == 1 {
+                            if name.as_ref() == "Option" && args.len() == 1 {
                                 iter_ty = args[0].clone();
                             }
                         }
@@ -178,7 +186,7 @@ impl<'a> TypeChecker<'a> {
                     iter_ty = match iterable_ty {
                         Type::GenericInstance(base, args) => {
                             if let Type::Enum(name, _) = &*base {
-                                if name == "Option" && args.len() == 1 {
+                                if name.as_ref() == "Option" && args.len() == 1 {
                                     args[0].clone()
                                 } else {
                                     Type::Scalar(ElementType::I64)
@@ -198,8 +206,11 @@ impl<'a> TypeChecker<'a> {
                 let prev_constraints_len = self.constraints.len();
                 for inv in invariants.iter() {
                     if !self.prove_expr(inv) {
-                        self.errors
-                            .push("Loop invariant cannot be proven on entry".to_string());
+                        self.errors.push(
+                            "Loop invariant cannot be proven on entry"
+                                .to_string()
+                                .into(),
+                        );
                     }
                     self.constraints.push(inv.clone());
                 }
@@ -228,8 +239,11 @@ impl<'a> TypeChecker<'a> {
                 let prev_constraints_len = self.constraints.len();
                 for inv in invariants.iter() {
                     if !self.prove_expr(inv) {
-                        self.errors
-                            .push("Loop invariant cannot be proven on entry".to_string());
+                        self.errors.push(
+                            "Loop invariant cannot be proven on entry"
+                                .to_string()
+                                .into(),
+                        );
                     }
                     self.constraints.push(inv.clone());
                 }
@@ -260,10 +274,10 @@ impl<'a> TypeChecker<'a> {
 
                 // Determine target name for NLL
                 if let Expr::Identifier(id) = lhs {
-                    self.current_assignment_target = Some(id.name.clone());
+                    self.current_assignment_target = Some(id.name.to_string());
                 } else if let Expr::MemberAccess(ma) = lhs {
                     if let Expr::Identifier(id) = &*ma.base {
-                        self.current_assignment_target = Some(id.name.clone());
+                        self.current_assignment_target = Some(id.name.to_string());
                     }
                 }
 
@@ -283,8 +297,8 @@ impl<'a> TypeChecker<'a> {
                     if let Some(val) = self.eval_expr(rhs, &tmp_env) {
                         // find the scope that has the variable
                         for env in self.eval_env.iter_mut().rev() {
-                            if env.contains_key(name) {
-                                env.insert(name.clone(), val);
+                            if env.contains_key(name.as_ref()) {
+                                env.insert(name.to_string().into(), val);
                                 break;
                             }
                         }
@@ -309,7 +323,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
                 let return_ident = Expr::Identifier(IdentifierExpr {
-                    name: "return".to_string(),
+                    name: "return".to_string().into(),
                     span: *span,
                 });
                 let return_eq = Expr::RelationalOp(RelationalOpExpr {
@@ -408,7 +422,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn eval_expr(&self, expr: &Expr, env: &HashMap<String, Value>) -> Option<Value> {
+    pub(crate) fn eval_expr(
+        &self,
+        expr: &Expr,
+        env: &HashMap<crate::symbol::Symbol, Value>,
+    ) -> Option<Value> {
         match expr {
             Expr::Number(NumberExpr {
                 value: n_str,
@@ -421,14 +439,14 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "true" => {
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n.as_ref() == "true" => {
                 Some(Value::Bool(true))
             }
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n == "false" => {
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n.as_ref() == "false" => {
                 Some(Value::Bool(false))
             }
 
-            Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n).cloned(),
+            Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n.as_ref()).cloned(),
             Expr::BinaryOp(BinaryOpExpr {
                 lhs,
                 op,
@@ -528,7 +546,7 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                let func = self.env.ast_functions.get(name)?;
+                let func = self.env.ast_functions.get(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;
@@ -594,7 +612,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn eval_statement(
         &self,
         stmt: &Statement,
-        env: &mut HashMap<String, Value>,
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Value> {
         match stmt {
             Statement::LetDecl(LetDeclStmt {

@@ -13,6 +13,7 @@
 use super::*;
 
 use crate::ast;
+use crate::symbol::Symbol;
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOp {
     Add,
@@ -46,26 +47,26 @@ pub enum UnaryOp {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct IdentifierExpr {
-    pub name: String,
+    pub name: Symbol,
     pub span: Span,
 }
 impl IdentifierExpr {
-    pub fn new(name: String, span: Span) -> Self {
+    pub fn new(name: Symbol, span: Span) -> Self {
         Self { name, span }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumVariantExpr {
-    pub enum_name: String,
-    pub variant_name: String,
+    pub enum_name: Symbol,
+    pub variant_name: Symbol,
     pub payload: Option<Vec<Expr>>,
     pub span: Span,
 }
 impl EnumVariantExpr {
     pub fn new(
-        enum_name: String,
-        variant_name: String,
+        enum_name: Symbol,
+        variant_name: Symbol,
         payload: Option<Vec<Expr>>,
         span: Span,
     ) -> Self {
@@ -139,13 +140,13 @@ impl TransferExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionCallExpr {
-    pub name: String,
+    pub name: Symbol,
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
 }
 impl FunctionCallExpr {
-    pub fn new(name: String, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
+    pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
         Self {
             name,
             type_args,
@@ -195,12 +196,12 @@ impl ArrayExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MemberAccessExpr {
     pub base: Box<Expr>,
-    pub member: String,
-    pub struct_name: Option<String>,
+    pub member: Symbol,
+    pub struct_name: Option<Symbol>,
     pub span: Span,
 }
 impl MemberAccessExpr {
-    pub fn new(base: Box<Expr>, member: String, span: Span) -> Self {
+    pub fn new(base: Box<Expr>, member: Symbol, span: Span) -> Self {
         Self {
             base,
             member,
@@ -225,7 +226,7 @@ impl IndexAccessExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct MethodCallExpr {
     pub base: Box<Expr>,
-    pub method_name: String,
+    pub method_name: Symbol,
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
     pub span: Span,
@@ -233,7 +234,7 @@ pub struct MethodCallExpr {
 impl MethodCallExpr {
     pub fn new(
         base: Box<Expr>,
-        method_name: String,
+        method_name: Symbol,
         type_args: Option<Vec<Type>>,
         args: Vec<Expr>,
         span: Span,
@@ -395,12 +396,12 @@ impl ComptimeBlockExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructInitExpr {
-    pub name: String,
-    pub fields: Vec<(String, Expr)>,
+    pub name: Symbol,
+    pub fields: Vec<(Symbol, Expr)>,
     pub span: Span,
 }
 impl StructInitExpr {
-    pub fn new(name: String, fields: Vec<(String, Expr)>, span: Span) -> Self {
+    pub fn new(name: Symbol, fields: Vec<(Symbol, Expr)>, span: Span) -> Self {
         Self { name, fields, span }
     }
 }
@@ -429,12 +430,12 @@ impl TopologyExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct GradExpr {
-    pub target_fn: String,
+    pub target_fn: Symbol,
     pub args: Vec<Expr>,
     pub span: Span,
 }
 impl GradExpr {
-    pub fn new(target_fn: String, args: Vec<Expr>, span: Span) -> Self {
+    pub fn new(target_fn: Symbol, args: Vec<Expr>, span: Span) -> Self {
         Self {
             target_fn,
             args,
@@ -445,13 +446,13 @@ impl GradExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct VjpExpr {
-    pub target_fn: String,
+    pub target_fn: Symbol,
     pub args: Vec<Expr>,
     pub cotangent: Box<Expr>,
     pub span: Span,
 }
 impl VjpExpr {
-    pub fn new(target_fn: String, args: Vec<Expr>, cotangent: Box<Expr>, span: Span) -> Self {
+    pub fn new(target_fn: Symbol, args: Vec<Expr>, cotangent: Box<Expr>, span: Span) -> Self {
         Self {
             target_fn,
             args,
@@ -463,13 +464,13 @@ impl VjpExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct JvpExpr {
-    pub target_fn: String,
+    pub target_fn: Symbol,
     pub args: Vec<Expr>,
     pub tangent: Box<Expr>,
     pub span: Span,
 }
 impl JvpExpr {
-    pub fn new(target_fn: String, args: Vec<Expr>, tangent: Box<Expr>, span: Span) -> Self {
+    pub fn new(target_fn: Symbol, args: Vec<Expr>, tangent: Box<Expr>, span: Span) -> Self {
         Self {
             target_fn,
             args,
@@ -521,8 +522,8 @@ impl RangeExpr {
 pub enum Pattern {
     Wildcard,
     Literal(Expr), // e.g. Number, StringLiteral
-    Identifier(String),
-    EnumVariant(String, String, Option<Vec<Pattern>>), // enum_name, variant_name, payload patterns
+    Identifier(Symbol),
+    EnumVariant(Symbol, Symbol, Option<Vec<Pattern>>), // enum_name, variant_name, payload patterns
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -556,14 +557,14 @@ impl VecMacroExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ClosureExpr {
-    pub params: Vec<(String, Type)>,
+    pub params: Vec<(Symbol, Type)>,
     pub body: Box<Expr>,
-    pub captures: Vec<(String, Type)>,
+    pub captures: Vec<(Symbol, Type)>,
     pub ret_ty: Option<Type>,
     pub span: Span,
 }
 impl ClosureExpr {
-    pub fn new(params: Vec<(String, Type)>, body: Box<Expr>, span: Span) -> Self {
+    pub fn new(params: Vec<(Symbol, Type)>, body: Box<Expr>, span: Span) -> Self {
         Self {
             params,
             body,
@@ -576,7 +577,7 @@ impl ClosureExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MacroCallExpr {
-    pub name: String,
+    pub name: Symbol,
     pub token_tree: TokenTree,
     pub block_tree: Option<TokenTree>,
     pub span: Span,
@@ -589,7 +590,7 @@ impl MacroCallExpr {
         span: Span,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             token_tree,
             block_tree,
             span,
@@ -632,7 +633,7 @@ impl SizeOfExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct InlineMlirExpr {
-    pub inputs: Vec<(String, Expr, String)>, // "%argN", expr, mlir_type_str
+    pub inputs: Vec<(Symbol, Expr, String)>, // "%argN", expr, mlir_type_str
     pub clobbers: Vec<Expr>,
     pub returns: Option<Type>, // None for void
     pub dialects: Vec<String>,
@@ -746,7 +747,7 @@ impl Expr {
         }
     }
 
-    pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Expr {
+    pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Expr {
         match self {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
@@ -764,7 +765,7 @@ impl Expr {
                 if new_name.starts_with("Tensor_") {
                     let t_name = new_name.strip_prefix("Tensor_").unwrap();
                     if let Some(concrete_el) = mapping.get(t_name) {
-                        new_name = format!("Tensor_{}", concrete_el);
+                        new_name = format!("Tensor_{}", concrete_el).into();
                     }
                 } else if let Some(idx) = new_name.find('<') {
                     if let Some(end_idx) = new_name.find('>') {
@@ -781,7 +782,8 @@ impl Expr {
                             }
                         }
                         new_name =
-                            format!("{}<{}>{}", base, substituted_args.join(", "), remainder);
+                            format!("{}<{}>{}", base, substituted_args.join(", "), remainder)
+                                .into();
                     }
                 }
                 let substituted_type_args = e
@@ -881,7 +883,7 @@ impl Expr {
                             substituted_args.push(ty_arg.to_string());
                         }
                     }
-                    new_name = format!("{}<{}>", base, substituted_args.join(", "));
+                    new_name = format!("{}<{}>", base, substituted_args.join(", ")).into();
                 }
                 Expr::StructInit(StructInitExpr {
                     name: new_name,
@@ -950,11 +952,11 @@ impl Expr {
                 span: e.span,
             }),
             Expr::Identifier(id) => {
-                if let Some(mapped_ty) = mapping.get(&id.name) {
+                if let Some(mapped_ty) = mapping.get(&*id.name) {
                     if let Type::Generic(val_str, _) = mapped_ty {
                         if val_str.parse::<f64>().is_ok() {
                             return Expr::Number(ast::NumberExpr {
-                                value: val_str.clone(),
+                                value: val_str.to_string(),
                                 ty: None,
                                 span: id.span,
                             });
@@ -984,7 +986,7 @@ impl Expr {
                             substituted_args.push(ty_arg.to_string());
                         }
                     }
-                    new_name = format!("{}<{}>", base, substituted_args.join(", "));
+                    new_name = format!("{}<{}>", base, substituted_args.join(", ")).into();
                 }
                 Expr::EnumVariant(EnumVariantExpr {
                     enum_name: new_name,

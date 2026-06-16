@@ -11,10 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
+use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LetDeclStmt {
-    pub name: String,
+    pub name: Symbol,
     pub is_mut: bool,
     pub ty_ann: Option<Type>,
     pub expr: Expr,
@@ -23,7 +24,7 @@ pub struct LetDeclStmt {
 impl LetDeclStmt {
     pub fn new(name: String, is_mut: bool, ty_ann: Option<Type>, expr: Expr, span: Span) -> Self {
         Self {
-            name,
+            name: name.into(),
             is_mut,
             ty_ann,
             expr,
@@ -160,7 +161,7 @@ impl ContinueStmt {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MacroCallStmt {
-    pub name: String,
+    pub name: Symbol,
     pub token_tree: TokenTree,
     pub block_tree: Option<TokenTree>,
     pub has_semi: bool,
@@ -175,7 +176,7 @@ impl MacroCallStmt {
         span: Span,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             token_tree,
             block_tree,
             has_semi,
@@ -218,7 +219,10 @@ macro_rules! delegate_stmt {
 }
 
 impl Statement {
-    pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Statement {
+    pub fn substitute(
+        &self,
+        mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
+    ) -> Statement {
         match self {
             Statement::LetDecl(e) => Statement::LetDecl(LetDeclStmt {
                 name: e.name.clone(),

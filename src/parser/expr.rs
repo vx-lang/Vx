@@ -253,9 +253,13 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
                         payload = Some(p);
                     }
-                    Ok(Pattern::EnumVariant(enum_name, variant_name, payload))
+                    Ok(Pattern::EnumVariant(
+                        enum_name.into(),
+                        variant_name.into(),
+                        payload,
+                    ))
                 } else {
-                    Ok(Pattern::Identifier(enum_name))
+                    Ok(Pattern::Identifier(enum_name.into()))
                 }
             }
             _ => Err(self.error(&format!("Unexpected token in pattern: {:?}", token.kind))),
@@ -337,7 +341,7 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             Ok(Expr::FunctionCall(FunctionCallExpr {
-                name: call_name,
+                name: call_name.into(),
                 type_args: parsed_type_args,
                 args,
                 span: Span::default(),
@@ -373,7 +377,7 @@ impl<'a> Parser<'a> {
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
                     let f_expr = self.parse_expr()?;
-                    fields.push((f_name, f_expr));
+                    fields.push((f_name.into(), f_expr));
                     if !self.match_token(&TokenType::Comma) {
                         break;
                     }
@@ -388,7 +392,7 @@ impl<'a> Parser<'a> {
                     call_name = format!("{}<{}>", call_name, ty_args_str);
                 }
                 Ok(Expr::StructInit(StructInitExpr {
-                    name: call_name,
+                    name: call_name.into(),
                     fields,
                     span: Span::default(),
                 }))
@@ -420,8 +424,8 @@ impl<'a> Parser<'a> {
                     call_name = format!("{}<{}>", call_name, ty_args_str);
                 }
                 Ok(Expr::EnumVariant(EnumVariantExpr {
-                    enum_name: call_name,
-                    variant_name: variant.to_string(),
+                    enum_name: call_name.into(),
+                    variant_name: variant.to_string().into(),
                     payload,
                     span: Span::default(),
                 }))
@@ -435,7 +439,7 @@ impl<'a> Parser<'a> {
                     call_name = format!("{}<{}>", call_name, ty_args_str);
                 }
                 Ok(Expr::Identifier(IdentifierExpr {
-                    name: call_name,
+                    name: call_name.into(),
                     span: Span::default(),
                 }))
             }
@@ -467,8 +471,8 @@ impl<'a> Parser<'a> {
                 call_name = format!("{}<{}>", call_name, ty_args_str);
             }
             Ok(Expr::EnumVariant(EnumVariantExpr {
-                enum_name: call_name,
-                variant_name: variant.to_string(),
+                enum_name: call_name.into(),
+                variant_name: variant.to_string().into(),
                 payload,
                 span: Span::default(),
             }))
@@ -482,7 +486,7 @@ impl<'a> Parser<'a> {
                 call_name = format!("{}<{}>", call_name, ty_args_str);
             }
             Ok(Expr::Identifier(IdentifierExpr {
-                name: call_name,
+                name: call_name.into(),
                 span: Span::default(),
             }))
         }
@@ -654,7 +658,7 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
-                    name: "Verified".to_string(),
+                    name: "Verified".to_string().into(),
                     type_args: None,
                     args: vec![inner],
                     span: Span::default(),
@@ -682,7 +686,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::Grad(GradExpr {
-                    target_fn,
+                    target_fn: target_fn.into(),
                     args,
                     span: Span::default(),
                 })
@@ -714,7 +718,7 @@ impl<'a> Parser<'a> {
                 }
                 let cotangent = all_args.pop().unwrap();
                 Expr::Vjp(VjpExpr {
-                    target_fn,
+                    target_fn: target_fn.into(),
                     args: all_args,
                     cotangent: Box::new(cotangent),
                     span: Span::default(),
@@ -747,7 +751,7 @@ impl<'a> Parser<'a> {
                 }
                 let tangent = all_args.pop().unwrap();
                 Expr::Jvp(JvpExpr {
-                    target_fn,
+                    target_fn: target_fn.into(),
                     args: all_args,
                     tangent: Box::new(tangent),
                     span: Span::default(),
@@ -783,7 +787,7 @@ impl<'a> Parser<'a> {
                                 block_tree = Some(self.parse_token_tree()?);
                             }
                             Expr::MacroCall(MacroCallExpr {
-                                name: s.to_string(),
+                                name: s.to_string().into(),
                                 token_tree,
                                 block_tree,
                                 span: Span::default(),
@@ -854,7 +858,7 @@ impl<'a> Parser<'a> {
                                     } else {
                                         Type::Unknown
                                     };
-                                    params.push((name, ty));
+                                    params.push((name.into(), ty));
                                     if !self.match_token(&TokenType::Comma) {
                                         break;
                                     }
@@ -933,7 +937,7 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::RightParen, "Expected ')'")?;
                     expr = Expr::MethodCall(MethodCallExpr {
                         base: Box::new(expr),
-                        method_name: ident.to_string(),
+                        method_name: ident.to_string().into(),
                         type_args: None,
                         args,
                         span: Span::default(),
@@ -941,7 +945,7 @@ impl<'a> Parser<'a> {
                 } else {
                     expr = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(expr),
-                        member: ident,
+                        member: ident.into(),
                         struct_name: None,
                         span: Span::default(),
                     });
@@ -1011,8 +1015,8 @@ mod tests {
             span: _,
         }) = expr
         {
-            assert_eq!(enum_name, "Option");
-            assert_eq!(variant_name, "None");
+            assert_eq!(enum_name.as_ref(), "Option");
+            assert_eq!(variant_name.as_ref(), "None");
             assert!(payload.is_none());
         } else {
             panic!("Expected EnumVariant, got {:?}", expr);
@@ -1032,10 +1036,10 @@ mod tests {
             type_args: _,
         }) = expr
         {
-            assert_eq!(name, "Option::Some");
+            assert_eq!(name.as_ref(), "Option::Some");
             assert_eq!(args.len(), 1);
             if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &args[0] {
-                assert_eq!(name, "x");
+                assert_eq!(name.as_ref(), "x");
             } else {
                 panic!("Expected Identifier payload");
             }
@@ -1056,7 +1060,7 @@ mod tests {
             type_args: _,
         }) = expr
         {
-            assert_eq!(name, "Option<i32>::Some");
+            assert_eq!(name.as_ref(), "Option<i32>::Some");
             assert_eq!(args.len(), 1);
         } else {
             panic!("Expected FunctionCall, got {:?}", expr);
@@ -1074,7 +1078,7 @@ mod tests {
             type_args: _,
         }) = expr
         {
-            assert_eq!(name, "Vec<i32>::new");
+            assert_eq!(name.as_ref(), "Vec<i32>::new");
             assert_eq!(args.len(), 0);
         } else {
             panic!("Expected FunctionCall, got {:?}", expr);
@@ -1094,11 +1098,11 @@ mod tests {
         }) = expr
         {
             if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &*base {
-                assert_eq!(name, "vec");
+                assert_eq!(name.as_ref(), "vec");
             } else {
                 panic!("Expected Identifier base");
             }
-            assert_eq!(method_name, "push");
+            assert_eq!(method_name.as_ref(), "push");
             assert_eq!(args.len(), 1);
             if let Expr::Number(NumberExpr { value, .. }) = &args[0] {
                 assert_eq!(value, "10");
@@ -1122,7 +1126,7 @@ mod tests {
             type_args: _,
         }) = expr
         {
-            assert_eq!(method_name, "map");
+            assert_eq!(method_name.as_ref(), "map");
             assert_eq!(args.len(), 1);
             if let Expr::MethodCall(MethodCallExpr {
                 base: inner_base,
@@ -1132,10 +1136,10 @@ mod tests {
                 type_args: _,
             }) = &*base
             {
-                assert_eq!(inner_method_name, "iter");
+                assert_eq!(inner_method_name.as_ref(), "iter");
                 assert_eq!(inner_args.len(), 0);
                 if let Expr::Identifier(IdentifierExpr { name, span: _ }) = &**inner_base {
-                    assert_eq!(name, "vec");
+                    assert_eq!(name.as_ref(), "vec");
                 } else {
                     panic!("Expected Identifier inner_base");
                 }

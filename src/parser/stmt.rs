@@ -82,7 +82,7 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
                 Ok(Statement::LetDecl(LetDeclStmt {
-                    name,
+                    name: name.into(),
                     is_mut,
                     ty_ann: type_annotation,
                     expr,
@@ -246,7 +246,7 @@ impl<'a> Parser<'a> {
                     }
                     let has_semi = self.match_token(&TokenType::Semicolon); // optional semicolon for statement macros
                     return Ok(Statement::MacroCall(MacroCallStmt {
-                        name,
+                        name: name.into(),
                         token_tree,
                         block_tree,
                         has_semi,

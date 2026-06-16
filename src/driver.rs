@@ -213,7 +213,9 @@ impl CompilerDriver {
         if self.options.action == Action::ParseOnly {
             let ast = program_arr
                 .iter()
-                .find(|p| p.module_path == filename)
+                .find(|p| {
+                    p.module_path == <std::string::String as Clone>::clone(&filename.clone()).into()
+                })
                 .unwrap();
             println!("{:#?}", ast);
             return Ok(());
@@ -221,7 +223,9 @@ impl CompilerDriver {
 
         let ast_idx = program_arr
             .iter()
-            .position(|p| p.module_path == filename)
+            .position(|p| {
+                p.module_path == <std::string::String as Clone>::clone(&filename.clone()).into()
+            })
             .unwrap();
         let mut ast = program_arr.remove(ast_idx);
 
@@ -307,7 +311,7 @@ impl CompilerDriver {
         context.load_all_available_dialects();
         codegen::register_vx_dialect(&context);
 
-        let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.clone());
+        let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
         codegen
             .generate(&monomorphized_ast, &module_asts)
             .map_err(|e| format!("Codegen Error: {:?}", e))?;
@@ -397,7 +401,7 @@ impl CompilerDriver {
                     shared_libs.push(libnpu.clone());
                 }
 
-                let shared_libs_refs: Vec<&str> = shared_libs.iter().map(|s| s.as_str()).collect();
+                let shared_libs_refs: Vec<&str> = shared_libs.iter().map(|s| s.as_ref()).collect();
 
                 let engine = melior::ExecutionEngine::new(
                     &module,
@@ -447,7 +451,11 @@ fn get_optimization_pipeline(
 
     if llvm_lower {
         passes.push("vx-to-llvm".to_string());
-        passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
+        passes.push(
+            "func.func(convert-linalg-to-loops,lower-affine)"
+                .to_string()
+                .into(),
+        );
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
         passes.push("finalize-memref-to-llvm".to_string());
@@ -510,7 +518,9 @@ pub fn apply_mlir_opt(
     let _ = std::fs::remove_file(&temp_in);
     if status != 0 {
         let _ = std::fs::remove_file(&temp_out);
-        return Err("vx-opt failed. Check stderr for details.".to_string());
+        return Err("vx-opt failed. Check stderr for details."
+            .to_string()
+            .into());
     }
 
     let out_str = std::fs::read_to_string(&temp_out).unwrap_or_default();
@@ -537,5 +547,7 @@ pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Resu
             String::from_utf8_lossy(&mlir_translate_out.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout)
+        .to_string()
+        .into())
 }

@@ -16,11 +16,11 @@ use crate::lexer::OwnedTokenType;
 use std::collections::HashMap;
 
 pub struct MacroExpander<'a> {
-    pub macros: &'a HashMap<String, Vec<MacroRule>>,
+    pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
 }
 
 impl<'a> MacroExpander<'a> {
-    pub fn new(macros: &'a HashMap<String, Vec<MacroRule>>) -> Self {
+    pub fn new(macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>) -> Self {
         Self { macros }
     }
 
@@ -437,7 +437,7 @@ impl<'a> MacroExpander<'a> {
         &self,
         matcher: &[TokenTree],
         input: &[crate::lexer::OwnedToken],
-    ) -> Result<HashMap<String, Vec<crate::lexer::OwnedToken>>, String> {
+    ) -> Result<HashMap<crate::symbol::Symbol, Vec<crate::lexer::OwnedToken>>, String> {
         let mut captures = HashMap::new();
         let mut matcher_tokens = Vec::new();
         for tt in matcher {
@@ -459,7 +459,7 @@ impl<'a> MacroExpander<'a> {
                         let kind_tok = &matcher_tokens[j + 3];
                         if let OwnedTokenType::Identifier(kind) = &kind_tok.kind {
                             // Match a meta-variable
-                            if kind == "expr" {
+                            if kind.as_ref() == "expr" {
                                 // Simplified: just grab tokens until the next matcher token is found or EOF
                                 let mut captured = Vec::new();
                                 if j + 4 < matcher_tokens.len() {
@@ -507,7 +507,7 @@ impl<'a> MacroExpander<'a> {
     fn transcribe(
         &self,
         transcriber: &[TokenTree],
-        captures: &HashMap<String, Vec<crate::lexer::OwnedToken>>,
+        captures: &HashMap<crate::symbol::Symbol, Vec<crate::lexer::OwnedToken>>,
     ) -> Result<Vec<crate::lexer::OwnedToken>, String> {
         let mut tokens = Vec::new();
         let mut transcriber_tokens = Vec::new();
@@ -568,7 +568,11 @@ impl<'a> MacroExpander<'a> {
     fn expand_print_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
-            _ => return Err("Expected delimited token tree for print!".to_string()),
+            _ => {
+                return Err("Expected delimited token tree for print!"
+                    .to_string()
+                    .into())
+            }
         };
         let mut tokens = Vec::new();
         for t in elements {
@@ -590,7 +594,11 @@ impl<'a> MacroExpander<'a> {
     fn expand_println_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
-            _ => return Err("Expected delimited token tree for println!".to_string()),
+            _ => {
+                return Err("Expected delimited token tree for println!"
+                    .to_string()
+                    .into())
+            }
         };
         let mut tokens = Vec::new();
         for t in elements {
@@ -666,7 +674,7 @@ impl<'a> MacroExpander<'a> {
                 .consume(&crate::lexer::TokenType::Colon, "Expected ':'")
                 .map_err(|e| e.format(""))?;
 
-            match field_name.as_str() {
+            match field_name.as_ref() {
                 "inputs" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftParen, "Expected '('")
@@ -715,7 +723,7 @@ impl<'a> MacroExpander<'a> {
                                 }
                                 ty_str.push_str(&tok.kind.to_string());
                             }
-                            inputs.push((arg_name, expr, ty_str));
+                            inputs.push((arg_name.into(), expr, ty_str));
 
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;
@@ -759,7 +767,11 @@ impl<'a> MacroExpander<'a> {
                                 crate::lexer::TokenType::StringLiteral(lit) => {
                                     dialects.push(lit.to_string());
                                 }
-                                _ => return Err("Expected string literal in dialects".to_string()),
+                                _ => {
+                                    return Err("Expected string literal in dialects"
+                                        .to_string()
+                                        .into())
+                                }
                             }
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;

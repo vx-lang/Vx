@@ -41,7 +41,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), String> {
             let mut program = parser
                 .parse()
                 .map_err(|e| format!("Failed to parse {}:\n{}", path, e.format(&source)))?;
-            program.module_path = path.clone();
+            program.module_path = path.clone().into();
             Ok(program)
         })
         .collect();

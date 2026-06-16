@@ -205,7 +205,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let for_block = Block::new(&[(ty_index, gen.loc())]);
             let i_arg = for_block.argument(0).unwrap().into();
 
-            gen.env.insert(iter.clone(), (i_arg, ty_index));
+            gen.env.insert(iter.clone().into(), (i_arg, ty_index));
 
             for stmt in body {
                 gen.generate_statement(stmt, &for_block)?;
@@ -307,7 +307,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .unwrap()
                 .into();
 
-            gen.env.insert(iter.clone(), (el_val, el_ty));
+            gen.env.insert(iter.clone().into(), (el_val, el_ty));
 
             for stmt in body {
                 gen.generate_statement(stmt, &for_block)?;
@@ -336,14 +336,15 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         let iter_name = format!("__iter_{}", gen.string_counter);
         gen.string_counter += 1;
-        gen.env.insert(iter_name.clone(), (iter_arg, iter_ty));
+        gen.env
+            .insert(iter_name.clone().into(), (iter_arg, iter_ty));
 
         let ptr_ty = gen.ptr_ty;
         let mut actual_next_name = "next".to_string();
         for (name, (_, _args)) in &gen.functions {
             // Find the mangled next function that takes a pointer
             if name.contains("_next_") || name.ends_with("_next") {
-                actual_next_name = name.clone();
+                actual_next_name = name.to_string();
                 break;
             }
         }
@@ -389,15 +390,16 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         // Add ptr_val to gen.allocs and gen.env temporarily so IdentifierExpr returns it!
         let tmp_iter_name = format!("__iter_ptr_{}", gen.string_counter);
         gen.string_counter += 1;
-        gen.env.insert(tmp_iter_name.clone(), (ptr_val, iter_ty));
+        gen.env
+            .insert(tmp_iter_name.clone().into(), (ptr_val, iter_ty));
         gen.allocs.insert(tmp_iter_name.clone());
 
         let next_call = Expr::FunctionCall(FunctionCallExpr {
-            name: actual_next_name,
+            name: actual_next_name.into(),
             type_args: None,
             args: vec![Expr::Borrow(BorrowExpr {
                 expr: Box::new(Expr::Identifier(IdentifierExpr {
-                    name: tmp_iter_name.clone(),
+                    name: tmp_iter_name.clone().into(),
                     span: Span::default(),
                 })),
                 is_mut: true,
@@ -499,7 +501,8 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             .unwrap()
             .into();
 
-        gen.env.insert(iter.clone(), (payload_val, payload_ty));
+        gen.env
+            .insert(iter.clone().into(), (payload_val, payload_ty));
 
         // execute body
         gen.break_flags.push(cond_val); // dummy value just to enable breaks?

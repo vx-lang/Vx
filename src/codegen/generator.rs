@@ -16,13 +16,14 @@ use crate::codegen::lower::{LowerError, LowerToMelior};
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
-    pub(crate) env: HashMap<String, (Value<'c, 'c>, Type<'c>)>,
-    pub(crate) ast_env: HashMap<String, ast::Type>,
-    pub(crate) structs: HashMap<String, ast::StructDecl>,
+    pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
+    pub(crate) ast_env: HashMap<crate::symbol::Symbol, ast::Type>,
+    pub(crate) structs: HashMap<crate::symbol::Symbol, ast::StructDecl>,
     #[allow(clippy::type_complexity)]
-    pub(crate) enums: HashMap<String, Vec<(String, Option<Vec<ast::Type>>)>>,
-    pub(crate) functions: HashMap<String, (Type<'c>, Vec<Type<'c>>)>,
-    pub(crate) ast_functions: HashMap<String, ast::Function>,
+    pub(crate) enums:
+        HashMap<crate::symbol::Symbol, Vec<(crate::symbol::Symbol, Option<Vec<ast::Type>>)>>,
+    pub(crate) functions: HashMap<crate::symbol::Symbol, (Type<'c>, Vec<Type<'c>>)>,
+    pub(crate) ast_functions: HashMap<crate::symbol::Symbol, ast::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     pub current_return_type: Option<Type<'c>>,
@@ -279,7 +280,7 @@ impl<'c> MeliorGenerator<'c> {
     pub fn generate(
         &mut self,
         program: &Program,
-        modules: &HashMap<String, Program>,
+        modules: &HashMap<crate::symbol::Symbol, Program>,
     ) -> Result<String, LowerError> {
         println!("[CODEGEN] Starting MLIR generation...");
         let location = self.loc();
@@ -317,7 +318,7 @@ impl<'c> MeliorGenerator<'c> {
     pub(crate) fn generate_module(
         &mut self,
         program: &Program,
-        modules: &HashMap<String, Program>,
+        modules: &HashMap<crate::symbol::Symbol, Program>,
     ) -> Result<(), LowerError> {
         for s in &program.structs {
             self.structs.insert(s.name.clone(), s.clone());
@@ -463,10 +464,10 @@ impl<'c> MeliorGenerator<'c> {
 
         for ext in &unique_externs {
             let name = &ext.name;
-            if name == "printf" || name == "vx_internal_printf" {
+            if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
                 continue;
             }
-            let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
+            let (ret_ty, arg_tys) = self.functions.get(&*name).unwrap();
 
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
@@ -515,7 +516,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
-        let is_main = func.name == "main";
+        let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type);
         let ret_ty = if is_main {
             Type::parse(self.context, "i32").unwrap()
@@ -568,8 +569,9 @@ impl<'c> MeliorGenerator<'c> {
         // Map arguments into the environment
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
             let arg_val = block.argument(i).unwrap().into();
-            self.env.insert(name.clone(), (arg_val, arg_tys[i]));
-            self.ast_env.insert(name.clone(), ast_ty.clone());
+            self.env
+                .insert(name.to_string().into(), (arg_val, arg_tys[i]));
+            self.ast_env.insert(name.to_string().into(), ast_ty.clone());
         }
 
         if is_main {
@@ -620,7 +622,7 @@ impl<'c> MeliorGenerator<'c> {
                     .unwrap(),
             );
         } else if let ast::Type::Struct(name, _) = &func.return_type {
-            if name == "void" {
+            if name.as_ref() == "void" {
                 let has_return = func
                     .body
                     .last()
@@ -847,11 +849,11 @@ impl<'c> MeliorGenerator<'c> {
                 }
             }
             ast::Type::Struct(name, _) => {
-                if let Some(enum_def) = self.enums.get(name) {
+                if let Some(enum_def) = self.enums.get(&*name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
-                            if v_name == "Some" {
+                            if **v_name == *"Some" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
                                         let mut lowered = self.lower_type_str(&types[0]);
@@ -871,7 +873,7 @@ impl<'c> MeliorGenerator<'c> {
                     }
                     return Type::parse(self.context, "i32").unwrap();
                 }
-                if let Some(decl) = self.structs.get(name).cloned() {
+                if let Some(decl) = self.structs.get(&*name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
                         let mut lowered = self.lower_type_str(ty);
@@ -881,7 +883,7 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(lowered);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(", "))
-                } else if name == "void" {
+                } else if name.as_ref() == "void" {
                     "none".to_string()
                 } else {
                     format!("!llvm.struct<\"{}\">", name)
@@ -889,14 +891,17 @@ impl<'c> MeliorGenerator<'c> {
             }
             ast::Type::GenericInstance(base, args) => {
                 if let ast::Type::Struct(name, _) = &**base {
-                    if let Some(decl) = self.structs.get(name).cloned() {
+                    if let Some(decl) = self.structs.get(&*name).cloned() {
                         let mut field_types = Vec::new();
-                        let mut mapping = std::collections::HashMap::new();
+                        let mut mapping: std::collections::HashMap<
+                            crate::symbol::Symbol,
+                            ast::Type,
+                        > = std::collections::HashMap::new();
                         for (i, param) in decl.generics.iter().enumerate() {
                             if i >= args.len() {
                                 panic!("Not enough arguments for generic instance {} (expected {}, got {})", name, decl.generics.len(), args.len());
                             }
-                            mapping.insert(param.name().to_string(), args[i].clone());
+                            mapping.insert(param.name().into(), args[i].clone());
                         }
                         for (_, ty) in &decl.fields {
                             let sub_ty = ty.substitute(&mapping);
@@ -928,15 +933,18 @@ impl<'c> MeliorGenerator<'c> {
                             args_str.join("_"),
                             field_types.join(", ")
                         )
-                    } else if let Some(enum_def) = self.enums.get(name).cloned() {
+                    } else if let Some(enum_def) = self.enums.get(&*name).cloned() {
                         let ty_arg = args.first().unwrap();
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
-                            if v_name == "Some" {
+                            if v_name == "Some".into() {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
-                                        let mut mapping = std::collections::HashMap::new();
-                                        mapping.insert("T".to_string(), ty_arg.clone());
+                                        let mut mapping: std::collections::HashMap<
+                                            crate::symbol::Symbol,
+                                            ast::Type,
+                                        > = std::collections::HashMap::new();
+                                        mapping.insert("T".into(), ty_arg.clone());
                                         let sub_ty = types[0].substitute(&mapping);
                                         let mut lowered = self.lower_type_str(&sub_ty);
                                         if lowered.starts_with("memref<") {
@@ -1006,11 +1014,11 @@ impl<'c> MeliorGenerator<'c> {
                 format!("vector<{}x{}>", n, ty_str)
             }
             ast::Type::Enum(name, _) => {
-                if let Some(enum_def) = self.enums.get(name) {
+                if let Some(enum_def) = self.enums.get(&*name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
-                            if v_name == "Some" {
+                            if **v_name == *"Some" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
                                         let mut lowered = self.lower_type_str(&types[0]);
@@ -1074,7 +1082,7 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<ast::Type> {
         match expr {
-            Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
+            Expr::Identifier(id) => self.ast_env.get(&*id.name).cloned(),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
                 if let ast::Type::Borrow { inner, .. } = base_ty {
@@ -1086,16 +1094,18 @@ impl<'c> MeliorGenerator<'c> {
                     generic_args = Some(args);
                 }
                 if let ast::Type::Struct(s_name, _) = base_ty {
-                    if let Some(decl) = self.structs.get(&s_name) {
+                    if let Some(decl) = self.structs.get(&*s_name) {
                         for (n, t) in &decl.fields {
                             if n == &ma.member {
                                 let mut resolved_ty = t.clone();
                                 if let Some(args) = generic_args {
-                                    let mut mapping = std::collections::HashMap::new();
+                                    let mut mapping: std::collections::HashMap<
+                                        crate::symbol::Symbol,
+                                        ast::Type,
+                                    > = std::collections::HashMap::new();
                                     for (i, param) in decl.generics.iter().enumerate() {
                                         if i < args.len() {
-                                            mapping
-                                                .insert(param.name().to_string(), args[i].clone());
+                                            mapping.insert(param.name().into(), args[i].clone());
                                         }
                                     }
                                     resolved_ty = resolved_ty.substitute(&mapping);
@@ -1109,7 +1119,7 @@ impl<'c> MeliorGenerator<'c> {
             }
             Expr::FunctionCall(fc) => self
                 .ast_functions
-                .get(&fc.name)
+                .get(&*fc.name)
                 .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
@@ -1122,7 +1132,7 @@ impl<'c> MeliorGenerator<'c> {
                 if let ast::Type::Struct(s_name, _) = base_ty {
                     let mangled = format!("{}_{}", s_name, mc.method_name);
                     self.ast_functions
-                        .get(&mangled)
+                        .get(mangled.as_str())
                         .map(|decl| decl.return_type.clone())
                 } else {
                     None

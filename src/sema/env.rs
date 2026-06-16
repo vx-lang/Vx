@@ -34,15 +34,16 @@ pub enum Value {
 }
 
 pub struct GlobalAstEnv<'a> {
-    pub structs: HashMap<String, &'a StructDecl>,
+    pub structs: HashMap<crate::symbol::Symbol, &'a StructDecl>,
     #[allow(clippy::type_complexity)]
-    pub enums: HashMap<String, &'a EnumDecl>,
-    pub traits: HashMap<String, &'a TraitDecl>,
-    pub impls: HashMap<String, Vec<&'a ImplBlock>>,
+    pub enums: HashMap<crate::symbol::Symbol, &'a EnumDecl>,
+    pub traits: HashMap<crate::symbol::Symbol, &'a TraitDecl>,
+    pub impls: HashMap<crate::symbol::Symbol, Vec<&'a ImplBlock>>,
     #[allow(clippy::type_complexity)]
-    pub functions: HashMap<String, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
-    pub ast_functions: HashMap<String, &'a Function>,
-    pub generic_functions: HashMap<String, (&'a Function, u64)>, // (func, origin_module_hash)
+    pub functions:
+        HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
+    pub ast_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    pub generic_functions: HashMap<crate::symbol::Symbol, (&'a Function, u64)>, // (func, origin_module_hash)
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -70,7 +71,7 @@ impl<'a> GlobalAstEnv<'a> {
             for i in &module.impls {
                 let trait_name = match &i.trait_name {
                     Some(name) => name.clone(),
-                    None => "_inherent".to_string(),
+                    None => "_inherent".to_string().into(),
                 };
                 env.impls.entry(trait_name).or_default().push(i);
             }
@@ -126,26 +127,26 @@ pub struct BorrowRecord {
 pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
-    pub(crate) scopes: Vec<HashMap<String, (Type, Topology)>>,
+    pub(crate) scopes: Vec<HashMap<crate::symbol::Symbol, (Type, Topology)>>,
     pub monomorphized_functions: Vec<(Function, u64)>,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
     pub(crate) active_topology: Topology,
     pub(crate) active_memory: MemorySpace,
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
-    pub active_borrows: HashMap<String, Vec<BorrowRecord>>,
+    pub active_borrows: HashMap<crate::symbol::Symbol, Vec<BorrowRecord>>,
     pub constraints: Vec<Expr>,
     pub(crate) next_id: u32,
     pub(crate) moved_vars: Vec<std::collections::HashSet<String>>,
-    pub eval_env: Vec<HashMap<String, Value>>,
+    pub eval_env: Vec<HashMap<crate::symbol::Symbol, Value>>,
     pub current_return_type: Option<Type>,
     #[allow(dead_code)]
     pub(crate) closure_depths: Vec<usize>,
     #[allow(dead_code)]
-    pub(crate) closure_captures_stack: Vec<HashMap<String, Type>>,
+    pub(crate) closure_captures_stack: Vec<HashMap<crate::symbol::Symbol, Type>>,
     pub generated_structs: Vec<StructDecl>,
     pub(crate) current_assignment_target: Option<String>,
-    pub(crate) block_liveness: Vec<HashMap<String, usize>>,
+    pub(crate) block_liveness: Vec<HashMap<crate::symbol::Symbol, usize>>,
     pub(crate) current_stmt_idx: Vec<usize>,
     pub skip_borrow_check: bool,
 }
@@ -202,7 +203,7 @@ impl<'a> TypeChecker<'a> {
     pub fn insert(&mut self, name: String, ty: Type) {
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, (ty, current_top));
+            scope.insert(name.into(), (ty, current_top));
         }
     }
 
@@ -256,7 +257,7 @@ impl<'a> TypeChecker<'a> {
     pub fn extract_uses_expr(expr: &Expr, uses: &mut std::collections::HashSet<String>) {
         match expr {
             Expr::Identifier(id) => {
-                uses.insert(id.name.clone());
+                uses.insert(id.name.to_string());
             }
             Expr::MemberAccess(m) => Self::extract_uses_expr(&m.base, uses),
             Expr::MethodCall(m) => {
@@ -266,7 +267,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::FunctionCall(f) => {
-                uses.insert(f.name.clone());
+                uses.insert(f.name.to_string());
                 for a in &f.args {
                     Self::extract_uses_expr(a, uses);
                 }
@@ -366,7 +367,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         generic_ty: &Type,
         concrete_ty: &Type,
-        mapping: &mut std::collections::HashMap<String, Type>,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
     ) -> bool {
         let mut temp_mapping = mapping.clone();
         if self.unify_types_internal(generic_ty, concrete_ty, &mut temp_mapping) {
@@ -381,11 +382,11 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         generic_ty: &Type,
         concrete_ty: &Type,
-        mapping: &mut std::collections::HashMap<String, Type>,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
     ) -> bool {
         match (generic_ty, concrete_ty) {
             (Type::Generic(name, _), _) => {
-                if let Some(existing) = mapping.get(name) {
+                if let Some(existing) = mapping.get(&*name) {
                     existing == concrete_ty
                 } else {
                     mapping.insert(name.clone(), concrete_ty.clone());
@@ -394,7 +395,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Type::Tensor(e1, d1, t1), Type::Tensor(e2, d2, t2)) => {
                 let e1_match = if let ElementType::Generic(ref name) = e1 {
-                    if let Some(existing) = mapping.get(name) {
+                    if let Some(existing) = mapping.get(&*name) {
                         existing == &Type::Scalar(e2.clone())
                     } else {
                         mapping.insert(name.clone(), Type::Scalar(e2.clone()));
@@ -409,7 +410,10 @@ impl<'a> TypeChecker<'a> {
                 for (dim1, dim2) in d1.iter().zip(d2.iter()) {
                     if let Expr::Identifier(id) = dim1 {
                         if let Expr::Number(n) = dim2 {
-                            mapping.insert(id.name.clone(), Type::Generic(n.value.clone(), None));
+                            mapping.insert(
+                                id.name.clone(),
+                                Type::Generic(n.value.clone().into(), None),
+                            );
                         } else if let Expr::Identifier(id2) = dim2 {
                             mapping.insert(id.name.clone(), Type::Generic(id2.name.clone(), None));
                         } else if dim1 != dim2 {
@@ -477,10 +481,10 @@ impl<'a> TypeChecker<'a> {
     pub fn instantiate_function(
         &mut self,
         generic_func: &Function,
-        mapping: &std::collections::HashMap<String, Type>,
+        mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
     ) -> Function {
-        let mut mangled_name = generic_func.name.clone();
-        let mut sorted_keys: Vec<&String> = mapping.keys().collect();
+        let mut mangled_name = generic_func.name.to_string();
+        let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping.keys().collect();
         sorted_keys.sort();
         for g_name in sorted_keys {
             if let Some(ty) = mapping.get(g_name) {
@@ -506,7 +510,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
 
         Function {
-            name: mangled_name,
+            name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
             topology: generic_func.topology.clone(),
@@ -546,7 +550,7 @@ impl<'a> TypeChecker<'a> {
             crate::arch::TransferCostGraph::default_memory_for(&self.active_topology);
 
         for (name, ty) in &func.params {
-            self.insert(name.clone(), ty.clone());
+            self.insert(name.to_string(), ty.clone());
         }
 
         // Add preconditions (requires) to our constraints
@@ -595,7 +599,7 @@ impl<'a> TypeChecker<'a> {
     fn resolve_parsed_type(&self, ty: Type) -> Type {
         match ty {
             Type::Struct(name, id) => {
-                if self.env.structs.contains_key(&name)
+                if self.env.structs.contains_key(&*name)
                     || self.generated_structs.iter().any(|s| s.name == name)
                 {
                     Type::Struct(name, id)

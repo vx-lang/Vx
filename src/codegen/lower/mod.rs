@@ -198,7 +198,7 @@ pub(crate) fn emit_enzyme_decl<'c>(
         _ => base_name,
     };
     let enzyme_name = format!("{}_{}_{}", prefix, suffix, target_fn);
-    if !gen.functions.contains_key(&enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
+    if !gen.functions.contains_key(&*enzyme_name) && gen.enzyme_decls.insert(enzyme_name.clone()) {
         let func_type = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[ret_ty]);
         let _name_attr = StringAttribute::new(gen.context, &enzyme_name);
         let _type_attr = TypeAttribute::new(func_type.into());
@@ -265,7 +265,7 @@ pub fn generate_match_chain<'c>(
             // Real enums should look up the tag in `gen.enums`.
             for enum_def in gen.enums.values() {
                 for (i, v) in enum_def.iter().enumerate() {
-                    if v.0 == *variant_name {
+                    if *v.0 == **variant_name {
                         tag_val = i as i64;
                         break;
                     }
@@ -365,7 +365,8 @@ pub fn generate_match_chain<'c>(
                     .result(0)
                     .unwrap()
                     .into();
-                gen.env.insert(name.clone(), (payload_val, payload_ty));
+                gen.env
+                    .insert(name.to_string().into(), (payload_val, payload_ty));
             }
         }
     }

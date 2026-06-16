@@ -14,9 +14,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let IdentifierExpr { name, span: _ } = self;
-        if name == "true" || name == "false" {
+        if name.as_ref() == "true" || **name == *"false" {
             let i1_ty = gen.i1_ty;
-            let val = if name == "true" { 1 } else { 0 };
+            let val = if name.as_ref() == "true" { 1 } else { 0 };
             let const_op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[i1_ty])
                 .add_attributes(&[(
@@ -28,9 +28,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             let const_ref = block.append_operation(const_op);
             return Ok((const_ref.result(0).unwrap().into(), i1_ty));
         }
-        if let Some((val, ty)) = gen.env.get(name) {
+        if let Some((val, ty)) = gen.env.get(&*name) {
             let ty_str = ty.to_string();
-            if gen.allocs.contains(name) {
+            if gen.allocs.contains(name.as_ref()) {
                 if ty_str.starts_with("memref<") {
                     let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                     let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap_or_else(|| {
@@ -86,8 +86,8 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             } else {
                 Ok((*val, *ty))
             }
-        } else if gen.functions.contains_key(name) {
-            let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
+        } else if gen.functions.contains_key(&*name) {
+            let (ret_ty, arg_tys) = gen.functions.get(&*name).unwrap();
             let func_ty = melior::ir::r#type::FunctionType::new(gen.context, arg_tys, &[*ret_ty]);
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
@@ -119,8 +119,8 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
     fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
         let BorrowExpr { expr, .. } = self;
         if let Expr::Identifier(id) = &**expr {
-            if gen.allocs.contains(&id.name) {
-                if let Some((val, val_ty)) = gen.env.get(&id.name) {
+            if gen.allocs.contains(&*id.name) {
+                if let Some((val, val_ty)) = gen.env.get(&*id.name) {
                     let ptr_ty = gen.ptr_ty;
                     if gen.is_memref(val_ty) {
                         return Ok((*val, *val_ty));
@@ -919,7 +919,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
         let base_name = name.split('<').next().unwrap_or(name).to_string();
         let struct_decl = gen
             .structs
-            .get(&base_name)
+            .get(base_name.as_str())
             .unwrap_or_else(|| {
                 panic!(
                     "Struct {} not found in gen.structs! Available: {:?}",
@@ -948,18 +948,18 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                         ast::Span::default(),
                     ))))
                 } else {
-                    ast::Type::Struct(ty_arg.to_string(), None)
+                    ast::Type::Struct(ty_arg.to_string().into(), None)
                 };
                 inner_tys.push(inner_ty);
             }
             for (i, param) in struct_decl.generics.iter().enumerate() {
                 if i < inner_tys.len() {
-                    mapping.insert(param.name().to_string(), inner_tys[i].clone());
+                    mapping.insert(param.name().into(), inner_tys[i].clone());
                 }
             }
 
             gen.lower_type(&ast::Type::GenericInstance(
-                Box::new(ast::Type::Struct(base_name.clone(), None)),
+                Box::new(ast::Type::Struct(base_name.clone().into(), None)),
                 inner_tys,
             ))
         } else {
@@ -1054,8 +1054,11 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
         if struct_name_opt.is_none() {
             if let Some(start_idx) = base_ty_str.find('\"') {
                 if let Some(end_idx) = base_ty_str[start_idx + 1..].find('"') {
-                    struct_name_opt =
-                        Some(base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string());
+                    struct_name_opt = Some(
+                        base_ty_str[start_idx + 1..start_idx + 1 + end_idx]
+                            .to_string()
+                            .into(),
+                    );
                 }
             }
         }
@@ -1066,7 +1069,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
             let base_name = resolved_struct_name
                 .split('<')
                 .next()
-                .unwrap_or(resolved_struct_name.as_str())
+                .unwrap_or(resolved_struct_name.as_ref())
                 .to_string();
             let mut mapping = std::collections::HashMap::new();
             if resolved_struct_name.contains('<') && resolved_struct_name.ends_with('>') {
@@ -1088,20 +1091,20 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             ast::Span::default(),
                         ))))
                     } else {
-                        ast::Type::Struct(ty_arg.to_string(), None)
+                        ast::Type::Struct(ty_arg.to_string().into(), None)
                     };
                     inner_tys.push(inner_ty);
                 }
-                if let Some(struct_decl) = gen.structs.get(&base_name) {
+                if let Some(struct_decl) = gen.structs.get(base_name.as_str()) {
                     for (i, param) in struct_decl.generics.iter().enumerate() {
                         if i < inner_tys.len() {
-                            mapping.insert(param.name().to_string(), inner_tys[i].clone());
+                            mapping.insert(param.name().into(), inner_tys[i].clone());
                         }
                     }
                 }
             }
 
-            if let Some(struct_decl) = gen.structs.get(&base_name).cloned() {
+            if let Some(struct_decl) = gen.structs.get(base_name.as_str()).cloned() {
                 if let Some(field_idx) = struct_decl.fields.iter().position(|(n, _)| n == member) {
                     let sub_ty = struct_decl.fields[field_idx].1.substitute(&mapping);
                     let field_ty = gen.lower_type(&sub_ty);
@@ -1203,10 +1206,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             type_args,
             span: _,
         } = self;
-        if name == "Verified" {
+        if name.as_ref() == "Verified" {
             return gen.generate_expr(&args[0], block);
         }
-        if name == "Tensor" {
+        if name.as_ref() == "Tensor" {
             let mlir_ty_str = if let Some(tys) = type_args {
                 if !tys.is_empty() {
                     gen.lower_type_str(&tys[0])
@@ -1272,7 +1275,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((alloc_ref.result(0).unwrap().into(), tensor_ty));
         }
 
-        if name == "reshape" || name == "transpose" {
+        if name.as_ref() == "reshape" || **name == *"transpose" {
             let (arg_val, expr_ty) = gen.generate_expr(&args[0], block)?;
             let expr_ty_str = expr_ty.to_string();
 
@@ -1323,21 +1326,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((cast2_ref.result(0).unwrap().into(), target_ty));
         }
 
-        if name == "with_memory" {
+        if name.as_ref() == "with_memory" {
             // For now, with_memory is a no-op in lowering, just returns the tensor
             let (arg_val, expr_ty) = gen.generate_expr(&args[0], block)?;
             return Ok((arg_val, expr_ty));
         }
 
-        if name == "map" {
+        if name.as_ref() == "map" {
             return lower_map_call(gen, block, args);
         }
 
-        if name == "print" {
+        if name.as_ref() == "print" {
             return lower_print_call(gen, block, args);
         }
 
-        if name == "printf" || name == "vx_internal_printf" {
+        if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
             let mut arg_vals = Vec::new();
             for arg in args {
                 let (arg_val, _arg_ty) = gen.generate_expr(arg, block)?;
@@ -1375,7 +1378,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
                 gen.module.body().append_operation(printf_decl);
                 gen.functions.insert(
-                    "llvm_printf_decl".to_string(),
+                    "llvm_printf_decl".to_string().into(),
                     (gen.i32_ty, vec![gen.ptr_ty]),
                 );
             }
@@ -1410,7 +1413,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((call_op.result(0).unwrap().into(), gen.i32_ty));
         }
 
-        if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
+        if let Some((ret_ty, arg_tys)) = gen.functions.get(&*name).cloned() {
             let mut arg_vals = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 let (mut arg_val, expr_ty) = gen.generate_expr(arg, block)?;
@@ -1458,11 +1461,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     none_ty,
                 ))
             }
-        } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
+        } else if let Some((ptr_val, func_ty)) = gen.env.get(&*name).cloned() {
             let mut actual_func_ty = func_ty;
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
-                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(&*name) {
                     println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret.as_ref());
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
@@ -1472,7 +1475,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
             } else if is_closure {
-                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(&*name) {
                     let r = gen.lower_type(ret.as_ref());
                     let mut a: Vec<_> = vec![gen.ptr_ty];
                     a.extend(func_args.iter().map(|t| gen.lower_type(t)));
@@ -1960,7 +1963,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 
         if let Some(enum_def) = gen.enums.get(actual_enum_name) {
             for (i, v) in enum_def.iter().enumerate() {
-                if v.0 == *variant_name {
+                if *v.0 == **variant_name {
                     tag_val = i as i64;
                     break;
                 }
@@ -1976,10 +1979,10 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                             "f64" => ast::Type::Scalar(ast::ElementType::F64),
                             "i64" => ast::Type::Scalar(ast::ElementType::I64),
                             "Bool" => ast::Type::Scalar(ast::ElementType::Bool),
-                            _ => ast::Type::Struct(ty_arg.to_string(), None),
+                            _ => ast::Type::Struct(ty_arg.to_string().into(), None),
                         };
                         let t = ast::Type::GenericInstance(
-                            Box::new(ast::Type::Struct(base.to_string(), None)),
+                            Box::new(ast::Type::Struct(base.to_string().into(), None)),
                             vec![parsed_ty],
                         );
                         enum_ty_str = gen.lower_type_str(&t);
@@ -2065,7 +2068,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             if let Some(ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
                 el_ty = t;
             } else if let Some(ast::Type::Struct(s, _)) = gen.infer_ast_type(&self.elements[0]) {
-                if s == "String" {
+                if s == "String".into() {
                     // String is equivalent to pointer, but generic instantiation requires element type
                 }
             }
@@ -2085,7 +2088,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                         span: Span::default(),
                     })))
                 {
-                    if s == "String" {
+                    if s == "String".into() {
                         "String"
                     } else {
                         "f32"
@@ -2097,7 +2100,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         };
 
         let new_call = Expr::FunctionCall(FunctionCallExpr {
-            name: format!("Vec_{}::new", type_suffix),
+            name: format!("Vec_{}::new", type_suffix).into(),
             args: vec![],
             type_args: None,
             span: self.span,
@@ -2141,16 +2144,17 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
 
         let tmp_vec_name = format!("__vec_ptr_{}", gen.string_counter);
         gen.string_counter += 1;
-        gen.env.insert(tmp_vec_name.clone(), (ptr_val, vec_ty));
+        gen.env
+            .insert(tmp_vec_name.clone().into(), (ptr_val, vec_ty));
         gen.allocs.insert(tmp_vec_name.clone());
 
         for el in &self.elements {
             let push_call = Expr::FunctionCall(FunctionCallExpr {
-                name: format!("Vec_{}::push", type_suffix),
+                name: format!("Vec_{}::push", type_suffix).into(),
                 args: vec![
                     Expr::Borrow(BorrowExpr {
                         expr: Box::new(Expr::Identifier(IdentifierExpr {
-                            name: tmp_vec_name.clone(),
+                            name: tmp_vec_name.clone().into(),
                             span: Span::default(),
                         })),
                         is_mut: true,
@@ -2193,7 +2197,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
         for arg in &self.args {
             let (arg_val, arg_ty) = gen.generate_expr(arg, block)?;
 
-            let func_name = match arg_ty.to_string().as_str() {
+            let func_name = match arg_ty.to_string().as_ref() {
                 "i32" => "print_i32",
                 "f32" => "print_f32",
                 "f64" => "print_f64",
@@ -2234,7 +2238,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
 
                 gen.module.body().append_operation(func_decl);
                 gen.functions.insert(
-                    func_name.to_string(),
+                    func_name.to_string().into(),
                     (
                         gen.i32_ty,
                         vec![if func_name == "print_str" {
@@ -2310,7 +2314,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
 
             gen.module.body().append_operation(func_decl);
             gen.functions
-                .insert("println".to_string(), (gen.i32_ty, vec![]));
+                .insert("println".to_string().into(), (gen.i32_ty, vec![]));
         }
 
         let name_attr = FlatSymbolRefAttribute::new(gen.context, "println");
@@ -2386,7 +2390,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             let call_fn_name = format!("{}_call", closure_struct_name);
             let (ret_ty, orig_arg_types) = gen
                 .functions
-                .get(&call_fn_name)
+                .get(&*call_fn_name)
                 .cloned()
                 .expect("Closure call function not found");
 

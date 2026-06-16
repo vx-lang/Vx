@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 pub struct ModuleLoader {
     search_paths: Vec<PathBuf>,
-    loaded_modules: HashMap<String, Program>,
+    loaded_modules: HashMap<crate::symbol::Symbol, Program>,
 }
 
 impl ModuleLoader {
@@ -50,11 +50,11 @@ impl ModuleLoader {
         let mut parser = Parser::new(&tokens, &source);
 
         let mut main_program = parser.parse().map_err(|e| e.format(&source))?;
-        main_program.module_path = filename.to_string();
+        main_program.module_path = filename.to_string().into();
 
         let imports = main_program.imports.clone();
         self.loaded_modules
-            .insert(filename.to_string(), main_program);
+            .insert(filename.to_string().into(), main_program);
 
         for import in imports {
             self.load_import(&import.path)?;
@@ -63,9 +63,13 @@ impl ModuleLoader {
         Ok(self.loaded_modules.clone().into_values().collect())
     }
 
-    fn load_import(&mut self, path: &[String]) -> Result<(), String> {
-        let module_name = path.join("::");
-        if self.loaded_modules.contains_key(&module_name) {
+    fn load_import(&mut self, path: &[crate::symbol::Symbol]) -> Result<(), String> {
+        let module_name = path
+            .iter()
+            .map(|s| s.as_ref())
+            .collect::<Vec<_>>()
+            .join("::");
+        if self.loaded_modules.contains_key(&*module_name) {
             return Ok(());
         }
 
@@ -76,15 +80,15 @@ impl ModuleLoader {
         for search_path in &self.search_paths {
             // Check if it's a stdlib import
             let mut current_path = search_path.clone();
-            if !path.is_empty() && path[0] == "std" {
+            if !path.is_empty() && *path[0] == *"std" {
                 // `std::collections::vec` -> `stdlib/std/collections/vec.vx`
                 for component in &path[1..] {
-                    current_path.push(component);
+                    current_path.push(component.as_ref());
                 }
                 current_path.set_extension("vx");
             } else {
                 for component in path {
-                    current_path.push(component);
+                    current_path.push(component.as_ref());
                 }
                 current_path.set_extension("vx");
             }
@@ -114,10 +118,11 @@ impl ModuleLoader {
         let mut parser = Parser::new(&tokens, &source);
 
         let mut program = parser.parse().map_err(|e| e.format(&source))?;
-        program.module_path = module_name.clone();
+        program.module_path = module_name.clone().into();
 
         let imports = program.imports.clone();
-        self.loaded_modules.insert(module_name.clone(), program);
+        self.loaded_modules
+            .insert(module_name.clone().into(), program);
 
         for import in imports {
             self.load_import(&import.path)?;

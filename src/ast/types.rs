@@ -15,6 +15,7 @@ use super::*;
 //
 //===----------------------------------------------------------------------===//
 use crate::ast;
+use crate::symbol::Symbol;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash)]
 pub struct Span {
     pub line: usize,
@@ -65,7 +66,7 @@ pub enum ElementType {
     I128,
     U128,
     Bool,
-    Generic(String),
+    Generic(Symbol),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -81,13 +82,13 @@ pub enum Type {
     }, // (type, mem_space, is_mut, region_id)
     Pointer(Box<Type>, Option<MemorySpace>, bool), // (type, mem_space, is_mut)
     Scalar(ElementType),
-    Struct(String, Option<crate::gid::TypeId>),
-    Enum(String, Option<crate::gid::TypeId>),
+    Struct(Symbol, Option<crate::gid::TypeId>),
+    Enum(Symbol, Option<crate::gid::TypeId>),
     Verified(Box<Type>),
     Pinned(Box<Type>, Topology),
-    Generic(String, Option<crate::gid::TypeId>), // e.g. T
+    Generic(Symbol, Option<crate::gid::TypeId>), // e.g. T
     GenericInstance(Box<Type>, Vec<Type>),       // e.g. Config<f32>
-    Module(String, std::collections::HashMap<String, Type>), // (path, exported_symbols)
+    Module(Symbol, std::collections::HashMap<Symbol, Type>), // (path, exported_symbols)
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
     Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
@@ -118,7 +119,7 @@ impl Type {
         )
     }
 
-    pub fn substitute(&self, mapping: &std::collections::HashMap<String, Type>) -> Type {
+    pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {
         match self {
             Type::Generic(name, _) => {
                 if let Some(concrete) = mapping.get(name) {

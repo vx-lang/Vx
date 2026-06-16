@@ -54,7 +54,7 @@ pub fn enable_optimization_remarks(context: &Context) {
 pub fn parse_command_line_options(args: &[String]) -> Result<(), String> {
     let mut c_args = Vec::new();
     for arg in args {
-        let c_str = std::ffi::CString::new(arg.as_str())
+        let c_str = std::ffi::CString::new(arg.clone())
             .map_err(|_| format!("Invalid CLI argument (contains null byte): {}", arg))?;
         c_args.push(c_str);
     }

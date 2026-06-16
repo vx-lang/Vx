@@ -20,7 +20,7 @@ impl Type {
     ) {
         match self {
             Type::Struct(name, id) | Type::Enum(name, id) | Type::Generic(name, id) => {
-                if let Some(tid) = mod_syms.and_then(|m| m.get(name)) {
+                if let Some(tid) = mod_syms.and_then(|m| m.get(&*name)) {
                     *id = Some(*tid);
                 }
             }

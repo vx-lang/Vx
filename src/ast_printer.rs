@@ -46,7 +46,7 @@ impl AstPrinter {
         }
     }
 
-    fn print_fields(fields: &[(String, Type)], indent: &str) {
+    fn print_fields(fields: &[(crate::symbol::Symbol, Type)], indent: &str) {
         for (i, (name, ty)) in fields.iter().enumerate() {
             let is_last = i == fields.len() - 1;
             let prefix = if is_last { "└─ " } else { "├─ " };

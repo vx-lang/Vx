@@ -20,7 +20,7 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
-        match ident.as_str() {
+        match ident.as_ref() {
             "CPU" => Ok(Topology::CPU),
             "Current" => Ok(Topology::Current),
             "NPU" => {
@@ -57,7 +57,7 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
-        match ident.as_str() {
+        match ident.as_ref() {
             "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
             "NPU_HBM" => Ok(MemorySpace::NPUHBM),
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
@@ -172,7 +172,7 @@ impl<'a> Parser<'a> {
                 if self.generic_params.iter().any(|p| p == *s) {
                     let s = s.to_string();
                     self.advance();
-                    return Ok(Type::Generic(s, None));
+                    return Ok(Type::Generic(s.into(), None));
                 }
             }
 
@@ -224,19 +224,19 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
-        match ident.as_str() {
+        match ident.as_ref() {
             "Tensor" => {
                 let mut el_ty = ElementType::F32;
                 if let TokenType::LeftAngle = &self.peek().kind {
                     self.advance(); // consume '<'
                     let ty_ident = match self.advance().kind.clone() {
-                        TokenType::Identifier(s) => s.to_string(),
+                        TokenType::Identifier(s) => s,
                         _ => return Err(self.error("Expected element type after '<'")),
                     };
-                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_str()) {
+                    el_ty = if let Ok(parsed_ty) = std::str::FromStr::from_str(ty_ident.as_ref()) {
                         parsed_ty
-                    } else if self.generic_params.contains(&ty_ident.to_string()) {
-                        ElementType::Generic(ty_ident)
+                    } else if self.generic_params.iter().any(|p| p.as_str() == ty_ident) {
+                        ElementType::Generic(ty_ident.into())
                     } else {
                         return Err(self.error(&format!("Unknown element type {}", ty_ident)));
                     };
@@ -280,7 +280,7 @@ impl<'a> Parser<'a> {
                 }
 
                 // Check for GenericInstance like Config<f32>
-                let base_type = Type::Struct(ident.to_string(), None);
+                let base_type = Type::Struct(crate::symbol::Symbol::from(ident.as_ref()), None);
                 if self.match_token(&TokenType::LeftAngle) {
                     let type_args = self.parse_generic_type_args()?;
                     Ok(Type::GenericInstance(Box::new(base_type), type_args))

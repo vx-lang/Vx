@@ -11,11 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
+use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum GenericParam {
-    Type { name: String, bound: Option<String> },
-    Const { name: String, ty: Type },
+    Type { name: Symbol, bound: Option<Symbol> },
+    Const { name: Symbol, ty: Type },
 }
 
 impl GenericParam {
@@ -29,9 +30,9 @@ impl GenericParam {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function {
-    pub name: String,
+    pub name: Symbol,
     pub generics: Vec<GenericParam>,
-    pub params: Vec<(String, Type)>,
+    pub params: Vec<(Symbol, Type)>,
     pub topology: Topology,
     pub return_type: Type,
     pub requires: Vec<Expr>,
@@ -41,36 +42,36 @@ pub struct Function {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDecl {
-    pub name: String,
+    pub name: Symbol,
     pub generics: Vec<GenericParam>,
-    pub fields: Vec<(String, Type)>,
+    pub fields: Vec<(Symbol, Type)>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumDecl {
-    pub name: String,
+    pub name: Symbol,
     pub generics: Vec<GenericParam>,
-    pub variants: Vec<(String, Option<Vec<Type>>)>,
+    pub variants: Vec<(Symbol, Option<Vec<Type>>)>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExternDecl {
-    pub name: String,
+    pub name: Symbol,
     pub is_safe: bool,
-    pub params: Vec<(String, Type)>,
+    pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MethodSignature {
-    pub name: String,
-    pub params: Vec<(String, Type)>,
+    pub name: Symbol,
+    pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TraitDecl {
-    pub name: String,
+    pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub methods: Vec<MethodSignature>,
 }
@@ -78,19 +79,19 @@ pub struct TraitDecl {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ImplBlock {
     pub generics: Vec<GenericParam>,
-    pub trait_name: Option<String>,
+    pub trait_name: Option<Symbol>,
     pub target_type: Type,
     pub methods: Vec<Function>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ImportDecl {
-    pub path: Vec<String>,
+    pub path: Vec<Symbol>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MacroDefDecl {
-    pub name: String,
+    pub name: Symbol,
     pub rules: Vec<MacroRule>,
     pub span: Span,
 }
@@ -103,7 +104,7 @@ pub struct MacroRule {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
-    pub module_path: String,
+    pub module_path: Symbol,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,

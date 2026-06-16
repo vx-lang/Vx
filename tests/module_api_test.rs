@@ -33,10 +33,11 @@ fn test_parse_module_api() -> Result<(), String> {
             1
         ));
     }
-    if module.functions[0].name != "hello_world" {
+    if module.functions[0].name.as_ref() != "hello_world" {
         return Err(format!(
             "Assertion failed: {} != {}",
-            module.functions[0].name, "hello_world"
+            module.functions[0].name.as_ref(),
+            "hello_world"
         ));
     }
 
@@ -49,7 +50,7 @@ use vxc::ast::VxModule;
 fn test_ak_module_add_function() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
-        module_path: "core::test".to_string(),
+        module_path: "core::test".into(),
         externs: vec![],
         structs: vec![],
         enums: vec![],
@@ -71,10 +72,11 @@ fn test_ak_module_add_function() -> Result<(), String> {
             1
         ));
     }
-    if module.functions[0].name != "foo" {
+    if module.functions[0].name.as_ref() != "foo" {
         return Err(format!(
             "Assertion failed: {} != {}",
-            module.functions[0].name, "foo"
+            module.functions[0].name.as_ref(),
+            "foo"
         ));
     }
 

@@ -110,7 +110,7 @@ pub enum TokenTypeBase<S, C> {
 }
 
 pub type TokenType<'a> = TokenTypeBase<&'a str, std::borrow::Cow<'a, str>>;
-pub type OwnedTokenType = TokenTypeBase<String, String>;
+pub type OwnedTokenType = TokenTypeBase<crate::symbol::Symbol, String>;
 
 impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenTypeBase<S, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -215,7 +215,7 @@ pub struct TokenBase<S, C> {
 }
 
 pub type Token<'a> = TokenBase<&'a str, std::borrow::Cow<'a, str>>;
-pub type OwnedToken = TokenBase<String, String>;
+pub type OwnedToken = TokenBase<crate::symbol::Symbol, String>;
 
 use once_cell::sync::Lazy;
 use rustc_hash::FxHashMap;
@@ -713,8 +713,10 @@ impl<'a> Token<'a> {
             TokenTypeBase::Verified => TokenTypeBase::Verified,
             TokenTypeBase::Pinned => TokenTypeBase::Pinned,
             TokenTypeBase::HardwareState => TokenTypeBase::HardwareState,
-            TokenTypeBase::Identifier(s) => TokenTypeBase::Identifier(s.to_string()),
-            TokenTypeBase::Number(s) => TokenTypeBase::Number(s.to_string()),
+            TokenTypeBase::Identifier(s) => {
+                TokenTypeBase::Identifier(crate::symbol::Symbol::from(s))
+            }
+            TokenTypeBase::Number(s) => TokenTypeBase::Number(crate::symbol::Symbol::from(s)),
             TokenTypeBase::StringLiteral(s) => TokenTypeBase::StringLiteral(s.into_owned()),
             TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
             TokenTypeBase::RightParen => TokenTypeBase::RightParen,
@@ -751,8 +753,10 @@ impl<'a> Token<'a> {
             TokenTypeBase::Pipe => TokenTypeBase::Pipe,
             TokenTypeBase::Eof => TokenTypeBase::Eof,
             TokenTypeBase::Unknown(c) => TokenTypeBase::Unknown(c),
-            TokenTypeBase::Comment(s) => TokenTypeBase::Comment(s.to_string()),
-            TokenTypeBase::Whitespace(s) => TokenTypeBase::Whitespace(s.to_string()),
+            TokenTypeBase::Comment(s) => TokenTypeBase::Comment(crate::symbol::Symbol::from(s)),
+            TokenTypeBase::Whitespace(s) => {
+                TokenTypeBase::Whitespace(crate::symbol::Symbol::from(s))
+            }
         };
         OwnedToken {
             kind,

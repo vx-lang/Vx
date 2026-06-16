@@ -20,14 +20,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_comma_separated_params(&mut self) -> ParseResult<'a, Vec<(String, Type)>> {
-        let mut params = Vec::new();
+    fn parse_comma_separated_params(
+        &mut self,
+    ) -> ParseResult<'a, Vec<(crate::symbol::Symbol, Type)>> {
+        let mut params: Vec<(crate::symbol::Symbol, crate::ast::types::Type)> = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 let name = self.expect_identifier("Expected parameter name")?;
                 self.consume(&TokenType::Colon, "Expected ':'")?;
                 let ty = self.parse_type()?;
-                params.push((name, ty));
+                params.push((name.into(), ty));
 
                 if !self.match_token(&TokenType::Comma) {
                     break;
@@ -47,7 +49,10 @@ impl<'a> Parser<'a> {
                     self.consume(&TokenType::Colon, "Expected ':' after const parameter name")?;
                     let ty = self.parse_type()?;
                     self.generic_params.push(name.clone());
-                    generics.push(GenericParam::Const { name, ty });
+                    generics.push(GenericParam::Const {
+                        name: name.into(),
+                        ty,
+                    });
                 } else {
                     let name = self.expect_identifier("Expected generic parameter name")?;
                     self.generic_params.push(name.clone());
@@ -58,7 +63,10 @@ impl<'a> Parser<'a> {
                             _ => return Err(self.error("Expected trait bound identifier")),
                         };
                     }
-                    generics.push(GenericParam::Type { name, bound });
+                    generics.push(GenericParam::Type {
+                        name: name.into(),
+                        bound: bound.map(|s| s.into()),
+                    });
                 }
                 if !self.match_token(&TokenType::Comma) {
                     break;
@@ -131,7 +139,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Function {
-            name,
+            name: name.into(),
             generics,
             params,
             topology,
@@ -150,12 +158,12 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-        let mut fields = Vec::new();
+        let mut fields: Vec<(crate::symbol::Symbol, crate::ast::types::Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let f_name = self.expect_identifier("Expected field name")?;
             self.consume(&TokenType::Colon, "Expected ':'")?;
             let f_type = self.parse_type()?;
-            fields.push((f_name, f_type));
+            fields.push((f_name.into(), f_type));
 
             if !self.match_token(&TokenType::Comma) {
                 break;
@@ -169,7 +177,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(StructDecl {
-            name,
+            name: name.into(),
             generics,
             fields,
         })
@@ -183,7 +191,8 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-        let mut variants = Vec::new();
+        let mut variants: Vec<(crate::symbol::Symbol, Option<Vec<crate::ast::types::Type>>)> =
+            Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let v_name = self.expect_identifier("Expected enum variant name")?;
 
@@ -202,7 +211,7 @@ impl<'a> Parser<'a> {
                 payload = Some(types);
             }
 
-            variants.push((v_name, payload));
+            variants.push((v_name.into(), payload));
 
             if !self.match_token(&TokenType::Comma) {
                 break;
@@ -216,7 +225,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(EnumDecl {
-            name,
+            name: name.into(),
             generics,
             variants,
         })
@@ -249,7 +258,7 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
 
             externs.push(ExternDecl {
-                name,
+                name: name.into(),
                 is_safe,
                 params,
                 return_type,
@@ -277,7 +286,7 @@ impl<'a> Parser<'a> {
             let return_type = self.parse_type()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
             methods.push(MethodSignature {
-                name: method_name,
+                name: method_name.into(),
                 params,
                 return_type,
             });
@@ -289,7 +298,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(TraitDecl {
-            name,
+            name: name.into(),
             generics,
             methods,
         })
@@ -351,7 +360,7 @@ impl<'a> Parser<'a> {
         let mut path = Vec::new();
         loop {
             let ident = self.expect_identifier("Expected identifier in import path")?;
-            path.push(ident);
+            path.push(ident.into());
             if self.match_token(&TokenType::DoubleColon) {
                 continue;
             } else {
@@ -407,7 +416,7 @@ impl<'a> Parser<'a> {
         )?;
 
         Ok(MacroDefDecl {
-            name,
+            name: name.into(),
             rules,
             span: Span {
                 line: span_start_line,
@@ -451,7 +460,7 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Program {
-            module_path: self.source.to_string(), // Default fallback, should be overridden by pipeline
+            module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             imports,
             macros,
             externs,
@@ -477,7 +486,7 @@ mod tests {
         let mut parser = Parser::new(&tokens, input);
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
-        assert_eq!(program.functions[0].name, "main");
+        assert_eq!(program.functions[0].name.as_ref(), "main");
     }
 
     #[test]
@@ -499,9 +508,9 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         assert_eq!(program.functions.len(), 1);
 
         let func = &program.functions[0];
-        assert_eq!(func.name, "distributed_matmul");
+        assert_eq!(func.name.as_ref(), "distributed_matmul");
         assert_eq!(func.params.len(), 2);
-        assert_eq!(func.params[0].0, "a");
+        assert_eq!(func.params[0].0.as_ref(), "a");
 
         // Assert return type is Verified<Tensor>
         assert_eq!(
@@ -551,7 +560,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             span: _,
         }) = &func.body[0]
         {
-            assert_eq!(name, "x");
+            assert_eq!(name.as_ref(), "x");
             assert!(is_mut);
             assert_eq!(ty, &Some(Type::Tensor(ElementType::F32, vec![], None)));
             if let Expr::FunctionCall(FunctionCallExpr {
@@ -561,7 +570,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 type_args: _,
             }) = expr
             {
-                assert_eq!(func_name, "Tensor");
+                assert_eq!(func_name.as_ref(), "Tensor");
                 assert_eq!(args.len(), 1);
                 if let Expr::Array(ArrayExpr { elements, span: _ }) = &args[0] {
                     assert_eq!(elements.len(), 2);
@@ -621,7 +630,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     *lhs,
                     Expr::Identifier(IdentifierExpr {
-                        name: "x".to_string(),
+                        name: "x".into(),
                         span: Span::default()
                     })
                 );
@@ -664,7 +673,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     **arr,
                     Expr::Identifier(IdentifierExpr {
-                        name: "x".to_string(),
+                        name: "x".into(),
                         span: Span::default()
                     })
                 );
@@ -691,14 +700,14 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     **left,
                     Expr::Identifier(IdentifierExpr {
-                        name: "y".to_string(),
+                        name: "y".into(),
                         span: Span::default()
                     })
                 );
                 assert_eq!(
                     **right,
                     Expr::Identifier(IdentifierExpr {
-                        name: "z".to_string(),
+                        name: "z".into(),
                         span: Span::default()
                     })
                 );
@@ -730,7 +739,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 type_args: _,
             }) = expr
             {
-                assert_eq!(method, "with_memory");
+                assert_eq!(method.as_ref(), "with_memory");
                 assert_eq!(args.len(), 1);
                 if let Expr::MemberAccess(MemberAccessExpr {
                     base: inner_obj,
@@ -739,11 +748,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                     span: _,
                 }) = &**obj
                 {
-                    assert_eq!(member, "shape");
+                    assert_eq!(member.as_ref(), "shape");
                     assert_eq!(
                         **inner_obj,
                         Expr::Identifier(IdentifierExpr {
-                            name: "x".to_string(),
+                            name: "x".into(),
                             span: Span::default()
                         })
                     );
@@ -781,7 +790,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         let program = parser.parse().unwrap();
         assert_eq!(program.functions.len(), 1);
         let func = &program.functions[0];
-        assert_eq!(func.name, "custom_matmul");
+        assert_eq!(func.name.as_ref(), "custom_matmul");
         if let Statement::Return(ReturnStmt {
             expr:
                 Expr::SpawnOn(SpawnOnExpr {
@@ -820,13 +829,13 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         let program = parser.parse().unwrap();
 
         assert_eq!(program.structs.len(), 1);
-        assert_eq!(program.structs[0].name, "Config");
+        assert_eq!(program.structs[0].name.as_ref(), "Config");
         assert_eq!(program.structs[0].fields.len(), 2);
-        assert_eq!(program.structs[0].fields[0].0, "value");
+        assert_eq!(program.structs[0].fields[0].0.as_ref(), "value");
 
         assert_eq!(program.functions.len(), 1);
         let func = &program.functions[0];
-        assert_eq!(func.name, "update_config");
+        assert_eq!(func.name.as_ref(), "update_config");
 
         // Param should be &mut Config
         let param_ty = &func.params[0].1;
@@ -838,7 +847,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         } = param_ty
         {
             if let Type::Struct(s, _) = &**inner {
-                assert_eq!(s, "Config");
+                assert_eq!(s.as_ref(), "Config");
             } else {
                 panic!("Expected Struct");
             }
@@ -876,7 +885,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         let program = parser.parse().unwrap();
 
         assert_eq!(program.externs.len(), 1);
-        assert_eq!(program.externs[0].name, "malloc");
+        assert_eq!(program.externs[0].name.as_ref(), "malloc");
         assert_eq!(program.externs[0].params.len(), 1);
         if let Type::Pointer(inner, None, true) = &program.externs[0].return_type {
             assert_eq!(**inner, Type::Tensor(ElementType::F32, vec![], None));
@@ -912,7 +921,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 type_args: _,
             }) = expr
             {
-                assert_eq!(name, "vx_stdout_write");
+                assert_eq!(name.as_ref(), "vx_stdout_write");
                 assert_eq!(args.len(), 2);
             } else {
                 panic!("Expected FunctionCall in implicit return");
@@ -937,7 +946,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
                 type_args: _,
             }) = expr
             {
-                assert_eq!(name, "vx_stderr_write");
+                assert_eq!(name.as_ref(), "vx_stderr_write");
                 assert_eq!(args.len(), 2);
             } else {
                 panic!("Expected FunctionCall in ExprStmt");

@@ -123,8 +123,8 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                     .unwrap();
                 block.append_operation(store_op);
 
-                gen.env.insert(name.clone(), (alloca_val, ty));
-                gen.allocs.insert(name.clone());
+                gen.env.insert(name.to_string().into(), (alloca_val, ty));
+                gen.allocs.insert(name.to_string());
             } else {
                 let memref_ty = format!("memref<{}>", ty);
                 let parsed_memref_ty = Type::parse(gen.context, &memref_ty).unwrap();
@@ -140,15 +140,16 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                     .build()
                     .unwrap();
                 block.append_operation(store_op);
-                gen.env.insert(name.clone(), (alloca_val, parsed_memref_ty));
-                gen.allocs.insert(name.clone());
+                gen.env
+                    .insert(name.to_string().into(), (alloca_val, parsed_memref_ty));
+                gen.allocs.insert(name.to_string());
             }
         } else {
             let ast_ty = ty_ann.clone().or_else(|| gen.infer_ast_type(expr));
             if let Some(t) = ast_ty {
-                gen.ast_env.insert(name.clone(), t);
+                gen.ast_env.insert(name.to_string().into(), t);
             }
-            gen.env.insert(name.clone(), (val, ty));
+            gen.env.insert(name.to_string().into(), (val, ty));
         }
 
         Ok(())
@@ -162,7 +163,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
         let mut expected_ty = None;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((_, mem_ty)) = gen.env.get(name) {
+            if let Some((_, mem_ty)) = gen.env.get(&*name) {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
@@ -181,7 +182,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         gen.expected_type = prev_expected;
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
+            if let Some((mem_val, mem_ty)) = gen.env.get(&*name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let mut store_val = rhs_val;
@@ -205,14 +206,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()
                         .unwrap();
                     block.append_operation(store_op);
-                } else if gen.allocs.contains(name) {
+                } else if gen.allocs.contains(name.as_ref()) {
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
                         .add_operands(&[rhs_val, mem_val])
                         .build()
                         .unwrap();
                     block.append_operation(store_op);
                 } else {
-                    gen.env.insert(name.clone(), (rhs_val, rhs_ty));
+                    gen.env.insert(name.to_string().into(), (rhs_val, rhs_ty));
                 }
             }
         } else if let Expr::IndexAccess(ast::IndexAccessExpr {
@@ -317,7 +318,9 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     if let Some(start_idx) = base_ty_str.find('"') {
                         if let Some(end_idx) = base_ty_str[start_idx + 1..].find('"') {
                             struct_name_opt = Some(
-                                base_ty_str[start_idx + 1..start_idx + 1 + end_idx].to_string(),
+                                base_ty_str[start_idx + 1..start_idx + 1 + end_idx]
+                                    .to_string()
+                                    .into(),
                             );
                         }
                     }
@@ -326,7 +329,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 let is_ptr = base_ty_str.starts_with("!llvm.ptr");
 
                 if let Some(resolved_struct_name) = struct_name_opt {
-                    if let Some(struct_decl) = gen.structs.get(&resolved_struct_name).cloned() {
+                    if let Some(struct_decl) = gen.structs.get(&*resolved_struct_name).cloned() {
                         if let Some(field_idx) =
                             struct_decl.fields.iter().position(|(n, _)| n == member)
                         {
@@ -413,7 +416,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let new_struct_val =
                                     block.append_operation(insert_op).result(0).unwrap().into();
 
-                                if let Some((mem_val, mem_ty)) = gen.env.get(base_name).cloned() {
+                                if let Some((mem_val, mem_ty)) = gen.env.get(&*base_name).cloned() {
                                     let mem_ty_str = mem_ty.to_string();
                                     if mem_ty_str.starts_with("memref<") {
                                         let store_op =
@@ -423,8 +426,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                                 .unwrap();
                                         block.append_operation(store_op);
                                     } else {
-                                        gen.env
-                                            .insert(base_name.clone(), (new_struct_val, base_ty));
+                                        gen.env.insert(
+                                            base_name.to_string().into(),
+                                            (new_struct_val, base_ty),
+                                        );
                                     }
                                 }
                             }
@@ -478,7 +483,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let result_val = bin_ref.result(0).unwrap().into();
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-            if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
+            if let Some((mem_val, mem_ty)) = gen.env.get(&*name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
@@ -487,7 +492,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                         .unwrap();
                     block.append_operation(store_op);
                 } else {
-                    gen.env.insert(name.clone(), (result_val, ty));
+                    gen.env.insert(name.to_string().into(), (result_val, ty));
                 }
             }
         } else if let Expr::IndexAccess(ast::IndexAccessExpr {

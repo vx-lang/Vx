@@ -33,7 +33,7 @@ pub struct TypeDefinition {
 /// The globally frozen type registry for parallel compilation phases.
 pub struct ImmutableGlobalRegistry {
     pub layouts: HashMap<TypeId, TypeDefinition>,
-    pub module_indices: HashMap<u64, HashMap<String, TypeId>>,
+    pub module_indices: HashMap<u64, HashMap<crate::symbol::Symbol, TypeId>>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -41,7 +41,8 @@ impl ImmutableGlobalRegistry {
     /// Runs a fast cycle-detection pass to ensure no infinite-sized recursive layouts exist.
     pub fn build_and_validate(definitions: Vec<TypeDefinition>) -> Result<Self, String> {
         let mut layouts = HashMap::new();
-        let mut module_indices: HashMap<u64, HashMap<String, TypeId>> = HashMap::new();
+        let mut module_indices: HashMap<u64, HashMap<crate::symbol::Symbol, TypeId>> =
+            HashMap::new();
 
         let mut graph = DiGraph::<TypeId, ()>::new();
         let mut node_map = HashMap::new();
@@ -54,7 +55,7 @@ impl ImmutableGlobalRegistry {
             module_indices
                 .entry(mod_id)
                 .or_default()
-                .insert(def.name.clone(), def.id);
+                .insert(def.name.clone().into(), def.id);
 
             let node_idx = graph.add_node(def.id);
             node_map.insert(def.id, node_idx);
@@ -82,7 +83,9 @@ impl ImmutableGlobalRegistry {
                     cyclic_def.name
                 ));
             }
-            return Err("Infinite-sized recursive layout detected.".to_string());
+            return Err("Infinite-sized recursive layout detected."
+                .to_string()
+                .into());
         }
 
         Ok(Self {

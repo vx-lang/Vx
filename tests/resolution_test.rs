@@ -18,10 +18,10 @@ use vxc::resolver::build_symbol_map;
 fn test_local_name_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
-        module_path: "core::math".to_string(),
+        module_path: "core::math".into(),
         externs: vec![],
         structs: vec![StructDecl {
-            name: "Vector".to_string(),
+            name: "Vector".into(),
             generics: vec![],
             fields: vec![],
         }],
@@ -30,11 +30,11 @@ fn test_local_name_resolution() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![Function {
-            name: "get_vector".to_string(),
+            name: "get_vector".into(),
             generics: vec![],
             params: vec![],
             topology: vxc::ast::Topology::CPU,
-            return_type: Type::Struct("Vector".to_string(), None),
+            return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
@@ -49,7 +49,7 @@ fn test_local_name_resolution() -> Result<(), String> {
 
     // Verify that `Vector` was mapped to a deterministic `TypeId`
     if let Type::Struct(name, id) = &module.functions[0].return_type {
-        if name != "Vector" {
+        if name.as_ref() != "Vector" {
             return Err(format!("Assertion failed: {} != {}", name, "Vector"));
         }
         if !(id.is_some()) {
@@ -77,7 +77,7 @@ use vxc::ast::{Expr, LetDeclStmt, MemorySpace, NumberExpr, Statement};
 fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
-        module_path: "core::bad".to_string(),
+        module_path: "core::bad".into(),
         externs: vec![],
         structs: vec![], // Empty structs, "Vector" does not exist!
         enums: vec![],
@@ -85,11 +85,11 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![Function {
-            name: "get_vector".to_string(),
+            name: "get_vector".into(),
             generics: vec![],
             params: vec![],
             topology: vxc::ast::Topology::CPU,
-            return_type: Type::Struct("Vector".to_string(), None),
+            return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
@@ -100,7 +100,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
     module.resolve_names(&symbol_map);
 
     if let Type::Struct(name, id) = &module.functions[0].return_type {
-        if name != "Vector" {
+        if name.as_ref() != "Vector" {
             return Err(format!("Assertion failed: {} != {}", name, "Vector"));
         }
         if !(id.is_none()) {
@@ -117,10 +117,10 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
 fn test_nested_type_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
-        module_path: "core::math".to_string(),
+        module_path: "core::math".into(),
         externs: vec![],
         structs: vec![StructDecl {
-            name: "Matrix".to_string(),
+            name: "Matrix".into(),
             generics: vec![],
             fields: vec![],
         }],
@@ -129,14 +129,14 @@ fn test_nested_type_resolution() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![Function {
-            name: "compute".to_string(),
+            name: "compute".into(),
             generics: vec![],
             topology: vxc::ast::Topology::CPU,
             params: vec![(
-                "m".to_string(),
+                "m".into(),
                 // &mut Matrix
                 Type::Borrow {
-                    inner: Box::new(Type::Struct("Matrix".to_string(), None)),
+                    inner: Box::new(Type::Struct("Matrix".into(), None)),
                     mem_space: Some(MemorySpace::CPUDRAM),
                     is_mut: true,
                     region_id: 0,
@@ -154,7 +154,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
 
     if let Type::Borrow { inner, .. } = &module.functions[0].params[0].1 {
         if let Type::Struct(name, id) = &**inner {
-            if name != "Matrix" {
+            if name.as_ref() != "Matrix" {
                 return Err(format!("Assertion failed: {} != {}", name, "Matrix"));
             }
             if !(id.is_some()) {
@@ -174,10 +174,10 @@ fn test_nested_type_resolution() -> Result<(), String> {
 fn test_expr_and_stmt_resolution() -> Result<(), String> {
     let mut module = VxModule {
         imports: Vec::new(),
-        module_path: "core::app".to_string(),
+        module_path: "core::app".into(),
         externs: vec![],
         structs: vec![StructDecl {
-            name: "Config".to_string(),
+            name: "Config".into(),
             generics: vec![],
             fields: vec![],
         }],
@@ -186,7 +186,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![Function {
-            name: "setup".to_string(),
+            name: "setup".into(),
             generics: vec![],
             params: vec![],
             topology: vxc::ast::Topology::CPU,
@@ -195,9 +195,9 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             ensures: Vec::new(),
             // let c: Config = ...;
             body: vec![Statement::LetDecl(LetDeclStmt {
-                name: "c".to_string(),
+                name: "c".into(),
                 is_mut: false,
-                ty_ann: Some(Type::Struct("Config".to_string(), None)),
+                ty_ann: Some(Type::Struct("Config".into(), None)),
                 expr: Expr::Number(NumberExpr {
                     value: "0.0".to_string(),
                     ty: Some(vxc::ast::ElementType::F64),
@@ -216,7 +216,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
         ..
     }) = &module.functions[0].body[0]
     {
-        if name != "Config" {
+        if name.as_ref() != "Config" {
             return Err(format!("Assertion failed: {} != {}", name, "Config"));
         }
         if !(id.is_some()) {

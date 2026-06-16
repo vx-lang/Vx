@@ -30,8 +30,11 @@ impl<'a> TypeChecker<'a> {
 
         for s in stmts.iter_mut() {
             if terminated && !silent {
-                self.errors
-                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                self.errors.push_warning(
+                    "Unreachable code after return, break, or continue"
+                        .to_string()
+                        .into(),
+                );
                 break;
             }
 
@@ -88,8 +91,8 @@ impl<'a> TypeChecker<'a> {
                         payload = Some(args);
                     }
                     *expr = Expr::EnumVariant(EnumVariantExpr {
-                        enum_name: enum_name.to_string(),
-                        variant_name: variant.to_string(),
+                        enum_name: enum_name.into(),
+                        variant_name: variant.to_string().into(),
                         payload,
                         span: fc.span,
                     });
@@ -521,12 +524,12 @@ impl<'a> TypeChecker<'a> {
     fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
-                if name == "true" || name == "false" {
+                if name.as_ref() == "true" || **name == *"false" {
                     return Type::Scalar(ElementType::Bool);
                 }
 
                 if !self.skip_borrow_check {
-                    if let Some(borrows) = self.active_borrows.get(name) {
+                    if let Some(borrows) = self.active_borrows.get(name.as_ref()) {
                         for b in borrows {
                             if b.is_mut && !silent {
                                 self.errors.push(format!(
@@ -550,11 +553,12 @@ impl<'a> TypeChecker<'a> {
                     // we must capture it in all closures between the definition and usage.
                     for (i, closure_depth) in self.closure_depths.iter().enumerate() {
                         if depth < closure_depth {
-                            self.closure_captures_stack[i].insert(name.clone(), ty.clone());
+                            self.closure_captures_stack[i]
+                                .insert(name.to_string().into(), ty.clone());
                         }
                     }
                 }
-                if name == "new_item" {
+                if name.as_ref() == "new_item" {
                     println!(
                         "lookup('new_item') = {:?}, is_moved = {}, consume = {}",
                         lookup_res,
@@ -576,7 +580,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
                 } else if lookup_res.is_none() {
-                    if let Some((ret_ty, _, params, _, _, _)) = self.env.functions.get(name) {
+                    if let Some((ret_ty, _, params, _, _, _)) =
+                        self.env.functions.get(name.as_ref())
+                    {
                         return Type::Function(params.clone(), Box::new(ret_ty.clone()));
                     }
                     for (func, _) in &self.monomorphized_functions {
@@ -642,7 +648,7 @@ impl<'a> TypeChecker<'a> {
                 let actual_enum_name = if let Some(idx) = enum_name.find('<') {
                     &enum_name[..idx]
                 } else {
-                    enum_name.as_str()
+                    enum_name.as_ref()
                 };
 
                 if let Some(enum_decl) = self.env.enums.get(actual_enum_name) {
@@ -669,9 +675,12 @@ impl<'a> TypeChecker<'a> {
                                                     "f64" => Type::Scalar(ElementType::F64),
                                                     "i64" => Type::Scalar(ElementType::I64),
                                                     "Bool" => Type::Scalar(ElementType::Bool),
-                                                    _ => Type::Struct(ty_arg.to_string(), None),
+                                                    _ => Type::Struct(
+                                                        ty_arg.to_string().into(),
+                                                        None,
+                                                    ),
                                                 };
-                                                mapping.insert(param.name().to_string(), parsed_ty);
+                                                mapping.insert(param.name().into(), parsed_ty);
                                             }
                                         }
                                     }
@@ -720,10 +729,10 @@ impl<'a> TypeChecker<'a> {
                             "f64" => Type::Scalar(ElementType::F64),
                             "i64" => Type::Scalar(ElementType::I64),
                             "Bool" => Type::Scalar(ElementType::Bool),
-                            _ => Type::Struct(ty_arg.to_string(), None),
+                            _ => Type::Struct(ty_arg.to_string().into(), None),
                         };
                         return Type::GenericInstance(
-                            Box::new(Type::Struct(base.to_string(), None)),
+                            Box::new(Type::Struct(base.to_string().into(), None)),
                             vec![parsed_ty],
                         );
                     }
@@ -746,11 +755,11 @@ impl<'a> TypeChecker<'a> {
                 let call_method_name = format!("{}_call", name);
 
                 let mut found_func = None;
-                if let Some(func_type) = self.env.functions.get(&call_method_name) {
+                if let Some(func_type) = self.env.functions.get(&*call_method_name) {
                     found_func = Some(func_type.0.clone());
                 } else {
                     for (func, _) in &self.monomorphized_functions {
-                        if func.name == call_method_name {
+                        if func.name.as_ref() == call_method_name {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
                             found_func =
                                 Some(Type::Function(params, Box::new(func.return_type.clone())));
@@ -1042,8 +1051,11 @@ impl<'a> TypeChecker<'a> {
 
         let cond_ty = self.check_expr_type(&mut if_expr.cond);
         if cond_ty != Type::Scalar(ElementType::Bool) {
-            self.errors
-                .push("Condition in if expression must be of type bool (i1)".to_string());
+            self.errors.push(
+                "Condition in if expression must be of type bool (i1)"
+                    .to_string()
+                    .into(),
+            );
         }
 
         if if_expr.is_comptime {
@@ -1060,8 +1072,11 @@ impl<'a> TypeChecker<'a> {
                     if_expr.then_block.clear();
                 }
             } else {
-                self.errors
-                    .push("Cannot statically evaluate comptime if condition".to_string());
+                self.errors.push(
+                    "Cannot statically evaluate comptime if condition"
+                        .to_string()
+                        .into(),
+                );
             }
         }
 
@@ -1119,11 +1134,9 @@ impl<'a> TypeChecker<'a> {
         if let Type::Struct(struct_name, _) = callee_ty {
             if struct_name.starts_with("Closure_") {
                 let call_name = format!("{}_call", struct_name);
-                if let Some(func) = self
-                    .monomorphized_functions
-                    .iter()
-                    .find(|f| f.0.name == call_name)
-                {
+                if let Some(func) = self.monomorphized_functions.iter().find(|f| {
+                    f.0.name == <std::string::String as Clone>::clone(&call_name.clone()).into()
+                }) {
                     let param_types: Vec<Type> = func
                         .0
                         .params
@@ -1159,7 +1172,7 @@ impl<'a> TypeChecker<'a> {
                     new_args.extend(args.clone());
 
                     *expr = Expr::FunctionCall(FunctionCallExpr {
-                        name: call_name,
+                        name: call_name.into(),
                         type_args: None,
                         args: new_args,
                         span: Span::default(),
@@ -1241,7 +1254,8 @@ impl<'a> TypeChecker<'a> {
                                 "{}{}",
                                 &resolved_name[..start_idx],
                                 &resolved_name[end_idx + 1..]
-                            );
+                            )
+                            .into();
                             let args_str = &resolved_name[start_idx + 1..end_idx];
                             explicit_generic_args = args_str
                                 .split(',')
@@ -1250,12 +1264,13 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 } else if let Some(idx) = resolved_name.find('<') {
-                    base_name = resolved_name[..idx].to_string();
+                    base_name = resolved_name[..idx].to_string().into();
                 }
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
-                let is_builtin_ref = resolved_name == "print" || resolved_name == "Verified";
+                let is_builtin_ref =
+                    resolved_name == "print".into() || resolved_name == "Verified".into();
                 let arg_consume = if is_builtin_ref { false } else { consume };
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
@@ -1322,7 +1337,7 @@ impl<'a> TypeChecker<'a> {
                         if let Some(func) = self
                             .monomorphized_functions
                             .iter()
-                            .find(|f| f.0.name == call_name)
+                            .find(|f| f.0.name == call_name.as_str().into())
                         {
                             let param_types: Vec<Type> = func
                                 .0
@@ -1363,7 +1378,7 @@ impl<'a> TypeChecker<'a> {
                             new_args.extend(args.clone());
 
                             *expr = Expr::FunctionCall(FunctionCallExpr {
-                                name: call_name,
+                                name: call_name.into(),
                                 type_args: None,
                                 args: new_args,
                                 span: Span::default(),
@@ -1389,7 +1404,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
-                    self.env.functions.get(&resolved_name)
+                    self.env.functions.get(resolved_name.as_ref())
                 {
                     if (*req_topology != self.active_topology) && !silent {
                         self.errors.push(format!(
@@ -1454,7 +1469,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     func.0.return_type.clone()
                 } else if let Some((generic_func, origin_hash)) =
-                    self.env.generic_functions.get(&base_name).cloned()
+                    self.env.generic_functions.get(base_name.as_ref()).cloned()
                 {
                     self.instantiate_generic_function_call(
                         generic_func,
@@ -1500,24 +1515,24 @@ impl<'a> TypeChecker<'a> {
                         for ib in impl_blocks {
                             let mut matches = false;
                             if let Type::Struct(n, _) = &ib.target_type {
-                                if &struct_name == n {
+                                if *struct_name == **n {
                                     matches = true;
                                 }
                             } else if let Type::Enum(n, _) = &ib.target_type {
-                                if &struct_name == n {
+                                if *struct_name == **n {
                                     matches = true;
                                 }
                             } else if let Type::Generic(n, _) = &ib.target_type {
-                                if &struct_name == n {
+                                if *struct_name == **n {
                                     matches = true;
                                 }
                             } else if let Type::GenericInstance(inner, _) = &ib.target_type {
                                 if let Type::Struct(n, _) = &**inner {
-                                    if &struct_name == n {
+                                    if *struct_name == **n {
                                         matches = true;
                                     }
                                 } else if let Type::Enum(n, _) = &**inner {
-                                    if &struct_name == n {
+                                    if *struct_name == **n {
                                         matches = true;
                                     }
                                 }
@@ -1525,7 +1540,7 @@ impl<'a> TypeChecker<'a> {
 
                             if matches {
                                 for m in &ib.methods {
-                                    if m.name == method_name {
+                                    if m.name == method_name.as_str().into() {
                                         found_generic_func = Some(m.clone());
                                         if !explicit_ty_str.is_empty() {
                                             let mut explicit_args = Vec::new();
@@ -1572,23 +1587,28 @@ impl<'a> TypeChecker<'a> {
 
                     if let Some(generic_func) = found_generic_func {
                         let mut modified_func = generic_func.clone();
-                        modified_func.name = format!("{}::{}", struct_name, method_name);
+                        modified_func.name = format!("{}::{}", struct_name, method_name).into();
                         modified_func.generics = found_mapping
                             .keys()
                             .map(|k| decl::GenericParam::Type {
-                                name: k.clone(),
+                                name: k.clone().into(),
                                 bound: None,
                             })
                             .collect();
 
-                        let mut inst_func =
-                            self.instantiate_function(&modified_func, &found_mapping);
+                        let mut inst_func = self.instantiate_function(
+                            &modified_func,
+                            &found_mapping
+                                .into_iter()
+                                .map(|(k, v)| (k.into(), v))
+                                .collect(),
+                        );
                         let inst_ret = inst_func.return_type.clone();
                         let inst_name = inst_func.name.clone();
 
                         *name = inst_name.clone();
 
-                        if !self.env.functions.contains_key(&inst_name)
+                        if !self.env.functions.contains_key(inst_name.as_ref())
                             && !self
                                 .monomorphized_functions
                                 .iter()
@@ -1607,7 +1627,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
                 } else {
-                    let mono_names: Vec<String> = self
+                    let mono_names: Vec<crate::symbol::Symbol> = self
                         .monomorphized_functions
                         .iter()
                         .map(|(f, _)| f.name.clone())
@@ -1631,13 +1651,13 @@ impl<'a> TypeChecker<'a> {
         generic_func: &Function,
         origin_hash: u64,
         resolved_name: &str,
-        name: &mut String,
+        name: &mut crate::symbol::Symbol,
         args: &[Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
         silent: bool,
     ) -> Option<Type> {
-        let mut mapping = HashMap::new();
+        let mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type> = HashMap::new();
         let mut success = true;
         if args.len() != generic_func.params.len() {
             if !silent {
@@ -1652,7 +1672,7 @@ impl<'a> TypeChecker<'a> {
         } else {
             for (i, param) in generic_func.generics.iter().enumerate() {
                 if i < explicit_generic_args.len() {
-                    mapping.insert(param.name().to_string(), explicit_generic_args[i].clone());
+                    mapping.insert(param.name().into(), explicit_generic_args[i].clone());
                 }
             }
             for (i, _arg) in args.iter().enumerate() {
@@ -1669,15 +1689,15 @@ impl<'a> TypeChecker<'a> {
 
         if success {
             for param in &generic_func.generics {
-                let g_name = param.name().to_string();
+                let g_name = param.name();
                 let bound_opt = match param {
                     decl::GenericParam::Type { bound, .. } => bound.clone(),
                     _ => None,
                 };
                 if let Some(bound_name) = bound_opt {
-                    if let Some(concrete_ty) = mapping.get(&g_name) {
+                    if let Some(concrete_ty) = mapping.get(&*g_name) {
                         let mut implements_trait = false;
-                        if let Some(impl_blocks) = self.env.impls.get(&bound_name) {
+                        if let Some(impl_blocks) = self.env.impls.get(bound_name.as_ref()) {
                             for ib in impl_blocks {
                                 if self.unify_types(
                                     &ib.target_type,
@@ -1710,7 +1730,7 @@ impl<'a> TypeChecker<'a> {
 
             *name = inst_name.clone();
 
-            if !self.env.functions.contains_key(&inst_name)
+            if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self
                     .monomorphized_functions
                     .iter()
@@ -1775,13 +1795,19 @@ impl<'a> TypeChecker<'a> {
                 if let Type::Scalar(el) = &explicit_generic_args[0] {
                     el.clone()
                 } else {
-                    self.errors
-                        .push("Generic argument to Tensor must be a scalar type.".to_string());
+                    self.errors.push(
+                        "Generic argument to Tensor must be a scalar type."
+                            .to_string()
+                            .into(),
+                    );
                     ElementType::F32
                 }
             } else {
-                self.errors
-                    .push("Missing generic argument for Tensor initialization.".to_string());
+                self.errors.push(
+                    "Missing generic argument for Tensor initialization."
+                        .to_string()
+                        .into(),
+                );
                 ElementType::F32
             };
             let mut dims = Vec::new();
@@ -1817,8 +1843,11 @@ impl<'a> TypeChecker<'a> {
             Some(Type::Tensor(ElementType::F32, vec![], None))
         } else if resolved_name == "printf" || resolved_name == "vx_internal_printf" {
             if args.is_empty() {
-                self.errors
-                    .push("Function 'printf' expects at least 1 argument".to_string());
+                self.errors.push(
+                    "Function 'printf' expects at least 1 argument"
+                        .to_string()
+                        .into(),
+                );
             }
             Some(Type::Scalar(ElementType::I32))
         } else if resolved_name == "Some" || resolved_name == "Option::Some" {
@@ -1826,7 +1855,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
-            Some(Type::Struct("Option".to_string(), None))
+            Some(Type::Struct("Option".into(), None))
         } else {
             None
         }
@@ -1859,8 +1888,8 @@ impl<'a> TypeChecker<'a> {
 
                 if !self.skip_borrow_check {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
-                        path.push(member.clone());
-                        if let Some(borrows) = self.active_borrows.get(&name) {
+                        path.push(member.to_string());
+                        if let Some(borrows) = self.active_borrows.get(&*name) {
                             for b in borrows {
                                 if b.is_mut && !silent {
                                     let mut overlap = true;
@@ -1893,11 +1922,11 @@ impl<'a> TypeChecker<'a> {
                 let mut mapping = HashMap::new();
 
                 if let Type::Struct(struct_name, _) = &base_ty {
-                    actual_struct_name = struct_name.clone();
+                    actual_struct_name = struct_name.to_string();
                     struct_decl_opt = self
                         .env
                         .structs
-                        .get(struct_name)
+                        .get(struct_name.as_ref())
                         .map(|s| (*s).clone())
                         .or_else(|| {
                             self.generated_structs
@@ -1907,11 +1936,11 @@ impl<'a> TypeChecker<'a> {
                         });
                 } else if let Type::GenericInstance(inner, args) = &base_ty {
                     if let Type::Struct(struct_name, _) = &**inner {
-                        actual_struct_name = struct_name.clone();
+                        actual_struct_name = struct_name.to_string();
                         struct_decl_opt = self
                             .env
                             .structs
-                            .get(struct_name)
+                            .get(struct_name.as_ref())
                             .map(|s| (*s).clone())
                             .or_else(|| {
                                 self.generated_structs
@@ -1922,7 +1951,7 @@ impl<'a> TypeChecker<'a> {
                         if let Some(decl) = &struct_decl_opt {
                             for (i, param) in decl.generics.iter().enumerate() {
                                 if i < args.len() {
-                                    mapping.insert(param.name().to_string(), args[i].clone());
+                                    mapping.insert(param.name().into(), args[i].clone());
                                 }
                             }
                         }
@@ -1930,7 +1959,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some(decl) = struct_decl_opt {
-                    *struct_name_field = Some(base_ty.to_string());
+                    *struct_name_field = Some(base_ty.to_string().into());
                     for (f_name, f_type) in &decl.fields {
                         if f_name == member {
                             return f_type.substitute(&mapping);
@@ -1955,7 +1984,7 @@ impl<'a> TypeChecker<'a> {
                         self.errors
                             .push(format!("Module '{}' does not export '{}'", path, member));
                     }
-                } else if member == "shape" {
+                } else if member.as_ref() == "shape" {
                     return Type::Tensor(ElementType::I32, vec![], None);
                 } else {
                     self.errors
@@ -2003,7 +2032,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
                 if let Type::Tensor(el_ty, _, _) = &base_ty {
-                    if _method == "map" && args.len() == 1 {
+                    if _method.as_ref() == "map" && args.len() == 1 {
                         if let Expr::Closure(c) = &mut args[0] {
                             if c.params.len() == 1 && c.params[0].1 == Type::Unknown {
                                 c.params[0].1 = Type::Scalar(el_ty.clone());
@@ -2016,7 +2045,7 @@ impl<'a> TypeChecker<'a> {
                     self.check_expr_type(arg);
                 }
 
-                if _method == "drop" && args.is_empty() {
+                if _method.as_ref() == "drop" && args.is_empty() {
                     if let Expr::Identifier(id) = &**obj {
                         self.consume(&id.name);
                     }
@@ -2027,7 +2056,7 @@ impl<'a> TypeChecker<'a> {
                         let prefix = TypeChecker::mangle_path(path);
                         let mangled_name = format!("{}_{}", prefix, _method);
                         let func_call = Expr::FunctionCall(FunctionCallExpr {
-                            name: mangled_name,
+                            name: crate::symbol::Symbol::from(mangled_name.as_str()),
                             type_args: None,
                             args: args.clone(),
                             span: Span::default(),
@@ -2112,13 +2141,12 @@ impl<'a> TypeChecker<'a> {
                         _method, base_ty, mangled_name
                     );
 
-                    method_func.name = mangled_name.clone();
+                    method_func.name = mangled_name.clone().into();
 
-                    if !self.env.functions.contains_key(&mangled_name)
-                        && !self
-                            .monomorphized_functions
-                            .iter()
-                            .any(|(f, _)| f.name == mangled_name)
+                    if !self.env.functions.contains_key(&*mangled_name)
+                        && !self.monomorphized_functions.iter().any(|(f, _)| {
+                            f.name == crate::symbol::Symbol::from(mangled_name.as_str())
+                        })
                     {
                         // Type check the instantiated method
                         let mut func_to_check = method_func.clone();
@@ -2158,7 +2186,7 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     let mut func_call = Expr::FunctionCall(FunctionCallExpr {
-                        name: mangled_name,
+                        name: crate::symbol::Symbol::from(mangled_name.as_str()),
                         type_args: None,
                         args: call_args,
                         span: Span::default(),
@@ -2171,9 +2199,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Fallback for hardcoded mock methods
-                if _method == "with_memory" {
+                if _method.as_ref() == "with_memory" {
                     base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
-                } else if _method == "to_device" {
+                } else if _method.as_ref() == "to_device" {
                     let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
@@ -2189,7 +2217,7 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         span: Span::default(),
                     });
-                } else if _method == "to_host" {
+                } else if _method.as_ref() == "to_host" {
                     let target_mem = MemorySpace::CPUDRAM;
                     base_ty = Type::Pinned(Box::new(base_ty), Topology::CPU);
                     *expr = Expr::Transfer(TransferExpr {
@@ -2198,8 +2226,8 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         span: Span::default(),
                     });
-                } else if _method == "as_ptr" || _method == "as_mut_ptr" {
-                    let is_mut = _method == "as_mut_ptr";
+                } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
+                    let is_mut = _method.as_ref() == "as_mut_ptr";
                     match &base_ty {
                         Type::Tensor(el_ty, dims, top) => {
                             base_ty = Type::Pointer(
@@ -2229,7 +2257,7 @@ impl<'a> TypeChecker<'a> {
                                 .push(format!("Cannot call {} on {:?}", _method, base_ty));
                         }
                     }
-                } else if _method == "len" {
+                } else if _method.as_ref() == "len" {
                     match &base_ty {
                         Type::Tensor(_, _, _) | Type::Borrow { .. } | Type::Pointer(_, _, _) => {
                             base_ty = Type::Tensor(ElementType::I64, vec![], None);
@@ -2366,7 +2394,7 @@ impl<'a> TypeChecker<'a> {
 
                 if let Some((name, path)) = Self::extract_base_and_path(inner) {
                     let mut dead_borrowers = std::collections::HashSet::new();
-                    if let Some(borrows) = self.active_borrows.get(&name) {
+                    if let Some(borrows) = self.active_borrows.get(&*name) {
                         for b in borrows.iter() {
                             if let Some(borrower) = &b.borrower_name {
                                 if !self.is_variable_used_after(borrower) {
@@ -2375,7 +2403,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    if let Some(borrows) = self.active_borrows.get_mut(&name) {
+                    if let Some(borrows) = self.active_borrows.get_mut(&*name) {
                         // NLL: Remove dead borrows
                         borrows.retain(|b| {
                             if let Some(borrower) = &b.borrower_name {
@@ -2409,7 +2437,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     if !silent {
                         self.active_borrows
-                            .entry(name.clone())
+                            .entry(name.clone().into())
                             .or_default()
                             .push(BorrowRecord {
                                 is_mut: *is_mut,
@@ -2433,10 +2461,10 @@ impl<'a> TypeChecker<'a> {
 
     fn extract_base_and_path(expr: &Expr) -> Option<(String, Vec<String>)> {
         match expr {
-            Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
+            Expr::Identifier(id) => Some((id.name.to_string(), Vec::new())),
             Expr::MemberAccess(ma) => {
                 if let Some((base_name, mut path)) = Self::extract_base_and_path(&ma.base) {
-                    path.push(ma.member.clone());
+                    path.push(ma.member.to_string());
                     Some((base_name, path))
                 } else {
                     None
@@ -2520,7 +2548,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some(struct_decl) = self
                     .env
                     .structs
-                    .get(&base_name)
+                    .get(base_name.as_ref())
                     .map(|s| (*s).clone())
                     .or_else(|| {
                         self.generated_structs
@@ -2532,7 +2560,7 @@ impl<'a> TypeChecker<'a> {
                     let mut mapping = std::collections::HashMap::new();
                     for (i, param) in struct_decl.generics.iter().enumerate() {
                         if i < generic_args.len() {
-                            mapping.insert(param.name().to_string(), generic_args[i].clone());
+                            mapping.insert(param.name().into(), generic_args[i].clone());
                         }
                     }
 
@@ -2599,7 +2627,7 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors.push(format!(
@@ -2643,7 +2671,7 @@ impl<'a> TypeChecker<'a> {
                 cotangent,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors
@@ -2686,7 +2714,7 @@ impl<'a> TypeChecker<'a> {
                 tangent,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(target_fn) {
+                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors
@@ -2745,14 +2773,14 @@ impl<'a> TypeChecker<'a> {
     fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
-                self.insert(name.clone(), expr_ty.clone());
+                self.insert(name.to_string(), expr_ty.clone());
             }
             Pattern::EnumVariant(enum_name, variant_name, Some(payloads)) => {
                 let mut base_name = enum_name.clone();
                 if let Some(idx) = enum_name.find('<') {
-                    base_name = enum_name[..idx].to_string();
+                    base_name = enum_name[..idx].to_string().into();
                 }
-                if let Some(enum_decl) = self.env.enums.get(&base_name) {
+                if let Some(enum_decl) = self.env.enums.get(base_name.as_ref()) {
                     if let Some(variant) = enum_decl.variants.iter().find(|v| v.0 == *variant_name)
                     {
                         if let Some(payload_types) = &variant.1 {
@@ -2760,7 +2788,7 @@ impl<'a> TypeChecker<'a> {
                             if let Type::GenericInstance(_, args) = expr_ty {
                                 for (i, param) in enum_decl.generics.iter().enumerate() {
                                     if i < args.len() {
-                                        mapping.insert(param.name().to_string(), args[i].clone());
+                                        mapping.insert(param.name().into(), args[i].clone());
                                     }
                                 }
                             }
@@ -2768,9 +2796,9 @@ impl<'a> TypeChecker<'a> {
                                 if let Pattern::Identifier(name) = p {
                                     if i < payload_types.len() {
                                         let p_ty = payload_types[i].substitute(&mapping);
-                                        self.insert(name.clone(), p_ty);
+                                        self.insert(name.to_string(), p_ty);
                                     } else {
-                                        self.insert(name.clone(), Type::Unknown);
+                                        self.insert(name.to_string(), Type::Unknown);
                                     }
                                 }
                             }
@@ -2779,7 +2807,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     for p in payloads {
                         if let Pattern::Identifier(name) = p {
-                            self.insert(name.clone(), Type::Unknown);
+                            self.insert(name.to_string(), Type::Unknown);
                         }
                     }
                 }
@@ -2828,7 +2856,7 @@ impl<'a> TypeChecker<'a> {
                 self.next_id += 1;
 
                 let new_call = Expr::FunctionCall(FunctionCallExpr::new(
-                    format!("Vec<{}>::new", element_type),
+                    format!("Vec<{}>::new", element_type).into(),
                     None,
                     vec![],
                     *span,
@@ -2848,13 +2876,13 @@ impl<'a> TypeChecker<'a> {
                     let push_call = Expr::MethodCall(MethodCallExpr::new(
                         Box::new(Expr::Borrow(BorrowExpr {
                             expr: Box::new(Expr::Identifier(IdentifierExpr::new(
-                                var_name.clone(),
+                                var_name.clone().into(),
                                 Span::default(),
                             ))),
                             is_mut: true,
                             span: Span::default(),
                         })),
-                        "push".to_string(),
+                        "push".to_string().into(),
                         None,
                         vec![el],
                         *span,
@@ -2864,7 +2892,8 @@ impl<'a> TypeChecker<'a> {
                     )));
                 }
 
-                let ret_expr = Expr::Identifier(IdentifierExpr::new(var_name.clone(), *span));
+                let ret_expr =
+                    Expr::Identifier(IdentifierExpr::new(var_name.clone().into(), *span));
 
                 let block =
                     Expr::UnsafeBlock(UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span));
@@ -2894,7 +2923,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.push_scope();
                 for (name, ty) in &cloned_params {
-                    self.insert(name.clone(), ty.clone());
+                    self.insert(name.to_string(), ty.clone());
                 }
                 let mut b = e.body.clone();
                 let expr_ret_ty = self.check_expr_type(&mut b);
@@ -2912,7 +2941,7 @@ impl<'a> TypeChecker<'a> {
                 let captured_vars_map = self.closure_captures_stack.pop().unwrap();
                 self.closure_depths.pop();
 
-                let mut captured_vars: Vec<(String, Type)> =
+                let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
@@ -2927,17 +2956,17 @@ impl<'a> TypeChecker<'a> {
 
                 // Create StructDecl for the environment
                 let struct_decl = decl::StructDecl {
-                    name: struct_name.clone(),
+                    name: struct_name.clone().into(),
                     generics: vec![],
                     fields: captured_vars.clone(),
                 };
                 self.generated_structs.push(struct_decl);
 
                 // Create the Function for calling the closure
-                let mut env_params = vec![(
-                    "_env".to_string(),
+                let mut env_params: Vec<(crate::symbol::Symbol, Type)> = vec![(
+                    "_env".to_string().into(),
                     Type::Pointer(
-                        Box::new(Type::Struct(struct_name.clone(), None)),
+                        Box::new(Type::Struct(struct_name.clone().into(), None)),
                         None,
                         true,
                     ), // &mut env
@@ -2951,11 +2980,11 @@ impl<'a> TypeChecker<'a> {
                 for (cap_name, cap_ty) in &captured_vars {
                     let env_access = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(Expr::Identifier(IdentifierExpr::new(
-                            "_env".to_string(),
+                            "_env".to_string().into(),
                             e.span,
                         ))),
                         member: cap_name.clone(),
-                        struct_name: Some(struct_name.clone()),
+                        struct_name: Some(struct_name.clone().into()),
                         span: e.span,
                     });
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
@@ -2973,7 +3002,7 @@ impl<'a> TypeChecker<'a> {
                 }));
 
                 let call_func = decl::Function {
-                    name: func_name.clone(),
+                    name: func_name.clone().into(),
                     generics: vec![],
                     params: env_params,
                     topology: self.active_topology.clone(),
@@ -2994,12 +3023,12 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 *expr = Expr::StructInit(StructInitExpr {
-                    name: struct_name.clone(),
+                    name: struct_name.clone().into(),
                     fields,
                     span: e.span,
                 });
 
-                Type::Struct(struct_name, None)
+                Type::Struct(struct_name.into(), None)
             }
             _ => unreachable!(),
         }
@@ -3017,7 +3046,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors
                         .push("topology requires 0 arguments".to_string());
                 }
-                return Some((Type::Struct("Option".to_string(), None), false));
+                return Some((Type::Struct("Option".into(), None), false));
             }
         }
 
@@ -3027,7 +3056,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors
                         .push("topology requires 0 arguments".to_string());
                 }
-                return Some((Type::Struct("Option".to_string(), None), false));
+                return Some((Type::Struct("Option".into(), None), false));
             } else if _method == "reshape" {
                 if args.is_empty() || args.len() > 3 {
                     self.errors
@@ -3044,7 +3073,9 @@ impl<'a> TypeChecker<'a> {
                         span: _,
                     }) = &args[1]
                     {
-                        if enum_name == "PadMode" && (variant == "Pad" || variant == "Trim") {
+                        if enum_name.as_ref() == "PadMode"
+                            && (variant.as_ref() == "Pad" || variant.as_ref() == "Trim")
+                        {
                             is_exact = false;
                         } else {
                             self.errors.push(
@@ -3115,8 +3146,11 @@ impl<'a> TypeChecker<'a> {
                 return Some((base_ty.clone(), true));
             } else if _method == "map" {
                 if args.len() != 1 {
-                    self.errors
-                        .push("map requires exactly 1 argument (the closure)".to_string());
+                    self.errors.push(
+                        "map requires exactly 1 argument (the closure)"
+                            .to_string()
+                            .into(),
+                    );
                     return Some((base_ty.clone(), false));
                 }
 
@@ -3187,8 +3221,11 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Some((Type::Tensor(el_ty.clone(), new_dims, top.clone()), false));
                 } else {
-                    self.errors
-                        .push("transpose requires an array of permutation indices".to_string());
+                    self.errors.push(
+                        "transpose requires an array of permutation indices"
+                            .to_string()
+                            .into(),
+                    );
                     return Some((base_ty.clone(), false));
                 }
             }
