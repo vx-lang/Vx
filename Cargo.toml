@@ -50,7 +50,7 @@ name = "vxc"
 path = "src/main.rs"
 
 [profile.release]
-strip = true      # Automatically strip symbols from the binary (~90% size reduction)
+strip = "debuginfo"      # Strip debuginfo but keep symbols for dynamic linking
 lto = "thin"      # Thin LTO drops dead LLVM code without taking 10 minutes to link
 codegen-units = 1 # Maximize optimization by compiling as a single unit
 
