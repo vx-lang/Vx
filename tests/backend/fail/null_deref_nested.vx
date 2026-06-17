@@ -8,7 +8,7 @@
 // CHECK: Caught SIGSEGV: Segmentation Fault!
 // CHECK: Backtrace
 // CHECK: vx_sigsegv_handler
-// CHECK: _f4
+// CHECK: {{_?}}f4
 // CHECK: Program exited with non-zero code: -1
 
 import std::box;

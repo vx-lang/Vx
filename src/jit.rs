@@ -207,6 +207,8 @@ pub fn execute_mlir(
         clang_cmd.args([&lib_npu]);
     }
 
+    clang_cmd.arg("-lm");
+
     let clang_out = clang_cmd.output().map_err(|e| e.to_string())?;
 
     if !clang_out.status.success() {
