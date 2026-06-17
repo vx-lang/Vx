@@ -1,0 +1,10 @@
+- `[x]` Create `stdlib/libc.vx` and add `extern fn` bindings for `open`, `close`, `lseek`.
+- `[x]` Create `stdlib/mmap.vx` and add `extern fn` bindings for `mmap`, `munmap`, and necessary constants (`PROT_READ`, `MAP_SHARED`).
+- `[x]` Update `stdlib/string.vx` to include `string_length`, `string_compare`, and `parse_int`.
+- `[x]` Rewrite `examples/llama.vx` to use the `mmap` bindings for loading configs and weights instead of file streams.
+- `[x]` Update `vscode-vx/syntaxes/vx.tmLanguage.json` to highlight macros properly.
+- `[x]` Investigate linker errors (`_vx_init_signals`, `_malloc_X`, etc.) in CI
+- `[x]` Resolve dynamic symbols getting stripped (`strip = true`) from `vx_std_core`
+- `[x]` Bump the version in `vscode-vx/package.json`.
+- `[x]` Run `cargo test` to verify no regressions in the compiler or standard library.
+- `[x]` Test `examples/llama.vx` to ensure `mmap` loads successfully.
