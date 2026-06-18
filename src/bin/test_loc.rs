@@ -31,8 +31,12 @@ fn main() {
         di_file, di_cu, di_subp
     );
 
-    let module = melior::ir::Module::parse(&context, &mlir_str).unwrap();
-    let op = module.body().first_operation().unwrap();
+    let module = melior::ir::Module::parse(&context, &mlir_str)
+        .expect("Failed to parse MLIR string. Check DI attribute formatting");
+    let op = module
+        .body()
+        .first_operation()
+        .expect("Module has no operations");
     let loc = op.location();
     println!("Got loc: {}", loc);
 }

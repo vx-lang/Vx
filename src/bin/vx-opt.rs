@@ -24,9 +24,15 @@ extern "C" {
     fn run_vx_opt(argc: c_int, argv: *const *const c_char) -> c_int;
 }
 
+use std::os::unix::ffi::OsStrExt;
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let c_args: Vec<CString> = args.into_iter().map(|a| CString::new(a).unwrap()).collect();
+    let c_args: Vec<CString> = std::env::args_os()
+        .map(|arg| {
+            CString::new(arg.as_bytes()).unwrap_or_else(|_| CString::new("invalid_arg").unwrap())
+        })
+        .collect();
+
     let c_ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
 
     let status = unsafe { run_vx_opt(c_ptrs.len() as c_int, c_ptrs.as_ptr()) };

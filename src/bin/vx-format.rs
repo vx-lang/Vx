@@ -12,69 +12,49 @@
 // across all Vx projects.
 //
 //===----------------------------------------------------------------------===//
-use std::env;
 use std::fs;
 use std::path::Path;
 
 use vxc::formatter::format_file;
 
+use clap::Parser;
+use rayon::prelude::*;
+
+#[derive(Parser)]
+#[command(author, version, about = "Vx Code Formatter")]
+struct Cli {
+    /// Number of spaces for indentation
+    #[arg(long, default_value_t = 2)]
+    indent: usize,
+
+    /// Files to format
+    #[arg(required = true)]
+    files: Vec<String>,
+}
+
+fn process_file(file_path: &str, indent_spaces: usize) -> anyhow::Result<()> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        anyhow::bail!("File not found: {}", file_path);
+    }
+
+    let content = fs::read_to_string(path)?;
+    let formatted = format_file(&content, indent_spaces);
+    if formatted != content {
+        fs::write(path, formatted)?;
+        println!("Formatted {}", file_path);
+    } else {
+        println!("Unchanged {}", file_path);
+    }
+    Ok(())
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    if args.len() < 2 {
-        eprintln!("Usage: vx-format [--indent <spaces>] <file1.vx> <file2.vx> ...");
-        std::process::exit(1);
-    }
-
-    let mut indent_spaces = 2;
-    let mut file_paths = Vec::new();
-
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--indent" && i + 1 < args.len() {
-            if let Ok(spaces) = args[i + 1].parse::<usize>() {
-                indent_spaces = spaces;
-                i += 2;
-                continue;
-            } else {
-                eprintln!("Error: Invalid value for --indent. Must be a number.");
-                std::process::exit(1);
-            }
-        }
-        file_paths.push(&args[i]);
-        i += 1;
-    }
-
-    if file_paths.is_empty() {
-        eprintln!("Error: No files provided to format.");
-        std::process::exit(1);
-    }
-
-    use rayon::prelude::*;
-
-    file_paths.par_iter().for_each(|file_path| {
-        let path = Path::new(file_path);
-        if !path.exists() {
-            eprintln!("Error: File not found: {}", file_path);
-            return;
-        }
-
-        match fs::read_to_string(path) {
-            Ok(content) => {
-                let formatted = format_file(&content, indent_spaces);
-                if formatted != content {
-                    if let Err(e) = fs::write(path, formatted) {
-                        eprintln!("Error writing to {}: {}", file_path, e);
-                    } else {
-                        println!("Formatted {}", file_path);
-                    }
-                } else {
-                    println!("Unchanged {}", file_path);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error reading {}: {}", file_path, e);
-            }
+    cli.files.par_iter().for_each(|file_path| {
+        if let Err(e) = process_file(file_path, cli.indent) {
+            eprintln!("Error processing {}: {:?}", file_path, e);
         }
     });
 }

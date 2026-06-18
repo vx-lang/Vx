@@ -6,6 +6,7 @@ version = 4
 name = "Vx"
 version = "2.0.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "clap",
  "melior",
