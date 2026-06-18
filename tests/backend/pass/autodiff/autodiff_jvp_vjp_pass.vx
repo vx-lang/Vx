@@ -2,8 +2,8 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 import std::googletest;
 
-// EXPECT: callee = @__enzyme_autodiff_grad_compute_val
-// EXPECT: callee = @__enzyme_fwddiff_jvp_compute_val
+// EXPECT: llvm.call @__enzyme_autodiff_grad_compute_val
+// EXPECT: llvm.call @__enzyme_fwddiff_jvp_compute_val
 
 fn compute_val(x : f32) -> f32 {
   return x * x * x; // x^3
