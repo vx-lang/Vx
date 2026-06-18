@@ -230,7 +230,7 @@ impl CompilerDriver {
         let mut ast = program_arr.remove(ast_idx);
 
         if self.options.action == Action::PrintAst {
-            AstPrinter::print_program(&ast);
+            AstPrinter::print_program(&ast, &mut std::io::stdout()).unwrap();
         }
 
         let global_session = std::sync::Arc::new(GlobalSession::new(1));

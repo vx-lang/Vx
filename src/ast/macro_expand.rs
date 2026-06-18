@@ -28,48 +28,20 @@ impl<'a> MacroExpander<'a> {
         &self,
         tokens: &[crate::lexer::OwnedToken],
     ) -> Result<expr::Expr, String> {
-        let mut s = String::new();
-        for i in 0..tokens.len() {
-            let t = &tokens[i];
-            if t.kind == crate::lexer::OwnedTokenType::Eof {
-                continue;
-            }
-            s.push_str(&t.kind.to_string());
-            let next_is_bang =
-                i + 1 < tokens.len() && tokens[i + 1].kind == crate::lexer::OwnedTokenType::Bang;
-            if !next_is_bang {
-                s.push(' ');
-            }
-        }
-        let mut lexer = crate::lexer::Lexer::new(&s);
-        let lexed_tokens = lexer.tokenize();
-        let mut parser = crate::parser::Parser::new(&lexed_tokens, &s);
-        parser.parse_expr().map_err(|e| e.format(&s))
+        let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
+        let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
+        parser.parse_expr().map_err(|e| format!("{:?}", e))
     }
 
     fn parse_expanded_exprs(
         &self,
         tokens: &[crate::lexer::OwnedToken],
     ) -> Result<Vec<expr::Expr>, String> {
-        let mut s = String::new();
-        for i in 0..tokens.len() {
-            let t = &tokens[i];
-            if t.kind == crate::lexer::OwnedTokenType::Eof {
-                continue;
-            }
-            s.push_str(&t.kind.to_string());
-            let next_is_bang =
-                i + 1 < tokens.len() && tokens[i + 1].kind == crate::lexer::OwnedTokenType::Bang;
-            if !next_is_bang {
-                s.push(' ');
-            }
-        }
-        let mut lexer = crate::lexer::Lexer::new(&s);
-        let lexed_tokens = lexer.tokenize();
-        let mut parser = crate::parser::Parser::new(&lexed_tokens, &s);
+        let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
+        let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
         let mut exprs = Vec::new();
         while !parser.check(&crate::lexer::TokenType::Eof) {
-            exprs.push(parser.parse_expr().map_err(|e| e.format(&s))?);
+            exprs.push(parser.parse_expr().map_err(|e| format!("{:?}", e))?);
             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                 break;
             }
@@ -91,15 +63,12 @@ impl<'a> MacroExpander<'a> {
     }
 
     fn expand_function(&mut self, func: &mut Function) -> Result<(), String> {
-        let mut i = 0;
-        while i < func.body.len() {
-            let stmt = func.body.remove(i);
-            let mut expanded_stmts = self.expand_stmt(stmt)?;
-            for s in expanded_stmts.drain(..).rev() {
-                func.body.insert(i, s);
-            }
-            i += 1;
+        let body = std::mem::take(&mut func.body);
+        let mut new_body = Vec::with_capacity(body.len());
+        for stmt in body {
+            new_body.extend(self.expand_stmt(stmt)?);
         }
+        func.body = new_body;
         Ok(())
     }
 
@@ -142,27 +111,21 @@ impl<'a> MacroExpander<'a> {
                 *a.expr = self.expand_expr(*a.expr.clone())?;
             }
             stmt::Statement::Loop(l) => {
-                let mut i = 0;
-                while i < l.body.len() {
-                    let s = l.body.remove(i);
-                    let mut expanded = self.expand_stmt(s)?;
-                    for e in expanded.drain(..).rev() {
-                        l.body.insert(i, e);
-                    }
-                    i += 1;
+                let body = std::mem::take(&mut l.body);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
                 }
+                l.body = new_body;
             }
             stmt::Statement::ForLoop(f) => {
                 *f.iterable = self.expand_expr(*f.iterable.clone())?;
-                let mut i = 0;
-                while i < f.body.len() {
-                    let s = f.body.remove(i);
-                    let mut expanded = self.expand_stmt(s)?;
-                    for e in expanded.drain(..).rev() {
-                        f.body.insert(i, e);
-                    }
-                    i += 1;
+                let body = std::mem::take(&mut f.body);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
                 }
+                f.body = new_body;
             }
             _ => {}
         }
@@ -212,15 +175,12 @@ impl<'a> MacroExpander<'a> {
             expr::Expr::Match(m) => {
                 *m.expr = self.expand_expr(*m.expr.clone())?;
                 for arm in &mut m.arms {
-                    let mut i = 0;
-                    while i < arm.body.len() {
-                        let s = arm.body.remove(i);
-                        let mut expanded = self.expand_stmt(s)?;
-                        for e in expanded.drain(..).rev() {
-                            arm.body.insert(i, e);
-                        }
-                        i += 1;
+                    let body = std::mem::take(&mut arm.body);
+                    let mut new_body = Vec::with_capacity(body.len());
+                    for s in body {
+                        new_body.extend(self.expand_stmt(s)?);
                     }
+                    arm.body = new_body;
                 }
             }
             expr::Expr::FunctionCall(f) => {
@@ -251,54 +211,42 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::If(i) => {
                 *i.cond = self.expand_expr(*i.cond.clone())?;
-                let mut j = 0;
-                while j < i.then_block.len() {
-                    let s = i.then_block.remove(j);
-                    let mut expanded = self.expand_stmt(s)?;
-                    for e in expanded.drain(..).rev() {
-                        i.then_block.insert(j, e);
-                    }
-                    j += 1;
+                let body = std::mem::take(&mut i.then_block);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
                 }
+                i.then_block = new_body;
                 if let Some(else_b) = &mut i.else_block {
-                    let mut j = 0;
-                    while j < else_b.len() {
-                        let s = else_b.remove(j);
-                        let mut expanded = self.expand_stmt(s)?;
-                        for e in expanded.drain(..).rev() {
-                            else_b.insert(j, e);
-                        }
-                        j += 1;
+                    let body = std::mem::take(else_b);
+                    let mut new_body = Vec::with_capacity(body.len());
+                    for s in body {
+                        new_body.extend(self.expand_stmt(s)?);
                     }
+                    *else_b = new_body;
                 }
             }
             expr::Expr::UnsafeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
                     **ret = self.expand_expr(*ret.clone())?;
                 }
-                let mut j = 0;
-                while j < u.stmts.len() {
-                    let s = u.stmts.remove(j);
-                    let mut expanded = self.expand_stmt(s)?;
-                    for e in expanded.drain(..).rev() {
-                        u.stmts.insert(j, e);
-                    }
-                    j += 1;
+                let body = std::mem::take(&mut u.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
                 }
+                u.stmts = new_body;
             }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
                     **ret = self.expand_expr(*ret.clone())?;
                 }
-                let mut j = 0;
-                while j < u.stmts.len() {
-                    let s = u.stmts.remove(j);
-                    let mut expanded = self.expand_stmt(s)?;
-                    for e in expanded.drain(..).rev() {
-                        u.stmts.insert(j, e);
-                    }
-                    j += 1;
+                let body = std::mem::take(&mut u.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
                 }
+                u.stmts = new_body;
             }
             expr::Expr::Closure(c) => {
                 *c.body = self.expand_expr(*c.body.clone())?;
@@ -307,15 +255,12 @@ impl<'a> MacroExpander<'a> {
                 if let Some(ret) = &mut s.ret {
                     **ret = self.expand_expr(*ret.clone())?;
                 }
-                let mut j = 0;
-                while j < s.stmts.len() {
-                    let st = s.stmts.remove(j);
-                    let mut expanded = self.expand_stmt(st)?;
-                    for e in expanded.drain(..).rev() {
-                        s.stmts.insert(j, e);
-                    }
-                    j += 1;
+                let body = std::mem::take(&mut s.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for st in body {
+                    new_body.extend(self.expand_stmt(st)?);
                 }
+                s.stmts = new_body;
             }
             expr::Expr::Grad(g) => {
                 for arg in &mut g.args {
@@ -636,22 +581,8 @@ impl<'a> MacroExpander<'a> {
             _ => return Err("Expected delimited token tree for mlir!".to_string()),
         };
 
-        let mut s = String::new();
-        for i in 0..tokens.len() {
-            let t = &tokens[i];
-            if t.kind == crate::lexer::OwnedTokenType::Eof {
-                continue;
-            }
-            s.push_str(&t.kind.to_string());
-            let next_is_bang =
-                i + 1 < tokens.len() && tokens[i + 1].kind == crate::lexer::OwnedTokenType::Bang;
-            if !next_is_bang {
-                s.push(' ');
-            }
-        }
-        let mut lexer = crate::lexer::Lexer::new(&s);
-        let lexed_tokens = lexer.tokenize();
-        let mut parser = crate::parser::Parser::new(&lexed_tokens, &s);
+        let lexed_tokens: Vec<_> = tokens.iter().map(|t| t.as_token()).collect();
+        let mut parser = crate::parser::Parser::new(&lexed_tokens, "");
 
         while !parser.check(&crate::lexer::TokenType::Eof) {
             let field_name = match &parser.advance().kind {

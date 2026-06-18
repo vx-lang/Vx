@@ -748,6 +748,9 @@ impl Expr {
     }
 
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Expr {
+        if mapping.is_empty() {
+            return self.clone();
+        }
         match self {
             Expr::Transfer(e) => Expr::Transfer(TransferExpr {
                 expr: Box::new(e.expr.substitute(mapping)),
@@ -1038,21 +1041,30 @@ impl Expr {
             Expr::InlineMlir(e) => {
                 let mut new_block_str = e.block_str.clone();
                 if !mapping.is_empty() {
-                    let pattern = mapping
-                        .keys()
-                        .map(|k| regex::escape(k))
-                        .collect::<Vec<_>>()
-                        .join("|");
-                    if let Ok(re) = regex::Regex::new(&format!(r"\b({})\b", pattern)) {
-                        new_block_str = re
-                            .replace_all(&new_block_str, |caps: &regex::Captures| {
-                                let key = caps.get(1).unwrap().as_str();
-                                mapping
-                                    .get(key)
-                                    .map(|t| t.to_string())
-                                    .unwrap_or_else(|| key.to_string())
-                            })
-                            .to_string();
+                    let mut needs_replace = false;
+                    for k in mapping.keys() {
+                        if new_block_str.contains(&**k) {
+                            needs_replace = true;
+                            break;
+                        }
+                    }
+                    if needs_replace {
+                        let pattern = mapping
+                            .keys()
+                            .map(|k| regex::escape(k))
+                            .collect::<Vec<_>>()
+                            .join("|");
+                        if let Ok(re) = regex::Regex::new(&format!(r"\b({})\b", pattern)) {
+                            new_block_str = re
+                                .replace_all(&new_block_str, |caps: &regex::Captures| {
+                                    let key = caps.get(1).unwrap().as_str();
+                                    mapping
+                                        .get(key)
+                                        .map(|t| t.to_string())
+                                        .unwrap_or_else(|| key.to_string())
+                                })
+                                .to_string();
+                        }
                     }
                 }
                 Expr::InlineMlir(InlineMlirExpr {
