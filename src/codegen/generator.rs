@@ -348,7 +348,6 @@ impl<'c> MeliorGenerator<'c> {
             let func_name = format!("printMemref{}", ty_str.to_uppercase());
             let unranked_memref_ty =
                 Type::parse(self.context, &format!("memref<*x{}>", ty_str)).unwrap();
-            let _none_ty = Type::parse(self.context, "none").unwrap();
 
             let func_ty = melior::ir::attribute::TypeAttribute::new(
                 Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()")).unwrap(),
@@ -518,11 +517,7 @@ impl<'c> MeliorGenerator<'c> {
         self.allocs.clear();
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type);
-        let ret_ty = if is_main {
-            Type::parse(self.context, "i32").unwrap()
-        } else {
-            true_ret_ty
-        };
+        let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };
 
         let mut arg_tys = Vec::new();
         for (_, ty) in &func.params {
@@ -603,7 +598,7 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         if is_main {
-            let i32_ty = Type::parse(self.context, "i32").unwrap();
+            let i32_ty = self.i32_ty;
             let c0_op = block.append_operation(
                 melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                     .add_results(&[i32_ty])
@@ -871,7 +866,7 @@ impl<'c> MeliorGenerator<'c> {
                         )
                         .unwrap();
                     }
-                    return Type::parse(self.context, "i32").unwrap();
+                    return self.i32_ty;
                 }
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
@@ -1163,7 +1158,7 @@ impl<'c> MeliorGenerator<'c> {
                         self.loc(),
                     )
                     .add_operands(&[idx_val])
-                    .add_results(&[Type::parse(self.context, "index").unwrap()])
+                    .add_results(&[self.index_ty])
                     .build()
                     .unwrap();
                     block.append_operation(cast_op).result(0).unwrap().into()
