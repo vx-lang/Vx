@@ -19,44 +19,50 @@ pub fn format_compiler_error(
     len: usize,
     msg: &str,
 ) -> String {
-    let mut out = format!("Error at {}:{}: {}\n", line, col, msg);
-    let lines: Vec<&str> = source.lines().collect();
+    if line > 0 {
+        if let Some(src_line) = source.lines().nth(line - 1) {
+            let mut out = String::with_capacity(msg.len() + src_line.len() * 2 + 64);
+            use std::fmt::Write;
+            let _ = writeln!(out, "Error at {}:{}: {}", line, col, msg);
 
-    if line > 0 && line <= lines.len() {
-        let src_line = lines[line - 1];
-        out.push_str(src_line);
-        out.push('\n');
+            out.push_str(src_line);
+            out.push('\n');
 
-        let mut pointer = String::new();
-        for (i, c) in src_line.chars().enumerate() {
-            if i < col - 1 {
-                if c == '\t' {
-                    pointer.push('\t');
+            let mut pointer = String::new();
+            for (i, c) in src_line.chars().enumerate() {
+                if i < col - 1 {
+                    if c == '\t' {
+                        pointer.push('\t');
+                    } else {
+                        pointer.push(' ');
+                    }
                 } else {
-                    pointer.push(' ');
+                    break;
                 }
-            } else {
-                break;
             }
-        }
 
-        let mut prefix_tildes = 0;
-        while prefix_tildes < 4 && pointer.ends_with(' ') {
-            pointer.pop();
-            prefix_tildes += 1;
-        }
-        for _ in 0..prefix_tildes {
-            pointer.push('~');
-        }
+            // Replace up to 4 trailing spaces with tildes for better visual anchoring
+            let mut prefix_tildes = 0;
+            while prefix_tildes < 4 && pointer.ends_with(' ') {
+                pointer.pop();
+                prefix_tildes += 1;
+            }
+            for _ in 0..prefix_tildes {
+                pointer.push('~');
+            }
 
-        for _ in 0..len {
-            pointer.push('^');
+            for _ in 0..len {
+                pointer.push('^');
+            }
+            pointer.push_str("~~~~");
+            out.push_str(&pointer);
+            out.push('\n');
+            return out;
         }
-        pointer.push_str("~~~~");
-        out.push_str(&pointer);
-        out.push('\n');
     }
-    out
+
+    // Fallback if line is out of bounds
+    format!("Error at {}:{}: {}\n", line, col, msg)
 }
 
 #[cfg(test)]
