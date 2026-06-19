@@ -33,8 +33,7 @@ impl<'a> VxMetadata<'a> {
         serialize_metadata_symbols(type_dictionary, &mut buffer);
 
         // For now, AST bytes are empty since we're just saving the dictionary
-        let ast_bytes: Vec<u8> = Vec::new();
-        buffer.extend_from_slice(&ast_bytes);
+        // In the future, write AST data here directly
 
         fs::write(path, &buffer)?;
         Ok(())
