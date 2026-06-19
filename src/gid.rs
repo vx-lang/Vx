@@ -21,6 +21,10 @@ pub const INDEX_MASK: u64 = !ESCAPE_HATCH_MASK;
 // Bitmask Constants for Word 3
 const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
 
+// Fast Param Constants
+pub const FAST_PARAM_REGION_MAX: u16 = 0x0FFF;
+pub const FAST_PARAM_VARIANCE_MASK: u16 = 0x000F;
+
 // Specific High-Frequency Attribute Flags
 pub const ATTR_INLINE: u64 = 1 << 52;
 pub const ATTR_INLINE_ALWAYS: u64 = 1 << 53;
@@ -122,10 +126,11 @@ impl TypeId {
             param_index < 4,
             "Fast path only supports up to 4 parameters"
         );
-        if region_id > 4095 {
+        if region_id > FAST_PARAM_REGION_MAX {
             return Err("Lifetime region overflowed 12 bits. Must use Slow Path.");
         }
-        let payload = ((variance_flags as u16 & 0x0F) << 12) | (region_id & 0x0FFF);
+        let payload = ((variance_flags as u16 & FAST_PARAM_VARIANCE_MASK) << 12)
+            | (region_id & FAST_PARAM_REGION_MAX);
         let shift = param_index * 16;
         let mask = !(0xFFFF_u64 << shift);
         self.words[2] = (self.words[2] & mask) | ((payload as u64) << shift);
@@ -149,7 +154,12 @@ impl TypeId {
             0 => Visibility::Private,
             1 => Visibility::CratePublic,
             2 => Visibility::FullyPublic,
-            _ => Visibility::Private, // Safe default fallback
+            _ => {
+                #[cfg(debug_assertions)]
+                panic!("Invalid visibility bits: {:b}", vis_bits);
+                #[cfg(not(debug_assertions))]
+                Visibility::Private
+            }
         }
     }
 
