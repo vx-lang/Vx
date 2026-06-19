@@ -10,6 +10,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+use std::borrow::Cow;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticLevel {
     Warning,
@@ -19,14 +27,43 @@ pub enum DiagnosticLevel {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
-    pub message: String,
+    pub message: Cow<'static, str>,
+    pub span: Option<Span>,
+}
+
+impl Diagnostic {
+    pub fn error(msg: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            level: DiagnosticLevel::Error,
+            message: msg.into(),
+            span: None,
+        }
+    }
+
+    pub fn warning(msg: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            level: DiagnosticLevel::Warning,
+            message: msg.into(),
+            span: None,
+        }
+    }
+
+    pub fn with_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
+    }
 }
 
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.level {
-            DiagnosticLevel::Warning => write!(f, "Warning: {}", self.message),
-            DiagnosticLevel::Error => write!(f, "Error: {}", self.message),
+        let prefix = match self.level {
+            DiagnosticLevel::Warning => "Warning",
+            DiagnosticLevel::Error => "Error",
+        };
+        if let Some(s) = &self.span {
+            write!(f, "{}: {} at {}..{}", prefix, self.message, s.start, s.end)
+        } else {
+            write!(f, "{}: {}", prefix, self.message)
         }
     }
 }
@@ -41,28 +78,38 @@ impl DiagnosticsVec {
         Self { inner: Vec::new() }
     }
 
-    pub fn push(&mut self, message: String) {
-        // TODO: Parameterize this limit based on a vxc flag (-ferror-limit).
-        if self.inner.len() > 10 {
-            if self.inner.len() <= 11 {
+    pub fn report(&mut self, level: DiagnosticLevel, message: impl Into<Cow<'static, str>>) {
+        if level == DiagnosticLevel::Error && self.error_count() >= 10 {
+            if self.error_count() == 10 {
                 self.inner.push(Diagnostic {
                     level: DiagnosticLevel::Error,
-                    message: "Too many errors. Please fix the errors and try again.".to_string(),
+                    message: "Too many errors. Please fix the errors and try again.".into(),
+                    span: None,
                 });
             }
             return;
         }
+
         self.inner.push(Diagnostic {
-            level: DiagnosticLevel::Error,
-            message,
+            level,
+            message: message.into(),
+            span: None,
         });
     }
 
+    pub fn error_count(&self) -> usize {
+        self.inner
+            .iter()
+            .filter(|d| d.level == DiagnosticLevel::Error)
+            .count()
+    }
+
+    pub fn push(&mut self, message: String) {
+        self.report(DiagnosticLevel::Error, message);
+    }
+
     pub fn push_warning(&mut self, message: String) {
-        self.inner.push(Diagnostic {
-            level: DiagnosticLevel::Warning,
-            message,
-        });
+        self.report(DiagnosticLevel::Warning, message);
     }
 
     pub fn is_empty(&self) -> bool {

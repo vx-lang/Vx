@@ -78,12 +78,9 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(&tokens, input);
-    let mut program = parser.parse().map_err(|e| {
-        vec![vxc::diagnostic::Diagnostic {
-            level: vxc::diagnostic::DiagnosticLevel::Error,
-            message: e.format(input),
-        }]
-    })?;
+    let mut program = parser
+        .parse()
+        .map_err(|e| vec![vxc::diagnostic::Diagnostic::error(e.format(input))])?;
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [program.clone()];
     let env = vxc::sema::GlobalAstEnv::build(&program_arr);
