@@ -44,6 +44,7 @@ pub enum Action {
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit"])]
     pub action: Action,
 
     /// Output file
@@ -51,27 +52,27 @@ pub struct DriverOptions {
     pub output: Option<PathBuf>,
 
     /// Compile to object file (alias for --action emit-obj)
-    #[arg(short = 'c')]
+    #[arg(short = 'c', overrides_with = "action")]
     pub compile: bool,
 
     /// Parse only (alias for --action parse-only)
-    #[arg(short = 'p', long = "parse-only")]
+    #[arg(short = 'p', long = "parse-only", overrides_with = "action")]
     pub parse_only: bool,
 
     /// Print AST (alias for --action print-ast)
-    #[arg(long = "print-ast")]
+    #[arg(long = "print-ast", overrides_with = "action")]
     pub print_ast: bool,
 
     /// Emit MLIR (alias for --action emit-mlir)
-    #[arg(long = "emit-mlir")]
+    #[arg(long = "emit-mlir", overrides_with = "action")]
     pub emit_mlir: bool,
 
     /// Emit LLVM IR (alias for --action emit-llvm)
-    #[arg(long = "emit-llvm")]
+    #[arg(long = "emit-llvm", overrides_with = "action")]
     pub emit_llvm: bool,
 
     /// Run JIT (alias for --action run-jit)
-    #[arg(long = "run")]
+    #[arg(long = "run", overrides_with = "action")]
     pub run_jit: bool,
 
     /// Emit MLIR/LLVM backend diagnostics
@@ -207,6 +208,25 @@ impl CompilerDriver {
         filename: &str,
         mlir_args: &[String],
     ) -> Result<(), String> {
+        let mut program_arr = self.load_and_expand(filename)?;
+
+        if self.options.action == Action::ParseOnly {
+            return self.handle_parse_only(&program_arr, filename);
+        }
+
+        let (mut main_ast, mut other_asts) =
+            self.prepare_semantic_analysis(&mut program_arr, filename)?;
+        self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename)?;
+
+        if self.options.action == Action::PrintAst {
+            AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
+            return Ok(());
+        }
+
+        self.run_codegen(main_ast, other_asts, filename, main_file, mlir_args)
+    }
+
+    fn load_and_expand(&self, filename: &str) -> Result<Vec<crate::ast::Program>, String> {
         let mut loader = ModuleLoader::new();
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
@@ -225,36 +245,63 @@ impl CompilerDriver {
                 return Err(format!("Macro expansion failed: {}", e));
             }
         }
+        Ok(program_arr)
+    }
 
-        if self.options.action == Action::ParseOnly {
-            let ast = program_arr
-                .iter()
-                .find(|p| {
-                    p.module_path
-                        == <std::string::String as Clone>::clone(&filename.to_string()).into()
-                })
-                .unwrap();
-            println!("{:#?}", ast);
-            return Ok(());
-        }
+    fn handle_parse_only(
+        &self,
+        program_arr: &[crate::ast::Program],
+        filename: &str,
+    ) -> Result<(), String> {
+        let ast = program_arr
+            .iter()
+            .find(|p| {
+                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
+            })
+            .unwrap();
+        println!("{:#?}", ast);
+        Ok(())
+    }
 
+    fn prepare_semantic_analysis(
+        &self,
+        program_arr: &mut Vec<crate::ast::Program>,
+        filename: &str,
+    ) -> Result<
+        (
+            crate::ast::Program,
+            std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+        ),
+        String,
+    > {
         let ast_idx = program_arr
             .iter()
             .position(|p| {
                 p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
             })
             .unwrap();
-        let mut ast = program_arr.remove(ast_idx);
+        let ast = program_arr.remove(ast_idx);
 
-        if self.options.action == Action::PrintAst {
-            AstPrinter::print_program(&ast, &mut std::io::stdout()).unwrap();
+        let mut module_asts = std::collections::HashMap::new();
+        for mut p in program_arr.drain(..) {
+            p.functions.retain(|f| f.generics.is_empty());
+            module_asts.insert(p.module_path.clone(), p);
         }
+        Ok((ast, module_asts))
+    }
 
+    fn run_semantic_analysis(
+        &self,
+        ast: &mut crate::ast::Program,
+        other_asts: &mut std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+        filename: &str,
+    ) -> Result<(), String> {
         let global_session = std::sync::Arc::new(GlobalSession::new(1));
 
-        let mut env_modules: Vec<_> = program_arr.iter().map(|m| m.clone_signature()).collect();
-        env_modules.push(ast.clone()); // We fully clone the current AST so its bodies are preserved!
-        let env = GlobalAstEnv::build(&env_modules);
+        let cloned_ast_sig = ast.clone_signature();
+        let mut env_modules: Vec<&crate::ast::Program> = other_asts.values().collect();
+        env_modules.push(&cloned_ast_sig);
+        let env = GlobalAstEnv::build_from_refs(&env_modules);
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
@@ -289,12 +336,7 @@ impl CompilerDriver {
             return Err(err_msg);
         }
 
-        if self.options.action == Action::PrintAst {
-            return Ok(());
-        }
-
-        let mut monomorphized_ast = ast;
-        let mut orig_functions = monomorphized_ast.functions;
+        let mut orig_functions = ast.functions.clone();
         orig_functions.retain(|f| f.generics.is_empty());
 
         let mut new_functions: Vec<_> = checker
@@ -303,22 +345,10 @@ impl CompilerDriver {
             .map(|(f, _)| f)
             .collect();
         new_functions.extend(orig_functions);
-        monomorphized_ast.functions = new_functions;
-        monomorphized_ast.structs.extend(checker.generated_structs);
+        ast.functions = new_functions;
+        ast.structs.extend(checker.generated_structs);
 
-        let mut module_asts = std::collections::HashMap::new();
-        for mut p in program_arr {
-            p.functions.retain(|f| f.generics.is_empty());
-            module_asts.insert(p.module_path.clone(), p);
-        }
-
-        self.run_codegen(
-            monomorphized_ast,
-            module_asts,
-            filename,
-            main_file,
-            mlir_args,
-        )
+        Ok(())
     }
 
     fn run_codegen(
@@ -513,27 +543,32 @@ extern "C" {
 pub fn apply_mlir_opt(
     mlir_src: &str,
     mlir_args: &[String],
-    main_file: &std::path::Path,
+    _main_file: &std::path::Path,
 ) -> Result<String, String> {
     if mlir_args.is_empty() {
         return Ok(mlir_src.to_string());
     }
 
-    let temp_dir = std::env::temp_dir();
-    let file_stem = main_file.file_name().unwrap().to_string_lossy();
-    let pid = std::process::id();
+    let mut temp_in = tempfile::Builder::new()
+        .prefix("vx_opt_in_")
+        .suffix(".mlir")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
 
-    let temp_in = temp_dir.join(format!("{}_{}_temp_in.mlir", file_stem, pid));
-    let temp_out = temp_dir.join(format!("{}_{}_temp_out.mlir", file_stem, pid));
+    let temp_out = tempfile::Builder::new()
+        .prefix("vx_opt_out_")
+        .suffix(".mlir")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
 
-    let mut file = std::fs::File::create(&temp_in).unwrap();
-    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
+    std::io::Write::write_all(temp_in.as_file_mut(), mlir_src.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     let mut args = vec![
         "vx-opt".to_string(),
-        temp_in.to_string_lossy().into_owned(),
+        temp_in.path().to_string_lossy().into_owned(),
         "-o".to_string(),
-        temp_out.to_string_lossy().into_owned(),
+        temp_out.path().to_string_lossy().into_owned(),
     ];
     args.extend_from_slice(mlir_args);
 
@@ -545,37 +580,40 @@ pub fn apply_mlir_opt(
 
     let status = unsafe { run_vx_opt(c_ptrs.len() as std::os::raw::c_int, c_ptrs.as_ptr()) };
 
-    let _ = std::fs::remove_file(&temp_in);
     if status != 0 {
-        let _ = std::fs::remove_file(&temp_out);
         return Err("vx-opt failed. Check stderr for details.".to_string());
     }
 
-    let out_str = std::fs::read_to_string(&temp_out).unwrap_or_default();
-    let _ = std::fs::remove_file(&temp_out);
+    let out_str = std::fs::read_to_string(temp_out.path()).unwrap_or_default();
     Ok(out_str)
 }
 
-pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Result<String, String> {
-    let temp_dir = std::env::temp_dir();
-    let file_stem = main_file.file_name().unwrap().to_string_lossy();
-    let pid = std::process::id();
+pub fn translate_to_llvm_ir(
+    mlir_src: &str,
+    _main_file: &std::path::Path,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("mlir-translate")
+        .arg("--mlir-to-llvmir")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn mlir-translate: {}", e))?;
 
-    let temp_mlir = temp_dir.join(format!("{}_{}_temp_llvm.mlir", file_stem, pid));
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(mlir_src.as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
 
-    let mut file = std::fs::File::create(&temp_mlir).unwrap();
-    std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
 
-    let mut cmd = std::process::Command::new("mlir-translate");
-    cmd.arg("--mlir-to-llvmir");
-    let mlir_translate_out = cmd.arg(&temp_mlir).output().map_err(|e| e.to_string())?;
-
-    let _ = std::fs::remove_file(&temp_mlir);
-    if !mlir_translate_out.status.success() {
+    if !output.status.success() {
         return Err(format!(
             "mlir-translate failed:\n{}",
-            String::from_utf8_lossy(&mlir_translate_out.stderr)
+            String::from_utf8_lossy(&output.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&mlir_translate_out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

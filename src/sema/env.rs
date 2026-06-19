@@ -48,6 +48,11 @@ pub struct GlobalAstEnv<'a> {
 
 impl<'a> GlobalAstEnv<'a> {
     pub fn build(modules: &'a [Program]) -> Self {
+        let refs: Vec<&'a Program> = modules.iter().collect();
+        Self::build_from_refs(&refs)
+    }
+
+    pub fn build_from_refs(modules: &[&'a Program]) -> Self {
         let mut env = Self {
             structs: HashMap::new(),
             enums: HashMap::new(),
@@ -58,7 +63,7 @@ impl<'a> GlobalAstEnv<'a> {
             generic_functions: HashMap::new(),
         };
 
-        for module in modules {
+        for &module in modules {
             for s in &module.structs {
                 env.structs.insert(s.name.clone(), s);
             }
