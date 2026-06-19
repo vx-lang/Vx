@@ -39,6 +39,17 @@ extern "C" {
     fn mlirEnableOptimizationRemarks(ctx: mlir_sys::MlirContext);
 }
 
+use std::sync::Once;
+
+static INIT: Once = Once::new();
+
+pub fn init_codegen_globals() {
+    INIT.call_once(|| {
+        melior::utility::register_all_passes();
+        register_vx_passes();
+    });
+}
+
 pub fn register_vx_dialect(context: &Context) {
     unsafe {
         registerVxDialect(context.to_raw());
@@ -52,12 +63,14 @@ pub fn enable_optimization_remarks(context: &Context) {
 }
 
 pub fn parse_command_line_options(args: &[String]) -> Result<(), String> {
-    let mut c_args = Vec::new();
-    for arg in args {
-        let c_str = std::ffi::CString::new(arg.clone())
-            .map_err(|_| format!("Invalid CLI argument (contains null byte): {}", arg))?;
-        c_args.push(c_str);
-    }
+    let c_args: Vec<std::ffi::CString> = args
+        .iter()
+        .map(|s| {
+            std::ffi::CString::new(s.as_str())
+                .map_err(|_| format!("Invalid CLI argument (contains null byte): {}", s))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let c_args_ptrs: Vec<*const std::ffi::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
     unsafe {
         parseCommandLineOptions(c_args_ptrs.len() as std::ffi::c_int, c_args_ptrs.as_ptr());
@@ -75,61 +88,35 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // Register the custom `vx` dialect before loading dialects
     register_vx_dialect(context);
 
+    // Ensure all passes (built-in and custom) are registered exactly once globally
+    init_codegen_globals();
+
     let pass_manager = melior::pass::PassManager::new(context);
-
-    // Add custom Vx lowering passes
-    unsafe {
-        addVxLoweringPass(pass_manager.to_raw());
-        addVxToLLVMPass(pass_manager.to_raw());
-    }
-
-    // Register all built-in passes
-    melior::utility::register_all_passes();
 
     // Check if an external plugin is specified via ENZYME_LIB (for MLIR Enzyme)
     let mut has_enzyme = false;
     if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
-        match std::ffi::CString::new(enzyme_lib.clone()) {
+        match std::ffi::CString::new(enzyme_lib.as_str()) {
             Ok(c_path) => {
                 let loaded = unsafe { loadMlirPassPlugin(c_path.as_ptr()) };
                 if loaded {
-                    println!("[CodeGen] Loaded MLIR Pass Plugin: {}", enzyme_lib);
+                    println!("[CodeGen] Loaded MLIR Pass Plugin from {}", enzyme_lib);
                     has_enzyme = true;
                 } else {
                     eprintln!(
-                        "[CodeGen] Failed to load MLIR Pass Plugin (may not export MLIR plugin hooks): {}",
+                        "[CodeGen] Failed to load MLIR Pass Plugin at {}",
                         enzyme_lib
                     );
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "[CodeGen] Invalid ENZYME_LIB path (contains null byte): {}",
-                    e
-                );
+            Err(_) => {
+                eprintln!("[CodeGen] Invalid ENZYME_LIB path (contains null byte)");
             }
         }
     }
 
-    // Architectural Note on PassManagers:
-    // We use a separate `vx_pm` PassManager for our custom lowering passes first,
-    // before running the standard string-based pass pipeline.
-    // This is because `melior::utility::parse_pass_pipeline` directly overwrites
-    // or clears the manager it is applied to. If we appended standard passes to
-    // the same manager using the string API, it could conflict or drop the custom
-    // passes we added via the raw C API `addVxLoweringPass`.
-    // Running them in two separate sequences guarantees safety.
-    let vx_pm = melior::pass::PassManager::new(context);
-    unsafe {
-        addVxLoweringPass(vx_pm.to_raw());
-        addVxToLLVMPass(vx_pm.to_raw());
-    }
-    vx_pm
-        .run(module)
-        .map_err(|e| format!("Failed to lower Vx dialect: {}", e))?;
-
-    // Now run standard pipeline
-    let mut pipeline = "builtin.module(".to_string();
+    // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
+    let mut pipeline = "builtin.module(convert-vx-to-standard,vx-to-llvm,".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
