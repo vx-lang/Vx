@@ -13,7 +13,6 @@
 //
 //===----------------------------------------------------------------------===//
 use rustc_hash::FxHasher;
-use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 
 /// Computes a fast 64-bit cryptographic-like hash for a given module path.
@@ -28,9 +27,9 @@ pub fn compute_module_hash(module_path: &str) -> u64 {
 /// Represents the stable topological path to a definition (struct, enum, closure).
 /// This prevents incremental compilation breakage when anonymous types are re-ordered.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DefPath {
+pub enum DefPath<'a> {
     /// A named, top-level symbol (e.g., `MyStruct`).
-    Named(Cow<'static, str>),
+    Named(&'a str),
     /// An anonymous closure or comptime block, defined by its structural layout
     /// or its position within a specific parent item, rather than file line number.
     Anonymous {
@@ -39,7 +38,7 @@ pub enum DefPath {
     },
 }
 
-impl DefPath {
+impl<'a> DefPath<'a> {
     /// Computes the deterministic 64-bit Word 1 for the TypeId.
     pub fn compute_symbol_hash(&self) -> u64 {
         let mut hasher = FxHasher::default();
@@ -69,17 +68,17 @@ mod tests {
 
     #[test]
     fn test_named_defpath_stability() {
-        let path1 = DefPath::Named("MyStruct".into());
-        let path2 = DefPath::Named("MyStruct".into());
+        let path1 = DefPath::Named("MyStruct");
+        let path2 = DefPath::Named("MyStruct");
         assert_eq!(path1.compute_symbol_hash(), path2.compute_symbol_hash());
 
-        let path3 = DefPath::Named("OtherStruct".into());
+        let path3 = DefPath::Named("OtherStruct");
         assert_ne!(path1.compute_symbol_hash(), path3.compute_symbol_hash());
     }
 
     #[test]
     fn test_anonymous_defpath_stability() {
-        let parent = DefPath::Named("ParentFn".into()).compute_symbol_hash();
+        let parent = DefPath::Named("ParentFn").compute_symbol_hash();
 
         let anon1 = DefPath::Anonymous {
             parent_hash: parent,

@@ -32,23 +32,35 @@ pub enum Opcode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Register(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeIdx(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct HirInstruction {
     /// The specific operation (e.g. Add, Call, Store, Branch)
     pub opcode: Opcode,
     /// Register index for the first operand
-    pub operand1: u32,
+    pub operand1: Register,
     /// Register index for the second operand
-    pub operand2: u32,
+    pub operand2: Register,
     /// Lightweight 32-bit index pointing into the `LOCAL_TYPE_STREAM`
     /// to fetch the resolved 256-bit GID for this instruction's type.
-    pub type_idx: u32,
+    pub type_idx: TypeIdx,
     /// Inline scalar immediate value (e.g. f64 or i64)
     pub imm: u64,
 }
 
 impl HirInstruction {
-    pub fn new(opcode: Opcode, operand1: u32, operand2: u32, type_idx: u32, imm: u64) -> Self {
+    pub fn new(
+        opcode: Opcode,
+        operand1: Register,
+        operand2: Register,
+        type_idx: TypeIdx,
+        imm: u64,
+    ) -> Self {
         Self {
             opcode,
             operand1,

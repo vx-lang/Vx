@@ -31,25 +31,16 @@ pub fn build_symbol_map(modules: &[VxModule]) -> SymbolMap {
         let mut module_symbols = HashMap::new();
         let module_hash = compute_module_hash(&module.module_path);
 
-        for struct_decl in &module.structs {
-            let sym_hash =
-                DefPath::Named(struct_decl.name.to_string().into()).compute_symbol_hash();
-            // Flag parsing can happen later, for now we just use 0
+        let mut process_decl = |name: &crate::symbol::Symbol| {
+            // DefPath::Named can now take a borrowed &str.
+            let sym_hash = DefPath::Named(name.as_ref()).compute_symbol_hash();
             let tid = TypeId::new(module_hash, sym_hash, 0, 0);
-            module_symbols.insert(struct_decl.name.clone(), tid);
-        }
+            module_symbols.insert(name.clone(), tid);
+        };
 
-        for enum_decl in &module.enums {
-            let sym_hash = DefPath::Named(enum_decl.name.to_string().into()).compute_symbol_hash();
-            let tid = TypeId::new(module_hash, sym_hash, 0, 0);
-            module_symbols.insert(enum_decl.name.clone(), tid);
-        }
-
-        for trait_decl in &module.traits {
-            let sym_hash = DefPath::Named(trait_decl.name.to_string().into()).compute_symbol_hash();
-            let tid = TypeId::new(module_hash, sym_hash, 0, 0);
-            module_symbols.insert(trait_decl.name.clone(), tid);
-        }
+        module.structs.iter().for_each(|d| process_decl(&d.name));
+        module.enums.iter().for_each(|d| process_decl(&d.name));
+        module.traits.iter().for_each(|d| process_decl(&d.name));
 
         map.insert(module.module_path.clone(), module_symbols);
     }
