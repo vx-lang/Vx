@@ -61,6 +61,18 @@ impl Indent {
 }
 
 impl AstPrinter {
+    fn print_list<T, F>(items: &[T], mut print_fn: F) -> std::io::Result<()>
+    where
+        F: FnMut(&T, &str, bool) -> std::io::Result<()>,
+    {
+        for (i, item) in items.iter().enumerate() {
+            let is_last = i == items.len() - 1;
+            let prefix = if is_last { "└─ " } else { "├─ " };
+            print_fn(item, prefix, is_last)?;
+        }
+        Ok(())
+    }
+
     pub fn print_program(program: &Program, w: &mut impl Write) -> std::io::Result<()> {
         writeln!(w, "Program")?;
 
@@ -110,10 +122,7 @@ impl AstPrinter {
         stmts: &[Statement],
         indent: &Indent,
     ) -> std::io::Result<()> {
-        for (i, stmt) in stmts.iter().enumerate() {
-            let is_last = i == stmts.len() - 1;
-            let prefix = if is_last { "└─ " } else { "├─ " };
-
+        Self::print_list(stmts, |stmt, prefix, is_last| {
             match stmt {
                 Statement::LetDecl(LetDeclStmt {
                     name,
@@ -158,8 +167,8 @@ impl AstPrinter {
                     writeln!(w, "{}{:?}", prefix, stmt)?; // Fallback for other statements
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn print_expr(

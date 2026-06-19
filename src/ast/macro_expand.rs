@@ -19,6 +19,16 @@ pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
 }
 
+fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
+    std::mem::replace(
+        expr,
+        expr::Expr::Number(expr::NumberExpr::new(
+            "0".into(),
+            None,
+            crate::ast::Span::default(),
+        )),
+    )
+}
 impl<'a> MacroExpander<'a> {
     pub fn new(macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>) -> Self {
         Self { macros }
@@ -91,24 +101,24 @@ impl<'a> MacroExpander<'a> {
     fn expand_stmt_children(&mut self, stmt: &mut stmt::Statement) -> Result<(), String> {
         match stmt {
             stmt::Statement::ExprStmt(e) => {
-                e.expr = self.expand_expr(e.expr.clone())?;
+                e.expr = self.expand_expr(take_expr(&mut e.expr))?;
             }
             stmt::Statement::LetDecl(l) => {
-                l.expr = self.expand_expr(l.expr.clone())?;
+                l.expr = self.expand_expr(take_expr(&mut l.expr))?;
             }
             stmt::Statement::Assign(a) => {
-                a.lhs = self.expand_expr(a.lhs.clone())?;
-                a.rhs = self.expand_expr(a.rhs.clone())?;
+                a.lhs = self.expand_expr(take_expr(&mut a.lhs))?;
+                a.rhs = self.expand_expr(take_expr(&mut a.rhs))?;
             }
             stmt::Statement::CompoundAssign(a) => {
-                a.lhs = self.expand_expr(a.lhs.clone())?;
-                a.rhs = self.expand_expr(a.rhs.clone())?;
+                a.lhs = self.expand_expr(take_expr(&mut a.lhs))?;
+                a.rhs = self.expand_expr(take_expr(&mut a.rhs))?;
             }
             stmt::Statement::Return(r) => {
-                r.expr = self.expand_expr(r.expr.clone())?;
+                r.expr = self.expand_expr(take_expr(&mut r.expr))?;
             }
             stmt::Statement::Assert(a) => {
-                *a.expr = self.expand_expr(*a.expr.clone())?;
+                *a.expr = self.expand_expr(take_expr(&mut a.expr))?;
             }
             stmt::Statement::Loop(l) => {
                 let body = std::mem::take(&mut l.body);
@@ -119,7 +129,7 @@ impl<'a> MacroExpander<'a> {
                 l.body = new_body;
             }
             stmt::Statement::ForLoop(f) => {
-                *f.iterable = self.expand_expr(*f.iterable.clone())?;
+                *f.iterable = self.expand_expr(take_expr(&mut f.iterable))?;
                 let body = std::mem::take(&mut f.body);
                 let mut new_body = Vec::with_capacity(body.len());
                 for s in body {
@@ -141,39 +151,39 @@ impl<'a> MacroExpander<'a> {
         // Traverse and expand
         match &mut expr {
             expr::Expr::BinaryOp(b) => {
-                *b.lhs = self.expand_expr(*b.lhs.clone())?;
-                *b.rhs = self.expand_expr(*b.rhs.clone())?;
+                *b.lhs = self.expand_expr(take_expr(&mut b.lhs))?;
+                *b.rhs = self.expand_expr(take_expr(&mut b.rhs))?;
             }
             expr::Expr::RelationalOp(b) => {
-                *b.lhs = self.expand_expr(*b.lhs.clone())?;
-                *b.rhs = self.expand_expr(*b.rhs.clone())?;
+                *b.lhs = self.expand_expr(take_expr(&mut b.lhs))?;
+                *b.rhs = self.expand_expr(take_expr(&mut b.rhs))?;
             }
             expr::Expr::LogicalOp(b) => {
-                *b.lhs = self.expand_expr(*b.lhs.clone())?;
-                *b.rhs = self.expand_expr(*b.rhs.clone())?;
+                *b.lhs = self.expand_expr(take_expr(&mut b.lhs))?;
+                *b.rhs = self.expand_expr(take_expr(&mut b.rhs))?;
             }
             expr::Expr::Range(b) => {
-                *b.start = self.expand_expr(*b.start.clone())?;
-                *b.end = self.expand_expr(*b.end.clone())?;
+                *b.start = self.expand_expr(take_expr(&mut b.start))?;
+                *b.end = self.expand_expr(take_expr(&mut b.end))?;
             }
             expr::Expr::UnaryOp(u) => {
-                *u.expr = self.expand_expr(*u.expr.clone())?;
+                *u.expr = self.expand_expr(take_expr(&mut u.expr))?;
             }
             expr::Expr::Borrow(u) => {
-                *u.expr = self.expand_expr(*u.expr.clone())?;
+                *u.expr = self.expand_expr(take_expr(&mut u.expr))?;
             }
             expr::Expr::Dereference(u) => {
-                *u.expr = self.expand_expr(*u.expr.clone())?;
+                *u.expr = self.expand_expr(take_expr(&mut u.expr))?;
             }
             expr::Expr::MemberAccess(m) => {
-                *m.base = self.expand_expr(*m.base.clone())?;
+                *m.base = self.expand_expr(take_expr(&mut m.base))?;
             }
             expr::Expr::IndexAccess(m) => {
-                *m.base = self.expand_expr(*m.base.clone())?;
-                *m.index = self.expand_expr(*m.index.clone())?;
+                *m.base = self.expand_expr(take_expr(&mut m.base))?;
+                *m.index = self.expand_expr(take_expr(&mut m.index))?;
             }
             expr::Expr::Match(m) => {
-                *m.expr = self.expand_expr(*m.expr.clone())?;
+                *m.expr = self.expand_expr(take_expr(&mut m.expr))?;
                 for arm in &mut m.arms {
                     let body = std::mem::take(&mut arm.body);
                     let mut new_body = Vec::with_capacity(body.len());
@@ -185,32 +195,32 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::FunctionCall(f) => {
                 for arg in &mut f.args {
-                    *arg = self.expand_expr(arg.clone())?;
+                    *arg = self.expand_expr(take_expr(arg))?;
                 }
             }
             expr::Expr::MethodCall(m) => {
-                *m.base = self.expand_expr(*m.base.clone())?;
+                *m.base = self.expand_expr(take_expr(&mut m.base))?;
                 for arg in &mut m.args {
-                    *arg = self.expand_expr(arg.clone())?;
+                    *arg = self.expand_expr(take_expr(arg))?;
                 }
             }
             expr::Expr::StructInit(s) => {
                 for (_, e) in &mut s.fields {
-                    *e = self.expand_expr(e.clone())?;
+                    *e = self.expand_expr(take_expr(e))?;
                 }
             }
             expr::Expr::Array(a) => {
                 for e in &mut a.elements {
-                    *e = self.expand_expr(e.clone())?;
+                    *e = self.expand_expr(take_expr(e))?;
                 }
             }
             expr::Expr::VecMacro(a) => {
                 for e in &mut a.elements {
-                    *e = self.expand_expr(e.clone())?;
+                    *e = self.expand_expr(take_expr(e))?;
                 }
             }
             expr::Expr::If(i) => {
-                *i.cond = self.expand_expr(*i.cond.clone())?;
+                *i.cond = self.expand_expr(take_expr(&mut i.cond))?;
                 let body = std::mem::take(&mut i.then_block);
                 let mut new_body = Vec::with_capacity(body.len());
                 for s in body {
@@ -228,7 +238,7 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::UnsafeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
-                    **ret = self.expand_expr(*ret.clone())?;
+                    **ret = self.expand_expr(take_expr(ret))?;
                 }
                 let body = std::mem::take(&mut u.stmts);
                 let mut new_body = Vec::with_capacity(body.len());
@@ -239,7 +249,7 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
-                    **ret = self.expand_expr(*ret.clone())?;
+                    **ret = self.expand_expr(take_expr(ret))?;
                 }
                 let body = std::mem::take(&mut u.stmts);
                 let mut new_body = Vec::with_capacity(body.len());
@@ -249,11 +259,11 @@ impl<'a> MacroExpander<'a> {
                 u.stmts = new_body;
             }
             expr::Expr::Closure(c) => {
-                *c.body = self.expand_expr(*c.body.clone())?;
+                *c.body = self.expand_expr(take_expr(&mut c.body))?;
             }
             expr::Expr::SpawnOn(s) => {
                 if let Some(ret) = &mut s.ret {
-                    **ret = self.expand_expr(*ret.clone())?;
+                    **ret = self.expand_expr(take_expr(ret))?;
                 }
                 let body = std::mem::take(&mut s.stmts);
                 let mut new_body = Vec::with_capacity(body.len());
@@ -264,20 +274,20 @@ impl<'a> MacroExpander<'a> {
             }
             expr::Expr::Grad(g) => {
                 for arg in &mut g.args {
-                    *arg = self.expand_expr(arg.clone())?;
+                    *arg = self.expand_expr(take_expr(arg))?;
                 }
             }
             expr::Expr::Vjp(v) => {
                 for arg in &mut v.args {
-                    *arg = self.expand_expr(arg.clone())?;
+                    *arg = self.expand_expr(take_expr(arg))?;
                 }
-                *v.cotangent = self.expand_expr(*v.cotangent.clone())?;
+                *v.cotangent = self.expand_expr(take_expr(&mut v.cotangent))?;
             }
             expr::Expr::Jvp(j_expr) => {
                 for arg in &mut j_expr.args {
-                    *arg = self.expand_expr(arg.clone())?;
+                    *arg = self.expand_expr(take_expr(arg))?;
                 }
-                *j_expr.tangent = self.expand_expr(*j_expr.tangent.clone())?;
+                *j_expr.tangent = self.expand_expr(take_expr(&mut j_expr.tangent))?;
             }
             _ => {}
         }

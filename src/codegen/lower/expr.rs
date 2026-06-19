@@ -2083,7 +2083,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             _ => {
                 if let Some(ast::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
-                        value: "0".to_string(),
+                        value: "0".into(),
                         ty: None,
                         span: Span::default(),
                     })))

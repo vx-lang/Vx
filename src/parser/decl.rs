@@ -534,7 +534,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             assert_eq!(
                 *top,
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                    value: "0".to_string(),
+                    value: "0".to_string().into(),
                     ty: Some(ElementType::I32),
                     span: Span::default()
                 })))
@@ -609,7 +609,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     **start,
                     Expr::Number(NumberExpr {
-                        value: "0".to_string(),
+                        value: "0".to_string().into(),
                         ty: Some(ElementType::I32),
                         span: Span::default()
                     })
@@ -617,7 +617,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     **end,
                     Expr::Number(NumberExpr {
-                        value: "10".to_string(),
+                        value: "10".to_string().into(),
                         ty: Some(ElementType::I32),
                         span: Span::default()
                     })
@@ -637,7 +637,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     *rhs,
                     Expr::Number(NumberExpr {
-                        value: "5".to_string(),
+                        value: "5".to_string().into(),
                         ty: Some(ElementType::I32),
                         span: Span::default()
                     })
@@ -680,7 +680,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 assert_eq!(
                     **idx,
                     Expr::Number(NumberExpr {
-                        value: "0".to_string(),
+                        value: "0".to_string().into(),
                         ty: Some(ElementType::I32),
                         span: Span::default()
                     })

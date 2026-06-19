@@ -802,13 +802,13 @@ impl<'a> Parser<'a> {
                             infer_number_literal(s).map_err(|e| self.error(&e))?;
 
                         Expr::Number(NumberExpr {
-                            value: num_str.to_string(),
+                            value: num_str.into(),
                             ty: el_ty,
                             span: Span::default(),
                         })
                     }
                     TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {
-                        value: s.to_string(),
+                        value: s.into(),
                         span: Span::default(),
                     }),
 
@@ -1105,7 +1105,7 @@ mod tests {
             assert_eq!(method_name.as_ref(), "push");
             assert_eq!(args.len(), 1);
             if let Expr::Number(NumberExpr { value, .. }) = &args[0] {
-                assert_eq!(value, "10");
+                assert_eq!(value.as_ref(), "10");
             } else {
                 panic!("Expected Number payload");
             }

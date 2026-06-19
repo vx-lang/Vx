@@ -894,20 +894,20 @@ impl<'a> TypeChecker<'a> {
             Type::Tensor(_, _, _) => {
                 let pinned_top = match &target_mem {
                     MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string(),
+                        value: "0".into(),
                         ty: Some(ElementType::I32),
                         span: Span::default(),
                     }))),
                     MemorySpace::LocalSRAM => {
                         Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default(),
                         })))
                     }
                     MemorySpace::NicRam | MemorySpace::RemoteHbm => {
                         Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default(),
                         })))
@@ -927,20 +927,20 @@ impl<'a> TypeChecker<'a> {
             Type::Pinned(base, _) => {
                 let pinned_top = match &target_mem {
                     MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string(),
+                        value: "0".into(),
                         ty: Some(ElementType::I32),
                         span: Span::default(),
                     }))),
                     MemorySpace::LocalSRAM => {
                         Topology::AccCore(Box::new(Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default(),
                         })))
                     }
                     MemorySpace::NicRam | MemorySpace::RemoteHbm => {
                         Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default(),
                         })))
@@ -2188,7 +2188,7 @@ impl<'a> TypeChecker<'a> {
                     base_ty = Type::Pinned(
                         Box::new(base_ty),
                         Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default(),
                         }))),
@@ -3160,7 +3160,7 @@ impl<'a> TypeChecker<'a> {
                     let empty_env = HashMap::new();
                     let mut new_dims = vec![
                         Expr::Number(NumberExpr {
-                            value: "0".to_string(),
+                            value: "0".into(),
                             ty: Some(ElementType::I32),
                             span: Span::default()
                         });

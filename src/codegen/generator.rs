@@ -1065,9 +1065,9 @@ impl<'c> MeliorGenerator<'c> {
         }
         if let ast::Type::Const(expr) = ty {
             if let ast::Expr::Number(n) = &**expr {
-                return n.value.clone();
+                return n.value.to_string();
             } else if let ast::Expr::StringLiteral(s) = &**expr {
-                return s.value.clone();
+                return s.value.to_string();
             } else {
                 return format!("{:?}", expr)
                     .replace(" ", "_")

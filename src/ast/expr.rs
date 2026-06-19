@@ -81,24 +81,31 @@ impl EnumVariantExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct NumberExpr {
-    pub value: String,
+    pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
 }
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
-        Self { value, ty, span }
+        Self {
+            value: value.into(),
+            ty,
+            span,
+        }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StringLiteralExpr {
-    pub value: String,
+    pub value: Symbol,
     pub span: Span,
 }
 impl StringLiteralExpr {
     pub fn new(value: String, span: Span) -> Self {
-        Self { value, span }
+        Self {
+            value: value.into(),
+            span,
+        }
     }
 }
 
@@ -959,7 +966,7 @@ impl Expr {
                     if let Type::Generic(val_str, _) = mapped_ty {
                         if val_str.parse::<f64>().is_ok() {
                             return Expr::Number(ast::NumberExpr {
-                                value: val_str.to_string(),
+                                value: val_str.to_string().into(),
                                 ty: None,
                                 span: id.span,
                             });
@@ -1049,22 +1056,31 @@ impl Expr {
                         }
                     }
                     if needs_replace {
-                        let pattern = mapping
-                            .keys()
-                            .map(|k| regex::escape(k))
-                            .collect::<Vec<_>>()
-                            .join("|");
-                        if let Ok(re) = regex::Regex::new(&format!(r"\b({})\b", pattern)) {
-                            new_block_str = re
-                                .replace_all(&new_block_str, |caps: &regex::Captures| {
-                                    let key = caps.get(1).unwrap().as_str();
-                                    mapping
-                                        .get(key)
-                                        .map(|t| t.to_string())
-                                        .unwrap_or_else(|| key.to_string())
-                                })
-                                .to_string();
+                        let mut result = String::with_capacity(new_block_str.len());
+                        let mut current_word = String::new();
+                        for c in new_block_str.chars() {
+                            if c.is_alphanumeric() || c == '_' {
+                                current_word.push(c);
+                            } else {
+                                if !current_word.is_empty() {
+                                    if let Some(mapped_ty) = mapping.get(current_word.as_str()) {
+                                        result.push_str(&mapped_ty.to_string());
+                                    } else {
+                                        result.push_str(&current_word);
+                                    }
+                                    current_word.clear();
+                                }
+                                result.push(c);
+                            }
                         }
+                        if !current_word.is_empty() {
+                            if let Some(mapped_ty) = mapping.get(current_word.as_str()) {
+                                result.push_str(&mapped_ty.to_string());
+                            } else {
+                                result.push_str(&current_word);
+                            }
+                        }
+                        new_block_str = result;
                     }
                 }
                 Expr::InlineMlir(InlineMlirExpr {

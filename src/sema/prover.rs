@@ -87,7 +87,7 @@ impl SmtProver {
 
     fn lower_expr(&mut self, expr: &Expr) -> Result<String, String> {
         match expr {
-            Expr::Number(n) => Ok(n.value.clone()),
+            Expr::Number(n) => Ok(n.value.to_string()),
             Expr::Identifier(id) => {
                 let name = id.name.replace(".", "_");
                 self.declarations.insert(name.clone());
