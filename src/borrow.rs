@@ -73,6 +73,10 @@
 use crate::gid::{LifetimeSignature, TypeId, UnboundedFunctionMetadata};
 use crate::session::LocalWorkerState;
 
+const VARIANCE_MASK: u64 = 0xF000;
+const REGION_MASK: u64 = 0x0FFF;
+const PARAM_MASK: u64 = 0xFFFF;
+
 /// High-performance verification check for variance and lifetime compatibility.
 /// Encodes borrow checker math directly into the 256-bit registers.
 ///
@@ -101,44 +105,42 @@ pub fn verify_subtyping_bounds(
                 return true; // Exact structural match, exit instantly
             }
 
-            // Evaluate individual variance rules for Parameter 0
-            // Note: For a detailed explanation of the math rules, see:
-            // `docs/discussions/borrow_checker_fastpath_integration.md`
+            // Iterate through all 4 active slots in Word 2
+            for i in 0..4 {
+                let shift = i * 16;
+                let slot_a = (bits_a >> shift) & PARAM_MASK;
+                let slot_b = (bits_b >> shift) & PARAM_MASK;
 
-            // Mask out the lowest 16 bits to extract the full payload for Parameter 0
-            // The 16 bits are structured as: [ 4 bits: Variance | 12 bits: Region ID ]
-            let param_a = bits_a & 0xFFFF;
-            let param_b = bits_b & 0xFFFF;
+                let variance_a = (slot_a & VARIANCE_MASK) >> 12;
+                let variance_b = (slot_b & VARIANCE_MASK) >> 12;
 
-            // Shift right by 12 bits to isolate the top 4 bits representing the Variance flag
-            let variance_a = param_a >> 12;
-            let variance_b = param_b >> 12;
-
-            if variance_a == variance_b {
-                // Mask out the bottom 12 bits to isolate the Region ID
-                // (e.g., 0x0FFF ensures we drop the 4-bit variance flag)
-                let region_a = param_a & 0x0FFF;
-                let region_b = param_b & 0x0FFF;
-
-                // 0x0 represents Invariance (typically used for the inner type of &mut T)
-                if variance_a == 0x0 {
-                    // Invariant: Lifetimes must match EXACTLY.
-                    return region_a == region_b;
+                if variance_a != variance_b {
+                    return false;
                 }
-                // 0x1 represents Covariance (typically used for the outer lifetime of references: &'a)
-                else if variance_a == 0x1 {
+
+                let region_a = slot_a & REGION_MASK;
+                let region_b = slot_b & REGION_MASK;
+
+                let valid = match variance_a {
+                    // 0x0 represents Invariance (typically used for the inner type of &mut T)
+                    // Invariant: Lifetimes must match EXACTLY.
+                    0x0 => region_a == region_b,
+                    // 0x1 represents Covariance (typically used for the outer lifetime of references: &'a)
                     // Covariant: Source lifetime must outlive or equal target lifetime.
                     // Because Region 0 is 'static, a smaller Region ID actually lives longer.
                     // Therefore, region_a (source) <= region_b (target).
-                    return region_a <= region_b;
-                }
-                // 0x2 represents Contravariance (typically used for function pointer arguments)
-                else if variance_a == 0x2 {
+                    0x1 => region_a <= region_b,
+                    // 0x2 represents Contravariance (typically used for function pointer arguments)
                     // Contravariant: Target must outlive source.
-                    return region_a >= region_b;
+                    0x2 => region_a >= region_b,
+                    _ => false,
+                };
+
+                if !valid {
+                    return false;
                 }
             }
-            false
+            true
         }
         (LifetimeSignature::SlowPath(meta_a), LifetimeSignature::SlowPath(meta_b)) => {
             // SLOW PATH: Iterate through deep vector elements sequentially
