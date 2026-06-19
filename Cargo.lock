@@ -18,6 +18,7 @@ dependencies = [
  "regex",
  "rstest",
  "rustc-hash",
+ "tempfile",
  "vx_std_core",
 ]
 

@@ -21,6 +21,7 @@ name = "vxc"
 path = "src/lib.rs"
 
 [dependencies]
+tempfile = "3.10"
 rayon = "1.10"
 regex = "1.10"
 bytemuck = { version = "1.15", features = ["derive"] }

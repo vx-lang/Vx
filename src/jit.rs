@@ -15,9 +15,17 @@
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static JIT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+fn run_cmd(mut cmd: Command, desc: &str) -> Result<std::process::Output, String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run {}: {}", desc, e))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{} failed:\n{}", desc, err));
+    }
+    Ok(output)
+}
 
 pub fn execute_mlir(
     mlir_src: &str,
@@ -25,18 +33,18 @@ pub fn execute_mlir(
     opt_level: u8,
     disable_llvm_optimizations: bool,
 ) -> Result<String, String> {
-    // Ensure target/jit directory exists
-    let jit_dir = std::path::Path::new("target/jit");
-    if !jit_dir.exists() {
-        std::fs::create_dir_all(jit_dir).map_err(|e| e.to_string())?;
-    }
+    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
-    let pid = std::process::id();
-    let counter = JIT_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let uid = format!("{}_{}", pid, counter);
-
-    let temp_mlir = format!("target/jit/temp_{}.mlir", uid);
-    let temp_ll = format!("target/jit/temp_{}.ll", uid);
+    let temp_mlir = temp_dir
+        .path()
+        .join("input.mlir")
+        .to_string_lossy()
+        .into_owned();
+    let temp_ll = temp_dir
+        .path()
+        .join("input.ll")
+        .to_string_lossy()
+        .into_owned();
 
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
@@ -51,27 +59,20 @@ pub fn execute_mlir(
     let mlir_translate_path =
         std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());
     println!("[JIT] Translating to LLVM IR...");
-    let mlir_translate_out = Command::new(&mlir_translate_path)
-        .args(["--mlir-to-llvmir", &temp_mlir])
-        .output()
-        .map_err(|e| format!("Failed to execute {}: {}", mlir_translate_path, e))?;
-
-    if !mlir_translate_out.status.success() {
-        let err_str = String::from_utf8_lossy(&mlir_translate_out.stderr);
-        return Err(format!(
-            "mlir-translate failed:
-{}
-",
-            err_str
-        ));
-    }
+    let mut mlir_translate_cmd = Command::new(&mlir_translate_path);
+    mlir_translate_cmd.args(["--mlir-to-llvmir", &temp_mlir]);
+    let mlir_translate_out = run_cmd(mlir_translate_cmd, "mlir-translate")?;
 
     let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
     llvmir_file
         .write_all(&mlir_translate_out.stdout)
         .map_err(|e| e.to_string())?;
 
-    let temp_opt_ll = format!("target/jit/temp_opt_{}.ll", uid);
+    let temp_opt_ll = temp_dir
+        .path()
+        .join("opt.ll")
+        .to_string_lossy()
+        .into_owned();
     let mut opt_args = vec![];
     let actual_opt_level = if disable_llvm_optimizations {
         0
@@ -94,50 +95,33 @@ pub fn execute_mlir(
 
     let opt_path = std::env::var("OPT_PATH").unwrap_or_else(|_| "opt".to_string());
     println!("[JIT] Optimizing LLVM IR (-O{})...", actual_opt_level);
-    let opt_out = Command::new(&opt_path)
-        .args(&opt_args)
-        .output()
-        .map_err(|e| format!("Failed to execute {}: {}", opt_path, e))?;
-
-    if !opt_out.status.success() {
-        let err_str = String::from_utf8_lossy(&opt_out.stderr);
-        return Err(format!(
-            "opt failed:
-{}",
-            err_str
-        ));
-    }
+    let mut opt_cmd = Command::new(&opt_path);
+    opt_cmd.args(&opt_args);
+    run_cmd(opt_cmd, "opt")?;
 
     let llc_path = std::env::var("LLC_PATH").unwrap_or_else(|_| "llc".to_string());
     println!(
         "[JIT] Compiling to native object (-O{})...",
         actual_opt_level
     );
-    let temp_obj = format!("target/jit/temp_opt_{}.o", uid);
-    let llc_out = Command::new(&llc_path)
-        .args([
-            &format!("-O={}", actual_opt_level),
-            "-filetype=obj",
-            "-relocation-model=pic",
-            &temp_opt_ll,
-            "-o",
-            &temp_obj,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute {}: {}", llc_path, e))?;
-
-    if !llc_out.status.success() {
-        let err_str = String::from_utf8_lossy(&llc_out.stderr);
-        return Err(format!(
-            "llc failed:
-{}
-",
-            err_str
-        ));
-    }
+    let temp_obj = temp_dir.path().join("opt.o").to_string_lossy().into_owned();
+    let mut llc_cmd = Command::new(&llc_path);
+    llc_cmd.args([
+        &format!("-O={}", actual_opt_level),
+        "-filetype=obj",
+        "-relocation-model=pic",
+        &temp_opt_ll,
+        "-o",
+        &temp_obj,
+    ]);
+    run_cmd(llc_cmd, "llc")?;
 
     println!("[JIT] Linking native executable...");
-    let temp_exe = format!("target/jit/temp_{}.out", uid);
+    let temp_exe = temp_dir
+        .path()
+        .join("temp.out")
+        .to_string_lossy()
+        .into_owned();
     let current_dir = std::env::current_dir().unwrap();
     let profile_dir = if cfg!(debug_assertions) {
         "debug"
@@ -145,22 +129,21 @@ pub fn execute_mlir(
         "release"
     };
 
-    let llvm_config_path =
-        std::env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".to_string());
+    let llvm_config_path = std::env::var("LLVM_CONFIG_PATH")
+        .unwrap_or_else(|_| "/opt/homebrew/opt/llvm/bin/llvm-config".to_string());
 
-    let llvm_libdir_out = Command::new(&llvm_config_path)
-        .arg("--libdir")
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                format!(
-                    "Compiler toolchain error: '{}' was not found. Please ensure LLVM is installed and in your PATH, or set LLVM_CONFIG_PATH.",
-                    llvm_config_path
-                )
-            } else {
-                format!("Failed to run {}: {}", llvm_config_path, e)
-            }
-        })?;
+    let mut llvm_config_cmd = Command::new(&llvm_config_path);
+    llvm_config_cmd.arg("--libdir");
+    let llvm_libdir_out = llvm_config_cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "Compiler toolchain error: '{}' was not found. Please ensure LLVM is installed and in your PATH, or set LLVM_CONFIG_PATH.",
+                llvm_config_path
+            )
+        } else {
+            format!("Failed to run {}: {}", llvm_config_path, e)
+        }
+    })?;
     let llvm_libdir = String::from_utf8_lossy(&llvm_libdir_out.stdout)
         .trim()
         .to_string();
@@ -176,7 +159,7 @@ pub fn execute_mlir(
             current_dir.display(),
             profile_dir
         ),
-        &format!("-Wl,-rpath,{}/target/jit", current_dir.display()),
+        // No longer need target/jit in rpath
     ]);
 
     // Input obj and output exe
@@ -209,16 +192,7 @@ pub fn execute_mlir(
 
     clang_cmd.arg("-lm");
 
-    let clang_out = clang_cmd.output().map_err(|e| e.to_string())?;
-
-    if !clang_out.status.success() {
-        let err_str = String::from_utf8_lossy(&clang_out.stderr);
-        return Err(format!(
-            "clang failed:
-{}",
-            err_str
-        ));
-    }
+    run_cmd(clang_cmd, "clang")?;
 
     println!("[JIT] Executing native binary...");
     let mut exe_cmd = Command::new(&temp_exe);
