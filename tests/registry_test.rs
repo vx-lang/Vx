@@ -19,8 +19,8 @@ use vxc::registry::{ImmutableGlobalRegistry, TypeDefinition};
 #[test]
 fn test_valid_acyclic_registry() -> Result<(), String> {
     let mod_hash = compute_module_hash("core::test");
-    let struct_a_hash = DefPath::Named("A".to_string()).compute_symbol_hash();
-    let struct_b_hash = DefPath::Named("B".to_string()).compute_symbol_hash();
+    let struct_a_hash = DefPath::Named("A".into()).compute_symbol_hash();
+    let struct_b_hash = DefPath::Named("B".into()).compute_symbol_hash();
 
     let id_a = TypeId::new(mod_hash, struct_a_hash, 0, 0);
     let id_b = TypeId::new(mod_hash, struct_b_hash, 0, 0);
@@ -70,8 +70,8 @@ fn test_valid_acyclic_registry() -> Result<(), String> {
 #[test]
 fn test_invalid_cyclic_registry() -> Result<(), String> {
     let mod_hash = compute_module_hash("core::test");
-    let struct_a_hash = DefPath::Named("A".to_string()).compute_symbol_hash();
-    let struct_b_hash = DefPath::Named("B".to_string()).compute_symbol_hash();
+    let struct_a_hash = DefPath::Named("A".into()).compute_symbol_hash();
+    let struct_b_hash = DefPath::Named("B".into()).compute_symbol_hash();
 
     let id_a = TypeId::new(mod_hash, struct_a_hash, 0, 0);
     let id_b = TypeId::new(mod_hash, struct_b_hash, 0, 0);

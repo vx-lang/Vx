@@ -34,16 +34,18 @@ pub mod pipeline;
 pub mod plugin;
 pub mod registry;
 pub mod resolver;
+pub mod scratch;
 pub mod sema;
 pub mod session;
 pub mod symbol;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
 /// Useful for unit testing and interactive REPLs.
-pub fn parse_module(source: &str) -> Result<ast::VxModule, String> {
+pub fn parse_module(source: &str) -> Result<ast::VxModule, crate::error::Error> {
     let mut lexer = lexer::Lexer::new(source);
     let tokens = lexer.tokenize();
     let mut parser = parser::Parser::new(&tokens, source);
-    parser.parse().map_err(|e| e.format(source))
+    parser
+        .parse()
+        .map_err(|e| crate::error::Error(e.format(source)))
 }
-pub mod scratch;
