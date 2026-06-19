@@ -17,6 +17,11 @@ use std::process;
 use vxc::driver::{CompilerDriver, DriverOptions};
 
 fn main() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("Vx Compiler Internal Error: {}", panic_info);
+        eprintln!("Please report this bug at: https://github.com/hiraditya/Vx/issues");
+    }));
+
     let options = DriverOptions::parse();
     let driver = CompilerDriver::new(options);
 

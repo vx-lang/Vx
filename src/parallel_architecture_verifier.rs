@@ -77,23 +77,26 @@ pub mod verify_arch {
         global_slow_path_arena: &Arc<Vec<crate::gid::UnboundedFunctionMetadata>>,
     ) {
         // Assert no duplicates exist in generics arena
-        let mut generics_set = std::collections::HashSet::new();
-        for &(start, len) in global_generics_offsets.iter() {
-            let gen = &global_generics_arena[start..start + len];
-            assert!(
-                generics_set.insert(gen),
-                "FATAL: Phase 4 Deduplication failed. Duplicate generics vector found."
-            );
-        }
+        let generics_count = global_generics_offsets.len();
+        let unique_generics: std::collections::HashSet<_> = global_generics_offsets
+            .par_iter()
+            .map(|&(start, len)| &global_generics_arena[start..start + len])
+            .collect();
+        assert_eq!(
+            generics_count,
+            unique_generics.len(),
+            "FATAL: Phase 4 Deduplication failed. Duplicate generics vector found."
+        );
 
         // Assert no duplicates exist in slow path arena
-        let mut slow_path_set = std::collections::HashSet::new();
-        for meta in global_slow_path_arena.iter() {
-            assert!(
-                slow_path_set.insert(meta),
-                "FATAL: Phase 4 Deduplication failed. Duplicate slow path metadata found."
-            );
-        }
+        let slow_path_count = global_slow_path_arena.len();
+        let unique_slow_path: std::collections::HashSet<_> =
+            global_slow_path_arena.par_iter().collect();
+        assert_eq!(
+            slow_path_count,
+            unique_slow_path.len(),
+            "FATAL: Phase 4 Deduplication failed. Duplicate slow path metadata found."
+        );
     }
 
     pub fn verify_phase_5_epoch_advance(old_epoch: Weak<GlobalSession>) {

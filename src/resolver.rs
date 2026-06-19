@@ -25,25 +25,25 @@ pub type SymbolMap = HashMap<crate::symbol::Symbol, SymbolTable>;
 /// Iterates through all parsed modules sequentially and computes their deterministic
 /// 256-bit TypeId for every top-level struct, enum, and trait.
 pub fn build_symbol_map(modules: &[VxModule]) -> SymbolMap {
-    let mut map: SymbolMap = HashMap::new();
+    use rayon::prelude::*;
 
-    for module in modules {
-        let mut module_symbols = HashMap::new();
-        let module_hash = compute_module_hash(&module.module_path);
+    modules
+        .par_iter()
+        .map(|module| {
+            let mut module_symbols = HashMap::new();
+            let module_hash = compute_module_hash(&module.module_path);
 
-        let mut process_decl = |name: &crate::symbol::Symbol| {
-            // DefPath::Named can now take a borrowed &str.
-            let sym_hash = DefPath::Named(name.as_ref()).compute_symbol_hash();
-            let tid = TypeId::new(module_hash, sym_hash, 0, 0);
-            module_symbols.insert(name.clone(), tid);
-        };
+            let mut process_decl = |name: &crate::symbol::Symbol| {
+                let sym_hash = DefPath::Named(name.as_ref()).compute_symbol_hash();
+                let tid = TypeId::new(module_hash, sym_hash, 0, 0);
+                module_symbols.insert(name.clone(), tid);
+            };
 
-        module.structs.iter().for_each(|d| process_decl(&d.name));
-        module.enums.iter().for_each(|d| process_decl(&d.name));
-        module.traits.iter().for_each(|d| process_decl(&d.name));
+            module.structs.iter().for_each(|d| process_decl(&d.name));
+            module.enums.iter().for_each(|d| process_decl(&d.name));
+            module.traits.iter().for_each(|d| process_decl(&d.name));
 
-        map.insert(module.module_path.clone(), module_symbols);
-    }
-
-    map
+            (module.module_path.clone(), module_symbols)
+        })
+        .collect()
 }

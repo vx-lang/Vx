@@ -14,7 +14,9 @@
 use melior::ir::BlockLike;
 
 #[test]
-pub fn test_clone4() {
+pub fn test_operation_cloning_with_nested_regions() {
+    // This experiment verifies that cloning a "vx.macro_wrapper"
+    // correctly handles nested regions and yields.
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
     let context = melior::Context::new();
@@ -23,8 +25,12 @@ pub fn test_clone4() {
     context.set_allow_unregistered_dialects(true);
     let source =
         r#"module { "vx.macro_wrapper"() ({ ^bb0: "vx.yield"() : () -> () }) : () -> () }"#;
-    let module = melior::ir::Module::parse(&context, source).unwrap();
-    let op = module.body().first_operation().unwrap();
+    let module = melior::ir::Module::parse(&context, source)
+        .expect("Failed to parse MLIR source in scratchpad");
+    let op = module
+        .body()
+        .first_operation()
+        .expect("Failed to get first operation");
     // try cloning explicitly
     let cloned_op = melior::ir::operation::Operation::clone(&op);
     let dest_module = melior::ir::Module::new(melior::ir::Location::unknown(&context));
