@@ -862,3 +862,191 @@ impl OwnedToken {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lex(input: &str) -> Vec<TokenType<'_>> {
+        let mut lexer = Lexer::new(input);
+        lexer
+            .tokenize()
+            .into_iter()
+            .map(|t| t.kind)
+            .filter(|k| *k != TokenTypeBase::Eof)
+            .collect()
+    }
+
+    fn lex_first(input: &str) -> TokenType<'_> {
+        let mut lexer = Lexer::new(input);
+        lexer.tokenize().into_iter().next().unwrap().kind
+    }
+
+    #[test]
+    fn test_lex_keywords() {
+        assert_eq!(lex_first("fn"), TokenTypeBase::Fn);
+        assert_eq!(lex_first("let"), TokenTypeBase::Let);
+        assert_eq!(lex_first("mut"), TokenTypeBase::Mut);
+        assert_eq!(lex_first("for"), TokenTypeBase::For);
+        assert_eq!(lex_first("in"), TokenTypeBase::In);
+        assert_eq!(lex_first("if"), TokenTypeBase::If);
+        assert_eq!(lex_first("else"), TokenTypeBase::Else);
+        assert_eq!(lex_first("return"), TokenTypeBase::Return);
+        assert_eq!(lex_first("match"), TokenTypeBase::Match);
+        assert_eq!(lex_first("struct"), TokenTypeBase::Struct);
+        assert_eq!(lex_first("enum"), TokenTypeBase::Enum);
+        assert_eq!(lex_first("unsafe"), TokenTypeBase::Unsafe);
+        assert_eq!(lex_first("extern"), TokenTypeBase::Extern);
+        assert_eq!(lex_first("trait"), TokenTypeBase::Trait);
+        assert_eq!(lex_first("impl"), TokenTypeBase::Impl);
+        assert_eq!(lex_first("import"), TokenTypeBase::Import);
+        assert_eq!(lex_first("grad"), TokenTypeBase::Grad);
+        assert_eq!(lex_first("vjp"), TokenTypeBase::Vjp);
+        assert_eq!(lex_first("jvp"), TokenTypeBase::Jvp);
+    }
+
+    #[test]
+    fn test_lex_operators() {
+        assert_eq!(lex_first("+"), TokenTypeBase::Plus);
+        assert_eq!(lex_first("-"), TokenTypeBase::Minus);
+        assert_eq!(lex_first("*"), TokenTypeBase::Star);
+        assert_eq!(lex_first("/"), TokenTypeBase::Slash);
+        assert_eq!(lex_first("@"), TokenTypeBase::At);
+        assert_eq!(lex_first("("), TokenTypeBase::LeftParen);
+        assert_eq!(lex_first(")"), TokenTypeBase::RightParen);
+        assert_eq!(lex_first("{"), TokenTypeBase::LeftBrace);
+        assert_eq!(lex_first("}"), TokenTypeBase::RightBrace);
+        assert_eq!(lex_first("["), TokenTypeBase::LeftBracket);
+        assert_eq!(lex_first("]"), TokenTypeBase::RightBracket);
+        assert_eq!(lex_first(";"), TokenTypeBase::Semicolon);
+        assert_eq!(lex_first(","), TokenTypeBase::Comma);
+        assert_eq!(lex_first("&"), TokenTypeBase::Ampersand);
+        assert_eq!(lex_first("!"), TokenTypeBase::Bang);
+        assert_eq!(lex_first("."), TokenTypeBase::Dot);
+        assert_eq!(lex_first(":"), TokenTypeBase::Colon);
+    }
+
+    #[test]
+    fn test_lex_multi_char_operators() {
+        assert_eq!(lex_first("=="), TokenTypeBase::EqEq);
+        assert_eq!(lex_first("!="), TokenTypeBase::NotEq);
+        assert_eq!(lex_first("<="), TokenTypeBase::LessEq);
+        assert_eq!(lex_first(">="), TokenTypeBase::GreaterEq);
+        assert_eq!(lex_first("&&"), TokenTypeBase::AndAnd);
+        assert_eq!(lex_first("||"), TokenTypeBase::OrOr);
+        assert_eq!(lex_first("::"), TokenTypeBase::DoubleColon);
+        assert_eq!(lex_first(".."), TokenTypeBase::DoubleDot);
+        assert_eq!(lex_first("->"), TokenTypeBase::Arrow);
+        assert_eq!(lex_first("=>"), TokenTypeBase::FatArrow);
+        assert_eq!(lex_first("+="), TokenTypeBase::PlusEquals);
+    }
+
+    #[test]
+    fn test_lex_number_integer() {
+        assert_eq!(lex_first("42"), TokenTypeBase::Number("42"));
+    }
+
+    #[test]
+    fn test_lex_number_float() {
+        assert_eq!(lex_first("3.14"), TokenTypeBase::Number("3.14"));
+    }
+
+    #[test]
+    fn test_lex_number_with_suffix() {
+        assert_eq!(lex_first("42i64"), TokenTypeBase::Number("42i64"));
+    }
+
+    #[test]
+    fn test_lex_string_literal() {
+        let kind = lex_first("\"hello\"");
+        if let TokenTypeBase::StringLiteral(s) = kind {
+            assert_eq!(s.as_ref(), "hello");
+        } else {
+            panic!("Expected StringLiteral, got {:?}", kind);
+        }
+    }
+
+    #[test]
+    fn test_lex_identifier() {
+        assert_eq!(lex_first("my_var"), TokenTypeBase::Identifier("my_var"));
+    }
+
+    #[test]
+    fn test_lex_identifier_vs_keyword() {
+        // "fn" is a keyword, "fn_name" is an identifier
+        assert_eq!(lex_first("fn"), TokenTypeBase::Fn);
+        assert_eq!(lex_first("fn_name"), TokenTypeBase::Identifier("fn_name"));
+    }
+
+    #[test]
+    fn test_lex_empty_input() {
+        let mut lexer = Lexer::new("");
+        let tokens = lexer.tokenize();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenTypeBase::Eof);
+    }
+
+    #[test]
+    fn test_lex_line_tracking() {
+        let input = "a\nb";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        // Filter out Eof
+        let non_eof: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind != TokenTypeBase::Eof)
+            .collect();
+        assert_eq!(non_eof.len(), 2);
+        assert_eq!(non_eof[0].line, 1);
+        assert_eq!(non_eof[1].line, 2);
+    }
+
+    #[test]
+    fn test_lex_comment_skipped_by_default() {
+        let input = "a // comment\nb";
+        let kinds = lex(input);
+        // Comments should be skipped by default
+        assert_eq!(kinds.len(), 2);
+        assert_eq!(kinds[0], TokenTypeBase::Identifier("a"));
+        assert_eq!(kinds[1], TokenTypeBase::Identifier("b"));
+    }
+
+    #[test]
+    fn test_lex_comment_preserved() {
+        let input = "a // comment";
+        let mut lexer = Lexer::new_with_comments(input);
+        let tokens = lexer.tokenize();
+        let has_comment = tokens
+            .iter()
+            .any(|t| matches!(&t.kind, TokenTypeBase::Comment(_)));
+        assert!(
+            has_comment,
+            "Expected comment token when preserve_comments is true"
+        );
+    }
+
+    #[test]
+    fn test_lex_multiple_expressions() {
+        let kinds = lex("a + b * c");
+        assert_eq!(kinds.len(), 5);
+        assert_eq!(kinds[0], TokenTypeBase::Identifier("a"));
+        assert_eq!(kinds[1], TokenTypeBase::Plus);
+        assert_eq!(kinds[2], TokenTypeBase::Identifier("b"));
+        assert_eq!(kinds[3], TokenTypeBase::Star);
+        assert_eq!(kinds[4], TokenTypeBase::Identifier("c"));
+    }
+
+    #[test]
+    fn test_lex_function_signature() {
+        let kinds = lex("fn foo(x: i32) -> f32");
+        assert_eq!(kinds[0], TokenTypeBase::Fn);
+        assert_eq!(kinds[1], TokenTypeBase::Identifier("foo"));
+        assert_eq!(kinds[2], TokenTypeBase::LeftParen);
+        assert_eq!(kinds[3], TokenTypeBase::Identifier("x"));
+        assert_eq!(kinds[4], TokenTypeBase::Colon);
+        assert_eq!(kinds[5], TokenTypeBase::Identifier("i32"));
+        assert_eq!(kinds[6], TokenTypeBase::RightParen);
+        assert_eq!(kinds[7], TokenTypeBase::Arrow);
+        assert_eq!(kinds[8], TokenTypeBase::Identifier("f32"));
+    }
+}

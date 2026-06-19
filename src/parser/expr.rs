@@ -1106,4 +1106,295 @@ mod tests {
             panic!("Expected MethodCall, got {:?}", expr);
         }
     }
+
+    // ---- infer_number_literal tests ----
+
+    #[test]
+    fn test_infer_integer_i32() {
+        let (num, ty) = infer_number_literal("42").unwrap();
+        assert_eq!(num, "42");
+        assert_eq!(ty, Some(ElementType::I32));
+    }
+
+    #[test]
+    fn test_infer_integer_large_promotes_to_i64() {
+        // 3_000_000_000 overflows i32 but fits i64
+        let (num, ty) = infer_number_literal("3000000000").unwrap();
+        assert_eq!(num, "3000000000");
+        assert_eq!(ty, Some(ElementType::I64));
+    }
+
+    #[test]
+    fn test_infer_integer_huge_promotes_to_i128() {
+        // Overflows i64
+        let (num, ty) = infer_number_literal("99999999999999999999").unwrap();
+        assert_eq!(num, "99999999999999999999");
+        assert_eq!(ty, Some(ElementType::I128));
+    }
+
+    #[test]
+    fn test_infer_float_defaults_to_f32() {
+        let (num, ty) = infer_number_literal("3.14").unwrap();
+        assert_eq!(num, "3.14");
+        assert_eq!(ty, Some(ElementType::F32));
+    }
+
+    #[test]
+    fn test_infer_scientific_notation_is_suffix_split() {
+        // infer_number_literal splits at first alphabetic char.
+        // "1e10" → num_part="1", suffix="e10" → Err (e10 is not a valid ElementType)
+        // This is a known limitation: scientific notation is not supported directly.
+        assert!(infer_number_literal("1e10").is_err());
+        // "3.4e39" → num_part="3.4", suffix="e39" → Err
+        assert!(infer_number_literal("3.4e39").is_err());
+    }
+
+    #[test]
+    fn test_infer_suffixed_literal() {
+        let (num, ty) = infer_number_literal("42i64").unwrap();
+        assert_eq!(num, "42");
+        assert_eq!(ty, Some(ElementType::I64));
+    }
+
+    #[test]
+    fn test_infer_suffixed_float_literal() {
+        let (num, ty) = infer_number_literal("3.14f64").unwrap();
+        assert_eq!(num, "3.14");
+        assert_eq!(ty, Some(ElementType::F64));
+    }
+
+    // ---- Binary operator precedence tests ----
+
+    #[test]
+    fn test_parse_binary_add_mul_precedence() {
+        // "a + b * c" should parse as Add(a, Mul(b, c)) due to * having higher precedence
+        let expr = parse_expr("a + b * c");
+        if let Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, .. }) = expr {
+            assert_eq!(op, BinaryOp::Add);
+            assert!(matches!(&*lhs, Expr::Identifier(_)));
+            if let Expr::BinaryOp(BinaryOpExpr { op: inner_op, .. }) = &*rhs {
+                assert_eq!(*inner_op, BinaryOp::Mul);
+            } else {
+                panic!("Expected Mul on RHS, got {:?}", rhs);
+            }
+        } else {
+            panic!("Expected BinaryOp, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_logical_and_or_precedence() {
+        // "a && b || c" → Or(And(a, b), c) because && binds tighter than ||
+        let expr = parse_expr("a && b || c");
+        if let Expr::LogicalOp(LogicalOpExpr { op, lhs, .. }) = expr {
+            assert_eq!(op, LogicalOp::Or);
+            if let Expr::LogicalOp(LogicalOpExpr { op: inner_op, .. }) = &*lhs {
+                assert_eq!(*inner_op, LogicalOp::And);
+            } else {
+                panic!("Expected And on LHS, got {:?}", lhs);
+            }
+        } else {
+            panic!("Expected LogicalOp, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_relational_less_equal() {
+        let expr = parse_expr("a <= b");
+        if let Expr::RelationalOp(RelationalOpExpr { op, .. }) = expr {
+            assert_eq!(op, RelationalOp::Le);
+        } else {
+            panic!("Expected RelationalOp, got {:?}", expr);
+        }
+    }
+
+    // ---- Unary operator tests ----
+
+    #[test]
+    fn test_parse_unary_negation() {
+        let expr = parse_expr("-x");
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op, expr: inner, ..
+        }) = expr
+        {
+            assert_eq!(op, UnaryOp::Neg);
+            assert!(matches!(&*inner, Expr::Identifier(_)));
+        } else {
+            panic!("Expected UnaryOp(Neg), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_unary_not() {
+        let expr = parse_expr("!flag");
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op, expr: inner, ..
+        }) = expr
+        {
+            assert_eq!(op, UnaryOp::Not);
+            if let Expr::Identifier(IdentifierExpr { name, .. }) = &*inner {
+                assert_eq!(name.as_ref(), "flag");
+            } else {
+                panic!("Expected Identifier, got {:?}", inner);
+            }
+        } else {
+            panic!("Expected UnaryOp(Not), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_borrow_immutable() {
+        let expr = parse_expr("&x");
+        if let Expr::Borrow(BorrowExpr { is_mut, .. }) = expr {
+            assert!(!is_mut);
+        } else {
+            panic!("Expected Borrow, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_borrow_mutable() {
+        let expr = parse_expr("&mut x");
+        if let Expr::Borrow(BorrowExpr { is_mut, .. }) = expr {
+            assert!(is_mut);
+        } else {
+            panic!("Expected Borrow, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_dereference() {
+        let expr = parse_expr("*ptr");
+        if let Expr::Dereference(DereferenceExpr { expr: inner, .. }) = expr {
+            if let Expr::Identifier(IdentifierExpr { name, .. }) = &*inner {
+                assert_eq!(name.as_ref(), "ptr");
+            } else {
+                panic!("Expected Identifier, got {:?}", inner);
+            }
+        } else {
+            panic!("Expected Dereference, got {:?}", expr);
+        }
+    }
+
+    // ---- Expression kind tests ----
+
+    #[test]
+    fn test_parse_function_call() {
+        let expr = parse_expr("foo(a, b, c)");
+        if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+            assert_eq!(name.as_ref(), "foo");
+            assert_eq!(args.len(), 3);
+        } else {
+            panic!("Expected FunctionCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_function_call_no_args() {
+        let expr = parse_expr("bar()");
+        if let Expr::FunctionCall(FunctionCallExpr { name, args, .. }) = expr {
+            assert_eq!(name.as_ref(), "bar");
+            assert_eq!(args.len(), 0);
+        } else {
+            panic!("Expected FunctionCall, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_init() {
+        let input = "Point { x: 1, y: 2 }";
+        let expr = parse_expr(input);
+        if let Expr::StructInit(StructInitExpr { name, fields, .. }) = expr {
+            assert_eq!(name.as_ref(), "Point");
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].0.as_ref(), "x");
+            assert_eq!(fields[1].0.as_ref(), "y");
+        } else {
+            panic!("Expected StructInit, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_array_literal() {
+        let expr = parse_expr("[1, 2, 3]");
+        if let Expr::Array(ArrayExpr { elements, .. }) = expr {
+            assert_eq!(elements.len(), 3);
+        } else {
+            panic!("Expected Array, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_range() {
+        let expr = parse_expr("0..10");
+        if let Expr::Range(RangeExpr { start, end, .. }) = expr {
+            if let Expr::Number(NumberExpr { value, .. }) = &*start {
+                assert_eq!(value.as_ref(), "0");
+            } else {
+                panic!("Expected Number start");
+            }
+            if let Expr::Number(NumberExpr { value, .. }) = &*end {
+                assert_eq!(value.as_ref(), "10");
+            } else {
+                panic!("Expected Number end");
+            }
+        } else {
+            panic!("Expected Range, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_member_access_chain() {
+        let expr = parse_expr("a.b.c");
+        // Should be MemberAccess(MemberAccess(a, b), c)
+        if let Expr::MemberAccess(MemberAccessExpr { base, member, .. }) = expr {
+            assert_eq!(member.as_ref(), "c");
+            if let Expr::MemberAccess(MemberAccessExpr {
+                base: inner_base,
+                member: inner_member,
+                ..
+            }) = &*base
+            {
+                assert_eq!(inner_member.as_ref(), "b");
+                if let Expr::Identifier(IdentifierExpr { name, .. }) = &**inner_base {
+                    assert_eq!(name.as_ref(), "a");
+                } else {
+                    panic!("Expected Identifier at root");
+                }
+            } else {
+                panic!("Expected inner MemberAccess, got {:?}", base);
+            }
+        } else {
+            panic!("Expected MemberAccess, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_matmul_operator() {
+        let expr = parse_expr("a @ b");
+        if let Expr::BinaryOp(BinaryOpExpr { op, .. }) = expr {
+            assert_eq!(op, BinaryOp::MatMul);
+        } else {
+            panic!("Expected BinaryOp(MatMul), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_index_access() {
+        let expr = parse_expr("arr[0]");
+        if let Expr::IndexAccess(IndexAccessExpr { base, index, .. }) = expr {
+            if let Expr::Identifier(IdentifierExpr { name, .. }) = &*base {
+                assert_eq!(name.as_ref(), "arr");
+            } else {
+                panic!("Expected Identifier base");
+            }
+            if let Expr::Number(NumberExpr { value, .. }) = &*index {
+                assert_eq!(value.as_ref(), "0");
+            } else {
+                panic!("Expected Number index");
+            }
+        } else {
+            panic!("Expected IndexAccess, got {:?}", expr);
+        }
+    }
 }

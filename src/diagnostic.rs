@@ -148,3 +148,80 @@ impl Default for DiagnosticsVec {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diagnostic_display_error_no_span() {
+        let d = Diagnostic::error("type mismatch");
+        assert_eq!(d.to_string(), "Error: type mismatch");
+    }
+
+    #[test]
+    fn test_diagnostic_display_warning_with_span() {
+        let d = Diagnostic::warning("unused variable").with_span(Span { start: 5, end: 10 });
+        assert_eq!(d.to_string(), "Warning: unused variable at 5..10");
+    }
+
+    #[test]
+    fn test_diagnostic_error_with_span() {
+        let d = Diagnostic::error("undeclared").with_span(Span { start: 0, end: 3 });
+        assert_eq!(d.level, DiagnosticLevel::Error);
+        assert_eq!(d.span, Some(Span { start: 0, end: 3 }));
+    }
+
+    #[test]
+    fn test_diagnostics_vec_error_cap_at_10() {
+        let mut diags = DiagnosticsVec::new();
+        for i in 0..15 {
+            diags.push(format!("error {}", i));
+        }
+        // 10 real errors + 1 "too many errors" message = 11 total
+        assert_eq!(diags.error_count(), 11);
+        assert_eq!(diags.len(), 11);
+        // The 11th message should be the cap message
+        assert!(diags.inner[10].message.contains("Too many errors"));
+    }
+
+    #[test]
+    fn test_diagnostics_vec_warnings_not_capped() {
+        let mut diags = DiagnosticsVec::new();
+        for i in 0..20 {
+            diags.push_warning(format!("warning {}", i));
+        }
+        assert_eq!(diags.len(), 20);
+        assert_eq!(diags.error_count(), 0);
+    }
+
+    #[test]
+    fn test_diagnostics_vec_mixed_error_warning_counting() {
+        let mut diags = DiagnosticsVec::new();
+        diags.push("error 1".to_string());
+        diags.push_warning("warning 1".to_string());
+        diags.push("error 2".to_string());
+        diags.push_warning("warning 2".to_string());
+        assert_eq!(diags.error_count(), 2);
+        assert_eq!(diags.len(), 4);
+    }
+
+    #[test]
+    fn test_diagnostics_vec_empty() {
+        let diags = DiagnosticsVec::new();
+        assert!(diags.is_empty());
+        assert_eq!(diags.len(), 0);
+        assert_eq!(diags.error_count(), 0);
+    }
+
+    #[test]
+    fn test_diagnostics_vec_into_iter() {
+        let mut diags = DiagnosticsVec::new();
+        diags.push("e1".to_string());
+        diags.push_warning("w1".to_string());
+        let collected: Vec<_> = diags.into_iter().collect();
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0].level, DiagnosticLevel::Error);
+        assert_eq!(collected[1].level, DiagnosticLevel::Warning);
+    }
+}

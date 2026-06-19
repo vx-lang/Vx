@@ -428,3 +428,152 @@ impl Mangle for ElementType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_type_substitute_generic_simple() {
+        let ty = Type::Generic("T".into(), None);
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::I32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(result, Type::Scalar(ElementType::I32));
+    }
+
+    #[test]
+    fn test_type_substitute_no_match_passthrough() {
+        let ty = Type::Generic("U".into(), None);
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::I32));
+        let result = ty.substitute(&mapping);
+        // U is not in the mapping, so it stays Generic("U")
+        assert_eq!(result, Type::Generic("U".into(), None));
+    }
+
+    #[test]
+    fn test_type_substitute_borrow_nested() {
+        let ty = Type::Borrow {
+            inner: Box::new(Type::Generic("T".into(), None)),
+            mem_space: None,
+            is_mut: true,
+            region_id: 0,
+        };
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::F32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(
+            result,
+            Type::Borrow {
+                inner: Box::new(Type::Scalar(ElementType::F32)),
+                mem_space: None,
+                is_mut: true,
+                region_id: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn test_type_substitute_tensor_element() {
+        let ty = Type::Tensor(ElementType::Generic("T".into()), vec![], None);
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::F32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(result, Type::Tensor(ElementType::F32, vec![], None));
+    }
+
+    #[test]
+    fn test_type_substitute_generic_instance() {
+        let ty = Type::GenericInstance(
+            Box::new(Type::Struct("Vec".into(), None)),
+            vec![Type::Generic("T".into(), None)],
+        );
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::I32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(
+            result,
+            Type::GenericInstance(
+                Box::new(Type::Struct("Vec".into(), None)),
+                vec![Type::Scalar(ElementType::I32)],
+            )
+        );
+    }
+
+    #[test]
+    fn test_type_substitute_function() {
+        let ty = Type::Function(
+            vec![Type::Generic("T".into(), None)],
+            Box::new(Type::Generic("T".into(), None)),
+        );
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::F64));
+        let result = ty.substitute(&mapping);
+        assert_eq!(
+            result,
+            Type::Function(
+                vec![Type::Scalar(ElementType::F64)],
+                Box::new(Type::Scalar(ElementType::F64)),
+            )
+        );
+    }
+
+    #[test]
+    fn test_type_substitute_unknown_passthrough() {
+        let ty = Type::Unknown;
+        let mapping = HashMap::new();
+        assert_eq!(ty.substitute(&mapping), Type::Unknown);
+    }
+
+    #[test]
+    fn test_type_is_linear_true_cases() {
+        assert!(Type::Tensor(ElementType::F32, vec![], None).is_linear());
+        assert!(Type::Matrix.is_linear());
+        assert!(Type::Ref(
+            Box::new(Type::Scalar(ElementType::I32)),
+            MemorySpace::CPUDRAM
+        )
+        .is_linear());
+        assert!(Type::Verified(Box::new(Type::Scalar(ElementType::I32))).is_linear());
+        assert!(Type::Pinned(Box::new(Type::Scalar(ElementType::I32)), Topology::CPU).is_linear());
+        assert!(Type::Struct("Foo".into(), None).is_linear());
+        assert!(Type::Enum("Bar".into(), None).is_linear());
+    }
+
+    #[test]
+    fn test_type_is_linear_false_cases() {
+        assert!(!Type::Scalar(ElementType::I32).is_linear());
+        assert!(!Type::Unknown.is_linear());
+        assert!(!Type::Function(vec![], Box::new(Type::Unknown)).is_linear());
+        assert!(!Type::Generic("T".into(), None).is_linear());
+    }
+
+    #[test]
+    fn test_type_topology_tensor_with_topology() {
+        let ty = Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU));
+        assert_eq!(ty.topology(), Some(Topology::GPU));
+    }
+
+    #[test]
+    fn test_type_topology_tensor_without_topology() {
+        let ty = Type::Tensor(ElementType::F32, vec![], None);
+        assert_eq!(ty.topology(), None);
+    }
+
+    #[test]
+    fn test_type_topology_non_tensor_returns_none() {
+        assert_eq!(Type::Scalar(ElementType::I32).topology(), None);
+        assert_eq!(Type::Struct("X".into(), None).topology(), None);
+    }
+
+    #[test]
+    fn test_topology_is_same_kind() {
+        // CPU, CpuAvx512, CpuNeon are all distinct TopologyKinds
+        assert!(Topology::CPU.is_same_kind(&Topology::CPU));
+        assert!(!Topology::CPU.is_same_kind(&Topology::CpuAvx512));
+        assert!(!Topology::CPU.is_same_kind(&Topology::GPU));
+        assert!(Topology::GPU.is_same_kind(&Topology::GPU));
+    }
+}
