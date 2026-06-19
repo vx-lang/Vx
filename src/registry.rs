@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 use petgraph::algo::toposort;
 use petgraph::graph::DiGraph;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::gid::TypeId;
 
@@ -32,25 +32,23 @@ pub struct TypeDefinition {
 
 /// The globally frozen type registry for parallel compilation phases.
 pub struct ImmutableGlobalRegistry {
-    pub layouts: HashMap<TypeId, TypeDefinition>,
-    pub module_indices: HashMap<u64, HashMap<crate::symbol::Symbol, TypeId>>,
+    pub layouts: FxHashMap<TypeId, TypeDefinition>,
+    pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
 }
 
 impl ImmutableGlobalRegistry {
     /// Builds and validates the registry from a collection of local module thread maps.
     /// Runs a fast cycle-detection pass to ensure no infinite-sized recursive layouts exist.
     pub fn build_and_validate(definitions: Vec<TypeDefinition>) -> Result<Self, String> {
-        let mut layouts = HashMap::new();
-        let mut module_indices: HashMap<u64, HashMap<crate::symbol::Symbol, TypeId>> =
-            HashMap::new();
+        let mut layouts = FxHashMap::default();
+        let mut module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>> =
+            FxHashMap::default();
 
         let mut graph = DiGraph::<TypeId, ()>::new();
-        let mut node_map = HashMap::new();
+        let mut node_map = FxHashMap::default();
 
         // 1. Register all layouts and build the node map
-        for def in &definitions {
-            layouts.insert(def.id, def.clone());
-
+        for def in definitions {
             let mod_id = def.id.module_id();
             module_indices
                 .entry(mod_id)
@@ -59,10 +57,11 @@ impl ImmutableGlobalRegistry {
 
             let node_idx = graph.add_node(def.id);
             node_map.insert(def.id, node_idx);
+            layouts.insert(def.id, def);
         }
 
         // 2. Add dependency edges
-        for def in &definitions {
+        for def in layouts.values() {
             let source_idx = *node_map.get(&def.id).unwrap();
             for dep in &def.by_value_dependencies {
                 if let Some(target_idx) = node_map.get(dep) {
