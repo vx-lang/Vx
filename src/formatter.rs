@@ -12,53 +12,70 @@
 // readable Vx source code.
 //
 //===----------------------------------------------------------------------===//
-use crate::lexer::{Lexer, TokenType};
+use crate::lexer::{Lexer, Token, TokenType};
+use std::collections::HashMap;
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let mut lexer = Lexer::new_with_comments(content);
-    let mut tokens = lexer.tokenize();
+    let tokens = lexer.tokenize();
 
-    // Pass 1: Token Stream Normalization - Expand single-line blocks and spacing
+    if let Some(token) = tokens.first() {
+        if let TokenType::Comment(c) = &token.kind {
+            if c.contains("//! vx-format: OFF") {
+                return content.to_string();
+            }
+        }
+    }
+
+    let tokens = normalize_and_expand_blocks(tokens);
+    let tokens = adjust_spacing(tokens);
+    emit_formatted_string(tokens, indent_spaces, content.len())
+}
+
+fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
+    // Pass 1a: Ensure spaces before `{`
+    let mut spaced_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 10);
+    for token in &tokens {
+        if let TokenType::LeftBrace = token.kind {
+            if !spaced_tokens.is_empty()
+                && !matches!(spaced_tokens.last().unwrap().kind, TokenType::Whitespace(_))
+            {
+                spaced_tokens.push(Token {
+                    kind: TokenType::Whitespace(" "),
+                    line: token.line,
+                    column: token.column,
+                    length: 1,
+                });
+            }
+        }
+        spaced_tokens.push(token.clone());
+    }
+    tokens = spaced_tokens;
+
+    // Pass 1b: Match braces in O(N) using a stack
+    let mut stack = Vec::new();
+    let mut left_to_right = HashMap::new();
+    let mut right_to_left = HashMap::new();
+    for (idx, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenType::LeftBrace => stack.push(idx),
+            TokenType::RightBrace => {
+                if let Some(lb_idx) = stack.pop() {
+                    left_to_right.insert(lb_idx, idx);
+                    right_to_left.insert(idx, lb_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Pass 1c: Process blocks (collapsing `unsafe` or expanding others)
+    let mut new_tokens: Vec<Token> = Vec::with_capacity(tokens.len() + 20);
     let mut i = 0;
     while i < tokens.len() {
         if let TokenType::LeftBrace = tokens[i].kind {
-            if i > 0 && !matches!(tokens[i - 1].kind, TokenType::Whitespace(_)) {
-                tokens.insert(
-                    i,
-                    crate::lexer::Token {
-                        kind: TokenType::Whitespace(" "),
-                        line: tokens[i].line,
-                        column: tokens[i].column,
-                        length: 1,
-                    },
-                );
-                i += 1; // skip the newly inserted whitespace
-            }
-        }
-        i += 1;
-    }
-
-    let mut i = 0;
-    while i < tokens.len() {
-        if let TokenType::RightBrace = tokens[i].kind {
-            let rb_idx = i;
-            let mut lb_idx = None;
-            let mut depth = 1;
-            for j in (0..rb_idx).rev() {
-                match tokens[j].kind {
-                    TokenType::RightBrace => depth += 1,
-                    TokenType::LeftBrace => {
-                        depth -= 1;
-                        if depth == 0 {
-                            lb_idx = Some(j);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(lb_idx) = lb_idx {
+            if let Some(&rb_idx) = left_to_right.get(&i) {
+                let lb_idx = i;
                 let has_newline = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
                     if let TokenType::Whitespace(ws) = t.kind {
                         ws.contains('\n')
@@ -66,9 +83,10 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                         false
                     }
                 });
+
                 let mut is_unsafe_block = false;
-                for j in (0..lb_idx).rev() {
-                    match tokens[j].kind {
+                for j in (0..new_tokens.len()).rev() {
+                    match new_tokens[j].kind {
                         TokenType::Whitespace(_) | TokenType::Comment(_) => continue,
                         TokenType::Unsafe => {
                             is_unsafe_block = true;
@@ -81,24 +99,22 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 if is_unsafe_block {
                     // Try to measure the total length if we collapsed it to a single line
                     let mut collapsed_len = 0;
-                    // measure before the block until a newline
-                    for j in (0..lb_idx).rev() {
-                        if let TokenType::Whitespace(ws) = tokens[j].kind {
+                    for j in (0..new_tokens.len()).rev() {
+                        if let TokenType::Whitespace(ws) = new_tokens[j].kind {
                             if let Some(pos) = ws.rfind('\n') {
                                 collapsed_len += ws.len() - pos - 1;
                                 break;
                             } else {
-                                collapsed_len += tokens[j].length;
+                                collapsed_len += new_tokens[j].length;
                             }
                         } else {
-                            collapsed_len += tokens[j].length;
+                            collapsed_len += new_tokens[j].length;
                         }
                     }
-                    // measure inside the block, stripping newlines
                     for t in &tokens[lb_idx..=rb_idx] {
                         if let TokenType::Whitespace(ws) = t.kind {
                             if ws.contains('\n') {
-                                collapsed_len += 1; // will become a single space
+                                collapsed_len += 1;
                             } else {
                                 collapsed_len += t.length;
                             }
@@ -109,40 +125,38 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
 
                     if collapsed_len + 2 <= 80 {
                         // Collapse it! Replace all newlines inside with spaces.
-                        for t in &mut tokens[lb_idx..rb_idx] {
+                        new_tokens.push(tokens[lb_idx].clone());
+
+                        if !matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
+                            new_tokens.push(Token {
+                                kind: TokenType::Whitespace(" "),
+                                line: tokens[lb_idx].line,
+                                column: tokens[lb_idx].column,
+                                length: 1,
+                            });
+                        }
+
+                        for token in &tokens[(lb_idx + 1)..rb_idx] {
+                            let mut t = token.clone();
                             if let TokenType::Whitespace(ref mut ws) = t.kind {
                                 if ws.contains('\n') {
                                     *ws = " ";
                                 }
                             }
+                            new_tokens.push(t);
                         }
 
-                        // Ensure spaces inside { and }
-                        if !matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
-                            tokens.insert(
-                                rb_idx,
-                                crate::lexer::Token {
-                                    kind: TokenType::Whitespace(" "),
-                                    line: tokens[rb_idx].line,
-                                    column: tokens[rb_idx].column,
-                                    length: 1,
-                                },
-                            );
-                            i += 1;
+                        if !matches!(new_tokens.last().unwrap().kind, TokenType::Whitespace(_)) {
+                            new_tokens.push(Token {
+                                kind: TokenType::Whitespace(" "),
+                                line: tokens[rb_idx].line,
+                                column: tokens[rb_idx].column,
+                                length: 1,
+                            });
                         }
-                        if !matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                            tokens.insert(
-                                lb_idx + 1,
-                                crate::lexer::Token {
-                                    kind: TokenType::Whitespace(" "),
-                                    line: tokens[lb_idx].line,
-                                    column: tokens[lb_idx].column,
-                                    length: 1,
-                                },
-                            );
-                            i += 1;
-                        }
-                        i += 1;
+
+                        new_tokens.push(tokens[rb_idx].clone());
+                        i = rb_idx + 1;
                         continue;
                     }
                 }
@@ -152,107 +166,150 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
 
                 if !has_newline && has_non_ws {
-                    // Expand the block by inserting newlines after { and before }
-                    if matches!(tokens[rb_idx - 1].kind, TokenType::Whitespace(_)) {
-                        tokens[rb_idx - 1].kind = TokenType::Whitespace("\n");
-                    } else {
-                        tokens.insert(
-                            rb_idx,
-                            crate::lexer::Token {
-                                kind: TokenType::Whitespace("\n"),
-                                line: 0,
-                                column: 0,
-                                length: 1,
-                            },
-                        );
-                        i += 1;
-                    }
+                    new_tokens.push(tokens[lb_idx].clone());
 
                     if matches!(tokens[lb_idx + 1].kind, TokenType::Whitespace(_)) {
-                        tokens[lb_idx + 1].kind = TokenType::Whitespace("\n");
+                        let mut t = tokens[lb_idx + 1].clone();
+                        t.kind = TokenType::Whitespace("\n");
+                        new_tokens.push(t);
+                        i = lb_idx + 2;
                     } else {
-                        tokens.insert(
-                            lb_idx + 1,
-                            crate::lexer::Token {
-                                kind: TokenType::Whitespace("\n"),
-                                line: 0,
-                                column: 0,
-                                length: 1,
-                            },
-                        );
-                        i += 1;
+                        new_tokens.push(Token {
+                            kind: TokenType::Whitespace("\n"),
+                            line: 0,
+                            column: 0,
+                            length: 1,
+                        });
+                        i = lb_idx + 1;
+                    }
+                    continue;
+                }
+            }
+        } else if let TokenType::RightBrace = tokens[i].kind {
+            if let Some(&lb_idx) = right_to_left.get(&i) {
+                let has_newline = tokens[(lb_idx + 1)..i].iter().any(|t| {
+                    if let TokenType::Whitespace(ws) = t.kind {
+                        ws.contains('\n')
+                    } else {
+                        false
+                    }
+                });
+
+                let has_non_ws = tokens[(lb_idx + 1)..i]
+                    .iter()
+                    .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
+
+                if !has_newline && has_non_ws {
+                    let needs_newline = match new_tokens.last() {
+                        Some(t) => {
+                            if let TokenType::Whitespace(ws) = t.kind {
+                                !ws.contains('\n')
+                            } else {
+                                true
+                            }
+                        }
+                        None => true,
+                    };
+
+                    if needs_newline {
+                        if let Some(t) = new_tokens.last_mut() {
+                            if let TokenType::Whitespace(_) = t.kind {
+                                t.kind = TokenType::Whitespace("\n");
+                            } else {
+                                new_tokens.push(Token {
+                                    kind: TokenType::Whitespace("\n"),
+                                    line: 0,
+                                    column: 0,
+                                    length: 1,
+                                });
+                            }
+                        }
                     }
                 }
             }
         }
+
+        new_tokens.push(tokens[i].clone());
         i += 1;
     }
 
-    for i in 0..tokens.len() {
-        if matches!(tokens[i].kind, TokenType::Whitespace(_)) {
-            let prev_non_ws = (0..i).rev().find_map(|j| {
-                if !matches!(
-                    tokens[j].kind,
-                    TokenType::Whitespace(_) | TokenType::Comment(_)
-                ) {
-                    Some(tokens[j].kind.clone())
-                } else {
-                    None
-                }
-            });
-            let next_non_ws = ((i + 1)..tokens.len()).find_map(|j| {
-                if !matches!(
-                    tokens[j].kind,
-                    TokenType::Whitespace(_) | TokenType::Comment(_)
-                ) {
-                    Some(tokens[j].kind.clone())
-                } else {
-                    None
-                }
-            });
+    new_tokens
+}
 
-            if let TokenType::Whitespace(ref mut ws) = tokens[i].kind {
-                if ws.contains('\n') {
-                    if let Some(prev) = &prev_non_ws {
-                        if matches!(prev, TokenType::For | TokenType::If) {
-                            *ws = " ";
-                        }
-                    }
-                    if let Some(next) = &next_non_ws {
-                        if matches!(
-                            next,
-                            TokenType::EqEq
-                                | TokenType::NotEq
-                                | TokenType::LessEq
-                                | TokenType::GreaterEq
-                                | TokenType::LeftAngle
-                                | TokenType::RightAngle
-                                | TokenType::AndAnd
-                                | TokenType::OrOr
-                        ) {
-                            *ws = " ";
-                        }
-                    }
-                }
+fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
+    let mut new_tokens = Vec::with_capacity(tokens.len());
+    let mut last_non_ws: Option<TokenType> = None;
 
-                // Enforce } else { formatting unconditionally on whitespaces between them
-                if let (Some(TokenType::RightBrace), Some(TokenType::Else)) =
-                    (&prev_non_ws, &next_non_ws)
-                {
-                    *ws = " ";
-                }
-                if let (Some(TokenType::Else), Some(TokenType::LeftBrace)) =
-                    (&prev_non_ws, &next_non_ws)
-                {
-                    *ws = " ";
-                }
-            }
+    let mut next_non_ws_arr = vec![None; tokens.len()];
+    let mut curr_next = None;
+    for (i, token) in tokens.iter().enumerate().rev() {
+        next_non_ws_arr[i] = curr_next.clone();
+        if !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Comment(_)) {
+            curr_next = Some(token.kind.clone());
         }
     }
 
-    let mut formatted = String::with_capacity(content.len() + content.len() / 10);
+    for (i, mut token) in tokens.into_iter().enumerate() {
+        if !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Comment(_)) {
+            last_non_ws = Some(token.kind.clone());
+            new_tokens.push(token);
+            continue;
+        }
+
+        if let TokenType::Whitespace(ref mut ws) = token.kind {
+            let next_non_ws = &next_non_ws_arr[i];
+
+            if ws.contains('\n') {
+                if let Some(prev) = &last_non_ws {
+                    if matches!(prev, TokenType::For | TokenType::If) {
+                        *ws = " ";
+                    }
+                }
+                if let Some(next) = next_non_ws {
+                    if matches!(
+                        next,
+                        TokenType::EqEq
+                            | TokenType::NotEq
+                            | TokenType::LessEq
+                            | TokenType::GreaterEq
+                            | TokenType::LeftAngle
+                            | TokenType::RightAngle
+                            | TokenType::AndAnd
+                            | TokenType::OrOr
+                    ) {
+                        *ws = " ";
+                    }
+                }
+            }
+
+            if let (Some(TokenType::RightBrace), Some(TokenType::Else)) =
+                (&last_non_ws, next_non_ws)
+            {
+                *ws = " ";
+            }
+            if let (Some(TokenType::Else), Some(TokenType::LeftBrace)) = (&last_non_ws, next_non_ws)
+            {
+                *ws = " ";
+            }
+        }
+
+        new_tokens.push(token);
+    }
+
+    new_tokens
+}
+
+fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len: usize) -> String {
+    let mut formatted = String::with_capacity(original_len + original_len / 10);
     let mut indent_level: isize = 0;
-    let indent_str = " ".repeat(indent_spaces);
+
+    fn write_indent(out: &mut String, level: isize, spaces: usize) {
+        if level > 0 {
+            for _ in 0..(level as usize * spaces) {
+                out.push(' ');
+            }
+        }
+    }
 
     let mut is_new_line = true;
     let mut format_enabled = true;
@@ -271,14 +328,12 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                     }
                 } else {
                     if ws.contains('\n') {
-                        // Output the newlines and reset the start-of-line flag
                         let newlines = ws.chars().filter(|&c| c == '\n').count();
                         for _ in 0..newlines {
                             formatted.push('\n');
                         }
                         is_new_line = true;
                     } else {
-                        // Only output inline spaces if we aren't at the very start of a line
                         if !is_new_line {
                             formatted.push_str(ws);
                         }
@@ -292,28 +347,20 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 }
 
                 if format_enabled && is_new_line {
-                    for _ in 0..indent_level {
-                        formatted.push_str(&indent_str);
-                    }
+                    write_indent(&mut formatted, indent_level, indent_spaces);
                 }
                 is_new_line = false;
                 formatted.push('}');
             }
             TokenType::LeftBrace => {
                 if format_enabled && is_new_line {
-                    for _ in 0..indent_level {
-                        formatted.push_str(&indent_str);
-                    }
+                    write_indent(&mut formatted, indent_level, indent_spaces);
                 }
                 is_new_line = false;
                 formatted.push('{');
                 indent_level += 1;
             }
             TokenType::Comment(c) => {
-                if c.contains("//! vx-format: OFF") {
-                    return content.to_string();
-                }
-
                 let mut turning_off = false;
                 if c.contains("vx-format-begin: OFF") {
                     format_enabled = false;
@@ -323,18 +370,14 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
                 }
 
                 if (format_enabled || turning_off) && is_new_line {
-                    for _ in 0..indent_level {
-                        formatted.push_str(&indent_str);
-                    }
+                    write_indent(&mut formatted, indent_level, indent_spaces);
                 }
                 is_new_line = false;
                 formatted.push_str(c);
             }
             other => {
                 if format_enabled && is_new_line {
-                    for _ in 0..indent_level {
-                        formatted.push_str(&indent_str);
-                    }
+                    write_indent(&mut formatted, indent_level, indent_spaces);
                 }
                 is_new_line = false;
                 use std::fmt::Write;
