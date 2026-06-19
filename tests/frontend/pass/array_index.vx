@@ -1,0 +1,38 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- array_index.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test array literals, indexing, and iteration patterns.
+//===----------------------------------------------------------------------===//
+
+fn sum_array() -> i32 {
+  let arr = [10, 20, 30, 40, 50];
+  let mut total = 0;
+  for i in 0..5 {
+    total += arr[i];
+  }
+  return total;
+}
+
+fn dot_product() -> i32 {
+  let a = [1, 2, 3];
+  let b = [4, 5, 6];
+  let mut sum = 0;
+  for i in 0..3 {
+    sum += a[i] * b[i];
+  }
+  // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+  return sum;
+}
+
+fn main() -> i32 {
+  let s = sum_array();
+  let d = dot_product();
+  // 150 + 32 = 182
+  return s + d;
+}

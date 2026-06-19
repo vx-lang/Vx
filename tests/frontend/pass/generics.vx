@@ -1,0 +1,51 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- generics.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test generic structs, generic enums, and generic function instantiation.
+//===----------------------------------------------------------------------===//
+
+struct Pair<T> {
+  first: T,
+  second: T,
+}
+
+enum Maybe<T> {
+  Just(T),
+  Nothing,
+}
+
+impl Pair<i32> {
+  fn sum(self: &Pair<i32>) -> i32 {
+    return self.first + self.second;
+  }
+}
+
+fn make_pair(a: i32, b: i32) -> Pair<i32> {
+  return Pair<i32> {
+    first: a, second: b
+  };
+}
+
+fn main() -> i32 {
+  let p = make_pair(10, 32);
+  let s = p.sum();
+
+  let m = Maybe<i32>::Just(42);
+  let mut result = 0;
+  match m {
+    Maybe<i32>::Just(val) => {
+      result = val;
+    }
+    , Maybe<i32>::Nothing => {
+      result = 0;
+    }
+  }
+  // s = 42, result = 42 → 84
+  return s + result;
+}

@@ -1,0 +1,41 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- struct_methods.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test struct definitions, field access, method calls, and impl blocks.
+//===----------------------------------------------------------------------===//
+
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+impl Point {
+  fn new(x: i32, y: i32) -> Point {
+    return Point {
+      x: x, y: y
+    };
+  }
+
+  fn manhattan_distance(self: &Point) -> i32 {
+    return self.x + self.y;
+  }
+
+  fn add(self: &Point, other: &Point) -> Point {
+    return Point {
+      x: self.x + other.x, y: self.y + other.y
+    };
+  }
+}
+
+fn main() -> i32 {
+  let a = Point::new(3, 4);
+  let b = Point::new(10, 20);
+  let c = a.add(&b);
+  return c.manhattan_distance();
+}

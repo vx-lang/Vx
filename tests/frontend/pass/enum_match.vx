@@ -1,0 +1,51 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- enum_match.vx - Vx Compiler -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test enum definitions, variant construction, and pattern matching.
+//===----------------------------------------------------------------------===//
+
+enum Result {
+  Ok(i32),
+  Err(i32),
+}
+
+enum Color {
+  Red, Green, Blue,
+}
+
+fn classify(x: i32) -> Result {
+  if x >= 0 {
+    return Result::Ok(x);
+  }
+  return Result::Err(0 - x);
+}
+
+fn unwrap_or(r: Result, default: i32) -> i32 {
+  let mut out = default;
+  match r {
+    Result::Ok(val) => {
+      out = val;
+    }
+    , Result::Err(code) => {
+      out = 0 - code;
+    }
+  }
+  return out;
+}
+
+fn main() -> i32 {
+  let a = classify(42);
+  let b = classify(0 - 7);
+  let c = Color::Green;
+
+  let x = unwrap_or(a, 0);
+  let y = unwrap_or(b, 0);
+  // 42 + (-7) = 35
+  return x + y;
+}

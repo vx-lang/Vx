@@ -1,0 +1,33 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- unsafe_extern.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test extern function declarations and unsafe blocks for FFI.
+//===----------------------------------------------------------------------===//
+
+extern {
+  fn c_sqrt(x: f64) -> f64;
+  fn c_abs(x: i32) -> i32;
+}
+
+fn safe_sqrt(x: f64) -> f64 {
+  let mut result = 0.0f64;
+  unsafe { result = c_sqrt(x); }
+  return result;
+}
+
+fn safe_abs(x: i32) -> i32 {
+  let mut result = 0;
+  unsafe { result = c_abs(x); }
+  return result;
+}
+
+fn main() -> i32 {
+  let a = safe_abs(0 - 42);
+  return a;
+}

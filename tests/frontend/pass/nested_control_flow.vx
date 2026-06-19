@@ -1,0 +1,48 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- nested_control_flow.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test deeply nested control flow: loops, conditionals, break, continue.
+//===----------------------------------------------------------------------===//
+
+fn fibonacci(n: i32) -> i32 {
+  if n <= 1 {
+    return n;
+  }
+  let mut a = 0;
+  let mut b = 1;
+  let mut i = 2;
+  loop {
+    if i > n {
+      break;
+    }
+    let tmp = a + b;
+    a = b;
+    b = tmp;
+    i += 1;
+  }
+  return b;
+}
+
+fn count_evens(n: i32) -> i32 {
+  let mut count = 0;
+  for i in 0..n {
+    if i * 2 >= n {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+fn main() -> i32 {
+  let fib10 = fibonacci(10);
+  let evens = count_evens(20);
+  // fib(10) = 55, count_evens(20) = 10
+  return fib10 + evens;
+}

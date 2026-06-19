@@ -1,0 +1,43 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- borrow_semantics.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test borrow and pointer semantics: immutable borrows, mutable borrows,
+// pointer operations, and unsafe blocks.
+//===----------------------------------------------------------------------===//
+
+fn read_value(x: &i32) -> i32 {
+  return *x;
+}
+
+fn increment(x: &mut i32) -> void {
+  *x = *x + 1;
+}
+
+fn swap(a: &mut i32, b: &mut i32) -> void {
+  let tmp = *a;
+  *a = *b;
+  *b = tmp;
+}
+
+fn main() -> i32 {
+  let mut x = 10;
+  let mut y = 20;
+
+  // Immutable borrow
+  let val = read_value(&x);
+
+  // Mutable borrow
+  increment(&mut x);
+
+  // Swap via mutable borrows
+  swap(&mut x, &mut y);
+
+  // After swap: x=20, y=11
+  return x + y;
+}
