@@ -28,14 +28,15 @@ pub struct VxMetadata<'a> {
 impl<'a> VxMetadata<'a> {
     /// Save the fully deduplicated Type Dictionary to disk.
     pub fn save_to_file(type_dictionary: &[TypeId], path: &Path) -> io::Result<()> {
-        let mut buffer = Vec::new();
+        let file = fs::File::create(path)?;
+        let mut writer = io::BufWriter::new(file);
+
         // Zero-copy serialization via bytemuck
-        serialize_metadata_symbols(type_dictionary, &mut buffer);
+        serialize_metadata_symbols(type_dictionary, &mut writer)?;
 
         // For now, AST bytes are empty since we're just saving the dictionary
         // In the future, write AST data here directly
 
-        fs::write(path, &buffer)?;
         Ok(())
     }
 

@@ -188,13 +188,17 @@ impl TypeId {
 
 /// Serializes an entire dictionary of `TypeId` structures into a zero-copy byte stream.
 /// This enables lightning-fast saving of incremental compilation metadata.
-pub fn serialize_metadata_symbols(unique_types: &[TypeId], output: &mut Vec<u8>) {
+pub fn serialize_metadata_symbols<W: std::io::Write>(
+    unique_types: &[TypeId],
+    output: &mut W,
+) -> std::io::Result<()> {
     let len = unique_types.len() as u64;
-    output.extend_from_slice(&len.to_le_bytes());
+    output.write_all(&len.to_le_bytes())?;
 
     // Cast the entire slice to raw bytes instantly (Zero-allocation)
     let bytes: &[u8] = bytemuck::cast_slice(unique_types);
-    output.extend_from_slice(bytes);
+    output.write_all(bytes)?;
+    Ok(())
 }
 
 /// Instantly maps a byte array back into a slice of `TypeId`s without allocating
@@ -335,7 +339,7 @@ mod tests {
 
         let dict = vec![t1, t2];
         let mut buffer = Vec::new();
-        serialize_metadata_symbols(&dict, &mut buffer);
+        serialize_metadata_symbols(&dict, &mut buffer).unwrap();
 
         // The length header is 8 bytes, plus 2 TypeIds (32 bytes each) = 72 bytes total.
         assert_eq!(buffer.len(), 72);
