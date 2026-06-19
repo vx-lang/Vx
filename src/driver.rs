@@ -208,9 +208,10 @@ impl CompilerDriver {
         mlir_args: &[String],
     ) -> Result<(), String> {
         let mut loader = ModuleLoader::new();
-        let mut program_arr = loader
-            .load_main(filename)
-            .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
+        if let Err(e) = loader.load_main(filename) {
+            return Err(format!("Frontend failed to parse '{}': {}", filename, e));
+        }
+        let mut program_arr = loader.into_programs();
 
         let mut global_macros = std::collections::HashMap::new();
         for m in &program_arr {

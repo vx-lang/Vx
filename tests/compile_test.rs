@@ -41,15 +41,13 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let _source = fs::read_to_string(path).expect("Failed to read test file");
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
-        Ok(p) => p,
-        Err(e) => {
-            if !expect_pass {
-                return Ok(());
-            }
-            return Err(format!("Parse failed on {:?}: {}", path, e));
+    if let Err(e) = loader.load_main(path.to_str().unwrap()) {
+        if !expect_pass {
+            return Ok(());
         }
-    };
+        return Err(format!("Parse failed on {:?}: {}", path, e));
+    }
+    let mut program_arr = loader.into_programs();
 
     let ast_idx = program_arr
         .iter()
@@ -129,9 +127,10 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = loader
+    loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
+    let mut program_arr = loader.into_programs();
 
     let ast_idx = program_arr
         .iter()
@@ -230,16 +229,14 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(format!(
-                "Frontend failed to parse '{}': {}",
-                path.display(),
-                e
-            ))
-        }
-    };
+    if let Err(e) = loader.load_main(path.to_str().unwrap()) {
+        return Err(format!(
+            "Frontend failed to parse '{}': {}",
+            path.display(),
+            e
+        ));
+    }
+    let mut program_arr = loader.into_programs();
 
     let ast_idx = program_arr
         .iter()
@@ -757,16 +754,14 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = match loader.load_main(path.to_str().unwrap()) {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(format!(
-                "Frontend failed to parse '{}': {}",
-                path.display(),
-                e
-            ))
-        }
-    };
+    if let Err(e) = loader.load_main(path.to_str().unwrap()) {
+        return Err(format!(
+            "Frontend failed to parse '{}': {}",
+            path.display(),
+            e
+        ));
+    }
+    let mut program_arr = loader.into_programs();
 
     let ast_idx = program_arr
         .iter()
@@ -1009,9 +1004,10 @@ fn test_melior_matmul() -> Result<(), String> {
         .collect();
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
-    let mut program_arr = loader
+    loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
+    let mut program_arr = loader.into_programs();
 
     let ast_idx = program_arr
         .iter()
