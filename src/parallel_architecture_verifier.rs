@@ -58,7 +58,7 @@ pub mod verify_arch {
                 if (gid.words[3] & LOCAL_DEFERRED_BIT) != 0 {
                     let index = (gid.words[2] & INDEX_MASK) as usize;
                     let arena_len = if (gid.words[3] & IS_GENERIC_INST_FLAG) != 0 {
-                        worker.local_generics_arena.len()
+                        worker.local_generics_offsets.len()
                     } else {
                         worker.local_slow_path_arena.len()
                     };
@@ -72,12 +72,14 @@ pub mod verify_arch {
     }
 
     pub fn verify_phase_4_deduplication(
-        global_generics_arena: &Arc<Vec<Vec<TypeId>>>,
+        global_generics_arena: &Arc<Vec<TypeId>>,
+        global_generics_offsets: &Arc<Vec<(usize, usize)>>,
         global_slow_path_arena: &Arc<Vec<crate::gid::UnboundedFunctionMetadata>>,
     ) {
         // Assert no duplicates exist in generics arena
         let mut generics_set = std::collections::HashSet::new();
-        for gen in global_generics_arena.iter() {
+        for &(start, len) in global_generics_offsets.iter() {
+            let gen = &global_generics_arena[start..start + len];
             assert!(
                 generics_set.insert(gen),
                 "FATAL: Phase 4 Deduplication failed. Duplicate generics vector found."
@@ -117,7 +119,7 @@ pub mod verify_arch {
                 let index = (gid.words[2] & INDEX_MASK) as usize;
                 if (gid.words[3] & IS_GENERIC_INST_FLAG) != 0 {
                     assert!(
-                        index < session.generics_arena.len(),
+                        index < session.generics_offsets.len(),
                         "FATAL: Patched generics index OOB."
                     );
                 } else {

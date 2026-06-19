@@ -1017,8 +1017,8 @@ impl<'a> TypeChecker<'a> {
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::GPU
-                    | Topology::CPU_AVX512
-                    | Topology::CPU_Neon
+                    | Topology::CpuAvx512
+                    | Topology::CpuNeon
                     | Topology::Current => {}
                 }
 

@@ -40,6 +40,21 @@ pub struct Function {
     pub body: Vec<Statement>,
 }
 
+impl Function {
+    pub fn clone_signature(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            generics: self.generics.clone(),
+            params: self.params.clone(),
+            topology: self.topology.clone(),
+            return_type: self.return_type.clone(),
+            requires: self.requires.clone(),
+            ensures: self.ensures.clone(),
+            body: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDecl {
     pub name: Symbol,
@@ -84,6 +99,17 @@ pub struct ImplBlock {
     pub methods: Vec<Function>,
 }
 
+impl ImplBlock {
+    pub fn clone_signature(&self) -> Self {
+        Self {
+            generics: self.generics.clone(),
+            trait_name: self.trait_name.clone(),
+            target_type: self.target_type.clone(),
+            methods: self.methods.iter().map(|m| m.clone_signature()).collect(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct ImportDecl {
     pub path: Vec<Symbol>,
@@ -121,5 +147,19 @@ pub type VxFunction = Function;
 impl Program {
     pub fn add(&mut self, func: VxFunction) {
         self.functions.push(func);
+    }
+
+    pub fn clone_signature(&self) -> Self {
+        Self {
+            module_path: self.module_path.clone(),
+            imports: self.imports.clone(),
+            macros: self.macros.clone(),
+            externs: self.externs.clone(),
+            structs: self.structs.clone(),
+            enums: self.enums.clone(),
+            traits: self.traits.clone(),
+            impls: self.impls.iter().map(|i| i.clone_signature()).collect(),
+            functions: self.functions.iter().map(|f| f.clone_signature()).collect(),
+        }
     }
 }

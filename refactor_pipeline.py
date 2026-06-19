@@ -1,4 +1,15 @@
-//===- pipeline.rs - Vx Compiler -------------------------------*- Rust -*-===//
+import os
+
+file_path = '/Users/adityak/go/Vx/src/pipeline.rs'
+
+with open(file_path, 'r') as f:
+    content = f.read()
+
+# We need to replace the monolithic compile_pipeline with smaller functions.
+# Because doing this safely via regex is hard, we will just completely rewrite pipeline.rs
+# using the exact logic from the existing file, just broken up.
+
+new_content = """//===- pipeline.rs - Vx Compiler -------------------------------*- Rust -*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -55,14 +66,11 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     #[cfg(debug_assertions)]
     verify_phase_2_registry(&global_session.registry);
 
-    let global_env_modules: Vec<VxModule> =
-        parsed_modules.iter().map(|m| m.clone_signature()).collect();
-    let global_env = GlobalAstEnv::build(&global_env_modules);
+    let global_env = build_global_env(&parsed_modules);
 
     let mut check_results = type_check_phase(&mut parsed_modules, &global_session, &global_env)?;
 
-    let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
-        deduplication_phase(&check_results, &global_session);
+    let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) = deduplication_phase(&check_results, &global_session);
 
     let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
@@ -73,11 +81,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     });
 
     #[cfg(debug_assertions)]
-    verify_phase_4_deduplication(
-        &_epoch_2_session.generics_arena,
-        &_epoch_2_session.generics_offsets,
-        &_epoch_2_session.slow_path_arena,
-    );
+    verify_phase_4_deduplication(&_epoch_2_session.generics_arena, &_epoch_2_session.generics_offsets, &_epoch_2_session.slow_path_arena);
 
     let mut all_type_streams = extract_type_streams(&mut check_results);
 
@@ -85,10 +89,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
 
     #[cfg(debug_assertions)]
     {
-        let patched_stream: Vec<crate::gid::TypeId> = all_type_streams
-            .iter()
-            .flat_map(|(_, stream)| stream.clone())
-            .collect();
+        let patched_stream: Vec<crate::gid::TypeId> = all_type_streams.iter().flat_map(|(_, stream)| stream.clone()).collect();
         verify_phase_6_simd_patch(&patched_stream, &global_session);
     }
 
@@ -114,9 +115,9 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
             let mut lexer = Lexer::new(&source);
             let tokens = lexer.tokenize();
             let mut parser = Parser::new(&tokens, &source);
-            let mut program = parser.parse().map_err(|e| {
-                PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
-            })?;
+            let mut program = parser
+                .parse()
+                .map_err(|e| PipelineError::Parse(format!("Failed to parse {}:\\n{}", path, e.format(&source))))?;
             program.module_path = path.clone().into();
             Ok(program)
         })
@@ -130,7 +131,7 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
     Ok(parsed_modules)
 }
 
-fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), PipelineError> {
+fn macro_expansion_phase(parsed_modules: &mut Vec<VxModule>) -> Result<(), PipelineError> {
     let mut global_macros = std::collections::HashMap::new();
     for m in parsed_modules.iter() {
         for mac in &m.macros {
@@ -139,7 +140,7 @@ fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), Pipeline
     }
     let mut expander = MacroExpander::new(&global_macros);
     for m in parsed_modules.iter_mut() {
-        expander.expand_module(m).map_err(PipelineError::Parse)?;
+        expander.expand_module(m).map_err(|e| PipelineError::Parse(e))?;
     }
     Ok(())
 }
@@ -152,13 +153,12 @@ fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) {
     println!("Resolved {} modules in parallel", parsed_modules.len());
 }
 
-type TypeCheckResult = (
-    crate::diagnostic::DiagnosticsVec,
-    Vec<(ast::Function, u64)>,
-    LocalWorkerState,
-    usize,
-    Vec<ast::StructDecl>,
-);
+fn build_global_env(parsed_modules: &[VxModule]) -> GlobalAstEnv {
+    let global_env_modules: Vec<VxModule> = parsed_modules.iter().map(|m| m.clone_signature()).collect();
+    GlobalAstEnv::build(&global_env_modules)
+}
+
+type TypeCheckResult = (Vec<crate::diagnostic::Diagnostic>, Vec<(ast::Function, u64)>, LocalWorkerState, usize, Vec<ast::StructDecl>);
 
 fn type_check_phase(
     parsed_modules: &mut Vec<VxModule>,
@@ -178,12 +178,7 @@ fn type_check_phase(
                     let mut worker = LocalWorkerState::new(global_session_ref.clone());
                     let mut checker = TypeChecker::new(global_env_ref, &mut worker);
                     checker.check_function(func);
-
-                    let errors = checker.errors;
-                    let monos = checker.monomorphized_functions;
-                    let gen_structs = checker.generated_structs;
-
-                    (errors, monos, worker, module_idx, gen_structs)
+                    (checker.errors, checker.monomorphized_functions, worker, module_idx, checker.generated_structs)
                 })
                 .collect::<Vec<_>>();
 
@@ -195,12 +190,7 @@ fn type_check_phase(
                         let mut worker = LocalWorkerState::new(global_session_ref.clone());
                         let mut checker = TypeChecker::new(global_env_ref, &mut worker);
                         checker.check_function(func);
-
-                        let errors = checker.errors;
-                        let monos = checker.monomorphized_functions;
-                        let gen_structs = checker.generated_structs;
-
-                        (errors, monos, worker, module_idx, gen_structs)
+                        (checker.errors, checker.monomorphized_functions, worker, module_idx, checker.generated_structs)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -222,10 +212,7 @@ fn type_check_phase(
         }
     }
 
-    let total_monomorphized: usize = check_results
-        .iter()
-        .map(|(_, monos, _, _, _)| monos.len())
-        .sum();
+    let total_monomorphized: usize = check_results.iter().map(|(_, monos, _, _, _)| monos.len()).sum();
 
     println!(
         "Type checked bodies in parallel: {} errors, {} monomorphized variants generated",
@@ -251,18 +238,16 @@ fn type_check_phase(
     Ok(check_results)
 }
 
-type DeduplicationResult = (
+fn deduplication_phase(
+    check_results: &[TypeCheckResult],
+    global_session: &GlobalSession,
+) -> (
     Vec<crate::gid::UnboundedFunctionMetadata>,
     Vec<crate::gid::TypeId>,
     Vec<(usize, usize)>,
     Vec<Vec<u64>>,
     Vec<Vec<u64>>,
-);
-
-fn deduplication_phase(
-    check_results: &[TypeCheckResult],
-    global_session: &GlobalSession,
-) -> DeduplicationResult {
+) {
     let mut merged_slow_path_arena = (*global_session.slow_path_arena).clone();
     let mut merged_generics_arena = (*global_session.generics_arena).clone();
     let mut merged_generics_offsets = (*global_session.generics_offsets).clone();
@@ -270,14 +255,12 @@ fn deduplication_phase(
     let mut slow_path_thread_mappings: Vec<Vec<u64>> = Vec::new();
     let mut generics_thread_mappings: Vec<Vec<u64>> = Vec::new();
 
-    let mut dedup_map_slow: std::collections::HashMap<crate::gid::UnboundedFunctionMetadata, u64> =
-        std::collections::HashMap::new();
+    let mut dedup_map_slow: std::collections::HashMap<crate::gid::UnboundedFunctionMetadata, u64> = std::collections::HashMap::new();
     for (i, meta) in merged_slow_path_arena.iter().enumerate() {
         dedup_map_slow.insert(meta.clone(), i as u64);
     }
 
-    let mut dedup_map_generics: std::collections::HashMap<Vec<crate::gid::TypeId>, u64> =
-        std::collections::HashMap::new();
+    let mut dedup_map_generics: std::collections::HashMap<Vec<crate::gid::TypeId>, u64> = std::collections::HashMap::new();
     for (i, &(start, len)) in merged_generics_offsets.iter().enumerate() {
         let gen = merged_generics_arena[start..start + len].to_vec();
         dedup_map_generics.insert(gen, i as u64);
@@ -314,29 +297,16 @@ fn deduplication_phase(
         generics_thread_mappings.push(local_mapping_generics);
     }
 
-    println!(
-        "Phase 5: Merged {} local arenas into global. Advancing to Epoch 2.",
-        slow_path_thread_mappings.len()
-    );
+    println!("Phase 5: Merged {} local arenas into global. Advancing to Epoch 2.", slow_path_thread_mappings.len());
 
-    (
-        merged_slow_path_arena,
-        merged_generics_arena,
-        merged_generics_offsets,
-        slow_path_thread_mappings,
-        generics_thread_mappings,
-    )
+    (merged_slow_path_arena, merged_generics_arena, merged_generics_offsets, slow_path_thread_mappings, generics_thread_mappings)
 }
 
-fn extract_type_streams(
-    check_results: &mut [TypeCheckResult],
-) -> Vec<(usize, Vec<crate::gid::TypeId>)> {
+fn extract_type_streams(check_results: &mut [TypeCheckResult]) -> Vec<(usize, Vec<crate::gid::TypeId>)> {
     check_results
         .iter_mut()
         .enumerate()
-        .map(|(thread_idx, (_, _, worker, _, _))| {
-            (thread_idx, std::mem::take(&mut worker.local_type_stream))
-        })
+        .map(|(thread_idx, (_, _, worker, _, _))| (thread_idx, std::mem::take(&mut worker.local_type_stream)))
         .collect()
 }
 
@@ -360,14 +330,14 @@ fn simd_patch_phase(
                     let w2 = gid.words[2];
                     let w3 = gid.words[3];
                     let is_deferred = (w3 & LOCAL_DEFERRED_BIT) != 0;
-
+                    
                     if is_deferred {
                         let local_index = w2 as usize;
                         let is_generic = (w3 & IS_GENERIC_INST_FLAG) != 0;
-
+                        
                         let slow_val = mapping_slow[local_index];
                         let gen_val = mapping_generics[local_index];
-
+                        
                         // Predicated selection avoiding branch
                         let is_gen_mask = -(is_generic as i64) as u64; // all 1s if true, 0s if false
                         let global_index = (gen_val & is_gen_mask) | (slow_val & !is_gen_mask);
@@ -391,8 +361,7 @@ fn codegen_and_metadata_phase(
     let mut module_buckets: Vec<Vec<ast::Function>> = vec![Vec::new(); num_modules];
     let mut module_struct_buckets: Vec<Vec<ast::StructDecl>> = vec![Vec::new(); num_modules];
 
-    let mut module_hash_to_index: std::collections::HashMap<u64, usize> =
-        std::collections::HashMap::new();
+    let mut module_hash_to_index: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
     for (i, module) in parsed_modules.iter().enumerate() {
         let hash = crate::hash::compute_module_hash(&module.module_path);
         module_hash_to_index.insert(hash, i);
@@ -449,11 +418,7 @@ fn codegen_and_metadata_phase(
     VxMetadata::save_to_file(&master_type_dictionary, &test_path)
         .map_err(|e| PipelineError::IO(format!("Failed to save metadata: {}", e)))?;
 
-    println!(
-        "Saved {} unique TypeIds to {:?}",
-        master_type_dictionary.len(),
-        test_path
-    );
+    println!("Saved {} unique TypeIds to {:?}", master_type_dictionary.len(), test_path);
 
     #[cfg(debug_assertions)]
     {
@@ -463,3 +428,9 @@ fn codegen_and_metadata_phase(
 
     Ok(())
 }
+"""
+
+with open(file_path, 'w') as f:
+    f.write(new_content)
+
+print("Refactored pipeline.rs")

@@ -32,8 +32,8 @@ pub enum Topology {
     AMX,
     ANE,
     GPU,
-    CPU_AVX512,
-    CPU_Neon,
+    CpuAvx512,
+    CpuNeon,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
     Current,
 }
@@ -45,6 +45,41 @@ pub enum MemorySpace {
     LocalSRAM,
     NicRam,
     RemoteHbm,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum TopologyKind {
+    CPU,
+    NPU,
+    AccCore,
+    AMX,
+    ANE,
+    GPU,
+    CpuAvx512,
+    CpuNeon,
+    Slice,
+    Current,
+}
+
+impl Topology {
+    pub fn kind(&self) -> TopologyKind {
+        match self {
+            Topology::CPU => TopologyKind::CPU,
+            Topology::NPU(_) => TopologyKind::NPU,
+            Topology::AccCore(_) => TopologyKind::AccCore,
+            Topology::AMX => TopologyKind::AMX,
+            Topology::ANE => TopologyKind::ANE,
+            Topology::GPU => TopologyKind::GPU,
+            Topology::CpuAvx512 => TopologyKind::CpuAvx512,
+            Topology::CpuNeon => TopologyKind::CpuNeon,
+            Topology::Slice(..) => TopologyKind::Slice,
+            Topology::Current => TopologyKind::Current,
+        }
+    }
+
+    pub fn is_same_kind(&self, other: &Self) -> bool {
+        self.kind() == other.kind()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

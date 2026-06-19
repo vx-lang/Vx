@@ -20,16 +20,20 @@ pub struct TransferCostGraph {
     /// Directed edge from A -> B means memory can be transferred from A to B.
     transfer_edges: HashMap<MemorySpace, Vec<(MemorySpace, u32)>>,
 
+    /// Cached all-pairs shortest paths for data transfers.
+    cost_matrix: HashMap<(MemorySpace, MemorySpace), u32>,
+
     /// Adjacency list for Topology to MemorySpace visibility.
     /// Directed edge from Top -> Mem means Top can directly read/write Mem.
-    visibility_edges: Vec<(Topology, Vec<MemorySpace>)>,
+    visibility_edges: HashMap<ast::TopologyKind, Vec<MemorySpace>>,
 }
 
 impl Default for TransferCostGraph {
     fn default() -> Self {
         let mut graph = Self {
             transfer_edges: HashMap::new(),
-            visibility_edges: Vec::new(),
+            cost_matrix: HashMap::new(),
+            visibility_edges: HashMap::new(),
         };
 
         // Standard Transfer Paths
@@ -67,6 +71,7 @@ impl Default for TransferCostGraph {
         // NPU and Slice reach HBM (we handle dynamic NPU IDs in the accessor method)
         // AccCore reaches SRAM (handled dynamically as well)
 
+        graph.precompute_costs();
         graph
     }
 }
@@ -80,17 +85,16 @@ impl TransferCostGraph {
     }
 
     pub fn add_visibility_edge(&mut self, top: Topology, mem: MemorySpace) {
-        if let Some(entry) = self.visibility_edges.iter_mut().find(|(t, _)| *t == top) {
-            entry.1.push(mem);
-        } else {
-            self.visibility_edges.push((top, vec![mem]));
-        }
+        self.visibility_edges
+            .entry(top.kind())
+            .or_default()
+            .push(mem);
     }
 
     /// Returns the default memory space for a given topology.
     pub fn default_memory_for(topology: &Topology) -> MemorySpace {
         match topology {
-            Topology::CPU | Topology::CPU_AVX512 | Topology::CPU_Neon => MemorySpace::CPUDRAM,
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => MemorySpace::CPUDRAM,
             Topology::NPU(_) => MemorySpace::NPUHBM,
             Topology::AccCore(_) => MemorySpace::LocalSRAM,
             Topology::AMX => MemorySpace::CPUDRAM,
@@ -103,20 +107,21 @@ impl TransferCostGraph {
         }
     }
 
-    /// Helper to generalize topologies with dynamic indices (e.g. NPU(0) -> NPU(any)).
-    fn generalize_topology(top: &Topology) -> Topology {
-        match top {
-            Topology::NPU(_) | Topology::Slice(_, _, _) => {
-                Topology::NPU(Box::new(ast::Expr::Number(ast::NumberExpr::new(
-                    "0".to_string(),
-                    None,
-                    ast::Span::default(),
-                ))))
+    /// Precomputes the all-pairs shortest path transfer costs.
+    pub fn precompute_costs(&mut self) {
+        let spaces = [
+            MemorySpace::CPUDRAM,
+            MemorySpace::NPUHBM,
+            MemorySpace::LocalSRAM,
+            MemorySpace::NicRam,
+            MemorySpace::RemoteHbm,
+        ];
+        for src in &spaces {
+            for dst in &spaces {
+                if let Some((cost, _)) = self.transfer_path(src, dst) {
+                    self.cost_matrix.insert((src.clone(), dst.clone()), cost);
+                }
             }
-            Topology::AccCore(_) => Topology::AccCore(Box::new(ast::Expr::Number(
-                ast::NumberExpr::new("0".to_string(), None, ast::Span::default()),
-            ))),
-            _ => top.clone(),
         }
     }
 
@@ -150,20 +155,18 @@ impl TransferCostGraph {
 
         // If the variable lives in its own default space, check visibility graph
         // Handle dynamic topologies
-        let active_gen = Self::generalize_topology(active_topology);
+        let active_kind = active_topology.kind();
 
         // Hardcode the dynamic matching rules that aren't easily static HashMap entries
-        if matches!(active_gen, Topology::NPU(_)) && target_mem == MemorySpace::NPUHBM {
+        if active_kind == ast::TopologyKind::NPU && target_mem == MemorySpace::NPUHBM {
             return true;
         }
-        if matches!(active_gen, Topology::AccCore(_)) && target_mem == MemorySpace::LocalSRAM {
+        if active_kind == ast::TopologyKind::AccCore && target_mem == MemorySpace::LocalSRAM {
             return true;
         }
 
         // Check formal visibility edges
-        if let Some((_, visible_mems)) =
-            self.visibility_edges.iter().find(|(t, _)| *t == active_gen)
-        {
+        if let Some(visible_mems) = self.visibility_edges.get(&active_kind) {
             if visible_mems.contains(&target_mem) {
                 return true;
             }
@@ -172,9 +175,7 @@ impl TransferCostGraph {
         // Host unified memory fallback (handled by graph edges but we can explicitly check if needed)
         // Check if var_topology is Host, and active_topology has visibility to CPUDRAM
         if *var_topology == Topology::CPU {
-            if let Some((_, visible_mems)) =
-                self.visibility_edges.iter().find(|(t, _)| *t == active_gen)
-            {
+            if let Some(visible_mems) = self.visibility_edges.get(&active_kind) {
                 if visible_mems.contains(&MemorySpace::CPUDRAM) {
                     return true;
                 }
@@ -265,12 +266,15 @@ impl TransferCostGraph {
 
     /// Determines the minimum data movement cost between two memory spaces using Dijkstra's algorithm.
     pub fn transfer_cost(&self, source: &MemorySpace, target: &MemorySpace) -> Option<u32> {
-        self.transfer_path(source, target).map(|(cost, _)| cost)
+        self.cost_matrix
+            .get(&(source.clone(), target.clone()))
+            .copied()
     }
 
     /// Determines if a data transfer between two memory spaces is physically supported.
     pub fn can_transfer(&self, source: &MemorySpace, target: &MemorySpace) -> bool {
-        self.transfer_cost(source, target).is_some()
+        self.cost_matrix
+            .contains_key(&(source.clone(), target.clone()))
     }
 }
 

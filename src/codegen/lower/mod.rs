@@ -141,8 +141,8 @@ pub(crate) fn topology_to_i32(top: &ast::Topology) -> i32 {
         AMX => 300,
         ANE => 400,
         GPU => 500,
-        CPU_AVX512 => 600,
-        CPU_Neon => 700,
+        CpuAvx512 => 600,
+        CpuNeon => 700,
         Slice(_, _, _) => 900,
         Current => 0,
     }

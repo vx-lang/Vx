@@ -785,8 +785,8 @@ impl<'c> MeliorGenerator<'c> {
 
                 let addr_space = match top {
                     Some(ast::Topology::CPU)
-                    | Some(ast::Topology::CPU_AVX512)
-                    | Some(ast::Topology::CPU_Neon)
+                    | Some(ast::Topology::CpuAvx512)
+                    | Some(ast::Topology::CpuNeon)
                     | Some(ast::Topology::Current) => 0,
                     Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
                     Some(ast::Topology::AccCore(_)) => 2,

@@ -12,7 +12,9 @@
 // of Vx source code to MLIR.
 //
 //===----------------------------------------------------------------------===//
-use crate::gid::{TypeId, UnboundedFunctionMetadata, ESCAPE_HATCH_MASK, INDEX_MASK};
+use crate::gid::{
+    TypeId, UnboundedFunctionMetadata, ESCAPE_HATCH_MASK, INDEX_MASK, LOCAL_DEFERRED_BIT,
+};
 use crate::hir::HirInstruction;
 use std::sync::Arc;
 
@@ -44,7 +46,8 @@ pub struct GlobalSession {
 
     /// The heterogeneous arena for structural generic instantiations.
     /// Separated to prevent cache fragmentation in the `slow_path_arena`.
-    pub generics_arena: Arc<Vec<Vec<TypeId>>>,
+    pub generics_arena: Arc<Vec<TypeId>>,
+    pub generics_offsets: Arc<Vec<(usize, usize)>>,
 }
 
 impl GlobalSession {
@@ -54,6 +57,7 @@ impl GlobalSession {
             registry: Arc::new(ImmutableGlobalRegistry {}),
             slow_path_arena: Arc::new(Vec::new()),
             generics_arena: Arc::new(Vec::new()),
+            generics_offsets: Arc::new(Vec::new()),
         }
     }
 }
@@ -64,7 +68,8 @@ pub struct LocalWorkerState {
 
     // Completely lock-free, thread-local mutation
     pub local_slow_path_arena: Vec<UnboundedFunctionMetadata>,
-    pub local_generics_arena: Vec<Vec<TypeId>>,
+    pub local_generics_arena: Vec<TypeId>,
+    pub local_generics_offsets: Vec<(usize, usize)>,
 
     // The flat arrays replacing the AST
     pub local_type_stream: Vec<TypeId>, // array of 256-bit GIDs
@@ -79,6 +84,7 @@ impl LocalWorkerState {
             global,
             local_slow_path_arena: Vec::new(),
             local_generics_arena: Vec::new(),
+            local_generics_offsets: Vec::new(),
             local_type_stream: Vec::new(),
             local_hir_stream: Vec::new(),
         }
@@ -93,7 +99,6 @@ impl LocalWorkerState {
 
             // Check the bit to determine routing
             // Bit 43 in Word 3 is LOCAL_DEFERRED_BIT
-            const LOCAL_DEFERRED_BIT: u64 = 1 << 43;
             if (type_id.words[3] & LOCAL_DEFERRED_BIT) != 0 {
                 LifetimeSignature::SlowPath(&self.local_slow_path_arena[index])
             } else {

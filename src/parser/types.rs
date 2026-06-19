@@ -44,8 +44,8 @@ impl<'a> Parser<'a> {
             "AMX" => Ok(Topology::AMX),
             "ANE" => Ok(Topology::ANE),
             "GPU" => Ok(Topology::GPU),
-            "CPU_AVX512" => Ok(Topology::CPU_AVX512),
-            "CPU_Neon" => Ok(Topology::CPU_Neon),
+            "CpuAvx512" | "CPU_AVX512" => Ok(Topology::CpuAvx512),
+            "CpuNeon" | "CPU_Neon" => Ok(Topology::CpuNeon),
             _ => Err(self.error(&format!("Unknown topology {}", ident))),
         }
     }
