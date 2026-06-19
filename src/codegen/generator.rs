@@ -734,68 +734,7 @@ impl<'c> MeliorGenerator<'c> {
     pub(crate) fn lower_type(&self, ty: &ast::Type) -> Type<'c> {
         let ty_str = match ty {
             ast::Type::Tensor(el_ty, dims, top) => {
-                let ty_str = match el_ty {
-                    ElementType::F16 => "f16",
-                    ElementType::F32 => "f32",
-                    ElementType::F64 => "f64",
-                    ElementType::BF16 => "bf16",
-                    ElementType::I4 | ElementType::U4 => "i4",
-                    ElementType::I8 | ElementType::U8 => "i8",
-                    ElementType::I16 | ElementType::U16 => "i16",
-                    ElementType::I32 | ElementType::U32 => "i32",
-                    ElementType::I64 | ElementType::U64 => "i64",
-                    ElementType::I128 | ElementType::U128 => "i128",
-                    ElementType::Bool => "i1",
-                    ElementType::Generic(_) => {
-                        panic!("Generic element type should be instantiated before codegen")
-                    }
-                };
-
-                let mut shape_str = String::new();
-                if dims.is_empty() {
-                    shape_str = "?x?".to_string();
-                } else {
-                    for (i, dim) in dims.iter().enumerate() {
-                        if let ast::Expr::Number(NumberExpr {
-                            value: n_str,
-                            ty: _,
-                            span: _,
-                        }) = dim
-                        {
-                            if let Ok(n) = n_str.parse::<f64>() {
-                                shape_str.push_str(&format!("{}", n as i64));
-                            }
-                        } else {
-                            shape_str.push('?');
-                        }
-                        if i < dims.len() - 1 {
-                            shape_str.push('x');
-                        }
-                    }
-                }
-
-                if !shape_str.is_empty() && !shape_str.ends_with('x') {
-                    shape_str.push('x');
-                }
-
-                let addr_space = match top {
-                    Some(ast::Topology::CPU)
-                    | Some(ast::Topology::CpuAvx512)
-                    | Some(ast::Topology::CpuNeon)
-                    | Some(ast::Topology::Current) => 0,
-                    Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
-                    Some(ast::Topology::AccCore(_)) => 2,
-                    Some(ast::Topology::AMX) => 3,
-                    Some(ast::Topology::ANE) => 4,
-                    Some(ast::Topology::GPU) => 5,
-                    None => 0,
-                };
-
-                if addr_space != 0 {
-                    format!("memref<{}{}, {}>", shape_str, ty_str, addr_space)
-                } else {
-                    format!("memref<{}{}>", shape_str, ty_str)
-                }
+                return self.lower_tensor_type(el_ty, dims, top);
             }
             ast::Type::Scalar(el_ty) => {
                 return match el_ty {
@@ -1073,6 +1012,80 @@ impl<'c> MeliorGenerator<'c> {
         }
         let t = self.lower_type(ty);
         t.to_string()
+    }
+
+    /// Lowers a Vx `Tensor(ElementType, dims, topology)` to an MLIR `memref<...>` type.
+    fn lower_tensor_type(
+        &self,
+        el_ty: &ElementType,
+        dims: &[ast::Expr],
+        top: &Option<ast::Topology>,
+    ) -> Type<'c> {
+        let ty_str = match el_ty {
+            ElementType::F16 => "f16",
+            ElementType::F32 => "f32",
+            ElementType::F64 => "f64",
+            ElementType::BF16 => "bf16",
+            ElementType::I4 | ElementType::U4 => "i4",
+            ElementType::I8 | ElementType::U8 => "i8",
+            ElementType::I16 | ElementType::U16 => "i16",
+            ElementType::I32 | ElementType::U32 => "i32",
+            ElementType::I64 | ElementType::U64 => "i64",
+            ElementType::I128 | ElementType::U128 => "i128",
+            ElementType::Bool => "i1",
+            ElementType::Generic(_) => {
+                panic!("Generic element type should be instantiated before codegen")
+            }
+        };
+
+        let mut shape_str = String::new();
+        if dims.is_empty() {
+            shape_str = "?x?".to_string();
+        } else {
+            for (i, dim) in dims.iter().enumerate() {
+                if let ast::Expr::Number(NumberExpr {
+                    value: n_str,
+                    ty: _,
+                    span: _,
+                }) = dim
+                {
+                    if let Ok(n) = n_str.parse::<f64>() {
+                        shape_str.push_str(&format!("{}", n as i64));
+                    }
+                } else {
+                    shape_str.push('?');
+                }
+                if i < dims.len() - 1 {
+                    shape_str.push('x');
+                }
+            }
+        }
+
+        if !shape_str.is_empty() && !shape_str.ends_with('x') {
+            shape_str.push('x');
+        }
+
+        let addr_space = match top {
+            Some(ast::Topology::CPU)
+            | Some(ast::Topology::CpuAvx512)
+            | Some(ast::Topology::CpuNeon)
+            | Some(ast::Topology::Current) => 0,
+            Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
+            Some(ast::Topology::AccCore(_)) => 2,
+            Some(ast::Topology::AMX) => 3,
+            Some(ast::Topology::ANE) => 4,
+            Some(ast::Topology::GPU) => 5,
+            None => 0,
+        };
+
+        let memref_str = if addr_space != 0 {
+            format!("memref<{}{}, {}>", shape_str, ty_str, addr_space)
+        } else {
+            format!("memref<{}{}>", shape_str, ty_str)
+        };
+
+        Type::parse(self.context, &memref_str)
+            .unwrap_or_else(|| panic!("Failed to parse MLIR memref type: {}", memref_str))
     }
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<ast::Type> {
