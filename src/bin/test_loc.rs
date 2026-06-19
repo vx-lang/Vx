@@ -1,13 +1,12 @@
+use anyhow::{Context as AnyhowContext, Result};
 use melior::ir::operation::OperationLike;
 use melior::ir::BlockLike;
 use melior::Context;
 
-fn main() {
-    let registry = melior::dialect::DialectRegistry::new();
-    melior::utility::register_all_dialects(&registry);
+fn main() -> Result<()> {
     let context = Context::new();
-    context.append_dialect_registry(&registry);
-    context.load_all_available_dialects();
+    melior::dialect::DialectHandle::llvm().register_dialect(&context);
+    context.set_allow_unregistered_dialects(true);
 
     let di_file = r#"#llvm.di_file<"test.vx" in "">"#;
     let di_cu = format!(
@@ -32,11 +31,12 @@ fn main() {
     );
 
     let module = melior::ir::Module::parse(&context, &mlir_str)
-        .expect("Failed to parse MLIR string. Check DI attribute formatting");
+        .context("Failed to parse MLIR string. Check DI attribute formatting")?;
     let op = module
         .body()
         .first_operation()
-        .expect("Module has no operations");
+        .context("Module has no operations")?;
     let loc = op.location();
     println!("Got loc: {}", loc);
+    Ok(())
 }
