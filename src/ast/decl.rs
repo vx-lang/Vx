@@ -41,7 +41,7 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn clone_signature(&self) -> Self {
+    pub fn clone_signature(&self, preserve_body: bool) -> Self {
         Self {
             name: self.name.clone(),
             generics: self.generics.clone(),
@@ -50,7 +50,11 @@ impl Function {
             return_type: self.return_type.clone(),
             requires: self.requires.clone(),
             ensures: self.ensures.clone(),
-            body: Vec::new(),
+            body: if preserve_body || !self.generics.is_empty() {
+                self.body.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -101,11 +105,16 @@ pub struct ImplBlock {
 
 impl ImplBlock {
     pub fn clone_signature(&self) -> Self {
+        let is_generic = !self.generics.is_empty();
         Self {
             generics: self.generics.clone(),
             trait_name: self.trait_name.clone(),
             target_type: self.target_type.clone(),
-            methods: self.methods.iter().map(|m| m.clone_signature()).collect(),
+            methods: self
+                .methods
+                .iter()
+                .map(|m| m.clone_signature(is_generic))
+                .collect(),
         }
     }
 }
@@ -159,7 +168,11 @@ impl Program {
             enums: self.enums.clone(),
             traits: self.traits.clone(),
             impls: self.impls.iter().map(|i| i.clone_signature()).collect(),
-            functions: self.functions.iter().map(|f| f.clone_signature()).collect(),
+            functions: self
+                .functions
+                .iter()
+                .map(|f| f.clone_signature(false))
+                .collect(),
         }
     }
 }

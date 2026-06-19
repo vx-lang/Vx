@@ -140,8 +140,6 @@ impl CompilerDriver {
             return Err("No input files provided".to_string());
         }
 
-        // For simplicity, we process the first input as the main file,
-        // just like the old main.rs behavior.
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
 
@@ -159,42 +157,59 @@ impl CompilerDriver {
         }
 
         if language == "mlir" {
-            let mlir_src = std::fs::read_to_string(main_file).map_err(|e| e.to_string())?;
-
-            if self.options.action == Action::EmitMlir || self.options.action == Action::EmitLlvm {
-                let optimized_mlir = apply_mlir_opt(&mlir_src, &mlir_args, main_file)?;
-                if self.options.action == Action::EmitLlvm {
-                    let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
-                    println!("{}", llvm_ir);
-                } else {
-                    println!("{}", optimized_mlir);
-                }
-                return Ok(());
-            }
-
-            if self.options.action == Action::RunJit {
-                let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
-                args.extend(self.options.program_args.clone());
-                let out = crate::jit::execute_mlir(
-                    &mlir_src,
-                    args,
-                    self.options.opt_level,
-                    self.options.disable_llvm_optimizations,
-                )
-                .map_err(|e| e.to_string())?;
-                println!("{}", out);
-                return Ok(());
-            }
-
-            return Err(format!(
-                "Action {:?} is not supported for MLIR inputs",
-                self.options.action
-            ));
+            return self.execute_mlir_pipeline(main_file, &mlir_args);
         }
 
+        self.execute_vx_pipeline(main_file, &filename, &mlir_args)
+    }
+
+    fn execute_mlir_pipeline(
+        &self,
+        main_file: &std::path::Path,
+        mlir_args: &[String],
+    ) -> Result<(), String> {
+        let mlir_src = std::fs::read_to_string(main_file).map_err(|e| e.to_string())?;
+
+        if self.options.action == Action::EmitMlir || self.options.action == Action::EmitLlvm {
+            let optimized_mlir = apply_mlir_opt(&mlir_src, mlir_args, main_file)?;
+            if self.options.action == Action::EmitLlvm {
+                let llvm_ir = translate_to_llvm_ir(&optimized_mlir, main_file)?;
+                println!("{}", llvm_ir);
+            } else {
+                println!("{}", optimized_mlir);
+            }
+            return Ok(());
+        }
+
+        if self.options.action == Action::RunJit {
+            let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
+            args.extend(self.options.program_args.clone());
+            let out = crate::jit::execute_mlir(
+                &mlir_src,
+                args,
+                self.options.opt_level,
+                self.options.disable_llvm_optimizations,
+            )
+            .map_err(|e| e.to_string())?;
+            println!("{}", out);
+            return Ok(());
+        }
+
+        Err(format!(
+            "Action {:?} is not supported for MLIR inputs",
+            self.options.action
+        ))
+    }
+
+    fn execute_vx_pipeline(
+        &self,
+        main_file: &std::path::Path,
+        filename: &str,
+        mlir_args: &[String],
+    ) -> Result<(), String> {
         let mut loader = ModuleLoader::new();
         let mut program_arr = loader
-            .load_main(&filename)
+            .load_main(filename)
             .map_err(|e| format!("Frontend failed to parse '{}': {}", filename, e))?;
 
         let mut global_macros = std::collections::HashMap::new();
@@ -214,7 +229,8 @@ impl CompilerDriver {
             let ast = program_arr
                 .iter()
                 .find(|p| {
-                    p.module_path == <std::string::String as Clone>::clone(&filename.clone()).into()
+                    p.module_path
+                        == <std::string::String as Clone>::clone(&filename.to_string()).into()
                 })
                 .unwrap();
             println!("{:#?}", ast);
@@ -224,7 +240,7 @@ impl CompilerDriver {
         let ast_idx = program_arr
             .iter()
             .position(|p| {
-                p.module_path == <std::string::String as Clone>::clone(&filename.clone()).into()
+                p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
             })
             .unwrap();
         let mut ast = program_arr.remove(ast_idx);
@@ -234,10 +250,11 @@ impl CompilerDriver {
         }
 
         let global_session = std::sync::Arc::new(GlobalSession::new(1));
-        let mut all_programs = program_arr.clone();
-        all_programs.push(ast.clone());
 
-        let env = GlobalAstEnv::build(&all_programs);
+        let mut env_modules: Vec<_> = program_arr.iter().map(|m| m.clone_signature()).collect();
+        env_modules.push(ast.clone()); // We fully clone the current AST so its bodies are preserved!
+        let env = GlobalAstEnv::build(&env_modules);
+
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
 
@@ -294,6 +311,23 @@ impl CompilerDriver {
             module_asts.insert(p.module_path.clone(), p);
         }
 
+        self.run_codegen(
+            monomorphized_ast,
+            module_asts,
+            filename,
+            main_file,
+            mlir_args,
+        )
+    }
+
+    fn run_codegen(
+        &self,
+        monomorphized_ast: crate::ast::Program,
+        module_asts: std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+        filename: &str,
+        main_file: &std::path::Path,
+        mlir_args: &[String],
+    ) -> Result<(), String> {
         codegen::register_vx_passes();
 
         let registry = melior::dialect::DialectRegistry::new();
@@ -341,7 +375,7 @@ impl CompilerDriver {
         }
 
         // Apply custom CLI MLIR args if provided
-        for arg in &mlir_args {
+        for arg in mlir_args {
             if let Some(custom_pipeline) = arg.strip_prefix("--pass-pipeline=") {
                 if let Err(e) = melior::utility::parse_pass_pipeline(
                     pass_manager.as_operation_pass_manager(),
@@ -412,7 +446,7 @@ impl CompilerDriver {
                 );
 
                 let output_path = self.options.output.clone().unwrap_or_else(|| {
-                    let mut p = main_file.clone();
+                    let mut p = main_file.to_path_buf();
                     p.set_extension("o");
                     p
                 });
@@ -483,23 +517,22 @@ pub fn apply_mlir_opt(
     if mlir_args.is_empty() {
         return Ok(mlir_src.to_string());
     }
-    let temp_in = format!(
-        "{}_temp_in.mlir",
-        main_file.file_name().unwrap().to_string_lossy()
-    );
-    let temp_out = format!(
-        "{}_temp_out.mlir",
-        main_file.file_name().unwrap().to_string_lossy()
-    );
+
+    let temp_dir = std::env::temp_dir();
+    let file_stem = main_file.file_name().unwrap().to_string_lossy();
+    let pid = std::process::id();
+
+    let temp_in = temp_dir.join(format!("{}_{}_temp_in.mlir", file_stem, pid));
+    let temp_out = temp_dir.join(format!("{}_{}_temp_out.mlir", file_stem, pid));
 
     let mut file = std::fs::File::create(&temp_in).unwrap();
     std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
 
     let mut args = vec![
         "vx-opt".to_string(),
-        temp_in.clone(),
+        temp_in.to_string_lossy().into_owned(),
         "-o".to_string(),
-        temp_out.clone(),
+        temp_out.to_string_lossy().into_owned(),
     ];
     args.extend_from_slice(mlir_args);
 
@@ -523,10 +556,12 @@ pub fn apply_mlir_opt(
 }
 
 pub fn translate_to_llvm_ir(mlir_src: &str, main_file: &std::path::Path) -> Result<String, String> {
-    let temp_mlir = format!(
-        "{}_temp_llvm.mlir",
-        main_file.file_name().unwrap().to_string_lossy()
-    );
+    let temp_dir = std::env::temp_dir();
+    let file_stem = main_file.file_name().unwrap().to_string_lossy();
+    let pid = std::process::id();
+
+    let temp_mlir = temp_dir.join(format!("{}_{}_temp_llvm.mlir", file_stem, pid));
+
     let mut file = std::fs::File::create(&temp_mlir).unwrap();
     std::io::Write::write_all(&mut file, mlir_src.as_bytes()).unwrap();
 
