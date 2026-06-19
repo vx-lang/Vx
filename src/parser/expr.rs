@@ -301,14 +301,7 @@ impl<'a> Parser<'a> {
             );
 
             if has_paren {
-                if let Some(tys) = parsed_type_args.take() {
-                    let ty_args_str = tys
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    call_name = format!("{}<{}>", call_name, ty_args_str);
-                }
+                Self::apply_type_args(&mut call_name, parsed_type_args.take());
 
                 self.advance(); // consume '::'
                 if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
@@ -383,113 +376,76 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
-                if let Some(tys) = parsed_type_args {
-                    let ty_args_str = tys
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    call_name = format!("{}<{}>", call_name, ty_args_str);
-                }
+                Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::StructInit(StructInitExpr {
                     name: call_name.into(),
                     fields,
                     span: Span::default(),
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
-                let variant = match self.advance().kind.clone() {
-                    TokenType::Identifier(v) => v,
-                    _ => return Err(self.error("Expected enum variant after ::")),
-                };
-                let mut payload = None;
-                if self.match_token(&TokenType::LeftParen) {
-                    let mut args = Vec::new();
-                    if !self.check(&TokenType::RightParen) {
-                        loop {
-                            args.push(self.parse_expr()?);
-                            if !self.match_token(&TokenType::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
-                    payload = Some(args);
-                }
-                if let Some(tys) = parsed_type_args {
-                    let ty_args_str = tys
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    call_name = format!("{}<{}>", call_name, ty_args_str);
-                }
-                Ok(Expr::EnumVariant(EnumVariantExpr {
-                    enum_name: call_name.into(),
-                    variant_name: variant.to_string().into(),
-                    payload,
-                    span: Span::default(),
-                }))
+                self.parse_enum_variant_expr(&mut call_name, parsed_type_args)
             } else {
-                if let Some(tys) = parsed_type_args {
-                    let ty_args_str = tys
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    call_name = format!("{}<{}>", call_name, ty_args_str);
-                }
+                Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::Identifier(IdentifierExpr {
                     name: call_name.into(),
                     span: Span::default(),
                 }))
             }
         } else if self.match_token(&TokenType::DoubleColon) {
-            let variant = match self.advance().kind.clone() {
-                TokenType::Identifier(v) => v,
-                _ => return Err(self.error("Expected enum variant after ::")),
-            };
-            let mut payload = None;
-            if self.match_token(&TokenType::LeftParen) {
-                let mut args = Vec::new();
-                if !self.check(&TokenType::RightParen) {
-                    loop {
-                        args.push(self.parse_expr()?);
-                        if !self.match_token(&TokenType::Comma) {
-                            break;
-                        }
-                    }
-                }
-                self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
-                payload = Some(args);
-            }
-            if let Some(tys) = parsed_type_args {
-                let ty_args_str = tys
-                    .iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                call_name = format!("{}<{}>", call_name, ty_args_str);
-            }
-            Ok(Expr::EnumVariant(EnumVariantExpr {
-                enum_name: call_name.into(),
-                variant_name: variant.to_string().into(),
-                payload,
-                span: Span::default(),
-            }))
+            self.parse_enum_variant_expr(&mut call_name, parsed_type_args)
         } else {
-            if let Some(tys) = parsed_type_args {
-                let ty_args_str = tys
-                    .iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                call_name = format!("{}<{}>", call_name, ty_args_str);
-            }
+            Self::apply_type_args(&mut call_name, parsed_type_args);
             Ok(Expr::Identifier(IdentifierExpr {
                 name: call_name.into(),
                 span: Span::default(),
             }))
         }
+    }
+
+    /// Applies parsed generic type arguments to a call name, e.g. `Foo` + `[i32, f64]` → `Foo<i32, f64>`.
+    fn apply_type_args(call_name: &mut String, type_args: Option<Vec<Type>>) {
+        if let Some(tys) = type_args {
+            let ty_args_str = tys
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            *call_name = format!("{}<{}>", call_name, ty_args_str);
+        }
+    }
+
+    /// Parses an enum variant expression after `::` has been consumed.
+    /// Expects `VariantName` optionally followed by `(args...)`.
+    fn parse_enum_variant_expr(
+        &mut self,
+        call_name: &mut String,
+        parsed_type_args: Option<Vec<Type>>,
+    ) -> ParseResult<'a, Expr> {
+        let variant = match self.advance().kind.clone() {
+            TokenType::Identifier(v) => v,
+            _ => return Err(self.error("Expected enum variant after ::")),
+        };
+        let mut payload = None;
+        if self.match_token(&TokenType::LeftParen) {
+            let mut args = Vec::new();
+            if !self.check(&TokenType::RightParen) {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
+            payload = Some(args);
+        }
+        Self::apply_type_args(call_name, parsed_type_args);
+        Ok(Expr::EnumVariant(EnumVariantExpr {
+            enum_name: call_name.clone().into(),
+            variant_name: variant.to_string().into(),
+            payload,
+            span: Span::default(),
+        }))
     }
 
     pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
