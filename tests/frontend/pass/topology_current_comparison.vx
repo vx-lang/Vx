@@ -1,0 +1,24 @@
+//===- topology_current_comparison.vx - Vx Compiler --------------*- Vx -*-===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: Topology::Current resolves to the active topology at point of use.
+// Uses print-ast since topology comparison codegen is not yet implemented.
+
+fn main() -> i32 {
+  // At top level, Topology::Current should be CPU
+  // CHECK-NOT: error
+  let is_cpu = Topology::Current == Topology::CPU;
+
+  spawn on(Topology::GPU) {
+    let is_gpu = Topology::Current == Topology::GPU;
+  }
+
+  return 0;
+}
+
+// CHECK: Function: main

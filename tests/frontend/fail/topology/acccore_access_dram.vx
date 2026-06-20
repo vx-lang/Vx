@@ -1,0 +1,21 @@
+//===- acccore_access_dram.vx - Vx Compiler ----------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: AccCore cannot access host DRAM variables — only LocalSRAM.
+
+fn main() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+
+  spawn on(Topology::AccCore[0]) {
+    // AccCore can only see LocalSRAM, not CPU DRAM
+    // CHECK: Cross-topology access error
+    let invalid = t_host;
+  }
+
+  return 0;
+}

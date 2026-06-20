@@ -1,0 +1,22 @@
+//===- spawn_cpuneon.vx - Vx Compiler ----------------------------*- Vx -*-===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: CpuNeon topology spawn with local computation.
+
+fn main() -> i32 {
+  // CpuNeon spawns use DRAM, but variables must be
+  // defined inside the spawn block (not crossed from CPU).
+  spawn on(Topology::CpuNeon) {
+    // CHECK-NOT: error
+    let neon_val : Tensor<f32> = 3.0;
+  }
+
+  return 0;
+}
+
+// CHECK: module

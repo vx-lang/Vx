@@ -1,0 +1,23 @@
+//===- transfer_remote_hbm.vx - Vx Compiler ----------------------*- Vx -*-===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: Multi-hop transfer to Remote_HBM via NPU_HBM and NIC_RAM.
+// Dijkstra's algorithm should find: CPUDRAM -> NPUHBM -> NicRam -> RemoteHbm
+
+fn main() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+
+  // Transfer from host DRAM to remote HBM
+  // The compiler should auto-insert multi-hop transfers
+  // CHECK-NOT: error
+  let t_remote = transfer(t_host, Memory::Remote_HBM);
+
+  return 0;
+}
+
+// CHECK: module

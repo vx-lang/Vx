@@ -31,6 +31,7 @@ pub struct TypeDefinition {
 }
 
 /// The globally frozen type registry for parallel compilation phases.
+#[derive(Debug)]
 pub struct ImmutableGlobalRegistry {
     pub layouts: FxHashMap<TypeId, TypeDefinition>,
     pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
@@ -89,5 +90,112 @@ impl ImmutableGlobalRegistry {
             layouts,
             module_indices,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gid::TypeId;
+
+    fn make_def(name: &str, w0: u64, w1: u64, deps: Vec<TypeId>) -> TypeDefinition {
+        TypeDefinition {
+            id: TypeId::new(w0, w1, 0, 0),
+            name: name.to_string(),
+            size_bytes: 8,
+            align_bytes: 8,
+            by_value_dependencies: deps,
+        }
+    }
+
+    #[test]
+    fn test_registry_build_empty() {
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![]);
+        assert!(registry.is_ok());
+        let reg = registry.unwrap();
+        assert!(reg.layouts.is_empty());
+    }
+
+    #[test]
+    fn test_registry_build_single_def() {
+        let def = make_def("MyStruct", 1, 100, vec![]);
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![def]);
+        assert!(registry.is_ok());
+        let reg = registry.unwrap();
+        assert_eq!(reg.layouts.len(), 1);
+        assert!(reg.layouts.contains_key(&TypeId::new(1, 100, 0, 0)));
+    }
+
+    #[test]
+    fn test_registry_build_valid_chain() {
+        // A depends on B (by value), no cycle
+        let b = make_def("Inner", 1, 200, vec![]);
+        let a = make_def("Outer", 1, 100, vec![TypeId::new(1, 200, 0, 0)]);
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![a, b]);
+        assert!(registry.is_ok());
+        let reg = registry.unwrap();
+        assert_eq!(reg.layouts.len(), 2);
+    }
+
+    #[test]
+    fn test_registry_detect_cycle() {
+        // A depends on B, B depends on A → cycle!
+        let a = make_def("TypeA", 1, 100, vec![TypeId::new(1, 200, 0, 0)]);
+        let b = make_def("TypeB", 1, 200, vec![TypeId::new(1, 100, 0, 0)]);
+        let result = ImmutableGlobalRegistry::build_and_validate(vec![a, b]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Infinite-sized recursive layout"),
+            "Got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_registry_self_referential_cycle() {
+        // A depends on itself
+        let a = make_def("SelfRef", 1, 100, vec![TypeId::new(1, 100, 0, 0)]);
+        let result = ImmutableGlobalRegistry::build_and_validate(vec![a]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Infinite-sized recursive layout detected in struct 'SelfRef'"),
+            "Got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_registry_unresolved_dependency() {
+        // A depends on a TypeId that doesn't exist in the registry
+        let a = make_def("Dangling", 1, 100, vec![TypeId::new(99, 999, 0, 0)]);
+        let result = ImmutableGlobalRegistry::build_and_validate(vec![a]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Unresolved by-value dependency"),
+            "Got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_registry_module_indices() {
+        let def1 = make_def("Foo", 1, 100, vec![]);
+        let def2 = make_def("Bar", 1, 200, vec![]);
+        let def3 = make_def("Baz", 2, 300, vec![]);
+        let reg = ImmutableGlobalRegistry::build_and_validate(vec![def1, def2, def3]).unwrap();
+
+        // Module 1 should have Foo and Bar
+        let mod1 = reg.module_indices.get(&1).unwrap();
+        assert_eq!(mod1.len(), 2);
+        assert!(mod1.contains_key("Foo"));
+        assert!(mod1.contains_key("Bar"));
+
+        // Module 2 should have Baz
+        let mod2 = reg.module_indices.get(&2).unwrap();
+        assert_eq!(mod2.len(), 1);
+        assert!(mod2.contains_key("Baz"));
     }
 }

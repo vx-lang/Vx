@@ -1,0 +1,23 @@
+//===- spawn_amx.vx - Vx Compiler --------------------------------*- Vx -*-===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: AMX topology spawn block with DRAM access.
+
+fn main() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+
+  // AMX has unified memory access to Host DRAM
+  spawn on(Topology::AMX) {
+    // CHECK-NOT: error
+    let valid_amx = t_host;
+  }
+
+  return 0;
+}
+
+// CHECK: module

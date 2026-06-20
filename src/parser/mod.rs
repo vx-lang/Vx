@@ -241,4 +241,155 @@ mod tests {
         assert!(formatted.contains("Unexpected end of file"));
         assert!(formatted.contains("("));
     }
+
+    fn parse_type(input: &str) -> crate::ast::Type {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse_type().expect("Failed to parse type")
+    }
+
+    fn parse_topology(input: &str) -> crate::ast::Topology {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse_topology().expect("Failed to parse topology")
+    }
+
+    fn parse_memory_space(input: &str) -> crate::ast::MemorySpace {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser
+            .parse_memory_space()
+            .expect("Failed to parse memory space")
+    }
+
+    #[test]
+    fn test_parse_topology_static_variants() {
+        assert_eq!(parse_topology("Topology::CPU"), Topology::CPU);
+        assert_eq!(parse_topology("Topology::AMX"), Topology::AMX);
+        assert_eq!(parse_topology("Topology::ANE"), Topology::ANE);
+        assert_eq!(parse_topology("Topology::GPU"), Topology::GPU);
+        assert_eq!(parse_topology("Topology::Current"), Topology::Current);
+        assert_eq!(parse_topology("Topology::CpuAvx512"), Topology::CpuAvx512);
+        assert_eq!(parse_topology("Topology::CPU_AVX512"), Topology::CpuAvx512);
+        assert_eq!(parse_topology("Topology::CpuNeon"), Topology::CpuNeon);
+        assert_eq!(parse_topology("Topology::CPU_Neon"), Topology::CpuNeon);
+    }
+
+    #[test]
+    fn test_parse_topology_npu_with_index() {
+        let top = parse_topology("Topology::NPU[0]");
+        if let Topology::NPU(expr) = top {
+            if let Expr::Number(n) = &*expr {
+                assert_eq!(n.value.as_ref(), "0");
+            } else {
+                panic!("Expected Number expression in NPU index");
+            }
+        } else {
+            panic!("Expected NPU topology, got {:?}", top);
+        }
+    }
+
+    #[test]
+    fn test_parse_topology_acccore_with_index() {
+        let top = parse_topology("Topology::AccCore[2]");
+        if let Topology::AccCore(expr) = top {
+            if let Expr::Number(n) = &*expr {
+                assert_eq!(n.value.as_ref(), "2");
+            } else {
+                panic!("Expected Number expression in AccCore index");
+            }
+        } else {
+            panic!("Expected AccCore topology, got {:?}", top);
+        }
+    }
+
+    #[test]
+    fn test_parse_topology_unknown_variant_error() {
+        let input = "Topology::Quantum";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let err = parser.parse_topology().unwrap_err();
+        let msg = err.format(input);
+        assert!(msg.contains("Unknown topology Quantum"), "Got: {}", msg);
+    }
+
+    #[test]
+    fn test_parse_topology_npu_missing_index_error() {
+        // NPU without [] should fail
+        let input = "Topology::NPU";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let err = parser.parse_topology().unwrap_err();
+        let msg = err.format(input);
+        assert!(msg.contains("Expected index for NPU"), "Got: {}", msg);
+    }
+
+    #[test]
+    fn test_parse_memory_space_all_variants() {
+        assert_eq!(parse_memory_space("Memory::CPU_DRAM"), MemorySpace::CPUDRAM);
+        assert_eq!(parse_memory_space("Memory::NPU_HBM"), MemorySpace::NPUHBM);
+        assert_eq!(
+            parse_memory_space("Memory::Local_SRAM"),
+            MemorySpace::LocalSRAM
+        );
+        assert_eq!(parse_memory_space("Memory::NIC_RAM"), MemorySpace::NicRam);
+        assert_eq!(
+            parse_memory_space("Memory::Remote_HBM"),
+            MemorySpace::RemoteHbm
+        );
+    }
+
+    #[test]
+    fn test_parse_memory_space_unknown_error() {
+        let input = "Memory::GDDR";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let err = parser.parse_memory_space().unwrap_err();
+        let msg = err.format(input);
+        assert!(msg.contains("Unknown memory space GDDR"), "Got: {}", msg);
+    }
+
+    #[test]
+    fn test_parse_tensor_type_plain() {
+        let ty = parse_type("Tensor");
+        assert_eq!(
+            ty,
+            Type::Tensor(ElementType::F32, vec![], None),
+            "Plain Tensor should default to f32"
+        );
+    }
+
+    #[test]
+    fn test_parse_tensor_type_with_element_type() {
+        let ty = parse_type("Tensor<i64>");
+        assert_eq!(ty, Type::Tensor(ElementType::I64, vec![], None));
+    }
+
+    #[test]
+    fn test_parse_pinned_type() {
+        let ty = parse_type("Pinned<i32, Topology::GPU>");
+        if let Type::Pinned(inner, top) = ty {
+            assert_eq!(*inner, Type::Scalar(ElementType::I32));
+            assert_eq!(top, Topology::GPU);
+        } else {
+            panic!("Expected Pinned type, got {:?}", ty);
+        }
+    }
+
+    #[test]
+    fn test_parse_ref_type() {
+        let ty = parse_type("Ref<f32, Memory::NPU_HBM>");
+        if let Type::Ref(inner, mem) = ty {
+            assert_eq!(*inner, Type::Scalar(ElementType::F32));
+            assert_eq!(mem, MemorySpace::NPUHBM);
+        } else {
+            panic!("Expected Ref type, got {:?}", ty);
+        }
+    }
 }
