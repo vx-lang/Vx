@@ -46,10 +46,10 @@ impl SourceSpan {
 }
 
 /// Stable warning/error codes for diagnostics.
-/// Warning codes start with W, error codes could start with E in the future.
+/// Warning codes use the W prefix, error codes use the E prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticCode {
-    // --- Warnings ---
+    // --- Warnings (W1xxx) ---
     /// Unused variable binding
     W1001,
     /// Unused function definition
@@ -80,6 +80,126 @@ pub enum DiagnosticCode {
     W1022,
     /// Spawn on Topology::Current (no-op)
     W1023,
+
+    // --- Parser Errors (E1xxx) ---
+    /// Unexpected token
+    E1001,
+    /// Unexpected end of file
+    E1002,
+    /// Expected identifier
+    E1003,
+    /// Expected type
+    E1004,
+    /// Expected expression
+    E1005,
+    /// Unclosed delimiter (paren/brace/bracket)
+    E1006,
+    /// Missing semicolon
+    E1007,
+    /// Missing comma
+    E1008,
+    /// Invalid operator
+    E1009,
+    /// Unknown topology variant
+    E1010,
+    /// Unknown memory space
+    E1011,
+    /// Unknown element type
+    E1012,
+    /// Invalid macro invocation syntax
+    E1013,
+
+    // --- Name Resolution Errors (E2xxx) ---
+    /// Undefined variable
+    E2001,
+    /// Undefined function
+    E2002,
+    /// Unknown enum
+    E2003,
+    /// Unknown enum variant
+    E2004,
+    /// Unknown struct field
+    E2005,
+    /// Module does not export function
+    E2006,
+    /// Method not found on type
+    E2007,
+
+    // --- Type Errors (E3xxx) ---
+    /// Type mismatch in variable declaration
+    E3001,
+    /// Type mismatch in return
+    E3002,
+    /// Type mismatch in function argument
+    E3003,
+    /// Type mismatch in binary operation
+    E3004,
+    /// Type mismatch in relational operation
+    E3005,
+    /// Type mismatch in logical operation
+    E3006,
+    /// If branch type mismatch
+    E3007,
+    /// Enum payload type mismatch
+    E3008,
+    /// Enum payload arity mismatch
+    E3009,
+    /// Function argument count mismatch
+    E3010,
+    /// Unsupported cast
+    E3011,
+    /// Type mismatch in struct field initialization
+    E3012,
+    /// Missing struct field in initialization
+    E3013,
+    /// Range type mismatch
+    E3014,
+    /// Trait not implemented
+    E3015,
+    /// Generic type deduction failure
+    E3016,
+    /// Closure argument count or type mismatch
+    E3017,
+
+    // --- Borrow/Ownership Errors (E4xxx) ---
+    /// Use of moved or consumed linear variable
+    E4001,
+    /// Cannot access mutably borrowed variable
+    E4002,
+    /// Cannot borrow as mutable (already immutably borrowed)
+    E4003,
+    /// Cannot borrow (already mutably borrowed)
+    E4004,
+
+    // --- Safety Errors (E5xxx) ---
+    /// Unsafe function call outside unsafe block
+    E5001,
+    /// Unsafe memory operation outside unsafe block
+    E5002,
+
+    // --- Topology/Hardware Errors (E6xxx) ---
+    /// Topology mismatch in function call
+    E6001,
+    /// Cannot transfer between memory spaces (no hardware path)
+    E6002,
+    /// Cannot transfer non-reference type
+    E6003,
+
+    // --- Tensor/Math Errors (E7xxx) ---
+    /// Matmul dimension mismatch
+    E7001,
+    /// Matmul element type mismatch
+    E7002,
+    /// Reshape arithmetic mismatch
+    E7003,
+    /// Non-differentiable return type (autodiff)
+    E7004,
+
+    // --- Contract/Verification Errors (E8xxx) ---
+    /// Cannot prove postcondition
+    E8001,
+    /// Comptime assert failed
+    E8002,
 }
 
 impl std::fmt::Display for DiagnosticCode {
@@ -296,6 +416,26 @@ impl DiagnosticsVec {
         self.inner.last_mut().unwrap()
     }
 
+    /// Emit an error with a diagnostic code and optional source span.
+    /// Returns a mutable reference to the diagnostic for chaining notes/fix-its.
+    pub fn error_with_code(
+        &mut self,
+        code: DiagnosticCode,
+        message: impl Into<Cow<'static, str>>,
+        span: Option<SourceSpan>,
+    ) -> &mut Diagnostic {
+        self.inner.push(Diagnostic {
+            level: DiagnosticLevel::Error,
+            code: Some(code),
+            message: message.into(),
+            span: None,
+            source_span: span,
+            notes: Vec::new(),
+            fix_its: Vec::new(),
+        });
+        self.inner.last_mut().unwrap()
+    }
+
     pub fn error_count(&self) -> usize {
         self.inner
             .iter()
@@ -335,6 +475,13 @@ impl DiagnosticsVec {
         self.inner
             .iter()
             .any(|d| d.level == DiagnosticLevel::Warning && d.code == Some(code))
+    }
+
+    /// Check if a specific error code has been emitted.
+    pub fn has_error(&self, code: DiagnosticCode) -> bool {
+        self.inner
+            .iter()
+            .any(|d| d.level == DiagnosticLevel::Error && d.code == Some(code))
     }
 }
 
@@ -525,6 +672,8 @@ mod tests {
     fn test_diagnostic_code_display() {
         assert_eq!(format!("{}", DiagnosticCode::W1001), "W1001");
         assert_eq!(format!("{}", DiagnosticCode::W1003), "W1003");
+        assert_eq!(format!("{}", DiagnosticCode::E2001), "E2001");
+        assert_eq!(format!("{}", DiagnosticCode::E3003), "E3003");
     }
 
     #[test]
@@ -535,5 +684,75 @@ mod tests {
         diags.warn(DiagnosticCode::W1001, "warning2", None);
         assert_eq!(diags.error_count(), 1);
         assert_eq!(diags.warning_count(), 2);
+    }
+
+    #[test]
+    fn test_error_with_code_creates_coded_error() {
+        let mut diags = DiagnosticsVec::new();
+        diags.error_with_code(
+            DiagnosticCode::E2001,
+            "Undefined variable 'x'",
+            Some(SourceSpan::new(5, 9, 1)),
+        );
+        assert_eq!(diags.error_count(), 1);
+        assert!(diags.has_error(DiagnosticCode::E2001));
+        assert!(!diags.has_error(DiagnosticCode::E2002));
+        let d = &diags.inner[0];
+        assert_eq!(d.level, DiagnosticLevel::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::E2001));
+        assert!(d.message.contains("Undefined variable"));
+        assert_eq!(d.source_span, Some(SourceSpan::new(5, 9, 1)));
+    }
+
+    #[test]
+    fn test_error_with_code_display() {
+        let d = Diagnostic::error("Undefined variable 'x'")
+            .with_code(DiagnosticCode::E2001)
+            .with_source_span(SourceSpan::new(5, 9, 1));
+        assert_eq!(d.to_string(), "Error[E2001] at 5:9: Undefined variable 'x'");
+    }
+
+    #[test]
+    fn test_error_with_code_and_note() {
+        let mut diags = DiagnosticsVec::new();
+        let d = diags.error_with_code(
+            DiagnosticCode::E4001,
+            "Use of moved variable 'x'",
+            Some(SourceSpan::new(10, 5, 1)),
+        );
+        d.notes.push(Note {
+            message: "moved here".into(),
+            span: Some(SourceSpan::new(8, 5, 1)),
+        });
+        let output = format!("{}", diags.inner[0]);
+        assert!(output.contains("Error[E4001]"));
+        assert!(output.contains("moved here"));
+        assert!(output.contains("at 8:5"));
+    }
+
+    #[test]
+    fn test_error_with_code_and_fix_it() {
+        let mut diags = DiagnosticsVec::new();
+        let d = diags.error_with_code(
+            DiagnosticCode::E5001,
+            "Call to unsafe function 'malloc'",
+            Some(SourceSpan::new(3, 12, 6)),
+        );
+        d.fix_its.push(FixIt {
+            message: "wrap in unsafe block".into(),
+            span: SourceSpan::new(3, 12, 6),
+            replacement: "unsafe { malloc(...) }".into(),
+        });
+        let output = format!("{}", diags.inner[0]);
+        assert!(output.contains("Error[E5001]"));
+        assert!(output.contains("wrap in unsafe block"));
+    }
+
+    #[test]
+    fn test_has_error_negative() {
+        let mut diags = DiagnosticsVec::new();
+        diags.push("unstructured error".to_string());
+        // has_error only matches coded errors
+        assert!(!diags.has_error(DiagnosticCode::E2001));
     }
 }

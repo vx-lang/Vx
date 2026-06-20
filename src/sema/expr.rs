@@ -524,7 +524,7 @@ impl<'a> TypeChecker<'a> {
     }
     fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr { name, span: _ }) => {
+            Expr::Identifier(IdentifierExpr { name, span }) => {
                 if name.as_ref() == "true" || **name == *"false" {
                     return Type::Scalar(ElementType::Bool);
                 }
@@ -536,10 +536,14 @@ impl<'a> TypeChecker<'a> {
                     if let Some(borrows) = self.active_borrows.get(name.as_ref()) {
                         for b in borrows {
                             if b.is_mut && !silent {
-                                self.errors.push(format!(
-                                    "Cannot access '{}' because it is mutably borrowed.",
-                                    name
-                                ));
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4002,
+                                    format!(
+                                        "Cannot access '{}' because it is mutably borrowed.",
+                                        name
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                                 break;
                             }
                         }
@@ -577,10 +581,11 @@ impl<'a> TypeChecker<'a> {
 
                 if lookup_res.is_none() && self.is_moved(name) {
                     if !silent {
-                        self.errors.push(format!(
-                            "Use of moved or consumed linear variable: {}",
-                            name
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4001,
+                            format!("Use of moved or consumed linear variable: {}", name),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
                 } else if lookup_res.is_none() {
@@ -597,7 +602,11 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     if !silent {
-                        self.errors.push(format!("Undefined variable '{}'", name));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E2001,
+                            format!("Undefined variable '{}'", name),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     return Type::Scalar(ElementType::F32); // Fallback to prevent panic
                 }
@@ -1242,7 +1251,7 @@ impl<'a> TypeChecker<'a> {
                 name,
                 type_args,
                 args,
-                span: _,
+                span,
             }) => {
                 let resolved_name = name.clone();
                 let mut base_name = resolved_name.clone();
@@ -1407,29 +1416,45 @@ impl<'a> TypeChecker<'a> {
                     self.env.functions.get(resolved_name.as_ref())
                 {
                     if (*req_topology != self.active_topology) && !silent {
-                        self.errors.push(format!(
-                                        "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
-                                        resolved_name, req_topology, self.active_topology
-                                    ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6001,
+                            format!(
+                                "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
+                                resolved_name, req_topology, self.active_topology
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     if *is_unsafe && !self.in_unsafe_block && !silent {
-                        self.errors.push(format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     if args.len() != param_types.len() && !silent {
-                        self.errors.push(format!(
-                            "Function '{}' expects {} arguments, got {}",
-                            resolved_name,
-                            param_types.len(),
-                            args.len()
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3010,
+                            format!(
+                                "Function '{}' expects {} arguments, got {}",
+                                resolved_name,
+                                param_types.len(),
+                                args.len()
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
-                                self.errors.push(format!(
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3003,
+                                    format!(
                                         "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
-                                    ));
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         }
                     }
@@ -1440,30 +1465,42 @@ impl<'a> TypeChecker<'a> {
                     .find(|f| f.0.name == resolved_name)
                 {
                     if (func.0.topology != self.active_topology) && !silent {
-                        self.errors.push(format!(
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6001,
+                            format!(
                                 "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
                                 resolved_name, func.0.topology, self.active_topology
-                            ));
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     let param_types: Vec<Type> =
                         func.0.params.iter().map(|(_, t)| t.clone()).collect();
                     if args.len() != param_types.len() {
                         if !silent {
-                            self.errors.push(format!(
-                                "Function '{}' expects {} arguments, got {}",
-                                resolved_name,
-                                param_types.len(),
-                                args.len()
-                            ));
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3010,
+                                format!(
+                                    "Function '{}' expects {} arguments, got {}",
+                                    resolved_name,
+                                    param_types.len(),
+                                    args.len()
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                         }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
                             if !self.is_assignable(param_ty, arg_ty) && !silent {
-                                self.errors.push(format!(
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3003,
+                                    format!(
                                         "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
-                                    ));
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         }
                     }
@@ -1633,10 +1670,14 @@ impl<'a> TypeChecker<'a> {
                         .map(|(f, _)| f.name.clone())
                         .collect();
                     if !silent {
-                        self.errors.push(format!(
-                            "Undefined function '{}'. Available monos: {:?}",
-                            resolved_name, mono_names
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E2002,
+                            format!(
+                                "Undefined function '{}'. Available monos: {:?}",
+                                resolved_name, mono_names
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
@@ -2379,7 +2420,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Borrow(BorrowExpr {
                 expr: inner,
                 is_mut,
-                span: _,
+                span,
             }) => {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
 
@@ -2419,10 +2460,18 @@ impl<'a> TypeChecker<'a> {
 
                             if b.is_mut {
                                 if !silent {
-                                    self.errors.push(format!("Cannot borrow '{}' because it is already borrowed as mutable.", name));
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E4004,
+                                        format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
                                 }
                             } else if *is_mut && !silent {
-                                self.errors.push(format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name));
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E4003,
+                                    format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         }
                     }
