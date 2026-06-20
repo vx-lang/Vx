@@ -72,11 +72,35 @@ fn test_nested_spawn() -> i32 {
   return 0;
 }
 
+// --- NPU Slice: spawn across a range of NPU devices ---
+fn test_spawn_npu_slice() -> i32 {
+  spawn on(Topology::NPU[0..4]) {
+    // CHECK-NOT: error
+    let slice_val : Tensor<f32> = 1.0;
+  }
+
+  return 0;
+}
+
+// --- Dynamic NPU index: loop variable as topology index ---
+fn test_spawn_npu_dynamic_index() -> i32 {
+  for i in 0..4 {
+    spawn on(Topology::NPU[i]) {
+      // CHECK-NOT: error
+      let dyn_val : Tensor<f32> = 1.0;
+    }
+  }
+
+  return 0;
+}
+
 fn main() -> i32 {
   test_unified_host_access();
   test_spawn_amx();
   test_spawn_cpu_isa_extensions();
   test_nested_spawn();
+  test_spawn_npu_slice();
+  test_spawn_npu_dynamic_index();
   return 0;
 }
 

@@ -27,7 +27,16 @@ impl<'a> Parser<'a> {
                 if self.match_token(&TokenType::LeftBracket) {
                     let expr = self.parse_expr()?;
                     self.consume(&TokenType::RightBracket, "Expected ']'")?;
-                    Ok(Topology::NPU(Box::new(expr)))
+                    // If the expression is a range like 0..4, convert to Slice
+                    if let Expr::Range(RangeExpr { start, end, .. }) = expr {
+                        Ok(Topology::Slice(
+                            Box::new(Topology::NPU(start.clone())),
+                            start,
+                            end,
+                        ))
+                    } else {
+                        Ok(Topology::NPU(Box::new(expr)))
+                    }
                 } else {
                     Err(self.error("Expected index for NPU"))
                 }

@@ -392,4 +392,26 @@ mod tests {
             panic!("Expected Ref type, got {:?}", ty);
         }
     }
+
+    #[test]
+    fn test_parse_topology_npu_slice() {
+        let top = parse_topology("Topology::NPU[0..4]");
+        if let Topology::Slice(inner_top, start, end) = top {
+            // Inner topology should be NPU(0)
+            assert!(matches!(*inner_top, Topology::NPU(_)));
+            // Start should be 0, end should be 4
+            if let Expr::Number(n) = *start {
+                assert_eq!(n.value, "0".into());
+            } else {
+                panic!("Expected Number for slice start, got {:?}", start);
+            }
+            if let Expr::Number(n) = *end {
+                assert_eq!(n.value, "4".into());
+            } else {
+                panic!("Expected Number for slice end, got {:?}", end);
+            }
+        } else {
+            panic!("Expected Topology::Slice, got {:?}", top);
+        }
+    }
 }

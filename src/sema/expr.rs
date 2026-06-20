@@ -994,18 +994,10 @@ impl<'a> TypeChecker<'a> {
                     actual_top = self.active_topology.clone();
                 }
 
-                let prev_top = self.active_topology.clone();
-                let prev_mem = self.active_memory.clone();
-                self.active_topology = actual_top.clone();
-                self.active_memory =
-                    crate::arch::TransferCostGraph::default_memory_for(&actual_top);
-
-                *top = actual_top;
-
-                self.push_scope();
-
-                // Validate topology expression if it contains one
-                match top {
+                // Validate topology index expressions BEFORE switching context,
+                // since the index (e.g., NPU[i]) refers to variables in the
+                // outer scope.
+                match &mut actual_top {
                     Topology::NPU(expr) | Topology::AccCore(expr) => {
                         let _ty = self.check_expr_type(expr);
                     }
@@ -1021,6 +1013,16 @@ impl<'a> TypeChecker<'a> {
                     | Topology::CpuNeon
                     | Topology::Current => {}
                 }
+
+                let prev_top = self.active_topology.clone();
+                let prev_mem = self.active_memory.clone();
+                self.active_topology = actual_top.clone();
+                self.active_memory =
+                    crate::arch::TransferCostGraph::default_memory_for(&actual_top);
+
+                *top = actual_top;
+
+                self.push_scope();
 
                 self.check_expr_block(stmts, consume, silent);
 

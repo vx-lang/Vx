@@ -1,0 +1,24 @@
+//===- pinned_cross_topology.vx - Vx Compiler --------------------*- Vx -*-===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Test: Pinned<Tensor, NPU> cannot be accessed from GPU topology.
+// GPU can see CPUDRAM (unified), but not NPU_HBM. A tensor pinned to NPU
+// lives in NPU_HBM, making it inaccessible from GPU.
+
+fn main() -> i32 {
+  let t : Tensor<f32> = 1.0;
+  let t_npu = transfer(t, Memory::NPU_HBM);
+
+  spawn on(Topology::GPU) {
+    // Pinned<Tensor, NPU> — GPU cannot access NPU_HBM
+    // CHECK: Cross-topology access error
+    let invalid = t_npu;
+  }
+
+  return 0;
+}
