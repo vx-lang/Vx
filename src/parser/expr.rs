@@ -1397,4 +1397,427 @@ mod tests {
             panic!("Expected IndexAccess, got {:?}", expr);
         }
     }
+
+    // ---- If expression tests ----
+
+    #[test]
+    fn test_parse_if_basic() {
+        let expr = parse_expr("if x { 1; }");
+        if let Expr::If(IfExpr {
+            is_comptime,
+            cond,
+            then_block,
+            else_block,
+            ..
+        }) = expr
+        {
+            assert!(!is_comptime);
+            assert!(matches!(&*cond, Expr::Identifier(_)));
+            assert_eq!(then_block.len(), 1);
+            assert!(else_block.is_none());
+        } else {
+            panic!("Expected If, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_if_comptime() {
+        let expr = parse_expr("if comptime x { 1; }");
+        if let Expr::If(IfExpr { is_comptime, .. }) = expr {
+            assert!(is_comptime);
+        } else {
+            panic!("Expected If(comptime), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let expr = parse_expr("if x { 1; } else { 2; }");
+        if let Expr::If(IfExpr {
+            then_block,
+            else_block,
+            ..
+        }) = expr
+        {
+            assert_eq!(then_block.len(), 1);
+            assert!(else_block.is_some());
+            assert_eq!(else_block.unwrap().len(), 1);
+        } else {
+            panic!("Expected If with else, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_if_else_if_chain() {
+        let expr = parse_expr("if a { 1; } else if b { 2; } else { 3; }");
+        if let Expr::If(IfExpr { else_block, .. }) = expr {
+            // else if → else_block = Some([ExprStmt(If(...))])
+            let else_b = else_block.expect("Expected else block");
+            assert_eq!(else_b.len(), 1);
+            if let Statement::ExprStmt(ExprStmtStmt { expr: inner, .. }) = &else_b[0] {
+                assert!(matches!(inner, Expr::If(_)));
+            } else {
+                panic!("Expected inner If in else-if chain");
+            }
+        } else {
+            panic!("Expected If, got {:?}", expr);
+        }
+    }
+
+    // ---- Match expression tests ----
+
+    #[test]
+    fn test_parse_match_with_wildcard() {
+        let expr = parse_expr("match x { _ => { 0; } }");
+        if let Expr::Match(MatchExpr {
+            expr: scrutinee,
+            arms,
+            ..
+        }) = expr
+        {
+            assert!(matches!(&*scrutinee, Expr::Identifier(_)));
+            assert_eq!(arms.len(), 1);
+            assert_eq!(arms[0].pattern, Pattern::Wildcard);
+        } else {
+            panic!("Expected Match, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_match_with_literal_and_identifier() {
+        let expr = parse_expr("match x { 1 => { a; } y => { b; } }");
+        if let Expr::Match(MatchExpr { arms, .. }) = expr {
+            assert_eq!(arms.len(), 2);
+            assert!(matches!(
+                &arms[0].pattern,
+                Pattern::Literal(Expr::Number(_))
+            ));
+            assert!(matches!(&arms[1].pattern, Pattern::Identifier(_)));
+        } else {
+            panic!("Expected Match, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_match_enum_variant_pattern() {
+        let expr = parse_expr("match x { Option::None => { 0; } Option::Some(v) => { v; } }");
+        if let Expr::Match(MatchExpr { arms, .. }) = expr {
+            assert_eq!(arms.len(), 2);
+            if let Pattern::EnumVariant(enum_name, variant, payload) = &arms[0].pattern {
+                assert_eq!(enum_name.as_ref(), "Option");
+                assert_eq!(variant.as_ref(), "None");
+                assert!(payload.is_none());
+            } else {
+                panic!("Expected EnumVariant pattern for first arm");
+            }
+            if let Pattern::EnumVariant(_, variant, payload) = &arms[1].pattern {
+                assert_eq!(variant.as_ref(), "Some");
+                assert!(payload.is_some());
+                assert_eq!(payload.as_ref().unwrap().len(), 1);
+            } else {
+                panic!("Expected EnumVariant pattern for second arm");
+            }
+        } else {
+            panic!("Expected Match, got {:?}", expr);
+        }
+    }
+
+    // ---- Unsafe block expression tests ----
+
+    #[test]
+    fn test_parse_unsafe_block_with_stmts() {
+        let expr = parse_expr("unsafe { call(); }");
+        if let Expr::UnsafeBlock(UnsafeBlockExpr { stmts, ret, .. }) = expr {
+            assert_eq!(stmts.len(), 1);
+            assert!(ret.is_none());
+        } else {
+            panic!("Expected UnsafeBlock, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_unsafe_block_tail_expr() {
+        let expr = parse_expr("unsafe { x }");
+        if let Expr::UnsafeBlock(UnsafeBlockExpr { stmts, ret, .. }) = expr {
+            assert!(stmts.is_empty());
+            assert!(ret.is_some());
+            assert!(matches!(&*ret.unwrap(), Expr::Identifier(_)));
+        } else {
+            panic!("Expected UnsafeBlock with tail, got {:?}", expr);
+        }
+    }
+
+    // ---- Comptime block expression tests ----
+
+    #[test]
+    fn test_parse_comptime_block_tail_expr() {
+        let expr = parse_expr("comptime { 42 }");
+        if let Expr::ComptimeBlock(ComptimeBlockExpr { stmts, ret, .. }) = expr {
+            assert!(stmts.is_empty());
+            assert!(ret.is_some());
+            if let Expr::Number(NumberExpr { value, .. }) = &*ret.unwrap() {
+                assert_eq!(value.as_ref(), "42");
+            } else {
+                panic!("Expected Number in comptime ret");
+            }
+        } else {
+            panic!("Expected ComptimeBlock, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_comptime_block_with_stmts() {
+        let expr = parse_expr("comptime { let x : i32 = 1; x }");
+        if let Expr::ComptimeBlock(ComptimeBlockExpr { stmts, ret, .. }) = expr {
+            assert_eq!(stmts.len(), 1);
+            assert!(ret.is_some());
+        } else {
+            panic!("Expected ComptimeBlock, got {:?}", expr);
+        }
+    }
+
+    // ---- Grad expression tests ----
+
+    #[test]
+    fn test_parse_grad() {
+        let expr = parse_expr("grad(f, x, y)");
+        if let Expr::Grad(GradExpr {
+            target_fn, args, ..
+        }) = expr
+        {
+            assert_eq!(target_fn.as_ref(), "f");
+            assert_eq!(args.len(), 2);
+        } else {
+            panic!("Expected Grad, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_grad_no_args() {
+        let expr = parse_expr("grad(f)");
+        if let Expr::Grad(GradExpr {
+            target_fn, args, ..
+        }) = expr
+        {
+            assert_eq!(target_fn.as_ref(), "f");
+            assert!(args.is_empty());
+        } else {
+            panic!("Expected Grad with no args, got {:?}", expr);
+        }
+    }
+
+    // ---- Vjp expression tests ----
+
+    #[test]
+    fn test_parse_vjp() {
+        let expr = parse_expr("vjp(f, x, y, ct)");
+        if let Expr::Vjp(VjpExpr {
+            target_fn,
+            args,
+            cotangent,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_fn.as_ref(), "f");
+            // Last arg split off as cotangent
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&*cotangent, Expr::Identifier(_)));
+        } else {
+            panic!("Expected Vjp, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_vjp_single_arg_is_cotangent() {
+        // vjp(f, ct) — ct is the cotangent, args should be empty
+        let expr = parse_expr("vjp(f, ct)");
+        if let Expr::Vjp(VjpExpr {
+            target_fn,
+            args,
+            cotangent,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_fn.as_ref(), "f");
+            assert!(args.is_empty());
+            if let Expr::Identifier(IdentifierExpr { name, .. }) = &*cotangent {
+                assert_eq!(name.as_ref(), "ct");
+            } else {
+                panic!("Expected Identifier cotangent");
+            }
+        } else {
+            panic!("Expected Vjp, got {:?}", expr);
+        }
+    }
+
+    // ---- Jvp expression tests ----
+
+    #[test]
+    fn test_parse_jvp() {
+        let expr = parse_expr("jvp(f, x, tn)");
+        if let Expr::Jvp(JvpExpr {
+            target_fn,
+            args,
+            tangent,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_fn.as_ref(), "f");
+            assert_eq!(args.len(), 1);
+            if let Expr::Identifier(IdentifierExpr { name, .. }) = &*tangent {
+                assert_eq!(name.as_ref(), "tn");
+            } else {
+                panic!("Expected Identifier tangent");
+            }
+        } else {
+            panic!("Expected Jvp, got {:?}", expr);
+        }
+    }
+
+    // ---- Closure expression tests ----
+
+    #[test]
+    fn test_parse_closure_typed_params() {
+        let expr = parse_expr("|x: i32, y: f32| x");
+        if let Expr::Closure(ClosureExpr { params, body, .. }) = expr {
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].0.as_ref(), "x");
+            assert_eq!(params[1].0.as_ref(), "y");
+            assert!(matches!(&*body, Expr::Identifier(_)));
+        } else {
+            panic!("Expected Closure, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_closure_zero_arg() {
+        let expr = parse_expr("|| 42");
+        if let Expr::Closure(ClosureExpr { params, body, .. }) = expr {
+            assert!(params.is_empty());
+            assert!(matches!(&*body, Expr::Number(_)));
+        } else {
+            panic!("Expected Closure(zero-arg), got {:?}", expr);
+        }
+    }
+
+    // ---- AsCast expression tests ----
+
+    #[test]
+    fn test_parse_as_cast() {
+        let expr = parse_expr("x as f64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert!(matches!(&*inner, Expr::Identifier(_)));
+            assert_eq!(target_ty.to_string(), "f64");
+        } else {
+            panic!("Expected AsCast, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_as_cast_chained() {
+        // x as i32 as f64 → AsCast(AsCast(x, i32), f64)
+        let expr = parse_expr("x as i32 as f64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "f64");
+            assert!(matches!(&*inner, Expr::AsCast(_)));
+        } else {
+            panic!("Expected chained AsCast, got {:?}", expr);
+        }
+    }
+
+    // ---- IndirectCall expression tests ----
+
+    #[test]
+    fn test_parse_indirect_call() {
+        // A parenthesized expression followed by (args) produces an IndirectCall
+        let expr = parse_expr("(get_fn())(a, b)");
+        if let Expr::IndirectCall(IndirectCallExpr { callee, args, .. }) = expr {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&*callee, Expr::FunctionCall(_)));
+        } else {
+            panic!("Expected IndirectCall, got {:?}", expr);
+        }
+    }
+
+    // ---- SizeOf expression tests ----
+
+    #[test]
+    fn test_parse_sizeof() {
+        let expr = parse_expr("sizeof<i32>()");
+        if let Expr::SizeOf(SizeOfExpr { target_ty, .. }) = expr {
+            assert_eq!(target_ty.to_string(), "i32");
+        } else {
+            panic!("Expected SizeOf, got {:?}", expr);
+        }
+    }
+
+    // ---- StringLiteral expression tests ----
+
+    #[test]
+    fn test_parse_string_literal() {
+        let expr = parse_expr("\"hello world\"");
+        if let Expr::StringLiteral(StringLiteralExpr { value, .. }) = expr {
+            assert_eq!(value.as_ref(), "hello world");
+        } else {
+            panic!("Expected StringLiteral, got {:?}", expr);
+        }
+    }
+
+    // ---- Dereference chain test ----
+
+    #[test]
+    fn test_parse_dereference_chain() {
+        // **ptr → Dereference(Dereference(ptr))
+        let expr = parse_expr("**ptr");
+        if let Expr::Dereference(DereferenceExpr { expr: inner, .. }) = expr {
+            if let Expr::Dereference(DereferenceExpr {
+                expr: innermost, ..
+            }) = &*inner
+            {
+                assert!(matches!(&**innermost, Expr::Identifier(_)));
+            } else {
+                panic!("Expected inner Dereference, got {:?}", inner);
+            }
+        } else {
+            panic!("Expected Dereference, got {:?}", expr);
+        }
+    }
+
+    // ---- Complex expression composition tests ----
+
+    #[test]
+    fn test_parse_borrow_then_deref() {
+        // *&x → Dereference(Borrow(x))
+        let expr = parse_expr("*&x");
+        if let Expr::Dereference(DereferenceExpr { expr: inner, .. }) = expr {
+            assert!(matches!(&*inner, Expr::Borrow(_)));
+        } else {
+            panic!("Expected Dereference(Borrow), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_negation_of_function_call() {
+        // -foo(x) → UnaryOp(Neg, FunctionCall)
+        let expr = parse_expr("-foo(x)");
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op, expr: inner, ..
+        }) = expr
+        {
+            assert_eq!(op, UnaryOp::Neg);
+            assert!(matches!(&*inner, Expr::FunctionCall(_)));
+        } else {
+            panic!("Expected UnaryOp(Neg, FunctionCall), got {:?}", expr);
+        }
+    }
 }
