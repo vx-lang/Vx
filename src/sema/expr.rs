@@ -529,6 +529,9 @@ impl<'a> TypeChecker<'a> {
                     return Type::Scalar(ElementType::Bool);
                 }
 
+                // Track variable usage for W1001/W1009 diagnostics
+                self.used_vars.insert(name.clone());
+
                 if !self.skip_borrow_check {
                     if let Some(borrows) = self.active_borrows.get(name.as_ref()) {
                         for b in borrows {

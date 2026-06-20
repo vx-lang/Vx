@@ -104,8 +104,11 @@ impl<'a> TypeChecker<'a> {
                 is_mut: _is_mut,
                 ty_ann,
                 expr,
-                span: _,
+                span,
             }) => {
+                // Track declared variables for W1001 (unused variable) detection
+                self.declared_vars.push((name.clone(), *span));
+
                 self.current_assignment_target = Some(name.to_string());
                 let ty = self.check_expr_type_flag(expr, consume, silent);
                 self.current_assignment_target = None;

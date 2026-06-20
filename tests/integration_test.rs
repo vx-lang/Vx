@@ -59,9 +59,9 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     for f in &mut ast.functions {
         checker.check_function(f);
     }
-    let is_valid = checker.errors.is_empty();
+    let is_valid = checker.errors.error_count() == 0;
 
-    if !checker.errors.is_empty() {
+    if checker.errors.error_count() > 0 {
         for err in &checker.errors {
             println!("Semantic Error: {}", err);
         }

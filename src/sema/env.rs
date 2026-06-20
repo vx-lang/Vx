@@ -154,6 +154,10 @@ pub struct TypeChecker<'a> {
     pub(crate) block_liveness: Vec<HashMap<crate::symbol::Symbol, usize>>,
     pub(crate) current_stmt_idx: Vec<usize>,
     pub skip_borrow_check: bool,
+    /// Tracks which variables have been read during the current function check.
+    pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
+    /// Tracks declared variables with their spans (for unused variable warnings).
+    pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::ast::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -184,6 +188,8 @@ impl<'a> TypeChecker<'a> {
             block_liveness: Vec::new(),
             current_stmt_idx: Vec::new(),
             skip_borrow_check: false,
+            used_vars: std::collections::HashSet::new(),
+            declared_vars: Vec::new(),
         }
     }
 
@@ -572,11 +578,44 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // W1009: Unused function parameters
+        for (param_name, _) in &func.params {
+            let name_str: &str = param_name.as_ref();
+            if !name_str.starts_with('_')
+                && name_str != "self"
+                && !self.used_vars.contains(param_name.as_ref())
+            {
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1009,
+                    format!("Unused function parameter '{}'", param_name),
+                    None,
+                );
+            }
+        }
+
+        // W1001: Unused variable bindings
+        for (var_name, var_span) in std::mem::take(&mut self.declared_vars) {
+            let name_str: &str = var_name.as_ref();
+            if !name_str.starts_with('_') && !self.used_vars.contains(&var_name) {
+                let diag = self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1001,
+                    format!("Unused variable '{}'", var_name),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&var_span)),
+                );
+                diag.fix_its.push(crate::diagnostic::FixIt {
+                    message: "prefix with underscore to suppress".into(),
+                    span: crate::diagnostic::SourceSpan::from_ast_span(&var_span),
+                    replacement: format!("_{}", var_name).into(),
+                });
+            }
+        }
+
         self.pop_scope();
         self.current_return_type = prev_ret_ty;
         self.constraints = prev_constraints;
         self.active_topology = prev_top;
         self.active_memory = prev_mem;
+        self.used_vars.clear();
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

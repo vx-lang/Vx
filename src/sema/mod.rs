@@ -57,14 +57,14 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Tensor<f32> {
             for f in &mut program.functions {
                 checker.check_function(f);
             }
-            checker.errors.is_empty()
+            checker.errors.error_count() == 0
         };
 
         for err in &checker.errors {
             println!("Error: {}", err);
         }
         assert!(success);
-        assert!(checker.errors.is_empty());
+        assert!(checker.errors.error_count() == 0);
     }
 
     #[test]
@@ -89,10 +89,10 @@ fn bad_matmul() -> Tensor {
             for f in &mut program.functions {
                 checker.check_function(f);
             }
-            checker.errors.is_empty()
+            checker.errors.error_count() == 0
         };
         assert!(!success);
-        assert!(!checker.errors.is_empty());
+        assert!(checker.errors.error_count() > 0);
     }
 
     #[test]
@@ -125,7 +125,7 @@ fn bad_matmul() -> Tensor {
                 for f in &mut program.functions {
                     checker.check_function(f);
                 }
-                checker.errors.is_empty()
+                checker.errors.error_count() == 0
             },
             "Semantic checking failed: {:?}",
             checker.errors
@@ -164,7 +164,7 @@ fn bad_matmul() -> Tensor {
             for f in &mut program.functions {
                 checker.check_function(f);
             }
-            checker.errors.is_empty()
+            checker.errors.error_count() == 0
         };
         assert!(!success);
         assert!(checker.errors.iter().any(|e| e
@@ -198,7 +198,7 @@ fn bad_matmul() -> Tensor {
                 for f in &mut program.functions {
                     checker.check_function(f);
                 }
-                checker.errors.is_empty()
+                checker.errors.error_count() == 0
             },
             "Semantic checking failed for methods: {:?}",
             checker.errors
@@ -276,7 +276,7 @@ fn bad_matmul() -> Tensor {
             checker.check_function(f);
         }
         assert!(
-            !checker.errors.is_empty(),
+            checker.errors.error_count() > 0,
             "Expected error for double-use of linear variable"
         );
         assert!(
@@ -314,7 +314,7 @@ fn bad_matmul() -> Tensor {
             checker.check_function(f);
         }
         assert!(
-            checker.errors.is_empty(),
+            checker.errors.error_count() == 0,
             "Scalars should not be consumed on use: {:?}",
             checker.errors
         );
