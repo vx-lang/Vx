@@ -1,0 +1,39 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- linear_scalar_reuse.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Scalars (i32, f32, bool) are NOT linear types and can be reused freely.
+// This test confirms that scalar values survive multiple uses without
+// triggering "moved or consumed" errors.
+//===----------------------------------------------------------------------===//
+
+fn test_scalar_reuse() -> i32 {
+  let x = 42;
+  let y = x + 1;
+  let z = x + 2;
+  let w = x * 3;
+  return w;
+}
+
+fn test_bool_reuse() -> i32 {
+  let flag = true;
+  if flag {
+    let a = 1;
+  }
+  if flag {
+    let b = 2;
+  }
+  return 0;
+}
+
+fn test_float_reuse() -> i32 {
+  let pi = 3.14;
+  let area = pi * 2.0;
+  let circumference = pi * 4.0;
+  return 0;
+}

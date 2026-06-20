@@ -1,0 +1,31 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//===- borrow_split_fields.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Split borrows: different fields of the same struct can be mutably borrowed
+// simultaneously because they occupy disjoint memory.
+//===----------------------------------------------------------------------===//
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+fn main() -> i32 {
+  let mut p = Point {
+    x : 1, y : 2
+  };
+
+  // Borrow field x mutably
+  let bx = &mut p.x;
+
+  // Borrow field y mutably — this is allowed because x and y are disjoint
+  let by = &mut p.y;
+
+  return 0;
+}

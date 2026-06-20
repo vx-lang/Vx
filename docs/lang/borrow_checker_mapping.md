@@ -100,3 +100,43 @@ pub unsafe extern "C" fn vx_tensor_f32_get_len(
 ```
 
 In `Vx`, this maps to a method call that does *not* remove the variable from the `SymbolMap`.
+
+## 5. Split Borrows (Field-Level Granularity)
+
+Vx supports **split borrows**: different fields of the same struct can be mutably borrowed simultaneously, because they reference disjoint memory regions. The borrow checker tracks borrows using a path-based overlap analysis.
+
+```vx
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+fn update_components(p: &mut Point) {
+  let bx = &mut p.x;  // Borrows field 'x'
+  let by = &mut p.y;  // OK: 'y' is disjoint from 'x'
+
+  let bx2 = &mut p.x; // ERROR: 'x' is already mutably borrowed
+}
+```
+
+**Implementation**: Each `BorrowRecord` stores a `path: Vec<String>` representing the chain of field accesses (e.g., `["x"]` or `["nested", "field"]`). When creating a new borrow, the compiler checks if the new path overlaps with any existing borrow path. If paths diverge at any level, they are considered disjoint and the borrow is permitted.
+
+## 6. Non-Lexical Lifetimes (NLL)
+
+Vx implements partial NLL support via liveness analysis. The compiler computes `last_use[variable] -> statement_index` for each block, allowing dead borrows to be released early when a new borrow is created.
+
+```vx
+fn example() {
+  let mut x : Tensor<f32> = Tensor<f32>();
+
+  if true {
+    let y = &mut x;
+    // use y...
+  } // y goes out of scope here, releasing the borrow
+
+  let z = &mut x; // Valid: y's borrow was released by scope exit
+}
+```
+
+> [!IMPORTANT]
+> **Current Limitation**: NLL dead-borrow cleanup runs at borrow-creation time (inside `check_borrow_expr`), but the identifier-level "mutably borrowed" access check (`check_identifier_expr`) fires earlier and does not perform NLL cleanup. This means NLL primarily enables reborrowing via **lexical scope exit** (`pop_scope`), not via usage-based liveness within the same scope.

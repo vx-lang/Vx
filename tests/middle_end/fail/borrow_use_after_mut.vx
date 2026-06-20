@@ -1,0 +1,26 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//===- borrow_use_after_mut.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Accessing a variable while a live mutable borrow exists must be rejected.
+// Unlike borrow_mut_twice (which tests double-borrow), this tests direct
+// access to the original variable while a mutable borrow is active.
+//===----------------------------------------------------------------------===//
+
+fn use_ref(r: &mut Tensor<f32>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut x : Tensor<f32> = Tensor<f32>();
+  let y = &mut x;
+  let z = x;
+  use_ref(y);
+  return 0;
+}
+
+// CHECK: Cannot access 'x' because it is mutably borrowed.

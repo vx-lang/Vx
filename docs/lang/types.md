@@ -202,3 +202,43 @@ Vx provides a comprehensive set of primitive types:
 - **Arrays**: Fixed-size arrays are supported using the `[T; N]` syntax.
 - **Tensors and Matrices**: Built-in `Tensor<T, Shape>` and `Matrix` types are first-class constructs natively understood by the compiler for high-performance algebraic operations.
 - **SIMD Vectors**: Explicit SIMD types are available (e.g., `<4 x f32>`) for low-level vectorization control.
+
+## 9. Linear (Affine) Types vs. Copyable Types
+
+Vx uses a **linear type discipline** for resource-owning types. A linear value must be used exactly once — using it consumes it, and any subsequent use is a compile-time error. This statically prevents double-free, use-after-free, and resource leaks.
+
+### Linear Types (consumed on use)
+
+| Type | Example |
+|------|---------|
+| `Tensor<T, Shape>` | `let a : Tensor<f32> = 1.0;` |
+| `Matrix` | `let m : Matrix = ...;` |
+| `Ref<T, Memory>` | `let r : Ref<Tensor, Host_DRAM> = ...;` |
+| `Verified<T>` | `let v : Verified<Tensor> = ...;` |
+| `Pinned<T, Topology>` | `let p : Pinned<Tensor, NPU[0]> = ...;` |
+| `struct` instances | `let cfg = Config { value: 1.0 };` |
+| `enum` instances | `let opt = Option::Some(42);` |
+
+```rust
+let a : Tensor<f32> = 1.0;
+let b = a;  // a is consumed here
+let c = a;  // COMPILE ERROR: Use of moved or consumed linear variable: a
+```
+
+### Copyable Types (reusable freely)
+
+| Type | Example |
+|------|---------|
+| `i4`, `i8`, `i16`, `i32`, `i64`, `i128` | `let x = 42;` |
+| `u4`, `u8`, `u16`, `u32`, `u64`, `u128` | `let y : u32 = 10;` |
+| `f16`, `bf16`, `f32`, `f64` | `let pi = 3.14;` |
+| `bool` | `let flag = true;` |
+
+```rust
+let x = 42;
+let y = x + 1;  // OK: scalars are NOT linear
+let z = x + 2;  // OK: x can be used multiple times
+```
+
+> [!NOTE]
+> The `transfer()` primitive uses **non-destructive copy semantics** at the sema level. It creates a DMA copy in the destination memory space without consuming the source variable. The source remains accessible in its original memory space.

@@ -1,0 +1,20 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//===- linear_tensor_double_use.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Tensors are linear types: using a Tensor value consumes it. A second use
+// of the same variable must produce a "moved or consumed" error.
+//===----------------------------------------------------------------------===//
+
+fn main() -> i32 {
+  let a : Tensor<f32> = 1.0;
+  let b = a;
+  let c = a;
+  return 0;
+}
+
+// CHECK: Use of moved or consumed linear variable: a

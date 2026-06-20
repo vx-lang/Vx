@@ -250,4 +250,111 @@ fn bad_matmul() -> Tensor {
             "c is last used in return c at index 5"
         );
     }
+
+    #[test]
+    fn test_sema_linear_move_consumed() {
+        // A Tensor is linear: using it once consumes it, second use is an error.
+        let input = r#"
+        fn test() -> i32 {
+            let a : Tensor<f32> = 1.0;
+            let b = a;
+            let c = a;
+            return 0;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let mut program = parser.parse().unwrap();
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+        assert!(
+            !checker.errors.is_empty(),
+            "Expected error for double-use of linear variable"
+        );
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("moved or consumed linear variable")),
+            "Expected 'moved or consumed linear variable' error, got: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn test_sema_scalar_not_consumed() {
+        // Scalars (i32) are NOT linear — they can be reused freely.
+        let input = r#"
+        fn test() -> i32 {
+            let x = 42;
+            let y = x + 1;
+            let z = x + 2;
+            return z;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let mut program = parser.parse().unwrap();
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+        assert!(
+            checker.errors.is_empty(),
+            "Scalars should not be consumed on use: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn test_sema_borrow_blocks_access() {
+        // A mutable borrow should block direct access to the original variable.
+        let input = r#"
+        fn test() -> i32 {
+            let mut x : Tensor<f32> = 1.0;
+            let y = &mut x;
+            let z = x;
+            return 0;
+        }
+        "#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let mut program = parser.parse().unwrap();
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+        assert!(
+            !checker.errors.is_empty(),
+            "Expected error for accessing mutably borrowed variable"
+        );
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("mutably borrowed")),
+            "Expected 'mutably borrowed' error, got: {:?}",
+            checker.errors
+        );
+    }
 }
