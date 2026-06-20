@@ -140,3 +140,22 @@ fn example() {
 
 > [!IMPORTANT]
 > **Current Limitation**: NLL dead-borrow cleanup runs at borrow-creation time (inside `check_borrow_expr`), but the identifier-level "mutably borrowed" access check (`check_identifier_expr`) fires earlier and does not perform NLL cleanup. This means NLL primarily enables reborrowing via **lexical scope exit** (`pop_scope`), not via usage-based liveness within the same scope.
+
+**Workaround**: Use explicit lexical scopes to force borrow cleanup before reborrowing.
+
+```vx
+fn nll_workaround() {
+    let mut x: Tensor<f32> = Tensor<f32>();
+
+    // Fails due to identifier access limitation
+    // let y = &mut x;
+    // let z = &mut x; // ERROR: x is already mutably borrowed
+
+    // Workaround: Explicit scoping
+    {
+        let y = &mut x;
+    } // y goes out of scope here, releasing the borrow
+
+    let z = &mut x; // OK
+}
+```

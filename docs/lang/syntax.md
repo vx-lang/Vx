@@ -116,6 +116,24 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
 }
 ```
 
+### 5.1 Multi-Hop Transfers via NIC
+
+When transferring data across physically distant memory spaces (e.g., from CPU DRAM to a remote HBM across the network), Vx can utilize the NIC (Network Interface Controller). This creates a multi-hop transfer that the compiler's `TransferCostGraph` routes efficiently.
+
+```rust
+fn network_transfer_example(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
+    // 1. Transfer from local CPU DRAM to the NIC RAM
+    let nic_buffer = transfer(host_input, Memory::NIC_RAM);
+
+    // 2. Transfer from NIC RAM over the network to Remote HBM
+    let remote_data = transfer(nic_buffer, Memory::Remote_HBM);
+
+    spawn on(Topology::NPU[0]) {
+        // ... process remote_data ...
+    }
+}
+```
+
 ## 6. Control Flow
 
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `loop`, `break`, `continue`.
