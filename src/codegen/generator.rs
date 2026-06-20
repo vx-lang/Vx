@@ -282,7 +282,6 @@ impl<'c> MeliorGenerator<'c> {
         program: &Program,
         modules: &HashMap<crate::symbol::Symbol, Program>,
     ) -> Result<String, LowerError> {
-        println!("[CODEGEN] Starting MLIR generation...");
         let location = self.loc();
         self.module = melior::ir::Module::new(location);
 
@@ -307,11 +306,8 @@ impl<'c> MeliorGenerator<'c> {
 
         self.generate_module(program, modules)?;
 
-        println!("[CODEGEN] Finished generating modules.");
         let op = self.module.as_operation();
         let s = format!("{}", op);
-        std::fs::write("mlir_dump.mlir", &s).unwrap();
-        println!("[CODEGEN] Formatted MLIR string to mlir_dump.mlir.");
         Ok(s)
     }
 
