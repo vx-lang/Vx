@@ -1,0 +1,83 @@
+//===- topology_spawn.vx - Vx Compiler ---------------------------*- Vx -*-===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Unified topology spawn tests: exercises every topology variant, unified
+// memory access from GPU/ANE, nested spawn, and ISA-extension spawn blocks.
+//===----------------------------------------------------------------------===//
+
+// --- GPU and ANE have unified memory access to Host DRAM ---
+fn test_unified_host_access() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+  let t_host2 : Tensor<f32> = 1.0;
+
+  spawn on(Topology::GPU) {
+    // CHECK-NOT: error
+    let valid_gpu = t_host;
+  }
+
+  spawn on(Topology::ANE) {
+    // CHECK-NOT: error
+    let valid_ane = t_host2;
+  }
+
+  return 0;
+}
+
+// --- AMX has unified memory access to Host DRAM ---
+fn test_spawn_amx() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+
+  spawn on(Topology::AMX) {
+    // CHECK-NOT: error
+    let valid_amx = t_host;
+  }
+
+  return 0;
+}
+
+// --- CpuAvx512 and CpuNeon: local computation inside spawn ---
+fn test_spawn_cpu_isa_extensions() -> i32 {
+  spawn on(Topology::CpuAvx512) {
+    // CHECK-NOT: error
+    let avx_val : Tensor<f32> = 2.0;
+  }
+
+  spawn on(Topology::CpuNeon) {
+    // CHECK-NOT: error
+    let neon_val : Tensor<f32> = 3.0;
+  }
+
+  return 0;
+}
+
+// --- Nested spawn blocks switching topology contexts ---
+fn test_nested_spawn() -> i32 {
+  let t_host : Tensor<f32> = 1.0;
+  let t_npu = transfer(t_host, Memory::NPU_HBM);
+
+  spawn on(Topology::NPU[0]) {
+    // CHECK-NOT: error
+    let local = t_npu;
+
+    spawn on(Topology::CPU) {
+      let cpu_val : i32 = 42;
+    }
+  }
+
+  return 0;
+}
+
+fn main() -> i32 {
+  test_unified_host_access();
+  test_spawn_amx();
+  test_spawn_cpu_isa_extensions();
+  test_nested_spawn();
+  return 0;
+}
+
+// CHECK: module
