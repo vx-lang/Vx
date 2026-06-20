@@ -785,3 +785,52 @@ pub(crate) fn lower_print_call<'c>(
         Some(gen.none_ty).ok_or_else(|| LowerError::ParseType("none".to_string()))?,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ast::{Expr, NumberExpr, Span, Topology};
+
+    fn make_num_expr(val: &str) -> Box<Expr> {
+        Box::new(Expr::Number(NumberExpr::new(
+            val.to_string(),
+            None,
+            Span::default(),
+        )))
+    }
+
+    #[test]
+    fn test_topology_to_i32_all_variants() {
+        assert_eq!(topology_to_i32(&Topology::CPU), 0);
+        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("0"))), 100);
+        assert_eq!(topology_to_i32(&Topology::NPU(make_num_expr("3"))), 103);
+        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("0"))), 200);
+        assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("5"))), 205);
+        assert_eq!(topology_to_i32(&Topology::AMX), 300);
+        assert_eq!(topology_to_i32(&Topology::ANE), 400);
+        assert_eq!(topology_to_i32(&Topology::GPU), 500);
+        assert_eq!(topology_to_i32(&Topology::CpuAvx512), 600);
+        assert_eq!(topology_to_i32(&Topology::CpuNeon), 700);
+        assert_eq!(topology_to_i32(&Topology::Current), 0);
+    }
+
+    #[test]
+    fn test_topology_to_i32_slice() {
+        let slice = Topology::Slice(
+            Box::new(Topology::NPU(make_num_expr("0"))),
+            make_num_expr("0"),
+            make_num_expr("4"),
+        );
+        assert_eq!(topology_to_i32(&slice), 900);
+    }
+
+    #[test]
+    fn test_topology_to_i32_npu_non_numeric_falls_back() {
+        // NPU with a non-numeric expr should fall back to 100
+        let ident_expr = Box::new(Expr::Identifier(ast::IdentifierExpr {
+            name: "i".into(),
+            span: Span::default(),
+        }));
+        assert_eq!(topology_to_i32(&Topology::NPU(ident_expr)), 100);
+    }
+}

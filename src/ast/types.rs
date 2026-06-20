@@ -576,4 +576,95 @@ mod tests {
         assert!(!Topology::CPU.is_same_kind(&Topology::GPU));
         assert!(Topology::GPU.is_same_kind(&Topology::GPU));
     }
+
+    fn make_npu_expr(idx: &str) -> Box<Expr> {
+        Box::new(Expr::Number(super::super::expr::NumberExpr::new(
+            idx.to_string(),
+            None,
+            Span::default(),
+        )))
+    }
+
+    #[test]
+    fn test_topology_kind_all_variants() {
+        assert_eq!(Topology::CPU.kind(), TopologyKind::CPU);
+        assert_eq!(Topology::NPU(make_npu_expr("0")).kind(), TopologyKind::NPU);
+        assert_eq!(
+            Topology::AccCore(make_npu_expr("0")).kind(),
+            TopologyKind::AccCore
+        );
+        assert_eq!(Topology::AMX.kind(), TopologyKind::AMX);
+        assert_eq!(Topology::ANE.kind(), TopologyKind::ANE);
+        assert_eq!(Topology::GPU.kind(), TopologyKind::GPU);
+        assert_eq!(Topology::CpuAvx512.kind(), TopologyKind::CpuAvx512);
+        assert_eq!(Topology::CpuNeon.kind(), TopologyKind::CpuNeon);
+        assert_eq!(Topology::Current.kind(), TopologyKind::Current);
+        let slice = Topology::Slice(
+            Box::new(Topology::NPU(make_npu_expr("0"))),
+            make_npu_expr("0"),
+            make_npu_expr("4"),
+        );
+        assert_eq!(slice.kind(), TopologyKind::Slice);
+    }
+
+    #[test]
+    fn test_topology_is_same_kind_npu_different_indices() {
+        let npu0 = Topology::NPU(make_npu_expr("0"));
+        let npu1 = Topology::NPU(make_npu_expr("1"));
+        // Same kind (both NPU) even though different indices
+        assert!(npu0.is_same_kind(&npu1));
+        // But they are not PartialEq-equal
+        assert_ne!(npu0, npu1);
+    }
+
+    #[test]
+    fn test_topology_is_same_kind_acccore_different_indices() {
+        let ac0 = Topology::AccCore(make_npu_expr("0"));
+        let ac3 = Topology::AccCore(make_npu_expr("3"));
+        assert!(ac0.is_same_kind(&ac3));
+        assert_ne!(ac0, ac3);
+    }
+
+    #[test]
+    fn test_type_substitute_preserves_topology() {
+        let ty = Type::Tensor(
+            ElementType::Generic("T".into()),
+            vec![],
+            Some(Topology::GPU),
+        );
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::F32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(
+            result,
+            Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU))
+        );
+    }
+
+    #[test]
+    fn test_type_substitute_pinned_preserves_topology() {
+        let ty = Type::Pinned(Box::new(Type::Generic("T".into(), None)), Topology::ANE);
+        let mut mapping = HashMap::new();
+        mapping.insert("T".into(), Type::Scalar(ElementType::I32));
+        let result = ty.substitute(&mapping);
+        assert_eq!(
+            result,
+            Type::Pinned(Box::new(Type::Scalar(ElementType::I32)), Topology::ANE)
+        );
+    }
+
+    #[test]
+    fn test_mangle_tensor_ignores_topology() {
+        let ty_with = Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU));
+        let ty_without = Type::Tensor(ElementType::F32, vec![], None);
+        // Topology is intentionally not included in mangling
+        assert_eq!(ty_with.mangle(), ty_without.mangle());
+        assert_eq!(ty_with.mangle(), "Tensor$f32$0");
+    }
+
+    #[test]
+    fn test_mangle_pinned_type() {
+        let ty = Type::Pinned(Box::new(Type::Scalar(ElementType::I32)), Topology::ANE);
+        assert_eq!(ty.mangle(), "Pinned$i32");
+    }
 }

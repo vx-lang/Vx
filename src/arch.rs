@@ -432,4 +432,167 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn test_transfer_cost_same_space_is_zero() {
+        let graph = TransferCostGraph::default();
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::CPUDRAM, &MemorySpace::CPUDRAM),
+            Some(0)
+        );
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::NPUHBM, &MemorySpace::NPUHBM),
+            Some(0)
+        );
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::LocalSRAM, &MemorySpace::LocalSRAM),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_transfer_cost_direct_hop() {
+        let graph = TransferCostGraph::default();
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::CPUDRAM, &MemorySpace::NPUHBM),
+            Some(50)
+        );
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::NPUHBM, &MemorySpace::CPUDRAM),
+            Some(50)
+        );
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::NPUHBM, &MemorySpace::LocalSRAM),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn test_transfer_cost_multi_hop() {
+        let graph = TransferCostGraph::default();
+        // CPUDRAM -> NPUHBM -> LocalSRAM = 50 + 10 = 60
+        assert_eq!(
+            graph.transfer_cost(&MemorySpace::CPUDRAM, &MemorySpace::LocalSRAM),
+            Some(60)
+        );
+    }
+
+    #[test]
+    fn test_transfer_cost_nic_to_remote_cheaper_than_direct() {
+        let graph = TransferCostGraph::default();
+        // Direct: CPUDRAM -> RemoteHbm = 300
+        // Via NIC: CPUDRAM -> NPUHBM -> NicRam -> RemoteHbm = 50 + 5 + 20 = 75
+        // Dijkstra should find the cheaper path
+        let cost = graph.transfer_cost(&MemorySpace::CPUDRAM, &MemorySpace::RemoteHbm);
+        assert_eq!(cost, Some(75));
+
+        // Verify the path goes via NIC
+        let (_, hops) = graph
+            .transfer_path(&MemorySpace::CPUDRAM, &MemorySpace::RemoteHbm)
+            .unwrap();
+        assert_eq!(
+            hops,
+            vec![
+                MemorySpace::CPUDRAM,
+                MemorySpace::NPUHBM,
+                MemorySpace::NicRam,
+                MemorySpace::RemoteHbm,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_can_transfer_reflexive_all_spaces() {
+        let graph = TransferCostGraph::default();
+        for space in &[
+            MemorySpace::CPUDRAM,
+            MemorySpace::NPUHBM,
+            MemorySpace::LocalSRAM,
+            MemorySpace::NicRam,
+            MemorySpace::RemoteHbm,
+        ] {
+            assert!(
+                graph.can_transfer(space, space),
+                "Reflexive transfer should always work for {:?}",
+                space
+            );
+        }
+    }
+
+    #[test]
+    fn test_accessibility_npu_cannot_reach_dram_directly() {
+        let graph = TransferCostGraph::default();
+        let ref_dram = Type::Ref(Box::new(make_tensor()), MemorySpace::CPUDRAM);
+        // NPU can only see NPUHBM, not CPUDRAM directly
+        assert!(!graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_dram));
+    }
+
+    #[test]
+    fn test_accessibility_acccore_cannot_reach_npuhbm() {
+        let graph = TransferCostGraph::default();
+        let ref_hbm = Type::Ref(Box::new(make_tensor()), MemorySpace::NPUHBM);
+        assert!(!graph.is_type_accessible(&make_acc_core(), &Topology::CPU, &ref_hbm));
+    }
+
+    #[test]
+    fn test_accessibility_gpu_cannot_reach_local_sram() {
+        let graph = TransferCostGraph::default();
+        let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
+        // GPU only sees CPUDRAM; LocalSRAM is only accessible by AccCore
+        // Use AccCore as var_topology to avoid the host unified memory fallback
+        assert!(!graph.is_type_accessible(&Topology::GPU, &make_acc_core(), &ref_sram));
+    }
+
+    #[test]
+    fn test_accessibility_cpuavx512_sees_dram() {
+        let graph = TransferCostGraph::default();
+        let ty = make_tensor();
+        // CpuAvx512 defaults to CPUDRAM, same topology means accessible
+        assert!(graph.is_type_accessible(&Topology::CpuAvx512, &Topology::CpuAvx512, &ty));
+    }
+
+    #[test]
+    fn test_accessibility_cpuneon_sees_dram() {
+        let graph = TransferCostGraph::default();
+        let ty = make_tensor();
+        assert!(graph.is_type_accessible(&Topology::CpuNeon, &Topology::CpuNeon, &ty));
+    }
+
+    #[test]
+    fn test_default_memory_cpuavx512_and_cpuneon() {
+        assert_eq!(
+            TransferCostGraph::default_memory_for(&Topology::CpuAvx512),
+            MemorySpace::CPUDRAM
+        );
+        assert_eq!(
+            TransferCostGraph::default_memory_for(&Topology::CpuNeon),
+            MemorySpace::CPUDRAM
+        );
+    }
+
+    #[test]
+    fn test_default_memory_slice() {
+        let slice = Topology::Slice(
+            Box::new(make_npu()),
+            Box::new(Expr::Number(NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            ))),
+            Box::new(Expr::Number(NumberExpr::new(
+                "4".to_string(),
+                None,
+                Span::default(),
+            ))),
+        );
+        assert_eq!(
+            TransferCostGraph::default_memory_for(&slice),
+            MemorySpace::NPUHBM
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Must specify a concrete topology")]
+    fn test_default_memory_for_current_panics() {
+        let _ = TransferCostGraph::default_memory_for(&Topology::Current);
+    }
 }
