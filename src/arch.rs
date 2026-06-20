@@ -595,4 +595,38 @@ mod tests {
     fn test_default_memory_for_current_panics() {
         let _ = TransferCostGraph::default_memory_for(&Topology::Current);
     }
+
+    #[test]
+    fn test_accessibility_gpu_cannot_reach_npuhbm() {
+        let graph = TransferCostGraph::default();
+        let ref_hbm = Type::Ref(Box::new(make_tensor()), MemorySpace::NPUHBM);
+        // GPU can see CPUDRAM only, not NPU_HBM
+        assert!(!graph.is_type_accessible(&Topology::GPU, &make_npu(), &ref_hbm));
+    }
+
+    #[test]
+    fn test_accessibility_npu_cannot_reach_local_sram() {
+        let graph = TransferCostGraph::default();
+        let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
+        // NPU sees NPUHBM and CPUDRAM, not LocalSRAM
+        assert!(!graph.is_type_accessible(&make_npu(), &make_acc_core(), &ref_sram));
+    }
+
+    #[test]
+    fn test_transfer_path_npu_to_remote_via_nic() {
+        let graph = TransferCostGraph::default();
+        let result = graph.transfer_path(&MemorySpace::NPUHBM, &MemorySpace::RemoteHbm);
+        assert!(result.is_some());
+        let (cost, path) = result.unwrap();
+        // NPUHBM -> NicRam (5) -> RemoteHbm (20) = 25
+        assert_eq!(cost, 25);
+        assert_eq!(
+            path,
+            vec![
+                MemorySpace::NPUHBM,
+                MemorySpace::NicRam,
+                MemorySpace::RemoteHbm
+            ]
+        );
+    }
 }
