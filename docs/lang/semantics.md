@@ -18,6 +18,7 @@ Let $E[ \\text{spawn on}(\\tau) { B } ]$ be a program state evaluated on an acti
 1. Execution of the block $B$ is enqueued on $\\tau$.
 1. The spawning unit $\\rho$ continues asynchronously unless a data dependency explicitly synchronizes the contexts.
 1. All variables captured within $B$ that are not in a shared or transferred memory space relative to $\\tau$ will result in a compiler error.
+1. **Index scope rule**: If $\\tau$ contains an index expression (e.g., `NPU[i]` or `NPU[0..4]`), the index expression is evaluated in the **calling** scope $\\rho$, not in $\\tau$. This ensures loop variables and other outer-scope identifiers are accessible.
 
 ### 1.2 The `unroll across(Topology)` Operation
 

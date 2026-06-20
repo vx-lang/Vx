@@ -76,6 +76,38 @@ let strict_task: Pinned<Tensor, Topology::NPU[0]> = matmul(A, B);
 - **Semantics:** The computation *must* execute on the specified topology.
 - **Routing:** If the target topology is unavailable or saturated, the program cannot proceed unless explicitly handled.
 
+### 3.3 Pinned Cross-Topology Access Rules
+
+A `Pinned<T, TopologyA>` value can only be accessed from topologies that have visibility to `TopologyA`'s default memory space. The compiler enforces this statically via the accessibility matrix:
+
+| Active Topology | Visible Memory Spaces |
+|---|---|
+| CPU | CPU_DRAM |
+| GPU, ANE, AMX | CPU_DRAM (unified host memory) |
+| CpuAvx512, CpuNeon | CPU_DRAM |
+| NPU | NPU_HBM, CPU_DRAM |
+| AccCore | Local_SRAM, NPU_HBM, CPU_DRAM |
+
+**Example — rejected at compile time:**
+
+```rust
+fn invalid_cross_access() -> i32 {
+    let t : Tensor<f32> = 1.0;
+    let t_npu = transfer(t, Memory::NPU_HBM);
+
+    spawn on(Topology::GPU) {
+        // COMPILE ERROR: GPU cannot access NPU_HBM.
+        // Pinned<Tensor, NPU> lives in NPU_HBM, which is
+        // not in GPU's visibility set.
+        let invalid = t_npu;
+    }
+    return 0;
+}
+```
+
+> [!WARNING]
+> This check applies to both explicit `Pinned<T, Topology>` types and any variable that was transferred to a topology-specific memory space (e.g., `transfer(t, Memory::NPU_HBM)` pins the data to NPU).
+
 ## 4. The Hardware State Monad
 
 Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Vx represents this via the `HardwareState` enum, which acts like a monad.

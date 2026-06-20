@@ -36,6 +36,43 @@ fn distributed_matmul(a: Tensor<f32, [M, K]>, b: Tensor<f32, [K, N]>) -> Tensor<
 }
 ```
 
+### 2.1 NPU Slice: Spawn Across a Range of Devices
+
+When a range expression is used inside the NPU index brackets, the parser constructs a `Topology::Slice` — representing a logical group of NPU devices. This enables spawning work across multiple NPUs without explicit looping.
+
+```rust
+fn parallel_forward_pass() -> i32 {
+    // Spawn computation across NPUs 0 through 3
+    spawn on(Topology::NPU[0..4]) {
+        let chunk : Tensor<f32> = 1.0;
+        // All four NPUs execute this block
+    }
+    return 0;
+}
+```
+
+> [!NOTE]
+> `Topology::NPU[0..4]` desugars to `Topology::Slice(NPU(0), 0, 4)` in the AST. The default memory for a Slice is `NPU_HBM`, same as a single NPU device.
+
+### 2.2 Dynamic Topology Index
+
+Topology indices can be runtime expressions, including loop variables. This enables patterns where different loop iterations target different hardware units:
+
+```rust
+fn scatter_to_npus() -> i32 {
+    for i in 0..4 {
+        spawn on(Topology::NPU[i]) {
+            let local_data : Tensor<f32> = 1.0;
+            // Each iteration spawns on a different NPU
+        }
+    }
+    return 0;
+}
+```
+
+> [!IMPORTANT]
+> The topology index expression (e.g., `i` in `NPU[i]`) is evaluated in the **outer** scope, not the spawned scope. The variable `i` belongs to the CPU topology where the `for` loop executes; it is resolved before the context switches to the NPU.
+
 ## 3. Topology-Aware Function Signatures
 
 Functions in Vx can explicitly declare the hardware topology they are designed to run on as part of their signature using the `on` keyword. This allows the compiler to enforce correctness at the language level and ensures that functions compiled for specific accelerators (like an NPU or GPU) are only called within valid execution scopes.

@@ -142,18 +142,19 @@ named_type ::=
 
 element_type ::= "f32" | "f64" | "i32" | "i64" | "i128" | "bool"
 
-memory_space ::= "Host_DRAM" | "NPU_HBM" | "Local_SRAM"
+memory_space ::= "CPU_DRAM" | "NPU_HBM" | "Local_SRAM" | "NIC_RAM" | "Remote_HBM"
 
 topology ::= 
-    | "Topology" "::" "Host"
+    | "Topology" "::" "CPU"
     | "Topology" "::" "Current"
     | "Topology" "::" "NPU" "[" expr "]"
+    | "Topology" "::" "NPU" "[" expr ".." expr "]"   // Slice: spawns across a range of NPUs
     | "Topology" "::" "AccCore" "[" expr "]"
     | "Topology" "::" "AMX"
     | "Topology" "::" "ANE"
     | "Topology" "::" "GPU"
-    | "Topology" "::" "Host_AVX512"
-    | "Topology" "::" "Host_Neon"
+    | "Topology" "::" "CpuAvx512"
+    | "Topology" "::" "CpuNeon"
 ```
 
 ## 6. ABI Mangling
