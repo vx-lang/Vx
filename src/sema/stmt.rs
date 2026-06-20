@@ -53,8 +53,12 @@ impl<'a> TypeChecker<'a> {
             *self.current_stmt_idx.last_mut().unwrap() = i;
             let mut stmt = body[i].clone();
             if terminated {
-                self.errors
-                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                let stmt_span = stmt.span();
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1003,
+                    "Unreachable code after return, break, or continue",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&stmt_span)),
+                );
                 break; // Only warn once per block
             }
 

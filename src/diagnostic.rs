@@ -18,38 +18,175 @@ pub struct Span {
     pub end: usize,
 }
 
+/// Source-level location for diagnostics with line/column information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub line: usize,
+    pub column: usize,
+    pub length: usize,
+}
+
+impl SourceSpan {
+    pub fn new(line: usize, column: usize, length: usize) -> Self {
+        Self {
+            line,
+            column,
+            length,
+        }
+    }
+
+    /// Convert from the AST-level Span (which has the same fields).
+    pub fn from_ast_span(span: &crate::ast::Span) -> Self {
+        Self {
+            line: span.line,
+            column: span.column,
+            length: span.length,
+        }
+    }
+}
+
+/// Stable warning/error codes for diagnostics.
+/// Warning codes start with W, error codes could start with E in the future.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticCode {
+    // --- Warnings ---
+    /// Unused variable binding
+    W1001,
+    /// Unused function definition
+    W1002,
+    /// Unreachable code after return, break, or continue
+    W1003,
+    /// Unnecessary mutable binding (`let mut x` where x is never reassigned)
+    W1004,
+    /// Shadowed variable in same scope
+    W1005,
+    /// Redundant borrow (`&&x`)
+    W1006,
+    /// Implicit type widening in `as` cast
+    W1007,
+    /// Empty match arm body
+    W1008,
+    /// Unused function parameter
+    W1009,
+    /// Unnecessary unsafe block (no unsafe ops inside)
+    W1010,
+    /// Redundant `as` cast to same type
+    W1013,
+    /// Narrowing cast loses precision
+    W1014,
+    /// Immediately dereferenced borrow (`*&x`)
+    W1020,
+    /// Transfer to same memory space (no-op)
+    W1022,
+    /// Spawn on Topology::Current (no-op)
+    W1023,
+}
+
+impl std::fmt::Display for DiagnosticCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticLevel {
     Warning,
     Error,
 }
 
+/// A secondary note attached to a diagnostic, providing additional context.
+#[derive(Debug, Clone)]
+pub struct Note {
+    pub message: Cow<'static, str>,
+    pub span: Option<SourceSpan>,
+}
+
+/// A suggested text edit that can fix the diagnostic.
+#[derive(Debug, Clone)]
+pub struct FixIt {
+    pub message: Cow<'static, str>,
+    pub span: SourceSpan,
+    pub replacement: Cow<'static, str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
+    pub code: Option<DiagnosticCode>,
     pub message: Cow<'static, str>,
     pub span: Option<Span>,
+    pub source_span: Option<SourceSpan>,
+    pub notes: Vec<Note>,
+    pub fix_its: Vec<FixIt>,
 }
 
 impl Diagnostic {
     pub fn error(msg: impl Into<Cow<'static, str>>) -> Self {
         Self {
             level: DiagnosticLevel::Error,
+            code: None,
             message: msg.into(),
             span: None,
+            source_span: None,
+            notes: Vec::new(),
+            fix_its: Vec::new(),
         }
     }
 
     pub fn warning(msg: impl Into<Cow<'static, str>>) -> Self {
         Self {
             level: DiagnosticLevel::Warning,
+            code: None,
             message: msg.into(),
             span: None,
+            source_span: None,
+            notes: Vec::new(),
+            fix_its: Vec::new(),
         }
     }
 
     pub fn with_span(mut self, span: Span) -> Self {
         self.span = Some(span);
+        self
+    }
+
+    pub fn with_source_span(mut self, span: SourceSpan) -> Self {
+        self.source_span = Some(span);
+        self
+    }
+
+    pub fn with_code(mut self, code: DiagnosticCode) -> Self {
+        self.code = Some(code);
+        self
+    }
+
+    pub fn with_note(mut self, msg: impl Into<Cow<'static, str>>) -> Self {
+        self.notes.push(Note {
+            message: msg.into(),
+            span: None,
+        });
+        self
+    }
+
+    pub fn with_note_at(mut self, msg: impl Into<Cow<'static, str>>, span: SourceSpan) -> Self {
+        self.notes.push(Note {
+            message: msg.into(),
+            span: Some(span),
+        });
+        self
+    }
+
+    pub fn with_fix_it(
+        mut self,
+        msg: impl Into<Cow<'static, str>>,
+        span: SourceSpan,
+        replacement: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.fix_its.push(FixIt {
+            message: msg.into(),
+            span,
+            replacement: replacement.into(),
+        });
         self
     }
 }
@@ -60,11 +197,45 @@ impl std::fmt::Display for Diagnostic {
             DiagnosticLevel::Warning => "Warning",
             DiagnosticLevel::Error => "Error",
         };
-        if let Some(s) = &self.span {
-            write!(f, "{}: {} at {}..{}", prefix, self.message, s.start, s.end)
+
+        // Include diagnostic code if present
+        if let Some(code) = &self.code {
+            write!(f, "{}[{}]", prefix, code)?;
         } else {
-            write!(f, "{}: {}", prefix, self.message)
+            write!(f, "{}", prefix)?;
         }
+
+        // Include source location if present
+        if let Some(s) = &self.source_span {
+            write!(f, " at {}:{}", s.line, s.column)?;
+        } else if let Some(s) = &self.span {
+            write!(f, " at {}..{}", s.start, s.end)?;
+        }
+
+        write!(f, ": {}", self.message)?;
+
+        // Print notes
+        for note in &self.notes {
+            write!(f, "\n  note: {}", note.message)?;
+            if let Some(span) = &note.span {
+                write!(f, " (at {}:{})", span.line, span.column)?;
+            }
+        }
+
+        // Print fix-its
+        for fix in &self.fix_its {
+            if fix.replacement.is_empty() {
+                write!(f, "\n  help: {} -- remove", fix.message)?;
+            } else {
+                write!(
+                    f,
+                    "\n  help: {} -- replace with `{}`",
+                    fix.message, fix.replacement
+                )?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -83,8 +254,12 @@ impl DiagnosticsVec {
             if self.error_count() == 10 {
                 self.inner.push(Diagnostic {
                     level: DiagnosticLevel::Error,
+                    code: None,
                     message: "Too many errors. Please fix the errors and try again.".into(),
                     span: None,
+                    source_span: None,
+                    notes: Vec::new(),
+                    fix_its: Vec::new(),
                 });
             }
             return;
@@ -92,15 +267,46 @@ impl DiagnosticsVec {
 
         self.inner.push(Diagnostic {
             level,
+            code: None,
             message: message.into(),
             span: None,
+            source_span: None,
+            notes: Vec::new(),
+            fix_its: Vec::new(),
         });
+    }
+
+    /// Emit a warning with a diagnostic code and source span.
+    /// Returns a mutable reference to the diagnostic for chaining notes/fix-its.
+    pub fn warn(
+        &mut self,
+        code: DiagnosticCode,
+        message: impl Into<Cow<'static, str>>,
+        span: Option<SourceSpan>,
+    ) -> &mut Diagnostic {
+        self.inner.push(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            code: Some(code),
+            message: message.into(),
+            span: None,
+            source_span: span,
+            notes: Vec::new(),
+            fix_its: Vec::new(),
+        });
+        self.inner.last_mut().unwrap()
     }
 
     pub fn error_count(&self) -> usize {
         self.inner
             .iter()
             .filter(|d| d.level == DiagnosticLevel::Error)
+            .count()
+    }
+
+    pub fn warning_count(&self) -> usize {
+        self.inner
+            .iter()
+            .filter(|d| d.level == DiagnosticLevel::Warning)
             .count()
     }
 
@@ -122,6 +328,13 @@ impl DiagnosticsVec {
 
     pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
         self.inner.iter()
+    }
+
+    /// Check if a specific warning code has been emitted.
+    pub fn has_warning(&self, code: DiagnosticCode) -> bool {
+        self.inner
+            .iter()
+            .any(|d| d.level == DiagnosticLevel::Warning && d.code == Some(code))
     }
 }
 
@@ -162,7 +375,7 @@ mod tests {
     #[test]
     fn test_diagnostic_display_warning_with_span() {
         let d = Diagnostic::warning("unused variable").with_span(Span { start: 5, end: 10 });
-        assert_eq!(d.to_string(), "Warning: unused variable at 5..10");
+        assert_eq!(d.to_string(), "Warning at 5..10: unused variable");
     }
 
     #[test]
@@ -223,5 +436,104 @@ mod tests {
         assert_eq!(collected.len(), 2);
         assert_eq!(collected[0].level, DiagnosticLevel::Error);
         assert_eq!(collected[1].level, DiagnosticLevel::Warning);
+    }
+
+    // ---- New tests for extended diagnostic infrastructure ----
+
+    #[test]
+    fn test_diagnostic_with_code_display() {
+        let d = Diagnostic::warning("unused variable 'x'").with_code(DiagnosticCode::W1001);
+        assert_eq!(d.to_string(), "Warning[W1001]: unused variable 'x'");
+    }
+
+    #[test]
+    fn test_diagnostic_with_source_span_display() {
+        let d = Diagnostic::warning("unreachable code")
+            .with_code(DiagnosticCode::W1003)
+            .with_source_span(SourceSpan::new(10, 5, 3));
+        assert_eq!(d.to_string(), "Warning[W1003] at 10:5: unreachable code");
+    }
+
+    #[test]
+    fn test_diagnostic_with_notes_display() {
+        let d = Diagnostic::warning("unused variable 'x'")
+            .with_code(DiagnosticCode::W1001)
+            .with_note("declared here");
+        assert_eq!(
+            d.to_string(),
+            "Warning[W1001]: unused variable 'x'\n  note: declared here"
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_with_fix_it_display() {
+        let d = Diagnostic::warning("unused variable 'x'")
+            .with_code(DiagnosticCode::W1001)
+            .with_fix_it("prefix with underscore", SourceSpan::new(2, 9, 1), "_x");
+        assert_eq!(
+            d.to_string(),
+            "Warning[W1001]: unused variable 'x'\n  help: prefix with underscore -- replace with `_x`"
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_with_fix_it_remove_display() {
+        let d = Diagnostic::warning("unnecessary `mut`")
+            .with_code(DiagnosticCode::W1004)
+            .with_fix_it("remove `mut`", SourceSpan::new(2, 9, 4), "");
+        assert_eq!(
+            d.to_string(),
+            "Warning[W1004]: unnecessary `mut`\n  help: remove `mut` -- remove"
+        );
+    }
+
+    #[test]
+    fn test_warn_method_creates_coded_warning() {
+        let mut diags = DiagnosticsVec::new();
+        diags.warn(
+            DiagnosticCode::W1001,
+            "unused variable 'x'",
+            Some(SourceSpan::new(5, 9, 1)),
+        );
+        assert_eq!(diags.warning_count(), 1);
+        assert!(diags.has_warning(DiagnosticCode::W1001));
+        assert!(!diags.has_warning(DiagnosticCode::W1003));
+    }
+
+    #[test]
+    fn test_warn_method_chaining() {
+        let mut diags = DiagnosticsVec::new();
+        let d = diags.warn(
+            DiagnosticCode::W1001,
+            "unused variable 'x'",
+            Some(SourceSpan::new(5, 9, 1)),
+        );
+        d.notes.push(Note {
+            message: "declared here".into(),
+            span: None,
+        });
+        d.fix_its.push(FixIt {
+            message: "prefix with underscore".into(),
+            span: SourceSpan::new(5, 9, 1),
+            replacement: "_x".into(),
+        });
+        assert_eq!(diags.inner[0].notes.len(), 1);
+        assert_eq!(diags.inner[0].fix_its.len(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_code_display() {
+        assert_eq!(format!("{}", DiagnosticCode::W1001), "W1001");
+        assert_eq!(format!("{}", DiagnosticCode::W1003), "W1003");
+    }
+
+    #[test]
+    fn test_warning_count() {
+        let mut diags = DiagnosticsVec::new();
+        diags.push("error".to_string());
+        diags.push_warning("warning1".to_string());
+        diags.warn(DiagnosticCode::W1001, "warning2", None);
+        assert_eq!(diags.error_count(), 1);
+        assert_eq!(diags.warning_count(), 2);
     }
 }

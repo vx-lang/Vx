@@ -30,8 +30,12 @@ impl<'a> TypeChecker<'a> {
 
         for s in stmts.iter_mut() {
             if terminated && !silent {
-                self.errors
-                    .push_warning("Unreachable code after return, break, or continue".to_string());
+                let stmt_span = s.span();
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1003,
+                    "Unreachable code after return, break, or continue",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&stmt_span)),
+                );
                 break;
             }
 
