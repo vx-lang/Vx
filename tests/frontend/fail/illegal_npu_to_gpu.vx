@@ -1,6 +1,6 @@
 //===- illegal_npu_to_gpu.vx - Vx Compiler -------------------------------*- Vx
-//-*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
+//-*-===//
 
 fn main() -> i32 {
   let t_host : Tensor<f32> = 1.0;

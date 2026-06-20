@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- llama_rt.vx - Vx Compiler -------------------------------------*- Vx
 //-*-===//
 //
@@ -8,6 +6,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 // This file declares the FFI boundary for the LLaMA2 runtime tests.
 // These functions are implemented natively in Rust inside `rt.rs` and
 // exposed as C-compatible symbols.

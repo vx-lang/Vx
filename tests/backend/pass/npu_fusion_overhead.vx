@@ -1,8 +1,8 @@
 //===- npu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// REQUIRES: macos
 // RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR-O0
 // RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR-O3
 // RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
+// REQUIRES: macos
 
 import std::io;
 import std::time;

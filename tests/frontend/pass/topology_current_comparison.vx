@@ -1,11 +1,11 @@
 //===- topology_current_comparison.vx - Vx Compiler --------------*- Vx -*-===//
-// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
 // Test: Topology::Current resolves to the active topology at point of use.
 // Uses print-ast since topology comparison codegen is not yet implemented.
 

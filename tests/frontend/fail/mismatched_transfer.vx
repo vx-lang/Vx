@@ -1,5 +1,4 @@
 //===- mismatched_transfer.vx - Vx Compiler ----------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Type mismatch in argument 1 for function 'expects_host'. Expected
 // Tensor(F32, [], None), got Pinned(Tensor(F32, [], None),
 // NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: Span { line: 0,
@@ -10,6 +9,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn expects_host(t : Tensor<f32>) -> Tensor<f32> {
   return t;

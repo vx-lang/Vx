@@ -1,6 +1,6 @@
 //===- legal_pinned_ane.vx - Vx Compiler -----------------------------------*-
-// Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Vx -*-===//
 
 fn main() -> i32 {
   // Transfer a variable to ANE pinned memory

@@ -1,5 +1,4 @@
 //===- tensor_errors.vx - Vx Compiler ------------------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Type mismatch in variable declaration 't_host'
 // CHECK: Missing generic argument for Tensor initialization.
 // CHECK: Generic argument to Tensor must be a scalar type.
@@ -12,6 +11,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn requires_specific_layout(t : Tensor<f32, [ 128, 256 ]>) -> i32 {
   return 0;

@@ -1,8 +1,8 @@
 //===- cpu_matrix_transpose.vx ---------------------------------*- Vx -*-===//
 // RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 |
-// FileCheck %s
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// FileCheck %s
 
 fn test_f32() -> i32 {
   let mut a = Tensor<f32>([ 4, 4 ]);

@@ -1,6 +1,6 @@
+//===- autodiff_math_abs_neg.vx - Vx Compiler -------------------*- Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-//===- autodiff_math_abs_neg.vx - Vx Compiler -------------------*- Vx -*-===//
 import std::math;
 
 fn test_func(x : f32) -> f32 {

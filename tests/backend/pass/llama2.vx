@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- llama2.vx - Vx Compiler -----------------------------------*- Vx -*-===//
 // REQUIRES: macos
 //
@@ -8,6 +6,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 
 import tests::modules::llama_rt;
 import std::io;

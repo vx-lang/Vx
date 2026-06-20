@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- math_atan_f32.vx - Vx Compiler -------------------*- Vx -*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
@@ -7,6 +5,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 import std::math;
 
 fn main() -> i32 {

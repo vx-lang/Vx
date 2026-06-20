@@ -1,6 +1,6 @@
 //===- illegal_transfer_sram_dram.vx - Vx Compiler ---------------------------*-
-// Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// Vx -*-===//
 
 fn main() -> i32 {
   let t_host : Tensor<f32> = 1.0;

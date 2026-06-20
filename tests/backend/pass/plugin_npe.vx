@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- plugin_npe.vx - Vx Compiler -------------------------------*- Vx -*-===//
 // REQUIRES: macos
 //
@@ -8,6 +6,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 extern {
   fn vx_malloc_f32(num_elements : i32)->*mut f32;
 }

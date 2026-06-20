@@ -1,6 +1,6 @@
 //===- illegal_acccore_to_npuhbm.vx - Vx Compiler --------------------------*-
-// Vx -*-===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
+// Vx -*-===//
 
 fn main() -> i32 {
   let t_host : Tensor<f32> = 1.0;

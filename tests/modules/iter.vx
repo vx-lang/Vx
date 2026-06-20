@@ -1,5 +1,3 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK: module
 //===- iter.vx - Vx Standard Library ---------------------------------*- Vx
 //-*-===//
 //
@@ -12,6 +10,8 @@
 // Core iterator interfaces and types.
 //
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 
 enum Option<T> {
   Some(T),

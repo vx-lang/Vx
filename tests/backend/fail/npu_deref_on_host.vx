@@ -1,5 +1,4 @@
 //===- npu_deref_on_host.vx - Vx Compiler ------------------------*- Vx -*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Type mismatch in variable declaration 't_device'
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
@@ -7,6 +6,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 // Expect execution trap/segfault when trying to run an NPU execution block on
 // host JIT The goal is to expose that our compiler JIT backend does not yet

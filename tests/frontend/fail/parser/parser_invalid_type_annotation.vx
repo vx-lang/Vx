@@ -1,6 +1,5 @@
 //===- parser_invalid_type_annotation.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: Expected type identifier
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
@@ -8,6 +7,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   let x : = 10;

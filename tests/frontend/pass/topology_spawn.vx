@@ -1,5 +1,4 @@
 //===- topology_spawn.vx - Vx Compiler ---------------------------*- Vx -*-===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
 // Part of the Vx Project, under the BSD 3-Clause License.
 // See LICENSE for license information.
@@ -9,6 +8,7 @@
 // Unified topology spawn tests: exercises every topology variant, unified
 // memory access from GPU/ANE, nested spawn, and ISA-extension spawn blocks.
 //===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 // --- GPU and ANE have unified memory access to Host DRAM ---
 fn test_unified_host_access() -> i32 {
