@@ -1,0 +1,25 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn require_gpu() on Topology::GPU -> void {
+}
+
+fn require_npu() on Topology::NPU[0] -> void {
+}
+
+fn main() -> i32 {
+  // We are currently on Topology::CPU (default for main)
+  require_gpu();
+
+  spawn on(Topology::GPU) {
+    // This is valid
+    require_gpu();
+
+    // This is invalid
+    require_npu();
+  }
+
+  return 0;
+}
+
+// CHECK-DAG: Type error: Function 'require_gpu' requires topology 'GPU', but is called from 'CPU'
+// CHECK-DAG: Type error: Function 'require_npu' requires topology 'NPU

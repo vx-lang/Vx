@@ -1,0 +1,21 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn main() -> i32 {
+  for i in 0..4 {
+    spawn on(Topology::NPU[i]) {
+      let local_data : Tensor<f32> = 1.0;
+    }
+  }
+
+  // Nested dynamic topology index
+  for x in 0..2 {
+    for y in 0..2 {
+      spawn on(Topology::AccCore[x + y]) {
+        let t : Tensor<f32> = 1.0;
+      }
+    }
+  }
+
+  return 0;
+}

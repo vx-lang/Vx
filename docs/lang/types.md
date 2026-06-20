@@ -110,6 +110,10 @@ fn invalid_cross_access() -> i32 {
 
 ## 4. The Hardware State Monad
 
+> [!WARNING]
+> **Experimental / Unimplemented Feature**
+> The `HardwareState` tracking and `try_pin` features are currently planned but not yet implemented.
+
 Because physical hardware may be saturated, failed, or unavailable, bridging `Verified<T>` to `Pinned<T, Topology>` is an inherently fallible operation. Vx represents this via the `HardwareState` enum, which acts like a monad.
 
 ```rust
@@ -140,9 +144,17 @@ match target {
 }
 ```
 
-## 5. Effect Tracking for Synchronization
+## 5. Effect Tracking (Upcoming Feature)
 
-Vx tracks synchronization and side-effects across address spaces as part of the function signature.
+> [!WARNING]
+> **Experimental / Unimplemented Feature**
+> The `effects(...)` syntax is currently planned but not yet implemented in the parser.
+
+Vx extends the type system with *effect tracking* to trace non-local behavior such as cross-topology data movement, implicit synchronization points, and potentially mutating global hardware states. Effects are checked at compile time to ensure functions do not silently introduce performance bottlenecks.
+
+### The `effects(...)` annotation
+
+Functions that incur significant effects must explicitly document them in their signature using the `effects` keyword. If a function calls another function with an effect, the caller must either propagate the effect in its own signature or handle it explicitly (if possible).
 
 ```rust
 // This function signature indicates that it performs asynchronous data
@@ -155,6 +167,10 @@ fn pipeline() -> Verified<()>
 ```
 
 ## 6. Topology-Aware Allocation
+
+> [!WARNING]
+> **Experimental / Unimplemented Feature**
+> The `with Topology::...` allocation syntax is currently planned but not yet implemented in the parser.
 
 When defining arrays, you can use Topology literals to specify the physical location of the memory as well as minimum alignment requirements (if applicable). If no alignment is specified, the compiler will use the default alignment for the type. For example:
 

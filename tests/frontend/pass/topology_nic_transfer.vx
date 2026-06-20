@@ -1,0 +1,16 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn multi_hop_transfer() -> i32 {
+  let t : Tensor<f32> = 1.0;
+
+  // 1. Transfer from local CPU DRAM to the NIC RAM
+  let nic_buffer = transfer(t, Memory::NIC_RAM);
+
+  // 2. Transfer from NIC RAM over the network to Remote HBM
+  let remote_data = transfer(nic_buffer, Memory::Remote_HBM);
+
+  // 3. Since the data is in Remote HBM, we would spawn there (if we had a Remote topology)
+  // For now we just verify the transfer compiles.
+  return 0;
+}

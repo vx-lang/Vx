@@ -139,6 +139,10 @@ fn network_transfer_example(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `loop`, `break`, `continue`.
 Loops can be annotated for spatial unrolling.
 
+> [!WARNING]
+> **Experimental / Unimplemented Feature**
+> The `unroll across` syntax is currently planned but not yet implemented in the parser or lowering passes.
+
 ```rust
 // Unroll this loop across 4 NPUs
 unroll across(Topology::NPU[0..4]) { |npu_id|
@@ -152,6 +156,10 @@ unroll across(Topology::NPU[0..4]) { |npu_id|
 ## 7. Foreign Function Interface (FFI) & Safety
 
 Vx supports calling external C functions via the `extern` block. By default, all external functions are considered `unsafe` because the compiler cannot statically verify their memory safety across the language boundary. Calling an `unsafe` function requires an `unsafe { ... }` block.
+
+> [!WARNING]
+> **Experimental / Unimplemented Feature**
+> The `safe` keyword for FFI functions is currently planned but not yet implemented in the parser.
 
 However, many C functions (like simple math functions, standard library I/O, or thoroughly tested user kernels) are inherently safe or have been manually verified by the programmer. Vx allows you to claim responsibility for this safety by annotating the FFI declaration with the `safe` keyword:
 

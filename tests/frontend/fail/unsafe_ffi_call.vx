@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+extern {
+  fn vx_malloc_f32(num_elements: i32) -> *mut f32;
+}
+
+fn main() -> i32 {
+  // Calling unsafe extern function outside unsafe block
+  let ptr = vx_malloc_f32(100);
+  return 0;
+}
+
+// CHECK: Call to unsafe function 'vx_malloc_f32' is unsafe and requires unsafe function or block
