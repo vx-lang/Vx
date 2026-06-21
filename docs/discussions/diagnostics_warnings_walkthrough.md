@@ -4,7 +4,7 @@
 
 A structured diagnostic infrastructure for the Vx compiler, replacing bare string warnings with coded, source-located, actionable diagnostics.
 
----
+______________________________________________________________________
 
 ## Changes Made
 
@@ -31,7 +31,7 @@ A structured diagnostic infrastructure for the Vx compiler, replacing bare strin
 
 - Upgraded existing "Unreachable code" `push_warning()` calls to use `warn(W1003, ...)` with the statement's source span
 
----
+______________________________________________________________________
 
 ### Commit 2: W1001 & W1009 Warnings (`9449dcc`)
 
@@ -54,7 +54,7 @@ A structured diagnostic infrastructure for the Vx compiler, replacing bare strin
 
 - Updated all test assertions from `errors.is_empty()` → `errors.error_count() == 0` so warnings don't cause false failures
 
----
+______________________________________________________________________
 
 ## What Was Tested
 
@@ -66,7 +66,7 @@ A structured diagnostic infrastructure for the Vx compiler, replacing bare strin
 | Fuzz tests | 5 | All pass |
 | Other test suites | 18 | All pass |
 
----
+______________________________________________________________________
 
 ## Example Warning Output
 
@@ -79,7 +79,7 @@ Warning[W1009]: Unused function parameter 'b'
 Warning[W1003] at 12:5: Unreachable code after return, break, or continue
 ```
 
----
+______________________________________________________________________
 
 ## What's Left (Future PRs)
 
