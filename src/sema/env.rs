@@ -571,10 +571,14 @@ impl<'a> TypeChecker<'a> {
         // Verify postconditions (ensures)
         for ens in &func.ensures {
             if !self.prove_expr(ens) {
-                self.errors.push(format!(
-                    "Function '{}' cannot prove postcondition (ensures) at compile time",
-                    func.name
-                ));
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8001,
+                    format!(
+                        "Function '{}' cannot prove postcondition (ensures) at compile time",
+                        func.name
+                    ),
+                    None,
+                );
             }
         }
 

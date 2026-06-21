@@ -656,7 +656,7 @@ impl<'a> TypeChecker<'a> {
                 enum_name,
                 variant_name: variant,
                 payload,
-                span: _,
+                span,
             }) => {
                 let actual_enum_name = if let Some(idx) = enum_name.find('<') {
                     &enum_name[..idx]
@@ -672,7 +672,11 @@ impl<'a> TypeChecker<'a> {
                             if let Some(exp_types) = expected_payload {
                                 if expr_payload.len() != exp_types.len() {
                                     if !silent {
-                                        self.errors.push(format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()));
+                                        self.errors.error_with_code(
+                                            crate::diagnostic::DiagnosticCode::E3009,
+                                            format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()),
+                                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                        );
                                     }
                                 } else {
                                     let mut mapping = HashMap::new();
@@ -706,30 +710,50 @@ impl<'a> TypeChecker<'a> {
                                             && !matches!(&expected_ty, Type::Generic(_, _))
                                             && !silent
                                         {
-                                            self.errors.push(format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, expected_ty, expr_ty));
+                                            self.errors.error_with_code(
+                                                crate::diagnostic::DiagnosticCode::E3008,
+                                                format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, expected_ty, expr_ty),
+                                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                            );
                                         }
                                     }
                                 }
                             } else if !silent {
-                                self.errors.push(format!(
-                                    "Enum variant {}::{} does not take a payload",
-                                    actual_enum_name, variant
-                                ));
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3009,
+                                    format!(
+                                        "Enum variant {}::{} does not take a payload",
+                                        actual_enum_name, variant
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         } else if expected_payload.is_some() && !silent {
-                            self.errors.push(format!(
-                                "Enum variant {}::{} expects a payload",
-                                actual_enum_name, variant
-                            ));
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3009,
+                                format!(
+                                    "Enum variant {}::{} expects a payload",
+                                    actual_enum_name, variant
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                         }
                     } else if !silent {
-                        self.errors.push(format!(
-                            "Enum {} does not have variant {}",
-                            actual_enum_name, variant
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E2004,
+                            format!(
+                                "Enum {} does not have variant {}",
+                                actual_enum_name, variant
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                 } else if !silent {
-                    self.errors.push(format!("Unknown enum {}", enum_name));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E2003,
+                        format!("Unknown enum {}", enum_name),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
 
                 if let Some(idx) = enum_name.find('<') {
@@ -1106,10 +1130,14 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
 
                 if !if_expr.is_comptime && then_ty != else_ty {
-                    self.errors.push(format!(
-                        "If expression branches have incompatible types: {:?} and {:?}",
-                        then_ty, else_ty
-                    ));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3007,
+                        format!(
+                            "If expression branches have incompatible types: {:?} and {:?}",
+                            then_ty, else_ty
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&if_expr.span)),
+                    );
                 }
             }
         } else if !if_expr.is_comptime {
@@ -2313,12 +2341,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::BinaryOp(BinaryOpExpr {
-                lhs,
-                op,
-                rhs,
-                span: _,
-            }) => {
+            Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, consume, silent);
                 let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
 
@@ -2330,12 +2353,20 @@ impl<'a> TypeChecker<'a> {
                 {
                     if *op == BinaryOp::MatMul {
                         if el_ty_l != el_ty_r {
-                            self.errors.push(format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r));
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E7002,
+                                format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                         }
                         let l_len = dims_l.len();
                         let r_len = dims_r.len();
                         if (l_len != 2 && l_len != 0) || (r_len != 2 && r_len != 0) {
-                            self.errors.push(format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", l_len, r_len));
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E7001,
+                                format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", l_len, r_len),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                             return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                         }
                         return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
@@ -2343,10 +2374,14 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors.push(format!(
-                        "Type mismatch in binary operation: {:?} vs {:?}",
-                        lhs_ty, rhs_ty
-                    ));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3004,
+                        format!(
+                            "Type mismatch in binary operation: {:?} vs {:?}",
+                            lhs_ty, rhs_ty
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
                 lhs_ty
             }
@@ -2360,15 +2395,19 @@ impl<'a> TypeChecker<'a> {
                 lhs,
                 op: _,
                 rhs,
-                span: _,
+                span,
             }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
                 let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors.push(format!(
-                        "Type mismatch in relational operation: {:?} vs {:?}",
-                        lhs_ty, rhs_ty
-                    ));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3005,
+                        format!(
+                            "Type mismatch in relational operation: {:?} vs {:?}",
+                            lhs_ty, rhs_ty
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
                 Type::Scalar(ElementType::Bool)
             }
@@ -2382,15 +2421,19 @@ impl<'a> TypeChecker<'a> {
                 lhs,
                 op: _,
                 rhs,
-                span: _,
+                span,
             }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
                 let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors.push(format!(
-                        "Type mismatch in logical operation: {:?} vs {:?}",
-                        lhs_ty, rhs_ty
-                    ));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3006,
+                        format!(
+                            "Type mismatch in logical operation: {:?} vs {:?}",
+                            lhs_ty, rhs_ty
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
                 Type::Scalar(ElementType::Bool)
             }

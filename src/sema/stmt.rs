@@ -313,10 +313,14 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if !self.is_assignable(&expected_ty, &ty) {
-                    self.errors.push(format!(
-                        "Type mismatch on return. Expected {:?}, got {:?}",
-                        expected_ty, ty
-                    ));
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3002,
+                        format!(
+                            "Type mismatch on return. Expected {:?}, got {:?}",
+                            expected_ty, ty
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
                 }
 
                 // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
@@ -342,7 +346,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(expr, consume, silent);
                 self.active_borrows = saved_borrows;
             }
-            Statement::Assert(AssertStmt { expr, msg, span: _ }) => {
+            Statement::Assert(AssertStmt { expr, msg, span }) => {
                 let ty = self.check_expr_type_flag(expr, consume, silent);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
@@ -367,7 +371,11 @@ impl<'a> TypeChecker<'a> {
                             self.errors
                                 .push(format!("Contract violated for Verified return type: {}", m));
                         } else {
-                            self.errors.push(format!("Comptime assert failed: {}", m));
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E8002,
+                                format!("Comptime assert failed: {}", m),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                         }
                     }
                 } else if is_verified {
