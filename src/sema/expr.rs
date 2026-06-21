@@ -602,11 +602,33 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     if !silent {
+                        // Collect all visible variable names for "did you mean?" suggestion
+                        let mut candidate_names: Vec<String> = Vec::new();
+                        for scope in &self.scopes {
+                            for key in scope.keys() {
+                                candidate_names.push(key.to_string());
+                            }
+                        }
+                        for func_name in self.env.functions.keys() {
+                            candidate_names.push(func_name.to_string());
+                        }
+                        let candidates: Vec<&str> =
+                            candidate_names.iter().map(|s| s.as_str()).collect();
+                        let suggestion = crate::suggest::suggest_name(name.as_ref(), &candidates);
+
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E2001,
                             format!("Undefined variable '{}'", name),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
+                        if let Some(suggested) = suggestion {
+                            if let Some(last_diag) = self.errors.inner.last_mut() {
+                                last_diag.notes.push(crate::diagnostic::Note {
+                                    message: format!("Did you mean '{}'?", suggested).into(),
+                                    span: None,
+                                });
+                            }
+                        }
                     }
                     return Type::Scalar(ElementType::F32); // Fallback to prevent panic
                 }

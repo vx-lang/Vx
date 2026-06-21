@@ -320,20 +320,24 @@ impl CompilerDriver {
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error);
 
+        // Print warnings first (so they appear before errors)
         for diag in checker.errors.iter() {
             if diag.level == DiagnosticLevel::Warning {
-                println!("Warning in {}: {}", filename, diag.message);
+                eprintln!("{}", diag);
             }
         }
 
         if has_errors {
-            let mut err_msg = format!("Semantic check failed on '{}':\n", filename);
+            let error_count = checker.errors.error_count();
             for diag in checker.errors.iter() {
                 if diag.level == DiagnosticLevel::Error {
-                    err_msg.push_str(&format!("  {}\n", diag.message));
+                    eprintln!("{}", diag);
                 }
             }
-            return Err(err_msg);
+            return Err(format!(
+                "Semantic check failed on '{}': {} error(s) emitted",
+                filename, error_count
+            ));
         }
 
         let mut orig_functions = ast.functions.clone();

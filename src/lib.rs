@@ -37,6 +37,7 @@ pub mod resolver;
 pub mod scratch;
 pub mod sema;
 pub mod session;
+pub mod suggest;
 pub mod symbol;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
