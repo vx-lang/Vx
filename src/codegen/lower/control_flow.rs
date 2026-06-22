@@ -121,25 +121,57 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         );
 
         let mut then_terminated = false;
-        for stmt in then_block {
-            if let Some(b) = gen.generate_statement(stmt, then_b)? {
-                then_b = b;
+        let mut then_val = None;
+        for (i, stmt) in then_block.iter().enumerate() {
+            let is_last = i == then_block.len() - 1;
+            if is_last && has_ret {
+                if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
+                    expr,
+                    has_semi: false,
+                    ..
+                }) = stmt
+                {
+                    let (val, _, b) = gen.generate_expr(expr, then_b)?;
+                    then_b = b;
+                    then_val = Some(val);
+                } else {
+                    if let Some(b) = gen.generate_statement(stmt, then_b)? {
+                        then_b = b;
+                    } else {
+                        then_terminated = true;
+                        break;
+                    }
+                }
             } else {
-                then_terminated = true;
-                break;
+                if let Some(b) = gen.generate_statement(stmt, then_b)? {
+                    then_b = b;
+                } else {
+                    then_terminated = true;
+                    break;
+                }
             }
         }
 
         if !then_terminated {
-            // Need to pass the return value if there is one
-            // Wait, IfExpr's return value was just dummy 0!
-            // I should just pass 0 for now.
-            // But wait, the original code returned 0 as dummy value?
-            // "let ty = gen.i32_ty; let op = OperationBuilder::new("arith.constant" ...)"
-            // Actually, in the old scf.if, it did not even yield the correct then/else values!
-            // Let's just cf.br to merge_b.
+            let mut yield_operands = vec![];
+            if has_ret {
+                if let Some(val) = then_val {
+                    yield_operands.push(val);
+                } else {
+                    let dummy_op = OperationBuilder::new("arith.constant", gen.loc())
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
+                        )])
+                        .build()
+                        .unwrap();
+                    let val = then_b.append_operation(dummy_op).result(0).unwrap().into();
+                    yield_operands.push(val);
+                }
+            }
             then_b.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
+                    .add_operands(&yield_operands)
                     .add_successors(&[&*merge_b])
                     .build()
                     .unwrap(),
@@ -147,19 +179,58 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         }
 
         let mut else_terminated = false;
+        let mut else_val = None;
         if let Some(else_block) = else_block_opt {
-            for stmt in else_block {
-                if let Some(b) = gen.generate_statement(stmt, else_b)? {
-                    else_b = b;
+            for (i, stmt) in else_block.iter().enumerate() {
+                let is_last = i == else_block.len() - 1;
+                if is_last && has_ret {
+                    if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
+                        expr,
+                        has_semi: false,
+                        ..
+                    }) = stmt
+                    {
+                        let (val, _, b) = gen.generate_expr(expr, else_b)?;
+                        else_b = b;
+                        else_val = Some(val);
+                    } else {
+                        if let Some(b) = gen.generate_statement(stmt, else_b)? {
+                            else_b = b;
+                        } else {
+                            else_terminated = true;
+                            break;
+                        }
+                    }
                 } else {
-                    else_terminated = true;
-                    break;
+                    if let Some(b) = gen.generate_statement(stmt, else_b)? {
+                        else_b = b;
+                    } else {
+                        else_terminated = true;
+                        break;
+                    }
                 }
             }
         }
         if !else_terminated {
+            let mut yield_operands = vec![];
+            if has_ret {
+                if let Some(val) = else_val {
+                    yield_operands.push(val);
+                } else {
+                    let dummy_op = OperationBuilder::new("arith.constant", gen.loc())
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
+                        )])
+                        .build()
+                        .unwrap();
+                    let val = else_b.append_operation(dummy_op).result(0).unwrap().into();
+                    yield_operands.push(val);
+                }
+            }
             else_b.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
+                    .add_operands(&yield_operands)
                     .add_successors(&[&*merge_b])
                     .build()
                     .unwrap(),
@@ -286,8 +357,13 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             );
 
             gen.env.insert(iter.clone().into(), (current_idx, ty_index));
+            // `continue` must still advance the loop index, so it targets a
+            // dedicated latch block rather than branching to the condition
+            // block directly (which would skip the increment and, since the
+            // condition block takes the index as an argument, emit invalid IR).
+            let latch_block = parent_region.append_block(melior::ir::Block::new(&[]));
             gen.break_blocks.push(&*merge_block as *const _);
-            gen.continue_blocks.push(&*cond_block as *const _);
+            gen.continue_blocks.push(&*latch_block as *const _);
 
             let mut body_terminated = false;
             for stmt in body {
@@ -303,23 +379,31 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             gen.continue_blocks.pop();
 
             if !body_terminated {
-                let next_idx_op = body_block.append_operation(
-                    OperationBuilder::new("arith.addi", gen.loc())
-                        .add_operands(&[current_idx, step_idx])
-                        .add_results(&[ty_index])
-                        .build()
-                        .unwrap(),
-                );
-                let next_idx = next_idx_op.result(0).unwrap().into();
-
                 body_block.append_operation(
                     OperationBuilder::new("cf.br", gen.loc())
-                        .add_operands(&[next_idx])
-                        .add_successors(&[&*cond_block])
+                        .add_successors(&[&*latch_block])
                         .build()
                         .unwrap(),
                 );
             }
+
+            // Latch: increment the index and branch back to the condition.
+            // Both normal fall-through and `continue` route through here.
+            let next_idx_op = latch_block.append_operation(
+                OperationBuilder::new("arith.addi", gen.loc())
+                    .add_operands(&[current_idx, step_idx])
+                    .add_results(&[ty_index])
+                    .build()
+                    .unwrap(),
+            );
+            let next_idx = next_idx_op.result(0).unwrap().into();
+            latch_block.append_operation(
+                OperationBuilder::new("cf.br", gen.loc())
+                    .add_operands(&[next_idx])
+                    .add_successors(&[&*cond_block])
+                    .build()
+                    .unwrap(),
+            );
 
             return Ok(Some(merge_block));
         }
@@ -441,8 +525,13 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .into();
 
             gen.env.insert(iter.clone().into(), (el_val, el_ty));
+            // `continue` must still advance the loop index, so it targets a
+            // dedicated latch block rather than branching to the condition
+            // block directly (which would skip the increment and, since the
+            // condition block takes the index as an argument, emit invalid IR).
+            let latch_block = parent_region.append_block(melior::ir::Block::new(&[]));
             gen.break_blocks.push(&*merge_block as *const _);
-            gen.continue_blocks.push(&*cond_block as *const _);
+            gen.continue_blocks.push(&*latch_block as *const _);
 
             let mut body_terminated = false;
             for stmt in body {
@@ -458,23 +547,31 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             gen.continue_blocks.pop();
 
             if !body_terminated {
-                let next_idx_op = body_block.append_operation(
-                    OperationBuilder::new("arith.addi", gen.loc())
-                        .add_operands(&[current_idx, step_idx])
-                        .add_results(&[ty_index])
-                        .build()
-                        .unwrap(),
-                );
-                let next_idx = next_idx_op.result(0).unwrap().into();
-
                 body_block.append_operation(
                     OperationBuilder::new("cf.br", gen.loc())
-                        .add_operands(&[next_idx])
-                        .add_successors(&[&*cond_block])
+                        .add_successors(&[&*latch_block])
                         .build()
                         .unwrap(),
                 );
             }
+
+            // Latch: increment the index and branch back to the condition.
+            // Both normal fall-through and `continue` route through here.
+            let next_idx_op = latch_block.append_operation(
+                OperationBuilder::new("arith.addi", gen.loc())
+                    .add_operands(&[current_idx, step_idx])
+                    .add_results(&[ty_index])
+                    .build()
+                    .unwrap(),
+            );
+            let next_idx = next_idx_op.result(0).unwrap().into();
+            latch_block.append_operation(
+                OperationBuilder::new("cf.br", gen.loc())
+                    .add_operands(&[next_idx])
+                    .add_successors(&[&*cond_block])
+                    .build()
+                    .unwrap(),
+            );
 
             return Ok(Some(merge_block));
         }

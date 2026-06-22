@@ -240,7 +240,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             span: _,
         }) = lhs
         {
-            if let Some((base_val, base_ty, indices, mut new_b)) = gen.flatten_indices(
+            if let Some((base_val, base_ty, indices, new_b)) = gen.flatten_indices(
                 &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
@@ -329,7 +329,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 span: _,
             }) = &**base
             {
-                let (base_val, base_ty, mut new_b) = gen.generate_expr(base, block)?;
+                let (base_val, base_ty, new_b) = gen.generate_expr(base, block)?;
                 let base_ty_str = base_ty.to_string();
 
                 let mut struct_name_opt = struct_name.clone();
@@ -527,7 +527,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             span: _,
         }) = lhs
         {
-            if let Some((mem_val, mem_ty, indices, mut new_b)) = gen.flatten_indices(
+            if let Some((mem_val, mem_ty, indices, new_b)) = gen.flatten_indices(
                 &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {

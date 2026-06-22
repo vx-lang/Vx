@@ -31,8 +31,8 @@ using namespace mlir::vx;
 
 namespace {
 
-
-
+// Lower `vx.spawn` to `async.execute` for CPU topologies, or an outlined
+// kernel + `vx.launch` for NPU/AccCore topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -105,13 +105,18 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       argTypes.push_back(val.getType());
     }
 
-    // Determine result types from the yield operation
+    // Determine result types from the yield operation. The yield may live in a
+    // nested block (e.g. inside control flow) now that the entire region is
+    // inlined, so search the whole region rather than only the entry block's
+    // terminator.
     SmallVector<Type> resultTypes;
-    SmallVector<Value> yieldedValues;
-    Block &spawnBlock = spawnBody.front();
-    if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
-      auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
-      for (auto val : yieldOp.getOperands()) {
+    vx::YieldOp resultYield;
+    spawnBody.walk([&](vx::YieldOp y) {
+      if (!resultYield)
+        resultYield = y;
+    });
+    if (resultYield) {
+      for (auto val : resultYield.getOperands()) {
         resultTypes.push_back(val.getType());
       }
     }
@@ -342,7 +347,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       // which the MLIR C-interface expects by value.
       if (argTy.isIntOrIndex()) {
         Value extArg = arg;
-        if (argTy.getIntOrFloatBitWidth() < 64) {
+        if (isa<IndexType>(argTy)) {
+          // `index` has no fixed bit width (getIntOrFloatBitWidth would assert),
+          // so normalize it to i64 before packing it into the pointer slot.
+          extArg = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(),
+                                                        arg);
+        } else if (argTy.getIntOrFloatBitWidth() < 64) {
           extArg = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), arg);
         }
         Value casted = rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrType, extArg);

@@ -8,7 +8,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
 // CHECK: memref.alloca()
-// CHECK: scf.for
+// CHECK: cf.cond_br
 // CHECK: memref.store
 // CHECK: return
 

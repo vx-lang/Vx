@@ -129,25 +129,20 @@ void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topolo
 
 extern "C" uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args) {
     const char* kernel_name = (const char*)binary_payload;
-    int32_t num_args = 3; // We assume 3 for now, because it passes 3 args in test
     printf("DEBUG: Entering vx_plugin_dispatch_async, kernel_name=%s\n", kernel_name);
-    
-    for (int i = 0; i < num_args; ++i) {
-        printf("DEBUG: device_args[%d] = %p\n", i, device_args[i]);
-        if (device_args[i] != nullptr) {
-            uint64_t* words = (uint64_t*)device_args[i];
-        }
-    }
     
     char ciface_name[256];
     snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
     
-    typedef void (*KernelFuncPtr)(void**);
+    typedef void (*KernelFuncPtr)(void*, void*, void*, void*, void*, void*, void*, void*);
     KernelFuncPtr kernel = (KernelFuncPtr)dlsym(RTLD_DEFAULT, ciface_name);
     
     if (kernel) {
         printf("DEBUG: Dispatching to JIT kernel %s\n", ciface_name);
-        kernel(device_args);
+        // The MLIR _mlir_ciface wrapper expects individual struct pointers, not a void** array.
+        // We unpack the array into the first 8 registers using the C ABI.
+        kernel(device_args[0], device_args[1], device_args[2], device_args[3],
+               device_args[4], device_args[5], device_args[6], device_args[7]);
     } else {
         printf("DEBUG: Could not find JIT kernel %s, skipping execution\n", ciface_name);
     }

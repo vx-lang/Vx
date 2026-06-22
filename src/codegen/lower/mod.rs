@@ -344,6 +344,10 @@ pub fn generate_match_chain<'c>(
         OperationBuilder::new("cf.cond_br", gen.loc())
             .add_operands(&[cond_val])
             .add_successors(&[&*then_block, &*else_block])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0]).into(),
+            )])
             .build()
             .unwrap(),
     );
