@@ -1,0 +1,30 @@
+//===- loop_early_return.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `return` nested inside a loop terminates the current block, so block
+// threading must stop emitting into it (statement lowering returns no
+// continuation block) rather than appending after the terminator.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn classify(n : i32) -> i32 {
+  for i in 0..n {
+    if i == 4 {
+      return i; // early return from inside the loop body
+    }
+  }
+  return 0 - 1;
+}
+
+fn main() -> i32 {
+  let r = classify(7);
+  print!("c=");
+  print!(r);
+  return 0;
+}
+
+// EXPECT: c=4

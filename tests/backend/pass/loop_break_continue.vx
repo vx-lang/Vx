@@ -1,0 +1,32 @@
+//===- loop_break_continue.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// `break` and `continue` inside an infinite `loop`. Unlike the counted `for`
+// loop, here `continue` targets the loop entry directly (no index latch), so
+// this guards that distinct lowering path.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn main() -> i32 {
+  let mut i : i32 = 0;
+  let mut acc : i32 = 0;
+  loop {
+    i += 1;
+    if i > 5 {
+      break;
+    }
+    if i == 3 {
+      continue; // skip adding 3
+    }
+    acc += i; // 1 + 2 + 4 + 5 = 12
+  }
+  print!("acc=");
+  print!(acc);
+  return 0;
+}
+
+// EXPECT: acc=12

@@ -1,0 +1,49 @@
+//===- match_runtime.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Runtime check that `match` over an enum lowers to the correct branch. The
+// existing match_simple.vx only checks that a module is emitted; this verifies
+// the selected arm actually executes.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+enum Dir {
+  North,
+  South,
+  East,
+  West,
+}
+
+fn code(d : Dir) -> i32 {
+  let mut r : i32 = 0;
+  match d {
+    Dir::North => {
+      r = 1;
+    }
+    Dir::South => {
+      r = 2;
+    }
+    Dir::East => {
+      r = 3;
+    }
+    Dir::West => {
+      r = 4;
+    }
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  let a = code(Dir::East);
+  let b = code(Dir::West);
+  let s = a + b; // 3 + 4 = 7
+  print!("m=");
+  print!(s);
+  return 0;
+}
+
+// EXPECT: m=7
