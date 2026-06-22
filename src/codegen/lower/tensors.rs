@@ -8,22 +8,28 @@ use melior::ir::{
 };
 
 impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let location = gen.loc();
         let region = melior::ir::Region::new();
-        let body_block = melior::ir::Block::new(&[]);
+        let mut body_block = region.append_block(melior::ir::Block::new(&[]));
         let prev_in_spawn = gen.in_spawn;
         gen.in_spawn = true;
         for stmt in &self.stmts {
-            gen.generate_statement(stmt, &body_block)?;
+            if let Some(b) = gen.generate_statement(stmt, body_block)? {
+                body_block = b;
+            }
         }
 
         let mut result_types = vec![];
         let mut ret_val = None;
 
         if let Some(r) = &self.ret {
-            let (val, ty) = gen.generate_expr(r, &body_block)?;
+            let (val, ty, _block) = gen.generate_expr(r, body_block)?;
             result_types.push(ty);
             ret_val = Some(val);
         }
@@ -45,7 +51,6 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         }
 
         gen.in_spawn = prev_in_spawn;
-        region.append_block(body_block);
 
         let topology_id = topology_to_i32(&self.top);
         let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
@@ -71,7 +76,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         }
 
         if !result_types.is_empty() {
-            Ok((spawn_ref.result(0).unwrap().into(), result_types[0]))
+            Ok((spawn_ref.result(0).unwrap().into(), result_types[0], block))
         } else {
             let _none_ty = gen.none_ty;
             let dummy_op = OperationBuilder::new("arith.constant", location)
@@ -86,15 +91,20 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
             Ok((
                 dummy_ref.result(0).unwrap().into(),
                 Type::index(gen.context),
+                block,
             ))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::TransferExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let (src_val, src_ty) = gen.generate_expr(&self.expr, block)?;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let (src_val, src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
 
         // Map memory space to topology target.
@@ -130,13 +140,17 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
         let result_val = transfer_op.result(0).unwrap().into();
         block.append_operation(transfer_op);
 
-        Ok((result_val, target_ty))
+        Ok((result_val, target_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for GradExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let GradExpr {
             target_fn,
             args,
@@ -163,10 +177,12 @@ impl<'c> LowerToMelior<'c> for GradExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
+        let mut current_b = block;
         for arg in args {
-            let (v, ty) = gen.generate_expr(arg, block)?;
+            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
             arg_vals.push(v);
             enzyme_arg_types.push(ty);
+            current_b = new_b;
         }
 
         let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
@@ -179,14 +195,18 @@ impl<'c> LowerToMelior<'c> for GradExpr {
             .build()
             .unwrap();
 
-        let call_ref = block.append_operation(call_op);
-        Ok((call_ref.result(0).unwrap().into(), ret_ty))
+        let call_ref = current_b.append_operation(call_op);
+        Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
     }
 }
 
 impl<'c> LowerToMelior<'c> for VjpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let VjpExpr {
             target_fn,
             args,
@@ -214,10 +234,12 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
+        let mut current_b = block;
         for arg in args {
-            let (v, ty) = gen.generate_expr(arg, block)?;
+            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
             arg_vals.push(v);
             enzyme_arg_types.push(ty);
+            current_b = new_b;
         }
 
         // For a scalar VJP in Enzyme, we just compute the gradient (implicitly seed=1.0)
@@ -232,10 +254,10 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             .build()
             .unwrap();
 
-        let call_ref = block.append_operation(call_op);
+        let call_ref = current_b.append_operation(call_op);
         let grad_val = call_ref.result(0).unwrap().into();
 
-        let (c_val, _) = gen.generate_expr(cotangent, block)?;
+        let (c_val, _, current_b) = gen.generate_expr(cotangent, current_b)?;
 
         // Multiply grad by cotangent
         let is_float = ret_ty.to_string().contains("f32")
@@ -248,15 +270,19 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             .add_results(&[ret_ty])
             .build()
             .unwrap();
-        let mul_ref = block.append_operation(mul_op);
+        let mul_ref = current_b.append_operation(mul_op);
 
-        Ok((mul_ref.result(0).unwrap().into(), ret_ty))
+        Ok((mul_ref.result(0).unwrap().into(), ret_ty, current_b))
     }
 }
 
 impl<'c> LowerToMelior<'c> for JvpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let JvpExpr {
             target_fn,
             args,
@@ -284,13 +310,15 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
+        let mut current_b = block;
         for arg in args {
-            let (v, ty) = gen.generate_expr(arg, block)?;
+            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
             arg_vals.push(v);
             enzyme_arg_types.push(ty);
+            current_b = new_b;
         }
 
-        let (t_val, t_ty) = gen.generate_expr(tangent, block)?;
+        let (t_val, t_ty, current_b) = gen.generate_expr(tangent, current_b)?;
         arg_vals.push(t_val);
         enzyme_arg_types.push(t_ty);
 
@@ -305,7 +333,7 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
             .build()
             .unwrap();
 
-        let call_ref = block.append_operation(call_op);
-        Ok((call_ref.result(0).unwrap().into(), ret_ty))
+        let call_ref = current_b.append_operation(call_op);
+        Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
     }
 }

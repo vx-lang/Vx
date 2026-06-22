@@ -29,8 +29,8 @@ pub struct MeliorGenerator<'c> {
     pub current_return_type: Option<Type<'c>>,
     pub expected_type: Option<Type<'c>>,
     pub in_spawn: bool,
-    pub break_flags: Vec<melior::ir::Value<'c, 'c>>,
-    pub continue_flags: Vec<melior::ir::Value<'c, 'c>>,
+    pub break_blocks: Vec<*const melior::ir::Block<'c>>,
+    pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     pub(crate) is_lvalue_context: bool,
     pub(crate) mlir_block_counter: usize,
@@ -181,6 +181,27 @@ impl<'c> MeliorGenerator<'c> {
             return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
+        let is_int = |s: &str| s.starts_with("i") || s.starts_with("u");
+        if is_int(&from_str) && is_int(&to_str) {
+            let from_width: u32 = from_str[1..].parse().unwrap_or(0);
+            let to_width: u32 = to_str[1..].parse().unwrap_or(0);
+            if from_width > 0 && to_width > 0 {
+                let op_name = if from_width > to_width {
+                    "arith.trunci"
+                } else if from_str.starts_with("u") {
+                    "arith.extui"
+                } else {
+                    "arith.extsi"
+                };
+                let cast_op = melior::ir::operation::OperationBuilder::new(op_name, self.loc())
+                    .add_operands(&[val])
+                    .add_results(&[to_ty])
+                    .build()
+                    .unwrap();
+                return block.append_operation(cast_op).result(0).unwrap().into();
+            }
+        }
+
         if val.r#type() == to_ty {
             return val;
         }
@@ -242,8 +263,8 @@ impl<'c> MeliorGenerator<'c> {
             current_return_type: None,
             expected_type: None,
             in_spawn: false,
-            break_flags: Vec::new(),
-            continue_flags: Vec::new(),
+            break_blocks: Vec::new(),
+            continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             is_lvalue_context: false,
             mlir_block_counter: 0,
@@ -549,17 +570,18 @@ impl<'c> MeliorGenerator<'c> {
         let dummy_op = dummy_module.body().first_operation().unwrap();
         let func_loc = dummy_op.location();
 
-        let region = Region::new();
+        let _region = Region::new();
 
         let mut block_args = Vec::new();
         for ty in &arg_tys {
             block_args.push((*ty, self.loc()));
         }
-        let block = Block::new(&block_args);
+        let region = melior::ir::Region::new();
+        let mut current_block = region.append_block(Block::new(&block_args));
 
         // Map arguments into the environment
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
-            let arg_val = block.argument(i).unwrap().into();
+            let arg_val = current_block.argument(i).unwrap().into();
             self.env
                 .insert(name.to_string().into(), (arg_val, arg_tys[i]));
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
@@ -580,7 +602,7 @@ impl<'c> MeliorGenerator<'c> {
                     .add_results(&[])
                     .build()
                     .unwrap();
-            block.append_operation(sig_init_call);
+            current_block.append_operation(sig_init_call);
         }
 
         self.current_return_type = Some(ret_ty);
@@ -590,12 +612,16 @@ impl<'c> MeliorGenerator<'c> {
                     continue;
                 }
             }
-            self.generate_statement(stmt, &block)?;
+            if let Some(b) = self.generate_statement(stmt, current_block)? {
+                current_block = b;
+            } else {
+                break;
+            }
         }
 
         if is_main {
             let i32_ty = self.i32_ty;
-            let c0_op = block.append_operation(
+            let c0_op = current_block.append_operation(
                 melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                     .add_results(&[i32_ty])
                     .add_attributes(&[(
@@ -606,7 +632,7 @@ impl<'c> MeliorGenerator<'c> {
                     .unwrap(),
             );
             let c0 = c0_op.result(0).unwrap().into();
-            block.append_operation(
+            current_block.append_operation(
                 melior::ir::operation::OperationBuilder::new("func.return", self.loc())
                     .add_operands(&[c0])
                     .build()
@@ -619,7 +645,7 @@ impl<'c> MeliorGenerator<'c> {
                     .last()
                     .is_some_and(|stmt| matches!(stmt, Statement::Return(_)));
                 if !has_return {
-                    block.append_operation(
+                    current_block.append_operation(
                         melior::ir::operation::OperationBuilder::new("func.return", self.loc())
                             .build()
                             .unwrap(),
@@ -629,8 +655,6 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         self.current_return_type = None;
-
-        region.append_block(block);
 
         let mut func_attributes = vec![
             (
@@ -662,8 +686,8 @@ impl<'c> MeliorGenerator<'c> {
     pub(crate) fn generate_statement(
         &mut self,
         stmt: &Statement,
-        block: &melior::ir::Block<'c>,
-    ) -> Result<(), LowerError> {
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
         self.current_span = stmt.span();
         match stmt {
             Statement::Return(s) => LowerToMelior::lower(s, self, block),
@@ -674,7 +698,7 @@ impl<'c> MeliorGenerator<'c> {
             Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
             Statement::Assert(_) => {
                 // TODO: Lower to `scf.if` with panic/abort for runtime checks
-                Ok(())
+                Ok(Some(block))
             }
             Statement::Loop(s) => LowerToMelior::lower(s, self, block),
             Statement::Break(s) => LowerToMelior::lower(s, self, block),
@@ -686,8 +710,8 @@ impl<'c> MeliorGenerator<'c> {
     pub(crate) fn generate_expr(
         &mut self,
         expr: &Expr,
-        block: &melior::ir::Block<'c>,
-    ) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
         self.current_span = expr.span();
         match expr {
             Expr::Identifier(e) => LowerToMelior::lower(e, self, block),
@@ -1149,16 +1173,21 @@ impl<'c> MeliorGenerator<'c> {
     pub fn flatten_indices(
         &mut self,
         expr: &Expr,
-        block: &melior::ir::Block<'c>,
-    ) -> Option<(Value<'c, 'c>, Type<'c>, Vec<Value<'c, 'c>>)> {
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Option<(
+        Value<'c, 'c>,
+        Type<'c>,
+        Vec<Value<'c, 'c>>,
+        melior::ir::BlockRef<'c, 'c>,
+    )> {
         match expr {
             Expr::IndexAccess(ast::IndexAccessExpr {
                 base,
                 index: idx,
                 span: _,
             }) => {
-                let (base_val, base_ty, mut indices) = self.flatten_indices(base, block)?;
-                let (idx_val, _) = self.generate_expr(idx, block).ok()?;
+                let (base_val, base_ty, mut indices, block) = self.flatten_indices(base, block)?;
+                let (idx_val, _, block) = self.generate_expr(idx, block).ok()?;
 
                 let idx_ty_str = idx_val.r#type().to_string();
                 let actual_idx = if idx_ty_str != "index" {
@@ -1176,11 +1205,11 @@ impl<'c> MeliorGenerator<'c> {
                 };
 
                 indices.push(actual_idx);
-                Some((base_val, base_ty, indices))
+                Some((base_val, base_ty, indices, block))
             }
             _ => {
-                let (val, ty) = self.generate_expr(expr, block).ok()?;
-                Some((val, ty, Vec::new()))
+                let (val, ty, block) = self.generate_expr(expr, block).ok()?;
+                Some((val, ty, Vec::new(), block))
             }
         }
     }

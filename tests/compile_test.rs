@@ -328,11 +328,15 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
+    println!("DEBUG: MeliorGenerator::new");
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
+    println!("DEBUG: codegen.generate");
     codegen
         .generate(&monomorphized_program, &module_asts)
         .unwrap();
+    println!("DEBUG: codegen.into_module");
     let mut module = codegen.into_module();
+    println!("DEBUG: lower_to_llvm");
     if let Err(e) = vxc::codegen::lower_to_llvm(&context, &mut module) {
         println!("MLIR Before Lowering Error:\n{}", module.as_operation());
         return Err(format!(
@@ -341,7 +345,9 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
             e
         ));
     }
+    println!("DEBUG: lower_to_llvm ok");
     let mlir_str = module.as_operation().to_string();
+    println!("DEBUG: module_to_string ok");
 
     if source.contains("// NO_EXEC") {
         return Ok(());
@@ -660,6 +666,16 @@ fn test_middle_end_fail() -> Result<(), String> {
             Ok(())
         },
     )
+}
+
+#[test]
+fn test_crash() -> Result<(), String> {
+    for i in 0..5 {
+        println!("test_crash iteration {}", i);
+        run_backend_test(Path::new("tests/backend/pass/plugin_npe.vx"))?;
+        println!("test_crash iteration {} done", i);
+    }
+    Ok(())
 }
 
 #[test]

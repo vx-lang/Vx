@@ -8,11 +8,15 @@ use melior::ir::{
 };
 
 impl<'c> LowerToMelior<'c> for ReturnStmt {
-    type Output = Result<(), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
         gen.expected_type = gen.current_return_type;
-        let (mut val, expr_ty) = gen.generate_expr(expr, block)?;
+        let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.expected_type = None;
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
@@ -45,7 +49,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                         .unwrap();
                     val = block.append_operation(zero_op).result(0).unwrap().into();
                 } else {
-                    val = gen.coerce_type(block, val, expr_ty, ret_ty);
+                    val = gen.coerce_type(&block, val, expr_ty, ret_ty);
                 }
             }
         }
@@ -60,14 +64,17 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             .unwrap();
         block.append_operation(ret_op);
         gen.has_returned = true;
-
-        Ok(())
+        Ok(None)
     }
 }
 
 impl<'c> LowerToMelior<'c> for LetDeclStmt {
-    type Output = Result<(), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let LetDeclStmt {
             name,
             is_mut,
@@ -79,7 +86,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         if let Some(ann) = ty_ann {
             gen.expected_type = Some(gen.lower_type(ann));
         }
-        let (val, ty) = gen.generate_expr(expr, block)?;
+        let (val, ty, block) = gen.generate_expr(expr, block)?;
         if let Expr::Closure(c) = expr {
             let func_args = c.params.iter().map(|(_, t)| t.clone()).collect();
             let ret_ty = c
@@ -92,6 +99,12 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             );
         }
         gen.expected_type = prev_expected;
+
+        let ast_ty = ty_ann.clone().or_else(|| gen.infer_ast_type(expr));
+        if let Some(ref t) = ast_ty {
+            gen.ast_env.insert(name.to_string().into(), t.clone());
+        }
+
         if *is_mut {
             let ty_str = ty.to_string();
             if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
@@ -145,20 +158,19 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.to_string());
             }
         } else {
-            let ast_ty = ty_ann.clone().or_else(|| gen.infer_ast_type(expr));
-            if let Some(t) = ast_ty {
-                gen.ast_env.insert(name.to_string().into(), t);
-            }
             gen.env.insert(name.to_string().into(), (val, ty));
         }
-
-        Ok(())
+        Ok(Some(block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for AssignStmt {
-    type Output = Result<(), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let AssignStmt { lhs, rhs, span: _ } = self;
 
         let mut expected_ty = None;
@@ -174,11 +186,17 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             }
         }
 
+        if expected_ty.is_none() {
+            if let Some(ast_ty) = gen.infer_ast_type(lhs) {
+                expected_ty = Some(gen.lower_type(&ast_ty));
+            }
+        }
+
         let prev_expected = gen.expected_type;
         if expected_ty.is_some() {
             gen.expected_type = expected_ty;
         }
-        let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block)?;
+        let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
@@ -222,7 +240,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             span: _,
         }) = lhs
         {
-            if let Some((base_val, base_ty, indices)) = gen.flatten_indices(
+            if let Some((base_val, base_ty, indices, mut new_b)) = gen.flatten_indices(
                 &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
@@ -241,7 +259,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .add_results(&[i64_ty])
                         .build()
                         .unwrap();
-                    let idx_i64 = block.append_operation(cast_op).result(0).unwrap().into();
+                    let idx_i64 = new_b.append_operation(cast_op).result(0).unwrap().into();
 
                     let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                         .add_attributes(&[
@@ -259,7 +277,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()
                         .unwrap();
 
-                    let gep_ref = block.append_operation(gep_op);
+                    let gep_ref = new_b.append_operation(gep_op);
                     let ptr_val = gep_ref.result(0).unwrap().into();
 
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
@@ -267,7 +285,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         .build()
                         .unwrap();
 
-                    block.append_operation(store_op);
+                    new_b.append_operation(store_op);
                 } else {
                     let mut inner_ty_str = String::new();
                     if let Some(start) = base_ty_str.find('<') {
@@ -284,7 +302,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     let mut store_val = rhs_val;
                     if !inner_ty_str.is_empty() {
                         let inner_ty = melior::ir::Type::parse(gen.context, &inner_ty_str).unwrap();
-                        store_val = gen.coerce_type(block, store_val, rhs_ty, inner_ty);
+                        store_val = gen.coerce_type(&new_b, store_val, rhs_ty, inner_ty);
                     }
 
                     let mut store_builder = OperationBuilder::new("memref.store", gen.loc())
@@ -295,8 +313,9 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     }
 
                     let store_op = store_builder.build().unwrap();
-                    block.append_operation(store_op);
+                    new_b.append_operation(store_op);
                 }
+                return Ok(Some(new_b));
             }
         } else if let Expr::MemberAccess(MemberAccessExpr {
             base,
@@ -310,7 +329,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 span: _,
             }) = &**base
             {
-                let (base_val, base_ty) = gen.generate_expr(base, block)?;
+                let (base_val, base_ty, mut new_b) = gen.generate_expr(base, block)?;
                 let base_ty_str = base_ty.to_string();
 
                 let mut struct_name_opt = struct_name.clone();
@@ -348,7 +367,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .build()
                                     .unwrap();
                                 field_val =
-                                    block.append_operation(cast_op).result(0).unwrap().into();
+                                    new_b.append_operation(cast_op).result(0).unwrap().into();
                             }
 
                             if is_ptr {
@@ -389,14 +408,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .build()
                                     .unwrap();
 
-                                let gep_ref = block.append_operation(gep_op);
+                                let gep_ref = new_b.append_operation(gep_op);
                                 let ptr_val = gep_ref.result(0).unwrap().into();
 
                                 let store_op = OperationBuilder::new("llvm.store", gen.loc())
                                     .add_operands(&[field_val, ptr_val])
                                     .build()
                                     .unwrap();
-                                block.append_operation(store_op);
+                                new_b.append_operation(store_op);
                             } else {
                                 let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                                     gen.context,
@@ -414,7 +433,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                         .unwrap();
 
                                 let new_struct_val =
-                                    block.append_operation(insert_op).result(0).unwrap().into();
+                                    new_b.append_operation(insert_op).result(0).unwrap().into();
 
                                 if let Some((mem_val, mem_ty)) = gen.env.get(base_name).cloned() {
                                     let mem_ty_str = mem_ty.to_string();
@@ -424,7 +443,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                                 .add_operands(&[new_struct_val, mem_val])
                                                 .build()
                                                 .unwrap();
-                                        block.append_operation(store_op);
+                                        new_b.append_operation(store_op);
                                     } else {
                                         gen.env.insert(
                                             base_name.to_string().into(),
@@ -436,26 +455,33 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         }
                     }
                 }
+                return Ok(Some(new_b));
             } else {
                 panic!("Complex struct assignment lhs not supported");
             }
         }
-
-        Ok(())
+        Ok(Some(block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
-    type Output = Result<(), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let CompoundAssignStmt {
             lhs,
             op,
             rhs,
             span: _,
         } = self;
-        let (rhs_val, rhs_ty) = gen.generate_expr(rhs, block)?;
-        let (lhs_val, ty) = gen.generate_expr(lhs, block)?;
+        let (lhs_val, ty, block) = gen.generate_expr(lhs, block)?;
+        let prev_expected = gen.expected_type;
+        gen.expected_type = Some(ty);
+        let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
+        gen.expected_type = prev_expected;
 
         let mut actual_rhs = rhs_val;
         if rhs_ty != ty
@@ -501,7 +527,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             span: _,
         }) = lhs
         {
-            if let Some((mem_val, mem_ty, indices)) = gen.flatten_indices(
+            if let Some((mem_val, mem_ty, indices, mut new_b)) = gen.flatten_indices(
                 &ast::Expr::IndexAccess(ast::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
@@ -523,25 +549,31 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                         .add_operands(&operands)
                         .build()
                         .unwrap();
-                    block.append_operation(store_op);
+                    new_b.append_operation(store_op);
                 }
+                return Ok(Some(new_b));
             }
         }
-
-        Ok(())
+        Ok(Some(block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ExprStmtStmt {
-    type Output = Result<(), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let ExprStmtStmt {
             expr,
             has_semi: _,
             span: _,
         } = self;
-        gen.generate_expr(expr, block)?;
-
-        Ok(())
+        let prev = gen.expected_type;
+        gen.expected_type = Some(gen.none_ty);
+        let (_, _, updated_block) = gen.generate_expr(expr, block)?;
+        gen.expected_type = prev;
+        Ok(Some(updated_block))
     }
 }

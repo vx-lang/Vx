@@ -1,181 +1,7 @@
-use super::*;
-use crate::ast;
-use crate::ast::*;
-use melior::ir::{
-    attribute::{FloatAttribute, IntegerAttribute},
-    operation::OperationBuilder,
-    Identifier, Type, Value,
-};
+with open("src/codegen/lower/control_flow.rs", "r") as f:
+    lines = f.readlines()
 
-impl<'c> LowerToMelior<'c> for IfExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
-    fn lower(
-        &self,
-        gen: &mut MeliorGenerator<'c>,
-        block: melior::ir::BlockRef<'c, 'c>,
-    ) -> Self::Output {
-        let IfExpr {
-            is_comptime,
-            cond,
-            then_block,
-            else_block: else_block_opt,
-            span: _,
-        } = self;
-
-        if *is_comptime {
-            let mut last_val = None;
-            let target_block = if !then_block.is_empty() {
-                Some(then_block)
-            } else {
-                else_block_opt.as_ref()
-            };
-
-            if let Some(tb) = target_block {
-                for (i, stmt) in tb.iter().enumerate() {
-                    let is_last = i == tb.len() - 1;
-                    if is_last {
-                        if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
-                            expr,
-                            has_semi,
-                            ..
-                        }) = stmt
-                        {
-                            let (val, ty, _block) = gen.generate_expr(expr, block)?;
-                            if !has_semi {
-                                last_val = Some((val, ty));
-                            }
-                        } else {
-                            gen.generate_statement(stmt, block)?;
-                        }
-                    } else {
-                        gen.generate_statement(stmt, block)?;
-                    }
-                }
-            }
-
-            if let Some((val, ty)) = last_val {
-                return Ok((val, ty, block));
-            }
-
-            let ret_ty = gen.expected_type.unwrap_or(gen.f32_ty);
-            let dummy_op = if ret_ty.to_string() == "f32" {
-                OperationBuilder::new("arith.constant", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        FloatAttribute::new(gen.context, ret_ty, 0.0).into(),
-                    )])
-                    .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
-            } else if ret_ty.to_string() == "i1" {
-                OperationBuilder::new("arith.constant", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(ret_ty, 0).into(),
-                    )])
-                    .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
-            } else {
-                OperationBuilder::new("arith.constant", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "value"),
-                        IntegerAttribute::new(ret_ty, 0).into(),
-                    )])
-                    .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
-            };
-            return Ok((
-                block.append_operation(dummy_op).result(0).unwrap().into(),
-                ret_ty,
-                block,
-            ));
-        }
-
-        let (cond_val, _, block) = gen.generate_expr(cond, block)?;
-
-        let ret_ty = gen.expected_type.unwrap_or(gen.f32_ty);
-        let parent_region = block.parent_region().unwrap();
-        let mut then_b = parent_region.append_block(melior::ir::Block::new(&[]));
-        let mut else_b = parent_region.append_block(melior::ir::Block::new(&[]));
-
-        let has_ret = ret_ty.to_string() != "none" && ret_ty.to_string() != "void";
-        let merge_b = if has_ret {
-            parent_region.append_block(melior::ir::Block::new(&[(ret_ty, gen.loc())]))
-        } else {
-            parent_region.append_block(melior::ir::Block::new(&[]))
-        };
-
-        block.append_operation(
-            OperationBuilder::new("cf.cond_br", gen.loc())
-                .add_operands(&[cond_val])
-                .add_successors(&[&*then_b, &*else_b])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "operandSegmentSizes"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
-                        .into(),
-                )])
-                .build()
-                .unwrap(),
-        );
-
-        let mut then_terminated = false;
-        for stmt in then_block {
-            if let Some(b) = gen.generate_statement(stmt, then_b)? {
-                then_b = b;
-            } else {
-                then_terminated = true;
-                break;
-            }
-        }
-
-        if !then_terminated {
-            // Need to pass the return value if there is one
-            // Wait, IfExpr's return value was just dummy 0!
-            // I should just pass 0 for now.
-            // But wait, the original code returned 0 as dummy value?
-            // "let ty = gen.i32_ty; let op = OperationBuilder::new("arith.constant" ...)"
-            // Actually, in the old scf.if, it did not even yield the correct then/else values!
-            // Let's just cf.br to merge_b.
-            then_b.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[&*merge_b])
-                    .build()
-                    .unwrap(),
-            );
-        }
-
-        let mut else_terminated = false;
-        if let Some(else_block) = else_block_opt {
-            for stmt in else_block {
-                if let Some(b) = gen.generate_statement(stmt, else_b)? {
-                    else_b = b;
-                } else {
-                    else_terminated = true;
-                    break;
-                }
-            }
-        }
-        if !else_terminated {
-            else_b.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[&*merge_b])
-                    .build()
-                    .unwrap(),
-            );
-        }
-
-        if has_ret {
-            let res = merge_b.argument(0).unwrap().into();
-            Ok((res, ret_ty, merge_b))
-        } else {
-            Ok((cond_val, ret_ty, merge_b))
-        }
-    }
-}
-
-impl<'c> LowerToMelior<'c> for ForLoopStmt {
+for_loop_content = """impl<'c> LowerToMelior<'c> for ForLoopStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
         &self,
@@ -244,8 +70,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             let step_idx = step_op.result(0).unwrap().into();
 
             let parent_region = block.parent_region().unwrap();
-            let cond_block =
-                parent_region.append_block(melior::ir::Block::new(&[(ty_index, gen.loc())]));
+            let cond_block = parent_region.append_block(melior::ir::Block::new(&[(ty_index, gen.loc())]));
             let mut body_block = parent_region.append_block(melior::ir::Block::new(&[]));
             let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
 
@@ -276,11 +101,6 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("cf.cond_br", gen.loc())
                     .add_operands(&[cond_val])
                     .add_successors(&[&*body_block, &*merge_block])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "operandSegmentSizes"),
-                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
-                            .into(),
-                    )])
                     .build()
                     .unwrap(),
             );
@@ -384,8 +204,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .into();
 
             let parent_region = block.parent_region().unwrap();
-            let cond_block =
-                parent_region.append_block(melior::ir::Block::new(&[(ty_index, gen.loc())]));
+            let cond_block = parent_region.append_block(melior::ir::Block::new(&[(ty_index, gen.loc())]));
             let mut body_block = parent_region.append_block(melior::ir::Block::new(&[]));
             let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
 
@@ -416,11 +235,6 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("cf.cond_br", gen.loc())
                     .add_operands(&[cond_val])
                     .add_successors(&[&*body_block, &*merge_block])
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "operandSegmentSizes"),
-                        melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
-                            .into(),
-                    )])
                     .build()
                     .unwrap(),
             );
@@ -514,7 +328,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 .unwrap(),
         );
         let ptr_val = alloca_op.result(0).unwrap().into();
-
+        
         block.append_operation(
             OperationBuilder::new("llvm.store", gen.loc())
                 .add_operands(&[iter_val, ptr_val])
@@ -600,11 +414,6 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             OperationBuilder::new("cf.cond_br", gen.loc())
                 .add_operands(&[cond_val])
                 .add_successors(&[&*body_block, &*merge_block])
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "operandSegmentSizes"),
-                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
-                        .into(),
-                )])
                 .build()
                 .unwrap(),
         );
@@ -634,8 +443,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             .unwrap()
             .into();
 
-        gen.env
-            .insert(iter.clone().into(), (payload_val, payload_ty));
+        gen.env.insert(iter.clone().into(), (payload_val, payload_ty));
         gen.break_blocks.push(&*merge_block as *const _);
         gen.continue_blocks.push(&*cond_block as *const _);
 
@@ -664,27 +472,21 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         Ok(Some(merge_block))
     }
 }
+"""
 
-impl<'c> LowerToMelior<'c> for LoopStmt {
+loop_content = """impl<'c> LowerToMelior<'c> for LoopStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let LoopStmt {
-            invariants: _,
-            body,
-            span: _,
-        } = self;
-
+        let LoopStmt { invariants: _, body, span: _ } = self;
+        
         let parent_region = block.parent_region().unwrap();
         let mut body_block = parent_region.append_block(melior::ir::Block::new(&[]));
-        let loop_entry_block_ref = body_block; // separate variable
         let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
-
-        let loop_entry_block = &*loop_entry_block_ref as *const melior::ir::Block<'c>;
-
+        
         block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
                 .add_successors(&[&*body_block])
@@ -693,8 +495,8 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         );
 
         gen.break_blocks.push(&*merge_block as *const _);
-        gen.continue_blocks.push(loop_entry_block);
-
+        gen.continue_blocks.push(&*body_block as *const _);
+        
         let mut body_terminated = false;
         for stmt in body {
             if let Some(b) = gen.generate_statement(stmt, body_block)? {
@@ -704,15 +506,14 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
                 break;
             }
         }
-
+        
         gen.break_blocks.pop();
         gen.continue_blocks.pop();
 
         if !body_terminated {
-            let entry_b: &melior::ir::Block<'c> = unsafe { &*loop_entry_block };
             body_block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[entry_b])
+                    .add_successors(&[&*body_block])
                     .build()
                     .unwrap(),
             );
@@ -721,47 +522,17 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         Ok(Some(merge_block))
     }
 }
+"""
 
-impl<'c> LowerToMelior<'c> for BreakStmt {
-    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
-    fn lower(
-        &self,
-        gen: &mut MeliorGenerator<'c>,
-        block: melior::ir::BlockRef<'c, 'c>,
-    ) -> Self::Output {
-        if let Some(&break_ptr) = gen.break_blocks.last() {
-            let break_block: &melior::ir::Block<'c> = unsafe { &*break_ptr };
-            block.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[break_block])
-                    .build()
-                    .unwrap(),
-            );
-        } else {
-            panic!("break outside of a loop");
-        }
-        Ok(None)
-    }
-}
+new_lines = []
+for line in lines[:172]:
+    new_lines.append(line)
 
-impl<'c> LowerToMelior<'c> for ContinueStmt {
-    type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
-    fn lower(
-        &self,
-        gen: &mut MeliorGenerator<'c>,
-        block: melior::ir::BlockRef<'c, 'c>,
-    ) -> Self::Output {
-        if let Some(&continue_ptr) = gen.continue_blocks.last() {
-            let continue_block: &melior::ir::Block<'c> = unsafe { &*continue_ptr };
-            block.append_operation(
-                OperationBuilder::new("cf.br", gen.loc())
-                    .add_successors(&[continue_block])
-                    .build()
-                    .unwrap(),
-            );
-        } else {
-            panic!("continue outside of a loop");
-        }
-        Ok(None)
-    }
-}
+new_lines.append(for_loop_content + "\n")
+new_lines.append(loop_content + "\n")
+
+for line in lines[635:]:
+    new_lines.append(line)
+
+with open("src/codegen/lower/control_flow.rs", "w") as f:
+    f.writelines(new_lines)

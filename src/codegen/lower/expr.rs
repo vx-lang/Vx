@@ -11,8 +11,12 @@ use melior::ir::{
 };
 
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let IdentifierExpr { name, span: _ } = self;
         if name.as_ref() == "true" || **name == *"false" {
             let i1_ty = gen.i1_ty;
@@ -26,7 +30,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                 .build()
                 .unwrap();
             let const_ref = block.append_operation(const_op);
-            return Ok((const_ref.result(0).unwrap().into(), i1_ty));
+            return Ok((const_ref.result(0).unwrap().into(), i1_ty, block));
         }
         if let Some((val, ty)) = gen.env.get(name) {
             let ty_str = ty.to_string();
@@ -42,7 +46,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                         .build()
                         .unwrap();
                     let load_ref = block.append_operation(load_op);
-                    return Ok((load_ref.result(0).unwrap().into(), inner_ty));
+                    return Ok((load_ref.result(0).unwrap().into(), inner_ty, block));
                 } else if ty_str.starts_with("!llvm.ptr")
                     || ty_str.starts_with("!llvm.struct")
                     || ty_str.starts_with("i")
@@ -51,7 +55,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                 {
                     if gen.is_lvalue_context {
                         let ptr_ty = gen.ptr_ty;
-                        return Ok((*val, ptr_ty));
+                        return Ok((*val, ptr_ty, block));
                     }
                     let elem_ty = *ty;
                     let load_op = OperationBuilder::new("llvm.load", gen.loc())
@@ -60,7 +64,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                         .build()
                         .unwrap();
                     let load_ref = block.append_operation(load_op);
-                    return Ok((load_ref.result(0).unwrap().into(), elem_ty));
+                    return Ok((load_ref.result(0).unwrap().into(), elem_ty, block));
                 }
             }
             if ty_str.starts_with("memref<memref<") {
@@ -72,7 +76,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     .build()
                     .unwrap();
                 let load_ref = block.append_operation(load_op);
-                Ok((load_ref.result(0).unwrap().into(), inner_ty))
+                Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
             } else if ty_str.starts_with("memref<") && !ty_str.contains("x") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
@@ -82,9 +86,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     .build()
                     .unwrap();
                 let load_ref = block.append_operation(load_op);
-                Ok((load_ref.result(0).unwrap().into(), inner_ty))
+                Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
             } else {
-                Ok((*val, *ty))
+                Ok((*val, *ty, block))
             }
         } else if gen.functions.contains_key(name) {
             let (ret_ty, arg_tys) = gen.functions.get(name).unwrap();
@@ -107,7 +111,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                 .unwrap();
             let cast_ref = block.append_operation(cast_op);
 
-            Ok((cast_ref.result(0).unwrap().into(), ptr_ty))
+            Ok((cast_ref.result(0).unwrap().into(), ptr_ty, block))
         } else {
             panic!("Undefined variable: {}", name);
         }
@@ -115,34 +119,38 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
 }
 
 impl<'c> LowerToMelior<'c> for BorrowExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let BorrowExpr { expr, .. } = self;
         if let Expr::Identifier(id) = &**expr {
             if gen.allocs.contains(&*id.name) {
                 if let Some((val, val_ty)) = gen.env.get(&*id.name) {
                     let ptr_ty = gen.ptr_ty;
                     if gen.is_memref(val_ty) {
-                        return Ok((*val, *val_ty));
+                        return Ok((*val, *val_ty, block));
                     } else if *val_ty == ptr_ty {
-                        return Ok((*val, ptr_ty));
+                        return Ok((*val, ptr_ty, block));
                     } else {
                         // Cast from val to ptr_ty if necessary? No, just return val_ty.
-                        return Ok((*val, *val_ty));
+                        return Ok((*val, *val_ty, block));
                     }
                 }
             }
         }
         let prev_lvalue = gen.is_lvalue_context;
         gen.is_lvalue_context = true;
-        let (val, ty) = gen.generate_expr(expr, block)?;
+        let (val, ty, block) = gen.generate_expr(expr, block)?;
         gen.is_lvalue_context = prev_lvalue;
         let ptr_ty = gen.ptr_ty;
         if ty == ptr_ty {
-            return Ok((val, ptr_ty));
+            return Ok((val, ptr_ty, block));
         }
         if ty.to_string().starts_with("memref<memref<") {
-            return Ok((val, ty));
+            return Ok((val, ty, block));
         }
         if gen.is_memref(&ty) {
             // Allocate a pointer to the memref
@@ -163,6 +171,7 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
             return Ok((
                 ptr,
                 Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap(),
+                block,
             ));
         }
 
@@ -199,13 +208,17 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                 .unwrap(),
         );
 
-        Ok((ptr, ptr_ty))
+        Ok((ptr, ptr_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for StringLiteralExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let str_val = format!("{}\0", self.value);
         let str_name = format!(".str.{}", gen.string_counter);
         gen.string_counter += 1;
@@ -253,13 +266,17 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
             .unwrap();
         let addressof_ref = block.append_operation(addressof_op);
 
-        Ok((addressof_ref.result(0).unwrap().into(), ptr_ty))
+        Ok((addressof_ref.result(0).unwrap().into(), ptr_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         for stmt in &self.stmts {
             gen.generate_statement(stmt, block)?;
         }
@@ -276,15 +293,19 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
                 .build()
                 .unwrap();
             let dummy_ref = block.append_operation(dummy_val);
-            Ok((dummy_ref.result(0).unwrap().into(), none_ty))
+            Ok((dummy_ref.result(0).unwrap().into(), none_ty, block))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for DereferenceExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let (ptr_val, ptr_ty) = gen.generate_expr(&self.expr, block)?;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let (ptr_val, ptr_ty, block) = gen.generate_expr(&self.expr, block)?;
         let ptr_ty_str = ptr_ty.to_string();
 
         let inner_ty = if let Some(t) = &self.ty {
@@ -299,7 +320,7 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         };
 
         if gen.is_lvalue_context {
-            return Ok((ptr_val, ptr_ty));
+            return Ok((ptr_val, ptr_ty, block));
         }
 
         let load_op = OperationBuilder::new("llvm.load", gen.loc())
@@ -308,14 +329,18 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             .build()
             .unwrap();
         let load_ref = block.append_operation(load_op);
-        Ok((load_ref.result(0).unwrap().into(), inner_ty))
+        Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let (base_val, base_ty, indices) = gen
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let (base_val, base_ty, indices, block) = gen
             .flatten_indices(&ast::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");
 
@@ -323,8 +348,15 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
         let is_ptr = base_ty_str.starts_with("!llvm.ptr");
 
         if is_ptr {
+            let mut inferred_el_ty_str = None;
+            if let Some(ast::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref()) {
+                inferred_el_ty_str = Some(gen.lower_type_str(&inner));
+            }
+
             let inner_ty_str = if base_ty_str.contains("<") {
                 base_ty_str[base_ty_str.find('<').unwrap() + 1..base_ty_str.len() - 1].to_string()
+            } else if let Some(el_str) = inferred_el_ty_str {
+                el_str
             } else if let Some(expected) = gen.expected_type {
                 expected.to_string()
             } else {
@@ -362,7 +394,7 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
 
             if gen.is_lvalue_context {
                 let ptr_ty = gen.ptr_ty;
-                return Ok((ptr_val, ptr_ty));
+                return Ok((ptr_val, ptr_ty, block));
             }
 
             let load_op = OperationBuilder::new("llvm.load", gen.loc())
@@ -372,7 +404,7 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
                 .unwrap();
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0).unwrap().into(), inner_ty))
+            Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
         } else {
             let inner_ty_str = if base_ty_str.starts_with("memref<") {
                 let inner = base_ty_str.replace("memref<", "").replace('>', "");
@@ -394,24 +426,28 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
             let load_op = load_builder.add_results(&[inner_ty]).build().unwrap();
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0).unwrap().into(), inner_ty))
+            Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for BinaryOpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let BinaryOpExpr {
             lhs,
             op,
             rhs,
             span: _,
         } = self;
-        let (mut lhs_val, lhs_ty) = gen.generate_expr(lhs, block)?;
+        let (mut lhs_val, lhs_ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
-        let (mut rhs_val, mut rhs_ty) = gen.generate_expr(rhs, block)?;
+        let (mut rhs_val, mut rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
         let mut final_ty = lhs_ty;
@@ -421,7 +457,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         if lhs_ty != rhs_ty && op != &BinaryOp::MatMul {
             // Priority coercion: f64 > f32 > i64 > i32
             // To simplify, we'll cast rhs to lhs for now.
-            rhs_val = gen.coerce_type(block, rhs_val, rhs_ty, lhs_ty);
+            rhs_val = gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty);
             rhs_ty = lhs_ty;
             final_ty = lhs_ty;
         }
@@ -616,7 +652,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 .unwrap();
             block.append_operation(matmul_op);
 
-            return Ok((out_val, out_ty));
+            return Ok((out_val, out_ty, block));
         } else if is_memref {
             // Element-wise Linalg Lowering (Add, Sub, Mul, Div)
             let out_ty = Type::parse(gen.context, &lhs_ty_str).unwrap();
@@ -714,7 +750,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 .unwrap();
             block.append_operation(linalg_op);
 
-            return Ok((out_val, out_ty));
+            return Ok((out_val, out_ty, block));
         }
 
         if lhs_ty != rhs_ty
@@ -762,23 +798,27 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
         let bin_op = builder.build().unwrap();
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), ret_ty))
+        Ok((bin_ref.result(0).unwrap().into(), ret_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for RelationalOpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let RelationalOpExpr {
             lhs,
             op,
             rhs,
             span: _,
         } = self;
-        let (lhs_val, lhs_ty) = gen.generate_expr(lhs, block)?;
+        let (lhs_val, lhs_ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
-        let (mut rhs_val, rhs_ty) = gen.generate_expr(rhs, block)?;
+        let (mut rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
         let _lhs_ty_str = lhs_ty.to_string();
@@ -789,7 +829,7 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
         if lhs_ty != rhs_ty {
             // Prioritize standard coercion depending on which type is more generic (e.g. f64 > f32 > i64 > i32)
             // For simplicity, just cast rhs to lhs for now.
-            rhs_val = gen.coerce_type(block, rhs_val, rhs_ty, lhs_ty);
+            rhs_val = gen.coerce_type(&block, rhs_val, rhs_ty, lhs_ty);
             _ = lhs_ty;
             final_ty = lhs_ty;
         }
@@ -817,21 +857,25 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
 
         let bin_op = builder.build().unwrap();
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), ret_ty))
+        Ok((bin_ref.result(0).unwrap().into(), ret_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for LogicalOpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let LogicalOpExpr {
             lhs,
             op,
             rhs,
             span: _,
         } = self;
-        let (lhs_val, _lhs_ty) = gen.generate_expr(lhs, block)?;
-        let (rhs_val, _rhs_ty) = gen.generate_expr(rhs, block)?;
+        let (lhs_val, _lhs_ty, block) = gen.generate_expr(lhs, block)?;
+        let (rhs_val, _rhs_ty, block) = gen.generate_expr(rhs, block)?;
 
         let final_ty = gen.i1_ty;
 
@@ -841,15 +885,19 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
 
         let bin_op = builder.build().unwrap();
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), final_ty))
+        Ok((bin_ref.result(0).unwrap().into(), final_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let ast::UnaryOpExpr { op, expr, span: _ } = self;
-        let (val, ty) = gen.generate_expr(expr, block)?;
+        let (val, ty, block) = gen.generate_expr(expr, block)?;
         match op {
             ast::UnaryOp::Not => {
                 let true_val_op = OperationBuilder::new("arith.constant", gen.loc())
@@ -869,7 +917,7 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
                     .unwrap();
 
                 let not_ref = block.append_operation(not_op);
-                Ok((not_ref.result(0).unwrap().into(), ty))
+                Ok((not_ref.result(0).unwrap().into(), ty, block))
             }
             ast::UnaryOp::Neg => {
                 let is_float = ty.to_string().contains("f32")
@@ -883,7 +931,7 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
                         .build()
                         .unwrap();
                     let neg_ref = block.append_operation(neg_op);
-                    Ok((neg_ref.result(0).unwrap().into(), ty))
+                    Ok((neg_ref.result(0).unwrap().into(), ty, block))
                 } else {
                     let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                         .add_results(&[ty])
@@ -901,7 +949,7 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
                         .build()
                         .unwrap();
                     let neg_ref = block.append_operation(neg_op);
-                    Ok((neg_ref.result(0).unwrap().into(), ty))
+                    Ok((neg_ref.result(0).unwrap().into(), ty, block))
                 }
             }
         }
@@ -909,8 +957,12 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
 }
 
 impl<'c> LowerToMelior<'c> for StructInitExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let StructInitExpr {
             name,
             fields,
@@ -983,7 +1035,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             let field_ty = gen.lower_type(&sub_ty);
             let prev_expected = gen.expected_type;
             gen.expected_type = Some(field_ty);
-            let (mut field_val, expr_ty) = gen.generate_expr(f_expr, block)?;
+            let (mut field_val, expr_ty, block) = gen.generate_expr(f_expr, block)?;
             gen.expected_type = prev_expected;
 
             if expr_ty != field_ty
@@ -1011,18 +1063,28 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 .unwrap();
             current_struct = block.append_operation(insert_op).result(0).unwrap().into();
         }
-        Ok((current_struct, struct_ty))
+        Ok((current_struct, struct_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let mut current_block = block;
         for stmt in &self.stmts {
-            gen.generate_statement(stmt, block)?;
+            if let Some(b) = gen.generate_statement(stmt, current_block)? {
+                current_block = b;
+            } else {
+                // Block was terminated (e.g., by break/continue/return)
+                break;
+            }
         }
         if let Some(ret_expr) = &self.ret {
-            gen.generate_expr(ret_expr, block)
+            gen.generate_expr(ret_expr, current_block)
         } else {
             // Return an i32 0 or something empty if no return type is expected.
             let i32_ty = gen.i32_ty;
@@ -1032,22 +1094,30 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
                 .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
                 .build()
                 .unwrap();
-            let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
-            Ok((zero_val, i32_ty))
+            let zero_val = current_block
+                .append_operation(zero_op)
+                .result(0)
+                .unwrap()
+                .into();
+            Ok((zero_val, i32_ty, current_block))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for MemberAccessExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let MemberAccessExpr {
             base,
             member,
             struct_name,
             span: _,
         } = self;
-        let (base_val, base_ty) = gen.generate_expr(base, block)?;
+        let (base_val, base_ty, block) = gen.generate_expr(base, block)?;
         let base_ty_str = base_ty.to_string();
 
         let mut struct_name_opt = struct_name.clone();
@@ -1150,7 +1220,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                         let field_ptr = gep_ref.result(0).unwrap().into();
 
                         if gen.is_lvalue_context {
-                            return Ok((field_ptr, ptr_ty));
+                            return Ok((field_ptr, ptr_ty, block));
                         }
 
                         let load_op = OperationBuilder::new("llvm.load", gen.loc())
@@ -1159,7 +1229,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .build()
                             .unwrap();
                         let load_ref = block.append_operation(load_op);
-                        return Ok((load_ref.result(0).unwrap().into(), field_ty));
+                        return Ok((load_ref.result(0).unwrap().into(), field_ty, block));
                     } else {
                         let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                             gen.context,
@@ -1176,7 +1246,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .build()
                             .unwrap();
                         let ext_ref = block.append_operation(ext_op);
-                        return Ok((ext_ref.result(0).unwrap().into(), field_ty));
+                        return Ok((ext_ref.result(0).unwrap().into(), field_ty, block));
                     }
                 }
             }
@@ -1198,8 +1268,12 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let FunctionCallExpr {
             name,
             args,
@@ -1222,18 +1296,24 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut dynamic_sizes = Vec::new();
             let mut dims_count = 2; // Default fallback
 
+            let mut current_b = block;
             if args.len() == 1 {
                 if let Expr::Array(arr) = &args[0] {
                     dims_count = arr.elements.len();
                     for el in &arr.elements {
-                        let (mut val, ty) = gen.generate_expr(el, block)?;
+                        let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
+                        current_b = new_b;
                         if ty.to_string() != "index" {
                             let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                                 .add_operands(&[val])
                                 .add_results(&[Type::index(gen.context)])
                                 .build()
                                 .unwrap();
-                            val = block.append_operation(cast_op).result(0).unwrap().into();
+                            val = current_b
+                                .append_operation(cast_op)
+                                .result(0)
+                                .unwrap()
+                                .into();
                         }
                         dynamic_sizes.push(val);
                     }
@@ -1241,14 +1321,19 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             } else if !args.is_empty() {
                 dims_count = args.len();
                 for el in args {
-                    let (mut val, ty) = gen.generate_expr(el, block)?;
+                    let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
+                    current_b = new_b;
                     if ty.to_string() != "index" {
                         let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                             .add_operands(&[val])
                             .add_results(&[Type::index(gen.context)])
                             .build()
                             .unwrap();
-                        val = block.append_operation(cast_op).result(0).unwrap().into();
+                        val = current_b
+                            .append_operation(cast_op)
+                            .result(0)
+                            .unwrap()
+                            .into();
                     }
                     dynamic_sizes.push(val);
                 }
@@ -1272,11 +1357,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .build()
                 .unwrap();
             let alloc_ref = block.append_operation(alloc_op);
-            return Ok((alloc_ref.result(0).unwrap().into(), tensor_ty));
+            return Ok((alloc_ref.result(0).unwrap().into(), tensor_ty, block));
         }
 
         if name.as_ref() == "reshape" || **name == *"transpose" {
-            let (arg_val, expr_ty) = gen.generate_expr(&args[0], block)?;
+            let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
             let expr_ty_str = expr_ty.to_string();
 
             // Extract element type
@@ -1323,13 +1408,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 .unwrap();
 
             let cast2_ref = block.append_operation(cast2_op);
-            return Ok((cast2_ref.result(0).unwrap().into(), target_ty));
+            return Ok((cast2_ref.result(0).unwrap().into(), target_ty, block));
         }
 
         if name.as_ref() == "with_memory" {
             // For now, with_memory is a no-op in lowering, just returns the tensor
-            let (arg_val, expr_ty) = gen.generate_expr(&args[0], block)?;
-            return Ok((arg_val, expr_ty));
+            let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
+            return Ok((arg_val, expr_ty, block));
         }
 
         if name.as_ref() == "map" {
@@ -1342,9 +1427,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
         if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
             let mut arg_vals = Vec::new();
+            let mut current_b = block;
             for arg in args {
-                let (arg_val, _arg_ty) = gen.generate_expr(arg, block)?;
+                let (arg_val, _arg_ty, new_b) = gen.generate_expr(arg, current_b)?;
                 arg_vals.push(arg_val);
+                current_b = new_b;
             }
 
             let printf_func_ty = TypeAttribute::new(
@@ -1383,7 +1470,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 );
             }
 
-            let call_op = block.append_operation(
+            let call_op = current_b.append_operation(
                 OperationBuilder::new("llvm.call", gen.loc())
                     .add_operands(&arg_vals)
                     .add_attributes(&[
@@ -1410,14 +1497,19 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     .unwrap(),
             );
 
-            return Ok((call_op.result(0).unwrap().into(), gen.i32_ty));
+            return Ok((call_op.result(0).unwrap().into(), gen.i32_ty, current_b));
         }
 
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
             let mut arg_vals = Vec::new();
+            let mut current_b = block;
             for (i, arg) in args.iter().enumerate() {
-                let (mut arg_val, expr_ty) = gen.generate_expr(arg, block)?;
                 let field_ty = arg_tys[i];
+                let prev_expected = gen.expected_type;
+                gen.expected_type = Some(field_ty);
+                let (mut arg_val, expr_ty, new_b) = gen.generate_expr(arg, current_b)?;
+                current_b = new_b;
+                gen.expected_type = prev_expected;
                 if expr_ty != field_ty {
                     if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
                         let cast_op = OperationBuilder::new("memref.cast", gen.loc())
@@ -1425,9 +1517,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .add_results(&[field_ty])
                             .build()
                             .unwrap();
-                        arg_val = block.append_operation(cast_op).result(0).unwrap().into();
+                        arg_val = current_b
+                            .append_operation(cast_op)
+                            .result(0)
+                            .unwrap()
+                            .into();
                     } else {
-                        arg_val = gen.coerce_type(block, arg_val, expr_ty, field_ty);
+                        arg_val = gen.coerce_type(&current_b, arg_val, expr_ty, field_ty);
                     }
                 }
                 arg_vals.push(arg_val);
@@ -1441,11 +1537,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build().unwrap();
-                let call_ref = block.append_operation(call_op);
-                Ok((call_ref.result(0).unwrap().into(), ret_ty))
+                let call_ref = current_b.append_operation(call_op);
+                Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
             } else {
                 let call_op = builder.build().unwrap();
-                block.append_operation(call_op);
+                current_b.append_operation(call_op);
                 let none_ty = gen.none_ty;
                 // this value shouldn't be used
                 let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
@@ -1457,8 +1553,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     .build()
                     .unwrap();
                 Ok((
-                    block.append_operation(dummy_op).result(0).unwrap().into(),
+                    current_b
+                        .append_operation(dummy_op)
+                        .result(0)
+                        .unwrap()
+                        .into(),
                     none_ty,
+                    current_b,
                 ))
             }
         } else if let Some((ptr_val, func_ty)) = gen.env.get(name).cloned() {
@@ -1524,11 +1625,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     actual_ptr_val = extract_func_ref.result(0).unwrap().into();
                 }
 
+                let mut current_b = block;
                 for (i, arg) in args.iter().enumerate() {
-                    let (mut arg_val, expr_ty) = gen.generate_expr(arg, block)?;
+                    let (mut arg_val, expr_ty, new_b) = gen.generate_expr(arg, current_b)?;
+                    current_b = new_b;
                     let field_ty = mlir_func_ty.input(i + arg_offset).unwrap();
                     if expr_ty != field_ty {
-                        arg_val = gen.coerce_type(block, arg_val, expr_ty, field_ty);
+                        arg_val = gen.coerce_type(&current_b, arg_val, expr_ty, field_ty);
                     }
                     arg_vals.push(arg_val);
                 }
@@ -1540,7 +1643,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .add_results(&[actual_func_ty])
                             .build()
                             .unwrap();
-                    let cast_ref = block.append_operation(cast_op);
+                    let cast_ref = current_b.append_operation(cast_op);
                     actual_ptr_val = cast_ref.result(0).unwrap().into();
                 }
 
@@ -1558,11 +1661,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 if ret_ty.to_string() != "none" {
                     builder = builder.add_results(&[ret_ty]);
                     let call_op = builder.build().unwrap();
-                    let call_ref = block.append_operation(call_op);
-                    Ok((call_ref.result(0).unwrap().into(), ret_ty))
+                    let call_ref = current_b.append_operation(call_op);
+                    Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
                 } else {
                     let call_op = builder.build().unwrap();
-                    block.append_operation(call_op);
+                    current_b.append_operation(call_op);
                     let none_ty = gen.none_ty;
                     let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
                         .add_results(&[gen.i32_ty])
@@ -1573,8 +1676,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         .build()
                         .unwrap();
                     Ok((
-                        block.append_operation(dummy_op).result(0).unwrap().into(),
+                        current_b
+                            .append_operation(dummy_op)
+                            .result(0)
+                            .unwrap()
+                            .into(),
                         none_ty,
+                        current_b,
                     ))
                 }
             } else {
@@ -1590,8 +1698,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 }
 
 impl<'c> LowerToMelior<'c> for IndirectCallExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let IndirectCallExpr {
             callee,
             args,
@@ -1599,7 +1711,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             span: _,
         } = self;
 
-        let (callee_val, callee_ty) = gen.generate_expr(callee, block)?;
+        let (callee_val, callee_ty, block) = gen.generate_expr(callee, block)?;
 
         if callee_ty.to_string() == "!llvm.struct<(ptr, ptr)>" {
             // Extract env_ptr
@@ -1629,9 +1741,11 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let mut actual_ptr_val = extract_func_ref.result(0).unwrap().into();
 
             let mut arg_vals = Vec::new();
+            let mut current_b = block;
             for arg in args {
-                let (arg_val, _) = gen.generate_expr(arg, block)?;
+                let (arg_val, _, new_b) = gen.generate_expr(arg, current_b)?;
                 arg_vals.push(arg_val);
+                current_b = new_b;
             }
 
             // In our current implementation we assume all functions taking closure
@@ -1662,7 +1776,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                 .add_results(&[actual_func_ty])
                 .build()
                 .unwrap();
-            let cast_ref = block.append_operation(cast_op);
+            let cast_ref = current_b.append_operation(cast_op);
             actual_ptr_val = cast_ref.result(0).unwrap().into();
 
             let mut builder = OperationBuilder::new("func.call_indirect", gen.loc())
@@ -1675,11 +1789,11 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
                 let call_op = builder.build().unwrap();
-                let call_ref = block.append_operation(call_op);
-                Ok((call_ref.result(0).unwrap().into(), ret_ty))
+                let call_ref = current_b.append_operation(call_op);
+                Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
             } else {
                 let call_op = builder.build().unwrap();
-                block.append_operation(call_op);
+                current_b.append_operation(call_op);
                 let none_ty = gen.none_ty;
                 let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
                     .add_results(&[gen.i32_ty])
@@ -1690,8 +1804,13 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                     .build()
                     .unwrap();
                 Ok((
-                    block.append_operation(dummy_op).result(0).unwrap().into(),
+                    current_b
+                        .append_operation(dummy_op)
+                        .result(0)
+                        .unwrap()
+                        .into(),
                     none_ty,
+                    current_b,
                 ))
             }
         } else {
@@ -1701,8 +1820,12 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
 }
 
 impl<'c> LowerToMelior<'c> for MethodCallExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let MethodCallExpr {
             base,
             method_name,
@@ -1725,14 +1848,18 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
 }
 
 impl<'c> LowerToMelior<'c> for InlineMlirExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let mut mlir_args = Vec::new();
         let mut input_types_str = Vec::new();
 
         for (name, expr, ty_str) in &self.inputs {
-            let (mut val, val_ty) = gen.generate_expr(expr, block)?;
+            let (mut val, val_ty, block) = gen.generate_expr(expr, block)?;
             if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[val])
@@ -1800,7 +1927,7 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let op = block.append_operation(call_op);
 
         if let Some(ret_ty) = &self.returns {
-            Ok((op.result(0).unwrap().into(), gen.lower_type(ret_ty)))
+            Ok((op.result(0).unwrap().into(), gen.lower_type(ret_ty), block))
         } else {
             let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
                 .add_attributes(&[(
@@ -1813,23 +1940,30 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             Ok((
                 block.append_operation(dummy_val).result(0).unwrap().into(),
                 Type::index(gen.context),
+                block,
             ))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for ArrayExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let ArrayExpr { elements, span: _ } = self;
         if elements.is_empty() {
             panic!("Empty arrays not supported yet");
         }
         let mut vals = Vec::new();
         let mut el_ty = None;
+        let mut current_b = block;
         for el in elements {
-            let (v, t) = gen.generate_expr(el, block)?;
+            let (v, t, new_b) = gen.generate_expr(el, current_b)?;
             vals.push(v);
+            current_b = new_b;
             if el_ty.is_none() {
                 el_ty = Some(t);
             }
@@ -1846,36 +1980,40 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
             .build()
             .unwrap();
 
-        let val = block.append_operation(op).result(0).unwrap().into();
-        Ok((val, tensor_ty))
+        let val = current_b.append_operation(op).result(0).unwrap().into();
+        Ok((val, tensor_ty, current_b))
     }
 }
 
 impl<'c> LowerToMelior<'c> for MemorySpaceExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
         _gen: &mut MeliorGenerator<'c>,
-        _block: &melior::ir::Block<'c>,
+        _block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         panic!("Should not be evaluated directly")
     }
 }
 
 impl<'c> LowerToMelior<'c> for TopologyExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
         _gen: &mut MeliorGenerator<'c>,
-        _block: &melior::ir::Block<'c>,
+        _block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         panic!("Should not be evaluated directly")
     }
 }
 
 impl<'c> LowerToMelior<'c> for NumberExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let NumberExpr {
             value: val_str,
             ty: ast_ty_opt,
@@ -1903,7 +2041,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
                 .build()
                 .unwrap();
             let op_ref = block.append_operation(op);
-            Ok((op_ref.result(0).unwrap().into(), ty))
+            Ok((op_ref.result(0).unwrap().into(), ty, block))
         } else {
             let op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[ty])
@@ -1914,17 +2052,24 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
                 .build()
                 .unwrap();
             let op_ref = block.append_operation(op);
-            Ok((op_ref.result(0).unwrap().into(), ty))
+            Ok((op_ref.result(0).unwrap().into(), ty, block))
         }
     }
 }
 
 impl<'c> LowerToMelior<'c> for MatchExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let (match_val, match_ty) = gen.generate_expr(&self.expr, block)?;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let (match_val, match_ty, block) = gen.generate_expr(&self.expr, block)?;
 
-        generate_match_chain(gen, &self.arms, match_val, match_ty, block)?;
+        let parent_region = block.parent_region().unwrap();
+        let merge_block = parent_region.append_block(melior::ir::Block::new(&[]));
+        generate_match_chain(gen, &self.arms, match_val, match_ty, block, merge_block)?;
+        let block = merge_block;
 
         // Return dummy value for now like IfExpr
         let ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
@@ -1937,13 +2082,17 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             .build()
             .unwrap();
         let op_ref = block.append_operation(op);
-        Ok((op_ref.result(0).unwrap().into(), ty))
+        Ok((op_ref.result(0).unwrap().into(), ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for EnumVariantExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let EnumVariantExpr {
             enum_name,
             variant_name,
@@ -2009,7 +2158,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         );
 
         if !has_payload {
-            return Ok((tag_val, i32_ty));
+            return Ok((tag_val, i32_ty, block));
         }
 
         // We have an Option<T> struct
@@ -2037,7 +2186,8 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
 
         if let Some(payload_exprs) = payload {
             if !payload_exprs.is_empty() {
-                let (payload_val, _payload_ty) = gen.generate_expr(&payload_exprs[0], block)?;
+                let (payload_val, _payload_ty, block) =
+                    gen.generate_expr(&payload_exprs[0], block)?;
                 let insert_payload_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                     .add_operands(&[struct_val, payload_val])
                     .add_results(&[struct_ty])
@@ -2056,13 +2206,17 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             }
         }
 
-        Ok((struct_val, struct_ty))
+        Ok((struct_val, struct_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for VecMacroExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let mut el_ty = ast::ElementType::F32;
         if !self.elements.is_empty() {
             if let Some(ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
@@ -2106,7 +2260,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             span: self.span,
         });
 
-        let (vec_val, vec_ty) = gen.generate_expr(&new_call, block)?;
+        let (vec_val, vec_ty, block) = gen.generate_expr(&new_call, block)?;
 
         let i32_ty = gen.i32_ty;
         let c1_op = block.append_operation(
@@ -2175,27 +2329,31 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                 .build()
                 .unwrap(),
         );
-        Ok((load_op.result(0).unwrap().into(), vec_ty))
+        Ok((load_op.result(0).unwrap().into(), vec_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ClosureExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
     fn lower(
         &self,
         _gen: &mut MeliorGenerator<'c>,
-        _block: &melior::ir::Block<'c>,
+        _block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         unreachable!("ClosureExpr should be transformed to StructInitExpr by Sema")
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         for arg in &self.args {
-            let (arg_val, arg_ty) = gen.generate_expr(arg, block)?;
+            let (arg_val, arg_ty, block) = gen.generate_expr(arg, block)?;
 
             let func_name = match arg_ty.to_string().as_ref() {
                 "i32" => "print_i32",
@@ -2273,13 +2431,18 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
         Ok((
             block.append_operation(dummy_op).result(0).unwrap().into(),
             gen.i32_ty,
+            block,
         ))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         // First, reuse PrintExpr logic for arguments
         if !self.args.is_empty() {
             let print_expr = ast::expr::PrintExpr {
@@ -2327,14 +2490,19 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
         Ok((
             block.append_operation(call_op).result(0).unwrap().into(),
             gen.i32_ty,
+            block,
         ))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
         let size: i64 = match &self.target_ty {
             ast::Type::Scalar(ast::ElementType::F32)
             | ast::Type::Scalar(ast::ElementType::I32)
@@ -2364,15 +2532,19 @@ impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
             .unwrap();
 
         let const_op = block.append_operation(const_op);
-        Ok((const_op.result(0).unwrap().into(), size_ty))
+        Ok((const_op.result(0).unwrap().into(), size_ty, block))
     }
 }
 
 impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
-    type Output = Result<(Value<'c, 'c>, Type<'c>), LowerError>;
+    type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output {
-        let (source_val, _source_ty) = gen.generate_expr(&self.expr, block)?;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output {
+        let (source_val, _source_ty, block) = gen.generate_expr(&self.expr, block)?;
         if let ast::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {
                 Some(ast::Type::Struct(name, _)) => name.clone(),
@@ -2458,11 +2630,11 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             let insert_env_ref = block.append_operation(insert_env_op);
             fat_ptr_val = insert_env_ref.result(0).unwrap().into();
 
-            return Ok((fat_ptr_val, fat_ptr_ty));
+            return Ok((fat_ptr_val, fat_ptr_ty, block));
         } else if let ast::Type::Scalar(_) = &self.target_ty {
             let target_ty_mlir = gen.lower_type(&self.target_ty);
-            let coerced_val = gen.coerce_type(block, source_val, _source_ty, target_ty_mlir);
-            return Ok((coerced_val, target_ty_mlir));
+            let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir);
+            return Ok((coerced_val, target_ty_mlir, block));
         } else if let ast::Type::Pointer(..) = &self.target_ty {
             if let Some(ast::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = gen.ptr_ty;
@@ -2472,7 +2644,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
                     .build()
                     .unwrap();
                 let cast_ref = block.append_operation(cast_op);
-                return Ok((cast_ref.result(0).unwrap().into(), ptr_ty));
+                return Ok((cast_ref.result(0).unwrap().into(), ptr_ty, block));
             }
         }
 

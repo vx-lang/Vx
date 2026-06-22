@@ -1,0 +1,10 @@
+fn main() -> i32 {
+  let mut i = 0;
+  loop {
+    if i == 5 {
+      break;
+    }
+    i = i + 1;
+  }
+  return i;
+}

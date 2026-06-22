@@ -28,7 +28,11 @@ mod tensors;
 
 pub trait LowerToMelior<'c> {
     type Output;
-    fn lower(&self, gen: &mut MeliorGenerator<'c>, block: &melior::ir::Block<'c>) -> Self::Output;
+    fn lower(
+        &self,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Self::Output;
 }
 
 pub trait MeliorOpInfo {
@@ -233,36 +237,50 @@ pub fn generate_match_chain<'c>(
     arms: &[MatchArm],
     match_val: melior::ir::Value<'c, 'c>,
     _match_ty: melior::ir::Type<'c>,
-    block: &melior::ir::Block<'c>,
-) -> Result<(), LowerError> {
+    mut block: melior::ir::BlockRef<'c, 'c>,
+    merge_block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
     if arms.is_empty() {
-        return Ok(());
+        block.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_successors(&[&*merge_block])
+                .build()
+                .unwrap(),
+        );
+        return Ok(block);
     }
 
     let arm = &arms[0];
 
     if let Pattern::Wildcard = arm.pattern {
-        // Wildcard matches unconditionally.
+        let mut then_terminated = false;
         for stmt in &arm.body {
-            gen.generate_statement(stmt, block)?;
+            if let Some(b) = gen.generate_statement(stmt, block)? {
+                block = b;
+            } else {
+                then_terminated = true;
+                break;
+            }
         }
-        return Ok(());
+        if !then_terminated {
+            block.append_operation(
+                OperationBuilder::new("cf.br", gen.loc())
+                    .add_successors(&[&*merge_block])
+                    .build()
+                    .unwrap(),
+            );
+        }
+        return Ok(block);
     }
 
-    // Evaluate condition
+    let parent_region = block.parent_region().unwrap();
+    let mut then_block = parent_region.append_block(melior::ir::Block::new(&[]));
+    let else_block = parent_region.append_block(melior::ir::Block::new(&[]));
+
     let cond_val = match &arm.pattern {
         Pattern::EnumVariant(_, variant_name, _) => {
-            // For now, if Enums are represented as i32 tags, we check equality.
-            // We need to look up the variant's tag value.
-            // Let's assume `match_val` is an `i32` for simplicity, or we do a generic equality check.
-
-            // We'll just generate an arith.cmpi!
             let i32_ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
-
-            // Find variant tag
             let mut tag_val = 0;
-            // Hack: just parse the variant name if it's a number, or assume 0.
-            // Real enums should look up the tag in `gen.enums`.
             for enum_def in gen.enums.values() {
                 for (i, v) in enum_def.iter().enumerate() {
                     if *v.0 == **variant_name {
@@ -310,10 +328,10 @@ pub fn generate_match_chain<'c>(
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(
                             melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
-                            0,
+                            0, // eq
                         )
                         .into(),
-                    )]) // 0 = eq
+                    )])
                     .build()
                     .unwrap(),
             );
@@ -322,8 +340,13 @@ pub fn generate_match_chain<'c>(
         _ => panic!("Unsupported pattern in codegen"),
     };
 
-    let then_region = melior::ir::Region::new();
-    let then_block = melior::ir::Block::new(&[]);
+    block.append_operation(
+        OperationBuilder::new("cf.cond_br", gen.loc())
+            .add_operands(&[cond_val])
+            .add_successors(&[&*then_block, &*else_block])
+            .build()
+            .unwrap(),
+    );
 
     if let Pattern::EnumVariant(_, _, Some(payloads)) = &arm.pattern {
         if payloads.len() == 1 {
@@ -334,7 +357,7 @@ pub fn generate_match_chain<'c>(
                     let end = opt_ty_str.rfind(')').unwrap();
                     opt_ty_str[start..end].to_string()
                 } else {
-                    "i32".to_string() // fallback
+                    "i32".to_string()
                 };
                 if payload_ty_str.starts_with("struct<")
                     || payload_ty_str.starts_with("ptr")
@@ -343,13 +366,7 @@ pub fn generate_match_chain<'c>(
                 {
                     payload_ty_str = format!("!llvm.{}", payload_ty_str);
                 }
-                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Failed to parse payload_ty_str: {:?} from opt_ty_str: {:?}",
-                            payload_ty_str, opt_ty_str
-                        );
-                    });
+                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).unwrap();
                 let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
                     .add_operands(&[match_val])
                     .add_results(&[payload_ty])
@@ -371,175 +388,42 @@ pub fn generate_match_chain<'c>(
         }
     }
 
+    let mut then_terminated = false;
     for stmt in &arm.body {
-        gen.generate_statement(stmt, &then_block)?;
-    }
-    then_block.append_operation(
-        OperationBuilder::new("scf.yield", gen.loc())
-            .build()
-            .unwrap(),
-    );
-    then_region.append_block(then_block);
-
-    let else_region = melior::ir::Region::new();
-    let else_block = melior::ir::Block::new(&[]);
-
-    // Recursively generate the rest of the arms inside the else block
-    generate_match_chain(gen, &arms[1..], match_val, _match_ty, &else_block)?;
-
-    else_block.append_operation(
-        OperationBuilder::new("scf.yield", gen.loc())
-            .build()
-            .unwrap(),
-    );
-    else_region.append_block(else_block);
-
-    block.append_operation(
-        OperationBuilder::new("scf.if", gen.loc())
-            .add_operands(&[cond_val])
-            .add_regions([then_region, else_region])
-            .build()
-            .unwrap(),
-    );
-
-    Ok(())
-}
-
-pub(crate) fn generate_statements_with_break_guard<'c>(
-    gen: &mut MeliorGenerator<'c>,
-    stmts: &[Statement],
-    block: &melior::ir::Block<'c>,
-    break_ptr: Value<'c, 'c>,
-    continue_ptr: Value<'c, 'c>,
-    c0_idx: Value<'c, 'c>,
-    i1_ty: Type<'c>,
-) {
-    if stmts.is_empty() {
-        return;
-    }
-
-    let _ = gen.generate_statement(&stmts[0], block);
-
-    if stmts.len() > 1 {
-        if contains_break(&stmts[0]) {
-            let load_break = block
-                .append_operation(
-                    OperationBuilder::new("memref.load", gen.loc())
-                        .add_operands(&[break_ptr, c0_idx])
-                        .add_results(&[i1_ty])
-                        .build()
-                        .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            let load_cont = block
-                .append_operation(
-                    OperationBuilder::new("memref.load", gen.loc())
-                        .add_operands(&[continue_ptr, c0_idx])
-                        .add_results(&[i1_ty])
-                        .build()
-                        .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            let is_break_or_cont = block
-                .append_operation(
-                    OperationBuilder::new("arith.ori", gen.loc())
-                        .add_operands(&[load_break, load_cont])
-                        .add_results(&[i1_ty])
-                        .build()
-                        .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            let true_val = block
-                .append_operation(
-                    OperationBuilder::new("arith.constant", gen.loc())
-                        .add_results(&[i1_ty])
-                        .add_attributes(&[(
-                            Identifier::new(gen.context, "value"),
-                            IntegerAttribute::new(i1_ty, 1).into(),
-                        )])
-                        .build()
-                        .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            let not_break = block
-                .append_operation(
-                    OperationBuilder::new("arith.xori", gen.loc())
-                        .add_operands(&[is_break_or_cont, true_val])
-                        .add_results(&[i1_ty])
-                        .build()
-                        .unwrap(),
-                )
-                .result(0)
-                .unwrap()
-                .into();
-
-            let if_region = Region::new();
-            let if_block = Block::new(&[]);
-
-            generate_statements_with_break_guard(
-                gen,
-                &stmts[1..],
-                &if_block,
-                break_ptr,
-                continue_ptr,
-                c0_idx,
-                i1_ty,
-            );
-
-            if_block.append_operation(
-                OperationBuilder::new("scf.yield", gen.loc())
-                    .build()
-                    .unwrap(),
-            );
-            if_region.append_block(if_block);
-
-            let else_region = melior::ir::Region::new();
-            let else_block = melior::ir::Block::new(&[]);
-            let yield_op = OperationBuilder::new("scf.yield", gen.loc())
-                .build()
-                .unwrap();
-            else_block.append_operation(yield_op);
-            else_region.append_block(else_block);
-
-            block.append_operation(
-                OperationBuilder::new("scf.if", gen.loc())
-                    .add_operands(&[not_break])
-                    .add_regions([if_region, else_region])
-                    .build()
-                    .unwrap(),
-            );
+        if let Some(b) = gen.generate_statement(stmt, then_block)? {
+            then_block = b;
         } else {
-            generate_statements_with_break_guard(
-                gen,
-                &stmts[1..],
-                block,
-                break_ptr,
-                continue_ptr,
-                c0_idx,
-                i1_ty,
-            );
+            then_terminated = true;
+            break;
         }
     }
+    if !then_terminated {
+        then_block.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_successors(&[&*merge_block])
+                .build()
+                .unwrap(),
+        );
+    }
+
+    generate_match_chain(
+        gen,
+        &arms[1..],
+        match_val,
+        _match_ty,
+        else_block,
+        merge_block,
+    )?;
+
+    Ok(block)
 }
 
 pub(crate) fn lower_map_call<'c>(
     gen: &mut MeliorGenerator<'c>,
-    block: &melior::ir::Block<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
     args: &[Expr],
-) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
-    let (tensor_val, tensor_ty) = gen.generate_expr(&args[0], block)?;
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (tensor_val, tensor_ty, block) = gen.generate_expr(&args[0], block)?;
     // args[1] is the closure
     // We need to fetch the closure's function and invoke it inside a linalg.generic.
     let tensor_ty_str = tensor_ty.to_string();
@@ -594,7 +478,7 @@ pub(crate) fn lower_map_call<'c>(
 
         // We need to call the closure!
         // args[1] is the closure expression (StructInitExpr for Closure_N).
-        let (closure_val, closure_ty) = gen.generate_expr(&args[1], block)?;
+        let (closure_val, closure_ty, block) = gen.generate_expr(&args[1], block)?;
 
         // Allocate it on stack to get a pointer
         let ptr_ty = gen.ptr_ty;
@@ -701,7 +585,7 @@ pub(crate) fn lower_map_call<'c>(
             .unwrap();
         block.append_operation(linalg_generic);
 
-        return Ok((out_val, tensor_ty));
+        return Ok((out_val, tensor_ty, block));
     }
     panic!("map called on unsupported tensor type: {}", tensor_ty_str);
 }
@@ -727,15 +611,15 @@ impl From<String> for LowerError {
 
 pub(crate) fn lower_print_call<'c>(
     gen: &mut MeliorGenerator<'c>,
-    block: &melior::ir::Block<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
     args: &[Expr],
-) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
     let mut print_arg = &args[0];
     if let Expr::Borrow(borrow) = print_arg {
         print_arg = &borrow.expr;
     }
 
-    let (mut arg_val, arg_ty) = gen.generate_expr(print_arg, block)?;
+    let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
     let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
 
@@ -783,6 +667,7 @@ pub(crate) fn lower_print_call<'c>(
     Ok((
         cast_val, // Dummy return value, caller ignores it
         Some(gen.none_ty).ok_or_else(|| LowerError::ParseType("none".to_string()))?,
+        block,
     ))
 }
 

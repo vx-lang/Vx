@@ -31,8 +31,8 @@ using namespace mlir::vx;
 
 namespace {
 
-// Lower `vx.spawn` to `async.execute` for CPU topologies, or a func call for
-// NPU.
+
+
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -116,37 +116,50 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
     }
 
+    // Create the kernel op
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
     static int kernelIdx = 0;
     std::string funcName = "vx_npu_kernel_" + std::to_string(kernelIdx++);
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
 
-    // Copy the region
-    Block *funcBlock = rewriter.createBlock(
-        &kernelOp.getBody(), kernelOp.getBody().end(), argTypes,
-        SmallVector<Location>(argTypes.size(), op.getLoc()));
+    // Clone the entire region to avoid leaving SpawnOp with an invalid empty region
+    Region &kernelRegion = kernelOp.getBody();
+    rewriter.cloneRegionBefore(spawnBody, kernelRegion, kernelRegion.end());
 
-    IRMapping mapping;
-    for (auto [cap, arg] : llvm::zip(captures, funcBlock->getArguments())) {
-      mapping.map(cap, arg);
+    // Fix up the entry block arguments to accept the captured variables
+    Block &entryBlock = kernelRegion.front();
+    for (auto type : argTypes) {
+      entryBlock.addArgument(type, op.getLoc());
     }
 
-    // Clone operations
-    for (auto &innerOp : spawnBlock.without_terminator()) {
-      rewriter.clone(innerOp, mapping);
+    // Replace usages of captured variables inside the region with the block arguments
+    for (auto [cap, arg] : llvm::zip(captures, entryBlock.getArguments())) {
+      Value capVal = cap;
+      rewriter.replaceUsesWithIf(capVal, arg, [&](OpOperand &use) {
+        return kernelRegion.isAncestor(use.getOwner()->getParentRegion());
+      });
     }
 
-    // Handle yield by returning the mapped values
-    if (!spawnBlock.empty() && isa<vx::YieldOp>(spawnBlock.back())) {
-      auto yieldOp = cast<vx::YieldOp>(spawnBlock.back());
-      SmallVector<Value> returnOperands;
-      for (auto val : yieldOp.getOperands()) {
-        returnOperands.push_back(mapping.lookupOrDefault(val));
+    // Replace vx.yield with vx.return
+    SmallVector<vx::YieldOp> yieldsToErase;
+    kernelRegion.walk([&](vx::YieldOp yieldOp) {
+      yieldsToErase.push_back(yieldOp);
+    });
+    for (auto y : yieldsToErase) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(y);
+      rewriter.create<vx::ReturnOp>(y.getLoc(), y.getOperands());
+      rewriter.eraseOp(y);
+    }
+
+    // If the region has no terminator in the last block (e.g. empty spawn), add vx.return
+    for (Block &block : kernelRegion) {
+      if (block.empty() || !block.back().hasTrait<OpTrait::IsTerminator>()) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToEnd(&block);
+        rewriter.create<vx::ReturnOp>(op.getLoc(), ValueRange{});
       }
-      rewriter.create<vx::ReturnOp>(op.getLoc(), returnOperands);
-    } else {
-      rewriter.create<vx::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
     // Restore insertion point to replace vx.spawn with vx.launch
@@ -302,9 +315,10 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     Value globalPtr =
         rewriter.create<LLVM::AddressOfOp>(loc, llvmPtrType, globalName);
 
-    // 2. Allocate the array of pointers for device_args
+    // 2. Allocate the array of pointers for device_args (at least 8 to match ABI unpacking)
+    int allocSize = std::max<int>(8, op.getNumOperands());
     Value numArgs = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI32Type, rewriter.getI32IntegerAttr(op.getNumOperands()));
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(allocSize));
     Value argsArray = rewriter.create<LLVM::AllocaOp>(
         loc, llvmPtrType, llvmPtrType, numArgs, /*alignment=*/0);
 
@@ -324,22 +338,33 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
                 .getResult(0);
       }
 
-      // Allocate space for this argument to get a pointer to it
-      Value one = rewriter.create<LLVM::ConstantOp>(
-          loc, llvmI32Type, rewriter.getI32IntegerAttr(1));
-      Value argAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
-                                                       one, /*alignment=*/0);
-      rewriter.create<LLVM::StoreOp>(loc, arg, argAlloc);
+      // Allocate space for this argument to get a pointer to it, unless it's an integer
+      // which the MLIR C-interface expects by value.
+      if (argTy.isIntOrIndex()) {
+        Value extArg = arg;
+        if (argTy.getIntOrFloatBitWidth() < 64) {
+          extArg = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), arg);
+        }
+        Value casted = rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrType, extArg);
+        
+        Value slotPtr = rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
+                                                     ArrayRef<LLVM::GEPArg>{en.index()});
+        rewriter.create<LLVM::StoreOp>(loc, casted, slotPtr);
+      } else {
+        Value one = rewriter.create<LLVM::ConstantOp>(
+            loc, llvmI32Type, rewriter.getI32IntegerAttr(1));
+        Value argAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
+                                                         one, /*alignment=*/0);
+        rewriter.create<LLVM::StoreOp>(loc, arg, argAlloc);
 
-      // Get pointer to argsArray[i]
-      Value index = rewriter.create<LLVM::ConstantOp>(
-          loc, llvmI32Type, rewriter.getI32IntegerAttr(en.index()));
-      Value slotPtr =
-          rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
-                                       ArrayRef<LLVM::GEPArg>{en.index()});
+        // Get pointer to argsArray[i]
+        Value slotPtr =
+            rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
+                                         ArrayRef<LLVM::GEPArg>{en.index()});
 
-      // Store the argument pointer into argsArray[i]
-      rewriter.create<LLVM::StoreOp>(loc, argAlloc, slotPtr);
+        // Store the argument pointer into argsArray[i]
+        rewriter.create<LLVM::StoreOp>(loc, argAlloc, slotPtr);
+      }
     }
 
     // 3. Declare vx_plugin_dispatch_async
