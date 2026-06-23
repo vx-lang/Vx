@@ -102,6 +102,31 @@ and removes those workarounds (`inttoptr` packing, the "allocate at least 8
 slots" hack). `tests/backend/pass/npu_float_scalar.vx` exercises a float-capturing
 kernel end to end.
 
+### 3.3 libffi dependency
+
+The runtime uses libffi, which ships with the platform — we do **not** vendor or
+build it. Two pieces come from libffi, not from Vx:
+
+- **The `ffi_type_*` primitives** (`ffi_type_sint8`, `ffi_type_float`,
+  `ffi_type_pointer`, …) that `vx_abi_ffi_type` returns are not functions; they
+  are predefined global objects of type `struct ffi_type` (size/alignment/class
+  descriptors). They are only *declared* `extern` in `<ffi/ffi.h>`; their storage
+  is *defined* inside the system libffi.
+- **The call machinery** `ffi_prep_cif` / `ffi_call`.
+
+On macOS the header is `<ffi/ffi.h>` (under the SDK's `usr/include/ffi/`), and
+the symbols are resolved at link time through the SDK stub `usr/lib/libffi.tbd`
+(its symbol table lists `_ffi_type_sint8`, `_ffi_type_float`, …) and at run time
+from the system libffi in the dyld shared cache.
+
+Because only the header is implicit, the library must be linked explicitly with
+`-lffi`. This is wired in two places; forgetting either yields an undefined
+symbol such as `_ffi_type_sint8` even though compilation succeeds:
+
+- `build.rs` — `-lffi` on the shared-runtime link plus
+  `cargo:rustc-link-lib=dylib=ffi` for the static archive linked into `vxc`.
+- `src/jit.rs` — `-lffi` on the JIT executable link.
+
 ## 4. Related
 
 - `docs/npu_hardware_dispatch.md` — the `_mlir_ciface` dispatch mechanism.
