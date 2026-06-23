@@ -24,6 +24,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include <atomic>
+
 using namespace mlir;
 using namespace mlir::vx;
 
@@ -121,10 +123,13 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
     }
 
-    // Create the kernel op
+    // Create the kernel op. The counter is process-global (kernel names must be
+    // unique across the module) and the test harness compiles files in parallel,
+    // so it must be atomic to avoid a data race / duplicate names.
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
-    static int kernelIdx = 0;
-    std::string funcName = "vx_npu_kernel_" + std::to_string(kernelIdx++);
+    static std::atomic<int> kernelIdx{0};
+    std::string funcName =
+        "vx_npu_kernel_" + std::to_string(kernelIdx.fetch_add(1));
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
 
