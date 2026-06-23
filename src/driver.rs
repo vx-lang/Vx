@@ -387,7 +387,7 @@ impl CompilerDriver {
         let mut module = codegen.into_module();
 
         if !module.as_operation().verify() {
-            eprintln!("Warning: MLIR Verification failed for {}", filename);
+            return Err(format!("MLIR verification failed for {}", filename));
         }
 
         let llvm_lower = matches!(
@@ -401,7 +401,7 @@ impl CompilerDriver {
         );
 
         let pass_manager = melior::pass::PassManager::new(&context);
-        pass_manager.enable_verifier(false);
+        pass_manager.enable_verifier(true);
         if let Err(e) = melior::utility::parse_pass_pipeline(
             pass_manager.as_operation_pass_manager(),
             &pipeline_str,
@@ -422,7 +422,7 @@ impl CompilerDriver {
         }
 
         if let Err(e) = pass_manager.run(&mut module) {
-            eprintln!("Warning: MLIR passes failed: {}", e);
+            return Err(format!("MLIR passes failed for {}: {}", filename, e));
         }
 
         match self.options.action {
