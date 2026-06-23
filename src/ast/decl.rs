@@ -105,15 +105,19 @@ pub struct ImplBlock {
 
 impl ImplBlock {
     pub fn clone_signature(&self) -> Self {
-        let is_generic = !self.generics.is_empty();
         Self {
             generics: self.generics.clone(),
             trait_name: self.trait_name.clone(),
             target_type: self.target_type.clone(),
+            // Always preserve method bodies: methods only exist in impl blocks, so
+            // method-call monomorphization clones the body from the type-check env
+            // (env.impls). Dropping it (as the signature clone does for free
+            // functions, whose bodies come from `program.functions`) yields an
+            // empty method body and invalid IR. See GitHub #146.
             methods: self
                 .methods
                 .iter()
-                .map(|m| m.clone_signature(is_generic))
+                .map(|m| m.clone_signature(true))
                 .collect(),
         }
     }
