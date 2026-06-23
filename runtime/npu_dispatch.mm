@@ -5,6 +5,8 @@
 #import <CoreML/CoreML.h>
 #include "npu_dispatch.h"
 #include <iostream>
+#include <vector>
+#include <ffi/ffi.h>
 
 extern "C" int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d) {
     @autoreleasepool {
@@ -127,40 +129,55 @@ void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topolo
     return ptr;
 }
 
-extern "C" uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args) {
+// Map a Vx ABI type tag (see abiTagForType in src/dialect/VxLowering.cpp) to a
+// libffi type. Keep this switch in sync with the producer's encoding.
+static ffi_type* vx_abi_ffi_type(int32_t tag) {
+    switch (tag) {
+        case 1: return &ffi_type_uint8;   // i1
+        case 2: return &ffi_type_sint8;   // i8
+        case 3: return &ffi_type_sint16;  // i16
+        case 4: return &ffi_type_sint32;  // i32
+        case 5: return &ffi_type_sint64;  // i64
+        case 6: return &ffi_type_float;   // f32
+        case 7: return &ffi_type_double;  // f64
+        case 0:
+        default: return &ffi_type_pointer; // memref descriptor / fallback
+    }
+}
+
+// Invoke the JIT-compiled kernel through its MLIR C-interface. The producer
+// supplies, per argument, a pointer to that argument's value (device_args) plus
+// an ABI type tag (arg_tags). libffi uses the tags to place each argument in the
+// correct GP/FP register or stack slot, which a fixed void*-array call cannot do
+// (e.g. by-value floats must travel in FP registers). See docs/lang/abi.md.
+extern "C" uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size,
+                                             void** device_args, const int32_t* arg_tags,
+                                             int64_t num_args) {
     const char* kernel_name = (const char*)binary_payload;
-    printf("DEBUG: Entering vx_plugin_dispatch_async, kernel_name=%s\n", kernel_name);
-    
+
     char ciface_name[256];
     snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
-    
-    // TODO(npu-abi): This generic dispatch can only pass pointer/integer-sized
-    // arguments. It calls _mlir_ciface_* through a fixed (void* x8) signature,
-    // which forces every argument into a general-purpose register. A kernel with
-    // a by-value float parameter (f32/f64) is therefore miscompiled: per the
-    // SysV/AAPCS ABI the float must travel in a floating-point register, so it
-    // reads garbage AND — because it does not consume a GP register — every
-    // following pointer argument is read from the wrong register, yielding a
-    // wild pointer and a SIGSEGV inside the kernel. Kernels whose ciface is all
-    // int/ptr work (see ane_matmul); kernels with f32 scalar captures crash
-    // (see npu_fusion_overhead, llama2). The integer-by-value packing in
-    // LaunchOpLowering only fixed the integer instance of this same problem.
-    // Proper fix: a packed void** ABI (compiler-generated wrapper loads each arg
-    // by its real type) or a libffi-based call with a compiler-emitted type
-    // descriptor array. Until then those kernels are expected to crash at run
-    // time, which is why the MLIR verifier stays disabled in codegen/mod.rs.
-    typedef void (*KernelFuncPtr)(void*, void*, void*, void*, void*, void*, void*, void*);
-    KernelFuncPtr kernel = (KernelFuncPtr)dlsym(RTLD_DEFAULT, ciface_name);
 
-    if (kernel) {
-        printf("DEBUG: Dispatching to JIT kernel %s\n", ciface_name);
-        // Unpack the array into the first 8 registers using the C ABI.
-        kernel(device_args[0], device_args[1], device_args[2], device_args[3],
-               device_args[4], device_args[5], device_args[6], device_args[7]);
-    } else {
+    void* kernel = dlsym(RTLD_DEFAULT, ciface_name);
+    if (!kernel) {
         printf("DEBUG: Could not find JIT kernel %s, skipping execution\n", ciface_name);
+        return 1;
     }
-    
+
+    std::vector<ffi_type*> types(num_args > 0 ? (size_t)num_args : 1);
+    for (int64_t i = 0; i < num_args; ++i) {
+        types[i] = vx_abi_ffi_type(arg_tags[i]);
+    }
+
+    ffi_cif cif;
+    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned)num_args, &ffi_type_void,
+                     types.data()) != FFI_OK) {
+        printf("ERROR: ffi_prep_cif failed for %s\n", ciface_name);
+        return 0;
+    }
+
+    // The kernel C-interface returns void; results flow through memref captures.
+    ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr, device_args);
     return 1;
 }
 

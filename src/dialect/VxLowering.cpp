@@ -285,6 +285,32 @@ struct ConvertVxToStandardPass
   }
 };
 
+// ABI type tags for kernel arguments, shared with runtime/npu_dispatch.mm.
+// The runtime maps these to libffi types to reconstruct the C calling
+// convention. Keep the encoding in sync with vx_abi_ffi_type() there.
+//   0=ptr, 1=i1, 2=i8, 3=i16, 4=i32, 5=i64, 6=f32, 7=f64
+static int32_t abiTagForType(Type t) {
+  if (isa<Float32Type>(t))
+    return 6;
+  if (isa<Float64Type>(t))
+    return 7;
+  if (auto it = dyn_cast<IntegerType>(t)) {
+    switch (it.getWidth()) {
+    case 1:
+      return 1;
+    case 8:
+      return 2;
+    case 16:
+      return 3;
+    case 32:
+      return 4;
+    default:
+      return 5; // i64 (and any wider integer, widened to i64 on the slot)
+    }
+  }
+  return 0; // pointer (memref descriptor) and fallback
+}
+
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
 
@@ -320,12 +346,22 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     Value globalPtr =
         rewriter.create<LLVM::AddressOfOp>(loc, llvmPtrType, globalName);
 
-    // 2. Allocate the array of pointers for device_args (at least 8 to match ABI unpacking)
-    int allocSize = std::max<int>(8, op.getNumOperands());
-    Value numArgs = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI32Type, rewriter.getI32IntegerAttr(allocSize));
+    // 2. Allocate the device_args array (one pointer per argument) and a
+    //    parallel array of ABI type tags. Every device_args[i] points to the
+    //    value of the i-th C-interface argument, so the runtime can rebuild the
+    //    platform calling convention via libffi (see docs/lang/abi.md):
+    //      - scalar param -> pointer to the scalar value
+    //      - memref param -> pointer to the (pointer-to-descriptor)
+    int numArgs = op.getNumOperands();
+    Value countVal = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(numArgs > 0 ? numArgs : 1));
     Value argsArray = rewriter.create<LLVM::AllocaOp>(
-        loc, llvmPtrType, llvmPtrType, numArgs, /*alignment=*/0);
+        loc, llvmPtrType, llvmPtrType, countVal, /*alignment=*/0);
+    Value tagsArray = rewriter.create<LLVM::AllocaOp>(
+        loc, llvmPtrType, llvmI32Type, countVal, /*alignment=*/0);
+
+    Value one = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(1));
 
     for (auto en : llvm::enumerate(op.getOperands())) {
       Value originalArg = en.value();
@@ -343,41 +379,43 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
                 .getResult(0);
       }
 
-      // Allocate space for this argument to get a pointer to it, unless it's an integer
-      // which the MLIR C-interface expects by value.
-      if (argTy.isIntOrIndex()) {
-        Value extArg = arg;
-        if (isa<IndexType>(argTy)) {
-          // `index` has no fixed bit width (getIntOrFloatBitWidth would assert),
-          // so normalize it to i64 before packing it into the pointer slot.
-          extArg = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(),
-                                                        arg);
-        } else if (argTy.getIntOrFloatBitWidth() < 64) {
-          extArg = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), arg);
-        }
-        Value casted = rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrType, extArg);
-        
-        Value slotPtr = rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
-                                                     ArrayRef<LLVM::GEPArg>{en.index()});
-        rewriter.create<LLVM::StoreOp>(loc, casted, slotPtr);
+      Value valuePtr;
+      int32_t tag;
+      if (isa<MemRefType>(originalTy)) {
+        // The C-interface passes a memref as a pointer to its descriptor, so the
+        // arg value is that descriptor pointer; device_args[i] points to it.
+        Value descAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
+                                                          one, /*alignment=*/0);
+        rewriter.create<LLVM::StoreOp>(loc, arg, descAlloc);
+        Value descPtrAlloc = rewriter.create<LLVM::AllocaOp>(
+            loc, llvmPtrType, llvmPtrType, one, /*alignment=*/0);
+        rewriter.create<LLVM::StoreOp>(loc, descAlloc, descPtrAlloc);
+        valuePtr = descPtrAlloc;
+        tag = 0;
       } else {
-        Value one = rewriter.create<LLVM::ConstantOp>(
-            loc, llvmI32Type, rewriter.getI32IntegerAttr(1));
-        Value argAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
-                                                         one, /*alignment=*/0);
-        rewriter.create<LLVM::StoreOp>(loc, arg, argAlloc);
-
-        // Get pointer to argsArray[i]
-        Value slotPtr =
-            rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
-                                         ArrayRef<LLVM::GEPArg>{en.index()});
-
-        // Store the argument pointer into argsArray[i]
-        rewriter.create<LLVM::StoreOp>(loc, argAlloc, slotPtr);
+        // Scalar: device_args[i] points directly to the value.
+        Value scalarAlloc = rewriter.create<LLVM::AllocaOp>(
+            loc, llvmPtrType, argTy, one, /*alignment=*/0);
+        rewriter.create<LLVM::StoreOp>(loc, arg, scalarAlloc);
+        valuePtr = scalarAlloc;
+        tag = abiTagForType(argTy);
       }
+
+      Value argSlot =
+          rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmPtrType, argsArray,
+                                       ArrayRef<LLVM::GEPArg>{en.index()});
+      rewriter.create<LLVM::StoreOp>(loc, valuePtr, argSlot);
+
+      Value tagVal = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI32Type, rewriter.getI32IntegerAttr(tag));
+      Value tagSlot =
+          rewriter.create<LLVM::GEPOp>(loc, llvmPtrType, llvmI32Type, tagsArray,
+                                       ArrayRef<LLVM::GEPArg>{en.index()});
+      rewriter.create<LLVM::StoreOp>(loc, tagVal, tagSlot);
     }
 
-    // 3. Declare vx_plugin_dispatch_async
+    // 3. Declare vx_plugin_dispatch_async(name, payload_size, device_args,
+    //    arg_tags, num_args)
     StringRef dispatchFuncName = "vx_plugin_dispatch_async";
     LLVM::LLVMFuncOp dispatchFunc =
         module.lookupSymbol<LLVM::LLVMFuncOp>(dispatchFuncName);
@@ -385,7 +423,9 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
       auto funcType = LLVM::LLVMFunctionType::get(
-          llvmI64Type, {llvmPtrType, llvmI64Type, llvmPtrType}, false);
+          llvmI64Type,
+          {llvmPtrType, llvmI64Type, llvmPtrType, llvmPtrType, llvmI64Type},
+          false);
       dispatchFunc =
           rewriter.create<LLVM::LLVMFuncOp>(loc, dispatchFuncName, funcType);
     }
@@ -393,8 +433,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // 4. Emit the call
     Value payloadSize = rewriter.create<LLVM::ConstantOp>(
         loc, llvmI64Type, rewriter.getI64IntegerAttr(0));
+    Value numArgsVal = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI64Type, rewriter.getI64IntegerAttr(numArgs));
     auto callOp = rewriter.create<LLVM::CallOp>(
-        loc, dispatchFunc, ValueRange{globalPtr, payloadSize, argsArray});
+        loc, dispatchFunc,
+        ValueRange{globalPtr, payloadSize, argsArray, tagsArray, numArgsVal});
 
     // 5. Handle return type
     // If the original operation had a result, we must provide it.

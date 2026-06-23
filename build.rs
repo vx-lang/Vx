@@ -121,6 +121,7 @@ fn main() {
             "MetalPerformanceShaders",
             "-framework",
             "CoreML",
+            "-lffi",
             "-o",
             lib_shared_path.to_str().unwrap(),
         ]);
@@ -147,6 +148,8 @@ fn main() {
 
         // Link required Apple frameworks and C++ standard library
         println!("cargo:rustc-link-lib=dylib=c++");
+        // libffi: used by vx_plugin_dispatch_async to call JIT kernels per the C ABI
+        println!("cargo:rustc-link-lib=dylib=ffi");
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Accelerate");
         println!("cargo:rustc-link-lib=framework=Metal");

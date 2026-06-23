@@ -64,59 +64,43 @@ wrapper `_mlir_ciface_vx_npu_kernel_N`. The captured values become the kernel's
 parameters, and memref-backed captures are passed as pointers to their memref
 descriptor structs (consistent with §2).
 
-The runtime (`runtime/npu_dispatch.mm`) receives the captures as a `void**`
-array (`device_args`) and must invoke the kernel.
+The runtime (`runtime/npu_dispatch.mm`) receives the captures and invokes the
+kernel through libffi so that the platform calling convention is honored.
 
-### 3.1 Known limitation (current state)
+### 3.1 The dispatch contract
 
-The current dispatcher calls the kernel through a fixed signature:
+`LaunchOpLowering` lowers a `vx.launch` to a call:
 
 ```c
-typedef void (*KernelFuncPtr)(void*, void*, void*, void*, void*, void*, void*, void*);
-kernel(device_args[0], ..., device_args[7]);
+vx_plugin_dispatch_async(name, payload_size, device_args, arg_tags, num_args);
 ```
 
-This forces **every** argument into a general-purpose register. That violates
-the policy in §1 for any kernel that has a by-value **float** parameter: per the
-platform ABI an `f32`/`f64` must travel in an FP register, so it (a) reads
-garbage and (b) — because it does not consume a GP register — shifts every
-following pointer argument into the wrong register, producing a wild pointer and
-a `SIGSEGV` inside the kernel.
+- `device_args[i]` is a pointer to the value of the i-th C-interface argument:
+  - scalar param → pointer to the scalar;
+  - memref param → pointer to the (pointer-to-descriptor).
+- `arg_tags[i]` is the argument's ABI type tag
+  (`0=ptr, 1=i1, 2=i8, 3=i16, 4=i32, 5=i64, 6=f32, 7=f64`; see `abiTagForType`
+  in `src/dialect/VxLowering.cpp` and `vx_abi_ffi_type` in
+  `runtime/npu_dispatch.mm` — keep the two in sync).
 
-- Kernels whose C-interface is entirely integer/pointer work
-  (e.g. `tests/backend/pass/ane_matmul.vx`).
-- Kernels with an `f32`/`f64` scalar capture crash
-  (e.g. `tests/backend/pass/npu_fusion_overhead.vx`, `llama2.vx`).
+The runtime builds an `ffi_cif` from the tags and `ffi_call`s
+`_mlir_ciface_<name>`. libffi places each argument in the correct GP/FP register
+or stack slot, so this is correct for **all** argument types, including by-value
+`f32`/`f64`.
 
-An earlier change packed integer captures by value (via `inttoptr`) in
-`LaunchOpLowering`; that fixed only the integer instance of this same class of
-bug. The float case remains broken.
+### 3.2 Why the naive dispatch was wrong
 
-### 3.2 Target design
-
-The dispatch boundary must honor the platform C ABI like every other call. Two
-acceptable implementations, in order of preference:
-
-1. **Packed `void**` ABI.** Have the compiler emit a per-kernel wrapper that
-   takes the single `void** args` array, loads each argument from `args[i]`
-   **with its real type** (so a float is loaded as a float and ends up in an FP
-   register when the typed kernel is called), and calls the typed kernel. The
-   runtime then simply calls `wrapper(device_args)` through `void (*)(void**)`.
-   Because the compiler knows every type, the platform ABI is reconstructed
-   correctly. This also lets us delete the integer `inttoptr` special case and
-   the "allocate at least 8 slots" workaround in `LaunchOpLowering`.
-
-1. **libffi.** The compiler emits a type-descriptor array alongside
-   `device_args`; the runtime uses `ffi_prep_cif`/`ffi_call` to perform the call
-   with correct per-argument types. Simpler compiler change, but adds a libffi
-   dependency.
-
-This is a run-time concern, not an IR-validity one: the lowered IR verifies
-cleanly, so the MLIR verifier is enabled. The float-capturing NPU tests
-(`npu_fusion_overhead.vx`, `llama2.vx`) are marked `NO_EXEC` — they check
-lowering only and do not run the kernel — so they pass today; the crash would
-only surface if such a kernel were actually executed. See the `TODO(npu-abi)`
-note in `runtime/npu_dispatch.mm`.
+The previous dispatcher called the kernel through a fixed
+`void (*)(void*, …)` signature, forcing every argument into a general-purpose
+register. For a by-value `f32`/`f64` that violates the policy in §1: per the
+platform ABI a float must travel in an FP register, so it (a) read garbage and
+(b) — because it did not consume a GP register — shifted every following pointer
+argument into the wrong register, producing a wild pointer and a `SIGSEGV`. An
+even earlier version packed only integers by value (via `inttoptr`), which fixed
+just the integer instance of the same problem. The libffi path supersedes both
+and removes those workarounds (`inttoptr` packing, the "allocate at least 8
+slots" hack). `tests/backend/pass/npu_float_scalar.vx` exercises a float-capturing
+kernel end to end.
 
 ## 4. Related
 

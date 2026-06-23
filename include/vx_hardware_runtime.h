@@ -15,10 +15,13 @@ void* vx_plugin_alloc_and_transfer(size_t bytes, void* host_ptr, uint32_t topolo
 
 /// 2. Asynchronous Execution
 /// Takes the compiled binary payload embedded by the compiler and dispatches it.
-/// Note: The `device_args` unpacks MLIR MemRefs (typically a struct of base pointer,
-/// aligned pointer, offset, sizes, and strides) mapping directly to the MLIR ABI.
+/// `device_args[i]` points to the value of the i-th C-interface argument and
+/// `arg_tags[i]` is its Vx ABI type tag (see vx_abi_ffi_type); together they let
+/// the runtime reconstruct the platform calling convention via libffi.
 /// Returns a Future/Event ID immediately (Non-blocking).
-uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size, void** device_args);
+uint64_t vx_plugin_dispatch_async(const void* binary_payload, size_t payload_size,
+                                  void** device_args, const int32_t* arg_tags,
+                                  int64_t num_args);
 
 /// 2.5. Temporary Flat Execution (Pending Issue #31 MLIR Migration)
 uint64_t vx_plugin_dispatch_async_flat(float* xout, float* x, float* w, int n, int d);

@@ -191,6 +191,8 @@ pub fn execute_mlir(
     }
 
     clang_cmd.arg("-lm");
+    // libffi: the NPU dispatch runtime calls JIT kernels through ffi_call.
+    clang_cmd.arg("-lffi");
 
     run_cmd(clang_cmd, "clang")?;
 

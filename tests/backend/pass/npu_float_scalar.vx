@@ -1,0 +1,43 @@
+//===- npu_float_scalar.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: macos
+//
+// Executes an NPU kernel that captures by-value floats (the `2.0` and `1.0`
+// constants are hoisted into f32 kernel parameters). Before the libffi-based
+// dispatch this SIGSEGV'd: the runtime called the kernel C-interface through a
+// fixed void*-array signature, which cannot pass a float in a floating-point
+// register. See docs/lang/abi.md.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+fn run() -> i32 {
+  let mut a = Tensor<f32>([4]);
+  let mut c = Tensor<f32>([4]).with_memory(Memory::NPU_HBM);
+  for i in 0..4 {
+    a[i] = 1.0;
+  }
+  let a_npu = transfer(a, Memory::NPU_HBM);
+
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      c[i] = a_npu[i] * 2.0 + 1.0; // 1.0 * 2.0 + 1.0 = 3.0
+    }
+  }
+
+  let c_host = transfer(c, Memory::CPU_DRAM);
+  print!("c0=");
+  print!(c_host[0]);
+  return 0;
+}
+
+fn main() -> i32 {
+  run();
+  return 0;
+}
+
+// EXPECT: c0=3
