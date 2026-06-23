@@ -1294,7 +1294,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 panic!("Tensor initialization requires an explicit generic type argument");
             };
             let mut dynamic_sizes = Vec::new();
-            let mut dims_count = 2; // Default fallback
+            // Number of dynamic dimensions; the type below uses one `?` per dim,
+            // so this must equal the number of size operands collected into
+            // `dynamic_sizes`. With no shape args (e.g. `Tensor<f32>()`) it stays
+            // 0, yielding a valid rank-0 `memref<f32>` rather than a `?x?` memref
+            // with no sizes (invalid IR). See GitHub #147.
+            let mut dims_count = 0;
 
             let mut current_b = block;
             if args.len() == 1 {
