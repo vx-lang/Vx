@@ -188,11 +188,13 @@ pub fn execute_mlir(
 
     if cfg!(target_os = "macos") {
         clang_cmd.args([&lib_npu]);
+        // libffi is only pulled in by the (macOS-only) NPU dispatch runtime,
+        // which calls JIT kernels through ffi_call. Linking it unconditionally
+        // would break the JIT link on Linux where libffi need not be present.
+        clang_cmd.arg("-lffi");
     }
 
     clang_cmd.arg("-lm");
-    // libffi: the NPU dispatch runtime calls JIT kernels through ffi_call.
-    clang_cmd.arg("-lffi");
 
     run_cmd(clang_cmd, "clang")?;
 

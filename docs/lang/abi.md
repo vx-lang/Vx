@@ -127,6 +127,22 @@ symbol such as `_ffi_type_sint8` even though compilation succeeds:
   `cargo:rustc-link-lib=dylib=ffi` for the static archive linked into `vxc`.
 - `src/jit.rs` — `-lffi` on the JIT executable link.
 
+### 3.4 Linux and other non-macOS targets
+
+`spawn on(Topology::NPU/ANE/GPU)` targets Apple Silicon, and the dispatch runtime
+(`runtime/npu_dispatch.mm`) is an Objective-C++ file that links Metal, CoreML and
+Accelerate. The whole thing — runtime compilation, the libffi link, and the
+`cargo:rustc-link-lib=dylib=ffi` directive — is gated behind
+`cfg!(target_os = "macos")` in `build.rs`, and the JIT executable link adds
+`-lffi` only on macOS (`src/jit.rs`). So on Linux/Ubuntu:
+
+- None of the NPU dispatch path or libffi is compiled or linked; a build does
+  **not** require `libffi-dev`. Accelerator `spawn on(...)` is simply not
+  available there yet — only the CPU (`async.execute`) path applies.
+- If the dispatch path is ever ported to Linux, note that the header is plain
+  `<ffi.h>` (from `libffi-dev`), not macOS's `<ffi/ffi.h>`, and `-lffi` must stay
+  gated to targets that actually link the runtime.
+
 ## 4. Related
 
 - `docs/npu_hardware_dispatch.md` — the `_mlir_ciface` dispatch mechanism.
