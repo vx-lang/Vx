@@ -90,14 +90,10 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     init_codegen_globals();
 
     let pass_manager = melior::pass::PassManager::new(context);
-    // TODO: re-enable the verifier. The lowered IR itself verifies for these
-    // kernels (`vxc --action emit-llvm` succeeds with the verifier on), but the
-    // backend test harness compiles files in parallel while SpawnOpLowering uses
-    // a process-global `static int kernelIdx`, so concurrent compilations race
-    // on kernel names and trip the verifier. Fix the kernel-name counter (or
-    // serialize the harness) before turning this back on. Separately, the NPU
-    // dispatch ABI cannot pass by-value floats; see runtime/npu_dispatch.mm.
-    pass_manager.enable_verifier(false);
+    // Verify after each pass. NOTE: this only checks IR validity; it does not
+    // catch the NPU dispatch ABI limitation (by-value floats), which is a
+    // runtime concern. See docs/lang/abi.md and runtime/npu_dispatch.mm.
+    pass_manager.enable_verifier(true);
 
     // Check if an external plugin is specified via ENZYME_LIB (for MLIR Enzyme)
     let mut has_enzyme = false;

@@ -58,8 +58,11 @@ def Vx_LaunchOp : Vx_Op<"launch"> {
     let assemblyFormat = "$callee `(` $operands `)` attr-dict `:` functional-type($operands, results)";
 }
 
-// A native kernel function operation
-def Vx_KernelOp : Vx_Op<"kernel", [IsolatedFromAbove, Symbol]> {
+// A native kernel function operation. Like a function, its body is an
+// automatic-allocation scope: `memref.alloca`/`llvm.alloca` for kernel-local
+// values (cloned in from the outlined `vx.spawn` region) are scoped to the
+// kernel invocation, matching the `func.func` it lowers to.
+def Vx_KernelOp : Vx_Op<"kernel", [IsolatedFromAbove, Symbol, AutomaticAllocationScope]> {
     let summary = "A native hardware kernel function.";
     let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$function_type, I32Attr:$topology);
     let regions = (region AnyRegion:$body);

@@ -111,9 +111,12 @@ acceptable implementations, in order of preference:
    with correct per-argument types. Simpler compiler change, but adds a libffi
    dependency.
 
-Until one of these lands, the MLIR verifier is left disabled in
-`src/codegen/mod.rs` and the float-capturing NPU tests are expected to crash at
-run time. See the `TODO(npu-abi)` note in `runtime/npu_dispatch.mm`.
+This is a run-time concern, not an IR-validity one: the lowered IR verifies
+cleanly, so the MLIR verifier is enabled. The float-capturing NPU tests
+(`npu_fusion_overhead.vx`, `llama2.vx`) are marked `NO_EXEC` — they check
+lowering only and do not run the kernel — so they pass today; the crash would
+only surface if such a kernel were actually executed. See the `TODO(npu-abi)`
+note in `runtime/npu_dispatch.mm`.
 
 ## 4. Related
 
