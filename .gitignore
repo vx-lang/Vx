@@ -1,5 +1,6 @@
 target/
 scratch/
+.claude/
 .cargo/
 .rustup/
 *.bin
