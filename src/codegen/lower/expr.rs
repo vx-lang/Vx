@@ -3,8 +3,8 @@ use crate::ast;
 use crate::ast::*;
 use melior::ir::{
     attribute::{
-        DenseI32ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute,
-        StringAttribute, TypeAttribute,
+        DenseI32ArrayAttribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute,
+        IntegerAttribute, StringAttribute, TypeAttribute,
     },
     operation::OperationBuilder,
     Identifier, Region, Type, Value,
@@ -1366,54 +1366,141 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         }
 
         if name.as_ref() == "reshape" || **name == *"transpose" {
+            // `memref.cast` cannot reshape or permute data (it only changes
+            // static/dynamic/ranked info), so model these as buffer views:
+            //   - reshape: reinterpret the contiguous source as the target shape
+            //     (a row-major view; also handles a smaller "trim" target).
+            //   - transpose: a permuted-stride view, materialized into a fresh
+            //     contiguous buffer so downstream ops see row-major data.
+            // See GitHub #148.
+            let is_transpose = **name == *"transpose";
             let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
             let expr_ty_str = expr_ty.to_string();
-
-            // Extract element type
             let el_ty_str =
                 extract_mlir_element_type(&expr_ty_str).unwrap_or_else(|e| panic!("{}", e));
 
-            let mut shape_str = String::new();
-            if let Expr::Array(arr) = &args[1] {
-                for el in &arr.elements {
-                    if let Expr::Number(num) = el {
-                        shape_str.push_str(&num.value);
-                        shape_str.push('x');
-                    }
-                }
-            } else {
-                shape_str.push_str("*x"); // unranked fallback
-            }
+            // Static dimensions of the source, parsed from "memref<AxBx...xT>".
+            let src_dims: Vec<i64> = expr_ty_str
+                .trim_start_matches("memref<")
+                .split('x')
+                .map_while(|t| t.parse::<i64>().ok())
+                .collect();
 
-            let target_ty_str = if shape_str == "*x" {
-                format!("memref<*x{}>", el_ty_str)
-            } else {
-                format!("memref<{}{}>", shape_str, el_ty_str)
+            // Row-major (contiguous) strides for a shape.
+            let contiguous = |dims: &[i64]| -> Vec<i64> {
+                let mut s = vec![1i64; dims.len()];
+                for i in (0..dims.len().saturating_sub(1)).rev() {
+                    s[i] = s[i + 1] * dims[i + 1];
+                }
+                s
             };
 
-            let unranked_ty_str = format!("memref<*x{}>", el_ty_str);
-            let unranked_ty = Type::parse(gen.context, &unranked_ty_str).unwrap();
+            // The second argument is an integer array: the target shape for
+            // `reshape`, or the dimension permutation for `transpose`.
+            let idx_vals: Vec<i64> = match &args[1] {
+                Expr::Array(arr) => arr
+                    .elements
+                    .iter()
+                    .filter_map(|el| match el {
+                        Expr::Number(num) => num.value.parse::<i64>().ok(),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
 
-            // Cast to unranked first
-            let cast1_op = OperationBuilder::new("memref.cast", gen.loc())
-                .add_operands(&[arg_val])
-                .add_results(&[unranked_ty])
-                .build()
+            let dims_str = |dims: &[i64]| -> String {
+                let mut s = String::new();
+                for d in dims {
+                    s.push_str(&d.to_string());
+                    s.push('x');
+                }
+                s.push_str(el_ty_str);
+                s
+            };
+            let i64_list = |v: &[i64]| -> String {
+                v.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let reinterpret = |src: Value<'c, 'c>,
+                               sizes: &[i64],
+                               strides: &[i64],
+                               result_ty: Type<'c>,
+                               blk: melior::ir::BlockRef<'c, 'c>|
+             -> Value<'c, 'c> {
+                let op = OperationBuilder::new("memref.reinterpret_cast", gen.loc())
+                    .add_operands(&[src])
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0, 0]).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_offsets"),
+                            DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_sizes"),
+                            DenseI64ArrayAttribute::new(gen.context, sizes).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_strides"),
+                            DenseI64ArrayAttribute::new(gen.context, strides).into(),
+                        ),
+                    ])
+                    .add_results(&[result_ty])
+                    .build()
+                    .unwrap();
+                blk.append_operation(op).result(0).unwrap().into()
+            };
+
+            if is_transpose {
+                let src_strides = contiguous(&src_dims);
+                let view_dims: Vec<i64> = idx_vals.iter().map(|&p| src_dims[p as usize]).collect();
+                let view_strides: Vec<i64> =
+                    idx_vals.iter().map(|&p| src_strides[p as usize]).collect();
+
+                let view_ty = Type::parse(
+                    gen.context,
+                    &format!(
+                        "memref<{}, strided<[{}], offset: 0>>",
+                        dims_str(&view_dims),
+                        i64_list(&view_strides)
+                    ),
+                )
                 .unwrap();
-            let cast1_ref = block.append_operation(cast1_op);
-            let unranked_val = cast1_ref.result(0).unwrap().into();
+                let view_val = reinterpret(arg_val, &view_dims, &view_strides, view_ty, block);
 
-            let target_ty = Type::parse(gen.context, &target_ty_str).unwrap();
+                let dst_ty =
+                    Type::parse(gen.context, &format!("memref<{}>", dims_str(&view_dims))).unwrap();
+                let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                    )])
+                    .add_results(&[dst_ty])
+                    .build()
+                    .unwrap();
+                let dst_val = block.append_operation(alloc).result(0).unwrap().into();
 
-            // Cast to targeted shape
-            let cast2_op = OperationBuilder::new("memref.cast", gen.loc())
-                .add_operands(&[unranked_val])
-                .add_results(&[target_ty])
-                .build()
-                .unwrap();
+                let copy = OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[view_val, dst_val])
+                    .build()
+                    .unwrap();
+                block.append_operation(copy);
 
-            let cast2_ref = block.append_operation(cast2_op);
-            return Ok((cast2_ref.result(0).unwrap().into(), target_ty, block));
+                return Ok((dst_val, dst_ty, block));
+            }
+
+            // reshape
+            let tgt_dims = idx_vals;
+            let tgt_strides = contiguous(&tgt_dims);
+            let tgt_ty =
+                Type::parse(gen.context, &format!("memref<{}>", dims_str(&tgt_dims))).unwrap();
+            let out_val = reinterpret(arg_val, &tgt_dims, &tgt_strides, tgt_ty, block);
+            return Ok((out_val, tgt_ty, block));
         }
 
         if name.as_ref() == "with_memory" {

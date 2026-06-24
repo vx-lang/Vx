@@ -86,6 +86,67 @@ impl<'c> MeliorGenerator<'c> {
             return val;
         }
 
+        // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
+        // rather than emitting an invalid f32->memref bitcast. Handles static,
+        // identity-layout memrefs whose element type matches the scalar. See #148.
+        if self.is_memref(&to_ty) && !self.is_memref(&from_ty) {
+            let to_str = to_ty.to_string();
+            let el = to_str
+                .trim_start_matches("memref<")
+                .split('x')
+                .next_back()
+                .unwrap_or("")
+                .trim_end_matches('>');
+            if to_str.starts_with("memref<")
+                && !to_str.contains('?')
+                && !to_str.contains('*')
+                && el == from_ty.to_string()
+            {
+                let alloc_op =
+                    melior::ir::operation::OperationBuilder::new("memref.alloc", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "operandSegmentSizes"),
+                            melior::ir::attribute::DenseI32ArrayAttribute::new(
+                                self.context,
+                                &[0, 0],
+                            )
+                            .into(),
+                        )])
+                        .add_results(&[to_ty])
+                        .build()
+                        .unwrap();
+                let dst: Value<'c, 'c> = block.append_operation(alloc_op).result(0).unwrap().into();
+
+                let region = melior::ir::Region::new();
+                let fblock =
+                    melior::ir::Block::new(&[(from_ty, self.loc()), (from_ty, self.loc())]);
+                let yield_op =
+                    melior::ir::operation::OperationBuilder::new("linalg.yield", self.loc())
+                        .add_operands(&[fblock.argument(0).unwrap().into()])
+                        .build()
+                        .unwrap();
+                fblock.append_operation(yield_op);
+                region.append_block(fblock);
+
+                let fill_op =
+                    melior::ir::operation::OperationBuilder::new("linalg.fill", self.loc())
+                        .add_operands(&[val, dst])
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "operandSegmentSizes"),
+                            melior::ir::attribute::DenseI32ArrayAttribute::new(
+                                self.context,
+                                &[1, 1],
+                            )
+                            .into(),
+                        )])
+                        .add_regions([region])
+                        .build()
+                        .unwrap();
+                block.append_operation(fill_op);
+                return dst;
+            }
+        }
+
         if from_ty == self.i32_ty && to_ty == self.i64_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extsi", self.loc())
                 .add_operands(&[val])

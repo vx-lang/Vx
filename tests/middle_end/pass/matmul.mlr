@@ -25,9 +25,11 @@ fn main() -> i32 {
 // CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
 // CHECK:     %cst = arith.constant 1.000000e+00 : f32
 // CHECK:     %cst_0 = arith.constant 1.000000e+00 : f32
-// CHECK:     %0 = builtin.unrealized_conversion_cast %cst : f32 to memref<128x64xf32>
-// CHECK:     %1 = builtin.unrealized_conversion_cast %cst_0 : f32 to memref<64x256xf32>
-// CHECK:     %2 = call @my_matmul(%0, %1) : (memref<128x64xf32>, memref<64x256xf32>) -> memref<128x256xf32>
+// CHECK:     %alloc = memref.alloc() : memref<128x64xf32>
+// CHECK:     linalg.fill ins(%cst : f32) outs(%alloc : memref<128x64xf32>)
+// CHECK:     %alloc_1 = memref.alloc() : memref<64x256xf32>
+// CHECK:     linalg.fill ins(%cst_0 : f32) outs(%alloc_1 : memref<64x256xf32>)
+// CHECK:     %0 = call @my_matmul(%alloc, %alloc_1) : (memref<128x64xf32>, memref<64x256xf32>) -> memref<128x256xf32>
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }

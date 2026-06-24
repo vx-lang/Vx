@@ -21,12 +21,14 @@ fn process_tensor(val : Tensor<f32, [ 128, 128 ]>)
   return final_view;
 }
 
-// CHECK: func.func @process_tensor(%arg0: memref<128x128xf32>) ->
-// memref<4x64x64xf32> { CHECK: %cast = memref.cast % CHECK: %cast_0 =
-// memref.cast % CHECK: %cast_1 = memref.cast % CHECK: %cast_2 = memref.cast %
-// CHECK: %cast_3 = memref.cast %
-// CHECK: %cast_4 = memref.cast %
-// CHECK: return %
+// CHECK: func.func @process_tensor(%arg0: memref<128x128xf32>) -> memref<4x64x64xf32> {
+// CHECK: %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [0], sizes: [2, 64, 2, 64], strides: [8192, 128, 64, 1] : memref<128x128xf32> to memref<2x64x2x64xf32>
+// CHECK: %reinterpret_cast_0 = memref.reinterpret_cast %reinterpret_cast to offset: [0], sizes: [2, 2, 64, 64], strides: [8192, 64, 128, 1] : memref<2x64x2x64xf32> to memref<2x2x64x64xf32, strided<[8192, 64, 128, 1]>>
+// CHECK: %alloc = memref.alloc() : memref<2x2x64x64xf32>
+// CHECK: memref.copy %reinterpret_cast_0, %alloc : memref<2x2x64x64xf32, strided<[8192, 64, 128, 1]>> to memref<2x2x64x64xf32>
+// CHECK: %reinterpret_cast_1 = memref.reinterpret_cast %alloc to offset: [0], sizes: [4, 64, 64], strides: [4096, 64, 1] : memref<2x2x64x64xf32> to memref<4x64x64xf32>
+// CHECK: return %reinterpret_cast_1 : memref<4x64x64xf32>
+// CHECK: }
 
 fn main() -> i32 {
   let v : Tensor<f32, [ 128, 128 ]> = 1.0;
