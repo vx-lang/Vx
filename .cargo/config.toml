@@ -7,9 +7,3 @@
 #===----------------------------------------------------------------------===#
 [alias]
 vx-bench = "run --release --bin cargo-vx-bench --"
-
-# Link with lld (much faster than the default ld64 for the large MLIR/LLVM libs).
-# `cargo test` links ~19 separate binaries against MLIR, so the linker dominates
-# wall-clock time. ld64.lld ships with the homebrew `lld` formula.
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
