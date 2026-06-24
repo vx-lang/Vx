@@ -51,6 +51,27 @@ if_same_then_else = "allow"
 name = "vxc"
 path = "src/main.rs"
 
+# Scratch/experiment binaries. Keep them buildable (`cargo build --bin <name>`)
+# but exclude them from `cargo test` so each one does not trigger a slow MLIR
+# link for an empty test harness.
+[[bin]]
+name = "test_loc"
+path = "src/bin/test_loc.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "melior_test2"
+path = "src/bin/melior_test2.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cargo-vx-bench"
+path = "src/bin/cargo-vx-bench.rs"
+test = false
+bench = false
+
 [profile.release]
 strip = "debuginfo"      # Strip debuginfo but keep symbols for dynamic linking
 lto = "thin"      # Thin LTO drops dead LLVM code without taking 10 minutes to link
