@@ -3,6 +3,7 @@ scratch/
 .claude/
 .cargo/
 .rustup/
+review/
 *.bin
 *.dylib
 *.so
