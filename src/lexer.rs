@@ -445,7 +445,10 @@ impl<'a> Lexer<'a> {
                             self.advance();
                             char_to_push = '\\';
                         }
-                        _ => {}
+                        _ => {
+                            self.advance();
+                            char_to_push = esc_c;
+                        }
                     }
                 }
             } else if text.is_none() {
