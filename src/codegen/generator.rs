@@ -121,7 +121,10 @@ impl<'c> MeliorGenerator<'c> {
                     melior::ir::Block::new(&[(from_ty, self.loc()), (from_ty, self.loc())]);
                 let yield_op =
                     melior::ir::operation::OperationBuilder::new("linalg.yield", self.loc())
-                        .add_operands(&[fblock.argument(0).map_err(|_| "Failed to get block argument".to_string().into())?.into()])
+                        .add_operands(&[fblock
+                            .argument(0)
+                            .map_err(|_| "Failed to get block argument".to_string().into())?
+                            .into()])
                         .build()?;
                 fblock.append_operation(yield_op);
                 region.append_block(fblock);
@@ -280,20 +283,34 @@ impl<'c> MeliorGenerator<'c> {
         let location = Location::unknown(context);
         let module = Module::new(location);
 
-        let index_ty = Type::parse(context, "index").ok_or_else(|| format!("Failed to parse type: {}", "index").into())?;
-        let i32_ty = Type::parse(context, "i32").ok_or_else(|| format!("Failed to parse type: {}", "i32").into())?;
-        let i64_ty = Type::parse(context, "i64").ok_or_else(|| format!("Failed to parse type: {}", "i64").into())?;
-        let f32_ty = Type::parse(context, "f32").ok_or_else(|| format!("Failed to parse type: {}", "f32").into())?;
-        let f64_ty = Type::parse(context, "f64").ok_or_else(|| format!("Failed to parse type: {}", "f64").into())?;
-        let f16_ty = Type::parse(context, "f16").ok_or_else(|| format!("Failed to parse type: {}", "f16").into())?;
-        let bf16_ty = Type::parse(context, "bf16").ok_or_else(|| format!("Failed to parse type: {}", "bf16").into())?;
-        let i1_ty = Type::parse(context, "i1").ok_or_else(|| format!("Failed to parse type: {}", "i1").into())?;
-        let i4_ty = Type::parse(context, "i4").ok_or_else(|| format!("Failed to parse type: {}", "i4").into())?;
-        let i8_ty = Type::parse(context, "i8").ok_or_else(|| format!("Failed to parse type: {}", "i8").into())?;
-        let i16_ty = Type::parse(context, "i16").ok_or_else(|| format!("Failed to parse type: {}", "i16").into())?;
-        let i128_ty = Type::parse(context, "i128").ok_or_else(|| format!("Failed to parse type: {}", "i128").into())?;
-        let ptr_ty = Type::parse(context, "!llvm.ptr").ok_or_else(|| format!("Failed to parse type: {}", "!llvm.ptr").into())?;
-        let none_ty = Type::parse(context, "none").ok_or_else(|| format!("Failed to parse type: {}", "none").into())?;
+        let index_ty = Type::parse(context, "index")
+            .ok_or_else(|| format!("Failed to parse type: {}", "index").into())?;
+        let i32_ty = Type::parse(context, "i32")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i32").into())?;
+        let i64_ty = Type::parse(context, "i64")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i64").into())?;
+        let f32_ty = Type::parse(context, "f32")
+            .ok_or_else(|| format!("Failed to parse type: {}", "f32").into())?;
+        let f64_ty = Type::parse(context, "f64")
+            .ok_or_else(|| format!("Failed to parse type: {}", "f64").into())?;
+        let f16_ty = Type::parse(context, "f16")
+            .ok_or_else(|| format!("Failed to parse type: {}", "f16").into())?;
+        let bf16_ty = Type::parse(context, "bf16")
+            .ok_or_else(|| format!("Failed to parse type: {}", "bf16").into())?;
+        let i1_ty = Type::parse(context, "i1")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i1").into())?;
+        let i4_ty = Type::parse(context, "i4")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i4").into())?;
+        let i8_ty = Type::parse(context, "i8")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i8").into())?;
+        let i16_ty = Type::parse(context, "i16")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i16").into())?;
+        let i128_ty = Type::parse(context, "i128")
+            .ok_or_else(|| format!("Failed to parse type: {}", "i128").into())?;
+        let ptr_ty = Type::parse(context, "!llvm.ptr")
+            .ok_or_else(|| format!("Failed to parse type: {}", "!llvm.ptr").into())?;
+        let none_ty = Type::parse(context, "none")
+            .ok_or_else(|| format!("Failed to parse type: {}", "none").into())?;
 
         Self {
             context,
@@ -409,12 +426,12 @@ impl<'c> MeliorGenerator<'c> {
         // Declare printMemref functions
         for ty_str in &["f32", "f64", "i32", "i64", "bf16"] {
             let func_name = format!("printMemref{}", ty_str.to_uppercase());
-            let unranked_memref_ty =
-                Type::parse(self.context, &format!("memref<*x{}>", ty_str))?;
+            let unranked_memref_ty = Type::parse(self.context, &format!("memref<*x{}>", ty_str))?;
 
-            let func_ty = melior::ir::attribute::TypeAttribute::new(
-                Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()"))?,
-            );
+            let func_ty = melior::ir::attribute::TypeAttribute::new(Type::parse(
+                self.context,
+                &format!("({unranked_memref_ty}) -> ()"),
+            )?);
 
             let decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
                 .add_attributes(&[
@@ -527,7 +544,10 @@ impl<'c> MeliorGenerator<'c> {
             if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
                 continue;
             }
-            let (ret_ty, arg_tys) = self.functions.get(name).ok_or_else(|| format!("Function not found: {}", name).into())?;
+            let (ret_ty, arg_tys) = self
+                .functions
+                .get(name)
+                .ok_or_else(|| format!("Function not found: {}", name).into())?;
 
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
@@ -608,10 +628,14 @@ impl<'c> MeliorGenerator<'c> {
             "module {{ func.func private @dummy() loc(fused<{}>[\"{}\":1:1]) }}",
             di_subp_str, self.current_filename
         );
-        let dummy_module = melior::ir::Module::parse(self.context, &mlir_str).ok_or_else(|| format!("Failed to parse module: {}", &mlir_str).into())?;
+        let dummy_module = melior::ir::Module::parse(self.context, &mlir_str)
+            .ok_or_else(|| format!("Failed to parse module: {}", &mlir_str).into())?;
         use melior::ir::operation::OperationLike;
         use melior::ir::BlockLike;
-        let dummy_op = dummy_module.body().first_operation().ok_or_else(|| "No first operation".to_string().into())?;
+        let dummy_op = dummy_module
+            .body()
+            .first_operation()
+            .ok_or_else(|| "No first operation".to_string().into())?;
         let func_loc = dummy_op.location();
 
         let _region = Region::new();
@@ -710,7 +734,8 @@ impl<'c> MeliorGenerator<'c> {
         if is_main {
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "llvm.emit_c_interface"),
-                melior::ir::attribute::Attribute::parse(self.context, "unit").ok_or_else(|| format!("Failed to parse attribute: {}", "unit").into())?,
+                melior::ir::attribute::Attribute::parse(self.context, "unit")
+                    .ok_or_else(|| format!("Failed to parse attribute: {}", "unit").into())?,
             ));
         }
 
@@ -861,8 +886,7 @@ impl<'c> MeliorGenerator<'c> {
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
-                        )
-                        ?;
+                        )?;
                     }
                     return self.i32_ty;
                 }
@@ -927,7 +951,9 @@ impl<'c> MeliorGenerator<'c> {
                             field_types.join(", ")
                         )
                     } else if let Some(enum_def) = self.enums.get(name).cloned() {
-                        let ty_arg = args.first().ok_or_else(|| "Expected at least one arg".to_string().into())?;
+                        let ty_arg = args
+                            .first()
+                            .ok_or_else(|| "Expected at least one arg".to_string().into())?;
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
                             if v_name == "Some".into() {
@@ -1026,8 +1052,7 @@ impl<'c> MeliorGenerator<'c> {
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
-                        )
-                        ?;
+                        )?;
                     }
                 }
                 "i32".to_string()
