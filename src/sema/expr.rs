@@ -3043,7 +3043,7 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 self.current_return_type = old_ret;
 
-                let captured_vars_map = self.closure_captures_stack.pop().unwrap();
+                let captured_vars_map = self.closure_captures_stack.pop().unwrap_or_default();
                 self.closure_depths.pop();
 
                 let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =

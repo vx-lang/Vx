@@ -141,6 +141,7 @@ pub struct TypeChecker<'a> {
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
     pub active_borrows: HashMap<crate::symbol::Symbol, Vec<BorrowRecord>>,
     pub constraints: Vec<Expr>,
+    pub return_constraints: Vec<Expr>,
     pub(crate) next_id: u32,
     pub(crate) moved_vars: Vec<std::collections::HashSet<String>>,
     pub eval_env: Vec<HashMap<crate::symbol::Symbol, Value>>,
@@ -177,6 +178,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             active_borrows: HashMap::new(),
             constraints: Vec::new(),
+            return_constraints: Vec::new(),
             next_id: 1,
             moved_vars: vec![std::collections::HashSet::new()],
             eval_env: vec![HashMap::new()],
@@ -341,7 +343,9 @@ impl<'a> TypeChecker<'a> {
         for scope in self.scopes.iter_mut().rev() {
             if scope.contains_key(name) {
                 scope.remove(name);
-                self.moved_vars.last_mut().unwrap().insert(name.to_string());
+                if let Some(last) = self.moved_vars.last_mut() {
+                    last.insert(name.to_string());
+                }
                 return;
             }
         }
@@ -567,6 +571,21 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_block(&mut func.body, &func.return_type.clone());
+
+        // Combine return constraints into a single OR constraint
+        if !self.return_constraints.is_empty() {
+            let mut combined = self.return_constraints[0].clone();
+            for rc in self.return_constraints.iter().skip(1) {
+                combined = Expr::LogicalOp(LogicalOpExpr {
+                    lhs: Box::new(combined),
+                    op: LogicalOp::Or,
+                    rhs: Box::new(rc.clone()),
+                    span: crate::ast::Span::default(),
+                });
+            }
+            self.constraints.push(combined);
+            self.return_constraints.clear();
+        }
 
         // Verify postconditions (ensures)
         for ens in &func.ensures {

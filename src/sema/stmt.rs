@@ -51,9 +51,8 @@ impl<'a> TypeChecker<'a> {
         #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
             *self.current_stmt_idx.last_mut().unwrap() = i;
-            let mut stmt = body[i].clone();
             if terminated {
-                let stmt_span = stmt.span();
+                let stmt_span = body[i].span();
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1003,
                     "Unreachable code after return, break, or continue",
@@ -62,9 +61,8 @@ impl<'a> TypeChecker<'a> {
                 break; // Only warn once per block
             }
 
-            self.check_statement(&mut stmt, return_type, true, false);
-            body[i] = stmt.clone();
-            match stmt {
+            self.check_statement(&mut body[i], return_type, true, false);
+            match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
                     terminated = true;
                 }
@@ -334,7 +332,7 @@ impl<'a> TypeChecker<'a> {
                     rhs: Box::new(expr.clone()),
                     span: *span,
                 });
-                self.constraints.push(return_eq);
+                self.return_constraints.push(return_eq);
             }
 
             Statement::ExprStmt(ExprStmtStmt {

@@ -113,18 +113,16 @@ impl<'c> MeliorGenerator<'c> {
                             .into(),
                         )])
                         .add_results(&[to_ty])
-                        .build()
-                        .unwrap();
-                let dst: Value<'c, 'c> = block.append_operation(alloc_op).result(0).unwrap().into();
+                        .build()?;
+                let dst: Value<'c, 'c> = block.append_operation(alloc_op).result(0)?.into();
 
                 let region = melior::ir::Region::new();
                 let fblock =
                     melior::ir::Block::new(&[(from_ty, self.loc()), (from_ty, self.loc())]);
                 let yield_op =
                     melior::ir::operation::OperationBuilder::new("linalg.yield", self.loc())
-                        .add_operands(&[fblock.argument(0).unwrap().into()])
-                        .build()
-                        .unwrap();
+                        .add_operands(&[fblock.argument(0).map_err(|_| "Failed to get block argument".to_string().into())?.into()])
+                        .build()?;
                 fblock.append_operation(yield_op);
                 region.append_block(fblock);
 
@@ -140,8 +138,7 @@ impl<'c> MeliorGenerator<'c> {
                             .into(),
                         )])
                         .add_regions([region])
-                        .build()
-                        .unwrap();
+                        .build()?;
                 block.append_operation(fill_op);
                 return dst;
             }
@@ -151,41 +148,36 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extsi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
         if from_ty == self.i64_ty && to_ty == self.i32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.trunci", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
         if from_ty == self.f32_ty && to_ty == self.f64_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
         if from_ty == self.f32_ty && (to_ty == self.bf16_ty || to_ty == self.f16_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty) && to_ty == self.f32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
         if (from_ty == self.f64_ty || from_ty == self.f32_ty)
             && (to_ty == self.f32_ty || to_ty == self.f16_ty || to_ty == self.bf16_ty)
@@ -193,9 +185,8 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
 
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty)
@@ -204,27 +195,24 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
 
         if from_ty == self.i32_ty && (to_ty == self.f32_ty || to_ty == self.f64_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
 
         if (from_ty == self.f32_ty || from_ty == self.f64_ty) && to_ty == self.i32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()
-                .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
 
         let from_str = from_ty.to_string();
@@ -237,9 +225,8 @@ impl<'c> MeliorGenerator<'c> {
                 melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
                     .add_operands(&[val])
                     .add_results(&[to_ty])
-                    .build()
-                    .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+                    .build()?;
+            return block.append_operation(cast_op).result(0)?.into();
         }
 
         let is_int = |s: &str| s.starts_with("i") || s.starts_with("u");
@@ -257,9 +244,8 @@ impl<'c> MeliorGenerator<'c> {
                 let cast_op = melior::ir::operation::OperationBuilder::new(op_name, self.loc())
                     .add_operands(&[val])
                     .add_results(&[to_ty])
-                    .build()
-                    .unwrap();
-                return block.append_operation(cast_op).result(0).unwrap().into();
+                    .build()?;
+                return block.append_operation(cast_op).result(0)?.into();
             }
         }
 
@@ -282,9 +268,8 @@ impl<'c> MeliorGenerator<'c> {
         )
         .add_operands(&[val])
         .add_results(&[to_ty])
-        .build()
-        .unwrap();
-        block.append_operation(cast_op).result(0).unwrap().into()
+        .build()?;
+        block.append_operation(cast_op).result(0)?.into()
     }
 
     pub fn new(context: &'c Context, filename: String) -> Self {
@@ -295,20 +280,20 @@ impl<'c> MeliorGenerator<'c> {
         let location = Location::unknown(context);
         let module = Module::new(location);
 
-        let index_ty = Type::parse(context, "index").unwrap();
-        let i32_ty = Type::parse(context, "i32").unwrap();
-        let i64_ty = Type::parse(context, "i64").unwrap();
-        let f32_ty = Type::parse(context, "f32").unwrap();
-        let f64_ty = Type::parse(context, "f64").unwrap();
-        let f16_ty = Type::parse(context, "f16").unwrap();
-        let bf16_ty = Type::parse(context, "bf16").unwrap();
-        let i1_ty = Type::parse(context, "i1").unwrap();
-        let i4_ty = Type::parse(context, "i4").unwrap();
-        let i8_ty = Type::parse(context, "i8").unwrap();
-        let i16_ty = Type::parse(context, "i16").unwrap();
-        let i128_ty = Type::parse(context, "i128").unwrap();
-        let ptr_ty = Type::parse(context, "!llvm.ptr").unwrap();
-        let none_ty = Type::parse(context, "none").unwrap();
+        let index_ty = Type::parse(context, "index").ok_or_else(|| format!("Failed to parse type: {}", "index").into())?;
+        let i32_ty = Type::parse(context, "i32").ok_or_else(|| format!("Failed to parse type: {}", "i32").into())?;
+        let i64_ty = Type::parse(context, "i64").ok_or_else(|| format!("Failed to parse type: {}", "i64").into())?;
+        let f32_ty = Type::parse(context, "f32").ok_or_else(|| format!("Failed to parse type: {}", "f32").into())?;
+        let f64_ty = Type::parse(context, "f64").ok_or_else(|| format!("Failed to parse type: {}", "f64").into())?;
+        let f16_ty = Type::parse(context, "f16").ok_or_else(|| format!("Failed to parse type: {}", "f16").into())?;
+        let bf16_ty = Type::parse(context, "bf16").ok_or_else(|| format!("Failed to parse type: {}", "bf16").into())?;
+        let i1_ty = Type::parse(context, "i1").ok_or_else(|| format!("Failed to parse type: {}", "i1").into())?;
+        let i4_ty = Type::parse(context, "i4").ok_or_else(|| format!("Failed to parse type: {}", "i4").into())?;
+        let i8_ty = Type::parse(context, "i8").ok_or_else(|| format!("Failed to parse type: {}", "i8").into())?;
+        let i16_ty = Type::parse(context, "i16").ok_or_else(|| format!("Failed to parse type: {}", "i16").into())?;
+        let i128_ty = Type::parse(context, "i128").ok_or_else(|| format!("Failed to parse type: {}", "i128").into())?;
+        let ptr_ty = Type::parse(context, "!llvm.ptr").ok_or_else(|| format!("Failed to parse type: {}", "!llvm.ptr").into())?;
+        let none_ty = Type::parse(context, "none").ok_or_else(|| format!("Failed to parse type: {}", "none").into())?;
 
         Self {
             context,
@@ -425,10 +410,10 @@ impl<'c> MeliorGenerator<'c> {
         for ty_str in &["f32", "f64", "i32", "i64", "bf16"] {
             let func_name = format!("printMemref{}", ty_str.to_uppercase());
             let unranked_memref_ty =
-                Type::parse(self.context, &format!("memref<*x{}>", ty_str)).unwrap();
+                Type::parse(self.context, &format!("memref<*x{}>", ty_str))?;
 
             let func_ty = melior::ir::attribute::TypeAttribute::new(
-                Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()")).unwrap(),
+                Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()"))?,
             );
 
             let decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
@@ -448,8 +433,7 @@ impl<'c> MeliorGenerator<'c> {
                     ),
                 ])
                 .add_regions([melior::ir::Region::new()])
-                .build()
-                .unwrap();
+                .build()?;
 
             self.module.body().append_operation(decl);
         }
@@ -473,8 +457,7 @@ impl<'c> MeliorGenerator<'c> {
                 ),
             ])
             .add_regions([melior::ir::Region::new()])
-            .build()
-            .unwrap();
+            .build()?;
         self.module.body().append_operation(sig_init_decl);
 
         for module_prog in modules.values() {
@@ -544,7 +527,7 @@ impl<'c> MeliorGenerator<'c> {
             if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
                 continue;
             }
-            let (ret_ty, arg_tys) = self.functions.get(name).unwrap();
+            let (ret_ty, arg_tys) = self.functions.get(name).ok_or_else(|| format!("Function not found: {}", name).into())?;
 
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
@@ -576,7 +559,7 @@ impl<'c> MeliorGenerator<'c> {
                 ]);
 
             let region = melior::ir::Region::new();
-            let func_op = builder.add_regions([region]).build().unwrap();
+            let func_op = builder.add_regions([region]).build()?;
 
             body.append_operation(func_op);
         }
@@ -625,10 +608,10 @@ impl<'c> MeliorGenerator<'c> {
             "module {{ func.func private @dummy() loc(fused<{}>[\"{}\":1:1]) }}",
             di_subp_str, self.current_filename
         );
-        let dummy_module = melior::ir::Module::parse(self.context, &mlir_str).unwrap();
+        let dummy_module = melior::ir::Module::parse(self.context, &mlir_str).ok_or_else(|| format!("Failed to parse module: {}", &mlir_str).into())?;
         use melior::ir::operation::OperationLike;
         use melior::ir::BlockLike;
-        let dummy_op = dummy_module.body().first_operation().unwrap();
+        let dummy_op = dummy_module.body().first_operation().ok_or_else(|| "No first operation".to_string().into())?;
         let func_loc = dummy_op.location();
 
         let _region = Region::new();
@@ -642,7 +625,7 @@ impl<'c> MeliorGenerator<'c> {
 
         // Map arguments into the environment
         for (i, (name, ast_ty)) in func.params.iter().enumerate() {
-            let arg_val = current_block.argument(i).unwrap().into();
+            let arg_val = current_block.argument(i)?.into();
             self.env
                 .insert(name.to_string().into(), (arg_val, arg_tys[i]));
             self.ast_env.insert(name.to_string().into(), ast_ty.clone());
@@ -661,8 +644,7 @@ impl<'c> MeliorGenerator<'c> {
                         .into(),
                     )])
                     .add_results(&[])
-                    .build()
-                    .unwrap();
+                    .build()?;
             current_block.append_operation(sig_init_call);
         }
 
@@ -689,15 +671,13 @@ impl<'c> MeliorGenerator<'c> {
                         melior::ir::Identifier::new(self.context, "value"),
                         melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let c0 = c0_op.result(0).unwrap().into();
+            let c0 = c0_op.result(0)?.into();
             current_block.append_operation(
                 melior::ir::operation::OperationBuilder::new("func.return", self.loc())
                     .add_operands(&[c0])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         } else if let ast::Type::Struct(name, _) = &func.return_type {
             if name.as_ref() == "void" {
@@ -708,8 +688,7 @@ impl<'c> MeliorGenerator<'c> {
                 if !has_return {
                     current_block.append_operation(
                         melior::ir::operation::OperationBuilder::new("func.return", self.loc())
-                            .build()
-                            .unwrap(),
+                            .build()?,
                     );
                 }
             }
@@ -731,15 +710,14 @@ impl<'c> MeliorGenerator<'c> {
         if is_main {
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "llvm.emit_c_interface"),
-                melior::ir::attribute::Attribute::parse(self.context, "unit").unwrap(),
+                melior::ir::attribute::Attribute::parse(self.context, "unit").ok_or_else(|| format!("Failed to parse attribute: {}", "unit").into())?,
             ));
         }
 
         let func_op = melior::ir::operation::OperationBuilder::new("func.func", func_loc)
             .add_attributes(&func_attributes)
             .add_regions([region])
-            .build()
-            .unwrap();
+            .build()?;
 
         Ok(func_op)
     }
@@ -884,7 +862,7 @@ impl<'c> MeliorGenerator<'c> {
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap();
+                        ?;
                     }
                     return self.i32_ty;
                 }
@@ -949,7 +927,7 @@ impl<'c> MeliorGenerator<'c> {
                             field_types.join(", ")
                         )
                     } else if let Some(enum_def) = self.enums.get(name).cloned() {
-                        let ty_arg = args.first().unwrap();
+                        let ty_arg = args.first().ok_or_else(|| "Expected at least one arg".to_string().into())?;
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
                             if v_name == "Some".into() {
@@ -1049,7 +1027,7 @@ impl<'c> MeliorGenerator<'c> {
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap();
+                        ?;
                     }
                 }
                 "i32".to_string()
@@ -1058,7 +1036,7 @@ impl<'c> MeliorGenerator<'c> {
                 return self.ptr_ty;
             }
             ast::Type::Closure(_, _) => {
-                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
+                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>")?;
             }
             ast::Type::Module(..) => "none".to_string(),
             ast::Type::Const(expr) => {
@@ -1258,9 +1236,8 @@ impl<'c> MeliorGenerator<'c> {
                     )
                     .add_operands(&[idx_val])
                     .add_results(&[self.index_ty])
-                    .build()
-                    .unwrap();
-                    block.append_operation(cast_op).result(0).unwrap().into()
+                    .build()?;
+                    block.append_operation(cast_op).result(0)?.into()
                 } else {
                     idx_val
                 };
