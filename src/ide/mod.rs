@@ -92,11 +92,33 @@ impl Analysis {
             return diagnostics;
         }
         
-        let modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
-        let global_env = GlobalAstEnv::build(&modules);
+        use crate::syntax::macro_expand::MacroExpander;
+        
+        let mut modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
+        
+        // 1. Macro Expansion
+        let mut global_macros = std::collections::HashMap::new();
+        for m in modules.iter() {
+            for mac in &m.macros {
+                global_macros.insert(mac.name.clone(), mac.rules.clone());
+            }
+        }
+        let mut expander = MacroExpander::new(&global_macros);
+        for m in modules.iter_mut() {
+            let _ = expander.expand_module(m); // Ignore expansion errors for IDE
+        }
+        
+        // 2. Name Resolution
+        let symbol_map = crate::resolver::build_symbol_map(&modules);
+        for m in modules.iter_mut() {
+            m.resolve_names(&symbol_map);
+        }
+
+        let global_env_modules: Vec<_> = modules.iter().map(|m| m.clone_signature()).collect();
+        let global_env = GlobalAstEnv::build(&global_env_modules);
         let session = std::sync::Arc::new(GlobalSession::new(0));
 
-        for p in loader.loaded_modules.values_mut() {
+        for p in &mut modules {
             for func in &mut p.functions {
                 let mut worker_state = LocalWorkerState::new(session.clone());
                 let mut checker = TypeChecker::new(&global_env, &mut worker_state);

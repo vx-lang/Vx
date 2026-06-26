@@ -180,10 +180,10 @@ impl<'a> TypeChecker<'a> {
                 // Return the specified type or Unknown if void
                 e.returns.clone().unwrap_or(Type::Unknown)
             }
-            Expr::MacroCall(m) => panic!(
-                "Macros should be expanded before type checking: macro `{}` at {:?}",
-                m.name, m.span
-            ),
+            Expr::MacroCall(_) => {
+                self.errors.push("Macro failed to expand".to_string());
+                crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32) // Fallback type
+            }
         }
     }
 

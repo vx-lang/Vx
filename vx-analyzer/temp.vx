@@ -1,12 +1,29 @@
-// RUN: vxc %s --emit-mlir | FileCheck %s
-
-import std::box;
+//===- loop_continue.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Reproducer for `continue` inside a counted `for` loop. Prior to the fix the
+// continue branch jumped to the condition block without supplying the required
+// loop-index block argument (invalid IR) and skipped the loop increment.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
 
 fn main() -> i32 {
-  let heap_val = Box<i32>::new (42);
-  heap_val.free();
+  // Sum only the values >= 5 in 0..10 by `continue`-ing on the smaller ones.
+  // 5 + 6 + 7 + 8 + 9 = 35
+  let mut sum : i32 = 0;
+  for i in 0..10 {
+    if i < 5 {
+      continue;
+    }
+    sum += i;
+  }
+  print!("sum=");
+  print!(sum);
   return 0;
 }
 
-// CHECK: func.func @"Box::new_{{.*}}"
-// CHECK: call @malloc
+// EXPECT: sum=35

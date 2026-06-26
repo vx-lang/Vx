@@ -194,28 +194,43 @@ fn extract_number(json: &str, key: &str) -> Option<i64> {
 }
 
 fn unescape_json(s: &str) -> String {
-    let mut out = String::new();
+    let mut res = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            if let Some(nc) = chars.next() {
-                match nc {
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    '\"' => out.push('\"'),
-                    '\\' => out.push('\\'),
+            if let Some(next) = chars.next() {
+                match next {
+                    'n' => res.push('\n'),
+                    'r' => res.push('\r'),
+                    't' => res.push('\t'),
+                    '\\' => res.push('\\'),
+                    '"' => res.push('"'),
                     _ => {
-                        out.push('\\');
-                        out.push(nc);
+                        res.push('\\');
+                        res.push(next);
                     }
                 }
             }
         } else {
-            out.push(c);
+            res.push(c);
         }
     }
-    out
+    res
+}
+
+fn escape_json(s: &str) -> String {
+    let mut res = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => res.push_str("\\n"),
+            '\r' => res.push_str("\\r"),
+            '\t' => res.push_str("\\t"),
+            '\\' => res.push_str("\\\\"),
+            '"' => res.push_str("\\\""),
+            _ => res.push(c),
+        }
+    }
+    res
 }
 
 fn send_message(stdout: &mut std::io::Stdout, msg: &str) {
