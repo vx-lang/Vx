@@ -1,292 +1,255 @@
-use std::io::{self, Read, Write};
-use vxc::ide::AnalysisHost;
+use lsp_server::{Connection, Message, Request, RequestId, Response};
+use lsp_types::{
+    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Hover,
+    HoverContents, HoverProviderCapability, MarkedString, Position, PublishDiagnosticsParams,
+    Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+};
+use serde_json::Value;
+use std::error::Error;
+use vxc::ide::{AnalysisHost, IdeDiagnostic};
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("/Users/adityak/go/Vx/vx-analyzer/analyzer.log")
         .unwrap();
-    writeln!(log_file, "--- vx-analyzer started ---").unwrap();
+    use std::io::Write;
+    writeln!(log_file, "--- vx-analyzer started (lsp-server) ---").unwrap();
 
-    let mut host = AnalysisHost::new();
-    let mut stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let (connection, io_threads) = Connection::stdio();
 
-    loop {
-        // Read headers
-        let mut content_length = 0;
-        let mut header = String::new();
-        let mut byte = [0u8; 1];
+    let server_capabilities = serde_json::to_value(&ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        ..Default::default()
+    })
+    .unwrap();
+    let _initialization_params = connection.initialize(server_capabilities)?;
 
-        loop {
-            if stdin.read_exact(&mut byte).is_err() {
-                return;
-            }
-            let c = byte[0] as char;
-            header.push(c);
-            if header.ends_with("\r\n\r\n") {
-                break;
-            }
-        }
+    writeln!(log_file, "Initialized").unwrap();
 
-        // Parse Content-Length
-        for line in header.split("\r\n") {
-            if line.starts_with("Content-Length: ") {
-                if let Ok(len) = line[16..].trim().parse::<usize>() {
-                    content_length = len;
-                }
-            }
-        }
+    main_loop(connection)?;
+    io_threads.join()?;
 
-        if content_length == 0 {
-            continue;
-        }
-
-        let mut body = vec![0u8; content_length];
-        if stdin.read_exact(&mut body).is_err() {
-            return;
-        }
-
-        let body_str = String::from_utf8_lossy(&body).to_string();
-        writeln!(log_file, "Received payload: {}", body_str).unwrap();
-
-        // Hacky JSON extraction
-        let method = extract_string(&body_str, "method");
-        let id = extract_number(&body_str, "id");
-
-        if let Some(m) = method {
-            if m == "initialize" {
-                if let Some(req_id) = id {
-                    let response = format!(
-                        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"capabilities\":{{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true}}}}}}",
-                        req_id
-                    );
-                    send_message(&mut stdout, &response);
-                }
-            } else if m == "initialized" {
-                // Log initialized
-                log_message(&mut stdout, "vx-analyzer custom initialized!");
-            } else if m == "textDocument/didOpen" {
-                if let Some(uri) = extract_nested_string(&body_str, "textDocument", "uri") {
-                    if let Some(text) = extract_nested_string(&body_str, "textDocument", "text") {
-                        let text = unescape_json(&text);
-                        host.apply_change(uri.clone(), text.clone());
-                        let analysis = host.snapshot();
-                        let diagnostics = analysis.diagnostics(&uri);
-                        send_diagnostics(&mut stdout, &uri, diagnostics);
-                    }
-                }
-            } else if m == "textDocument/didChange" {
-                if let Some(uri) = extract_nested_string(&body_str, "textDocument", "uri") {
-                    if let Some(text) = extract_nested_string(&body_str, "contentChanges", "text") {
-                        let text = unescape_json(&text);
-                        host.apply_change(uri.clone(), text.clone());
-                        let analysis = host.snapshot();
-                        let diagnostics = analysis.diagnostics(&uri);
-                        send_diagnostics(&mut stdout, &uri, diagnostics);
-                    }
-                }
-            } else if m == "textDocument/definition" {
-                if let Some(req_id) = id {
-                    // MVP: return empty for now
-                    let response =
-                        format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":null}}", req_id);
-                    send_message(&mut stdout, &response);
-                }
-            } else if m == "textDocument/hover" {
-                if let Some(req_id) = id {
-                    if let Some(uri) = extract_nested_string(&body_str, "textDocument", "uri") {
-                        let line =
-                            extract_nested_number(&body_str, "position", "line").unwrap_or(0);
-                        let character =
-                            extract_nested_number(&body_str, "position", "character").unwrap_or(0);
-
-                        let analysis = host.snapshot();
-                        if let Some(hover) = analysis.hover(&uri, line, character) {
-                            let response = format!(
-                                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"contents\":{{\"kind\":\"markdown\",\"value\":{}}}}},\"range\":{{\"start\":{{\"line\":{},\"character\":{}}},\"end\":{{\"line\":{},\"character\":{}}}}}}}}}",
-                                req_id,
-                                escape_json(&hover.value),
-                                hover.line_start,
-                                hover.col_start,
-                                hover.line_end,
-                                hover.col_end
-                            );
-                            send_message(&mut stdout, &response);
-                        } else {
-                            let response = format!(
-                                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":null}}",
-                                req_id
-                            );
-                            send_message(&mut stdout, &response);
-                        }
-                    }
-                }
-            } else if m == "textDocument/references" {
-                if let Some(req_id) = id {
-                    let response =
-                        format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":null}}", req_id);
-                    send_message(&mut stdout, &response);
-                }
-            }
-        }
-    }
+    writeln!(log_file, "Shut down").unwrap();
+    Ok(())
 }
 
-fn extract_string(json: &str, key: &str) -> Option<String> {
-    let key_str = format!("\"{}\"", key);
-    if let Some(idx) = json.find(&key_str) {
-        let mut start = idx + key_str.len();
-        let bytes = json.as_bytes();
-
-        // Skip spaces and colons
-        while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b':') {
-            start += 1;
-        }
-
-        if start < bytes.len() && bytes[start] == b'"' {
-            start += 1;
-            let mut end = start;
-            let mut escaped = false;
-            while end < bytes.len() {
-                if bytes[end] == b'\\' && !escaped {
-                    escaped = true;
-                } else if bytes[end] == b'"' && !escaped {
-                    break;
-                } else {
-                    escaped = false;
-                }
-                end += 1;
-            }
-            return Some(json[start..end].to_string());
-        }
-    }
-    None
-}
-
-fn extract_nested_string(json: &str, obj: &str, key: &str) -> Option<String> {
-    let key_str = format!("\"{}\"", obj);
-    if let Some(idx) = json.find(&key_str) {
-        let start = idx + key_str.len();
-        extract_string(&json[start..], key)
-    } else {
-        None
-    }
-}
-
-fn extract_number(json: &str, key: &str) -> Option<i64> {
-    let key_str = format!("\"{}\"", key);
-    if let Some(idx) = json.find(&key_str) {
-        let mut start = idx + key_str.len();
-        let bytes = json.as_bytes();
-
-        while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b':') {
-            start += 1;
-        }
-
-        let mut end = start;
-        while end < json.len() && json.chars().nth(end).unwrap().is_ascii_digit() {
-            end += 1;
-        }
-        if start < end {
-            return json[start..end].parse::<i64>().ok();
-        }
-    }
-    None
-}
-
-fn unescape_json(s: &str) -> String {
-    let mut res = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next) = chars.next() {
-                match next {
-                    'n' => res.push('\n'),
-                    'r' => res.push('\r'),
-                    't' => res.push('\t'),
-                    '\\' => res.push('\\'),
-                    '"' => res.push('"'),
-                    _ => {
-                        res.push('\\');
-                        res.push(next);
-                    }
-                }
-            }
-        } else {
-            res.push(c);
-        }
-    }
-    res
-}
-
-fn escape_json(s: &str) -> String {
-    let mut res = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\n' => res.push_str("\\n"),
-            '\r' => res.push_str("\\r"),
-            '\t' => res.push_str("\\t"),
-            '\\' => res.push_str("\\\\"),
-            '"' => res.push_str("\\\""),
-            _ => res.push(c),
-        }
-    }
-    res
-}
-
-fn send_message(stdout: &mut std::io::Stdout, msg: &str) {
-    write!(stdout, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).unwrap();
-    stdout.flush().unwrap();
-}
-
-fn log_message(stdout: &mut std::io::Stdout, msg: &str) {
-    let escaped = msg.replace("\"", "\\\"");
-    let response = format!(
-        "{{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\",\"params\":{{\"type\":4,\"message\":\"{}\"}}}}",
-        escaped
-    );
-    send_message(stdout, &response);
-}
-
-fn extract_nested_number(json: &str, obj: &str, key: &str) -> Option<usize> {
-    let key_str = format!("\"{}\"", obj);
-    if let Some(idx) = json.find(&key_str) {
-        let start = idx + key_str.len();
-        extract_number(&json[start..], key).map(|n| n as usize)
-    } else {
-        None
-    }
-}
-
-fn send_diagnostics(
-    stdout: &mut std::io::Stdout,
-    uri: &str,
-    diagnostics: Vec<vxc::ide::IdeDiagnostic>,
-) {
-    let mut diags_json = String::new();
-    diags_json.push('[');
-    for (i, d) in diagnostics.iter().enumerate() {
-        if i > 0 {
-            diags_json.push(',');
-        }
-        let escaped_msg = d.message.replace("\"", "\\\"").replace("\n", "\\n");
-        diags_json.push_str(&format!(
-            "{{\"range\":{{\"start\":{{\"line\":{},\"character\":{}}},\"end\":{{\"line\":{},\"character\":{}}}}},\"severity\":1,\"message\":\"{}\"}}",
-            d.line_start, d.col_start, d.line_end, d.col_end, escaped_msg
-        ));
-    }
-    diags_json.push(']');
-
-    let response = format!(
-        "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"{}\",\"diagnostics\":{}}}}}",
-        uri, diags_json
-    );
+fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut log_file = std::fs::OpenOptions::new()
         .append(true)
         .open("/Users/adityak/go/Vx/vx-analyzer/analyzer.log")
         .unwrap();
-    writeln!(log_file, "Sending diagnostics: {}", response).unwrap();
-    send_message(stdout, &response);
+    use std::io::Write;
+
+    let mut host = AnalysisHost::new();
+
+    for msg in &connection.receiver {
+        writeln!(log_file, "Received msg: {:?}", msg).unwrap();
+        match msg {
+            Message::Request(req) => {
+                if connection.handle_shutdown(&req)? {
+                    return Ok(());
+                }
+                writeln!(log_file, "got request: {:?}", req).unwrap();
+                match req.method.as_str() {
+                    "textDocument/hover" => {
+                        let (id, params) = cast::<lsp_types::request::HoverRequest>(req)?;
+                        let analysis = host.snapshot();
+                        let uri = params
+                            .text_document_position_params
+                            .text_document
+                            .uri
+                            .as_str();
+                        let line = params.text_document_position_params.position.line as usize;
+                        let character =
+                            params.text_document_position_params.position.character as usize;
+
+                        let result = if let Some(hover) = analysis.hover(uri, line, character) {
+                            Some(Hover {
+                                contents: HoverContents::Scalar(MarkedString::String(hover.value)),
+                                range: Some(Range {
+                                    start: Position::new(
+                                        hover.line_start as u32,
+                                        hover.col_start as u32,
+                                    ),
+                                    end: Position::new(hover.line_end as u32, hover.col_end as u32),
+                                }),
+                            })
+                        } else {
+                            None
+                        };
+                        let result = serde_json::to_value(&result).unwrap();
+                        let resp = Response {
+                            id,
+                            result: Some(result),
+                            error: None,
+                        };
+                        connection.sender.send(Message::Response(resp))?;
+                    }
+                    "textDocument/definition" => {
+                        let (id, params) = cast::<lsp_types::request::GotoDefinition>(req)?;
+                        let analysis = host.snapshot();
+                        let uri = params
+                            .text_document_position_params
+                            .text_document
+                            .uri
+                            .as_str();
+                        let line = params.text_document_position_params.position.line as usize;
+                        let character =
+                            params.text_document_position_params.position.character as usize;
+
+                        let result =
+                            if let Some(def_loc) = analysis.goto_definition(uri, line, character) {
+                                let loc = lsp_types::Location {
+                                    uri: lsp_types::Url::parse(&def_loc.uri).unwrap_or_else(|_| {
+                                        params
+                                            .text_document_position_params
+                                            .text_document
+                                            .uri
+                                            .clone()
+                                    }),
+                                    range: Range {
+                                        start: Position::new(
+                                            def_loc.line_start as u32,
+                                            def_loc.col_start as u32,
+                                        ),
+                                        end: Position::new(
+                                            def_loc.line_end as u32,
+                                            def_loc.col_end as u32,
+                                        ),
+                                    },
+                                };
+                                Some(lsp_types::GotoDefinitionResponse::Scalar(loc))
+                            } else {
+                                None
+                            };
+                        let result = serde_json::to_value(&result).unwrap();
+                        let resp = Response {
+                            id,
+                            result: Some(result),
+                            error: None,
+                        };
+                        connection.sender.send(Message::Response(resp))?;
+                    }
+                    "textDocument/formatting" => {
+                        let (id, params) = cast::<lsp_types::request::Formatting>(req)?;
+                        let uri = params.text_document.uri.as_str();
+                        let analysis = host.snapshot();
+
+                        if let Some(text) = analysis.files.get(uri) {
+                            let formatted =
+                                vxc::formatter::format_file(text, params.options.tab_size as usize);
+                            let lines: Vec<&str> = text.lines().collect();
+                            let last_line = lines.len().saturating_sub(1) as u32;
+                            let last_col = lines.last().map(|s| s.len() as u32).unwrap_or(0);
+
+                            let edit = lsp_types::TextEdit {
+                                range: Range {
+                                    start: Position::new(0, 0),
+                                    end: Position::new(last_line, last_col),
+                                },
+                                new_text: formatted,
+                            };
+                            let result = serde_json::to_value(&vec![edit]).unwrap();
+                            let resp = Response {
+                                id,
+                                result: Some(result),
+                                error: None,
+                            };
+                            connection.sender.send(Message::Response(resp))?;
+                        } else {
+                            let resp = Response {
+                                id,
+                                result: Some(Value::Null),
+                                error: None,
+                            };
+                            connection.sender.send(Message::Response(resp))?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Message::Response(_resp) => {
+                writeln!(log_file, "got response: {:?}", _resp).unwrap();
+            }
+            Message::Notification(not) => {
+                writeln!(log_file, "got notification: {:?}", not).unwrap();
+                match not.method.as_str() {
+                    "textDocument/didOpen" => {
+                        let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
+                        let uri = params.text_document.uri.as_str().to_string();
+                        let text = params.text_document.text;
+                        host.apply_change(uri.clone(), text);
+
+                        let analysis = host.snapshot();
+                        let diagnostics = analysis.diagnostics(&uri);
+                        send_diagnostics(&connection, params.text_document.uri, diagnostics)?;
+                    }
+                    "textDocument/didChange" => {
+                        let mut params: DidChangeTextDocumentParams =
+                            serde_json::from_value(not.params)?;
+                        let uri = params.text_document.uri.as_str().to_string();
+                        if let Some(change) = params.content_changes.pop() {
+                            let text = change.text;
+                            host.apply_change(uri.clone(), text);
+
+                            let analysis = host.snapshot();
+                            let diagnostics = analysis.diagnostics(&uri);
+                            send_diagnostics(&connection, params.text_document.uri, diagnostics)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cast<R>(req: Request) -> Result<(RequestId, R::Params), Box<dyn Error + Sync + Send>>
+where
+    R: lsp_types::request::Request,
+    R::Params: serde::de::DeserializeOwned,
+{
+    req.extract(R::METHOD)
+        .map_err(|e| format!("cast failed: {:?}", e).into())
+}
+
+fn send_diagnostics(
+    connection: &Connection,
+    uri: Url,
+    diagnostics: Vec<IdeDiagnostic>,
+) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let diags: Vec<Diagnostic> = diagnostics
+        .into_iter()
+        .map(|d| Diagnostic {
+            range: Range {
+                start: Position::new(d.line_start as u32, d.col_start as u32),
+                end: Position::new(d.line_end as u32, d.col_end as u32),
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some("vxc".to_string()),
+            message: d.message,
+            related_information: None,
+            tags: None,
+            data: None,
+        })
+        .collect();
+
+    let params = PublishDiagnosticsParams {
+        uri,
+        diagnostics: diags,
+        version: None,
+    };
+
+    let not = lsp_server::Notification::new("textDocument/publishDiagnostics".to_string(), params);
+    connection.sender.send(Message::Notification(not))?;
+    Ok(())
 }

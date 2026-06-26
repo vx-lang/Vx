@@ -21,6 +21,15 @@ pub struct HoverInfo {
     pub col_end: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct DefinitionLocation {
+    pub uri: String,
+    pub line_start: usize,
+    pub col_start: usize,
+    pub line_end: usize,
+    pub col_end: usize,
+}
+
 #[derive(Default)]
 pub struct AnalysisHost {
     pub files: HashMap<String, String>,
@@ -151,9 +160,157 @@ impl Analysis {
         diagnostics
     }
 
-    pub fn hover(&self, _uri: &str, _line: usize, _col: usize) -> Option<HoverInfo> {
-        // To be implemented: extract the node at the specified line/col
-        // and return hover text representing the type or docstring.
+    pub fn hover(&self, uri: &str, line: usize, col: usize) -> Option<HoverInfo> {
+        let text = self.files.get(uri)?;
+
+        // 1. Find the word under the cursor
+        let target_line = text.lines().nth(line)?;
+
+        if col >= target_line.len() {
+            return None;
+        }
+
+        let mut start_col = col;
+        let mut end_col = col;
+        let chars: Vec<char> = target_line.chars().collect();
+
+        while start_col > 0
+            && (chars[start_col - 1].is_alphanumeric() || chars[start_col - 1] == '_')
+        {
+            start_col -= 1;
+        }
+
+        while end_col < chars.len() && (chars[end_col].is_alphanumeric() || chars[end_col] == '_') {
+            end_col += 1;
+        }
+
+        if start_col == end_col {
+            return None; // Not a word
+        }
+
+        let word: String = chars[start_col..end_col].iter().collect();
+        let word_sym: crate::symbol::Symbol = word.clone().into();
+
+        // 2. Load the environment to resolve the word
+        let temp_path = "/Users/adityak/go/Vx/vx-analyzer/temp_hover.vx";
+        std::fs::write(temp_path, text).unwrap_or_default();
+        let mut loader = ModuleLoader::new();
+        if loader.load_main(temp_path).is_err() {
+            // Still try to show hover even if there's a parse error
+        }
+
+        let modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
+        let global_env_modules: Vec<_> = modules.iter().map(|m| m.clone_signature()).collect();
+        let global_env = GlobalAstEnv::build(&global_env_modules);
+
+        // 3. Look up the word in the environment
+        let mut hover_text = String::new();
+
+        if let Some((ty, is_unsafe, params, top, _, _)) = global_env.functions.get(&word_sym) {
+            hover_text.push_str(&format!("fn {}(", word));
+            let params_str = params
+                .iter()
+                .map(|t| format!("{}", t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            hover_text.push_str(&params_str);
+            hover_text.push_str(&format!(") -> {}", ty));
+            if *is_unsafe {
+                hover_text = format!("unsafe {}", hover_text);
+            }
+            hover_text.push_str(&format!(" [Topology: {:?}]", top.kind()));
+        } else if let Some(struct_decl) = global_env.structs.get(&word_sym) {
+            hover_text.push_str(&format!("struct {} {{\n", word));
+            for (name, ty) in &struct_decl.fields {
+                hover_text.push_str(&format!("    {}: {},\n", name, ty));
+            }
+            hover_text.push('}');
+        } else if let Some(enum_decl) = global_env.enums.get(&word_sym) {
+            hover_text.push_str(&format!("enum {} {{\n", word));
+            for var in &enum_decl.variants {
+                hover_text.push_str(&format!("    {},\n", var.0));
+            }
+            hover_text.push('}');
+        }
+
+        if hover_text.is_empty() {
+            return None;
+        }
+
+        Some(HoverInfo {
+            value: hover_text,
+            line_start: line,
+            col_start: start_col,
+            line_end: line,
+            col_end: end_col,
+        })
+    }
+
+    pub fn goto_definition(
+        &self,
+        uri: &str,
+        line: usize,
+        col: usize,
+    ) -> Option<DefinitionLocation> {
+        let text = self.files.get(uri)?;
+
+        let target_line = text.lines().nth(line)?;
+        if col >= target_line.len() {
+            return None;
+        }
+
+        let mut start_col = col;
+        let mut end_col = col;
+        let chars: Vec<char> = target_line.chars().collect();
+
+        while start_col > 0
+            && (chars[start_col - 1].is_alphanumeric() || chars[start_col - 1] == '_')
+        {
+            start_col -= 1;
+        }
+        while end_col < chars.len() && (chars[end_col].is_alphanumeric() || chars[end_col] == '_') {
+            end_col += 1;
+        }
+
+        if start_col == end_col {
+            return None;
+        }
+        let word: String = chars[start_col..end_col].iter().collect();
+
+        // Simple heuristic: search all files for definition
+        for (search_uri, search_text) in &self.files {
+            let mut lexer = crate::lexer::Lexer::new(search_text);
+            let tokens = lexer.tokenize();
+
+            for i in 0..tokens.len() {
+                // If it's `fn`, `struct`, `enum`, `let`, `mut` followed by the word
+                match tokens[i].kind {
+                    crate::lexer::TokenTypeBase::Fn
+                    | crate::lexer::TokenTypeBase::Struct
+                    | crate::lexer::TokenTypeBase::Enum
+                    | crate::lexer::TokenTypeBase::Let
+                    | crate::lexer::TokenTypeBase::Mut
+                        if i + 1 < tokens.len() =>
+                    {
+                        if let crate::lexer::TokenTypeBase::Identifier(id) = tokens[i + 1].kind
+                        {
+                            if id == word {
+                                return Some(DefinitionLocation {
+                                    uri: search_uri.clone(),
+                                    line_start: tokens[i + 1].line.saturating_sub(1),
+                                    col_start: tokens[i + 1].column.saturating_sub(1),
+                                    line_end: tokens[i + 1].line.saturating_sub(1),
+                                    col_end: tokens[i + 1].column.saturating_sub(1)
+                                        + tokens[i + 1].length,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         None
     }
 }

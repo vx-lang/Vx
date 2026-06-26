@@ -5,3 +5,10 @@ edition = "2024"
 
 [dependencies]
 Vx = { path = ".." }
+lsp-server = "0.7.6"
+lsp-types = "0.95.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
