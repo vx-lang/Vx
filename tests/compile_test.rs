@@ -34,7 +34,7 @@ fn init_rayon() {
 use rayon::prelude::*;
 
 use vxc::jit::execute_mlir;
-use vxc::sema::TypeChecker;
+use vxc::hir::TypeChecker;
 
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
@@ -49,11 +49,11 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     }
     let mut program_arr = loader.into_programs();
 
-    let ast_idx = program_arr
+    let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(syntax_idx);
 
     let mut global_macros = std::collections::HashMap::new();
     for p in &program_arr {
@@ -64,7 +64,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             if !expect_pass {
@@ -86,7 +86,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -132,11 +132,11 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         .expect("Failed to parse");
     let mut program_arr = loader.into_programs();
 
-    let ast_idx = program_arr
+    let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(syntax_idx);
 
     let mut global_macros = std::collections::HashMap::new();
     for p in &program_arr {
@@ -147,7 +147,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -163,7 +163,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -197,11 +197,11 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     melior::utility::register_all_llvm_translations(&context);
     vxc::codegen::register_vx_dialect(&context);
 
-    let module_asts = std::collections::HashMap::new();
+    let module_syntaxes = std::collections::HashMap::new();
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     codegen
-        .generate(&monomorphized_program, &module_asts)
+        .generate(&monomorphized_program, &module_syntaxes)
         .unwrap();
     let mlir_str = codegen.into_module().as_operation().to_string();
 
@@ -238,11 +238,11 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     }
     let mut program_arr = loader.into_programs();
 
-    let ast_idx = program_arr
+    let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(syntax_idx);
 
     let mut global_macros = std::collections::HashMap::new();
     for p in &program_arr {
@@ -253,7 +253,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -269,7 +269,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -300,7 +300,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     monomorphized_program
         .structs
         .extend(checker.generated_structs);
-    let mut module_asts = std::collections::HashMap::new();
+    let mut module_syntaxes = std::collections::HashMap::new();
     for mut p in program_arr {
         let before = p.functions.len();
         p.functions.retain(|f| f.generics.is_empty());
@@ -317,7 +317,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
                 );
             }
         }
-        module_asts.insert(p.module_path.clone(), p);
+        module_syntaxes.insert(p.module_path.clone(), p);
     }
 
     let context = melior::Context::new();
@@ -332,7 +332,7 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     println!("DEBUG: codegen.generate");
     codegen
-        .generate(&monomorphized_program, &module_asts)
+        .generate(&monomorphized_program, &module_syntaxes)
         .unwrap();
     println!("DEBUG: codegen.into_module");
     let mut module = codegen.into_module();
@@ -779,11 +779,11 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     }
     let mut program_arr = loader.into_programs();
 
-    let ast_idx = program_arr
+    let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(syntax_idx);
 
     let mut global_macros = std::collections::HashMap::new();
     for p in &program_arr {
@@ -794,7 +794,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
     for p in &mut program_arr {
         if let Err(e) = expander.expand_module(p) {
             return Err(format!(
@@ -810,7 +810,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -839,10 +839,10 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
 
-    let mut module_asts = std::collections::HashMap::new();
+    let mut module_syntaxes = std::collections::HashMap::new();
     for mut p in program_arr {
         p.functions.retain(|f| f.generics.is_empty());
-        module_asts.insert(p.module_path.clone(), p);
+        module_syntaxes.insert(p.module_path.clone(), p);
     }
 
     let context = melior::Context::new();
@@ -855,7 +855,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
     codegen
-        .generate(&monomorphized_program, &module_asts)
+        .generate(&monomorphized_program, &module_syntaxes)
         .unwrap();
 
     let mut module = codegen.into_module();
@@ -1025,17 +1025,17 @@ fn test_melior_matmul() -> Result<(), String> {
         .expect("Failed to parse");
     let mut program_arr = loader.into_programs();
 
-    let ast_idx = program_arr
+    let syntax_idx = program_arr
         .iter()
         .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
         .unwrap();
-    let mut program = program_arr.remove(ast_idx);
+    let mut program = program_arr.remove(syntax_idx);
 
     let mut global_macros = std::collections::HashMap::new();
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::ast::MacroExpander::new(&global_macros);
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
@@ -1043,7 +1043,7 @@ fn test_melior_matmul() -> Result<(), String> {
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
     all_programs.push(program.clone());
-    let env = vxc::sema::GlobalAstEnv::build(&all_programs);
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     let mut checked_program = program.clone();

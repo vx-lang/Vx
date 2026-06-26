@@ -1,6 +1,6 @@
 use super::*;
-use crate::ast;
-use crate::ast::*;
+use crate::syntax;
+use crate::syntax::*;
 use melior::ir::{
     attribute::{FloatAttribute, IntegerAttribute},
     operation::OperationBuilder,
@@ -34,7 +34,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 for (i, stmt) in tb.iter().enumerate() {
                     let is_last = i == tb.len() - 1;
                     if is_last {
-                        if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
+                        if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
                             expr,
                             has_semi,
                             ..
@@ -125,7 +125,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         for (i, stmt) in then_block.iter().enumerate() {
             let is_last = i == then_block.len() - 1;
             if is_last && has_ret {
-                if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
+                if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
                     expr,
                     has_semi: false,
                     ..
@@ -184,7 +184,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             for (i, stmt) in else_block.iter().enumerate() {
                 let is_last = i == else_block.len() - 1;
                 if is_last && has_ret {
-                    if let ast::Statement::ExprStmt(ast::stmt::ExprStmtStmt {
+                    if let syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
                         expr,
                         has_semi: false,
                         ..
@@ -261,7 +261,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             span: _,
         } = self;
 
-        if let Expr::Range(ast::expr::RangeExpr {
+        if let Expr::Range(syntax::expr::RangeExpr {
             start,
             end,
             span: _,

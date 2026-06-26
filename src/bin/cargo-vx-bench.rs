@@ -60,9 +60,9 @@ fn main() -> i32 {
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [ast.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
-    let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
+    let mut checker = vxc::hir::TypeChecker::new(&env, &mut worker);
     for f in &mut ast.functions {
         checker.check_function(f);
     }
@@ -76,7 +76,7 @@ fn main() -> i32 {
     }
 
     let monomorphized_ast = ast;
-    let module_asts = std::collections::HashMap::new();
+    let module_syntaxes = std::collections::HashMap::new();
     let context = melior::Context::new();
     let registry = melior::dialect::DialectRegistry::new();
     melior::utility::register_all_dialects(&registry);
@@ -85,7 +85,7 @@ fn main() -> i32 {
     vxc::codegen::register_vx_dialect(&context);
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, file_name.clone());
-    let _ = codegen.generate(&monomorphized_ast, &module_asts);
+    let _ = codegen.generate(&monomorphized_ast, &module_syntaxes);
     let mut module = codegen.into_module();
     vxc::codegen::lower_to_llvm(&context, &mut module)
         .map_err(|e| anyhow::anyhow!("Lowering Error: {:?}", e))?;

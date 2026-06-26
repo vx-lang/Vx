@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String) -> ParseResult<'a, Expr> {
+    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String, span: Span) -> ParseResult<'a, Expr> {
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;
@@ -388,7 +388,7 @@ impl<'a> Parser<'a> {
                 Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::Identifier(IdentifierExpr {
                     name: call_name.into(),
-                    span: Span::default(),
+                    span: span.clone(),
                 }))
             }
         } else if self.match_token(&TokenType::DoubleColon) {
@@ -397,7 +397,7 @@ impl<'a> Parser<'a> {
             Self::apply_type_args(&mut call_name, parsed_type_args);
             Ok(Expr::Identifier(IdentifierExpr {
                 name: call_name.into(),
-                span: Span::default(),
+                span,
             }))
         }
     }
@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
                             if bang_token.line == ident_line && bang_token.column == ident_end_col {
                                 is_macro = true;
                             } else {
-                                return Err(self.error(&format!("Macro invocations must not have spaces between the macro name and '!'. Did you mean `{}!`?", s)));
+                                return Err(self.error_at(&token, &format!("Macro invocations must not have spaces between the macro name and '!'. Did you mean `{}!`?", s)));
                             }
                         }
 
@@ -749,13 +749,18 @@ impl<'a> Parser<'a> {
                                 span: Span::default(),
                             })
                         } else {
-                            self.parse_identifier_expr(s.to_string())?
+                            let span = crate::syntax::Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            };
+                            self.parse_identifier_expr(s.to_string(), span)?
                         }
                     }
-                    TokenType::Return => self.parse_identifier_expr("return".to_string())?,
+                    TokenType::Return => self.parse_identifier_expr("return".to_string(), crate::syntax::Span { line: token.line, column: token.column, length: token.length })?,
                     TokenType::Number(s) => {
                         let (num_str, el_ty) =
-                            infer_number_literal(s).map_err(|e| self.error(&e))?;
+                            infer_number_literal(s).map_err(|e| self.error_at(&token, &e))?;
 
                         Expr::Number(NumberExpr {
                             value: num_str.into(),
@@ -866,7 +871,7 @@ impl<'a> Parser<'a> {
                     }
                     _ => {
                         return Err(
-                            self.error(&format!("Expected expression, found {:?}", token.kind))
+                            self.error_at(&token, &format!("Expected expression, found {:?}", token.kind))
                         )
                     }
                 }

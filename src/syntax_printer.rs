@@ -12,7 +12,7 @@
 // fidelity.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::*;
+use crate::syntax::*;
 use std::io::Write;
 
 pub struct AstPrinter;

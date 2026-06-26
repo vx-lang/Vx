@@ -17,7 +17,7 @@ pub mod types;
 // the Vx language.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::*;
+use crate::syntax::*;
 use crate::lexer::{Token, TokenType};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,6 +153,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(crate) fn error_at(&self, token: &Token<'a>, msg: &str) -> ParserError<'a> {
+        ParserError::Custom {
+            message: msg.to_string(),
+            token: token.clone(),
+        }
+    }
+
     pub(crate) fn parse_token_tree(&mut self) -> ParseResult<'a, TokenTree> {
         let peek = self.peek();
         match &peek.kind {
@@ -242,21 +249,21 @@ mod tests {
         assert!(formatted.contains("("));
     }
 
-    fn parse_type(input: &str) -> crate::ast::Type {
+    fn parse_type(input: &str) -> crate::syntax::Type {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         parser.parse_type().expect("Failed to parse type")
     }
 
-    fn parse_topology(input: &str) -> crate::ast::Topology {
+    fn parse_topology(input: &str) -> crate::syntax::Topology {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         parser.parse_topology().expect("Failed to parse topology")
     }
 
-    fn parse_memory_space(input: &str) -> crate::ast::MemorySpace {
+    fn parse_memory_space(input: &str) -> crate::syntax::MemorySpace {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);

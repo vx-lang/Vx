@@ -12,20 +12,20 @@
 // invoking the compiler on a project.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::MacroExpander;
-use crate::ast::VxModule;
+use crate::syntax::MacroExpander;
+use crate::syntax::VxModule;
 use crate::diagnostic::DiagnosticLevel;
 use crate::lexer::Lexer;
 use crate::metadata::VxMetadata;
 #[cfg(debug_assertions)]
 use crate::parallel_architecture_verifier::verify_arch::*;
 use crate::parser::Parser;
-use crate::sema::{GlobalAstEnv, TypeChecker};
+use crate::hir::{GlobalAstEnv, TypeChecker};
 use crate::session::{GlobalSession, LocalWorkerState};
 use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.
-use crate::ast;
+use crate::syntax;
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -154,10 +154,10 @@ fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) {
 
 type TypeCheckResult = (
     crate::diagnostic::DiagnosticsVec,
-    Vec<(ast::Function, u64)>,
+    Vec<(syntax::Function, u64)>,
     LocalWorkerState,
     usize,
-    Vec<ast::StructDecl>,
+    Vec<syntax::StructDecl>,
 );
 
 fn type_check_phase(
@@ -388,8 +388,8 @@ fn codegen_and_metadata_phase(
     all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
 ) -> Result<(), PipelineError> {
     let num_modules = parsed_modules.len();
-    let mut module_buckets: Vec<Vec<ast::Function>> = vec![Vec::new(); num_modules];
-    let mut module_struct_buckets: Vec<Vec<ast::StructDecl>> = vec![Vec::new(); num_modules];
+    let mut module_buckets: Vec<Vec<syntax::Function>> = vec![Vec::new(); num_modules];
+    let mut module_struct_buckets: Vec<Vec<syntax::StructDecl>> = vec![Vec::new(); num_modules];
 
     let mut module_hash_to_index: std::collections::HashMap<u64, usize> =
         std::collections::HashMap::new();

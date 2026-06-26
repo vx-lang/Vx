@@ -198,6 +198,7 @@ pub enum Statement {
     Break(BreakStmt),
     Continue(ContinueStmt),
     MacroCall(MacroCallStmt),
+    Error(Span),
 }
 
 macro_rules! delegate_stmt {
@@ -214,6 +215,7 @@ macro_rules! delegate_stmt {
             Statement::Break($inner) => $expr,
             Statement::Continue($inner) => $expr,
             Statement::MacroCall($inner) => $expr,
+            Statement::Error(_) => unreachable!(),
         }
     };
 }
@@ -285,6 +287,7 @@ impl Statement {
                 has_semi: e.has_semi,
                 span: e.span,
             }),
+            Statement::Error(s) => Statement::Error(*s),
         }
     }
 

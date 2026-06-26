@@ -11,7 +11,7 @@
 // across complex nested scopes, module boundaries, and shadowing scenarios.
 //
 //===----------------------------------------------------------------------===//
-use vxc::ast::{Function, Span, StructDecl, Type, VxModule};
+use vxc::syntax::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
 
 #[test]
@@ -33,7 +33,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::CPU,
+            topology: vxc::syntax::Topology::CPU,
             return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
@@ -71,7 +71,7 @@ fn test_local_name_resolution() -> Result<(), String> {
     Ok(())
 }
 
-use vxc::ast::{Expr, LetDeclStmt, MemorySpace, NumberExpr, Statement};
+use vxc::syntax::{Expr, LetDeclStmt, MemorySpace, NumberExpr, Statement};
 
 #[test]
 fn test_unresolved_symbol_remains_none() -> Result<(), String> {
@@ -88,7 +88,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             name: "get_vector".into(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::CPU,
+            topology: vxc::syntax::Topology::CPU,
             return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
@@ -131,7 +131,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
         functions: vec![Function {
             name: "compute".into(),
             generics: vec![],
-            topology: vxc::ast::Topology::CPU,
+            topology: vxc::syntax::Topology::CPU,
             params: vec![(
                 "m".into(),
                 // &mut Matrix
@@ -142,7 +142,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
                     region_id: 0,
                 },
             )],
-            return_type: Type::Scalar(vxc::ast::ElementType::Bool),
+            return_type: Type::Scalar(vxc::syntax::ElementType::Bool),
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
@@ -189,8 +189,8 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             name: "setup".into(),
             generics: vec![],
             params: vec![],
-            topology: vxc::ast::Topology::CPU,
-            return_type: Type::Scalar(vxc::ast::ElementType::Bool),
+            topology: vxc::syntax::Topology::CPU,
+            return_type: Type::Scalar(vxc::syntax::ElementType::Bool),
             requires: Vec::new(),
             ensures: Vec::new(),
             // let c: Config = ...;
@@ -200,7 +200,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
                 ty_ann: Some(Type::Struct("Config".into(), None)),
                 expr: Expr::Number(NumberExpr {
                     value: "0.0".to_string().into(),
-                    ty: Some(vxc::ast::ElementType::F64),
+                    ty: Some(vxc::syntax::ElementType::F64),
                     span: Span::default(),
                 }),
                 span: Span::default(),

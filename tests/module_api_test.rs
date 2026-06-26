@@ -44,7 +44,7 @@ fn test_parse_module_api() -> Result<(), String> {
     Ok(())
 }
 
-use vxc::ast::VxModule;
+use vxc::syntax::VxModule;
 
 #[test]
 fn test_ak_module_add_function() -> Result<(), String> {

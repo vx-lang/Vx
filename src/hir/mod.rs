@@ -10,13 +10,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::ast::*;
+use crate::syntax::*;
 
+pub mod bytecode;
 pub mod env;
 pub mod expr;
 pub mod prover;
 pub mod stmt;
 
+pub use bytecode::*;
 pub use env::*;
 #[cfg(test)]
 mod tests {

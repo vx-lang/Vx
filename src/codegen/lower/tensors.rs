@@ -1,13 +1,13 @@
 use super::*;
-use crate::ast;
-use crate::ast::*;
+use crate::syntax;
+use crate::syntax::*;
 use melior::ir::{
     attribute::{FlatSymbolRefAttribute, IntegerAttribute},
     operation::OperationBuilder,
     Identifier, Type, Value,
 };
 
-impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
+impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
@@ -35,7 +35,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
         }
 
         let mut needs_yield = true;
-        if let Some(ast::Statement::Return(_)) = self.stmts.last() {
+        if let Some(syntax::Statement::Return(_)) = self.stmts.last() {
             needs_yield = false;
         }
 
@@ -97,7 +97,7 @@ impl<'c> LowerToMelior<'c> for ast::SpawnOnExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::TransferExpr {
+impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
@@ -109,10 +109,10 @@ impl<'c> LowerToMelior<'c> for ast::TransferExpr {
 
         // Map memory space to topology target.
         let target_topology_id = match self.space {
-            ast::MemorySpace::CPUDRAM => 0,
-            ast::MemorySpace::NPUHBM => 100,
-            ast::MemorySpace::LocalSRAM => 200,
-            ast::MemorySpace::NicRam | ast::MemorySpace::RemoteHbm => 300,
+            syntax::MemorySpace::CPUDRAM => 0,
+            syntax::MemorySpace::NPUHBM => 100,
+            syntax::MemorySpace::LocalSRAM => 200,
+            syntax::MemorySpace::NicRam | syntax::MemorySpace::RemoteHbm => 300,
         };
 
         let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();

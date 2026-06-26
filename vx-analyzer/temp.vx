@@ -1,0 +1,12 @@
+// RUN: vxc %s --emit-mlir | FileCheck %s
+
+import std::box;
+
+fn main() -> i32 {
+  let heap_val = Box<i32>::new (42);
+  heap_val.free();
+  return 0;
+}
+
+// CHECK: func.func @"Box::new_{{.*}}"
+// CHECK: call @malloc

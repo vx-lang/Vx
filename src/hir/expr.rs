@@ -2218,10 +2218,7 @@ impl<'a> TypeChecker<'a> {
                     // Create a unique mangled name for the method based on the target type
                     let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
 
-                    println!(
-                        "MethodCall: method={} base_ty={:?} mangled_name={}",
-                        _method, base_ty, mangled_name
-                    );
+
 
                     method_func.name = mangled_name.clone().into();
 
@@ -2732,7 +2729,7 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
+                let func = if let Some(&f) = self.env.syntax_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors.push(format!(
@@ -2776,7 +2773,7 @@ impl<'a> TypeChecker<'a> {
                 cotangent,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
+                let func = if let Some(&f) = self.env.syntax_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors
@@ -2819,7 +2816,7 @@ impl<'a> TypeChecker<'a> {
                 tangent,
                 span: _,
             }) => {
-                let func = if let Some(&f) = self.env.ast_functions.get(&*target_fn) {
+                let func = if let Some(&f) = self.env.syntax_functions.get(&*target_fn) {
                     f.clone()
                 } else {
                     self.errors

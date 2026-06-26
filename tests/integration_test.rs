@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
-use vxc::sema::TypeChecker;
+use vxc::hir::TypeChecker;
 
 #[test]
 fn test_distributed_matmul_integration() -> Result<(), String> {
@@ -53,7 +53,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [ast.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut ast.functions {
@@ -74,7 +74,7 @@ fn distributed_matmul(a: Tensor<f32>, b: Tensor<f32>) -> Pinned<Tensor<f32>, Top
     Ok(())
 }
 
-fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::Diagnostic>> {
+fn run_pipeline(input: &str) -> Result<vxc::syntax::Program, Vec<vxc::diagnostic::Diagnostic>> {
     let mut lexer = Lexer::new(input);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(&tokens, input);
@@ -83,7 +83,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
         .map_err(|e| vec![vxc::diagnostic::Diagnostic::error(e.format(input))])?;
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [program.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     for f in &mut program.functions {
@@ -97,7 +97,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
 
     if !has_errors {
         let monomorphized_ast = program;
-        let module_asts = std::collections::HashMap::new();
+        let module_syntaxes = std::collections::HashMap::new();
         let context = melior::Context::new();
         let registry = melior::dialect::DialectRegistry::new();
         melior::utility::register_all_dialects(&registry);
@@ -107,7 +107,7 @@ fn run_pipeline(input: &str) -> Result<vxc::ast::Program, Vec<vxc::diagnostic::D
 
         let mut codegen =
             vxc::codegen::MeliorGenerator::new(&context, "integration_test".to_string());
-        let _ = codegen.generate(&monomorphized_ast, &module_asts);
+        let _ = codegen.generate(&monomorphized_ast, &module_syntaxes);
         let mut module = codegen.into_module();
         vxc::codegen::lower_to_llvm(&context, &mut module).unwrap();
         let _mlir_str = module.as_operation();

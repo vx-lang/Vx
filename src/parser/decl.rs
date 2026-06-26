@@ -23,7 +23,7 @@ impl<'a> Parser<'a> {
     fn parse_comma_separated_params(
         &mut self,
     ) -> ParseResult<'a, Vec<(crate::symbol::Symbol, Type)>> {
-        let mut params: Vec<(crate::symbol::Symbol, crate::ast::types::Type)> = Vec::new();
+        let mut params: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 let name = self.expect_identifier("Expected parameter name")?;
@@ -126,8 +126,8 @@ impl<'a> Parser<'a> {
         })) = body.last().cloned()
         {
             if !has_semi {
-                let last_idx = body.len() - 1;
-                body[last_idx] = Statement::Return(ReturnStmt { expr, span });
+                let lsyntax_idx = body.len() - 1;
+                body[lsyntax_idx] = Statement::Return(ReturnStmt { expr, span });
             }
         }
 
@@ -158,7 +158,7 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-        let mut fields: Vec<(crate::symbol::Symbol, crate::ast::types::Type)> = Vec::new();
+        let mut fields: Vec<(crate::symbol::Symbol, crate::syntax::types::Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let f_name = self.expect_identifier("Expected field name")?;
             self.consume(&TokenType::Colon, "Expected ':'")?;
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-        let mut variants: Vec<(crate::symbol::Symbol, Option<Vec<crate::ast::types::Type>>)> =
+        let mut variants: Vec<(crate::symbol::Symbol, Option<Vec<crate::syntax::types::Type>>)> =
             Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let v_name = self.expect_identifier("Expected enum variant name")?;

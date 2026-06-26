@@ -13,14 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 pub mod arch;
-pub mod ast;
-pub mod ast_printer;
+pub mod syntax;
+pub mod syntax_printer;
 pub mod borrow;
 pub mod codegen;
 pub mod diagnostic;
 pub mod driver;
 pub mod error;
 pub mod formatter;
+pub mod ide;
 pub mod gid;
 pub mod hash;
 pub mod hir;
@@ -35,14 +36,13 @@ pub mod plugin;
 pub mod registry;
 pub mod resolver;
 pub mod scratch;
-pub mod sema;
 pub mod session;
 pub mod suggest;
 pub mod symbol;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
 /// Useful for unit testing and interactive REPLs.
-pub fn parse_module(source: &str) -> Result<ast::VxModule, crate::error::Error> {
+pub fn parse_module(source: &str) -> Result<syntax::VxModule, crate::error::Error> {
     let mut lexer = lexer::Lexer::new(source);
     let tokens = lexer.tokenize();
     let mut parser = parser::Parser::new(&tokens, source);

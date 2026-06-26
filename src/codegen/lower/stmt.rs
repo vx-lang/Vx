@@ -1,6 +1,6 @@
 use super::*;
-use crate::ast;
-use crate::ast::*;
+use crate::syntax;
+use crate::syntax::*;
 use melior::ir::{
     attribute::{DenseI32ArrayAttribute, IntegerAttribute, TypeAttribute},
     operation::OperationBuilder,
@@ -92,10 +92,10 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             let ret_ty = c
                 .ret_ty
                 .clone()
-                .unwrap_or(ast::Type::Scalar(ast::ElementType::I32));
+                .unwrap_or(syntax::Type::Scalar(syntax::ElementType::I32));
             gen.ast_env.insert(
                 name.clone(),
-                ast::Type::Closure(func_args, Box::new(ret_ty)),
+                syntax::Type::Closure(func_args, Box::new(ret_ty)),
             );
         }
         gen.expected_type = prev_expected;
@@ -234,14 +234,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     gen.env.insert(name.to_string().into(), (rhs_val, rhs_ty));
                 }
             }
-        } else if let Expr::IndexAccess(ast::IndexAccessExpr {
+        } else if let Expr::IndexAccess(syntax::IndexAccessExpr {
             base,
             index: _,
             span: _,
         }) = lhs
         {
             if let Some((base_val, base_ty, indices, new_b)) = gen.flatten_indices(
-                &ast::Expr::IndexAccess(ast::IndexAccessExpr {
+                &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
                         Expr::IndexAccess(i) => i.index.clone(),
@@ -521,14 +521,14 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                     gen.env.insert(name.to_string().into(), (result_val, ty));
                 }
             }
-        } else if let Expr::IndexAccess(ast::IndexAccessExpr {
+        } else if let Expr::IndexAccess(syntax::IndexAccessExpr {
             base,
             index: _,
             span: _,
         }) = lhs
         {
             if let Some((mem_val, mem_ty, indices, new_b)) = gen.flatten_indices(
-                &ast::Expr::IndexAccess(ast::IndexAccessExpr {
+                &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
                     base: base.clone(),
                     index: match lhs {
                         Expr::IndexAccess(i) => i.index.clone(),

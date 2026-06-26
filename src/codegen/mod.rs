@@ -25,7 +25,7 @@ use melior::{
     Context,
 };
 
-use crate::ast::*;
+use crate::syntax::*;
 
 extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;

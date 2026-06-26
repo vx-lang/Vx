@@ -11,19 +11,19 @@
 //===----------------------------------------------------------------------===//
 use super::*;
 
-use crate::ast;
+use crate::syntax;
 use crate::codegen::lower::{LowerError, LowerToMelior};
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
-    pub(crate) ast_env: HashMap<crate::symbol::Symbol, ast::Type>,
-    pub(crate) structs: HashMap<crate::symbol::Symbol, ast::StructDecl>,
+    pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
+    pub(crate) structs: HashMap<crate::symbol::Symbol, syntax::StructDecl>,
     #[allow(clippy::type_complexity)]
     pub(crate) enums:
-        HashMap<crate::symbol::Symbol, Vec<(crate::symbol::Symbol, Option<Vec<ast::Type>>)>>,
+        HashMap<crate::symbol::Symbol, Vec<(crate::symbol::Symbol, Option<Vec<syntax::Type>>)>>,
     pub(crate) functions: HashMap<crate::symbol::Symbol, (Type<'c>, Vec<Type<'c>>)>,
-    pub(crate) ast_functions: HashMap<crate::symbol::Symbol, ast::Function>,
+    pub(crate) syntax_functions: HashMap<crate::symbol::Symbol, syntax::Function>,
     pub(crate) enzyme_decls: std::collections::HashSet<String>,
     pub string_counter: usize,
     pub current_return_type: Option<Type<'c>>,
@@ -38,7 +38,7 @@ pub struct MeliorGenerator<'c> {
     pub(crate) current_filename: String,
     pub(crate) di_compile_unit: Option<melior::ir::Attribute<'c>>,
     pub(crate) di_subprogram: Option<melior::ir::Attribute<'c>>,
-    pub current_span: ast::types::Span,
+    pub current_span: syntax::types::Span,
     pub(crate) index_ty: Type<'c>,
     pub(crate) i32_ty: Type<'c>,
     pub(crate) i64_ty: Type<'c>,
@@ -113,8 +113,8 @@ impl<'c> MeliorGenerator<'c> {
                             .into(),
                         )])
                         .add_results(&[to_ty])
-                        .build()?;
-                let dst: Value<'c, 'c> = block.append_operation(alloc_op).result(0)?.into();
+                        .build().unwrap();
+                let dst: Value<'c, 'c> = block.append_operation(alloc_op).result(0).unwrap().into();
 
                 let region = melior::ir::Region::new();
                 let fblock =
@@ -123,9 +123,9 @@ impl<'c> MeliorGenerator<'c> {
                     melior::ir::operation::OperationBuilder::new("linalg.yield", self.loc())
                         .add_operands(&[fblock
                             .argument(0)
-                            .map_err(|_| "Failed to get block argument".to_string().into())?
+                            .unwrap()
                             .into()])
-                        .build()?;
+                        .build().unwrap();
                 fblock.append_operation(yield_op);
                 region.append_block(fblock);
 
@@ -141,7 +141,7 @@ impl<'c> MeliorGenerator<'c> {
                             .into(),
                         )])
                         .add_regions([region])
-                        .build()?;
+                        .build().unwrap();
                 block.append_operation(fill_op);
                 return dst;
             }
@@ -151,36 +151,36 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extsi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
         if from_ty == self.i64_ty && to_ty == self.i32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.trunci", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
         if from_ty == self.f32_ty && to_ty == self.f64_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
         if from_ty == self.f32_ty && (to_ty == self.bf16_ty || to_ty == self.f16_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty) && to_ty == self.f32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
         if (from_ty == self.f64_ty || from_ty == self.f32_ty)
             && (to_ty == self.f32_ty || to_ty == self.f16_ty || to_ty == self.bf16_ty)
@@ -188,8 +188,8 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty)
@@ -198,24 +198,24 @@ impl<'c> MeliorGenerator<'c> {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
         if from_ty == self.i32_ty && (to_ty == self.f32_ty || to_ty == self.f64_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
         if (from_ty == self.f32_ty || from_ty == self.f64_ty) && to_ty == self.i32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
-                .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
         let from_str = from_ty.to_string();
@@ -228,8 +228,8 @@ impl<'c> MeliorGenerator<'c> {
                 melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
                     .add_operands(&[val])
                     .add_results(&[to_ty])
-                    .build()?;
-            return block.append_operation(cast_op).result(0)?.into();
+                    .build().unwrap();
+            return block.append_operation(cast_op).result(0).unwrap().into();
         }
 
         let is_int = |s: &str| s.starts_with("i") || s.starts_with("u");
@@ -247,8 +247,8 @@ impl<'c> MeliorGenerator<'c> {
                 let cast_op = melior::ir::operation::OperationBuilder::new(op_name, self.loc())
                     .add_operands(&[val])
                     .add_results(&[to_ty])
-                    .build()?;
-                return block.append_operation(cast_op).result(0)?.into();
+                    .build().unwrap();
+                return block.append_operation(cast_op).result(0).unwrap().into();
             }
         }
 
@@ -271,8 +271,8 @@ impl<'c> MeliorGenerator<'c> {
         )
         .add_operands(&[val])
         .add_results(&[to_ty])
-        .build()?;
-        block.append_operation(cast_op).result(0)?.into()
+        .build().unwrap();
+        block.append_operation(cast_op).result(0).unwrap().into()
     }
 
     pub fn new(context: &'c Context, filename: String) -> Self {
@@ -284,33 +284,33 @@ impl<'c> MeliorGenerator<'c> {
         let module = Module::new(location);
 
         let index_ty = Type::parse(context, "index")
-            .ok_or_else(|| format!("Failed to parse type: {}", "index").into())?;
+            .unwrap();
         let i32_ty = Type::parse(context, "i32")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i32").into())?;
+            .unwrap();
         let i64_ty = Type::parse(context, "i64")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i64").into())?;
+            .unwrap();
         let f32_ty = Type::parse(context, "f32")
-            .ok_or_else(|| format!("Failed to parse type: {}", "f32").into())?;
+            .unwrap();
         let f64_ty = Type::parse(context, "f64")
-            .ok_or_else(|| format!("Failed to parse type: {}", "f64").into())?;
+            .unwrap();
         let f16_ty = Type::parse(context, "f16")
-            .ok_or_else(|| format!("Failed to parse type: {}", "f16").into())?;
+            .unwrap();
         let bf16_ty = Type::parse(context, "bf16")
-            .ok_or_else(|| format!("Failed to parse type: {}", "bf16").into())?;
+            .unwrap();
         let i1_ty = Type::parse(context, "i1")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i1").into())?;
+            .unwrap();
         let i4_ty = Type::parse(context, "i4")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i4").into())?;
+            .unwrap();
         let i8_ty = Type::parse(context, "i8")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i8").into())?;
+            .unwrap();
         let i16_ty = Type::parse(context, "i16")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i16").into())?;
+            .unwrap();
         let i128_ty = Type::parse(context, "i128")
-            .ok_or_else(|| format!("Failed to parse type: {}", "i128").into())?;
+            .unwrap();
         let ptr_ty = Type::parse(context, "!llvm.ptr")
-            .ok_or_else(|| format!("Failed to parse type: {}", "!llvm.ptr").into())?;
+            .unwrap();
         let none_ty = Type::parse(context, "none")
-            .ok_or_else(|| format!("Failed to parse type: {}", "none").into())?;
+            .unwrap();
 
         Self {
             context,
@@ -320,7 +320,7 @@ impl<'c> MeliorGenerator<'c> {
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
-            ast_functions: HashMap::new(),
+            syntax_functions: HashMap::new(),
             enzyme_decls: std::collections::HashSet::new(),
             string_counter: 0,
             current_return_type: None,
@@ -335,7 +335,7 @@ impl<'c> MeliorGenerator<'c> {
             current_filename: filename,
             di_compile_unit: None,
             di_subprogram: None,
-            current_span: ast::types::Span {
+            current_span: syntax::types::Span {
                 line: 1,
                 column: 1,
                 length: 1,
@@ -426,12 +426,12 @@ impl<'c> MeliorGenerator<'c> {
         // Declare printMemref functions
         for ty_str in &["f32", "f64", "i32", "i64", "bf16"] {
             let func_name = format!("printMemref{}", ty_str.to_uppercase());
-            let unranked_memref_ty = Type::parse(self.context, &format!("memref<*x{}>", ty_str))?;
+            let unranked_memref_ty = Type::parse(self.context, &format!("memref<*x{}>", ty_str)).unwrap();
 
             let func_ty = melior::ir::attribute::TypeAttribute::new(Type::parse(
                 self.context,
                 &format!("({unranked_memref_ty}) -> ()"),
-            )?);
+            ).unwrap());
 
             let decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
                 .add_attributes(&[
@@ -498,7 +498,7 @@ impl<'c> MeliorGenerator<'c> {
                     arg_tys.push(self.lower_type(ty));
                 }
                 self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
-                self.ast_functions.insert(func.name.clone(), func.clone());
+                self.syntax_functions.insert(func.name.clone(), func.clone());
             }
         }
 
@@ -509,7 +509,7 @@ impl<'c> MeliorGenerator<'c> {
                 arg_tys.push(self.lower_type(ty));
             }
             self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
-            self.ast_functions.insert(func.name.clone(), func.clone());
+            self.syntax_functions.insert(func.name.clone(), func.clone());
         }
 
         // Emit module functions
@@ -547,7 +547,7 @@ impl<'c> MeliorGenerator<'c> {
             let (ret_ty, arg_tys) = self
                 .functions
                 .get(name)
-                .ok_or_else(|| format!("Function not found: {}", name).into())?;
+                .ok_or_else(|| crate::codegen::lower::LowerError::from(format!("Function not found: {}", name)))?;
 
             let mut actual_ret_tys = Vec::new();
             if ret_ty.to_string() != "none" {
@@ -629,13 +629,13 @@ impl<'c> MeliorGenerator<'c> {
             di_subp_str, self.current_filename
         );
         let dummy_module = melior::ir::Module::parse(self.context, &mlir_str)
-            .ok_or_else(|| format!("Failed to parse module: {}", &mlir_str).into())?;
+            .ok_or_else(|| crate::codegen::lower::LowerError::from(format!("Failed to parse module: {}", &mlir_str)))?;
         use melior::ir::operation::OperationLike;
         use melior::ir::BlockLike;
         let dummy_op = dummy_module
             .body()
             .first_operation()
-            .ok_or_else(|| "No first operation".to_string().into())?;
+            .ok_or_else(|| crate::codegen::lower::LowerError::from("No first operation".to_string()))?;
         let func_loc = dummy_op.location();
 
         let _region = Region::new();
@@ -703,7 +703,7 @@ impl<'c> MeliorGenerator<'c> {
                     .add_operands(&[c0])
                     .build()?,
             );
-        } else if let ast::Type::Struct(name, _) = &func.return_type {
+        } else if let syntax::Type::Struct(name, _) = &func.return_type {
             if name.as_ref() == "void" {
                 let has_return = func
                     .body
@@ -735,7 +735,7 @@ impl<'c> MeliorGenerator<'c> {
             func_attributes.push((
                 melior::ir::Identifier::new(self.context, "llvm.emit_c_interface"),
                 melior::ir::attribute::Attribute::parse(self.context, "unit")
-                    .ok_or_else(|| format!("Failed to parse attribute: {}", "unit").into())?,
+                    .ok_or_else(|| crate::codegen::lower::LowerError::from(format!("Failed to parse attribute: {}", "unit")))?,
             ));
         }
 
@@ -768,6 +768,7 @@ impl<'c> MeliorGenerator<'c> {
             Statement::Break(s) => LowerToMelior::lower(s, self, block),
             Statement::Continue(s) => LowerToMelior::lower(s, self, block),
             Statement::MacroCall(_) => panic!("Macros should be expanded before codegen"),
+            Statement::Error(_) => Ok(None),
         }
     }
 
@@ -815,12 +816,12 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    pub(crate) fn lower_type(&self, ty: &ast::Type) -> Type<'c> {
+    pub(crate) fn lower_type(&self, ty: &syntax::Type) -> Type<'c> {
         let ty_str = match ty {
-            ast::Type::Tensor(el_ty, dims, top) => {
+            syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
             }
-            ast::Type::Scalar(el_ty) => {
+            syntax::Type::Scalar(el_ty) => {
                 return match el_ty {
                     ElementType::F16 => self.f16_ty,
                     ElementType::F32 => self.f32_ty,
@@ -838,21 +839,21 @@ impl<'c> MeliorGenerator<'c> {
                     }
                 }
             }
-            ast::Type::Matrix => "tensor<?x?xf32>".to_string(),
-            ast::Type::Ref(inner, _mem) => {
+            syntax::Type::Matrix => "tensor<?x?xf32>".to_string(),
+            syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
-            ast::Type::Verified(inner) => return self.lower_type(inner),
-            ast::Type::Pinned(inner, _top) => {
+            syntax::Type::Verified(inner) => return self.lower_type(inner),
+            syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner).to_string();
                 inner_ty_str
             }
-            ast::Type::Borrow {
+            syntax::Type::Borrow {
                 inner,
                 mem_space: mem,
                 ..
             }
-            | ast::Type::Pointer(inner, mem, _) => {
+            | syntax::Type::Pointer(inner, mem, _) => {
                 let inner_str = self.lower_type_str(inner);
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
@@ -866,7 +867,7 @@ impl<'c> MeliorGenerator<'c> {
                     format!("!llvm.ptr<{}>", addr_space)
                 }
             }
-            ast::Type::Struct(name, _) => {
+            syntax::Type::Struct(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
@@ -886,7 +887,7 @@ impl<'c> MeliorGenerator<'c> {
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
-                        )?;
+                        ).unwrap_or_else(|| panic!("Failed to parse enum struct type"));
                     }
                     return self.i32_ty;
                 }
@@ -906,13 +907,13 @@ impl<'c> MeliorGenerator<'c> {
                     format!("!llvm.struct<\"{}\">", name)
                 }
             }
-            ast::Type::GenericInstance(base, args) => {
-                if let ast::Type::Struct(name, _) = &**base {
+            syntax::Type::GenericInstance(base, args) => {
+                if let syntax::Type::Struct(name, _) = &**base {
                     if let Some(decl) = self.structs.get(name).cloned() {
                         let mut field_types = Vec::new();
                         let mut mapping: std::collections::HashMap<
                             crate::symbol::Symbol,
-                            ast::Type,
+                            syntax::Type,
                         > = std::collections::HashMap::new();
                         for (i, param) in decl.generics.iter().enumerate() {
                             if i >= args.len() {
@@ -953,7 +954,7 @@ impl<'c> MeliorGenerator<'c> {
                     } else if let Some(enum_def) = self.enums.get(name).cloned() {
                         let ty_arg = args
                             .first()
-                            .ok_or_else(|| "Expected at least one arg".to_string().into())?;
+                            .unwrap();
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
                             if v_name == "Some".into() {
@@ -961,7 +962,7 @@ impl<'c> MeliorGenerator<'c> {
                                     if !types.is_empty() {
                                         let mut mapping: std::collections::HashMap<
                                             crate::symbol::Symbol,
-                                            ast::Type,
+                                            syntax::Type,
                                         > = std::collections::HashMap::new();
                                         mapping.insert("T".into(), ty_arg.clone());
                                         let sub_ty = types[0].substitute(&mapping);
@@ -1007,13 +1008,13 @@ impl<'c> MeliorGenerator<'c> {
                     panic!("GenericInstance base is not a Struct!");
                 }
             }
-            ast::Type::Generic(_, _) => {
+            syntax::Type::Generic(_, _) => {
                 panic!(
                     "Generic types should have been monomorphized before codegen! Got type: {:?}",
                     ty
                 );
             }
-            ast::Type::Simd(el_ty, n) => {
+            syntax::Type::Simd(el_ty, n) => {
                 let ty_str = match el_ty {
                     ElementType::F16 => "f16",
                     ElementType::F32 => "f32",
@@ -1032,7 +1033,7 @@ impl<'c> MeliorGenerator<'c> {
                 };
                 format!("vector<{}x{}>", n, ty_str)
             }
-            ast::Type::Enum(name, _) => {
+            syntax::Type::Enum(name, _) => {
                 if let Some(enum_def) = self.enums.get(name) {
                     if name.starts_with("Option<") {
                         let mut payload_ty_str = "none".to_string();
@@ -1052,39 +1053,39 @@ impl<'c> MeliorGenerator<'c> {
                         return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
-                        )?;
+                        ).unwrap_or_else(|| panic!("Failed to parse enum struct type"));
                     }
                 }
                 "i32".to_string()
             }
-            ast::Type::Function(_, _) => {
+            syntax::Type::Function(_, _) => {
                 return self.ptr_ty;
             }
-            ast::Type::Closure(_, _) => {
-                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>")?;
+            syntax::Type::Closure(_, _) => {
+                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             }
-            ast::Type::Module(..) => "none".to_string(),
-            ast::Type::Const(expr) => {
+            syntax::Type::Module(..) => "none".to_string(),
+            syntax::Type::Const(expr) => {
                 panic!(
                     "Cannot lower a const generic argument to an MLIR type: {:?}",
                     expr
                 );
             }
-            ast::Type::Unknown => "unknown".to_string(),
+            syntax::Type::Unknown => "unknown".to_string(),
         };
 
         Type::parse(self.context, &ty_str)
             .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str))
     }
 
-    pub(crate) fn lower_type_str(&self, ty: &ast::Type) -> String {
-        if let ast::Type::Function(_, _) = ty {
+    pub(crate) fn lower_type_str(&self, ty: &syntax::Type) -> String {
+        if let syntax::Type::Function(_, _) = ty {
             return "!llvm.ptr".to_string();
         }
-        if let ast::Type::Const(expr) = ty {
-            if let ast::Expr::Number(n) = &**expr {
+        if let syntax::Type::Const(expr) = ty {
+            if let syntax::Expr::Number(n) = &**expr {
                 return n.value.to_string();
-            } else if let ast::Expr::StringLiteral(s) = &**expr {
+            } else if let syntax::Expr::StringLiteral(s) = &**expr {
                 return s.value.to_string();
             } else {
                 return format!("{:?}", expr)
@@ -1102,8 +1103,8 @@ impl<'c> MeliorGenerator<'c> {
     fn lower_tensor_type(
         &self,
         el_ty: &ElementType,
-        dims: &[ast::Expr],
-        top: &Option<ast::Topology>,
+        dims: &[syntax::Expr],
+        top: &Option<syntax::Topology>,
     ) -> Type<'c> {
         let ty_str = match el_ty {
             ElementType::F16 => "f16",
@@ -1127,7 +1128,7 @@ impl<'c> MeliorGenerator<'c> {
             shape_str = "?x?".to_string();
         } else {
             for (i, dim) in dims.iter().enumerate() {
-                if let ast::Expr::Number(NumberExpr {
+                if let syntax::Expr::Number(NumberExpr {
                     value: n_str,
                     ty: _,
                     span: _,
@@ -1150,15 +1151,15 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         let addr_space = match top {
-            Some(ast::Topology::CPU)
-            | Some(ast::Topology::CpuAvx512)
-            | Some(ast::Topology::CpuNeon)
-            | Some(ast::Topology::Current) => 0,
-            Some(ast::Topology::NPU(_)) | Some(ast::Topology::Slice(_, _, _)) => 1,
-            Some(ast::Topology::AccCore(_)) => 2,
-            Some(ast::Topology::AMX) => 3,
-            Some(ast::Topology::ANE) => 4,
-            Some(ast::Topology::GPU) => 5,
+            Some(syntax::Topology::CPU)
+            | Some(syntax::Topology::CpuAvx512)
+            | Some(syntax::Topology::CpuNeon)
+            | Some(syntax::Topology::Current) => 0,
+            Some(syntax::Topology::NPU(_)) | Some(syntax::Topology::Slice(_, _, _)) => 1,
+            Some(syntax::Topology::AccCore(_)) => 2,
+            Some(syntax::Topology::AMX) => 3,
+            Some(syntax::Topology::ANE) => 4,
+            Some(syntax::Topology::GPU) => 5,
             None => 0,
         };
 
@@ -1172,20 +1173,20 @@ impl<'c> MeliorGenerator<'c> {
             .unwrap_or_else(|| panic!("Failed to parse MLIR memref type: {}", memref_str))
     }
 
-    pub fn infer_ast_type(&self, expr: &Expr) -> Option<ast::Type> {
+    pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
         match expr {
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
-                if let ast::Type::Borrow { inner, .. } = base_ty {
+                if let syntax::Type::Borrow { inner, .. } = base_ty {
                     base_ty = *inner;
                 }
                 let mut generic_args = None;
-                if let ast::Type::GenericInstance(inner, args) = base_ty {
+                if let syntax::Type::GenericInstance(inner, args) = base_ty {
                     base_ty = *inner;
                     generic_args = Some(args);
                 }
-                if let ast::Type::Struct(s_name, _) = base_ty {
+                if let syntax::Type::Struct(s_name, _) = base_ty {
                     if let Some(decl) = self.structs.get(&s_name) {
                         for (n, t) in &decl.fields {
                             if n == &ma.member {
@@ -1193,7 +1194,7 @@ impl<'c> MeliorGenerator<'c> {
                                 if let Some(args) = generic_args {
                                     let mut mapping: std::collections::HashMap<
                                         crate::symbol::Symbol,
-                                        ast::Type,
+                                        syntax::Type,
                                     > = std::collections::HashMap::new();
                                     for (i, param) in decl.generics.iter().enumerate() {
                                         if i < args.len() {
@@ -1210,20 +1211,20 @@ impl<'c> MeliorGenerator<'c> {
                 None
             }
             Expr::FunctionCall(fc) => self
-                .ast_functions
+                .syntax_functions
                 .get(&fc.name)
                 .map(|decl| decl.return_type.clone()),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
-                if let ast::Type::Borrow { inner, .. } = base_ty {
+                if let syntax::Type::Borrow { inner, .. } = base_ty {
                     base_ty = *inner;
                 }
-                if let ast::Type::GenericInstance(inner, _) = base_ty {
+                if let syntax::Type::GenericInstance(inner, _) = base_ty {
                     base_ty = *inner;
                 }
-                if let ast::Type::Struct(s_name, _) = base_ty {
+                if let syntax::Type::Struct(s_name, _) = base_ty {
                     let mangled = format!("{}_{}", s_name, mc.method_name);
-                    self.ast_functions
+                    self.syntax_functions
                         .get(mangled.as_str())
                         .map(|decl| decl.return_type.clone())
                 } else {
@@ -1245,7 +1246,7 @@ impl<'c> MeliorGenerator<'c> {
         melior::ir::BlockRef<'c, 'c>,
     )> {
         match expr {
-            Expr::IndexAccess(ast::IndexAccessExpr {
+            Expr::IndexAccess(syntax::IndexAccessExpr {
                 base,
                 index: idx,
                 span: _,
@@ -1261,8 +1262,8 @@ impl<'c> MeliorGenerator<'c> {
                     )
                     .add_operands(&[idx_val])
                     .add_results(&[self.index_ty])
-                    .build()?;
-                    block.append_operation(cast_op).result(0)?.into()
+                    .build().ok()?;
+                    block.append_operation(cast_op).result(0).ok()?.into()
                 } else {
                     idx_val
                 };

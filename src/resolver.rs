@@ -12,7 +12,7 @@
 // variables and functions actually exist.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::VxModule;
+use crate::syntax::VxModule;
 use crate::gid::TypeId;
 use crate::hash::{compute_module_hash, DefPath};
 use std::collections::HashMap;

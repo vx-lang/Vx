@@ -20,7 +20,7 @@ use melior::ir::{
     Identifier,
 };
 
-use crate::ast;
+use crate::syntax;
 mod control_flow;
 mod expr;
 mod stmt;
@@ -124,19 +124,19 @@ impl MeliorOpInfo for LogicalOp {
     }
 }
 
-pub(crate) fn topology_to_i32(top: &ast::Topology) -> i32 {
-    use ast::Topology::*;
+pub(crate) fn topology_to_i32(top: &syntax::Topology) -> i32 {
+    use syntax::Topology::*;
     match top {
         CPU => 0,
         NPU(expr) => {
-            if let ast::Expr::Number(n) = &**expr {
+            if let syntax::Expr::Number(n) = &**expr {
                 100 + n.value.parse::<i32>().unwrap_or(0)
             } else {
                 100
             }
         }
         AccCore(expr) => {
-            if let ast::Expr::Number(n) = &**expr {
+            if let syntax::Expr::Number(n) = &**expr {
                 200 + n.value.parse::<i32>().unwrap_or(0)
             } else {
                 200
@@ -678,7 +678,7 @@ pub(crate) fn lower_print_call<'c>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::{Expr, NumberExpr, Span, Topology};
+    use syntax::{Expr, NumberExpr, Span, Topology};
 
     fn make_num_expr(val: &str) -> Box<Expr> {
         Box::new(Expr::Number(NumberExpr::new(
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn test_topology_to_i32_npu_non_numeric_falls_back() {
         // NPU with a non-numeric expr should fall back to 100
-        let ident_expr = Box::new(Expr::Identifier(ast::IdentifierExpr {
+        let ident_expr = Box::new(Expr::Identifier(syntax::IdentifierExpr {
             name: "i".into(),
             span: Span::default(),
         }));

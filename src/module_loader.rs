@@ -12,7 +12,7 @@
 // module registry.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::Program;
+use crate::syntax::Program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ impl std::fmt::Display for ModuleError {
 
 pub struct ModuleLoader {
     search_paths: Vec<PathBuf>,
-    loaded_modules: HashMap<crate::symbol::Symbol, Program>,
+    pub loaded_modules: HashMap<crate::symbol::Symbol, Program>,
 }
 
 impl ModuleLoader {
@@ -132,7 +132,7 @@ impl ModuleLoader {
 
         // Need to keep the source string alive, we might leak it or use a string interner.
         // For now, since AST holds string slices to source, `ModuleLoader` should probably return Strings too?
-        // Wait! `Parser` takes `&'a str`. `ast::Program` borrows from source? No, `ast::Program` clones strings. Let's check `parser.rs`.
+        // Wait! `Parser` takes `&'a str`. `syntax::Program` borrows from source? No, `syntax::Program` clones strings. Let's check `parser.rs`.
         // `Parser::new(&tokens, source)` takes `&'a str`.
         // Does `Program` contain lifetimes? No. `Program` uses `String`.
 

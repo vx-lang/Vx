@@ -36,7 +36,7 @@ impl SourceSpan {
     }
 
     /// Convert from the AST-level Span (which has the same fields).
-    pub fn from_ast_span(span: &crate::ast::Span) -> Self {
+    pub fn from_ast_span(span: &crate::syntax::Span) -> Self {
         Self {
             line: span.line,
             column: span.column,

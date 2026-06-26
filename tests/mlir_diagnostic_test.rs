@@ -158,9 +158,9 @@ fn test_remark() -> f32 {
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [ast.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
-    let mut checker = vxc::sema::TypeChecker::new(&env, &mut worker);
+    let mut checker = vxc::hir::TypeChecker::new(&env, &mut worker);
     for f in &mut ast.functions {
         checker.check_function(f);
     }
@@ -177,9 +177,9 @@ fn test_remark() -> f32 {
     }
 
     // Generate MLIR
-    let module_asts = std::collections::HashMap::new();
+    let module_syntaxes = std::collections::HashMap::new();
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
-    let _ = codegen.generate(&ast, &module_asts);
+    let _ = codegen.generate(&ast, &module_syntaxes);
     let mut module = codegen.into_module();
 
     // 2. Trigger an optimization remark using a pass that analyzes the IR and emits remarks

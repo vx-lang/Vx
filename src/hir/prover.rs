@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::ast::*;
+use crate::syntax::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 

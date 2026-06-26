@@ -42,7 +42,7 @@ rstest = "0.19"
 [workspace]
 members = ["refactor_tool",
     "stdlib/rust_core"
-]
+, "vx-analyzer"]
 
 [lints.clippy]
 if_same_then_else = "allow"

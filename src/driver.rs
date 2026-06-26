@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::ast::MacroExpander;
-use crate::ast_printer::AstPrinter;
+use crate::syntax::MacroExpander;
+use crate::syntax_printer::AstPrinter;
 use crate::diagnostic::DiagnosticLevel;
 use clap::{Parser, ValueEnum};
 use codegen::MeliorGenerator;
@@ -19,7 +19,7 @@ use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
 
 use crate::module_loader::ModuleLoader;
-use crate::sema::{GlobalAstEnv, TypeChecker};
+use crate::hir::{GlobalAstEnv, TypeChecker};
 use crate::session::{GlobalSession, LocalWorkerState};
 
 use crate::codegen;
@@ -226,7 +226,7 @@ impl CompilerDriver {
         self.run_codegen(main_ast, other_asts, filename, main_file, mlir_args)
     }
 
-    fn load_and_expand(&self, filename: &str) -> Result<Vec<crate::ast::Program>, String> {
+    fn load_and_expand(&self, filename: &str) -> Result<Vec<crate::syntax::Program>, String> {
         let mut loader = ModuleLoader::new();
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
@@ -250,7 +250,7 @@ impl CompilerDriver {
 
     fn handle_parse_only(
         &self,
-        program_arr: &[crate::ast::Program],
+        program_arr: &[crate::syntax::Program],
         filename: &str,
     ) -> Result<(), String> {
         let ast = program_arr
@@ -265,41 +265,41 @@ impl CompilerDriver {
 
     fn prepare_semantic_analysis(
         &self,
-        program_arr: &mut Vec<crate::ast::Program>,
+        program_arr: &mut Vec<crate::syntax::Program>,
         filename: &str,
     ) -> Result<
         (
-            crate::ast::Program,
-            std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+            crate::syntax::Program,
+            std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         ),
         String,
     > {
-        let ast_idx = program_arr
+        let syntax_idx = program_arr
             .iter()
             .position(|p| {
                 p.module_path == <std::string::String as Clone>::clone(&filename.to_string()).into()
             })
             .unwrap();
-        let ast = program_arr.remove(ast_idx);
+        let ast = program_arr.remove(syntax_idx);
 
-        let mut module_asts = std::collections::HashMap::new();
+        let mut module_syntaxes = std::collections::HashMap::new();
         for mut p in program_arr.drain(..) {
             p.functions.retain(|f| f.generics.is_empty());
-            module_asts.insert(p.module_path.clone(), p);
+            module_syntaxes.insert(p.module_path.clone(), p);
         }
-        Ok((ast, module_asts))
+        Ok((ast, module_syntaxes))
     }
 
     fn run_semantic_analysis(
         &self,
-        ast: &mut crate::ast::Program,
-        other_asts: &mut std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+        ast: &mut crate::syntax::Program,
+        other_asts: &mut std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         filename: &str,
     ) -> Result<(), String> {
         let global_session = std::sync::Arc::new(GlobalSession::new(1));
 
         let cloned_ast_sig = ast.clone_signature();
-        let mut env_modules: Vec<&crate::ast::Program> = other_asts.values().collect();
+        let mut env_modules: Vec<&crate::syntax::Program> = other_asts.values().collect();
         env_modules.push(&cloned_ast_sig);
         let env = GlobalAstEnv::build_from_refs(&env_modules);
 
@@ -357,8 +357,8 @@ impl CompilerDriver {
 
     fn run_codegen(
         &self,
-        monomorphized_ast: crate::ast::Program,
-        module_asts: std::collections::HashMap<crate::symbol::Symbol, crate::ast::Program>,
+        monomorphized_ast: crate::syntax::Program,
+        module_syntaxes: std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         filename: &str,
         main_file: &std::path::Path,
         mlir_args: &[String],
@@ -382,7 +382,7 @@ impl CompilerDriver {
 
         let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
         codegen
-            .generate(&monomorphized_ast, &module_asts)
+            .generate(&monomorphized_ast, &module_syntaxes)
             .map_err(|e| format!("Codegen Error: {:?}", e))?;
         let mut module = codegen.into_module();
 

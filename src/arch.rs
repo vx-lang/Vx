@@ -11,10 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::ast::{MemorySpace, Topology, Type};
+use crate::syntax::{MemorySpace, Topology, Type};
 use std::collections::HashMap;
 
-use crate::ast;
+use crate::syntax;
 pub struct TransferCostGraph {
     /// Adjacency list for MemorySpace data transfers.
     /// Directed edge from A -> B means memory can be transferred from A to B.
@@ -25,7 +25,7 @@ pub struct TransferCostGraph {
 
     /// Adjacency list for Topology to MemorySpace visibility.
     /// Directed edge from Top -> Mem means Top can directly read/write Mem.
-    visibility_edges: HashMap<ast::TopologyKind, Vec<MemorySpace>>,
+    visibility_edges: HashMap<syntax::TopologyKind, Vec<MemorySpace>>,
 }
 
 impl Default for TransferCostGraph {
@@ -138,7 +138,7 @@ impl TransferCostGraph {
                 return true;
             }
             let mem = Self::default_memory_for(pinned_top);
-            let mock_ty = Type::Ref(Box::new(Type::Scalar(ast::ElementType::F32)), mem);
+            let mock_ty = Type::Ref(Box::new(Type::Scalar(syntax::ElementType::F32)), mem);
             return Self::is_type_accessible(self, active_topology, pinned_top, &mock_ty);
         }
 
@@ -158,10 +158,10 @@ impl TransferCostGraph {
         let active_kind = active_topology.kind();
 
         // Hardcode the dynamic matching rules that aren't easily static HashMap entries
-        if active_kind == ast::TopologyKind::NPU && target_mem == MemorySpace::NPUHBM {
+        if active_kind == syntax::TopologyKind::NPU && target_mem == MemorySpace::NPUHBM {
             return true;
         }
-        if active_kind == ast::TopologyKind::AccCore && target_mem == MemorySpace::LocalSRAM {
+        if active_kind == syntax::TopologyKind::AccCore && target_mem == MemorySpace::LocalSRAM {
             return true;
         }
 
@@ -281,7 +281,7 @@ impl TransferCostGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::{ElementType, Expr, NumberExpr, Span};
+    use syntax::{ElementType, Expr, NumberExpr, Span};
 
     fn make_tensor() -> Type {
         Type::Tensor(ElementType::F32, vec![], None)

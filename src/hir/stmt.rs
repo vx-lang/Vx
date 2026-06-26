@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::ast;
-use crate::sema;
+use crate::syntax;
+use crate::hir;
 impl<'a> TypeChecker<'a> {
     /// Performs semantic analysis on a block of statements.
     ///
@@ -166,8 +166,8 @@ impl<'a> TypeChecker<'a> {
                 if matches!(iterable_ty, Type::GenericInstance(..))
                     || matches!(iterable_ty, Type::Struct(..))
                 {
-                    use ast::expr::{Expr, MethodCallExpr};
-                    use ast::Span;
+                    use syntax::expr::{Expr, MethodCallExpr};
+                    use syntax::Span;
                     let mut next_call = Expr::MethodCall(MethodCallExpr {
                         base: (*iterable).clone(),
                         method_name: "next".to_string().into(),
@@ -391,11 +391,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::MacroCall(_) => panic!("Macros should be expanded before type checking"),
+            Statement::Error(_) => {},
         }
     }
 
     pub(crate) fn prove_expr(&mut self, expr: &Expr) -> bool {
-        let mut prover = sema::prover::SmtProver::new();
+        let mut prover = hir::prover::SmtProver::new();
         for constraint in &self.constraints {
             if let Err(e) = prover.add_constraint(constraint) {
                 // If we can't lower a constraint, we log a warning
@@ -550,7 +551,7 @@ impl<'a> TypeChecker<'a> {
                 args,
                 span: _,
             }) => {
-                let func = self.env.ast_functions.get(name.as_ref())?;
+                let func = self.env.syntax_functions.get(name.as_ref())?;
                 let mut local_env = HashMap::new();
                 for (i, arg_expr) in args.iter().enumerate() {
                     let arg_val = self.eval_expr(arg_expr, env)?;

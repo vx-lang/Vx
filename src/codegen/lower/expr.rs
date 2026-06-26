@@ -1,6 +1,6 @@
 use super::*;
-use crate::ast;
-use crate::ast::*;
+use crate::syntax;
+use crate::syntax::*;
 use melior::ir::{
     attribute::{
         DenseI32ArrayAttribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute,
@@ -333,7 +333,7 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
+impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
@@ -341,7 +341,7 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let (base_val, base_ty, indices, block) = gen
-            .flatten_indices(&ast::Expr::IndexAccess(self.clone()), block)
+            .flatten_indices(&syntax::Expr::IndexAccess(self.clone()), block)
             .expect("Failed to flatten indices for IndexAccess");
 
         let base_ty_str = base_ty.to_string();
@@ -349,7 +349,7 @@ impl<'c> LowerToMelior<'c> for ast::IndexAccessExpr {
 
         if is_ptr {
             let mut inferred_el_ty_str = None;
-            if let Some(ast::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref()) {
+            if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref()) {
                 inferred_el_ty_str = Some(gen.lower_type_str(&inner));
             }
 
@@ -889,17 +889,17 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
+impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let ast::UnaryOpExpr { op, expr, span: _ } = self;
+        let syntax::UnaryOpExpr { op, expr, span: _ } = self;
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         match op {
-            ast::UnaryOp::Not => {
+            syntax::UnaryOp::Not => {
                 let true_val_op = OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[ty])
                     .add_attributes(&[(
@@ -919,7 +919,7 @@ impl<'c> LowerToMelior<'c> for ast::UnaryOpExpr {
                 let not_ref = block.append_operation(not_op);
                 Ok((not_ref.result(0).unwrap().into(), ty, block))
             }
-            ast::UnaryOp::Neg => {
+            syntax::UnaryOp::Neg => {
                 let is_float = ty.to_string().contains("f32")
                     || ty.to_string().contains("f64")
                     || ty.to_string().contains("f16")
@@ -988,19 +988,19 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             for ty_arg_raw in inner_ty_str.split(',') {
                 let ty_arg = ty_arg_raw.trim();
                 let inner_ty = if ty_arg == "i32" {
-                    ast::Type::Scalar(ast::ElementType::I32)
+                    syntax::Type::Scalar(syntax::ElementType::I32)
                 } else if ty_arg == "f32" {
-                    ast::Type::Scalar(ast::ElementType::F32)
+                    syntax::Type::Scalar(syntax::ElementType::F32)
                 } else if ty_arg == "i64" {
-                    ast::Type::Scalar(ast::ElementType::I64)
+                    syntax::Type::Scalar(syntax::ElementType::I64)
                 } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
-                    ast::Type::Const(Box::new(ast::Expr::Number(ast::expr::NumberExpr::new(
+                    syntax::Type::Const(Box::new(syntax::Expr::Number(syntax::expr::NumberExpr::new(
                         ty_arg.to_string(),
                         None,
-                        ast::Span::default(),
+                        syntax::Span::default(),
                     ))))
                 } else {
-                    ast::Type::Struct(ty_arg.to_string().into(), None)
+                    syntax::Type::Struct(ty_arg.to_string().into(), None)
                 };
                 inner_tys.push(inner_ty);
             }
@@ -1010,12 +1010,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 }
             }
 
-            gen.lower_type(&ast::Type::GenericInstance(
-                Box::new(ast::Type::Struct(base_name.clone().into(), None)),
+            gen.lower_type(&syntax::Type::GenericInstance(
+                Box::new(syntax::Type::Struct(base_name.clone().into(), None)),
                 inner_tys,
             ))
         } else {
-            gen.lower_type(&ast::Type::Struct(name.clone(), None))
+            gen.lower_type(&syntax::Type::Struct(name.clone(), None))
         };
 
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
@@ -1149,19 +1149,19 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                 for ty_arg_raw in inner_ty_str.split(',') {
                     let ty_arg = ty_arg_raw.trim();
                     let inner_ty = if ty_arg == "i32" {
-                        ast::Type::Scalar(ast::ElementType::I32)
+                        syntax::Type::Scalar(syntax::ElementType::I32)
                     } else if ty_arg == "f32" {
-                        ast::Type::Scalar(ast::ElementType::F32)
+                        syntax::Type::Scalar(syntax::ElementType::F32)
                     } else if ty_arg == "i64" {
-                        ast::Type::Scalar(ast::ElementType::I64)
+                        syntax::Type::Scalar(syntax::ElementType::I64)
                     } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
-                        ast::Type::Const(Box::new(ast::Expr::Number(ast::expr::NumberExpr::new(
+                        syntax::Type::Const(Box::new(syntax::Expr::Number(syntax::expr::NumberExpr::new(
                             ty_arg.to_string(),
                             None,
-                            ast::Span::default(),
+                            syntax::Span::default(),
                         ))))
                     } else {
-                        ast::Type::Struct(ty_arg.to_string().into(), None)
+                        syntax::Type::Struct(ty_arg.to_string().into(), None)
                     };
                     inner_tys.push(inner_ty);
                 }
@@ -1658,7 +1658,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut actual_func_ty = func_ty;
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
-                if let Some(ast::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(syntax::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret.as_ref());
                     let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)).collect();
@@ -1668,7 +1668,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
             } else if is_closure {
-                if let Some(ast::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
+                if let Some(syntax::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
                     let r = gen.lower_type(ret.as_ref());
                     let mut a: Vec<_> = vec![gen.ptr_ty];
                     a.extend(func_args.iter().map(|t| gen.lower_type(t)));
@@ -1850,7 +1850,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let target_func_ty = target_func_ty
                 .as_ref()
                 .expect("IndirectCallExpr MLIR lowering needs explicit target_func_ty from Sema");
-            let ast::Type::Closure(func_args, ret) = target_func_ty else {
+            let syntax::Type::Closure(func_args, ret) = target_func_ty else {
                 panic!("Expected Type::Closure for indirect call fat pointer target");
             };
 
@@ -2112,7 +2112,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             span: _,
         } = self;
         let ty = if let Some(ast_ty) = ast_ty_opt {
-            gen.lower_type(&ast::Type::Scalar(ast_ty.clone()))
+            gen.lower_type(&syntax::Type::Scalar(ast_ty.clone()))
         } else if val_str.contains('.') {
             gen.f32_ty
         } else {
@@ -2215,15 +2215,15 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                         let base = &enum_name[..idx];
                         let ty_arg = &enum_name[idx + 1..end_idx];
                         let parsed_ty = match ty_arg {
-                            "i32" => ast::Type::Scalar(ast::ElementType::I32),
-                            "f32" => ast::Type::Scalar(ast::ElementType::F32),
-                            "f64" => ast::Type::Scalar(ast::ElementType::F64),
-                            "i64" => ast::Type::Scalar(ast::ElementType::I64),
-                            "Bool" => ast::Type::Scalar(ast::ElementType::Bool),
-                            _ => ast::Type::Struct(ty_arg.to_string().into(), None),
+                            "i32" => syntax::Type::Scalar(syntax::ElementType::I32),
+                            "f32" => syntax::Type::Scalar(syntax::ElementType::F32),
+                            "f64" => syntax::Type::Scalar(syntax::ElementType::F64),
+                            "i64" => syntax::Type::Scalar(syntax::ElementType::I64),
+                            "Bool" => syntax::Type::Scalar(syntax::ElementType::Bool),
+                            _ => syntax::Type::Struct(ty_arg.to_string().into(), None),
                         };
-                        let t = ast::Type::GenericInstance(
-                            Box::new(ast::Type::Struct(base.to_string().into(), None)),
+                        let t = syntax::Type::GenericInstance(
+                            Box::new(syntax::Type::Struct(base.to_string().into(), None)),
                             vec![parsed_ty],
                         );
                         enum_ty_str = gen.lower_type_str(&t);
@@ -2309,11 +2309,11 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let mut el_ty = ast::ElementType::F32;
+        let mut el_ty = syntax::ElementType::F32;
         if !self.elements.is_empty() {
-            if let Some(ast::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
+            if let Some(syntax::Type::Scalar(t)) = gen.infer_ast_type(&self.elements[0]) {
                 el_ty = t;
-            } else if let Some(ast::Type::Struct(s, _)) = gen.infer_ast_type(&self.elements[0]) {
+            } else if let Some(syntax::Type::Struct(s, _)) = gen.infer_ast_type(&self.elements[0]) {
                 if s == "String".into() {
                     // String is equivalent to pointer, but generic instantiation requires element type
                 }
@@ -2321,13 +2321,13 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         }
 
         let type_suffix = match el_ty {
-            ast::ElementType::I32 => "i32",
-            ast::ElementType::F32 => "f32",
-            ast::ElementType::I64 => "i64",
-            ast::ElementType::F64 => "f64",
-            ast::ElementType::Bool => "Bool",
+            syntax::ElementType::I32 => "i32",
+            syntax::ElementType::F32 => "f32",
+            syntax::ElementType::I64 => "i64",
+            syntax::ElementType::F64 => "f64",
+            syntax::ElementType::Bool => "Bool",
             _ => {
-                if let Some(ast::Type::Struct(s, _)) =
+                if let Some(syntax::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
                         value: "0".into(),
                         ty: None,
@@ -2437,7 +2437,7 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
+impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
@@ -2528,7 +2528,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
+impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
@@ -2537,7 +2537,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
     ) -> Self::Output {
         // First, reuse PrintExpr logic for arguments
         if !self.args.is_empty() {
-            let print_expr = ast::expr::PrintExpr {
+            let print_expr = syntax::expr::PrintExpr {
                 args: self.args.clone(),
                 span: self.span,
             };
@@ -2587,7 +2587,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::PrintlnExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
+impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
     fn lower(
@@ -2596,20 +2596,20 @@ impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let size: i64 = match &self.target_ty {
-            ast::Type::Scalar(ast::ElementType::F32)
-            | ast::Type::Scalar(ast::ElementType::I32)
-            | ast::Type::Scalar(ast::ElementType::U32) => 4,
-            ast::Type::Scalar(ast::ElementType::F64)
-            | ast::Type::Scalar(ast::ElementType::I64)
-            | ast::Type::Scalar(ast::ElementType::U64) => 8,
-            ast::Type::Scalar(ast::ElementType::I8)
-            | ast::Type::Scalar(ast::ElementType::U8)
-            | ast::Type::Scalar(ast::ElementType::Bool) => 1,
-            ast::Type::Scalar(ast::ElementType::I16)
-            | ast::Type::Scalar(ast::ElementType::U16)
-            | ast::Type::Scalar(ast::ElementType::BF16)
-            | ast::Type::Scalar(ast::ElementType::F16) => 2,
-            ast::Type::Pointer(..) | ast::Type::Borrow { .. } | ast::Type::Ref(..) => 8,
+            syntax::Type::Scalar(syntax::ElementType::F32)
+            | syntax::Type::Scalar(syntax::ElementType::I32)
+            | syntax::Type::Scalar(syntax::ElementType::U32) => 4,
+            syntax::Type::Scalar(syntax::ElementType::F64)
+            | syntax::Type::Scalar(syntax::ElementType::I64)
+            | syntax::Type::Scalar(syntax::ElementType::U64) => 8,
+            syntax::Type::Scalar(syntax::ElementType::I8)
+            | syntax::Type::Scalar(syntax::ElementType::U8)
+            | syntax::Type::Scalar(syntax::ElementType::Bool) => 1,
+            syntax::Type::Scalar(syntax::ElementType::I16)
+            | syntax::Type::Scalar(syntax::ElementType::U16)
+            | syntax::Type::Scalar(syntax::ElementType::BF16)
+            | syntax::Type::Scalar(syntax::ElementType::F16) => 2,
+            syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => 8,
             _ => 8,
         };
 
@@ -2628,7 +2628,7 @@ impl<'c> LowerToMelior<'c> for ast::expr::SizeOfExpr {
     }
 }
 
-impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
+impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
 
     fn lower(
@@ -2637,11 +2637,11 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let (source_val, _source_ty, block) = gen.generate_expr(&self.expr, block)?;
-        if let ast::Type::Closure(_, _) = &self.target_ty {
+        if let syntax::Type::Closure(_, _) = &self.target_ty {
             let closure_struct_name = match self.source_ty.as_ref() {
-                Some(ast::Type::Struct(name, _)) => name.clone(),
-                Some(ast::Type::Borrow { inner, .. }) => {
-                    if let ast::Type::Struct(name, _) = &**inner {
+                Some(syntax::Type::Struct(name, _)) => name.clone(),
+                Some(syntax::Type::Borrow { inner, .. }) => {
+                    if let syntax::Type::Struct(name, _) = &**inner {
                         name.clone()
                     } else {
                         panic!("Expected Closure_N struct, got {:?}", inner);
@@ -2723,12 +2723,12 @@ impl<'c> LowerToMelior<'c> for ast::expr::AsCastExpr {
             fat_ptr_val = insert_env_ref.result(0).unwrap().into();
 
             return Ok((fat_ptr_val, fat_ptr_ty, block));
-        } else if let ast::Type::Scalar(_) = &self.target_ty {
+        } else if let syntax::Type::Scalar(_) = &self.target_ty {
             let target_ty_mlir = gen.lower_type(&self.target_ty);
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir);
             return Ok((coerced_val, target_ty_mlir, block));
-        } else if let ast::Type::Pointer(..) = &self.target_ty {
-            if let Some(ast::Type::Scalar(_)) = self.source_ty.as_ref() {
+        } else if let syntax::Type::Pointer(..) = &self.target_ty {
+            if let Some(syntax::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = gen.ptr_ty;
                 let cast_op = OperationBuilder::new("llvm.inttoptr", gen.loc())
                     .add_operands(&[source_val])

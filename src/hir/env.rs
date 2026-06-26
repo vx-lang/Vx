@@ -23,7 +23,7 @@
 // error emissions.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast::*;
+use crate::syntax::*;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +42,7 @@ pub struct GlobalAstEnv<'a> {
     #[allow(clippy::type_complexity)]
     pub functions:
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
-    pub ast_functions: HashMap<crate::symbol::Symbol, &'a Function>,
+    pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
     pub generic_functions: HashMap<crate::symbol::Symbol, (&'a Function, u64)>, // (func, origin_module_hash)
 }
 
@@ -59,7 +59,7 @@ impl<'a> GlobalAstEnv<'a> {
             traits: HashMap::new(),
             impls: HashMap::new(),
             functions: HashMap::new(),
-            ast_functions: HashMap::new(),
+            syntax_functions: HashMap::new(),
             generic_functions: HashMap::new(),
         };
 
@@ -113,7 +113,7 @@ impl<'a> GlobalAstEnv<'a> {
                             func.ensures.clone(),
                         ),
                     );
-                    env.ast_functions.insert(func.name.clone(), func);
+                    env.syntax_functions.insert(func.name.clone(), func);
                 }
             }
         }
@@ -158,7 +158,7 @@ pub struct TypeChecker<'a> {
     /// Tracks which variables have been read during the current function check.
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
-    pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::ast::Span)>,
+    pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -580,7 +580,7 @@ impl<'a> TypeChecker<'a> {
                     lhs: Box::new(combined),
                     op: LogicalOp::Or,
                     rhs: Box::new(rc.clone()),
-                    span: crate::ast::Span::default(),
+                    span: crate::syntax::Span::default(),
                 });
             }
             self.constraints.push(combined);

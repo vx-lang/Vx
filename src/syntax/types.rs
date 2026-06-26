@@ -14,7 +14,7 @@ use super::*;
 // of the compiler.
 //
 //===----------------------------------------------------------------------===//
-use crate::ast;
+use crate::syntax;
 use crate::symbol::Symbol;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash)]
 pub struct Span {
@@ -127,7 +127,7 @@ pub enum Type {
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
     Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
-    Const(Box<ast::expr::Expr>),                 // E.g., generic const argument like `10`
+    Const(Box<syntax::expr::Expr>),                 // E.g., generic const argument like `10`
     Unknown,
 }
 
@@ -324,9 +324,9 @@ impl std::fmt::Display for Type {
             }
             Type::Generic(name, _) => write!(f, "{}", name),
             Type::Const(expr) => {
-                if let ast::expr::Expr::Number(n) = &**expr {
+                if let syntax::expr::Expr::Number(n) = &**expr {
                     write!(f, "{}", n.value)
-                } else if let ast::expr::Expr::StringLiteral(s) = &**expr {
+                } else if let syntax::expr::Expr::StringLiteral(s) = &**expr {
                     write!(f, "\"{}\"", s.value)
                 } else {
                     write!(f, "{{{:?}}}", expr)

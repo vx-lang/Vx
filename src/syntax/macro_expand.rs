@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
-use crate::ast::{Delimiter, Span};
+use crate::syntax::{Delimiter, Span};
 use crate::lexer::OwnedTokenType;
 use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
         expr::Expr::Number(expr::NumberExpr::new(
             "0".into(),
             None,
-            crate::ast::Span::default(),
+            crate::syntax::Span::default(),
         )),
     )
 }

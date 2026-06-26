@@ -3,7 +3,7 @@ mod vx_generator;
 use vx_generator::{FunctionBuilder, ModuleBuilder, StructBuilder};
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
-use vxc::sema::TypeChecker;
+use vxc::hir::TypeChecker;
 
 #[test]
 #[ignore]
@@ -48,7 +48,7 @@ fn test_stress_broad_ast_core_saturation() -> Result<(), String> {
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [ast.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut type_checker = TypeChecker::new(&env, &mut worker);
     for f in &mut ast.functions {
@@ -107,7 +107,7 @@ fn test_stress_deep_control_flow_nesting() -> Result<(), String> {
     // 3. Semantic Analysis
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let program_arr = [ast.clone()];
-    let env = vxc::sema::GlobalAstEnv::build(&program_arr);
+    let env = vxc::hir::GlobalAstEnv::build(&program_arr);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut type_checker = TypeChecker::new(&env, &mut worker);
     for f in &mut ast.functions {
