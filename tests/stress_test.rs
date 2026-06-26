@@ -1,9 +1,9 @@
 mod vx_generator;
 
 use vx_generator::{FunctionBuilder, ModuleBuilder, StructBuilder};
+use vxc::hir::TypeChecker;
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
-use vxc::hir::TypeChecker;
 
 #[test]
 #[ignore]

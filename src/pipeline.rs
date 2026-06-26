@@ -12,16 +12,16 @@
 // invoking the compiler on a project.
 //
 //===----------------------------------------------------------------------===//
-use crate::syntax::MacroExpander;
-use crate::syntax::VxModule;
 use crate::diagnostic::DiagnosticLevel;
+use crate::hir::{GlobalAstEnv, TypeChecker};
 use crate::lexer::Lexer;
 use crate::metadata::VxMetadata;
 #[cfg(debug_assertions)]
 use crate::parallel_architecture_verifier::verify_arch::*;
 use crate::parser::Parser;
-use crate::hir::{GlobalAstEnv, TypeChecker};
 use crate::session::{GlobalSession, LocalWorkerState};
+use crate::syntax::MacroExpander;
+use crate::syntax::VxModule;
 use rayon::prelude::*;
 
 /// The central orchestrator for the parallel compiler frontend.

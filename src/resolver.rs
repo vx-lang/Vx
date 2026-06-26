@@ -12,9 +12,9 @@
 // variables and functions actually exist.
 //
 //===----------------------------------------------------------------------===//
-use crate::syntax::VxModule;
 use crate::gid::TypeId;
 use crate::hash::{compute_module_hash, DefPath};
+use crate::syntax::VxModule;
 use std::collections::HashMap;
 
 /// A global read-only map generated during Phase 1.25.

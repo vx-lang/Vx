@@ -266,7 +266,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_identifier_expr(&mut self, mut call_name: String, span: Span) -> ParseResult<'a, Expr> {
+    pub(crate) fn parse_identifier_expr(
+        &mut self,
+        mut call_name: String,
+        span: Span,
+    ) -> ParseResult<'a, Expr> {
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;
@@ -388,7 +392,7 @@ impl<'a> Parser<'a> {
                 Self::apply_type_args(&mut call_name, parsed_type_args);
                 Ok(Expr::Identifier(IdentifierExpr {
                     name: call_name.into(),
-                    span: span.clone(),
+                    span,
                 }))
             }
         } else if self.match_token(&TokenType::DoubleColon) {
@@ -757,7 +761,14 @@ impl<'a> Parser<'a> {
                             self.parse_identifier_expr(s.to_string(), span)?
                         }
                     }
-                    TokenType::Return => self.parse_identifier_expr("return".to_string(), crate::syntax::Span { line: token.line, column: token.column, length: token.length })?,
+                    TokenType::Return => self.parse_identifier_expr(
+                        "return".to_string(),
+                        crate::syntax::Span {
+                            line: token.line,
+                            column: token.column,
+                            length: token.length,
+                        },
+                    )?,
                     TokenType::Number(s) => {
                         let (num_str, el_ty) =
                             infer_number_literal(s).map_err(|e| self.error_at(&token, &e))?;
@@ -870,9 +881,10 @@ impl<'a> Parser<'a> {
                         })
                     }
                     _ => {
-                        return Err(
-                            self.error_at(&token, &format!("Expected expression, found {:?}", token.kind))
-                        )
+                        return Err(self.error_at(
+                            &token,
+                            &format!("Expected expression, found {:?}", token.kind),
+                        ))
                     }
                 }
             }

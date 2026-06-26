@@ -191,8 +191,10 @@ impl<'a> Parser<'a> {
         let generics = self.parse_generic_params()?;
 
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
-        let mut variants: Vec<(crate::symbol::Symbol, Option<Vec<crate::syntax::types::Type>>)> =
-            Vec::new();
+        let mut variants: Vec<(
+            crate::symbol::Symbol,
+            Option<Vec<crate::syntax::types::Type>>,
+        )> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let v_name = self.expect_identifier("Expected enum variant name")?;
 
@@ -627,21 +629,17 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             }
             assert_eq!(body.len(), 1);
             if let Statement::Assign(AssignStmt { lhs, rhs, span: _ }) = &body[0] {
-                assert_eq!(
-                    *lhs,
-                    Expr::Identifier(IdentifierExpr {
-                        name: "x".into(),
-                        span: Span::default()
-                    })
-                );
-                assert_eq!(
-                    *rhs,
-                    Expr::Number(NumberExpr {
-                        value: "5".to_string().into(),
-                        ty: Some(ElementType::I32),
-                        span: Span::default()
-                    })
-                );
+                if let Expr::Identifier(id) = lhs {
+                    assert_eq!(id.name.as_ref(), "x");
+                } else {
+                    panic!("Expected Identifier");
+                }
+                if let Expr::Number(num) = rhs {
+                    assert_eq!(num.value.as_ref(), "5");
+                    assert_eq!(num.ty, Some(ElementType::I32));
+                } else {
+                    panic!("Expected Number");
+                }
             } else {
                 panic!("Expected Assign");
             }
@@ -670,21 +668,17 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 span: _,
             }) = lhs
             {
-                assert_eq!(
-                    **arr,
-                    Expr::Identifier(IdentifierExpr {
-                        name: "x".into(),
-                        span: Span::default()
-                    })
-                );
-                assert_eq!(
-                    **idx,
-                    Expr::Number(NumberExpr {
-                        value: "0".to_string().into(),
-                        ty: Some(ElementType::I32),
-                        span: Span::default()
-                    })
-                );
+                if let Expr::Identifier(id) = &**arr {
+                    assert_eq!(id.name.as_ref(), "x");
+                } else {
+                    panic!("Expected Identifier");
+                }
+                if let Expr::Number(num) = &**idx {
+                    assert_eq!(num.value.as_ref(), "0");
+                    assert_eq!(num.ty, Some(ElementType::I32));
+                } else {
+                    panic!("Expected Number");
+                }
             } else {
                 panic!("Expected IndexAccess");
             }
@@ -697,20 +691,16 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
             }) = rhs
             {
                 assert_eq!(*binop, BinaryOp::Mul);
-                assert_eq!(
-                    **left,
-                    Expr::Identifier(IdentifierExpr {
-                        name: "y".into(),
-                        span: Span::default()
-                    })
-                );
-                assert_eq!(
-                    **right,
-                    Expr::Identifier(IdentifierExpr {
-                        name: "z".into(),
-                        span: Span::default()
-                    })
-                );
+                if let Expr::Identifier(id) = &**left {
+                    assert_eq!(id.name.as_ref(), "y");
+                } else {
+                    panic!("Expected Identifier");
+                }
+                if let Expr::Identifier(id) = &**right {
+                    assert_eq!(id.name.as_ref(), "z");
+                } else {
+                    panic!("Expected Identifier");
+                }
             } else {
                 panic!("Expected BinaryOp");
             }
@@ -749,13 +739,11 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 }) = &**obj
                 {
                     assert_eq!(member.as_ref(), "shape");
-                    assert_eq!(
-                        **inner_obj,
-                        Expr::Identifier(IdentifierExpr {
-                            name: "x".into(),
-                            span: Span::default()
-                        })
-                    );
+                    if let Expr::Identifier(id) = &**inner_obj {
+                        assert_eq!(id.name.as_ref(), "x");
+                    } else {
+                        panic!("Expected Identifier");
+                    }
                 } else {
                     panic!("Expected MemberAccess");
                 }

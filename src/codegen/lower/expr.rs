@@ -349,7 +349,8 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
 
         if is_ptr {
             let mut inferred_el_ty_str = None;
-            if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref()) {
+            if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
+            {
                 inferred_el_ty_str = Some(gen.lower_type_str(&inner));
             }
 
@@ -994,11 +995,13 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 } else if ty_arg == "i64" {
                     syntax::Type::Scalar(syntax::ElementType::I64)
                 } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
-                    syntax::Type::Const(Box::new(syntax::Expr::Number(syntax::expr::NumberExpr::new(
-                        ty_arg.to_string(),
-                        None,
-                        syntax::Span::default(),
-                    ))))
+                    syntax::Type::Const(Box::new(syntax::Expr::Number(
+                        syntax::expr::NumberExpr::new(
+                            ty_arg.to_string(),
+                            None,
+                            syntax::Span::default(),
+                        ),
+                    )))
                 } else {
                     syntax::Type::Struct(ty_arg.to_string().into(), None)
                 };
@@ -1155,11 +1158,13 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                     } else if ty_arg == "i64" {
                         syntax::Type::Scalar(syntax::ElementType::I64)
                     } else if ty_arg.chars().all(|c| c.is_ascii_digit()) {
-                        syntax::Type::Const(Box::new(syntax::Expr::Number(syntax::expr::NumberExpr::new(
-                            ty_arg.to_string(),
-                            None,
-                            syntax::Span::default(),
-                        ))))
+                        syntax::Type::Const(Box::new(syntax::Expr::Number(
+                            syntax::expr::NumberExpr::new(
+                                ty_arg.to_string(),
+                                None,
+                                syntax::Span::default(),
+                            ),
+                        )))
                     } else {
                         syntax::Type::Struct(ty_arg.to_string().into(), None)
                     };

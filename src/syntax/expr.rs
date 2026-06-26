@@ -12,8 +12,8 @@
 
 use super::*;
 
-use crate::syntax;
 use crate::symbol::Symbol;
+use crate::syntax;
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinaryOp {
     Add,

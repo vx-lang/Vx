@@ -33,8 +33,8 @@ fn init_rayon() {
 
 use rayon::prelude::*;
 
-use vxc::jit::execute_mlir;
 use vxc::hir::TypeChecker;
+use vxc::jit::execute_mlir;
 
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {

@@ -10,16 +10,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+use crate::diagnostic::DiagnosticLevel;
 use crate::syntax::MacroExpander;
 use crate::syntax_printer::AstPrinter;
-use crate::diagnostic::DiagnosticLevel;
 use clap::{Parser, ValueEnum};
 use codegen::MeliorGenerator;
 use melior::ir::operation::OperationLike;
 use std::path::PathBuf;
 
-use crate::module_loader::ModuleLoader;
 use crate::hir::{GlobalAstEnv, TypeChecker};
+use crate::module_loader::ModuleLoader;
 use crate::session::{GlobalSession, LocalWorkerState};
 
 use crate::codegen;

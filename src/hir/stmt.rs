@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::syntax;
 use crate::hir;
+use crate::syntax;
 impl<'a> TypeChecker<'a> {
     /// Performs semantic analysis on a block of statements.
     ///
@@ -392,8 +392,8 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::MacroCall(_) => {
                 self.errors.push("Macro failed to expand".to_string());
-            },
-            Statement::Error(_) => {},
+            }
+            Statement::Error(_) => {}
         }
     }
 

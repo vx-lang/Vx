@@ -17,8 +17,8 @@ pub mod types;
 // the Vx language.
 //
 //===----------------------------------------------------------------------===//
-use crate::syntax::*;
 use crate::lexer::{Token, TokenType};
+use crate::syntax::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParserError<'a> {

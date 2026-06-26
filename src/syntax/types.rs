@@ -14,8 +14,8 @@ use super::*;
 // of the compiler.
 //
 //===----------------------------------------------------------------------===//
-use crate::syntax;
 use crate::symbol::Symbol;
+use crate::syntax;
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Hash)]
 pub struct Span {
     pub line: usize,
@@ -127,7 +127,7 @@ pub enum Type {
     Simd(ElementType, usize),                    // e.g. <4 x f32>
     Function(Vec<Type>, Box<Type>),              // e.g. fn(i32, f32) -> f32
     Closure(Vec<Type>, Box<Type>),               // Fat pointer closure type
-    Const(Box<syntax::expr::Expr>),                 // E.g., generic const argument like `10`
+    Const(Box<syntax::expr::Expr>),              // E.g., generic const argument like `10`
     Unknown,
 }
 

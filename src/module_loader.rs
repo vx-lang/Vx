@@ -12,9 +12,9 @@
 // module registry.
 //
 //===----------------------------------------------------------------------===//
-use crate::syntax::Program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::syntax::Program;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;

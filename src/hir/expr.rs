@@ -182,7 +182,8 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::MacroCall(_) => {
                 self.errors.push("Macro failed to expand".to_string());
-                crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32) // Fallback type
+                crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32)
+                // Fallback type
             }
         }
     }
@@ -2217,8 +2218,6 @@ impl<'a> TypeChecker<'a> {
 
                     // Create a unique mangled name for the method based on the target type
                     let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
-
-
 
                     method_func.name = mangled_name.clone().into();
 

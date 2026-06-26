@@ -14,11 +14,11 @@
 //===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
-    use crate::syntax;
     use crate::gid::{
         TypeId, ESCAPE_HATCH_MASK, INDEX_MASK, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT,
     };
     use crate::session::{GlobalSession, LocalWorkerState};
+    use crate::syntax;
     use rayon::prelude::*;
     use std::collections::HashMap;
     use std::sync::{Arc, Weak};

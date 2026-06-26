@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use crate::module_loader::ModuleLoader;
 use crate::hir::{GlobalAstEnv, TypeChecker};
+use crate::module_loader::ModuleLoader;
 use crate::session::{GlobalSession, LocalWorkerState};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct IdeDiagnostic {
@@ -21,6 +21,7 @@ pub struct HoverInfo {
     pub col_end: usize,
 }
 
+#[derive(Default)]
 pub struct AnalysisHost {
     pub files: HashMap<String, String>,
 }
@@ -55,17 +56,17 @@ impl Analysis {
         };
 
         let mut diagnostics = Vec::new();
-        
+
         // Write to temp file for the module loader (simplified for now)
         let temp_path = "/Users/adityak/go/Vx/vx-analyzer/temp.vx";
         std::fs::write(temp_path, text).unwrap_or_default();
-        
+
         let mut loader = ModuleLoader::new();
         if let Err(e) = loader.load_main(temp_path) {
             let err_str = format!("{}", e);
             let mut line = 1;
             let mut col = 1;
-            
+
             if let Some(idx) = err_str.find("Error at ") {
                 let rest = &err_str[idx + 9..];
                 if let Some(colon_idx) = rest.find(':') {
@@ -88,14 +89,14 @@ impl Analysis {
                 col_end: col,
                 message: err_str,
             });
-            
+
             return diagnostics;
         }
-        
+
         use crate::syntax::macro_expand::MacroExpander;
-        
+
         let mut modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
-        
+
         // 1. Macro Expansion
         let mut global_macros = std::collections::HashMap::new();
         for m in modules.iter() {
@@ -107,7 +108,7 @@ impl Analysis {
         for m in modules.iter_mut() {
             let _ = expander.expand_module(m); // Ignore expansion errors for IDE
         }
-        
+
         // 2. Name Resolution
         let symbol_map = crate::resolver::build_symbol_map(&modules);
         for m in modules.iter_mut() {
@@ -127,11 +128,14 @@ impl Analysis {
                 for d in checker.errors.into_iter() {
                     let (ls, cs) = match &d.source_span {
                         Some(s) => (s.line.saturating_sub(1), s.column.saturating_sub(1)),
-                        None => (0, 0)
+                        None => (0, 0),
                     };
                     let (le, ce) = match &d.source_span {
-                        Some(s) => (s.line.saturating_sub(1), s.column.saturating_sub(1) + s.length.max(1)),
-                        None => (0, 0)
+                        Some(s) => (
+                            s.line.saturating_sub(1),
+                            s.column.saturating_sub(1) + s.length.max(1),
+                        ),
+                        None => (0, 0),
                     };
                     diagnostics.push(IdeDiagnostic {
                         line_start: ls,
@@ -143,7 +147,7 @@ impl Analysis {
                 }
             }
         }
-        
+
         diagnostics
     }
 

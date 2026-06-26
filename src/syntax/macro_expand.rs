@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
-use crate::syntax::{Delimiter, Span};
 use crate::lexer::OwnedTokenType;
+use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
 
 pub struct MacroExpander<'a> {

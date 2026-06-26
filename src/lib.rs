@@ -13,18 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 pub mod arch;
-pub mod syntax;
-pub mod syntax_printer;
 pub mod borrow;
 pub mod codegen;
 pub mod diagnostic;
 pub mod driver;
 pub mod error;
 pub mod formatter;
-pub mod ide;
 pub mod gid;
 pub mod hash;
 pub mod hir;
+pub mod ide;
 pub mod jit;
 pub mod lexer;
 pub mod metadata;
@@ -39,6 +37,8 @@ pub mod scratch;
 pub mod session;
 pub mod suggest;
 pub mod symbol;
+pub mod syntax;
+pub mod syntax_printer;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
 /// Useful for unit testing and interactive REPLs.

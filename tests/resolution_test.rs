@@ -11,8 +11,8 @@
 // across complex nested scopes, module boundaries, and shadowing scenarios.
 //
 //===----------------------------------------------------------------------===//
-use vxc::syntax::{Function, Span, StructDecl, Type, VxModule};
 use vxc::resolver::build_symbol_map;
+use vxc::syntax::{Function, Span, StructDecl, Type, VxModule};
 
 #[test]
 fn test_local_name_resolution() -> Result<(), String> {

@@ -12,9 +12,9 @@
 // match expected outcomes.
 //
 //===----------------------------------------------------------------------===//
+use vxc::hir::TypeChecker;
 use vxc::lexer::Lexer;
 use vxc::parser::Parser;
-use vxc::hir::TypeChecker;
 
 #[test]
 fn test_distributed_matmul_integration() -> Result<(), String> {
