@@ -17,3 +17,5 @@ ast.txt
 config.local
 AGENTS.md
 .claude/settings.local.json
+temp_hover.vx
+temp.vx

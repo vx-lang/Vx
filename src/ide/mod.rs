@@ -292,8 +292,7 @@ impl Analysis {
                     | crate::lexer::TokenTypeBase::Mut
                         if i + 1 < tokens.len() =>
                     {
-                        if let crate::lexer::TokenTypeBase::Identifier(id) = tokens[i + 1].kind
-                        {
+                        if let crate::lexer::TokenTypeBase::Identifier(id) = tokens[i + 1].kind {
                             if id == word {
                                 return Some(DefinitionLocation {
                                     uri: search_uri.clone(),
