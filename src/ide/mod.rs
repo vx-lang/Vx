@@ -248,10 +248,10 @@ impl Analysis {
                 .lines()
                 .map(|line| {
                     let s = line.trim_start();
-                    if s.starts_with("/// ") {
-                        &s[4..]
-                    } else if s.starts_with("///") {
-                        &s[3..]
+                    if let Some(stripped) = s.strip_prefix("/// ") {
+                        stripped
+                    } else if let Some(stripped) = s.strip_prefix("///") {
+                        stripped
                     } else {
                         s
                     }
