@@ -20,7 +20,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
     let tokens = lexer.tokenize();
 
     if let Some(token) = tokens.first() {
-        if let TokenType::Comment(c) = &token.kind {
+        if let TokenType::Comment(c) | TokenType::DocComment(c) = &token.kind {
             if c.contains("//! vx-format: OFF") {
                 return content.to_string();
             }
@@ -87,7 +87,9 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                 let mut is_unsafe_block = false;
                 for j in (0..new_tokens.len()).rev() {
                     match new_tokens[j].kind {
-                        TokenType::Whitespace(_) | TokenType::Comment(_) => continue,
+                        TokenType::Whitespace(_)
+                        | TokenType::Comment(_)
+                        | TokenType::DocComment(_) => continue,
                         TokenType::Unsafe => {
                             is_unsafe_block = true;
                             break;
@@ -161,9 +163,12 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     }
                 }
 
-                let has_non_ws = tokens[(lb_idx + 1)..rb_idx]
-                    .iter()
-                    .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
+                let has_non_ws = tokens[(lb_idx + 1)..rb_idx].iter().any(|t| {
+                    !matches!(
+                        t.kind,
+                        TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
+                    )
+                });
 
                 if !has_newline && has_non_ws {
                     new_tokens.push(tokens[lb_idx].clone());
@@ -195,9 +200,12 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     }
                 });
 
-                let has_non_ws = tokens[(lb_idx + 1)..i]
-                    .iter()
-                    .any(|t| !matches!(t.kind, TokenType::Whitespace(_) | TokenType::Comment(_)));
+                let has_non_ws = tokens[(lb_idx + 1)..i].iter().any(|t| {
+                    !matches!(
+                        t.kind,
+                        TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
+                    )
+                });
 
                 if !has_newline && has_non_ws {
                     let needs_newline = match new_tokens.last() {
@@ -244,13 +252,19 @@ fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
     let mut curr_next = None;
     for (i, token) in tokens.iter().enumerate().rev() {
         next_non_ws_arr[i] = curr_next.clone();
-        if !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Comment(_)) {
+        if !matches!(
+            token.kind,
+            TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
+        ) {
             curr_next = Some(token.kind.clone());
         }
     }
 
     for (i, mut token) in tokens.into_iter().enumerate() {
-        if !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Comment(_)) {
+        if !matches!(
+            token.kind,
+            TokenType::Whitespace(_) | TokenType::Comment(_) | TokenType::DocComment(_)
+        ) {
             last_non_ws = Some(token.kind.clone());
             new_tokens.push(token);
             continue;
@@ -360,7 +374,7 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
                 formatted.push('{');
                 indent_level += 1;
             }
-            TokenType::Comment(c) => {
+            TokenType::Comment(c) | TokenType::DocComment(c) => {
                 let mut turning_off = false;
                 if c.contains("vx-format-begin: OFF") {
                     format_enabled = false;

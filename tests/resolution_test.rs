@@ -24,6 +24,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             name: "Vector".into(),
             generics: vec![],
             fields: vec![],
+            doc_comment: None,
         }],
         enums: vec![],
         traits: vec![],
@@ -38,6 +39,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
+            doc_comment: None,
         }],
     };
 
@@ -93,6 +95,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
+            doc_comment: None,
         }],
     };
 
@@ -123,6 +126,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             name: "Matrix".into(),
             generics: vec![],
             fields: vec![],
+            doc_comment: None,
         }],
         enums: vec![],
         traits: vec![],
@@ -146,6 +150,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             requires: Vec::new(),
             ensures: Vec::new(),
             body: vec![],
+            doc_comment: None,
         }],
     };
 
@@ -180,6 +185,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             name: "Config".into(),
             generics: vec![],
             fields: vec![],
+            doc_comment: None,
         }],
         enums: vec![],
         traits: vec![],
@@ -205,6 +211,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
                 }),
                 span: Span::default(),
             })],
+            doc_comment: None,
         }],
     };
 

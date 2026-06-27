@@ -147,6 +147,7 @@ impl<'a> Parser<'a> {
             requires,
             ensures,
             body,
+            doc_comment: None,
         })
     }
 
@@ -180,6 +181,7 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             fields,
+            doc_comment: None,
         })
     }
 
@@ -230,6 +232,7 @@ impl<'a> Parser<'a> {
             name: name.into(),
             generics,
             variants,
+            doc_comment: None,
         })
     }
 
@@ -341,7 +344,21 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            methods.push(self.parse_function()?);
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+
+            let mut method = self.parse_function()?;
+            method.doc_comment = doc_comment;
+            methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
@@ -438,6 +455,18 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut macros = Vec::new();
         while !self.check(&TokenType::Eof) {
+            let mut doc_comment: Option<String> = None;
+            while let TokenType::DocComment(c) = &self.peek().kind {
+                let text = c.to_string();
+                if let Some(existing) = &mut doc_comment {
+                    existing.push('\n');
+                    existing.push_str(&text);
+                } else {
+                    doc_comment = Some(text);
+                }
+                self.advance();
+            }
+
             if self.check(&TokenType::Import) {
                 imports.push(self.parse_import_decl()?);
             } else if self.check(&TokenType::MacroRules) {
@@ -449,11 +478,17 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Impl) {
                 impls.push(self.parse_impl_block()?);
             } else if self.check(&TokenType::Struct) {
-                structs.push(self.parse_struct_decl()?);
+                let mut s = self.parse_struct_decl()?;
+                s.doc_comment = doc_comment;
+                structs.push(s);
             } else if self.check(&TokenType::Enum) {
-                enums.push(self.parse_enum_decl()?);
+                let mut e = self.parse_enum_decl()?;
+                e.doc_comment = doc_comment;
+                enums.push(e);
             } else if self.check(&TokenType::Fn) {
-                functions.push(self.parse_function()?);
+                let mut f = self.parse_function()?;
+                f.doc_comment = doc_comment;
+                functions.push(f);
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",

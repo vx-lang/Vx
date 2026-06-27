@@ -195,8 +195,10 @@ impl Analysis {
         let temp_path = "/Users/adityak/go/Vx/vx-analyzer/temp_hover.vx";
         std::fs::write(temp_path, text).unwrap_or_default();
         let mut loader = ModuleLoader::new();
-        if loader.load_main(temp_path).is_err() {
-            // Still try to show hover even if there's a parse error
+        if let Err(e) = loader.load_main(temp_path) {
+            std::fs::write("/tmp/vx_hover_err.log", format!("{:?}", e)).ok();
+        } else {
+            std::fs::write("/tmp/vx_hover_err.log", "load_main succeeded").ok();
         }
 
         let modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
@@ -205,6 +207,8 @@ impl Analysis {
 
         // 3. Look up the word in the environment
         let mut hover_text = String::new();
+
+        let mut doc = None;
 
         if let Some((ty, is_unsafe, params, top, _, _)) = global_env.functions.get(&word_sym) {
             hover_text.push_str(&format!("fn {}(", word));
@@ -219,18 +223,44 @@ impl Analysis {
                 hover_text = format!("unsafe {}", hover_text);
             }
             hover_text.push_str(&format!(" [Topology: {:?}]", top.kind()));
+
+            if let Some(f) = global_env.syntax_functions.get(&word_sym) {
+                doc = f.doc_comment.clone();
+            }
         } else if let Some(struct_decl) = global_env.structs.get(&word_sym) {
             hover_text.push_str(&format!("struct {} {{\n", word));
             for (name, ty) in &struct_decl.fields {
                 hover_text.push_str(&format!("    {}: {},\n", name, ty));
             }
             hover_text.push('}');
+            doc = struct_decl.doc_comment.clone();
         } else if let Some(enum_decl) = global_env.enums.get(&word_sym) {
             hover_text.push_str(&format!("enum {} {{\n", word));
             for var in &enum_decl.variants {
                 hover_text.push_str(&format!("    {},\n", var.0));
             }
             hover_text.push('}');
+            doc = enum_decl.doc_comment.clone();
+        }
+
+        if let Some(doc_str) = doc {
+            let clean_doc = doc_str
+                .lines()
+                .map(|line| {
+                    let s = line.trim_start();
+                    if s.starts_with("/// ") {
+                        &s[4..]
+                    } else if s.starts_with("///") {
+                        &s[3..]
+                    } else {
+                        s
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            hover_text = format!("{}\n\n```vx\n{}\n```", clean_doc, hover_text);
+        } else {
+            hover_text = format!("```vx\n{}\n```", hover_text);
         }
 
         if hover_text.is_empty() {

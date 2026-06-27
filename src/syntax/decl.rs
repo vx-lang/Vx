@@ -38,6 +38,7 @@ pub struct Function {
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
     pub body: Vec<Statement>,
+    pub doc_comment: Option<String>,
 }
 
 impl Function {
@@ -55,6 +56,7 @@ impl Function {
             } else {
                 Vec::new()
             },
+            doc_comment: self.doc_comment.clone(),
         }
     }
 }
@@ -64,6 +66,7 @@ pub struct StructDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<(Symbol, Type)>,
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -71,6 +74,7 @@ pub struct EnumDecl {
     pub name: Symbol,
     pub generics: Vec<GenericParam>,
     pub variants: Vec<(Symbol, Option<Vec<Type>>)>,
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone)]

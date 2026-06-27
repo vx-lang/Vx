@@ -73,7 +73,7 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                             Some(Hover {
                                 contents: HoverContents::Markup(lsp_types::MarkupContent {
                                     kind: lsp_types::MarkupKind::Markdown,
-                                    value: format!("```vx\n{}\n```", hover.value),
+                                    value: hover.value,
                                 }),
                                 range: Some(Range {
                                     start: Position::new(

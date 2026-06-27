@@ -106,6 +106,7 @@ pub enum TokenTypeBase<S, C> {
     Eof,
     Unknown(char),
     Comment(S),
+    DocComment(S),
     Whitespace(S),
 }
 
@@ -199,6 +200,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Pipe => write!(f, "|"),
 
             TokenTypeBase::Comment(s) => write!(f, "{}", s),
+            TokenTypeBase::DocComment(s) => write!(f, "{}", s),
             TokenTypeBase::Whitespace(s) => write!(f, "{}", s),
             TokenTypeBase::Unknown(c) => write!(f, "{}", c),
             TokenTypeBase::Eof => write!(f, ""),
@@ -332,7 +334,12 @@ impl<'a> Lexer<'a> {
             if let Some(c) = chars.next() {
                 if c.is_whitespace() {
                     self.advance();
-                } else if c == '/' && chars.next() == Some('/') {
+                } else if c == '/' && chars.clone().next() == Some('/') {
+                    let mut lookahead = chars.clone();
+                    lookahead.next(); // second '/'
+                    if lookahead.next() == Some('/') && lookahead.next() != Some('/') {
+                        break; // doc comment
+                    }
                     // Line comment
                     self.advance(); // consume first '/'
                     self.advance(); // consume second '/'
@@ -528,6 +535,36 @@ impl<'a> Lexer<'a> {
                     let comment = &self.source[start_byte..end_byte];
                     return TokenBase {
                         kind: TokenTypeBase::Comment(comment),
+                        line: self.line,
+                        column: start_col,
+                        length: self.current_byte_offset() - start_byte,
+                    };
+                }
+            }
+        }
+
+        if c == '/' {
+            let offset = self.current_byte_offset();
+            let mut chars = self.source[offset..].chars();
+            if chars.next() == Some('/') {
+                let mut lookahead = chars.clone();
+                let second = lookahead.next();
+                let third = lookahead.next();
+                let fourth = lookahead.next();
+                if second == Some('/') && third == Some('/') && fourth != Some('/') {
+                    self.advance(); // consume first '/'
+                    self.advance(); // consume second '/'
+                    self.advance(); // consume third '/'
+                    while let Some(next_c) = self.peek_char() {
+                        if next_c == '\n' {
+                            break;
+                        }
+                        self.advance();
+                    }
+                    let end_byte = self.current_byte_offset();
+                    let comment = &self.source[start_byte..end_byte];
+                    return TokenBase {
+                        kind: TokenTypeBase::DocComment(comment),
                         line: self.line,
                         column: start_col,
                         length: self.current_byte_offset() - start_byte,
@@ -757,6 +794,9 @@ impl<'a> Token<'a> {
             TokenTypeBase::Eof => TokenTypeBase::Eof,
             TokenTypeBase::Unknown(c) => TokenTypeBase::Unknown(c),
             TokenTypeBase::Comment(s) => TokenTypeBase::Comment(crate::symbol::Symbol::from(s)),
+            TokenTypeBase::DocComment(s) => {
+                TokenTypeBase::DocComment(crate::symbol::Symbol::from(s))
+            }
             TokenTypeBase::Whitespace(s) => {
                 TokenTypeBase::Whitespace(crate::symbol::Symbol::from(s))
             }
@@ -855,6 +895,7 @@ impl OwnedToken {
             TokenTypeBase::Eof => TokenTypeBase::Eof,
             TokenTypeBase::Unknown(c) => TokenTypeBase::Unknown(*c),
             TokenTypeBase::Comment(s) => TokenTypeBase::Comment(&**s),
+            TokenTypeBase::DocComment(s) => TokenTypeBase::DocComment(&**s),
             TokenTypeBase::Whitespace(s) => TokenTypeBase::Whitespace(&**s),
         };
         Token {

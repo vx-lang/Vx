@@ -3060,6 +3060,7 @@ impl<'a> TypeChecker<'a> {
                     name: struct_name.clone().into(),
                     generics: vec![],
                     fields: captured_vars.clone(),
+                    doc_comment: None,
                 };
                 self.generated_structs.push(struct_decl);
 
@@ -3111,6 +3112,7 @@ impl<'a> TypeChecker<'a> {
                     requires: vec![],
                     ensures: vec![],
                     body: body_stmts,
+                    doc_comment: None,
                 };
 
                 self.monomorphized_functions.push((call_func, 0));

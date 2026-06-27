@@ -538,6 +538,7 @@ impl<'a> TypeChecker<'a> {
                 .map(|e| e.substitute(mapping))
                 .collect(),
             body: new_body,
+            doc_comment: generic_func.doc_comment.clone(),
         }
     }
 
