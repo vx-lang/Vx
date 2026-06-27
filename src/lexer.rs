@@ -480,7 +480,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_comment(&mut self, start_byte: usize, start_col: usize, is_doc: bool) -> TokenBase<'a> {
+    fn lex_comment(&mut self, start_byte: usize, start_col: usize, is_doc: bool) -> Token<'a> {
         while let Some(next_c) = self.peek_char() {
             if next_c == '\n' {
                 break;
