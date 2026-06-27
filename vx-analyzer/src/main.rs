@@ -71,7 +71,10 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
 
                         let result = if let Some(hover) = analysis.hover(uri, line, character) {
                             Some(Hover {
-                                contents: HoverContents::Scalar(MarkedString::String(hover.value)),
+                                contents: HoverContents::Markup(lsp_types::MarkupContent {
+                                    kind: lsp_types::MarkupKind::Markdown,
+                                    value: format!("```vx\n{}\n```", hover.value),
+                                }),
                                 range: Some(Range {
                                     start: Position::new(
                                         hover.line_start as u32,
@@ -89,6 +92,7 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                             result: Some(result),
                             error: None,
                         };
+                        writeln!(log_file, "sending hover response: {:?}", resp).unwrap();
                         connection.sender.send(Message::Response(resp))?;
                     }
                     "textDocument/definition" => {
