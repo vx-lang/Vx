@@ -54,7 +54,7 @@ impl AnalysisHost {
 }
 
 pub struct Analysis {
-    files: HashMap<String, String>,
+    pub files: HashMap<String, String>,
 }
 
 impl Analysis {

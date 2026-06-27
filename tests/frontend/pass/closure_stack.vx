@@ -1,5 +1,10 @@
 // RUN: vxc %s --emit-mlir | FileCheck %s
 
+/// comment for foo to see in hover.
+fn foo(x: i32) -> i32 {
+  return x + x;
+}
+
 fn main() -> i32 {
   let i = 1;
   let captured = 2;
@@ -7,7 +12,7 @@ fn main() -> i32 {
 
   // The closure should be lowered to an anonymous struct allocated on the stack
   // (alloca)
-  let _my_closure = | x : i32 | x + captured;
+  let _my_closure = | x : i32 | x + captured + foo(x);
 
   return 0;
 }
