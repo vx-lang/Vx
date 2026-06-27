@@ -417,6 +417,7 @@ impl<'a> Lexer<'a> {
     fn string_literal(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
         let mut text: Option<String> = None;
         let mut raw_len = 0;
+        let mut unknown_escape = None;
         while let Some(next_c) = self.peek_char() {
             if next_c == '"' {
                 self.advance();
@@ -454,6 +455,9 @@ impl<'a> Lexer<'a> {
                         _ => {
                             self.advance();
                             char_to_push = esc_c;
+                            if unknown_escape.is_none() {
+                                unknown_escape = Some(esc_c);
+                            }
                         }
                     }
                 }
@@ -466,6 +470,16 @@ impl<'a> Lexer<'a> {
         }
 
         let end_byte = self.current_byte_offset();
+        
+        if let Some(c) = unknown_escape {
+            return TokenBase {
+                kind: TokenTypeBase::Unknown(c),
+                line: self.line,
+                column: start_col,
+                length: self.current_byte_offset() - start_byte,
+            };
+        }
+
         let literal = if let Some(t) = text {
             std::borrow::Cow::Owned(t)
         } else {
