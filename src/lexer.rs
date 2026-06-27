@@ -334,10 +334,9 @@ impl<'a> Lexer<'a> {
             if let Some(c) = chars.next() {
                 if c.is_whitespace() {
                     self.advance();
-                } else if c == '/' && chars.clone().next() == Some('/') {
-                    let mut lookahead = chars.clone();
-                    lookahead.next(); // second '/'
-                    if lookahead.next() == Some('/') && lookahead.next() != Some('/') {
+                } else if self.source[offset..].starts_with("//") {
+                    let rest = &self.source[offset..];
+                    if rest.starts_with("///") && !rest.starts_with("////") {
                         break; // doc comment
                     }
                     // Line comment
@@ -481,6 +480,27 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn lex_comment(&mut self, start_byte: usize, start_col: usize, is_doc: bool) -> TokenBase<'a> {
+        while let Some(next_c) = self.peek_char() {
+            if next_c == '\n' {
+                break;
+            }
+            self.advance();
+        }
+        let end_byte = self.current_byte_offset();
+        let comment = &self.source[start_byte..end_byte];
+        TokenBase {
+            kind: if is_doc {
+                TokenTypeBase::DocComment(comment)
+            } else {
+                TokenTypeBase::Comment(comment)
+            },
+            line: self.line,
+            column: start_col,
+            length: end_byte - start_byte,
+        }
+    }
+
     pub fn next_token(&mut self) -> Token<'a> {
         if !self.preserve_comments {
             self.skip_whitespace();
@@ -520,56 +540,22 @@ impl<'a> Lexer<'a> {
             }
 
             if c == '/' {
-                let offset = self.current_byte_offset();
-                let mut chars = self.source[offset + 1..].chars();
-                if chars.next() == Some('/') {
-                    self.advance(); // '/'
-                    self.advance(); // '/'
-                    while let Some(next_c) = self.peek_char() {
-                        if next_c == '\n' {
-                            break;
-                        }
-                        self.advance();
-                    }
-                    let end_byte = self.current_byte_offset();
-                    let comment = &self.source[start_byte..end_byte];
-                    return TokenBase {
-                        kind: TokenTypeBase::Comment(comment),
-                        line: self.line,
-                        column: start_col,
-                        length: self.current_byte_offset() - start_byte,
-                    };
+                let rest = &self.source[self.current_byte_offset()..];
+                if rest.starts_with("//") && !rest.starts_with("///") {
+                    self.advance(); // consume first '/'
+                    self.advance(); // consume second '/'
+                    return self.lex_comment(start_byte, start_col, false);
                 }
             }
         }
 
         if c == '/' {
-            let offset = self.current_byte_offset();
-            let mut chars = self.source[offset..].chars();
-            if chars.next() == Some('/') {
-                let mut lookahead = chars.clone();
-                let second = lookahead.next();
-                let third = lookahead.next();
-                let fourth = lookahead.next();
-                if second == Some('/') && third == Some('/') && fourth != Some('/') {
-                    self.advance(); // consume first '/'
-                    self.advance(); // consume second '/'
-                    self.advance(); // consume third '/'
-                    while let Some(next_c) = self.peek_char() {
-                        if next_c == '\n' {
-                            break;
-                        }
-                        self.advance();
-                    }
-                    let end_byte = self.current_byte_offset();
-                    let comment = &self.source[start_byte..end_byte];
-                    return TokenBase {
-                        kind: TokenTypeBase::DocComment(comment),
-                        line: self.line,
-                        column: start_col,
-                        length: self.current_byte_offset() - start_byte,
-                    };
-                }
+            let rest = &self.source[self.current_byte_offset()..];
+            if rest.starts_with("///") && !rest.starts_with("////") {
+                self.advance(); // consume first '/'
+                self.advance(); // consume second '/'
+                self.advance(); // consume third '/'
+                return self.lex_comment(start_byte, start_col, true);
             }
         }
 
