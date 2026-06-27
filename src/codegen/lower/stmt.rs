@@ -35,9 +35,8 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     let cast_op = OperationBuilder::new(cast_op_name, gen.loc())
                         .add_operands(&[val])
                         .add_results(&[ret_ty])
-                        .build()
-                        .unwrap();
-                    val = block.append_operation(cast_op).result(0).unwrap().into();
+                        .build()?;
+                    val = block.append_operation(cast_op).result(0)?.into();
                 } else if ret_ty.to_string() == "i32" && gen.is_memref(&expr_ty) {
                     let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                         .add_results(&[ret_ty])
@@ -45,9 +44,8 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(ret_ty, 0).into(),
                         )])
-                        .build()
-                        .unwrap();
-                    val = block.append_operation(zero_op).result(0).unwrap().into();
+                        .build()?;
+                    val = block.append_operation(zero_op).result(0)?.into();
                 } else {
                     val = gen.coerce_type(&block, val, expr_ty, ret_ty);
                 }
@@ -60,8 +58,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         };
         let ret_op = OperationBuilder::new(op_name, gen.loc())
             .add_operands(&[val])
-            .build()
-            .unwrap();
+            .build()?;
         block.append_operation(ret_op);
         gen.has_returned = true;
         Ok(None)
@@ -114,9 +111,8 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 let const_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
                     .add_results(&[i32_ty])
                     .add_attributes(&[(Identifier::new(gen.context, "value"), one_attr)])
-                    .build()
-                    .unwrap();
-                let one_val = block.append_operation(const_op).result(0).unwrap().into();
+                    .build()?;
+                let one_val = block.append_operation(const_op).result(0)?.into();
 
                 let alloca_op = OperationBuilder::new("llvm.alloca", gen.loc())
                     .add_operands(&[one_val])
@@ -125,33 +121,29 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                         Identifier::new(gen.context, "elem_type"),
                         TypeAttribute::new(ty).into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let alloca_ref = block.append_operation(alloca_op);
-                let alloca_val = alloca_ref.result(0).unwrap().into();
+                let alloca_val = alloca_ref.result(0)?.into();
 
                 let store_op = OperationBuilder::new("llvm.store", gen.loc())
                     .add_operands(&[val, alloca_val])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 block.append_operation(store_op);
 
                 gen.env.insert(name.to_string().into(), (alloca_val, ty));
                 gen.allocs.insert(name.to_string());
             } else {
                 let memref_ty = format!("memref<{}>", ty);
-                let parsed_memref_ty = Type::parse(gen.context, &memref_ty).unwrap();
+                let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                 let alloca_op = OperationBuilder::new("memref.alloca", gen.loc())
                     .add_results(&[parsed_memref_ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let alloca_ref = block.append_operation(alloca_op);
-                let alloca_val = alloca_ref.result(0).unwrap().into();
+                let alloca_val = alloca_ref.result(0)?.into();
 
                 let store_op = OperationBuilder::new("memref.store", gen.loc())
                     .add_operands(&[val, alloca_val])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 block.append_operation(store_op);
                 gen.env
                     .insert(name.to_string().into(), (alloca_val, parsed_memref_ty));
@@ -179,7 +171,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
-                    expected_ty = Some(Type::parse(gen.context, inner_ty_str).unwrap());
+                    expected_ty = Some(Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?);
                 } else {
                     expected_ty = Some(*mem_ty);
                 }
@@ -205,7 +197,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 if mem_ty_str.starts_with("memref<") {
                     let mut store_val = rhs_val;
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
-                    let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                    let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                     if rhs_ty != inner_ty
                         && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
                             || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
@@ -216,19 +208,17 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                             .build()
                             .unwrap();
 
-                        store_val = block.append_operation(cast_op).result(0).unwrap().into();
+                        store_val = block.append_operation(cast_op).result(0)?.into();
                     }
 
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
                         .add_operands(&[store_val, mem_val])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     block.append_operation(store_op);
                 } else if gen.allocs.contains(name.as_ref()) {
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
                         .add_operands(&[rhs_val, mem_val])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     block.append_operation(store_op);
                 } else {
                     gen.env.insert(name.to_string().into(), (rhs_val, rhs_ty));
@@ -257,9 +247,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                     let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                         .add_operands(&[indices[0]])
                         .add_results(&[i64_ty])
-                        .build()
-                        .unwrap();
-                    let idx_i64 = new_b.append_operation(cast_op).result(0).unwrap().into();
+                        .build()?;
+                    let idx_i64 = new_b.append_operation(cast_op).result(0)?.into();
 
                     let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                         .add_attributes(&[
@@ -274,16 +263,14 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         ])
                         .add_operands(&[base_val, idx_i64])
                         .add_results(&[base_ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
 
                     let gep_ref = new_b.append_operation(gep_op);
-                    let ptr_val = gep_ref.result(0).unwrap().into();
+                    let ptr_val = gep_ref.result(0)?.into();
 
                     let store_op = OperationBuilder::new("llvm.store", gen.loc())
                         .add_operands(&[rhs_val, ptr_val])
-                        .build()
-                        .unwrap();
+                        .build()?;
 
                     new_b.append_operation(store_op);
                 } else {
@@ -301,7 +288,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
                     let mut store_val = rhs_val;
                     if !inner_ty_str.is_empty() {
-                        let inner_ty = melior::ir::Type::parse(gen.context, &inner_ty_str).unwrap();
+                        let inner_ty = melior::ir::Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                         store_val = gen.coerce_type(&new_b, store_val, rhs_ty, inner_ty);
                     }
 
@@ -312,7 +299,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         store_builder = store_builder.add_operands(&[idx]);
                     }
 
-                    let store_op = store_builder.build().unwrap();
+                    let store_op = store_builder.build()?;
                     new_b.append_operation(store_op);
                 }
                 return Ok(Some(new_b));
@@ -367,7 +354,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .build()
                                     .unwrap();
                                 field_val =
-                                    new_b.append_operation(cast_op).result(0).unwrap().into();
+                                    new_b.append_operation(cast_op).result(0)?.into();
                             }
 
                             if is_ptr {
@@ -386,7 +373,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     field_types.join(", ")
                                 );
                                 let struct_llvm_ty =
-                                    Type::parse(gen.context, &struct_llvm_ty_str).unwrap();
+                                    Type::parse(gen.context, &struct_llvm_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
                                 let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                                     .add_attributes(&[
@@ -409,7 +396,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .unwrap();
 
                                 let gep_ref = new_b.append_operation(gep_op);
-                                let ptr_val = gep_ref.result(0).unwrap().into();
+                                let ptr_val = gep_ref.result(0)?.into();
 
                                 let store_op = OperationBuilder::new("llvm.store", gen.loc())
                                     .add_operands(&[field_val, ptr_val])
@@ -433,7 +420,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                         .unwrap();
 
                                 let new_struct_val =
-                                    new_b.append_operation(insert_op).result(0).unwrap().into();
+                                    new_b.append_operation(insert_op).result(0)?.into();
 
                                 if let Some((mem_val, mem_ty)) = gen.env.get(base_name).cloned() {
                                     let mem_ty_str = mem_ty.to_string();
@@ -491,9 +478,8 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
             let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                 .add_operands(&[actual_rhs])
                 .add_results(&[ty])
-                .build()
-                .unwrap();
-            actual_rhs = block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            actual_rhs = block.append_operation(cast_op).result(0)?.into();
         }
 
         let is_float = ty.to_string().contains("f32")
@@ -503,10 +489,9 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let bin_op = OperationBuilder::new(op.get_op_name(is_float), gen.loc())
             .add_operands(&[lhs_val, actual_rhs])
             .add_results(&[ty])
-            .build()
-            .unwrap();
+            .build()?;
         let bin_ref = block.append_operation(bin_op);
-        let result_val = bin_ref.result(0).unwrap().into();
+        let result_val = bin_ref.result(0)?.into();
 
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
@@ -514,8 +499,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                 if mem_ty_str.starts_with("memref<") {
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
                         .add_operands(&[result_val, mem_val])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     block.append_operation(store_op);
                 } else {
                     gen.env.insert(name.to_string().into(), (result_val, ty));
@@ -547,8 +531,7 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
                     operands.extend(indices);
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
                         .add_operands(&operands)
-                        .build()
-                        .unwrap();
+                        .build()?;
                     new_b.append_operation(store_op);
                 }
                 return Ok(Some(new_b));

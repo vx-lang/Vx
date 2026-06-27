@@ -27,10 +27,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(i1_ty, val).into(),
                 )])
-                .build()
-                .unwrap();
+                .build()?;
             let const_ref = block.append_operation(const_op);
-            return Ok((const_ref.result(0).unwrap().into(), i1_ty, block));
+            return Ok((const_ref.result(0)?.into(), i1_ty, block));
         }
         if let Some((val, ty)) = gen.env.get(name) {
             let ty_str = ty.to_string();
@@ -43,10 +42,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     let load_op = OperationBuilder::new("memref.load", gen.loc())
                         .add_operands(&[*val])
                         .add_results(&[inner_ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let load_ref = block.append_operation(load_op);
-                    return Ok((load_ref.result(0).unwrap().into(), inner_ty, block));
+                    return Ok((load_ref.result(0)?.into(), inner_ty, block));
                 } else if ty_str.starts_with("!llvm.ptr")
                     || ty_str.starts_with("!llvm.struct")
                     || ty_str.starts_with("i")
@@ -61,32 +59,29 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     let load_op = OperationBuilder::new("llvm.load", gen.loc())
                         .add_operands(&[*val])
                         .add_results(&[elem_ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let load_ref = block.append_operation(load_op);
-                    return Ok((load_ref.result(0).unwrap().into(), elem_ty, block));
+                    return Ok((load_ref.result(0)?.into(), elem_ty, block));
                 }
             }
             if ty_str.starts_with("memref<memref<") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[*val])
                     .add_results(&[inner_ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let load_ref = block.append_operation(load_op);
-                Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
+                Ok((load_ref.result(0)?.into(), inner_ty, block))
             } else if ty_str.starts_with("memref<") && !ty_str.contains("x") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                let inner_ty = Type::parse(gen.context, inner_ty_str).unwrap();
+                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[*val])
                     .add_results(&[inner_ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let load_ref = block.append_operation(load_op);
-                Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
+                Ok((load_ref.result(0)?.into(), inner_ty, block))
             } else {
                 Ok((*val, *ty, block))
             }
@@ -99,19 +94,17 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     FlatSymbolRefAttribute::new(gen.context, name).into(),
                 )])
                 .add_results(&[func_ty.into()])
-                .build()
-                .unwrap();
+                .build()?;
             let const_ref = block.append_operation(const_op);
 
             let ptr_ty = gen.ptr_ty;
             let cast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
-                .add_operands(&[const_ref.result(0).unwrap().into()])
+                .add_operands(&[const_ref.result(0)?.into()])
                 .add_results(&[ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let cast_ref = block.append_operation(cast_op);
 
-            Ok((cast_ref.result(0).unwrap().into(), ptr_ty, block))
+            Ok((cast_ref.result(0)?.into(), ptr_ty, block))
         } else {
             panic!("Undefined variable: {}", name);
         }
@@ -157,16 +150,14 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
             let alloca_op = block.append_operation(
                 OperationBuilder::new("memref.alloca", gen.loc())
                     .add_results(&[Type::parse(gen.context, &format!("memref<{}>", ty)).unwrap()])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let ptr = alloca_op.result(0).unwrap().into();
+            let ptr = alloca_op.result(0)?.into();
 
             block.append_operation(
                 OperationBuilder::new("memref.store", gen.loc())
                     .add_operands(&[val, ptr])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
             return Ok((
                 ptr,
@@ -183,10 +174,9 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(i32_ty, 1).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let c1 = c1_op.result(0).unwrap().into();
+        let c1 = c1_op.result(0)?.into();
 
         let alloca_op = block.append_operation(
             OperationBuilder::new("llvm.alloca", gen.loc())
@@ -196,16 +186,14 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                     Identifier::new(gen.context, "elem_type"),
                     TypeAttribute::new(ty).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let ptr = alloca_op.result(0).unwrap().into();
+        let ptr = alloca_op.result(0)?.into();
 
         block.append_operation(
             OperationBuilder::new("llvm.store", gen.loc())
                 .add_operands(&[val, ptr])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         Ok((ptr, ptr_ty, block))
@@ -252,8 +240,7 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
                 ),
             ])
             .add_regions([Region::new()])
-            .build()
-            .unwrap();
+            .build()?;
         module_body.append_operation(global_op);
 
         let addressof_op = OperationBuilder::new("llvm.mlir.addressof", gen.loc())
@@ -262,11 +249,10 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
                 FlatSymbolRefAttribute::new(gen.context, &str_name).into(),
             )])
             .add_results(&[ptr_ty])
-            .build()
-            .unwrap();
+            .build()?;
         let addressof_ref = block.append_operation(addressof_op);
 
-        Ok((addressof_ref.result(0).unwrap().into(), ptr_ty, block))
+        Ok((addressof_ref.result(0)?.into(), ptr_ty, block))
     }
 }
 
@@ -290,10 +276,9 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
                     IntegerAttribute::new(Type::index(gen.context), 0).into(),
                 )])
                 .add_results(&[Type::index(gen.context)])
-                .build()
-                .unwrap();
+                .build()?;
             let dummy_ref = block.append_operation(dummy_val);
-            Ok((dummy_ref.result(0).unwrap().into(), none_ty, block))
+            Ok((dummy_ref.result(0)?.into(), none_ty, block))
         }
     }
 }
@@ -316,7 +301,7 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             } else {
                 "f32".to_string()
             };
-            Type::parse(gen.context, &inner_ty_str).unwrap()
+            Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?
         };
 
         if gen.is_lvalue_context {
@@ -326,10 +311,9 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         let load_op = OperationBuilder::new("llvm.load", gen.loc())
             .add_operands(&[ptr_val])
             .add_results(&[inner_ty])
-            .build()
-            .unwrap();
+            .build()?;
         let load_ref = block.append_operation(load_op);
-        Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
+        Ok((load_ref.result(0)?.into(), inner_ty, block))
     }
 }
 
@@ -370,9 +354,8 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                 .add_operands(&[indices[0]])
                 .add_results(&[i64_ty])
-                .build()
-                .unwrap();
-            let idx_i64 = block.append_operation(cast_op).result(0).unwrap().into();
+                .build()?;
+            let idx_i64 = block.append_operation(cast_op).result(0)?.into();
 
             let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                 .add_attributes(&[
@@ -387,11 +370,10 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 ])
                 .add_operands(&[base_val, idx_i64])
                 .add_results(&[base_ty])
-                .build()
-                .unwrap();
+                .build()?;
 
             let gep_ref = block.append_operation(gep_op);
-            let ptr_val = gep_ref.result(0).unwrap().into();
+            let ptr_val = gep_ref.result(0)?.into();
 
             if gen.is_lvalue_context {
                 let ptr_ty = gen.ptr_ty;
@@ -401,11 +383,10 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let load_op = OperationBuilder::new("llvm.load", gen.loc())
                 .add_operands(&[ptr_val])
                 .add_results(&[inner_ty])
-                .build()
-                .unwrap();
+                .build()?;
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
+            Ok((load_ref.result(0)?.into(), inner_ty, block))
         } else {
             let inner_ty_str = if base_ty_str.starts_with("memref<") {
                 let inner = base_ty_str.replace("memref<", "").replace('>', "");
@@ -416,7 +397,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 "f32".to_string()
             };
 
-            let inner_ty = Type::parse(gen.context, &inner_ty_str).unwrap();
+            let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
             let mut load_builder =
                 OperationBuilder::new("memref.load", gen.loc()).add_operands(&[base_val]);
 
@@ -424,10 +405,10 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 load_builder = load_builder.add_operands(&[idx]);
             }
 
-            let load_op = load_builder.add_results(&[inner_ty]).build().unwrap();
+            let load_op = load_builder.add_results(&[inner_ty]).build()?;
 
             let load_ref = block.append_operation(load_op);
-            Ok((load_ref.result(0).unwrap().into(), inner_ty, block))
+            Ok((load_ref.result(0)?.into(), inner_ty, block))
         }
     }
 }
@@ -500,7 +481,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             let el_ty_str = lhs_parts[2].split(',').next().unwrap().trim();
 
             let out_ty_str = format!("memref<{}x{}x{}>", m_str, n_str, el_ty_str);
-            let out_ty = Type::parse(gen.context, &out_ty_str).unwrap();
+            let out_ty = Type::parse(gen.context, &out_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
             // Determine dynamic dimensions for alloc
             let mut alloc_operands = Vec::new();
@@ -511,16 +492,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let cst_op = OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[index_ty])
                     .add_attributes(&[(Identifier::new(gen.context, "value"), m_idx_attr)])
-                    .build()
-                    .unwrap();
-                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+                    .build()?;
+                let idx_val = block.append_operation(cst_op).result(0)?.into();
 
                 let dim_m_op = OperationBuilder::new("memref.dim", gen.loc())
                     .add_operands(&[lhs_val, idx_val])
                     .add_results(&[index_ty])
-                    .build()
-                    .unwrap();
-                alloc_operands.push(block.append_operation(dim_m_op).result(0).unwrap().into());
+                    .build()?;
+                alloc_operands.push(block.append_operation(dim_m_op).result(0)?.into());
             }
 
             if n_str == "?" {
@@ -528,16 +507,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let cst_op = OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[index_ty])
                     .add_attributes(&[(Identifier::new(gen.context, "value"), n_idx_attr)])
-                    .build()
-                    .unwrap();
-                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+                    .build()?;
+                let idx_val = block.append_operation(cst_op).result(0)?.into();
 
                 let dim_n_op = OperationBuilder::new("memref.dim", gen.loc())
                     .add_operands(&[rhs_val, idx_val])
                     .add_results(&[index_ty])
-                    .build()
-                    .unwrap();
-                alloc_operands.push(block.append_operation(dim_n_op).result(0).unwrap().into());
+                    .build()?;
+                alloc_operands.push(block.append_operation(dim_n_op).result(0)?.into());
             }
 
             // Alloc output buffer
@@ -549,38 +526,35 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                         .into(),
                 )])
                 .add_results(&[out_ty])
-                .build()
-                .unwrap();
-            let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+                .build()?;
+            let out_val = block.append_operation(alloc_op).result(0)?.into();
 
             // Zero initialize the output buffer since matmul accumulates!
             let zero_attr = if el_ty_str.starts_with('i') {
-                IntegerAttribute::new(Type::parse(gen.context, el_ty_str).unwrap(), 0).into()
+                IntegerAttribute::new(Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, 0).into()
             } else {
                 FloatAttribute::new(
                     gen.context,
-                    Type::parse(gen.context, el_ty_str).unwrap(),
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?,
                     0.0,
                 )
                 .into()
             };
 
             let zero_op = OperationBuilder::new("arith.constant", gen.loc())
-                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
                 .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
-                .build()
-                .unwrap();
-            let zero_val = block.append_operation(zero_op).result(0).unwrap().into();
+                .build()?;
+            let zero_val = block.append_operation(zero_op).result(0)?.into();
 
             let region_fill = Region::new();
             let block_fill = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
             ]);
             let yield_fill = OperationBuilder::new("linalg.yield", gen.loc())
-                .add_operands(&[block_fill.argument(0).unwrap().into()])
-                .build()
-                .unwrap();
+                .add_operands(&[block_fill.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into()])
+                .build()?;
             block_fill.append_operation(yield_fill);
             region_fill.append_block(block_fill);
 
@@ -591,16 +565,15 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     DenseI32ArrayAttribute::new(gen.context, &[1, 1]).into(),
                 )])
                 .add_regions([region_fill])
-                .build()
-                .unwrap();
+                .build()?;
             block.append_operation(linalg_fill);
 
             // Execute linalg.matmul
             let region_matmul = Region::new();
             let block_matmul = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
             ]);
 
             let is_float = el_ty_str.contains("f32")
@@ -612,33 +585,28 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             let mul_op = OperationBuilder::new(mul_op_name, gen.loc())
                 .add_operands(&[
-                    block_matmul.argument(0).unwrap().into(),
-                    block_matmul.argument(1).unwrap().into(),
+                    block_matmul.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into(),
+                    block_matmul.argument(1).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 1)))?.into(),
                 ])
-                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-                .build()
-                .unwrap();
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .build()?;
             let mul_val = block_matmul
                 .append_operation(mul_op)
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let add_op = OperationBuilder::new(add_op_name, gen.loc())
-                .add_operands(&[block_matmul.argument(2).unwrap().into(), mul_val])
-                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-                .build()
-                .unwrap();
+                .add_operands(&[block_matmul.argument(2).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 2)))?.into(), mul_val])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .build()?;
             let add_val = block_matmul
                 .append_operation(add_op)
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let yield_matmul = OperationBuilder::new("linalg.yield", gen.loc())
                 .add_operands(&[add_val])
-                .build()
-                .unwrap();
+                .build()?;
             block_matmul.append_operation(yield_matmul);
             region_matmul.append_block(block_matmul);
 
@@ -649,14 +617,13 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
                 )])
                 .add_regions([region_matmul])
-                .build()
-                .unwrap();
+                .build()?;
             block.append_operation(matmul_op);
 
             return Ok((out_val, out_ty, block));
         } else if is_memref {
             // Element-wise Linalg Lowering (Add, Sub, Mul, Div)
-            let out_ty = Type::parse(gen.context, &lhs_ty_str).unwrap();
+            let out_ty = Type::parse(gen.context, &lhs_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
             let mut alloc_operands = Vec::new();
             let index_ty = gen.index_ty;
@@ -670,16 +637,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     let cst_op = OperationBuilder::new("arith.constant", gen.loc())
                         .add_results(&[index_ty])
                         .add_attributes(&[(Identifier::new(gen.context, "value"), idx_attr)])
-                        .build()
-                        .unwrap();
-                    let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+                        .build()?;
+                    let idx_val = block.append_operation(cst_op).result(0)?.into();
 
                     let dim_op = OperationBuilder::new("memref.dim", gen.loc())
                         .add_operands(&[lhs_val, idx_val])
                         .add_results(&[index_ty])
-                        .build()
-                        .unwrap();
-                    alloc_operands.push(block.append_operation(dim_op).result(0).unwrap().into());
+                        .build()?;
+                    alloc_operands.push(block.append_operation(dim_op).result(0)?.into());
                 }
             }
 
@@ -692,9 +657,8 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                         .into(),
                 )])
                 .add_results(&[out_ty])
-                .build()
-                .unwrap();
-            let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+                .build()?;
+            let out_val = block.append_operation(alloc_op).result(0)?.into();
 
             let op_name = match op {
                 BinaryOp::Add => "linalg.add",
@@ -712,30 +676,27 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             let region = Region::new();
             let block_inner = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-                (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
             ]);
 
             let arith_op = OperationBuilder::new(arith_op_name, gen.loc())
                 .add_operands(&[
-                    block_inner.argument(0).unwrap().into(),
-                    block_inner.argument(1).unwrap().into(),
+                    block_inner.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into(),
+                    block_inner.argument(1).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 1)))?.into(),
                 ])
-                .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-                .build()
-                .unwrap();
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .build()?;
 
             let arith_val = block_inner
                 .append_operation(arith_op)
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let yield_op = OperationBuilder::new("linalg.yield", gen.loc())
                 .add_operands(&[arith_val])
-                .build()
-                .unwrap();
+                .build()?;
 
             block_inner.append_operation(yield_op);
             region.append_block(block_inner);
@@ -747,8 +708,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                     DenseI32ArrayAttribute::new(gen.context, &[2, 1]).into(),
                 )])
                 .add_regions([region])
-                .build()
-                .unwrap();
+                .build()?;
             block.append_operation(linalg_op);
 
             return Ok((out_val, out_ty, block));
@@ -762,16 +722,14 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                     .add_operands(&[rhs_val])
                     .add_results(&[lhs_ty])
-                    .build()
-                    .unwrap();
-                rhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    .build()?;
+                rhs_val = block.append_operation(cast_op).result(0)?.into();
             } else {
                 let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                     .add_operands(&[lhs_val])
                     .add_results(&[rhs_ty])
-                    .build()
-                    .unwrap();
-                lhs_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    .build()?;
+                lhs_val = block.append_operation(cast_op).result(0)?.into();
                 final_ty = rhs_ty;
             }
         }
@@ -797,9 +755,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             final_ty
         };
 
-        let bin_op = builder.build().unwrap();
+        let bin_op = builder.build()?;
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), ret_ty, block))
+        Ok((bin_ref.result(0)?.into(), ret_ty, block))
     }
 }
 
@@ -856,9 +814,9 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             final_ty
         };
 
-        let bin_op = builder.build().unwrap();
+        let bin_op = builder.build()?;
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), ret_ty, block))
+        Ok((bin_ref.result(0)?.into(), ret_ty, block))
     }
 }
 
@@ -884,9 +842,9 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
             .add_operands(&[lhs_val, rhs_val])
             .add_results(&[final_ty]);
 
-        let bin_op = builder.build().unwrap();
+        let bin_op = builder.build()?;
         let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0).unwrap().into(), final_ty, block))
+        Ok((bin_ref.result(0)?.into(), final_ty, block))
     }
 }
 
@@ -907,18 +865,16 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
                         Identifier::new(gen.context, "value"),
                         IntegerAttribute::new(ty, 1).into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let true_val_ref = block.append_operation(true_val_op);
 
                 let not_op = OperationBuilder::new("arith.xori", gen.loc())
-                    .add_operands(&[val, true_val_ref.result(0).unwrap().into()])
+                    .add_operands(&[val, true_val_ref.result(0)?.into()])
                     .add_results(&[ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
 
                 let not_ref = block.append_operation(not_op);
-                Ok((not_ref.result(0).unwrap().into(), ty, block))
+                Ok((not_ref.result(0)?.into(), ty, block))
             }
             syntax::UnaryOp::Neg => {
                 let is_float = ty.to_string().contains("f32")
@@ -929,10 +885,9 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
                     let neg_op = OperationBuilder::new("arith.negf", gen.loc())
                         .add_operands(&[val])
                         .add_results(&[ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let neg_ref = block.append_operation(neg_op);
-                    Ok((neg_ref.result(0).unwrap().into(), ty, block))
+                    Ok((neg_ref.result(0)?.into(), ty, block))
                 } else {
                     let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                         .add_results(&[ty])
@@ -940,17 +895,15 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(ty, 0).into(),
                         )])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let zero_ref = block.append_operation(zero_op);
 
                     let neg_op = OperationBuilder::new("arith.subi", gen.loc())
-                        .add_operands(&[zero_ref.result(0).unwrap().into(), val])
+                        .add_operands(&[zero_ref.result(0)?.into(), val])
                         .add_results(&[ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let neg_ref = block.append_operation(neg_op);
-                    Ok((neg_ref.result(0).unwrap().into(), ty, block))
+                    Ok((neg_ref.result(0)?.into(), ty, block))
                 }
             }
         }
@@ -1023,9 +976,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
 
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
             .add_results(&[struct_ty])
-            .build()
-            .unwrap();
-        let mut current_struct = block.append_operation(undef_op).result(0).unwrap().into();
+            .build()?;
+        let mut current_struct = block.append_operation(undef_op).result(0)?.into();
 
         for (field_name, f_expr) in fields {
             let field_idx = struct_decl
@@ -1048,9 +1000,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
                     .add_operands(&[field_val])
                     .add_results(&[field_ty])
-                    .build()
-                    .unwrap();
-                field_val = block.append_operation(cast_op).result(0).unwrap().into();
+                    .build()?;
+                field_val = block.append_operation(cast_op).result(0)?.into();
             }
 
             let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
@@ -1062,9 +1013,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 .add_operands(&[current_struct, field_val])
                 .add_attributes(&[(Identifier::new(gen.context, "position"), pos_attr.into())])
                 .add_results(&[struct_ty])
-                .build()
-                .unwrap();
-            current_struct = block.append_operation(insert_op).result(0).unwrap().into();
+                .build()?;
+            current_struct = block.append_operation(insert_op).result(0)?.into();
         }
         Ok((current_struct, struct_ty, block))
     }
@@ -1095,12 +1045,10 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
             let zero_op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[i32_ty])
                 .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
-                .build()
-                .unwrap();
+                .build()?;
             let zero_val = current_block
                 .append_operation(zero_op)
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
             Ok((zero_val, i32_ty, current_block))
         }
@@ -1200,7 +1148,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             base_name,
                             field_types.join(", ")
                         );
-                        let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str).unwrap();
+                        let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
                         let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                             .add_operands(&[base_val])
@@ -1222,7 +1170,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .build()
                             .unwrap();
                         let gep_ref = block.append_operation(gep_op);
-                        let field_ptr = gep_ref.result(0).unwrap().into();
+                        let field_ptr = gep_ref.result(0)?.into();
 
                         if gen.is_lvalue_context {
                             return Ok((field_ptr, ptr_ty, block));
@@ -1234,7 +1182,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .build()
                             .unwrap();
                         let load_ref = block.append_operation(load_op);
-                        return Ok((load_ref.result(0).unwrap().into(), field_ty, block));
+                        return Ok((load_ref.result(0)?.into(), field_ty, block));
                     } else {
                         let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(
                             gen.context,
@@ -1251,7 +1199,7 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             .build()
                             .unwrap();
                         let ext_ref = block.append_operation(ext_op);
-                        return Ok((ext_ref.result(0).unwrap().into(), field_ty, block));
+                        return Ok((ext_ref.result(0)?.into(), field_ty, block));
                     }
                 }
             }
@@ -1321,8 +1269,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                                 .unwrap();
                             val = current_b
                                 .append_operation(cast_op)
-                                .result(0)
-                                .unwrap()
+                                .result(0)?
                                 .into();
                         }
                         dynamic_sizes.push(val);
@@ -1341,8 +1288,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .unwrap();
                         val = current_b
                             .append_operation(cast_op)
-                            .result(0)
-                            .unwrap()
+                            .result(0)?
                             .into();
                     }
                     dynamic_sizes.push(val);
@@ -1354,7 +1300,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 shape_str.push_str("?x");
             }
             let tensor_ty_str = format!("memref<{}{}>", shape_str, mlir_ty_str);
-            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).unwrap();
+            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
             let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
                 .add_operands(&dynamic_sizes)
@@ -1364,10 +1310,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         .into(),
                 )])
                 .add_results(&[tensor_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let alloc_ref = block.append_operation(alloc_op);
-            return Ok((alloc_ref.result(0).unwrap().into(), tensor_ty, block));
+            return Ok((alloc_ref.result(0)?.into(), tensor_ty, block));
         }
 
         if name.as_ref() == "reshape" || **name == *"transpose" {
@@ -1457,8 +1402,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     ])
                     .add_results(&[result_ty])
                     .build()
-                    .unwrap();
-                blk.append_operation(op).result(0).unwrap().into()
+                    .expect("Failed to build reinterpret_cast");
+                blk.append_operation(op).result(0)
+                    .expect("Failed to get result").into()
             };
 
             if is_transpose {
@@ -1486,14 +1432,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
                     )])
                     .add_results(&[dst_ty])
-                    .build()
-                    .unwrap();
-                let dst_val = block.append_operation(alloc).result(0).unwrap().into();
+                    .build()?;
+                let dst_val = block.append_operation(alloc).result(0)?.into();
 
                 let copy = OperationBuilder::new("memref.copy", gen.loc())
                     .add_operands(&[view_val, dst_val])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 block.append_operation(copy);
 
                 return Ok((dst_val, dst_ty, block));
@@ -1557,8 +1501,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         ),
                     ])
                     .add_regions([melior::ir::Region::new()])
-                    .build()
-                    .unwrap();
+                    .build()?;
 
                 gen.module.body().append_operation(printf_decl);
                 gen.functions.insert(
@@ -1590,11 +1533,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         ),
                     ])
                     .add_results(&[gen.i32_ty])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
-            return Ok((call_op.result(0).unwrap().into(), gen.i32_ty, current_b));
+            return Ok((call_op.result(0)?.into(), gen.i32_ty, current_b));
         }
 
         if let Some((ret_ty, arg_tys)) = gen.functions.get(name).cloned() {
@@ -1616,8 +1558,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .unwrap();
                         arg_val = current_b
                             .append_operation(cast_op)
-                            .result(0)
-                            .unwrap()
+                            .result(0)?
                             .into();
                     } else {
                         arg_val = gen.coerce_type(&current_b, arg_val, expr_ty, field_ty);
@@ -1633,11 +1574,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
-                let call_op = builder.build().unwrap();
+                let call_op = builder.build()?;
                 let call_ref = current_b.append_operation(call_op);
-                Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
+                Ok((call_ref.result(0)?.into(), ret_ty, current_b))
             } else {
-                let call_op = builder.build().unwrap();
+                let call_op = builder.build()?;
                 current_b.append_operation(call_op);
                 let none_ty = gen.none_ty;
                 // this value shouldn't be used
@@ -1647,13 +1588,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         Identifier::new(gen.context, "value"),
                         IntegerAttribute::new(gen.i32_ty, 0).into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 Ok((
                     current_b
                         .append_operation(dummy_op)
-                        .result(0)
-                        .unwrap()
+                        .result(0)?
                         .into(),
                     none_ty,
                     current_b,
@@ -1684,7 +1623,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 }
             }
             if let Ok(mlir_func_ty) = melior::ir::r#type::FunctionType::try_from(actual_func_ty) {
-                let ret_ty = mlir_func_ty.result(0).unwrap();
+                let ret_ty = mlir_func_ty.result(0)?;
                 let mut arg_vals = Vec::new();
 
                 let mut arg_offset = 0;
@@ -1702,10 +1641,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                                 .into(),
                         )])
                         .add_results(&[gen.ptr_ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let extract_env_ref = block.append_operation(extract_env_op);
-                    env_ptr = Some(extract_env_ref.result(0).unwrap().into());
+                    env_ptr = Some(extract_env_ref.result(0)?.into());
 
                     // Extract func_ptr
                     let extract_func_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
@@ -1716,10 +1654,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                                 .into(),
                         )])
                         .add_results(&[gen.ptr_ty])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     let extract_func_ref = block.append_operation(extract_func_op);
-                    actual_ptr_val = extract_func_ref.result(0).unwrap().into();
+                    actual_ptr_val = extract_func_ref.result(0)?.into();
                 }
 
                 let mut current_b = block;
@@ -1741,7 +1678,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .build()
                             .unwrap();
                     let cast_ref = current_b.append_operation(cast_op);
-                    actual_ptr_val = cast_ref.result(0).unwrap().into();
+                    actual_ptr_val = cast_ref.result(0)?.into();
                 }
 
                 let mut builder = OperationBuilder::new("func.call_indirect", gen.loc())
@@ -1757,11 +1694,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
 
                 if ret_ty.to_string() != "none" {
                     builder = builder.add_results(&[ret_ty]);
-                    let call_op = builder.build().unwrap();
+                    let call_op = builder.build()?;
                     let call_ref = current_b.append_operation(call_op);
-                    Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
+                    Ok((call_ref.result(0)?.into(), ret_ty, current_b))
                 } else {
-                    let call_op = builder.build().unwrap();
+                    let call_op = builder.build()?;
                     current_b.append_operation(call_op);
                     let none_ty = gen.none_ty;
                     let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
@@ -1770,13 +1707,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(gen.i32_ty, 0).into(),
                         )])
-                        .build()
-                        .unwrap();
+                        .build()?;
                     Ok((
                         current_b
                             .append_operation(dummy_op)
-                            .result(0)
-                            .unwrap()
+                            .result(0)?
                             .into(),
                         none_ty,
                         current_b,
@@ -1819,10 +1754,9 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                     melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
                 )])
                 .add_results(&[gen.ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let extract_env_ref = block.append_operation(extract_env_op);
-            let env_ptr = extract_env_ref.result(0).unwrap().into();
+            let env_ptr = extract_env_ref.result(0)?.into();
 
             // Extract func_ptr
             let extract_func_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
@@ -1832,10 +1766,9 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                     melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
                 )])
                 .add_results(&[gen.ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let extract_func_ref = block.append_operation(extract_func_op);
-            let mut actual_ptr_val = extract_func_ref.result(0).unwrap().into();
+            let mut actual_ptr_val = extract_func_ref.result(0)?.into();
 
             let mut arg_vals = Vec::new();
             let mut current_b = block;
@@ -1865,16 +1798,15 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             let actual_mlir_func_ty = melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]);
             let actual_func_ty: melior::ir::Type = actual_mlir_func_ty.into();
 
-            let ret_ty = actual_mlir_func_ty.result(0).unwrap();
+            let ret_ty = actual_mlir_func_ty.result(0)?;
 
             // Cast the raw func ptr to the actual function signature
             let cast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
                 .add_operands(&[actual_ptr_val])
                 .add_results(&[actual_func_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let cast_ref = current_b.append_operation(cast_op);
-            actual_ptr_val = cast_ref.result(0).unwrap().into();
+            actual_ptr_val = cast_ref.result(0)?.into();
 
             let mut builder = OperationBuilder::new("func.call_indirect", gen.loc())
                 .add_operands(&[actual_ptr_val, env_ptr]);
@@ -1885,11 +1817,11 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
 
             if ret_ty.to_string() != "none" {
                 builder = builder.add_results(&[ret_ty]);
-                let call_op = builder.build().unwrap();
+                let call_op = builder.build()?;
                 let call_ref = current_b.append_operation(call_op);
-                Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
+                Ok((call_ref.result(0)?.into(), ret_ty, current_b))
             } else {
-                let call_op = builder.build().unwrap();
+                let call_op = builder.build()?;
                 current_b.append_operation(call_op);
                 let none_ty = gen.none_ty;
                 let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
@@ -1898,13 +1830,11 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                         Identifier::new(gen.context, "value"),
                         IntegerAttribute::new(gen.i32_ty, 0).into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 Ok((
                     current_b
                         .append_operation(dummy_op)
-                        .result(0)
-                        .unwrap()
+                        .result(0)?
                         .into(),
                     none_ty,
                     current_b,
@@ -1960,10 +1890,9 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[val])
-                    .add_results(&[Type::parse(gen.context, ty_str).unwrap()])
-                    .build()
-                    .unwrap();
-                val = block.append_operation(load_op).result(0).unwrap().into();
+                    .add_results(&[Type::parse(gen.context, ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                    .build()?;
+                val = block.append_operation(load_op).result(0)?.into();
             }
             mlir_args.push(val);
             input_types_str.push(format!("{}: {}", name, ty_str));
@@ -2018,13 +1947,12 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             )])
             .add_operands(&mlir_args)
             .add_results(&call_ret_tys)
-            .build()
-            .unwrap();
+            .build()?;
 
         let op = block.append_operation(call_op);
 
         if let Some(ret_ty) = &self.returns {
-            Ok((op.result(0).unwrap().into(), gen.lower_type(ret_ty), block))
+            Ok((op.result(0)?.into(), gen.lower_type(ret_ty), block))
         } else {
             let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
                 .add_attributes(&[(
@@ -2032,10 +1960,9 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
                     IntegerAttribute::new(Type::index(gen.context), 0).into(),
                 )])
                 .add_results(&[Type::index(gen.context)])
-                .build()
-                .unwrap();
+                .build()?;
             Ok((
-                block.append_operation(dummy_val).result(0).unwrap().into(),
+                block.append_operation(dummy_val).result(0)?.into(),
                 Type::index(gen.context),
                 block,
             ))
@@ -2074,10 +2001,9 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
         let op = OperationBuilder::new("tensor.from_elements", gen.loc())
             .add_operands(&vals)
             .add_results(&[tensor_ty])
-            .build()
-            .unwrap();
+            .build()?;
 
-        let val = current_b.append_operation(op).result(0).unwrap().into();
+        let val = current_b.append_operation(op).result(0)?.into();
         Ok((val, tensor_ty, current_b))
     }
 }
@@ -2135,10 +2061,9 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
                     Identifier::new(gen.context, "value"),
                     FloatAttribute::new(gen.context, ty, val_str.parse::<f64>().unwrap()).into(),
                 )])
-                .build()
-                .unwrap();
+                .build()?;
             let op_ref = block.append_operation(op);
-            Ok((op_ref.result(0).unwrap().into(), ty, block))
+            Ok((op_ref.result(0)?.into(), ty, block))
         } else {
             let op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[ty])
@@ -2146,10 +2071,9 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(ty, val_str.parse::<i64>().unwrap()).into(),
                 )])
-                .build()
-                .unwrap();
+                .build()?;
             let op_ref = block.append_operation(op);
-            Ok((op_ref.result(0).unwrap().into(), ty, block))
+            Ok((op_ref.result(0)?.into(), ty, block))
         }
     }
 }
@@ -2176,10 +2100,9 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                 Identifier::new(gen.context, "value"),
                 IntegerAttribute::new(ty, 0).into(),
             )])
-            .build()
-            .unwrap();
+            .build()?;
         let op_ref = block.append_operation(op);
-        Ok((op_ref.result(0).unwrap().into(), ty, block))
+        Ok((op_ref.result(0)?.into(), ty, block))
     }
 }
 
@@ -2245,9 +2168,8 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 Identifier::new(gen.context, "value"),
                 IntegerAttribute::new(i32_ty, tag_val).into(),
             )])
-            .build()
-            .unwrap();
-        let tag_val = block.append_operation(tag_op).result(0).unwrap().into();
+            .build()?;
+        let tag_val = block.append_operation(tag_op).result(0)?.into();
 
         println!(
             "EnumVariantExpr: enum_name={}, variant={}, has_payload={}",
@@ -2259,12 +2181,11 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         }
 
         // We have an Option<T> struct
-        let struct_ty = Type::parse(gen.context, &enum_ty_str).unwrap();
+        let struct_ty = Type::parse(gen.context, &enum_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
             .add_results(&[struct_ty])
-            .build()
-            .unwrap();
-        let undef_val = block.append_operation(undef_op).result(0).unwrap().into();
+            .build()?;
+        let undef_val = block.append_operation(undef_op).result(0)?.into();
 
         let insert_tag_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
             .add_operands(&[undef_val, tag_val])
@@ -2273,12 +2194,10 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 Identifier::new(gen.context, "position"),
                 melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
             )])
-            .build()
-            .unwrap();
+            .build()?;
         let mut struct_val = block
             .append_operation(insert_tag_op)
-            .result(0)
-            .unwrap()
+            .result(0)?
             .into();
 
         if let Some(payload_exprs) = payload {
@@ -2293,12 +2212,10 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                         melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
                             .into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 struct_val = block
                     .append_operation(insert_payload_op)
-                    .result(0)
-                    .unwrap()
+                    .result(0)?
                     .into();
             }
         }
@@ -2367,10 +2284,9 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(i32_ty, 1).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let c1 = c1_op.result(0).unwrap().into();
+        let c1 = c1_op.result(0)?.into();
 
         let ptr_ty = gen.ptr_ty;
         let alloca_op = block.append_operation(
@@ -2381,16 +2297,14 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                     Identifier::new(gen.context, "elem_type"),
                     TypeAttribute::new(vec_ty).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let ptr_val = alloca_op.result(0).unwrap().into();
+        let ptr_val = alloca_op.result(0)?.into();
 
         block.append_operation(
             OperationBuilder::new("llvm.store", gen.loc())
                 .add_operands(&[vec_val, ptr_val])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         let tmp_vec_name = format!("__vec_ptr_{}", gen.string_counter);
@@ -2423,10 +2337,9 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
             OperationBuilder::new("llvm.load", gen.loc())
                 .add_operands(&[ptr_val])
                 .add_results(&[vec_ty])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        Ok((load_op.result(0).unwrap().into(), vec_ty, block))
+        Ok((load_op.result(0)?.into(), vec_ty, block))
     }
 }
 
@@ -2488,8 +2401,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                         ),
                     ])
                     .add_regions([melior::ir::Region::new()])
-                    .build()
-                    .unwrap();
+                    .build()?;
 
                 gen.module.body().append_operation(func_decl);
                 gen.functions.insert(
@@ -2510,8 +2422,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                 .add_operands(&[arg_val])
                 .add_results(&[gen.i32_ty])
                 .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-                .build()
-                .unwrap();
+                .build()?;
 
             block.append_operation(call_op);
         }
@@ -2522,11 +2433,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                 Identifier::new(gen.context, "value"),
                 IntegerAttribute::new(gen.i32_ty, 0).into(),
             )])
-            .build()
-            .unwrap();
+            .build()?;
 
         Ok((
-            block.append_operation(dummy_op).result(0).unwrap().into(),
+            block.append_operation(dummy_op).result(0)?.into(),
             gen.i32_ty,
             block,
         ))
@@ -2569,8 +2479,7 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
                     ),
                 ])
                 .add_regions([melior::ir::Region::new()])
-                .build()
-                .unwrap();
+                .build()?;
 
             gen.module.body().append_operation(func_decl);
             gen.functions
@@ -2581,11 +2490,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
         let call_op = OperationBuilder::new("func.call", gen.loc())
             .add_results(&[gen.i32_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-            .build()
-            .unwrap();
+            .build()?;
 
         Ok((
-            block.append_operation(call_op).result(0).unwrap().into(),
+            block.append_operation(call_op).result(0)?.into(),
             gen.i32_ty,
             block,
         ))
@@ -2625,11 +2533,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
                 IntegerAttribute::new(size_ty, size).into(),
             )])
             .add_results(&[size_ty])
-            .build()
-            .unwrap();
+            .build()?;
 
         let const_op = block.append_operation(const_op);
-        Ok((const_op.result(0).unwrap().into(), size_ty, block))
+        Ok((const_op.result(0)?.into(), size_ty, block))
     }
 }
 
@@ -2671,27 +2578,24 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                     FlatSymbolRefAttribute::new(gen.context, &call_fn_name).into(),
                 )])
                 .add_results(&[fn_ty.into()])
-                .build()
-                .unwrap();
+                .build()?;
             let const_ref = block.append_operation(const_op);
-            let mut fn_ptr_val: melior::ir::Value = const_ref.result(0).unwrap().into();
+            let mut fn_ptr_val: melior::ir::Value = const_ref.result(0)?.into();
 
             let ptr_ty = gen.ptr_ty;
             let bitcast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
                 .add_operands(&[fn_ptr_val])
                 .add_results(&[ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let bitcast_ref = block.append_operation(bitcast_op);
-            fn_ptr_val = bitcast_ref.result(0).unwrap().into();
+            fn_ptr_val = bitcast_ref.result(0)?.into();
 
             let fat_ptr_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr)>").unwrap();
             let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
                 .add_results(&[fat_ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let undef_ref = block.append_operation(undef_op);
-            let mut fat_ptr_val: melior::ir::Value = undef_ref.result(0).unwrap().into();
+            let mut fat_ptr_val: melior::ir::Value = undef_ref.result(0)?.into();
 
             let insert_fn_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                 .add_operands(&[fat_ptr_val, fn_ptr_val])
@@ -2700,20 +2604,18 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                     melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
                 )])
                 .add_results(&[fat_ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let insert_fn_ref = block.append_operation(insert_fn_op);
-            fat_ptr_val = insert_fn_ref.result(0).unwrap().into();
+            fat_ptr_val = insert_fn_ref.result(0)?.into();
 
             let mut env_ptr_val = source_val;
             let ptr_bitcast_op =
                 OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
                     .add_operands(&[env_ptr_val])
                     .add_results(&[ptr_ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
             let ptr_bitcast_ref = block.append_operation(ptr_bitcast_op);
-            env_ptr_val = ptr_bitcast_ref.result(0).unwrap().into();
+            env_ptr_val = ptr_bitcast_ref.result(0)?.into();
 
             let insert_env_op = OperationBuilder::new("llvm.insertvalue", gen.loc())
                 .add_operands(&[fat_ptr_val, env_ptr_val])
@@ -2722,10 +2624,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                     melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
                 )])
                 .add_results(&[fat_ptr_ty])
-                .build()
-                .unwrap();
+                .build()?;
             let insert_env_ref = block.append_operation(insert_env_op);
-            fat_ptr_val = insert_env_ref.result(0).unwrap().into();
+            fat_ptr_val = insert_env_ref.result(0)?.into();
 
             return Ok((fat_ptr_val, fat_ptr_ty, block));
         } else if let syntax::Type::Scalar(_) = &self.target_ty {
@@ -2738,10 +2639,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                 let cast_op = OperationBuilder::new("llvm.inttoptr", gen.loc())
                     .add_operands(&[source_val])
                     .add_results(&[ptr_ty])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let cast_ref = block.append_operation(cast_op);
-                return Ok((cast_ref.result(0).unwrap().into(), ptr_ty, block));
+                return Ok((cast_ref.result(0)?.into(), ptr_ty, block));
             }
         }
 

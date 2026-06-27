@@ -65,8 +65,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                         FloatAttribute::new(gen.context, ret_ty, 0.0).into(),
                     )])
                     .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
+                    .build()?
             } else if ret_ty.to_string() == "i1" {
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_attributes(&[(
@@ -74,8 +73,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                         IntegerAttribute::new(ret_ty, 0).into(),
                     )])
                     .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
+                    .build()?
             } else {
                 OperationBuilder::new("arith.constant", gen.loc())
                     .add_attributes(&[(
@@ -83,11 +81,10 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                         IntegerAttribute::new(ret_ty, 0).into(),
                     )])
                     .add_results(&[ret_ty])
-                    .build()
-                    .unwrap()
+                    .build()?
             };
             return Ok((
-                block.append_operation(dummy_op).result(0).unwrap().into(),
+                block.append_operation(dummy_op).result(0)?.into(),
                 ret_ty,
                 block,
             ));
@@ -116,8 +113,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                     melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
                         .into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         let mut then_terminated = false;
@@ -163,9 +159,8 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                             Identifier::new(gen.context, "value"),
                             melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
                         )])
-                        .build()
-                        .unwrap();
-                    let val = then_b.append_operation(dummy_op).result(0).unwrap().into();
+                        .build()?;
+                    let val = then_b.append_operation(dummy_op).result(0)?.into();
                     yield_operands.push(val);
                 }
             }
@@ -173,8 +168,7 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&yield_operands)
                     .add_successors(&[&*merge_b])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         }
 
@@ -222,9 +216,8 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                             Identifier::new(gen.context, "value"),
                             melior::ir::attribute::IntegerAttribute::new(ret_ty, 0).into(),
                         )])
-                        .build()
-                        .unwrap();
-                    let val = else_b.append_operation(dummy_op).result(0).unwrap().into();
+                        .build()?;
+                    let val = else_b.append_operation(dummy_op).result(0)?.into();
                     yield_operands.push(val);
                 }
             }
@@ -232,13 +225,12 @@ impl<'c> LowerToMelior<'c> for IfExpr {
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&yield_operands)
                     .add_successors(&[&*merge_b])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         }
 
         if has_ret {
-            let res = merge_b.argument(0).unwrap().into();
+            let res = merge_b.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
             Ok((res, ret_ty, merge_b))
         } else {
             Ok((cond_val, ret_ty, merge_b))
@@ -278,12 +270,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 let cast_start_op = OperationBuilder::new("arith.index_cast", gen.loc())
                     .add_operands(&[start_val])
                     .add_results(&[ty_index])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 block
                     .append_operation(cast_start_op)
-                    .result(0)
-                    .unwrap()
+                    .result(0)?
                     .into()
             };
 
@@ -293,12 +283,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 let cast_end_op = OperationBuilder::new("arith.index_cast", gen.loc())
                     .add_operands(&[end_val])
                     .add_results(&[ty_index])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 block
                     .append_operation(cast_end_op)
-                    .result(0)
-                    .unwrap()
+                    .result(0)?
                     .into()
             };
 
@@ -309,10 +297,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                         Identifier::new(gen.context, "value"),
                         IntegerAttribute::new(ty_index, 1).into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let step_idx = step_op.result(0).unwrap().into();
+            let step_idx = step_op.result(0)?.into();
 
             let parent_region = block.parent_region().unwrap();
             let cond_block =
@@ -324,11 +311,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&[start_idx])
                     .add_successors(&[&*cond_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
-            let current_idx = cond_block.argument(0).unwrap().into();
+            let current_idx = cond_block.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
 
             let cmp_op = cond_block.append_operation(
                 OperationBuilder::new("arith.cmpi", gen.loc())
@@ -338,10 +324,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(gen.i64_ty, 2).into(), // slt
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let cond_val = cmp_op.result(0).unwrap().into();
+            let cond_val = cmp_op.result(0)?.into();
 
             cond_block.append_operation(
                 OperationBuilder::new("cf.cond_br", gen.loc())
@@ -352,8 +337,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                         melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
                             .into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
             gen.env.insert(iter.clone().into(), (current_idx, ty_index));
@@ -382,8 +366,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 body_block.append_operation(
                     OperationBuilder::new("cf.br", gen.loc())
                         .add_successors(&[&*latch_block])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 );
             }
 
@@ -393,16 +376,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("arith.addi", gen.loc())
                     .add_operands(&[current_idx, step_idx])
                     .add_results(&[ty_index])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let next_idx = next_idx_op.result(0).unwrap().into();
+            let next_idx = next_idx_op.result(0)?.into();
             latch_block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&[next_idx])
                     .add_successors(&[&*cond_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
             return Ok(Some(merge_block));
@@ -421,11 +402,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(ty_index, 0).into(),
                         )])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 )
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let len_str = iter_ty_str
@@ -445,11 +424,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(ty_index, len).into(),
                         )])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 )
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let step_idx = block
@@ -460,11 +437,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                             Identifier::new(gen.context, "value"),
                             IntegerAttribute::new(ty_index, 1).into(),
                         )])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 )
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             let parent_region = block.parent_region().unwrap();
@@ -477,11 +452,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&[start_idx])
                     .add_successors(&[&*cond_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
-            let current_idx = cond_block.argument(0).unwrap().into();
+            let current_idx = cond_block.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
 
             let cmp_op = cond_block.append_operation(
                 OperationBuilder::new("arith.cmpi", gen.loc())
@@ -491,10 +465,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                         Identifier::new(gen.context, "predicate"),
                         IntegerAttribute::new(gen.i64_ty, 2).into(), // slt
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let cond_val = cmp_op.result(0).unwrap().into();
+            let cond_val = cmp_op.result(0)?.into();
 
             cond_block.append_operation(
                 OperationBuilder::new("cf.cond_br", gen.loc())
@@ -505,23 +478,20 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                         melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
                             .into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
             let el_ty_str = iter_ty_str.split('x').nth(1).unwrap().trim_end_matches('>');
-            let el_ty = Type::parse(gen.context, el_ty_str).unwrap();
+            let el_ty = Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
             let extract_op = OperationBuilder::new("tensor.extract", gen.loc())
                 .add_operands(&[iter_val, current_idx])
                 .add_results(&[el_ty])
-                .build()
-                .unwrap();
+                .build()?;
 
             let el_val = body_block
                 .append_operation(extract_op)
-                .result(0)
-                .unwrap()
+                .result(0)?
                 .into();
 
             gen.env.insert(iter.clone().into(), (el_val, el_ty));
@@ -550,8 +520,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 body_block.append_operation(
                     OperationBuilder::new("cf.br", gen.loc())
                         .add_successors(&[&*latch_block])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 );
             }
 
@@ -561,16 +530,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 OperationBuilder::new("arith.addi", gen.loc())
                     .add_operands(&[current_idx, step_idx])
                     .add_results(&[ty_index])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let next_idx = next_idx_op.result(0).unwrap().into();
+            let next_idx = next_idx_op.result(0)?.into();
             latch_block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_operands(&[next_idx])
                     .add_successors(&[&*cond_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
 
             return Ok(Some(merge_block));
@@ -594,10 +561,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(i32_ty, 1).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let c1_val_alloc = c1_op_alloc.result(0).unwrap().into();
+        let c1_val_alloc = c1_op_alloc.result(0)?.into();
 
         let alloca_op = block.append_operation(
             OperationBuilder::new("llvm.alloca", gen.loc())
@@ -607,16 +573,14 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     Identifier::new(gen.context, "elem_type"),
                     melior::ir::attribute::TypeAttribute::new(iter_ty).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let ptr_val = alloca_op.result(0).unwrap().into();
+        let ptr_val = alloca_op.result(0)?.into();
 
         block.append_operation(
             OperationBuilder::new("llvm.store", gen.loc())
                 .add_operands(&[iter_val, ptr_val])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         let tmp_iter_name = format!("__iter_ptr_{}", gen.string_counter);
@@ -633,8 +597,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
                 .add_successors(&[&*cond_block])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         let next_call = Expr::FunctionCall(FunctionCallExpr {
@@ -660,12 +623,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 Identifier::new(gen.context, "position"),
                 melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
             )])
-            .build()
-            .unwrap();
+            .build()?;
         let tag_val = cond_block_end
             .append_operation(extract_tag_op)
-            .result(0)
-            .unwrap()
+            .result(0)?
             .into();
 
         let c1_op = cond_block_end.append_operation(
@@ -675,10 +636,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     Identifier::new(gen.context, "value"),
                     IntegerAttribute::new(i32_ty, 0).into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let c1_val = c1_op.result(0).unwrap().into();
+        let c1_val = c1_op.result(0)?.into();
 
         let cmpi_op = cond_block_end.append_operation(
             OperationBuilder::new("arith.cmpi", gen.loc())
@@ -688,10 +648,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     Identifier::new(gen.context, "predicate"),
                     IntegerAttribute::new(gen.i64_ty, 0).into(), // eq
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
-        let cond_val = cmpi_op.result(0).unwrap().into();
+        let cond_val = cmpi_op.result(0)?.into();
 
         cond_block_end.append_operation(
             OperationBuilder::new("cf.cond_br", gen.loc())
@@ -702,8 +661,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
                         .into(),
                 )])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         let opt_ty_str = opt_ty.to_string();
@@ -714,7 +672,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         } else {
             "i32".to_string()
         };
-        let payload_ty = Type::parse(gen.context, &payload_ty_str).unwrap();
+        let payload_ty = Type::parse(gen.context, &payload_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
 
         let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
             .add_operands(&[opt_val])
@@ -723,12 +681,10 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                 Identifier::new(gen.context, "position"),
                 melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
             )])
-            .build()
-            .unwrap();
+            .build()?;
         let payload_val = body_block
             .append_operation(extract_payload_op)
-            .result(0)
-            .unwrap()
+            .result(0)?
             .into();
 
         gen.env
@@ -753,8 +709,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             body_block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_successors(&[&*cond_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         }
 
@@ -785,8 +740,7 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
         block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
                 .add_successors(&[&*body_block])
-                .build()
-                .unwrap(),
+                .build()?,
         );
 
         gen.break_blocks.push(&*merge_block as *const _);
@@ -810,8 +764,7 @@ impl<'c> LowerToMelior<'c> for LoopStmt {
             body_block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_successors(&[entry_b])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         }
 
@@ -831,8 +784,7 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
             block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_successors(&[break_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         } else {
             panic!("break outside of a loop");
@@ -853,8 +805,7 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
             block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_successors(&[continue_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         } else {
             panic!("continue outside of a loop");

@@ -225,7 +225,7 @@ pub(crate) fn emit_enzyme_decl<'c>(
             ])
             .add_regions([region])
             .build()
-            .unwrap();
+            .expect("Failed to build enzyme decl");
 
         gen.module.body().append_operation(func_op);
     }
@@ -244,8 +244,7 @@ pub fn generate_match_chain<'c>(
         block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
                 .add_successors(&[&*merge_block])
-                .build()
-                .unwrap(),
+                .build()?,
         );
         return Ok(block);
     }
@@ -266,8 +265,7 @@ pub fn generate_match_chain<'c>(
             block.append_operation(
                 OperationBuilder::new("cf.br", gen.loc())
                     .add_successors(&[&*merge_block])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
         }
         return Ok(block);
@@ -297,10 +295,9 @@ pub fn generate_match_chain<'c>(
                         Identifier::new(gen.context, "value"),
                         IntegerAttribute::new(i32_ty, tag_val).into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            let tag = tag_op.result(0).unwrap().into();
+            let tag = tag_op.result(0)?.into();
 
             let actual_tag = if _match_ty.to_string() == "i32" {
                 match_val
@@ -314,10 +311,9 @@ pub fn generate_match_chain<'c>(
                             melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0])
                                 .into(),
                         )])
-                        .build()
-                        .unwrap(),
+                        .build()?,
                 );
-                extract_tag_op.result(0).unwrap().into()
+                extract_tag_op.result(0)?.into()
             };
 
             let cmp_op = block.append_operation(
@@ -332,10 +328,9 @@ pub fn generate_match_chain<'c>(
                         )
                         .into(),
                     )])
-                    .build()
-                    .unwrap(),
+                    .build()?,
             );
-            cmp_op.result(0).unwrap().into()
+            cmp_op.result(0)?.into()
         }
         _ => panic!("Unsupported pattern in codegen"),
     };
@@ -348,8 +343,7 @@ pub fn generate_match_chain<'c>(
                 Identifier::new(gen.context, "operandSegmentSizes"),
                 melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0]).into(),
             )])
-            .build()
-            .unwrap(),
+            .build()?,
     );
 
     if let Pattern::EnumVariant(_, _, Some(payloads)) = &arm.pattern {
@@ -370,7 +364,7 @@ pub fn generate_match_chain<'c>(
                 {
                     payload_ty_str = format!("!llvm.{}", payload_ty_str);
                 }
-                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).unwrap();
+                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
                 let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
                     .add_operands(&[match_val])
                     .add_results(&[payload_ty])
@@ -379,12 +373,10 @@ pub fn generate_match_chain<'c>(
                         melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[1])
                             .into(),
                     )])
-                    .build()
-                    .unwrap();
+                    .build()?;
                 let payload_val = then_block
                     .append_operation(extract_payload_op)
-                    .result(0)
-                    .unwrap()
+                    .result(0)?
                     .into();
                 gen.env
                     .insert(name.to_string().into(), (payload_val, payload_ty));
@@ -405,8 +397,7 @@ pub fn generate_match_chain<'c>(
         then_block.append_operation(
             OperationBuilder::new("cf.br", gen.loc())
                 .add_successors(&[&*merge_block])
-                .build()
-                .unwrap(),
+                .build()?,
         );
     }
 
@@ -449,16 +440,14 @@ pub(crate) fn lower_map_call<'c>(
                 let cst_op = OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[index_ty])
                     .add_attributes(&[(Identifier::new(gen.context, "value"), idx_attr)])
-                    .build()
-                    .unwrap();
-                let idx_val = block.append_operation(cst_op).result(0).unwrap().into();
+                    .build()?;
+                let idx_val = block.append_operation(cst_op).result(0)?.into();
 
                 let dim_op = OperationBuilder::new("memref.dim", gen.loc())
                     .add_operands(&[tensor_val, idx_val])
                     .add_results(&[index_ty])
-                    .build()
-                    .unwrap();
-                alloc_operands.push(block.append_operation(dim_op).result(0).unwrap().into());
+                    .build()?;
+                alloc_operands.push(block.append_operation(dim_op).result(0)?.into());
             }
         }
 
@@ -469,15 +458,14 @@ pub(crate) fn lower_map_call<'c>(
                 DenseI32ArrayAttribute::new(gen.context, &[alloc_operands.len() as i32, 0]).into(),
             )])
             .add_results(&[tensor_ty])
-            .build()
-            .unwrap();
-        let out_val = block.append_operation(alloc_op).result(0).unwrap().into();
+            .build()?;
+        let out_val = block.append_operation(alloc_op).result(0)?.into();
 
         // 2. Generate linalg.generic
         let region = Region::new();
         let block_generic = melior::ir::Block::new(&[
-            (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
-            (Type::parse(gen.context, el_ty_str).unwrap(), gen.loc()),
+            (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+            (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
         ]);
 
         // We need to call the closure!
@@ -493,9 +481,8 @@ pub(crate) fn lower_map_call<'c>(
                 Identifier::new(gen.context, "value"),
                 IntegerAttribute::new(i32_ty, 1).into(),
             )])
-            .build()
-            .unwrap();
-        let c1 = block.append_operation(c1_op).result(0).unwrap().into();
+            .build()?;
+        let c1 = block.append_operation(c1_op).result(0)?.into();
 
         let alloca_op = OperationBuilder::new("llvm.alloca", gen.loc())
             .add_operands(&[c1])
@@ -504,14 +491,12 @@ pub(crate) fn lower_map_call<'c>(
                 Identifier::new(gen.context, "elem_type"),
                 TypeAttribute::new(closure_ty).into(),
             )])
-            .build()
-            .unwrap();
-        let alloca_ptr = block.append_operation(alloca_op).result(0).unwrap().into();
+            .build()?;
+        let alloca_ptr = block.append_operation(alloca_op).result(0)?.into();
 
         let store_op = OperationBuilder::new("llvm.store", gen.loc())
             .add_operands(&[closure_val, alloca_ptr])
-            .build()
-            .unwrap();
+            .build()?;
         block.append_operation(store_op);
 
         // Extract invoke method name
@@ -525,25 +510,22 @@ pub(crate) fn lower_map_call<'c>(
         let invoke_method = format!("{}_call", struct_name);
 
         let call_op = OperationBuilder::new("func.call", gen.loc())
-            .add_operands(&[alloca_ptr, block_generic.argument(0).unwrap().into()])
+            .add_operands(&[alloca_ptr, block_generic.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into()])
             .add_attributes(&[(
                 Identifier::new(gen.context, "callee"),
                 FlatSymbolRefAttribute::new(gen.context, &invoke_method).into(),
             )])
-            .add_results(&[Type::parse(gen.context, el_ty_str).unwrap()])
-            .build()
-            .unwrap();
+            .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+            .build()?;
 
         let call_res = block_generic
             .append_operation(call_op)
-            .result(0)
-            .unwrap()
+            .result(0)?
             .into();
 
         let yield_op = OperationBuilder::new("linalg.yield", gen.loc())
             .add_operands(&[call_res])
-            .build()
-            .unwrap();
+            .build()?;
         block_generic.append_operation(yield_op);
         region.append_block(block_generic);
 
@@ -585,8 +567,7 @@ pub(crate) fn lower_map_call<'c>(
                 ),
             ])
             .add_regions([region])
-            .build()
-            .unwrap();
+            .build()?;
         block.append_operation(linalg_generic);
 
         return Ok((out_val, tensor_ty, block));

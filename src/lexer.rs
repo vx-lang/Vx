@@ -515,6 +515,42 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn lex_whitespace(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
+        while let Some(next_c) = self.peek_char() {
+            if next_c.is_whitespace() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let end_byte = self.current_byte_offset();
+        let ws = &self.source[start_byte..end_byte];
+        TokenBase {
+            kind: TokenTypeBase::Whitespace(ws),
+            line: self.line,
+            column: start_col,
+            length: end_byte - start_byte,
+        }
+    }
+
+    fn lex_slash_or_comment(&mut self, start_byte: usize, start_col: usize) -> Option<Token<'a>> {
+        let rest = &self.source[self.current_byte_offset()..];
+        if rest.starts_with("///") && !rest.starts_with("////") {
+            self.advance(); // consume first '/'
+            self.advance(); // consume second '/'
+            self.advance(); // consume third '/'
+            return Some(self.lex_comment(start_byte, start_col, true));
+        }
+
+        if self.preserve_comments && rest.starts_with("//") {
+            self.advance(); // consume first '/'
+            self.advance(); // consume second '/'
+            return Some(self.lex_comment(start_byte, start_col, false));
+        }
+
+        None
+    }
+
     pub fn next_token(&mut self) -> Token<'a> {
         if !self.preserve_comments {
             self.skip_whitespace();
@@ -534,42 +570,13 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        if self.preserve_comments {
-            if c.is_whitespace() {
-                while let Some(next_c) = self.peek_char() {
-                    if next_c.is_whitespace() {
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                let end_byte = self.current_byte_offset();
-                let ws = &self.source[start_byte..end_byte];
-                return TokenBase {
-                    kind: TokenTypeBase::Whitespace(ws),
-                    line: self.line,
-                    column: start_col,
-                    length: self.current_byte_offset() - start_byte,
-                };
-            }
-
-            if c == '/' {
-                let rest = &self.source[self.current_byte_offset()..];
-                if rest.starts_with("//") && !rest.starts_with("///") {
-                    self.advance(); // consume first '/'
-                    self.advance(); // consume second '/'
-                    return self.lex_comment(start_byte, start_col, false);
-                }
-            }
+        if self.preserve_comments && c.is_whitespace() {
+            return self.lex_whitespace(start_byte, start_col);
         }
 
         if c == '/' {
-            let rest = &self.source[self.current_byte_offset()..];
-            if rest.starts_with("///") && !rest.starts_with("////") {
-                self.advance(); // consume first '/'
-                self.advance(); // consume second '/'
-                self.advance(); // consume third '/'
-                return self.lex_comment(start_byte, start_col, true);
+            if let Some(token) = self.lex_slash_or_comment(start_byte, start_col) {
+                return token;
             }
         }
 

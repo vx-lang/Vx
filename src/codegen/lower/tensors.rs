@@ -63,20 +63,20 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
             spawn_builder = spawn_builder.add_results(&result_types);
         }
 
-        let spawn_op = spawn_builder.build().unwrap();
+        let spawn_op = spawn_builder.build()?;
         let spawn_ref = block.append_operation(spawn_op);
 
         if !needs_yield {
             let mut ret_builder = OperationBuilder::new("func.return", location);
             if !result_types.is_empty() {
-                ret_builder = ret_builder.add_operands(&[spawn_ref.result(0).unwrap().into()]);
+                ret_builder = ret_builder.add_operands(&[spawn_ref.result(0)?.into()]);
             }
-            let ret_op = ret_builder.build().unwrap();
+            let ret_op = ret_builder.build()?;
             block.append_operation(ret_op);
         }
 
         if !result_types.is_empty() {
-            Ok((spawn_ref.result(0).unwrap().into(), result_types[0], block))
+            Ok((spawn_ref.result(0)?.into(), result_types[0], block))
         } else {
             let _none_ty = gen.none_ty;
             let dummy_op = OperationBuilder::new("arith.constant", location)
@@ -85,11 +85,10 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
                     IntegerAttribute::new(Type::index(gen.context), 0).into(),
                 )])
                 .add_results(&[Type::index(gen.context)])
-                .build()
-                .unwrap();
+                .build()?;
             let dummy_ref = block.append_operation(dummy_op);
             Ok((
-                dummy_ref.result(0).unwrap().into(),
+                dummy_ref.result(0)?.into(),
                 Type::index(gen.context),
                 block,
             ))
@@ -137,7 +136,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             .expect("Failed to build vx.transfer operation");
 
         use melior::ir::operation::OperationLike;
-        let result_val = transfer_op.result(0).unwrap().into();
+        let result_val = transfer_op.result(0)?.into();
         block.append_operation(transfer_op);
 
         Ok((result_val, target_ty, block))
@@ -169,10 +168,9 @@ impl<'c> LowerToMelior<'c> for GradExpr {
                 FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
             )])
             .add_results(&[fn_ty.into()])
-            .build()
-            .unwrap();
+            .build()?;
         let const_ref = block.append_operation(const_op);
-        let target_fn_val = const_ref.result(0).unwrap().into();
+        let target_fn_val = const_ref.result(0)?.into();
 
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
@@ -192,11 +190,10 @@ impl<'c> LowerToMelior<'c> for GradExpr {
             .add_operands(&arg_vals)
             .add_results(&[ret_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-            .build()
-            .unwrap();
+            .build()?;
 
         let call_ref = current_b.append_operation(call_op);
-        Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
+        Ok((call_ref.result(0)?.into(), ret_ty, current_b))
     }
 }
 
@@ -226,10 +223,9 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
                 FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
             )])
             .add_results(&[fn_ty.into()])
-            .build()
-            .unwrap();
+            .build()?;
         let const_ref = block.append_operation(const_op);
-        let target_fn_val = const_ref.result(0).unwrap().into();
+        let target_fn_val = const_ref.result(0)?.into();
 
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
@@ -251,11 +247,10 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
             .add_operands(&arg_vals)
             .add_results(&[ret_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-            .build()
-            .unwrap();
+            .build()?;
 
         let call_ref = current_b.append_operation(call_op);
-        let grad_val = call_ref.result(0).unwrap().into();
+        let grad_val = call_ref.result(0)?.into();
 
         let (c_val, _, current_b) = gen.generate_expr(cotangent, current_b)?;
 
@@ -268,11 +263,10 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         let mul_op = OperationBuilder::new(op_name, gen.loc())
             .add_operands(&[grad_val, c_val])
             .add_results(&[ret_ty])
-            .build()
-            .unwrap();
+            .build()?;
         let mul_ref = current_b.append_operation(mul_op);
 
-        Ok((mul_ref.result(0).unwrap().into(), ret_ty, current_b))
+        Ok((mul_ref.result(0)?.into(), ret_ty, current_b))
     }
 }
 
@@ -302,10 +296,9 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
                 FlatSymbolRefAttribute::new(gen.context, target_fn).into(),
             )])
             .add_results(&[fn_ty.into()])
-            .build()
-            .unwrap();
+            .build()?;
         let const_ref = block.append_operation(const_op);
-        let target_fn_val = const_ref.result(0).unwrap().into();
+        let target_fn_val = const_ref.result(0)?.into();
 
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
@@ -330,10 +323,9 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
             .add_operands(&arg_vals)
             .add_results(&[ret_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-            .build()
-            .unwrap();
+            .build()?;
 
         let call_ref = current_b.append_operation(call_op);
-        Ok((call_ref.result(0).unwrap().into(), ret_ty, current_b))
+        Ok((call_ref.result(0)?.into(), ret_ty, current_b))
     }
 }
