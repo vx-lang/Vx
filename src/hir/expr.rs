@@ -651,11 +651,41 @@ impl<'a> TypeChecker<'a> {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::CPU);
                             if !is_pinned_on_host && !silent && !self.allow_cross_topology {
-                                let msg = format!(
-                                    "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                    name, top, ty, self.active_topology
-                                );
-                                self.errors.push(msg);
+                                let mut implements_transfer = false;
+                                if let Some(impl_blocks) = self.env.impls.get("Transfer") {
+                                    for ib in impl_blocks {
+                                        if self.unify_types(
+                                            &ib.target_type,
+                                            &ty,
+                                            &mut std::collections::HashMap::new(),
+                                        ) {
+                                            implements_transfer = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if implements_transfer {
+                                    let active_mem = crate::arch::TransferCostGraph::default_memory_for(&self.active_topology);
+                                    let original_expr = std::mem::replace(expr, Expr::Error(span.clone()));
+                                    
+                                    let method_name = crate::symbol::Symbol::from("transfer");
+                                    let method_call = Expr::MethodCall(
+                                        Box::new(original_expr),
+                                        method_name,
+                                        vec![], // No arguments!
+                                        span.clone(),
+                                    );
+                                    *expr = method_call;
+                                    
+                                    return self.check_methodcall_expr(expr, consume, silent);
+                                } else {
+                                    let msg = format!(
+                                        "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
+                                        name, top, ty, self.active_topology
+                                    );
+                                    self.errors.push(msg);
+                                }
                             }
                         }
                         ty.clone()

@@ -1,0 +1,33 @@
+trait Transfer {
+    fn transfer(self) -> Self;
+}
+
+struct CustomHostData {
+    id: i32,
+    host_tensor: Tensor<f32, [1024]>,
+}
+
+impl Transfer for CustomHostData {
+    fn transfer(self) -> CustomHostData {
+        // Here we define the explicit transfer logic for our struct
+        // We use explicit transfer to NPU_HBM for the internal tensor
+        let new_tensor = transfer(self.host_tensor, MemorySpace::NPUHBM);
+        CustomHostData {
+            id: self.id,
+            host_tensor: new_tensor,
+        }
+    }
+}
+
+fn main() {
+    let host_data = CustomHostData {
+        id: 1,
+        host_tensor: tensor<f32>(1024),
+    };
+    
+    spawn_on NPU(0) {
+        // Implicit transfer should now WORK automatically because CustomHostData implements Transfer!
+        // The compiler will rewrite this to `host_data.transfer()`
+        let x = host_data.host_tensor[0];
+    }
+}
