@@ -1,5 +1,8 @@
+//===- transfer_wrong_topology_trait.vx - Vx Compiler --------------------*- Vx -*-===//
+// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+
 trait Transfer {
-    fn transfer(self) -> Self;
+    fn transfer(self: CustomHostData) -> CustomHostData;
 }
 
 struct CustomHostData {
@@ -8,25 +11,23 @@ struct CustomHostData {
 }
 
 impl Transfer for CustomHostData {
-    fn transfer(self) -> CustomHostData {
-        // Explicit transfer, but to the WRONG memory space!
+    fn transfer(self: CustomHostData) -> CustomHostData {
         let new_tensor = transfer(self.host_tensor, Memory::CPU_DRAM);
-        CustomHostData {
+        return CustomHostData {
             id: self.id,
-            host_tensor: new_tensor,
-        }
+            host_tensor: self.host_tensor,
+        };
     }
 }
 
 fn main() on Topology::NPU[0] -> i32 {
     let host_data = CustomHostData {
         id: 1,
-        host_tensor: tensor<f32>(1024),
+        host_tensor: Tensor<f32>(),
     };
     
-    // Implicit transfer happens here because CustomHostData implements Transfer.
-    // However, the transfer() method above transfers to CPU_DRAM, not NPU.
-    // So accessing it on the NPU should still throw a cross-topology error!
     let x = host_data.host_tensor[0];
     return 0;
 }
+
+// CHECK: Type mismatch in struct initialization

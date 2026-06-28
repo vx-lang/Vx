@@ -73,16 +73,13 @@ impl HirArena {
             Statement::Continue(s) => HirStmt::Continue(self.lower_continuestmt(s)),
             Statement::MacroCall(s) => HirStmt::MacroCall(self.lower_macrocallstmt(s)),
             Statement::Error(span) => HirStmt::Error(*span),
-            Statement::MacroCall(_) => {
-                unimplemented!("Macro calls should be expanded before lowering")
-            }
         };
         self.alloc_stmt(hir_stmt)
     }
     fn lower_identifierexpr(&mut self, node: &IdentifierExpr) -> HirIdentifierExpr {
         HirIdentifierExpr {
             name: node.name.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_enumvariantexpr(&mut self, node: &EnumVariantExpr) -> HirEnumVariantExpr {
@@ -93,20 +90,20 @@ impl HirArena {
                 .payload
                 .as_ref()
                 .map(|stmts| stmts.iter().map(|s| self.lower_expr(s)).collect()),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_numberexpr(&mut self, node: &NumberExpr) -> HirNumberExpr {
         HirNumberExpr {
             value: node.value.clone(),
             ty: node.ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_stringliteralexpr(&mut self, node: &StringLiteralExpr) -> HirStringLiteralExpr {
         HirStringLiteralExpr {
             value: node.value.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_spawnonexpr(&mut self, node: &SpawnOnExpr) -> HirSpawnOnExpr {
@@ -114,15 +111,15 @@ impl HirArena {
             top: node.top.clone(),
             stmts: node.stmts.iter().map(|s| self.lower_stmt(s)).collect(),
             ret: node.ret.as_ref().map(|e| self.lower_expr(e)),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_transferexpr(&mut self, node: &TransferExpr) -> HirTransferExpr {
         HirTransferExpr {
             expr: self.lower_expr(&node.expr),
             space: node.space.clone(),
-            cost: node.cost.clone(),
-            span: node.span.clone(),
+            cost: node.cost,
+            span: node.span,
         }
     }
     fn lower_functioncallexpr(&mut self, node: &FunctionCallExpr) -> HirFunctionCallExpr {
@@ -130,7 +127,7 @@ impl HirArena {
             name: node.name.clone(),
             type_args: node.type_args.clone(),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_ascastexpr(&mut self, node: &AsCastExpr) -> HirAsCastExpr {
@@ -138,7 +135,7 @@ impl HirArena {
             expr: self.lower_expr(&node.expr),
             target_ty: node.target_ty.clone(),
             source_ty: node.source_ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_indirectcallexpr(&mut self, node: &IndirectCallExpr) -> HirIndirectCallExpr {
@@ -146,13 +143,13 @@ impl HirArena {
             callee: self.lower_expr(&node.callee),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
             target_func_ty: node.target_func_ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_arrayexpr(&mut self, node: &ArrayExpr) -> HirArrayExpr {
         HirArrayExpr {
             elements: node.elements.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_memberaccessexpr(&mut self, node: &MemberAccessExpr) -> HirMemberAccessExpr {
@@ -160,14 +157,14 @@ impl HirArena {
             base: self.lower_expr(&node.base),
             member: node.member.clone(),
             struct_name: node.struct_name.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_indexaccessexpr(&mut self, node: &IndexAccessExpr) -> HirIndexAccessExpr {
         HirIndexAccessExpr {
             base: self.lower_expr(&node.base),
             index: self.lower_expr(&node.index),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_methodcallexpr(&mut self, node: &MethodCallExpr) -> HirMethodCallExpr {
@@ -176,7 +173,7 @@ impl HirArena {
             method_name: node.method_name.clone(),
             type_args: node.type_args.clone(),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_binaryopexpr(&mut self, node: &BinaryOpExpr) -> HirBinaryOpExpr {
@@ -184,7 +181,7 @@ impl HirArena {
             lhs: self.lower_expr(&node.lhs),
             op: node.op.clone(),
             rhs: self.lower_expr(&node.rhs),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_relationalopexpr(&mut self, node: &RelationalOpExpr) -> HirRelationalOpExpr {
@@ -192,7 +189,7 @@ impl HirArena {
             lhs: self.lower_expr(&node.lhs),
             op: node.op.clone(),
             rhs: self.lower_expr(&node.rhs),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_logicalopexpr(&mut self, node: &LogicalOpExpr) -> HirLogicalOpExpr {
@@ -200,68 +197,68 @@ impl HirArena {
             lhs: self.lower_expr(&node.lhs),
             op: node.op.clone(),
             rhs: self.lower_expr(&node.rhs),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_unaryopexpr(&mut self, node: &UnaryOpExpr) -> HirUnaryOpExpr {
         HirUnaryOpExpr {
             op: node.op.clone(),
             expr: self.lower_expr(&node.expr),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_borrowexpr(&mut self, node: &BorrowExpr) -> HirBorrowExpr {
         HirBorrowExpr {
             expr: self.lower_expr(&node.expr),
-            is_mut: node.is_mut.clone(),
-            span: node.span.clone(),
+            is_mut: node.is_mut,
+            span: node.span,
         }
     }
     fn lower_dereferenceexpr(&mut self, node: &DereferenceExpr) -> HirDereferenceExpr {
         HirDereferenceExpr {
             expr: self.lower_expr(&node.expr),
             ty: node.ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_unsafeblockexpr(&mut self, node: &UnsafeBlockExpr) -> HirUnsafeBlockExpr {
         HirUnsafeBlockExpr {
             stmts: node.stmts.iter().map(|s| self.lower_stmt(s)).collect(),
             ret: node.ret.as_ref().map(|e| self.lower_expr(e)),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_comptimeblockexpr(&mut self, node: &ComptimeBlockExpr) -> HirComptimeBlockExpr {
         HirComptimeBlockExpr {
             stmts: node.stmts.iter().map(|s| self.lower_stmt(s)).collect(),
             ret: node.ret.as_ref().map(|e| self.lower_expr(e)),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_structinitexpr(&mut self, node: &StructInitExpr) -> HirStructInitExpr {
         HirStructInitExpr {
             name: node.name.clone(),
             fields: node.fields.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_memoryspaceexpr(&mut self, node: &MemorySpaceExpr) -> HirMemorySpaceExpr {
         HirMemorySpaceExpr {
             space: node.space.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_topologyexpr(&mut self, node: &TopologyExpr) -> HirTopologyExpr {
         HirTopologyExpr {
             top: node.top.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_gradexpr(&mut self, node: &GradExpr) -> HirGradExpr {
         HirGradExpr {
             target_fn: node.target_fn.clone(),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_vjpexpr(&mut self, node: &VjpExpr) -> HirVjpExpr {
@@ -269,7 +266,7 @@ impl HirArena {
             target_fn: node.target_fn.clone(),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
             cotangent: self.lower_expr(&node.cotangent),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_jvpexpr(&mut self, node: &JvpExpr) -> HirJvpExpr {
@@ -277,39 +274,39 @@ impl HirArena {
             target_fn: node.target_fn.clone(),
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
             tangent: self.lower_expr(&node.tangent),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_ifexpr(&mut self, node: &IfExpr) -> HirIfExpr {
         HirIfExpr {
-            is_comptime: node.is_comptime.clone(),
+            is_comptime: node.is_comptime,
             cond: self.lower_expr(&node.cond),
             then_block: node.then_block.iter().map(|s| self.lower_stmt(s)).collect(),
             else_block: node
                 .else_block
                 .as_ref()
                 .map(|stmts| stmts.iter().map(|s| self.lower_stmt(s)).collect()),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_rangeexpr(&mut self, node: &RangeExpr) -> HirRangeExpr {
         HirRangeExpr {
             start: self.lower_expr(&node.start),
             end: self.lower_expr(&node.end),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_matchexpr(&mut self, node: &MatchExpr) -> HirMatchExpr {
         HirMatchExpr {
             expr: self.lower_expr(&node.expr),
             arms: node.arms.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_vecmacroexpr(&mut self, node: &VecMacroExpr) -> HirVecMacroExpr {
         HirVecMacroExpr {
             elements: node.elements.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_closureexpr(&mut self, node: &ClosureExpr) -> HirClosureExpr {
@@ -318,7 +315,7 @@ impl HirArena {
             body: self.lower_expr(&node.body),
             captures: node.captures.clone(),
             ret_ty: node.ret_ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_macrocallexpr(&mut self, node: &MacroCallExpr) -> HirMacroCallExpr {
@@ -326,25 +323,25 @@ impl HirArena {
             name: node.name.clone(),
             token_tree: node.token_tree.clone(),
             block_tree: node.block_tree.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_printexpr(&mut self, node: &PrintExpr) -> HirPrintExpr {
         HirPrintExpr {
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_printlnexpr(&mut self, node: &PrintlnExpr) -> HirPrintlnExpr {
         HirPrintlnExpr {
             args: node.args.iter().map(|e| self.lower_expr(e)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_sizeofexpr(&mut self, node: &SizeOfExpr) -> HirSizeOfExpr {
         HirSizeOfExpr {
             target_ty: node.target_ty.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_inlinemlirexpr(&mut self, node: &InlineMlirExpr) -> HirInlineMlirExpr {
@@ -354,22 +351,22 @@ impl HirArena {
             returns: node.returns.clone(),
             dialects: node.dialects.clone(),
             block_str: node.block_str.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_letdeclstmt(&mut self, node: &LetDeclStmt) -> HirLetDeclStmt {
         HirLetDeclStmt {
             name: node.name.clone(),
-            is_mut: node.is_mut.clone(),
+            is_mut: node.is_mut,
             ty_ann: node.ty_ann.clone(),
             expr: node.expr.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_returnstmt(&mut self, node: &ReturnStmt) -> HirReturnStmt {
         HirReturnStmt {
             expr: node.expr.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
 
@@ -379,15 +376,15 @@ impl HirArena {
             token_tree: node.token_tree.clone(),
             block_tree: node.block_tree.clone(),
             has_semi: node.has_semi,
-            span: node.span.clone(),
+            span: node.span,
         }
     }
 
     fn lower_exprstmtstmt(&mut self, node: &ExprStmtStmt) -> HirExprStmtStmt {
         HirExprStmtStmt {
             expr: node.expr.clone(),
-            has_semi: node.has_semi.clone(),
-            span: node.span.clone(),
+            has_semi: node.has_semi,
+            span: node.span,
         }
     }
     fn lower_forloopstmt(&mut self, node: &ForLoopStmt) -> HirForLoopStmt {
@@ -396,14 +393,14 @@ impl HirArena {
             iterable: self.lower_expr(&node.iterable),
             invariants: node.invariants.iter().map(|e| self.lower_expr(e)).collect(),
             body: node.body.iter().map(|s| self.lower_stmt(s)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_assignstmt(&mut self, node: &AssignStmt) -> HirAssignStmt {
         HirAssignStmt {
             lhs: node.lhs.clone(),
             rhs: node.rhs.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_compoundassignstmt(&mut self, node: &CompoundAssignStmt) -> HirCompoundAssignStmt {
@@ -411,32 +408,28 @@ impl HirArena {
             lhs: node.lhs.clone(),
             op: node.op.clone(),
             rhs: node.rhs.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_assertstmt(&mut self, node: &AssertStmt) -> HirAssertStmt {
         HirAssertStmt {
             expr: self.lower_expr(&node.expr),
             msg: node.msg.clone(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_loopstmt(&mut self, node: &LoopStmt) -> HirLoopStmt {
         HirLoopStmt {
             invariants: node.invariants.iter().map(|e| self.lower_expr(e)).collect(),
             body: node.body.iter().map(|s| self.lower_stmt(s)).collect(),
-            span: node.span.clone(),
+            span: node.span,
         }
     }
     fn lower_breakstmt(&mut self, node: &BreakStmt) -> HirBreakStmt {
-        HirBreakStmt {
-            span: node.span.clone(),
-        }
+        HirBreakStmt { span: node.span }
     }
     fn lower_continuestmt(&mut self, node: &ContinueStmt) -> HirContinueStmt {
-        HirContinueStmt {
-            span: node.span.clone(),
-        }
+        HirContinueStmt { span: node.span }
     }
 }
 

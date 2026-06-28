@@ -910,7 +910,7 @@ impl<'c> MeliorGenerator<'c> {
                         }
                         field_types.push(lowered);
                     }
-                    format!("!llvm.struct<{}>", field_types.join(","))
+                    format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
                 } else {
                     if name.as_ref() == "void" {
                         "none".to_string()

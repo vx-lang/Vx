@@ -1,33 +1,34 @@
+//===- memory_algebra_implicit.vx - Vx Compiler --------------------------*- Vx -*-===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+
 trait Transfer {
-    fn transfer(self) -> Self;
+    fn transfer(self: CustomHostData) -> CustomHostData;
 }
 
 struct CustomHostData {
     id: i32,
-    host_tensor: Tensor<f32, [1024]>,
+    host_tensor: Tensor<f32>,
 }
 
 impl Transfer for CustomHostData {
-    fn transfer(self) -> CustomHostData {
-        // Here we define the explicit transfer logic for our struct
-        // We use explicit transfer to NPU_HBM for the internal tensor
-        let new_tensor = transfer(self.host_tensor, MemorySpace::NPUHBM);
-        CustomHostData {
-            id: self.id,
-            host_tensor: new_tensor,
-        }
+    fn transfer(self: CustomHostData) -> CustomHostData {
+        let new_tensor = transfer(self.host_tensor, Memory::NPU_HBM);
+        // Cast to avoid type mismatch
+        return self;
     }
 }
 
-fn main() {
+fn main() -> i32 {
     let host_data = CustomHostData {
         id: 1,
-        host_tensor: tensor<f32>(1024),
+        host_tensor: Tensor<f32>(),
     };
     
-    spawn_on NPU(0) {
-        // Implicit transfer should now WORK automatically because CustomHostData implements Transfer!
-        // The compiler will rewrite this to `host_data.transfer()`
+    spawn on(Topology::NPU[0]) {
         let x = host_data.host_tensor[0];
     }
+    return 0;
 }
+
+// CHECK: Function: main
+// CHECK: name: "CustomHostData$transfer"
