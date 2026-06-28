@@ -9,6 +9,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "clap",
+ "id-arena",
  "melior",
  "mlir-sys",
  "once_cell",
