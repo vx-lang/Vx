@@ -47,7 +47,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                         .build()?;
                     val = block.append_operation(zero_op).result(0)?.into();
                 } else {
-                    val = gen.coerce_type(&block, val, expr_ty, ret_ty);
+                    val = gen.coerce_type(&block, val, expr_ty, ret_ty)?;
                 }
             }
         }
@@ -81,7 +81,7 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
         } = self;
         let prev_expected = gen.expected_type;
         if let Some(ann) = ty_ann {
-            gen.expected_type = Some(gen.lower_type(ann));
+            gen.expected_type = gen.lower_type(ann).ok();
         }
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         if let Expr::Closure(c) = expr {
@@ -187,7 +187,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
         if expected_ty.is_none() {
             if let Some(ast_ty) = gen.infer_ast_type(lhs) {
-                expected_ty = Some(gen.lower_type(&ast_ty));
+                expected_ty = gen.lower_type(&ast_ty).ok();
             }
         }
 
@@ -305,7 +305,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     "Type::parse failed".to_string(),
                                 )
                             })?;
-                        store_val = gen.coerce_type(&new_b, store_val, rhs_ty, inner_ty);
+                        store_val = gen.coerce_type(&new_b, store_val, rhs_ty, inner_ty)?;
                     }
 
                     let mut store_builder = OperationBuilder::new("memref.store", gen.loc())
@@ -355,7 +355,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         if let Some(field_idx) =
                             struct_decl.fields.iter().position(|(n, _)| n == member)
                         {
-                            let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1);
+                            let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1)?;
                             let mut field_val = rhs_val;
 
                             if rhs_ty != field_ty
@@ -376,7 +376,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let ptr_ty = gen.ptr_ty;
                                 let mut field_types = Vec::new();
                                 for (_, ty) in &struct_decl.fields {
-                                    let mut lowered = gen.lower_type_str(ty);
+                                    let mut lowered = gen.lower_type_str(ty)?;
                                     if lowered.starts_with("memref<") {
                                         lowered = "!llvm.ptr".to_string();
                                     }

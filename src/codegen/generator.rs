@@ -81,7 +81,7 @@ impl<'c> MeliorGenerator<'c> {
         val: Value<'c, 'c>,
         from_ty: Type<'c>,
         to_ty: Type<'c>,
-    ) -> Value<'c, 'c> {
+    ) -> Result<Value<\'c, \'c>, crate::codegen::lower::LowerError> {
         if from_ty == to_ty {
             return val;
         }
@@ -413,10 +413,10 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
         for ext in &program.externs {
-            let ret_ty = self.lower_type(&ext.return_type);
+            let ret_ty = self.lower_type(&ext.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &ext.params {
-                arg_tys.push(self.lower_type(ty));
+                arg_tys.push(self.lower_type(ty)?)?;
             }
             self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
         }
@@ -477,10 +477,10 @@ impl<'c> MeliorGenerator<'c> {
 
         for module_prog in modules.values() {
             for ext in &module_prog.externs {
-                let ret_ty = self.lower_type(&ext.return_type);
+                let ret_ty = self.lower_type(&ext.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &ext.params {
-                    arg_tys.push(self.lower_type(ty));
+                    arg_tys.push(self.lower_type(ty)?)?;
                 }
                 self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
             }
@@ -490,10 +490,10 @@ impl<'c> MeliorGenerator<'c> {
 
         for module_prog in modules.values() {
             for func in &module_prog.functions {
-                let ret_ty = self.lower_type(&func.return_type);
+                let ret_ty = self.lower_type(&func.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &func.params {
-                    arg_tys.push(self.lower_type(ty));
+                    arg_tys.push(self.lower_type(ty)?)?;
                 }
                 self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
                 self.syntax_functions
@@ -502,10 +502,10 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         for func in &program.functions {
-            let ret_ty = self.lower_type(&func.return_type);
+            let ret_ty = self.lower_type(&func.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &func.params {
-                arg_tys.push(self.lower_type(ty));
+                arg_tys.push(self.lower_type(ty)?)?;
             }
             self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
             self.syntax_functions
@@ -596,12 +596,12 @@ impl<'c> MeliorGenerator<'c> {
         self.env.clear();
         self.allocs.clear();
         let is_main = func.name.as_ref() == "main";
-        let true_ret_ty = self.lower_type(&func.return_type);
+        let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };
 
         let mut arg_tys = Vec::new();
         for (_, ty) in &func.params {
-            arg_tys.push(self.lower_type(ty));
+            arg_tys.push(self.lower_type(ty)?)?;
         }
 
         let mut actual_ret_tys = Vec::new();
@@ -822,7 +822,7 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    pub(crate) fn lower_type(&self, ty: &syntax::Type) -> Type<'c> {
+    pub(crate) fn lower_type(&self, ty: &syntax::Type) -> Result<Type<\'c>, crate::codegen::lower::LowerError> {
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
@@ -847,11 +847,11 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Matrix => "tensor<?x?xf32>".to_string(),
             syntax::Type::Ref(inner, _mem) => {
-                return self.lower_type(inner);
+                return self.lower_type(inner)?;
             }
-            syntax::Type::Verified(inner) => return self.lower_type(inner),
+            syntax::Type::Verified(inner) => return self.lower_type(inner)?,
             syntax::Type::Pinned(inner, _top) => {
-                let inner_ty_str = self.lower_type(inner).to_string();
+                let inner_ty_str = self.lower_type(inner)?.to_string()?;
                 inner_ty_str
             }
             syntax::Type::Borrow {
@@ -860,7 +860,7 @@ impl<'c> MeliorGenerator<'c> {
                 ..
             }
             | syntax::Type::Pointer(inner, mem, _) => {
-                let inner_str = self.lower_type_str(inner);
+                let inner_str = self.lower_type_str(inner)?;
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
                 } else {
@@ -881,7 +881,7 @@ impl<'c> MeliorGenerator<'c> {
                             if **v_name == *"Some" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
-                                        let mut lowered = self.lower_type_str(&types[0]);
+                                        let mut lowered = self.lower_type_str(&types[0])?;
                                         if lowered.starts_with("memref<") {
                                             lowered = "!llvm.ptr".to_string();
                                         }
@@ -896,19 +896,19 @@ impl<'c> MeliorGenerator<'c> {
                         )
                         .unwrap_or_else(|| panic!("Failed to parse enum struct type"));
                     }
-                    return self.i32_ty;
+                    return Ok(self.i32_ty);
                 }
                 if let Some(decl) = self.structs.get(name).cloned() {
                     let mut field_types = Vec::new();
                     for (_, ty) in &decl.fields {
-                        let mut lowered = self.lower_type_str(ty);
+                        let mut lowered = self.lower_type_str(ty)?;
                         if lowered.starts_with("memref<") {
                             lowered = "!llvm.ptr".to_string();
                         }
                         field_types.push(lowered);
                     }
-                    format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(", "))
-                } else if name.as_ref() == "void" {
+                    Ok(format!("!llvm.struct<\1>", name, field_types.join("\2")))
+            } else if name.as_ref() == "void" {
                     "none".to_string()
                 } else {
                     format!("!llvm.struct<\"{}\">", name)
@@ -930,7 +930,7 @@ impl<'c> MeliorGenerator<'c> {
                         }
                         for (_, ty) in &decl.fields {
                             let sub_ty = ty.substitute(&mapping);
-                            let mut lowered = self.lower_type_str(&sub_ty);
+                            let mut lowered = self.lower_type_str(&sub_ty)?;
                             if lowered.starts_with("memref<") {
                                 lowered = "!llvm.ptr".to_string();
                             }
@@ -939,7 +939,7 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a);
+                                let lowered = self.lower_type_str(a)?;
                                 lowered
                                     .replace("!", "")
                                     .replace("<", "_")
@@ -971,7 +971,7 @@ impl<'c> MeliorGenerator<'c> {
                                         > = std::collections::HashMap::new();
                                         mapping.insert("T".into(), ty_arg.clone());
                                         let sub_ty = types[0].substitute(&mapping);
-                                        let mut lowered = self.lower_type_str(&sub_ty);
+                                        let mut lowered = self.lower_type_str(&sub_ty)?;
                                         if lowered.starts_with("memref<") {
                                             lowered = "!llvm.ptr".to_string();
                                         }
@@ -984,7 +984,7 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a);
+                                let lowered = self.lower_type_str(a)?;
                                 lowered
                                     .replace("!", "")
                                     .replace("<", "_")
@@ -1046,7 +1046,7 @@ impl<'c> MeliorGenerator<'c> {
                             if **v_name == *"Some" {
                                 if let Some(types) = payload {
                                     if !types.is_empty() {
-                                        let mut lowered = self.lower_type_str(&types[0]);
+                                        let mut lowered = self.lower_type_str(&types[0])?;
                                         if lowered.starts_with("memref<") {
                                             lowered = "!llvm.ptr".to_string();
                                         }
@@ -1084,7 +1084,7 @@ impl<'c> MeliorGenerator<'c> {
             .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str))
     }
 
-    pub(crate) fn lower_type_str(&self, ty: &syntax::Type) -> String {
+    pub(crate) fn lower_type_str(&self, ty: &syntax::Type) -> Result<String, crate::codegen::lower::LowerError> {
         if let syntax::Type::Function(_, _) = ty {
             return "!llvm.ptr".to_string();
         }
@@ -1101,7 +1101,7 @@ impl<'c> MeliorGenerator<'c> {
                     .replace(")", "_");
             }
         }
-        let t = self.lower_type(ty);
+        let t = self.lower_type(ty)?;
         t.to_string()
     }
 
@@ -1111,7 +1111,7 @@ impl<'c> MeliorGenerator<'c> {
         el_ty: &ElementType,
         dims: &[syntax::Expr],
         top: &Option<syntax::Topology>,
-    ) -> Type<'c> {
+    ) -> Result<Type<\'c>, crate::codegen::lower::LowerError> {
         let ty_str = match el_ty {
             ElementType::F16 => "f16",
             ElementType::F32 => "f32",
