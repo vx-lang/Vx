@@ -2766,3 +2766,59 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
         panic!("Unsupported cast operation in codegen");
     }
 }
+
+impl<'c> LowerToMelior<'c> for syntax::expr::TransferExpr {
+    fn lower<'a>(
+        &self,
+        gen: &mut CodeGenerator<'c, 'a>,
+        block: BlockRef<'c, 'a>,
+    ) -> Result<(Value<'c, 'a>, melior::ir::Type<'c>, BlockRef<'c, 'a>), melior::Error> {
+        // Evaluate the inner expression
+        let (val, ty, block) = self.expr.lower(gen, block)?;
+        
+        // Ensure it's a MemRefType (our standard tensor representation in codegen)
+        if !ty.is_mem_ref() {
+            // If it's a scalar being transferred, we might need a different handling,
+            // but in Vx scalars are passed by value and often don't need explicit DMA
+            // unless they are wrapped in tensors. For now, we assume it's a memref.
+            return Ok((val, ty, block));
+        }
+        
+        let memref_ty = melior::ir::r#type::MemRefType::try_from(ty)?;
+        let shape = memref_ty.shape();
+        let element_ty = memref_ty.element_type();
+        
+        // Define the target memory space attribute
+        let mem_space_attr = IntegerAttribute::new(
+            melior::ir::r#type::IntegerType::new(gen.context, 32).into(),
+            self.space.clone() as i64, // Assume space casts to i64, might need check
+        );
+        
+        // Create the new MemRef type with the target memory space
+        let target_memref_ty = melior::ir::r#type::MemRefType::new(
+            gen.context,
+            shape,
+            element_ty,
+            None, // layout
+            Some(mem_space_attr.into()),
+        );
+        
+        // Emit memref.alloc in the target memory space
+        let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+            )])
+            .add_results(&[target_memref_ty.into()])
+            .build()?;
+        let alloc_val = block.append_operation(alloc_op).result(0)?.into();
+        
+        // Emit memref.copy from source to target
+        let copy_op = OperationBuilder::new("memref.copy", gen.loc())
+            .add_operands(&[val, alloc_val])
+            .build()?;
+        block.append_operation(copy_op);
+        
+        Ok((alloc_val, target_memref_ty.into(), block))
+    }
+}
