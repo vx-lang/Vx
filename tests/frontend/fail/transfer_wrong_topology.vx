@@ -1,0 +1,5 @@
+fn main(host_data: Tensor<f32>) on Topology::NPU[0] -> i32 {
+    let device_data = transfer(host_data, Memory::CPU_DRAM);
+    let x = device_data[0];
+    return 0;
+}

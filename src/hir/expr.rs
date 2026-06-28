@@ -670,12 +670,12 @@ impl<'a> TypeChecker<'a> {
                                     let original_expr = std::mem::replace(expr, Expr::Error(span.clone()));
                                     
                                     let method_name = crate::symbol::Symbol::from("transfer");
-                                    let method_call = Expr::MethodCall(
-                                        Box::new(original_expr),
-                                        method_name,
-                                        vec![], // No arguments!
-                                        span.clone(),
-                                    );
+                                    let method_call = Expr::MethodCall(crate::syntax::expr::MethodCallExpr {
+                                        base: Box::new(original_expr),
+                                        method: method_name,
+                                        args: vec![],
+                                        span: span.clone(),
+                                    });
                                     *expr = method_call;
                                     
                                     return self.check_methodcall_expr(expr, consume, silent);
@@ -699,7 +699,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -829,7 +829,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Enum(enum_name.clone(), None)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -1073,7 +1073,7 @@ impl<'a> TypeChecker<'a> {
                 ret_ty
             }
 
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -1134,14 +1134,14 @@ impl<'a> TypeChecker<'a> {
 
                 ret_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
     fn check_if_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         let if_expr = match expr {
             Expr::If(e) => e,
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
 
         let cond_ty = self.check_expr_type(&mut if_expr.cond);
@@ -1216,7 +1216,7 @@ impl<'a> TypeChecker<'a> {
     fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         let (callee, args) = match expr {
             Expr::IndirectCall(c) => (&mut c.callee, &mut c.args),
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
         let callee_ty = self.check_expr_type_flag(callee, consume, silent);
         let mut arg_types = Vec::new();
@@ -1766,7 +1766,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Tensor(ElementType::F32, vec![], None)
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -1985,7 +1985,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2108,7 +2108,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2120,6 +2120,19 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
+                
+                // Enforce topology boundary for Pinned types
+                if let Type::Pinned(_, pinned_top) = &obj_ty {
+                    if !self.transfer_cost_graph.is_type_accessible(&self.active_topology, pinned_top, &obj_ty) {
+                        if !silent {
+                            self.errors.push(format!(
+                                "Cross-topology access error: Cannot access Pinned type on {:?} from {:?}",
+                                pinned_top, self.active_topology
+                            ));
+                        }
+                    }
+                }
+                
                 self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
                     *inner
@@ -2131,7 +2144,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Scalar(ElementType::F32)
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2386,7 +2399,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 base_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2436,7 +2449,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 lhs_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2462,7 +2475,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Scalar(ElementType::Bool)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2488,7 +2501,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Scalar(ElementType::Bool)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2505,7 +2518,7 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::Neg => inner_ty,
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2589,7 +2602,7 @@ impl<'a> TypeChecker<'a> {
                     region_id: self.scopes.len(),
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2635,7 +2648,7 @@ impl<'a> TypeChecker<'a> {
                 e.ty = Some(resolved_ty.clone());
                 resolved_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2657,7 +2670,7 @@ impl<'a> TypeChecker<'a> {
                 self.in_unsafe_block = prev_unsafe;
                 ret_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2750,7 +2763,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Struct(resolved_name, None)
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2793,7 +2806,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 func.return_type.clone()
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2836,7 +2849,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(cotangent);
                 func.return_type.clone()
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2879,7 +2892,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type(tangent);
                 func.return_type.clone()
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2900,7 +2913,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 start_ty
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -2973,7 +2986,7 @@ impl<'a> TypeChecker<'a> {
 
                 Type::Tensor(ElementType::F32, vec![], None)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -3035,7 +3048,7 @@ impl<'a> TypeChecker<'a> {
                 *expr = block;
                 self.check_expr_type(expr)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 
@@ -3166,7 +3179,7 @@ impl<'a> TypeChecker<'a> {
 
                 Type::Struct(struct_name.into(), None)
             }
-            _ => unreachable!(),
+            _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
 

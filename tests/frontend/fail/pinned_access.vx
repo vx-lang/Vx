@@ -1,0 +1,10 @@
+fn returns_pinned() -> Pinned<Tensor<f32>, Topology::CPU> {
+    let host_data = tensor<f32>(1024);
+    return host_data;
+}
+
+fn main() on Topology::NPU[0] -> i32 {
+    let device_data = returns_pinned();
+    let x = device_data[0];
+    return 0;
+}
