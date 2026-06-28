@@ -134,7 +134,6 @@ pub struct TypeChecker<'a> {
     pub env: &'a GlobalAstEnv<'a>,
     pub(crate) scopes: Vec<HashMap<crate::symbol::Symbol, (Type, Topology)>>,
     pub allow_cross_topology: bool,
-    pub allow_cross_topology: bool,
     pub monomorphized_functions: Vec<(Function, u64)>,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,

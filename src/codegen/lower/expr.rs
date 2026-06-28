@@ -341,7 +341,7 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
             let mut inferred_el_ty_str = None;
             if let Some(syntax::Type::Pointer(inner, _, _)) = gen.infer_ast_type(self.base.as_ref())
             {
-                inferred_el_ty_str = Some(gen.lower_type_str(&inner)?)?;
+                inferred_el_ty_str = Some(gen.lower_type_str(&inner)?);
             }
 
             let inner_ty_str = if base_ty_str.contains("<") {
@@ -1099,9 +1099,9 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             gen.lower_type(&syntax::Type::GenericInstance(
                 Box::new(syntax::Type::Struct(base_name.clone().into(), None)),
                 inner_tys,
-            ))
+            ))?
         } else {
-            gen.lower_type(&syntax::Type::Struct(name.clone()?, None)?)?
+            gen.lower_type(&syntax::Type::Struct(name.clone().into(), None))?
         };
 
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
@@ -1728,8 +1728,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             if func_ty.to_string() == "!llvm.ptr" {
                 if let Some(syntax::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
                     println!("Lowering function pointer ret type for name={}", name);
-                    let r = gen.lower_type(ret.as_ref()?)?;
-                    let a: Vec<_> = func_args.iter().map(|t| gen.lower_type(t)?)?.collect()?;
+                    let r = gen.lower_type(ret.as_ref())?;
+                    let mut a: Vec<_> = Vec::new();
+                    for t in func_args.iter() {
+                        a.push(gen.lower_type(t)?);
+                    }
                     actual_func_ty =
                         melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
                 } else {
@@ -1737,9 +1740,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 }
             } else if is_closure {
                 if let Some(syntax::Type::Closure(func_args, ret)) = gen.ast_env.get(name) {
-                    let r = gen.lower_type(ret.as_ref()?)?;
+                    let r = gen.lower_type(ret.as_ref())?;
                     let mut a: Vec<_> = vec![gen.ptr_ty];
-                    a.extend(func_args.iter().map(|t| gen.lower_type(t)?)?)?;
+                    for t in func_args.iter() {
+                        a.push(gen.lower_type(t)?);
+                    }
                     actual_func_ty =
                         melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
                 } else {
@@ -1915,7 +1920,9 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
 
             let r = gen.lower_type(ret)?;
             let mut a: Vec<_> = vec![gen.ptr_ty];
-            a.extend(func_args.iter().map(|t| gen.lower_type(t)?)?)?;
+            for t in func_args.iter() {
+                a.push(gen.lower_type(t)?);
+            }
             let actual_mlir_func_ty = melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]);
             let actual_func_ty: melior::ir::Type = actual_mlir_func_ty.into();
 
@@ -2074,7 +2081,7 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let op = block.append_operation(call_op);
 
         if let Some(ret_ty) = &self.returns {
-            Ok((op.result(0)?.into(), gen.lower_type(ret_ty)?, block)?)?
+            Ok((op.result(0)?.into(), gen.lower_type(ret_ty)?, block))
         } else {
             let dummy_val = OperationBuilder::new("arith.constant", gen.loc())
                 .add_attributes(&[(
@@ -2165,7 +2172,8 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             span: _,
         } = self;
         let ty = if let Some(ast_ty) = ast_ty_opt {
-            gen.lower_type(&syntax::Type::Scalar(ast_ty.clone().unwrap())).unwrap()
+            gen.lower_type(&syntax::Type::Scalar(ast_ty.clone()))
+                .unwrap()
         } else if val_str.contains('.') {
             gen.f32_ty
         } else {

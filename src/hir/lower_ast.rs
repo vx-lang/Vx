@@ -61,7 +61,7 @@ impl HirArena {
         let hir_stmt = match stmt {
             Statement::LetDecl(s) => HirStmt::LetDecl(self.lower_letdeclstmt(s)),
             Statement::Return(s) => HirStmt::Return(self.lower_returnstmt(s)),
-            Statement::Expr(s) => HirStmt::Expr(self.lower_expr(s)),
+            Statement::ExprStmt(s) => HirStmt::Expr(self.lower_exprstmtstmt(s)),
             Statement::ForLoop(s) => HirStmt::ForLoop(self.lower_forloopstmt(s)),
             Statement::Assign(s) => HirStmt::Assign(self.lower_assignstmt(s)),
             Statement::CompoundAssign(s) => {
@@ -71,7 +71,7 @@ impl HirArena {
             Statement::Loop(s) => HirStmt::Loop(self.lower_loopstmt(s)),
             Statement::Break(s) => HirStmt::Break(self.lower_breakstmt(s)),
             Statement::Continue(s) => HirStmt::Continue(self.lower_continuestmt(s)),
-            Statement::MacroCall(s) => HirStmt::MacroCall(self.lower_macrocallexpr(s)),
+            Statement::MacroCall(s) => HirStmt::MacroCall(self.lower_macrocallstmt(s)),
             Statement::Error(span) => HirStmt::Error(*span),
             Statement::MacroCall(_) => {
                 unimplemented!("Macro calls should be expanded before lowering")
@@ -89,7 +89,10 @@ impl HirArena {
         HirEnumVariantExpr {
             enum_name: node.enum_name.clone(),
             variant_name: node.variant_name.clone(),
-            payload: node.payload.as_ref().map(|stmts| stmts.iter().map(|s| self.lower_expr(s)).collect()),
+            payload: node
+                .payload
+                .as_ref()
+                .map(|stmts| stmts.iter().map(|s| self.lower_expr(s)).collect()),
             span: node.span.clone(),
         }
     }
@@ -282,7 +285,10 @@ impl HirArena {
             is_comptime: node.is_comptime.clone(),
             cond: self.lower_expr(&node.cond),
             then_block: node.then_block.iter().map(|s| self.lower_stmt(s)).collect(),
-            else_block: node.else_block.as_ref().map(|stmts| stmts.iter().map(|s| self.lower_stmt(s)).collect()),
+            else_block: node
+                .else_block
+                .as_ref()
+                .map(|stmts| stmts.iter().map(|s| self.lower_stmt(s)).collect()),
             span: node.span.clone(),
         }
     }
@@ -366,6 +372,17 @@ impl HirArena {
             span: node.span.clone(),
         }
     }
+
+    fn lower_macrocallstmt(&mut self, node: &MacroCallStmt) -> HirMacroCallStmt {
+        HirMacroCallStmt {
+            name: node.name.clone(),
+            token_tree: node.token_tree.clone(),
+            block_tree: node.block_tree.clone(),
+            has_semi: node.has_semi,
+            span: node.span.clone(),
+        }
+    }
+
     fn lower_exprstmtstmt(&mut self, node: &ExprStmtStmt) -> HirExprStmtStmt {
         HirExprStmtStmt {
             expr: node.expr.clone(),

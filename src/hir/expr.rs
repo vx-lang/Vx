@@ -525,8 +525,11 @@ impl<'a> TypeChecker<'a> {
     }
     fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
-            Expr::Identifier(IdentifierExpr { name, span }) => {
-                if name.as_ref() == "true" || **name == *"false" {
+            Expr::Identifier(id) => {
+                let name = id.name.clone();
+                let span = id.span.clone();
+
+                if name.as_ref() == "true" || name.as_ref() == "false" {
                     return Type::Scalar(ElementType::Bool);
                 }
 
@@ -543,7 +546,7 @@ impl<'a> TypeChecker<'a> {
                                         "Cannot access '{}' because it is mutably borrowed.",
                                         name
                                     ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
                                 break;
                             }
@@ -551,7 +554,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 let lookup_depth_res = self
-                    .lookup_with_depth(name)
+                    .lookup_with_depth(name.as_ref())
                     .map(|(ty, top, d)| (ty.clone(), top.clone(), d));
                 let lookup_res = lookup_depth_res
                     .as_ref()
@@ -571,7 +574,7 @@ impl<'a> TypeChecker<'a> {
                     println!(
                         "lookup('new_item') = {:?}, is_moved = {}, consume = {}",
                         lookup_res,
-                        self.is_moved(name),
+                        self.is_moved(name.as_ref()),
                         consume
                     );
                     println!("scopes = {:?}", self.scopes.last());
@@ -580,12 +583,12 @@ impl<'a> TypeChecker<'a> {
                     println!("{}", bt);
                 }
 
-                if lookup_res.is_none() && self.is_moved(name) {
+                if lookup_res.is_none() && self.is_moved(name.as_ref()) {
                     if !silent {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4001,
                             format!("Use of moved or consumed linear variable: {}", name),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                     return Type::Tensor(ElementType::F32, vec![], None);
@@ -596,7 +599,7 @@ impl<'a> TypeChecker<'a> {
                         return Type::Function(params.clone(), Box::new(ret_ty.clone()));
                     }
                     for (func, _) in &self.monomorphized_functions {
-                        if &func.name == name {
+                        if func.name.as_ref() == name.as_ref() {
                             let params = func.params.iter().map(|(_, t)| t.clone()).collect();
                             return Type::Function(params, Box::new(func.return_type.clone()));
                         }
@@ -620,7 +623,7 @@ impl<'a> TypeChecker<'a> {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E2001,
                             format!("Undefined variable '{}'", name),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                         if let Some(suggested) = suggestion {
                             if let Some(last_diag) = self.errors.inner.last_mut() {
@@ -637,7 +640,7 @@ impl<'a> TypeChecker<'a> {
                 match lookup_res {
                     Some((ty, top)) => {
                         if consume && ty.is_linear() && !silent {
-                            self.consume(name);
+                            self.consume(name.as_ref());
                         }
 
                         // Enforce Topology Boundaries!
@@ -666,18 +669,21 @@ impl<'a> TypeChecker<'a> {
                                 }
 
                                 if implements_transfer {
-                                    let active_mem = crate::arch::TransferCostGraph::default_memory_for(&self.active_topology);
-                                    let original_expr = std::mem::replace(expr, Expr::Error(span.clone()));
-                                    
+                                    let active_mem =
+                                        crate::arch::TransferCostGraph::default_memory_for(
+                                            &self.active_topology,
+                                        );
                                     let method_name = crate::symbol::Symbol::from("transfer");
-                                    let method_call = Expr::MethodCall(crate::syntax::expr::MethodCallExpr {
-                                        base: Box::new(original_expr),
-                                        method: method_name,
-                                        args: vec![],
-                                        span: span.clone(),
-                                    });
+                                    let method_call =
+                                        Expr::MethodCall(crate::syntax::expr::MethodCallExpr {
+                                            base: Box::new(expr.clone()),
+                                            method_name: method_name,
+                                            type_args: None,
+                                            args: vec![],
+                                            span: span.clone(),
+                                        });
                                     *expr = method_call;
-                                    
+
                                     return self.check_methodcall_expr(expr, consume, silent);
                                 } else {
                                     let msg = format!(
@@ -699,7 +705,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            _ => panic!("Expected IndexAccess, got {:?}", expr),
+            _ => panic!("Expected Identifier, got {:?}", expr),
         }
     }
 
@@ -728,7 +734,7 @@ impl<'a> TypeChecker<'a> {
                                         self.errors.error_with_code(
                                             crate::diagnostic::DiagnosticCode::E3009,
                                             format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()),
-                                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                         );
                                     }
                                 } else {
@@ -766,7 +772,7 @@ impl<'a> TypeChecker<'a> {
                                             self.errors.error_with_code(
                                                 crate::diagnostic::DiagnosticCode::E3008,
                                                 format!("Type mismatch in payload argument {} for {}::{}: expected {:?}, got {:?}", i + 1, actual_enum_name, variant, expected_ty, expr_ty),
-                                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                             );
                                         }
                                     }
@@ -778,7 +784,7 @@ impl<'a> TypeChecker<'a> {
                                         "Enum variant {}::{} does not take a payload",
                                         actual_enum_name, variant
                                     ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
                             }
                         } else if expected_payload.is_some() && !silent {
@@ -788,7 +794,7 @@ impl<'a> TypeChecker<'a> {
                                     "Enum variant {}::{} expects a payload",
                                     actual_enum_name, variant
                                 ),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
                         }
                     } else if !silent {
@@ -798,14 +804,14 @@ impl<'a> TypeChecker<'a> {
                                 "Enum {} does not have variant {}",
                                 actual_enum_name, variant
                             ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                 } else if !silent {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E2003,
                         format!("Unknown enum {}", enum_name),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                     );
                 }
 
@@ -1506,14 +1512,14 @@ impl<'a> TypeChecker<'a> {
                                 "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
                                 resolved_name, req_topology, self.active_topology
                             ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                     if *is_unsafe && !self.in_unsafe_block && !silent {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                     if args.len() != param_types.len() && !silent {
@@ -1525,7 +1531,7 @@ impl<'a> TypeChecker<'a> {
                                 param_types.len(),
                                 args.len()
                             ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
@@ -1537,7 +1543,7 @@ impl<'a> TypeChecker<'a> {
                                         "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
                                     ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
                             }
                         }
@@ -1555,7 +1561,7 @@ impl<'a> TypeChecker<'a> {
                                 "Type error: Function '{}' requires topology '{:?}', but is called from '{:?}'",
                                 resolved_name, func.0.topology, self.active_topology
                             ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                     let param_types: Vec<Type> =
@@ -1570,7 +1576,7 @@ impl<'a> TypeChecker<'a> {
                                     param_types.len(),
                                     args.len()
                                 ),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
                         }
                     } else {
@@ -1583,7 +1589,7 @@ impl<'a> TypeChecker<'a> {
                                         "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
                                     ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
                             }
                         }
@@ -1760,7 +1766,7 @@ impl<'a> TypeChecker<'a> {
                                 "Undefined function '{}'. Available monos: {:?}",
                                 resolved_name, mono_names
                             ),
-                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
                     Type::Tensor(ElementType::F32, vec![], None)
@@ -2120,10 +2126,14 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
-                
+
                 // Enforce topology boundary for Pinned types
                 if let Type::Pinned(_, pinned_top) = &obj_ty {
-                    if !self.transfer_cost_graph.is_type_accessible(&self.active_topology, pinned_top, &obj_ty) {
+                    if !self.transfer_cost_graph.is_type_accessible(
+                        &self.active_topology,
+                        pinned_top,
+                        &obj_ty,
+                    ) {
                         if !silent {
                             self.errors.push(format!(
                                 "Cross-topology access error: Cannot access Pinned type on {:?} from {:?}",
@@ -2132,7 +2142,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                
+
                 self.check_expr_type(idx);
                 if let Type::Pointer(inner, _, _) = obj_ty {
                     *inner
@@ -2420,7 +2430,7 @@ impl<'a> TypeChecker<'a> {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E7002,
                                 format!("Tensor multiplication requires matching element types, got {:?} and {:?}", el_ty_l, el_ty_r),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
                         }
                         let l_len = dims_l.len();
@@ -2429,7 +2439,7 @@ impl<'a> TypeChecker<'a> {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E7001,
                                 format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", l_len, r_len),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
                             return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                         }
@@ -2444,7 +2454,7 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch in binary operation: {:?} vs {:?}",
                             lhs_ty, rhs_ty
                         ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                     );
                 }
                 lhs_ty
@@ -2470,7 +2480,7 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch in relational operation: {:?} vs {:?}",
                             lhs_ty, rhs_ty
                         ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                     );
                 }
                 Type::Scalar(ElementType::Bool)
@@ -2496,7 +2506,7 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch in logical operation: {:?} vs {:?}",
                             lhs_ty, rhs_ty
                         ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                     );
                 }
                 Type::Scalar(ElementType::Bool)
@@ -2570,14 +2580,14 @@ impl<'a> TypeChecker<'a> {
                                     self.errors.error_with_code(
                                         crate::diagnostic::DiagnosticCode::E4004,
                                         format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                     );
                                 }
                             } else if *is_mut && !silent {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4003,
                                     format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                 );
                             }
                         }
@@ -3096,7 +3106,7 @@ impl<'a> TypeChecker<'a> {
                     // Consume captured variables in the outer scope if they are linear
                     for (name, ty) in &captured_vars {
                         if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)) {
-                            self.consume(name);
+                            self.consume(name.as_ref());
                         }
                     }
                 }

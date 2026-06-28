@@ -1,5 +1,5 @@
 use crate::symbol::Symbol;
-use crate::symbol::Symbol;
+use crate::syntax;
 //===- arena.rs - Vx Compiler ---------------------------------------*- Rust -*-===//
 //
 // Part of the Vx Project, under the BSD 3-Clause License.

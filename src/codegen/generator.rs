@@ -81,9 +81,9 @@ impl<'c> MeliorGenerator<'c> {
         val: Value<'c, 'c>,
         from_ty: Type<'c>,
         to_ty: Type<'c>,
-    ) -> Result<Value<\'c, \'c>, crate::codegen::lower::LowerError> {
+    ) -> Result<Value<'c, 'c>, crate::codegen::lower::LowerError> {
         if from_ty == to_ty {
-            return val;
+            return Ok(val);
         }
 
         // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
@@ -143,7 +143,7 @@ impl<'c> MeliorGenerator<'c> {
                         .build()
                         .unwrap();
                 block.append_operation(fill_op);
-                return dst;
+                return Ok(dst);
             }
         }
 
@@ -153,7 +153,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
         if from_ty == self.i64_ty && to_ty == self.i32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.trunci", self.loc())
@@ -161,7 +161,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
         if from_ty == self.f32_ty && to_ty == self.f64_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
@@ -169,7 +169,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
         if from_ty == self.f32_ty && (to_ty == self.bf16_ty || to_ty == self.f16_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.truncf", self.loc())
@@ -177,7 +177,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty) && to_ty == self.f32_ty {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.extf", self.loc())
@@ -185,7 +185,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
         if (from_ty == self.f64_ty || from_ty == self.f32_ty)
             && (to_ty == self.f32_ty || to_ty == self.f16_ty || to_ty == self.bf16_ty)
@@ -195,7 +195,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
         if (from_ty == self.bf16_ty || from_ty == self.f16_ty)
@@ -206,7 +206,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
         if from_ty == self.i32_ty && (to_ty == self.f32_ty || to_ty == self.f64_ty) {
@@ -215,7 +215,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
         if (from_ty == self.f32_ty || from_ty == self.f64_ty) && to_ty == self.i32_ty {
@@ -224,7 +224,7 @@ impl<'c> MeliorGenerator<'c> {
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
         let from_str = from_ty.to_string();
@@ -239,7 +239,7 @@ impl<'c> MeliorGenerator<'c> {
                     .add_results(&[to_ty])
                     .build()
                     .unwrap();
-            return block.append_operation(cast_op).result(0).unwrap().into();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
         let is_int = |s: &str| s.starts_with("i") || s.starts_with("u");
@@ -259,12 +259,12 @@ impl<'c> MeliorGenerator<'c> {
                     .add_results(&[to_ty])
                     .build()
                     .unwrap();
-                return block.append_operation(cast_op).result(0).unwrap().into();
+                return Ok(block.append_operation(cast_op).result(0)?.into());
             }
         }
 
         if val.r#type() == to_ty {
-            return val;
+            return Ok(val);
         }
 
         if cfg!(debug_assertions) {
@@ -284,7 +284,7 @@ impl<'c> MeliorGenerator<'c> {
         .add_results(&[to_ty])
         .build()
         .unwrap();
-        block.append_operation(cast_op).result(0).unwrap().into()
+        Ok(block.append_operation(cast_op).result(0)?.into())
     }
 
     pub fn new(context: &'c Context, filename: String) -> Self {
@@ -416,7 +416,7 @@ impl<'c> MeliorGenerator<'c> {
             let ret_ty = self.lower_type(&ext.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &ext.params {
-                arg_tys.push(self.lower_type(ty)?)?;
+                arg_tys.push(self.lower_type(ty)?);
             }
             self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
         }
@@ -480,7 +480,7 @@ impl<'c> MeliorGenerator<'c> {
                 let ret_ty = self.lower_type(&ext.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &ext.params {
-                    arg_tys.push(self.lower_type(ty)?)?;
+                    arg_tys.push(self.lower_type(ty)?);
                 }
                 self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
             }
@@ -493,7 +493,7 @@ impl<'c> MeliorGenerator<'c> {
                 let ret_ty = self.lower_type(&func.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &func.params {
-                    arg_tys.push(self.lower_type(ty)?)?;
+                    arg_tys.push(self.lower_type(ty)?);
                 }
                 self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
                 self.syntax_functions
@@ -505,7 +505,7 @@ impl<'c> MeliorGenerator<'c> {
             let ret_ty = self.lower_type(&func.return_type)?;
             let mut arg_tys = Vec::new();
             for (_, ty) in &func.params {
-                arg_tys.push(self.lower_type(ty)?)?;
+                arg_tys.push(self.lower_type(ty)?);
             }
             self.functions.insert(func.name.clone(), (ret_ty, arg_tys));
             self.syntax_functions
@@ -601,7 +601,7 @@ impl<'c> MeliorGenerator<'c> {
 
         let mut arg_tys = Vec::new();
         for (_, ty) in &func.params {
-            arg_tys.push(self.lower_type(ty)?)?;
+            arg_tys.push(self.lower_type(ty)?);
         }
 
         let mut actual_ret_tys = Vec::new();
@@ -822,13 +822,16 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
-    pub(crate) fn lower_type(&self, ty: &syntax::Type) -> Result<Type<\'c>, crate::codegen::lower::LowerError> {
+    pub(crate) fn lower_type(
+        &self,
+        ty: &syntax::Type,
+    ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
             }
             syntax::Type::Scalar(el_ty) => {
-                return match el_ty {
+                return Ok(match el_ty {
                     ElementType::F16 => self.f16_ty,
                     ElementType::F32 => self.f32_ty,
                     ElementType::F64 => self.f64_ty,
@@ -843,15 +846,15 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::Generic(_) => {
                         panic!("Generic element type should be instantiated before codegen")
                     }
-                }
+                });
             }
-            syntax::Type::Matrix => "tensor<?x?xf32>".to_string(),
+            syntax::Type::Matrix => panic!("Matrix type not supported"),
             syntax::Type::Ref(inner, _mem) => {
-                return self.lower_type(inner)?;
+                return self.lower_type(inner);
             }
-            syntax::Type::Verified(inner) => return self.lower_type(inner)?,
+            syntax::Type::Verified(inner) => return self.lower_type(inner),
             syntax::Type::Pinned(inner, _top) => {
-                let inner_ty_str = self.lower_type(inner)?.to_string()?;
+                let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
             }
             syntax::Type::Borrow {
@@ -890,11 +893,11 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Type::parse(
+                        return Ok(Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap_or_else(|| panic!("Failed to parse enum struct type"));
+                        .unwrap_or_else(|| panic!("Failed to parse enum struct type")));
                     }
                     return Ok(self.i32_ty);
                 }
@@ -907,11 +910,13 @@ impl<'c> MeliorGenerator<'c> {
                         }
                         field_types.push(lowered);
                     }
-                    Ok(format!("!llvm.struct<\1>", name, field_types.join("\2")))
-            } else if name.as_ref() == "void" {
-                    "none".to_string()
+                    format!("!llvm.struct<{}>", field_types.join(","))
                 } else {
-                    format!("!llvm.struct<\"{}\">", name)
+                    if name.as_ref() == "void" {
+                        "none".to_string()
+                    } else {
+                        format!("!llvm.struct<\"{}\">", name)
+                    }
                 }
             }
             syntax::Type::GenericInstance(base, args) => {
@@ -939,7 +944,7 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a)?;
+                                let lowered = self.lower_type_str(a).unwrap();
                                 lowered
                                     .replace("!", "")
                                     .replace("<", "_")
@@ -984,7 +989,7 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a)?;
+                                let lowered = self.lower_type_str(a).unwrap();
                                 lowered
                                     .replace("!", "")
                                     .replace("<", "_")
@@ -1055,20 +1060,20 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Type::parse(
+                        return Ok(Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap_or_else(|| panic!("Failed to parse enum struct type"));
+                        .unwrap_or_else(|| panic!("Failed to parse enum struct type")));
                     }
                 }
                 "i32".to_string()
             }
             syntax::Type::Function(_, _) => {
-                return self.ptr_ty;
+                return Ok(self.ptr_ty);
             }
             syntax::Type::Closure(_, _) => {
-                return Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap();
+                return Ok(Type::parse(self.context, "!llvm.struct<(ptr, ptr)>").unwrap());
             }
             syntax::Type::Module(..) => "none".to_string(),
             syntax::Type::Const(expr) => {
@@ -1080,29 +1085,32 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Unknown => "unknown".to_string(),
         };
 
-        Type::parse(self.context, &ty_str)
-            .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str))
+        Ok(Type::parse(self.context, &ty_str)
+            .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str)))
     }
 
-    pub(crate) fn lower_type_str(&self, ty: &syntax::Type) -> Result<String, crate::codegen::lower::LowerError> {
+    pub(crate) fn lower_type_str(
+        &self,
+        ty: &syntax::Type,
+    ) -> Result<String, crate::codegen::lower::LowerError> {
         if let syntax::Type::Function(_, _) = ty {
-            return "!llvm.ptr".to_string();
+            return Ok("!llvm.ptr".to_string());
         }
         if let syntax::Type::Const(expr) = ty {
             if let syntax::Expr::Number(n) = &**expr {
-                return n.value.to_string();
+                return Ok(n.value.to_string());
             } else if let syntax::Expr::StringLiteral(s) = &**expr {
-                return s.value.to_string();
+                return Ok(s.value.to_string());
             } else {
-                return format!("{:?}", expr)
+                return Ok(format!("{:?}", expr)
                     .replace(" ", "_")
                     .replace("\"", "")
                     .replace("(", "_")
-                    .replace(")", "_");
+                    .replace(")", "_"));
             }
         }
         let t = self.lower_type(ty)?;
-        t.to_string()
+        Ok(t.to_string())
     }
 
     /// Lowers a Vx `Tensor(ElementType, dims, topology)` to an MLIR `memref<...>` type.
@@ -1111,7 +1119,7 @@ impl<'c> MeliorGenerator<'c> {
         el_ty: &ElementType,
         dims: &[syntax::Expr],
         top: &Option<syntax::Topology>,
-    ) -> Result<Type<\'c>, crate::codegen::lower::LowerError> {
+    ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
         let ty_str = match el_ty {
             ElementType::F16 => "f16",
             ElementType::F32 => "f32",
@@ -1175,8 +1183,8 @@ impl<'c> MeliorGenerator<'c> {
             format!("memref<{}{}>", shape_str, ty_str)
         };
 
-        Type::parse(self.context, &memref_str)
-            .unwrap_or_else(|| panic!("Failed to parse MLIR memref type: {}", memref_str))
+        Ok(Type::parse(self.context, &memref_str)
+            .unwrap_or_else(|| panic!("Failed to parse MLIR memref type: {}", memref_str)))
     }
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
