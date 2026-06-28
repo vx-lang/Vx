@@ -16,6 +16,7 @@ impl<'a> Parser<'a> {
     fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
         match self.advance().kind {
             TokenType::Identifier(s) => Ok(s.to_string()),
+            TokenType::Transfer => Ok("transfer".to_string()),
             _ => Err(self.error(msg)),
         }
     }
