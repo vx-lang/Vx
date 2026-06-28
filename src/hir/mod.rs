@@ -12,9 +12,11 @@
 
 use crate::syntax::*;
 
+pub mod arena;
 pub mod bytecode;
 pub mod env;
 pub mod expr;
+pub mod lower_ast;
 pub mod prover;
 pub mod stmt;
 
