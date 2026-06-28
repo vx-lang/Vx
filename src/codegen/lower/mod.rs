@@ -364,7 +364,12 @@ pub fn generate_match_chain<'c>(
                 {
                     payload_ty_str = format!("!llvm.{}", payload_ty_str);
                 }
-                let payload_ty = melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                let payload_ty =
+                    melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?;
                 let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
                     .add_operands(&[match_val])
                     .add_results(&[payload_ty])
@@ -464,8 +469,18 @@ pub(crate) fn lower_map_call<'c>(
         // 2. Generate linalg.generic
         let region = Region::new();
         let block_generic = melior::ir::Block::new(&[
-            (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-            (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+            (
+                Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?,
+                gen.loc(),
+            ),
+            (
+                Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?,
+                gen.loc(),
+            ),
         ]);
 
         // We need to call the closure!
@@ -510,18 +525,28 @@ pub(crate) fn lower_map_call<'c>(
         let invoke_method = format!("{}_call", struct_name);
 
         let call_op = OperationBuilder::new("func.call", gen.loc())
-            .add_operands(&[alloca_ptr, block_generic.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into()])
+            .add_operands(&[
+                alloca_ptr,
+                block_generic
+                    .argument(0)
+                    .map_err(|_| {
+                        crate::codegen::lower::LowerError::from(format!(
+                            "Missing argument {} block",
+                            0
+                        ))
+                    })?
+                    .into(),
+            ])
             .add_attributes(&[(
                 Identifier::new(gen.context, "callee"),
                 FlatSymbolRefAttribute::new(gen.context, &invoke_method).into(),
             )])
-            .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+            .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?])
             .build()?;
 
-        let call_res = block_generic
-            .append_operation(call_op)
-            .result(0)?
-            .into();
+        let call_res = block_generic.append_operation(call_op).result(0)?.into();
 
         let yield_op = OperationBuilder::new("linalg.yield", gen.loc())
             .add_operands(&[call_res])

@@ -66,7 +66,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             }
             if ty_str.starts_with("memref<memref<") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[*val])
                     .add_results(&[inner_ty])
@@ -75,7 +77,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                 Ok((load_ref.result(0)?.into(), inner_ty, block))
             } else if ty_str.starts_with("memref<") && !ty_str.contains("x") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
-                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[*val])
                     .add_results(&[inner_ty])
@@ -301,7 +305,9 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
             } else {
                 "f32".to_string()
             };
-            Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?
+            Type::parse(gen.context, &inner_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?
         };
 
         if gen.is_lvalue_context {
@@ -397,7 +403,9 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 "f32".to_string()
             };
 
-            let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+            let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?;
             let mut load_builder =
                 OperationBuilder::new("memref.load", gen.loc()).add_operands(&[base_val]);
 
@@ -481,7 +489,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             let el_ty_str = lhs_parts[2].split(',').next().unwrap().trim();
 
             let out_ty_str = format!("memref<{}x{}x{}>", m_str, n_str, el_ty_str);
-            let out_ty = Type::parse(gen.context, &out_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+            let out_ty = Type::parse(gen.context, &out_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?;
 
             // Determine dynamic dimensions for alloc
             let mut alloc_operands = Vec::new();
@@ -531,29 +541,65 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             // Zero initialize the output buffer since matmul accumulates!
             let zero_attr = if el_ty_str.starts_with('i') {
-                IntegerAttribute::new(Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, 0).into()
+                IntegerAttribute::new(
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    0,
+                )
+                .into()
             } else {
                 FloatAttribute::new(
                     gen.context,
-                    Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?,
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
                     0.0,
                 )
                 .into()
             };
 
             let zero_op = OperationBuilder::new("arith.constant", gen.loc())
-                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?])
                 .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
                 .build()?;
             let zero_val = block.append_operation(zero_op).result(0)?.into();
 
             let region_fill = Region::new();
             let block_fill = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
             ]);
             let yield_fill = OperationBuilder::new("linalg.yield", gen.loc())
-                .add_operands(&[block_fill.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into()])
+                .add_operands(&[block_fill
+                    .argument(0)
+                    .map_err(|_| {
+                        crate::codegen::lower::LowerError::from(format!(
+                            "Missing argument {} block",
+                            0
+                        ))
+                    })?
+                    .into()])
                 .build()?;
             block_fill.append_operation(yield_fill);
             region_fill.append_block(block_fill);
@@ -571,9 +617,30 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             // Execute linalg.matmul
             let region_matmul = Region::new();
             let block_matmul = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
             ]);
 
             let is_float = el_ty_str.contains("f32")
@@ -585,24 +652,49 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             let mul_op = OperationBuilder::new(mul_op_name, gen.loc())
                 .add_operands(&[
-                    block_matmul.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into(),
-                    block_matmul.argument(1).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 1)))?.into(),
+                    block_matmul
+                        .argument(0)
+                        .map_err(|_| {
+                            crate::codegen::lower::LowerError::from(format!(
+                                "Missing argument {} block",
+                                0
+                            ))
+                        })?
+                        .into(),
+                    block_matmul
+                        .argument(1)
+                        .map_err(|_| {
+                            crate::codegen::lower::LowerError::from(format!(
+                                "Missing argument {} block",
+                                1
+                            ))
+                        })?
+                        .into(),
                 ])
-                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?])
                 .build()?;
-            let mul_val = block_matmul
-                .append_operation(mul_op)
-                .result(0)?
-                .into();
+            let mul_val = block_matmul.append_operation(mul_op).result(0)?.into();
 
             let add_op = OperationBuilder::new(add_op_name, gen.loc())
-                .add_operands(&[block_matmul.argument(2).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 2)))?.into(), mul_val])
-                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .add_operands(&[
+                    block_matmul
+                        .argument(2)
+                        .map_err(|_| {
+                            crate::codegen::lower::LowerError::from(format!(
+                                "Missing argument {} block",
+                                2
+                            ))
+                        })?
+                        .into(),
+                    mul_val,
+                ])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?])
                 .build()?;
-            let add_val = block_matmul
-                .append_operation(add_op)
-                .result(0)?
-                .into();
+            let add_val = block_matmul.append_operation(add_op).result(0)?.into();
 
             let yield_matmul = OperationBuilder::new("linalg.yield", gen.loc())
                 .add_operands(&[add_val])
@@ -623,7 +715,9 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             return Ok((out_val, out_ty, block));
         } else if is_memref {
             // Element-wise Linalg Lowering (Add, Sub, Mul, Div)
-            let out_ty = Type::parse(gen.context, &lhs_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+            let out_ty = Type::parse(gen.context, &lhs_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?;
 
             let mut alloc_operands = Vec::new();
             let index_ty = gen.index_ty;
@@ -676,23 +770,59 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
 
             let region = Region::new();
             let block_inner = melior::ir::Block::new(&[
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
-                (Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?, gen.loc()),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
+                (
+                    Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?,
+                    gen.loc(),
+                ),
             ]);
 
             let arith_op = OperationBuilder::new(arith_op_name, gen.loc())
                 .add_operands(&[
-                    block_inner.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into(),
-                    block_inner.argument(1).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 1)))?.into(),
+                    block_inner
+                        .argument(0)
+                        .map_err(|_| {
+                            crate::codegen::lower::LowerError::from(format!(
+                                "Missing argument {} block",
+                                0
+                            ))
+                        })?
+                        .into(),
+                    block_inner
+                        .argument(1)
+                        .map_err(|_| {
+                            crate::codegen::lower::LowerError::from(format!(
+                                "Missing argument {} block",
+                                1
+                            ))
+                        })?
+                        .into(),
                 ])
-                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                .add_results(&[Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?])
                 .build()?;
 
-            let arith_val = block_inner
-                .append_operation(arith_op)
-                .result(0)?
-                .into();
+            let arith_val = block_inner.append_operation(arith_op).result(0)?.into();
 
             let yield_op = OperationBuilder::new("linalg.yield", gen.loc())
                 .add_operands(&[arith_val])
@@ -1046,10 +1176,7 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
                 .add_results(&[i32_ty])
                 .add_attributes(&[(Identifier::new(gen.context, "value"), zero_attr)])
                 .build()?;
-            let zero_val = current_block
-                .append_operation(zero_op)
-                .result(0)?
-                .into();
+            let zero_val = current_block.append_operation(zero_op).result(0)?.into();
             Ok((zero_val, i32_ty, current_block))
         }
     }
@@ -1148,7 +1275,12 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
                             base_name,
                             field_types.join(", ")
                         );
-                        let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                        let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str)
+                            .ok_or_else(|| {
+                                crate::codegen::lower::LowerError::ParseType(
+                                    "Type::parse failed".to_string(),
+                                )
+                            })?;
 
                         let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                             .add_operands(&[base_val])
@@ -1267,10 +1399,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                                 .add_results(&[Type::index(gen.context)])
                                 .build()
                                 .unwrap();
-                            val = current_b
-                                .append_operation(cast_op)
-                                .result(0)?
-                                .into();
+                            val = current_b.append_operation(cast_op).result(0)?.into();
                         }
                         dynamic_sizes.push(val);
                     }
@@ -1286,10 +1415,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .add_results(&[Type::index(gen.context)])
                             .build()
                             .unwrap();
-                        val = current_b
-                            .append_operation(cast_op)
-                            .result(0)?
-                            .into();
+                        val = current_b.append_operation(cast_op).result(0)?.into();
                     }
                     dynamic_sizes.push(val);
                 }
@@ -1300,7 +1426,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 shape_str.push_str("?x");
             }
             let tensor_ty_str = format!("memref<{}{}>", shape_str, mlir_ty_str);
-            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+            let tensor_ty = Type::parse(gen.context, &tensor_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?;
 
             let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
                 .add_operands(&dynamic_sizes)
@@ -1403,8 +1531,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     .add_results(&[result_ty])
                     .build()
                     .expect("Failed to build reinterpret_cast");
-                blk.append_operation(op).result(0)
-                    .expect("Failed to get result").into()
+                blk.append_operation(op)
+                    .result(0)
+                    .expect("Failed to get result")
+                    .into()
             };
 
             if is_transpose {
@@ -1556,10 +1686,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .add_results(&[field_ty])
                             .build()
                             .unwrap();
-                        arg_val = current_b
-                            .append_operation(cast_op)
-                            .result(0)?
-                            .into();
+                        arg_val = current_b.append_operation(cast_op).result(0)?.into();
                     } else {
                         arg_val = gen.coerce_type(&current_b, arg_val, expr_ty, field_ty);
                     }
@@ -1590,10 +1717,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     )])
                     .build()?;
                 Ok((
-                    current_b
-                        .append_operation(dummy_op)
-                        .result(0)?
-                        .into(),
+                    current_b.append_operation(dummy_op).result(0)?.into(),
                     none_ty,
                     current_b,
                 ))
@@ -1709,10 +1833,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         )])
                         .build()?;
                     Ok((
-                        current_b
-                            .append_operation(dummy_op)
-                            .result(0)?
-                            .into(),
+                        current_b.append_operation(dummy_op).result(0)?.into(),
                         none_ty,
                         current_b,
                     ))
@@ -1832,10 +1953,7 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
                     )])
                     .build()?;
                 Ok((
-                    current_b
-                        .append_operation(dummy_op)
-                        .result(0)?
-                        .into(),
+                    current_b.append_operation(dummy_op).result(0)?.into(),
                     none_ty,
                     current_b,
                 ))
@@ -1890,7 +2008,11 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[val])
-                    .add_results(&[Type::parse(gen.context, ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?])
+                    .add_results(&[Type::parse(gen.context, ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?])
                     .build()?;
                 val = block.append_operation(load_op).result(0)?.into();
             }
@@ -2181,7 +2303,9 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
         }
 
         // We have an Option<T> struct
-        let struct_ty = Type::parse(gen.context, &enum_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+        let struct_ty = Type::parse(gen.context, &enum_ty_str).ok_or_else(|| {
+            crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+        })?;
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
             .add_results(&[struct_ty])
             .build()?;
@@ -2195,10 +2319,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                 melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
             )])
             .build()?;
-        let mut struct_val = block
-            .append_operation(insert_tag_op)
-            .result(0)?
-            .into();
+        let mut struct_val = block.append_operation(insert_tag_op).result(0)?.into();
 
         if let Some(payload_exprs) = payload {
             if !payload_exprs.is_empty() {
@@ -2213,10 +2334,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
                             .into(),
                     )])
                     .build()?;
-                struct_val = block
-                    .append_operation(insert_payload_op)
-                    .result(0)?
-                    .into();
+                struct_val = block.append_operation(insert_payload_op).result(0)?.into();
             }
         }
 

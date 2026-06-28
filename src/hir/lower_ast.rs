@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::syntax::*;
 use crate::hir::arena::*;
+use crate::syntax::*;
 
 impl HirArena {
     pub fn lower_expr(&mut self, expr: &Expr) -> ExprId {
@@ -64,14 +64,18 @@ impl HirArena {
             Statement::Expr(s) => HirStmt::Expr(self.lower_exprstmtstmt(s)),
             Statement::ForLoop(s) => HirStmt::ForLoop(self.lower_forloopstmt(s)),
             Statement::Assign(s) => HirStmt::Assign(self.lower_assignstmt(s)),
-            Statement::CompoundAssign(s) => HirStmt::CompoundAssign(self.lower_compoundassignstmt(s)),
+            Statement::CompoundAssign(s) => {
+                HirStmt::CompoundAssign(self.lower_compoundassignstmt(s))
+            }
             Statement::Assert(s) => HirStmt::Assert(self.lower_assertstmt(s)),
             Statement::Loop(s) => HirStmt::Loop(self.lower_loopstmt(s)),
             Statement::Break(s) => HirStmt::Break(self.lower_breakstmt(s)),
             Statement::Continue(s) => HirStmt::Continue(self.lower_continuestmt(s)),
             Statement::MacroCall(s) => HirStmt::MacroCall(self.lower_macrocallstmt(s)),
             Statement::Error(span) => HirStmt::Error(*span),
-            Statement::MacroCall(_) => unimplemented!("Macro calls should be expanded before lowering"),
+            Statement::MacroCall(_) => {
+                unimplemented!("Macro calls should be expanded before lowering")
+            }
         };
         self.alloc_stmt(hir_stmt)
     }
@@ -417,12 +421,16 @@ impl HirArena {
             span: node.span.clone(),
         }
     }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{Expr, BinaryOpExpr, NumberExpr, IdentifierExpr, Statement, LetDeclStmt, ReturnStmt, Span, ElementType};
     use crate::symbol::Symbol;
+    use crate::syntax::{
+        BinaryOpExpr, ElementType, Expr, IdentifierExpr, LetDeclStmt, NumberExpr, ReturnStmt, Span,
+        Statement,
+    };
 
     #[test]
     fn test_lower_number_expr() {

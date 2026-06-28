@@ -230,7 +230,12 @@ impl<'c> LowerToMelior<'c> for IfExpr {
         }
 
         if has_ret {
-            let res = merge_b.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
+            let res = merge_b
+                .argument(0)
+                .map_err(|_| {
+                    crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0))
+                })?
+                .into();
             Ok((res, ret_ty, merge_b))
         } else {
             Ok((cond_val, ret_ty, merge_b))
@@ -271,10 +276,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .add_operands(&[start_val])
                     .add_results(&[ty_index])
                     .build()?;
-                block
-                    .append_operation(cast_start_op)
-                    .result(0)?
-                    .into()
+                block.append_operation(cast_start_op).result(0)?.into()
             };
 
             let end_idx = if end_ty == ty_index {
@@ -284,10 +286,7 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .add_operands(&[end_val])
                     .add_results(&[ty_index])
                     .build()?;
-                block
-                    .append_operation(cast_end_op)
-                    .result(0)?
-                    .into()
+                block.append_operation(cast_end_op).result(0)?.into()
             };
 
             let step_op = block.append_operation(
@@ -314,7 +313,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .build()?,
             );
 
-            let current_idx = cond_block.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
+            let current_idx = cond_block
+                .argument(0)
+                .map_err(|_| {
+                    crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0))
+                })?
+                .into();
 
             let cmp_op = cond_block.append_operation(
                 OperationBuilder::new("arith.cmpi", gen.loc())
@@ -455,7 +459,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
                     .build()?,
             );
 
-            let current_idx = cond_block.argument(0).map_err(|_| crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0)))?.into();
+            let current_idx = cond_block
+                .argument(0)
+                .map_err(|_| {
+                    crate::codegen::lower::LowerError::from(format!("Missing argument {} block", 0))
+                })?
+                .into();
 
             let cmp_op = cond_block.append_operation(
                 OperationBuilder::new("arith.cmpi", gen.loc())
@@ -482,17 +491,16 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
             );
 
             let el_ty_str = iter_ty_str.split('x').nth(1).unwrap().trim_end_matches('>');
-            let el_ty = Type::parse(gen.context, el_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+            let el_ty = Type::parse(gen.context, el_ty_str).ok_or_else(|| {
+                crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+            })?;
 
             let extract_op = OperationBuilder::new("tensor.extract", gen.loc())
                 .add_operands(&[iter_val, current_idx])
                 .add_results(&[el_ty])
                 .build()?;
 
-            let el_val = body_block
-                .append_operation(extract_op)
-                .result(0)?
-                .into();
+            let el_val = body_block.append_operation(extract_op).result(0)?.into();
 
             gen.env.insert(iter.clone().into(), (el_val, el_ty));
             // `continue` must still advance the loop index, so it targets a
@@ -672,7 +680,9 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         } else {
             "i32".to_string()
         };
-        let payload_ty = Type::parse(gen.context, &payload_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+        let payload_ty = Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
+            crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+        })?;
 
         let extract_payload_op = OperationBuilder::new("llvm.extractvalue", gen.loc())
             .add_operands(&[opt_val])

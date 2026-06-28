@@ -134,7 +134,9 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                 gen.allocs.insert(name.to_string());
             } else {
                 let memref_ty = format!("memref<{}>", ty);
-                let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                let parsed_memref_ty = Type::parse(gen.context, &memref_ty).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
+                })?;
                 let alloca_op = OperationBuilder::new("memref.alloca", gen.loc())
                     .add_results(&[parsed_memref_ty])
                     .build()?;
@@ -171,7 +173,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 let mem_ty_str = mem_ty.to_string();
                 if mem_ty_str.starts_with("memref<") {
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
-                    expected_ty = Some(Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?);
+                    expected_ty =
+                        Some(Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
+                            crate::codegen::lower::LowerError::ParseType(
+                                "Type::parse failed".to_string(),
+                            )
+                        })?);
                 } else {
                     expected_ty = Some(*mem_ty);
                 }
@@ -197,7 +204,11 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 if mem_ty_str.starts_with("memref<") {
                     let mut store_val = rhs_val;
                     let inner_ty_str = &mem_ty_str[7..mem_ty_str.len() - 1];
-                    let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                    let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
+                        crate::codegen::lower::LowerError::ParseType(
+                            "Type::parse failed".to_string(),
+                        )
+                    })?;
                     if rhs_ty != inner_ty
                         && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
                             || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
@@ -288,7 +299,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
 
                     let mut store_val = rhs_val;
                     if !inner_ty_str.is_empty() {
-                        let inner_ty = melior::ir::Type::parse(gen.context, &inner_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                        let inner_ty = melior::ir::Type::parse(gen.context, &inner_ty_str)
+                            .ok_or_else(|| {
+                                crate::codegen::lower::LowerError::ParseType(
+                                    "Type::parse failed".to_string(),
+                                )
+                            })?;
                         store_val = gen.coerce_type(&new_b, store_val, rhs_ty, inner_ty);
                     }
 
@@ -353,8 +369,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     .add_results(&[field_ty])
                                     .build()
                                     .unwrap();
-                                field_val =
-                                    new_b.append_operation(cast_op).result(0)?.into();
+                                field_val = new_b.append_operation(cast_op).result(0)?.into();
                             }
 
                             if is_ptr {
@@ -372,8 +387,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                     resolved_struct_name,
                                     field_types.join(", ")
                                 );
-                                let struct_llvm_ty =
-                                    Type::parse(gen.context, &struct_llvm_ty_str).ok_or_else(|| crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string()))?;
+                                let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str)
+                                    .ok_or_else(|| {
+                                        crate::codegen::lower::LowerError::ParseType(
+                                            "Type::parse failed".to_string(),
+                                        )
+                                    })?;
 
                                 let gep_op = OperationBuilder::new("llvm.getelementptr", gen.loc())
                                     .add_attributes(&[

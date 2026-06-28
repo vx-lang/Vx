@@ -30,11 +30,11 @@ impl HirArena {
             stmts: Arena::new(),
         }
     }
-    
+
     pub fn alloc_expr(&mut self, expr: HirExpr) -> ExprId {
         self.exprs.alloc(expr)
     }
-    
+
     pub fn alloc_stmt(&mut self, stmt: HirStmt) -> StmtId {
         self.stmts.alloc(stmt)
     }
@@ -202,7 +202,7 @@ pub struct HirComptimeBlockExpr {
 #[derive(Debug, Clone)]
 pub struct HirStructInitExpr {
     pub name: Symbol,
-    pub fields: Vec<(Symbol,
+    pub fields: Vec<(Symbol, Expr)>,
     pub span: Span,
 }
 
@@ -272,9 +272,9 @@ pub struct HirVecMacroExpr {
 
 #[derive(Debug, Clone)]
 pub struct HirClosureExpr {
-    pub params: Vec<(Symbol,
+    pub params: Vec<(Symbol, Type)>,
     pub body: ExprId,
-    pub captures: Vec<(Symbol,
+    pub captures: Vec<(Symbol, Type)>,
     pub ret_ty: Option<Type>,
     pub span: Span,
 }
@@ -307,7 +307,7 @@ pub struct HirSizeOfExpr {
 
 #[derive(Debug, Clone)]
 pub struct HirInlineMlirExpr {
-    pub inputs: Vec<(Symbol,
+    pub inputs: Vec<(Symbol, Expr, String)>, // "%argN", expr,
     pub clobbers: Vec<ExprId>,
     pub returns: Option<Type>,
     pub dialects: Vec<String>,
@@ -450,4 +450,3 @@ pub enum HirStmt {
     MacroCall(HirMacroCallStmt),
     Error(Span),
 }
-

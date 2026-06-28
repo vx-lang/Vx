@@ -87,11 +87,7 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
                 .add_results(&[Type::index(gen.context)])
                 .build()?;
             let dummy_ref = block.append_operation(dummy_op);
-            Ok((
-                dummy_ref.result(0)?.into(),
-                Type::index(gen.context),
-                block,
-            ))
+            Ok((dummy_ref.result(0)?.into(), Type::index(gen.context), block))
         }
     }
 }

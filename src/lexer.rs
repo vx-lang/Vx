@@ -470,7 +470,7 @@ impl<'a> Lexer<'a> {
         }
 
         let end_byte = self.current_byte_offset();
-        
+
         if let Some(c) = unknown_escape {
             return TokenBase {
                 kind: TokenTypeBase::Unknown(c),
