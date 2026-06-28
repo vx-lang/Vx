@@ -650,7 +650,7 @@ impl<'a> TypeChecker<'a> {
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::CPU);
-                            if !is_pinned_on_host && !silent {
+                            if !is_pinned_on_host && !silent && !self.allow_cross_topology {
                                 let msg = format!(
                                     "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
                                     name, top, ty, self.active_topology
@@ -887,7 +887,10 @@ impl<'a> TypeChecker<'a> {
         let inner_ty;
 
         if let Expr::Transfer(t) = expr {
+            let prev = self.allow_cross_topology;
+            self.allow_cross_topology = true;
             inner_ty = self.check_expr_type_flag(&mut t.expr, false, silent);
+            self.allow_cross_topology = prev;
 
             // Extract source memory space, preferring exact space from an inner transfer if present
             let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {

@@ -1,14 +1,8 @@
 fn main() {
-    // 1. Allocate a tensor on the Host CPUDRAM
     let host_data = tensor<f32>(1024);
     
-    // 2. Spawn a kernel on the NPU
-    // The NPU uses NPUHBM memory space
     spawn_on NPU(0) {
-        // 3. The NPU kernel accesses `host_data`
-        // Normally, this would throw "Cross-topology access error"
-        // But with Memory Algebra, the AST will auto-inject a TransferExpr 
-        // allocating an NPUHBM buffer and copying data over via DMA!
-        let x = host_data[0];
+        // Explicit transfer
+        let x = transfer(host_data, MemorySpace::NPUHBM)[0];
     }
 }

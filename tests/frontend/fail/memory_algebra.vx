@@ -1,0 +1,8 @@
+fn main() {
+    let host_data = tensor<f32>(1024);
+    
+    spawn_on NPU(0) {
+        // Implicit transfer should fail
+        let x = host_data[0];
+    }
+}

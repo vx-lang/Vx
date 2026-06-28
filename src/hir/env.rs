@@ -173,6 +173,7 @@ impl<'a> TypeChecker<'a> {
             monomorphized_functions: Vec::new(),
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            allow_cross_topology: false,
             active_topology: Topology::CPU,
             active_memory: crate::arch::TransferCostGraph::default_memory_for(&Topology::CPU),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
