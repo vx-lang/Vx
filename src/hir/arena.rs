@@ -12,34 +12,10 @@
 
 use crate::syntax::*;
 use crate::symbol::Symbol;
+use id_arena::{Arena, Id};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExprId(pub usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StmtId(pub usize);
-
-#[derive(Debug, Clone)]
-pub struct Arena<T> {
-    items: Vec<T>,
-}
-
-impl<T> Arena<T> {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self { items: Vec::new() }
-    }
-    pub fn alloc(&mut self, item: T) -> usize {
-        let id = self.items.len();
-        self.items.push(item);
-        id
-    }
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-    pub fn get(&self, id: usize) -> Option<&T> { self.items.get(id) }
-    pub fn get_mut(&mut self, id: usize) -> Option<&mut T> { self.items.get_mut(id) }
-}
+pub type ExprId = Id<HirExpr>;
+pub type StmtId = Id<HirStmt>;
 
 #[derive(Debug, Clone)]
 pub struct HirArena {
@@ -57,11 +33,11 @@ impl HirArena {
     }
     
     pub fn alloc_expr(&mut self, expr: HirExpr) -> ExprId {
-        ExprId(self.exprs.alloc(expr))
+        self.exprs.alloc(expr)
     }
     
     pub fn alloc_stmt(&mut self, stmt: HirStmt) -> StmtId {
-        StmtId(self.stmts.alloc(stmt))
+        self.stmts.alloc(stmt)
     }
 }
 

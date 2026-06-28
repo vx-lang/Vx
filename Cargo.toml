@@ -21,6 +21,7 @@ name = "vxc"
 path = "src/lib.rs"
 
 [dependencies]
+id-arena = "2.2.2"
 tempfile = "3.10"
 rayon = "1.10"
 regex = "1.10"
