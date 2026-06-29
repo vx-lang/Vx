@@ -8,21 +8,23 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 struct MyModel {
-    weights: Tensor<f32>,
+  weights: Tensor<f32>,
 }
 
 impl Transfer for MyModel {
-    fn transfer(self: MyModel) -> MyModel {
-        return self;
-    }
+  fn transfer(self: MyModel) -> MyModel {
+    return self;
+  }
 }
 
 fn process(m_host: MyModel) -> MyModel {
-    spawn on(Topology::NPU[0]) {
-        // This access crosses the topology boundary and triggers implicit transfer
-        let m_device = m_host;
-    }
-    return MyModel { weights: Tensor<f32>() };
+  spawn on(Topology::NPU[0]) {
+    // This access crosses the topology boundary and triggers implicit transfer
+    let m_device = m_host;
+  }
+  return MyModel {
+    weights: Tensor<f32>()
+  };
 }
 
 // CHECK: "func.call"

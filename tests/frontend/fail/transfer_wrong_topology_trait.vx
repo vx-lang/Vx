@@ -2,32 +2,32 @@
 // RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
 
 trait Transfer {
-    fn transfer(self: CustomHostData) -> CustomHostData;
+  fn transfer(self: CustomHostData) -> CustomHostData;
 }
 
 struct CustomHostData {
-    id: i32,
-    host_tensor: Pinned<Tensor<f32>, Topology::CPU>,
+  id: i32,
+  host_tensor: Pinned<Tensor<f32>, Topology::CPU>,
 }
 
 impl Transfer for CustomHostData {
-    fn transfer(self: CustomHostData) -> CustomHostData {
-        let new_tensor = transfer(self.host_tensor, Memory::CPU_DRAM);
-        return CustomHostData {
-            id: self.id,
-            host_tensor: self.host_tensor,
-        };
-    }
+  fn transfer(self: CustomHostData) -> CustomHostData {
+    let new_tensor = transfer(self.host_tensor, Memory::CPU_DRAM);
+    return CustomHostData {
+      id: self.id,
+      host_tensor: self.host_tensor,
+    };
+  }
 }
 
 fn main() on Topology::NPU[0] -> i32 {
-    let host_data = CustomHostData {
-        id: 1,
-        host_tensor: Tensor<f32>(),
-    };
-    
-    let x = host_data.host_tensor[0];
-    return 0;
+  let host_data = CustomHostData {
+    id: 1,
+    host_tensor: Tensor<f32>(),
+  };
+
+  let x = host_data.host_tensor[0];
+  return 0;
 }
 
 // CHECK: Type mismatch in struct initialization

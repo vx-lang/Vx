@@ -2,8 +2,8 @@
 // RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
 
 fn main(device_data: Pinned<Tensor<f32>, Topology::CPU>) on Topology::NPU[0] -> i32 {
-    let x = device_data[0];
-    return 0;
+  let x = device_data[0];
+  return 0;
 }
 
 // CHECK: Cannot access Pinned type on CPU from NPU

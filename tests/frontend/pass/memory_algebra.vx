@@ -2,13 +2,13 @@
 // RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
 
 fn main() -> i32 {
-    let host_data = Tensor<f32>();
-    
-    spawn on(Topology::NPU[0]) {
-        // Explicit transfer
-        let x = transfer(host_data, Memory::NPU_HBM)[0];
-    }
-    return 0;
+  let host_data = Tensor<f32>();
+
+  spawn on(Topology::NPU[0]) {
+    // Explicit transfer
+    let x = transfer(host_data, Memory::NPU_HBM)[0];
+  }
+  return 0;
 }
 
 // CHECK: Function: main
