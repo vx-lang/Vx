@@ -1101,7 +1101,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                 inner_tys,
             ))?
         } else {
-            gen.lower_type(&syntax::Type::Struct(name.clone().into(), None))?
+            gen.lower_type(&syntax::Type::Struct(name.clone(), None))?
         };
 
         let undef_op = OperationBuilder::new("llvm.mlir.undef", gen.loc())
