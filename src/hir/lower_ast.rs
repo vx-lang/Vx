@@ -436,11 +436,7 @@ impl HirArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbol::Symbol;
-    use crate::syntax::{
-        BinaryOpExpr, ElementType, Expr, IdentifierExpr, LetDeclStmt, NumberExpr, ReturnStmt, Span,
-        Statement,
-    };
+    use crate::syntax::{ElementType, Expr, NumberExpr, Span};
 
     #[test]
     fn test_lower_number_expr() {
