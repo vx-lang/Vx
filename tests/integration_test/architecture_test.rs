@@ -54,8 +54,8 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
         &file2_path,
         r#"
         fn compute_heavy(
-            p1: &Tensor, p2: &Tensor, p3: &Tensor, p4: &Tensor, 
-            p5: &Tensor, p6: &Tensor, p7: &Tensor, p8: &Tensor, 
+            p1: &Tensor, p2: &Tensor, p3: &Tensor, p4: &Tensor,
+            p5: &Tensor, p6: &Tensor, p7: &Tensor, p8: &Tensor,
             p9: &Tensor, p10: &Tensor, p11: &mut Tensor
         ) -> f32 {
             return 1.0f32;

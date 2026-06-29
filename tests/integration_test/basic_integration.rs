@@ -192,7 +192,7 @@ fn test_integration_function_calls() -> Result<(), String> {
     fn helper(x: Tensor<f32>) -> Tensor<f32> {
         return x + 1;
     }
-    
+
     fn main() -> Tensor<f32> {
         let y = 10;
         let z = helper(y);
@@ -232,7 +232,7 @@ fn test_integration_linear_variable_consumption() -> Result<(), String> {
 
     fn main() -> Tensor<f32> {
         let x = Tensor<f32>(2, 2);
-        
+
         let mut sum = 0;
         for i in 0..10 {
             sum += i;
