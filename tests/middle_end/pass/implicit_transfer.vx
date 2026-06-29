@@ -1,0 +1,28 @@
+//===- implicit_transfer.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+struct MyModel {
+    weights: Tensor<f32>,
+}
+
+impl Transfer for MyModel {
+    fn transfer(self: MyModel) -> MyModel {
+        return self;
+    }
+}
+
+fn process(m_host: MyModel) -> MyModel {
+    spawn on(Topology::NPU[0]) {
+        // This access crosses the topology boundary and triggers implicit transfer
+        let m_device = m_host;
+    }
+    return MyModel { weights: Tensor<f32>() };
+}
+
+// CHECK: "func.call"
