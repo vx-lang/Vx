@@ -195,6 +195,19 @@ fn buffers_goal_smt(consumed: &[String]) -> String {
     s
 }
 
+/// Single-buffer *value* goal: after the transfer, can `buffer` fail to hold its
+/// statically-known producer value `expected`? Stronger than the visibility goal:
+/// it pins the value, not just definiteness. A synchronizing transfer keeps the
+/// state's `val == expected` (goal `unsat` => ACCEPT); a relaxed transfer sends the
+/// buffer to TOP, freeing its value, so z3 can exhibit a concrete stale value
+/// `!= expected` (`sat` => REJECT with a value-level counterexample).
+fn value1_goal_smt(buffer: &str, expected: u64) -> String {
+    format!(
+        "(assert (not (= val_{buffer} {})))\n(check-sat)\n(get-value (tag_{buffer} val_{buffer}))\n",
+        hex(expected)
+    )
+}
+
 /// Run a QF_BV script through z3 (mirrors `prover.rs`). Returns (sat?, model-text).
 fn run_z3(script: &str) -> Result<(bool, String), String> {
     let mut child = match Command::new("z3")
@@ -416,6 +429,31 @@ impl Solver {
             Verdict::Accept
         })
     }
+
+    /// Per-seam *value* obligation for a buffer whose producer value `expected` is
+    /// statically known: can the buffer fail to hold `expected` after the transfer?
+    /// Stronger than [`check_seam_buffers`] (pins the value, not just definiteness).
+    pub fn check_seam_value(
+        &mut self,
+        reached: &AbsState,
+        t: &Transfer,
+        buffer: &str,
+        expected: u64,
+    ) -> Result<Verdict, String> {
+        let post = apply_transfer(reached, t);
+        let (violable, model) = self.query(&format!(
+            "{}{}",
+            state_smt(&post),
+            value1_goal_smt(buffer, expected)
+        ))?;
+        Ok(if violable {
+            Verdict::Reject {
+                counterexample: model,
+            }
+        } else {
+            Verdict::Accept
+        })
+    }
 }
 
 impl Default for Solver {
@@ -511,6 +549,26 @@ mod tests {
     fn no_consumed_buffers_accepts() {
         let v = check_seam_buffers(&buffer_state(), &Transfer::Sync, &[]).unwrap();
         assert_eq!(v, Verdict::Accept);
+    }
+
+    #[test]
+    fn value_contract_sync_accepts_relaxed_rejects() {
+        // Buffer x has a statically-known producer value (7). A synchronizing transfer
+        // preserves it; a relaxed one frees it, so z3 exhibits a stale value != 7.
+        let mut s = Solver::new();
+        let sync = s
+            .check_seam_value(&buffer_state(), &Transfer::Sync, "x", 7)
+            .unwrap();
+        assert_eq!(sync, Verdict::Accept);
+        let t = Transfer::Relaxed {
+            published: vec!["x".into()],
+        };
+        match s.check_seam_value(&buffer_state(), &t, "x", 7).unwrap() {
+            Verdict::Reject { counterexample } => {
+                assert!(counterexample.contains("val_x"), "model: {counterexample}");
+            }
+            Verdict::Accept => panic!("relaxed transfer must violate the value contract for x"),
+        }
     }
 
     #[test]

@@ -956,21 +956,42 @@ impl<'a> TypeChecker<'a> {
     /// (`sat` => REJECT, with a concrete counterexample naming the buffer). This is the
     /// per-buffer instance of the paper's `post /\ ~conclusion` schema; the value-contract
     /// form (`flag => data`) is the message-passing worked example (`seam::check_seam`).
+    /// If `name` holds a statically-known non-negative integer (tracked by the
+    /// constant evaluator) that fits the seam obligation's value field, return it.
+    /// This is what lets a seam be checked with a *value* contract rather than the
+    /// coarser visibility one when the producer's payload is known at compile time.
+    fn const_value_of(&self, name: &str) -> Option<u64> {
+        let sym = crate::symbol::Symbol::from(name);
+        for env in self.eval_env.iter().rev() {
+            if let Some(crate::hir::env::Value::Number(n)) = env.get(&sym) {
+                // Must be a non-negative integer fitting the 8-bit value field (seam::VAL_BITS).
+                if n.fract() == 0.0 && *n >= 0.0 && *n < 256.0 {
+                    return Some(*n as u64);
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn run_seam_hop(
         &mut self,
         src: &MemorySpace,
         dst: &MemorySpace,
         relaxed: bool,
         buffer: &str,
+        known_val: Option<u64>,
         span: Span,
         silent: bool,
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
 
-        // Reached state at the producer side: the transferred buffer is established
-        // (definite). The concrete value is irrelevant to the visibility obligation.
+        // Reached state at the producer side: the transferred buffer is established.
+        // If the producer value is statically known we pin it (a value contract);
+        // otherwise the concrete value is immaterial to the coarser visibility obligation.
         let reached = AbsState {
-            cells: vec![(buffer.to_string(), Cell::constant(1))],
+            cells: vec![(buffer.to_string(), Cell::constant(known_val.unwrap_or(1)))],
         };
         let transfer = if relaxed {
             // Relaxed escape hatch: the published buffer loses its visibility guarantee.
@@ -992,7 +1013,12 @@ impl<'a> TypeChecker<'a> {
         let solver = self.seam_solver.as_mut().unwrap();
 
         let start = std::time::Instant::now();
-        let verdict = solver.check_seam_buffers(&reached, &transfer, &consumed);
+        // A buffer with a statically-known value gets the stronger value contract (pin
+        // the value); an opaque buffer falls back to the visibility obligation.
+        let verdict = match known_val {
+            Some(v) => solver.check_seam_value(&reached, &transfer, buffer, v),
+            None => solver.check_seam_buffers(&reached, &transfer, &consumed),
+        };
         self.seam_check_time += start.elapsed();
         self.seam_checks += 1;
 
@@ -1005,9 +1031,15 @@ impl<'a> TypeChecker<'a> {
                             crate::diagnostic::DiagnosticCode::E6004,
                             format!(
                                 "relaxed transfer of '{}' across the {:?} -> {:?} seam violates \
-                                 the boundary contract: the buffer carries no synchronizing \
+                                 the boundary contract{}: the buffer carries no synchronizing \
                                  release, so a consumer may read it stale",
-                                buffer, src, dst
+                                buffer,
+                                src,
+                                dst,
+                                match known_val {
+                                    Some(v) => format!(" ('{buffer}' == {v})"),
+                                    None => String::new(),
+                                }
                             ),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         )
@@ -1088,7 +1120,16 @@ impl<'a> TypeChecker<'a> {
                 if path.len() == 2 {
                     let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
                     let buffer = Self::buffer_label(&t.expr);
-                    self.run_seam_hop(&source_mem, &target_mem, relaxed, &buffer, span, silent);
+                    let known_val = self.const_value_of(&buffer);
+                    self.run_seam_hop(
+                        &source_mem,
+                        &target_mem,
+                        relaxed,
+                        &buffer,
+                        known_val,
+                        span,
+                        silent,
+                    );
                 }
             }
         } else {
