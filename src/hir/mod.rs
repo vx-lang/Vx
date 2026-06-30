@@ -362,4 +362,68 @@ fn bad_matmul() -> Tensor {
             checker.errors
         );
     }
+
+    // A relaxed cross-device transfer whose consumer asserts a value on the buffer.
+    const SEAM_ASSERT_PROGRAM: &str = r#"
+fn k(x: Pinned<Tensor<i32>, Topology::NPU[0]>)
+     on Topology::NPU[0] -> Pinned<Tensor<i32>, Topology::NPU[0]> { return x; }
+fn f(a: Tensor<i32>) -> Pinned<Tensor<i32>, Topology::NPU[0]> {
+    let local_a = a.to_device_relaxed();
+    spawn on(Topology::NPU[0]) {
+        assert(local_a == 42);
+        let r = k(local_a);
+        r
+    }
+}
+"#;
+
+    #[test]
+    fn test_seam_assert_prescan_extracts_contract() {
+        // The pre-scan recovers the consumer's `assert(local_a == 42)` from inside the
+        // spawn body -- the conclusion of the boundary contract -- as a pure AST walk,
+        // independent of where the transfer is checked (the ordering fix).
+        let mut lexer = Lexer::new(SEAM_ASSERT_PROGRAM);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, SEAM_ASSERT_PROGRAM);
+        let program = parser.parse().unwrap();
+        let f = program.functions.last().unwrap(); // `f`
+
+        let mut contracts = std::collections::HashMap::new();
+        TypeChecker::collect_assert_contracts(&f.body, &mut contracts);
+        assert_eq!(
+            contracts.get("local_a"),
+            Some(&42u64),
+            "pre-scan should extract local_a == 42 from the spawn body, got {:?}",
+            contracts
+        );
+    }
+
+    #[test]
+    fn test_seam_check_off_by_default() {
+        // With seam verification disabled (the default), a relaxed transfer raises no
+        // E6004 -- the obligation (and its z3 dependency) is opt-in via --verify-seams.
+        let mut lexer = Lexer::new(SEAM_ASSERT_PROGRAM);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, SEAM_ASSERT_PROGRAM);
+        let mut program = parser.parse().unwrap();
+
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        assert!(!checker.verify_seams, "seam verification must default off");
+        for func in &mut program.functions {
+            checker.check_function(func);
+        }
+        assert!(
+            checker
+                .errors
+                .iter()
+                .all(|d| d.code != Some(crate::diagnostic::DiagnosticCode::E6004)),
+            "no seam (E6004) diagnostic should be emitted when --verify-seams is off: {:?}",
+            checker.errors
+        );
+    }
 }

@@ -175,6 +175,15 @@ pub struct TypeChecker<'a> {
     /// Persistent z3 process, lazily started on the first seam and reused for all of
     /// them so the marginal per-seam cost is solving time, not process startup.
     pub(crate) seam_solver: Option<crate::hir::seam::Solver>,
+    /// Per-function pre-scan of `assert(var == const)` facts: the value a consumer
+    /// requires of `var`. Populated before statements are checked so a transfer seam
+    /// (checked before the consumer's `spawn` body) can consult the downstream
+    /// contract on the buffer it produces. See `collect_assert_contracts`.
+    pub(crate) seam_contracts: std::collections::HashMap<String, u64>,
+    /// Whether to discharge per-seam boundary obligations (the assert pre-scan and the
+    /// z3 checks). Off by default so ordinary compilation pays nothing and needs no
+    /// solver; enabled with `vxc --verify-seams`. See `crate::hir::seam`.
+    pub verify_seams: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -214,6 +223,8 @@ impl<'a> TypeChecker<'a> {
             seam_check_time: std::time::Duration::ZERO,
             solver_init_time: std::time::Duration::ZERO,
             seam_solver: None,
+            seam_contracts: std::collections::HashMap::new(),
+            verify_seams: false,
         }
     }
 
@@ -593,7 +604,17 @@ impl<'a> TypeChecker<'a> {
             self.constraints.push(req.clone());
         }
 
+        // Pre-scan: gather the value contracts the consumer's asserts impose, so a
+        // transfer seam (checked before the consumer's spawn body) can consult them.
+        // Only when seam verification is enabled (otherwise we pay nothing for it).
+        let prev_contracts = std::mem::take(&mut self.seam_contracts);
+        if self.verify_seams {
+            Self::collect_assert_contracts(&func.body, &mut self.seam_contracts);
+        }
+
         self.check_block(&mut func.body, &func.return_type.clone());
+
+        self.seam_contracts = prev_contracts;
 
         // Combine return constraints into a single OR constraint
         if !self.return_constraints.is_empty() {

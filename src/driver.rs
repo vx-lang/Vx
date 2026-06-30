@@ -79,6 +79,11 @@ pub struct DriverOptions {
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
 
+    /// Discharge per-seam boundary obligations at cross-device transfers (assert
+    /// pre-scan + z3 checks). Off by default; requires z3 on PATH (fails open if absent).
+    #[arg(long = "verify-seams")]
+    pub verify_seams: bool,
+
     /// Disable Vx optimizations
     #[arg(long = "disable-vx-optimizations")]
     pub disable_vx_optimizations: bool,
@@ -305,6 +310,7 @@ impl CompilerDriver {
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
+        checker.verify_seams = self.options.verify_seams;
 
         for f in &mut ast.functions {
             checker.check_function(f);

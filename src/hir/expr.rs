@@ -956,6 +956,79 @@ impl<'a> TypeChecker<'a> {
     /// (`sat` => REJECT, with a concrete counterexample naming the buffer). This is the
     /// per-buffer instance of the paper's `post /\ ~conclusion` schema; the value-contract
     /// form (`flag => data`) is the message-passing worked example (`seam::check_seam`).
+    /// Pre-scan a statement block, recording `assert(var == const)` facts (the value a
+    /// consumer requires of `var`). Recurses into nested blocks (`spawn`, `if`, loops),
+    /// so a transfer seam checked *before* the consumer's `spawn` body can still consult
+    /// the contract the consumer will impose on the transferred buffer.
+    pub(crate) fn collect_assert_contracts(
+        stmts: &[Statement],
+        out: &mut std::collections::HashMap<String, u64>,
+    ) {
+        for s in stmts {
+            match s {
+                Statement::Assert(a) => Self::extract_eq_const(&a.expr, out),
+                Statement::LetDecl(l) => Self::scan_expr_for_asserts(&l.expr, out),
+                Statement::ExprStmt(e) => Self::scan_expr_for_asserts(&e.expr, out),
+                Statement::Return(r) => Self::scan_expr_for_asserts(&r.expr, out),
+                Statement::ForLoop(f) => Self::collect_assert_contracts(&f.body, out),
+                _ => {}
+            }
+        }
+    }
+
+    /// Descend into the block-bearing expressions that can hold consumer asserts.
+    fn scan_expr_for_asserts(e: &Expr, out: &mut std::collections::HashMap<String, u64>) {
+        match e {
+            Expr::SpawnOn(s) => {
+                Self::collect_assert_contracts(&s.stmts, out);
+                if let Some(r) = &s.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
+            Expr::UnsafeBlock(b) => {
+                Self::collect_assert_contracts(&b.stmts, out);
+                if let Some(r) = &b.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
+            Expr::ComptimeBlock(b) => {
+                Self::collect_assert_contracts(&b.stmts, out);
+                if let Some(r) = &b.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
+            Expr::If(i) => {
+                Self::collect_assert_contracts(&i.then_block, out);
+                if let Some(eb) = &i.else_block {
+                    Self::collect_assert_contracts(eb, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recognize `ident == N` (or `N == ident`) with N a small non-negative integer,
+    /// recording `ident -> N`. This is the conclusion of the boundary contract: the
+    /// value the consumer asserts the buffer holds after the seam.
+    fn extract_eq_const(e: &Expr, out: &mut std::collections::HashMap<String, u64>) {
+        let Expr::RelationalOp(b) = e else { return };
+        if b.op != RelationalOp::Eq {
+            return;
+        }
+        let pair = match (&*b.lhs, &*b.rhs) {
+            (Expr::Identifier(i), Expr::Number(n)) => Some((i, n)),
+            (Expr::Number(n), Expr::Identifier(i)) => Some((i, n)),
+            _ => None,
+        };
+        let Some((i, n)) = pair else { return };
+        let Ok(v) = n.value.as_ref().parse::<f64>() else {
+            return;
+        };
+        if v.fract() == 0.0 && (0.0..256.0).contains(&v) {
+            out.insert(i.name.as_ref().to_string(), v as u64);
+        }
+    }
+
     /// If `name` holds a statically-known non-negative integer (tracked by the
     /// constant evaluator) that fits the seam obligation's value field, return it.
     /// This is what lets a seam be checked with a *value* contract rather than the
@@ -1117,10 +1190,18 @@ impl<'a> TypeChecker<'a> {
                 // per-seam local-completeness / soundness obligation. Multi-hop paths
                 // are rewritten into a chain of single-hop transfers below, each of
                 // which re-enters here and is checked individually.
-                if path.len() == 2 {
+                if path.len() == 2 && self.verify_seams {
                     let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
                     let buffer = Self::buffer_label(&t.expr);
-                    let known_val = self.const_value_of(&buffer);
+                    // Prefer the value the consumer asserts of the buffer this transfer
+                    // produces (looked up by the let-binding target, e.g. `local_a`), which
+                    // is the boundary contract's conclusion; fall back to the producer's
+                    // own statically-known constant, else the coarse visibility check.
+                    let asserted_val = self
+                        .current_assignment_target
+                        .as_ref()
+                        .and_then(|tgt| self.seam_contracts.get(tgt).copied());
+                    let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
                     self.run_seam_hop(
                         &source_mem,
                         &target_mem,
@@ -2655,6 +2736,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Element type seen through value-carrying wrappers (Pinned/Ref/Borrow/Tensor).
+    /// Used so a relational comparison can match element values regardless of wrapper.
+    fn scalar_elem(ty: &Type) -> Option<ElementType> {
+        match ty {
+            Type::Scalar(e) => Some(e.clone()),
+            Type::Tensor(e, _, _) => Some(e.clone()),
+            Type::Pinned(inner, _) => Self::scalar_elem(inner),
+            Type::Ref(inner, _) => Self::scalar_elem(inner),
+            Type::Borrow { inner, .. } => Self::scalar_elem(inner),
+            _ => None,
+        }
+    }
+
     fn check_relationalop_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
         match expr {
             Expr::RelationalOp(RelationalOpExpr {
@@ -2665,7 +2759,15 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
                 let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
-                if !self.is_assignable(&lhs_ty, &rhs_ty) {
+                // A relational compares element *values*, so wrapper differences
+                // (Pinned/Ref/Tensor vs a bare Scalar) are fine as long as the element
+                // types agree -- e.g. comparing a device-resident scalar to a constant.
+                let compatible = self.is_assignable(&lhs_ty, &rhs_ty)
+                    || matches!(
+                        (Self::scalar_elem(&lhs_ty), Self::scalar_elem(&rhs_ty)),
+                        (Some(a), Some(b)) if a == b
+                    );
+                if !compatible {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3005,
                         format!(
