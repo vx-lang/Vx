@@ -160,6 +160,21 @@ pub struct TypeChecker<'a> {
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
     pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// Set immediately before a transfer is checked to mark it a *relaxed* (escape-hatch)
+    /// transfer that does not carry a synchronizing release/DMA-completion. Consumed and
+    /// reset by `check_transfer_expr`. See `crate::hir::seam`.
+    pub(crate) pending_transfer_relaxed: bool,
+    /// Number of per-seam obligations discharged (eval metric M1).
+    pub seam_checks: usize,
+    /// Total marginal solving time across all seams, excluding the one-time solver
+    /// startup below (eval metric M1: per-seam proof cost).
+    pub seam_check_time: std::time::Duration,
+    /// One-time cost of spawning the persistent solver and installing its preamble,
+    /// paid once per compilation regardless of program size (eval metric M1).
+    pub solver_init_time: std::time::Duration,
+    /// Persistent z3 process, lazily started on the first seam and reused for all of
+    /// them so the marginal per-seam cost is solving time, not process startup.
+    pub(crate) seam_solver: Option<crate::hir::seam::Solver>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -194,6 +209,11 @@ impl<'a> TypeChecker<'a> {
             skip_borrow_check: false,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
+            pending_transfer_relaxed: false,
+            seam_checks: 0,
+            seam_check_time: std::time::Duration::ZERO,
+            solver_init_time: std::time::Duration::ZERO,
+            seam_solver: None,
         }
     }
 

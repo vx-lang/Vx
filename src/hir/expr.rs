@@ -920,10 +920,129 @@ impl<'a> TypeChecker<'a> {
         Type::Unknown
     }
 
+    /// Best-effort label for the buffer crossing a seam, taken from the transferred
+    /// operand (an identifier, a borrow of one, or the base of a chained transfer).
+    /// Used to instantiate the per-buffer obligation with the program's real name so
+    /// distinct buffers produce distinct, localized diagnostics.
+    fn buffer_label(e: &Expr) -> String {
+        match e {
+            Expr::Identifier(id) => id.name.as_ref().to_string(),
+            Expr::Transfer(t) => Self::buffer_label(&t.expr),
+            Expr::Borrow(b) => Self::buffer_label(&b.expr),
+            _ => "buffer".to_string(),
+        }
+    }
+
+    /// Source span of the transferred operand. The parser leaves transfer/method-call
+    /// nodes with a default span, but the operand identifier carries a real one — using
+    /// it lets each seam in a multi-stage pipeline be localized to its own statement.
+    fn buffer_span(e: &Expr) -> Option<Span> {
+        match e {
+            Expr::Identifier(id) => Some(id.span),
+            Expr::Transfer(t) => Self::buffer_span(&t.expr),
+            Expr::Borrow(b) => Self::buffer_span(&b.expr),
+            _ => None,
+        }
+    }
+
+    /// Discharge the per-seam local-completeness / soundness obligation for one transfer
+    /// hop `src -> dst` (see "Precision at the Boundary" and `crate::hir::seam`).
+    ///
+    /// The footprint is the actual `buffer` crossing this seam. Because tensor *contents*
+    /// are opaque, the obligation tracks the coarsest abstraction — definite (`CONST`) vs
+    /// possibly-stale (`TOP`): the producer establishes the buffer (definite), a
+    /// synchronizing transfer is the identity (obligation `unsat` => ACCEPT), and a relaxed
+    /// transfer sends the published buffer to `TOP`, so a consumer can read it stale
+    /// (`sat` => REJECT, with a concrete counterexample naming the buffer). This is the
+    /// per-buffer instance of the paper's `post /\ ~conclusion` schema; the value-contract
+    /// form (`flag => data`) is the message-passing worked example (`seam::check_seam`).
+    fn run_seam_hop(
+        &mut self,
+        src: &MemorySpace,
+        dst: &MemorySpace,
+        relaxed: bool,
+        buffer: &str,
+        span: Span,
+        silent: bool,
+    ) {
+        use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
+
+        // Reached state at the producer side: the transferred buffer is established
+        // (definite). The concrete value is irrelevant to the visibility obligation.
+        let reached = AbsState {
+            cells: vec![(buffer.to_string(), Cell::constant(1))],
+        };
+        let transfer = if relaxed {
+            // Relaxed escape hatch: the published buffer loses its visibility guarantee.
+            Transfer::Relaxed {
+                published: vec![buffer.to_string()],
+            }
+        } else {
+            Transfer::Sync
+        };
+        let consumed = [buffer.to_string()];
+
+        // Lazily spawn the persistent solver on the first seam (one-time cost), then
+        // reuse it for every seam so the per-seam timing is solving, not process startup.
+        if self.seam_solver.is_none() {
+            let init = std::time::Instant::now();
+            self.seam_solver = Some(Solver::new());
+            self.solver_init_time += init.elapsed();
+        }
+        let solver = self.seam_solver.as_mut().unwrap();
+
+        let start = std::time::Instant::now();
+        let verdict = solver.check_seam_buffers(&reached, &transfer, &consumed);
+        self.seam_check_time += start.elapsed();
+        self.seam_checks += 1;
+
+        match verdict {
+            Ok(Verdict::Accept) => {}
+            Ok(Verdict::Reject { counterexample }) => {
+                if !silent {
+                    self.errors
+                        .error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6004,
+                            format!(
+                                "relaxed transfer of '{}' across the {:?} -> {:?} seam violates \
+                                 the boundary contract: the buffer carries no synchronizing \
+                                 release, so a consumer may read it stale",
+                                buffer, src, dst
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                        )
+                        .notes
+                        .push(crate::diagnostic::Note {
+                            message: format!(
+                                "seam obligation is satisfiable; z3 counterexample: {}",
+                                counterexample
+                            )
+                            .into(),
+                            span: None,
+                        });
+                }
+            }
+            Err(e) => {
+                // Solver error: fail open (as prover.rs does) but record a warning.
+                if !silent {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::E6004,
+                        format!("seam obligation could not be discharged: {}", e),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                    );
+                }
+            }
+        }
+    }
+
     fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         let mut do_rewrite = None;
         let target_mem;
         let inner_ty;
+
+        // Whether this transfer is a relaxed escape hatch (set by the caller, e.g. the
+        // `to_device_relaxed` method arm). Consumed here so it does not leak to siblings.
+        let relaxed = std::mem::take(&mut self.pending_transfer_relaxed);
 
         if let Expr::Transfer(t) = expr {
             let prev = self.allow_cross_topology;
@@ -962,6 +1081,15 @@ impl<'a> TypeChecker<'a> {
                 do_rewrite = Some(path);
             } else {
                 t.cost = Some(cost);
+                // Single hop (`path == [source_mem, target_mem]`): discharge the
+                // per-seam local-completeness / soundness obligation. Multi-hop paths
+                // are rewritten into a chain of single-hop transfers below, each of
+                // which re-enters here and is checked individually.
+                if path.len() == 2 {
+                    let span = Self::buffer_span(&t.expr).unwrap_or(t.span);
+                    let buffer = Self::buffer_label(&t.expr);
+                    self.run_seam_hop(&source_mem, &target_mem, relaxed, &buffer, span, silent);
+                }
             }
         } else {
             unreachable!()
@@ -991,6 +1119,9 @@ impl<'a> TypeChecker<'a> {
                 span: t.span,
             });
             // Recursively re-evaluate to ensure intermediate types and costs are resolved properly!
+            // Propagate the relaxed marker so each rewritten single-hop transfer is checked
+            // with the right transfer function.
+            self.pending_transfer_relaxed = relaxed;
             return self.check_transfer_expr(expr, consume, silent);
         }
 
@@ -1017,6 +1148,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
+                    MemorySpace::GpuHbm => Topology::GPU,
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
@@ -1050,6 +1182,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
+                    MemorySpace::GpuHbm => Topology::GPU,
                     MemorySpace::CPUDRAM => Topology::CPU,
                 };
                 Type::Pinned(base, pinned_top)
@@ -2167,8 +2300,9 @@ impl<'a> TypeChecker<'a> {
                 method_name: _method,
                 type_args: _,
                 args,
-                span: _,
+                span: method_span,
             }) => {
+                let method_span = *method_span;
                 let mut base_ty = self.check_expr_type_flag(obj, false, silent);
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
@@ -2337,22 +2471,37 @@ impl<'a> TypeChecker<'a> {
                 // Fallback for hardcoded mock methods
                 if _method.as_ref() == "with_memory" {
                     base_ty = Type::Ref(Box::new(base_ty), MemorySpace::NPUHBM);
-                } else if _method.as_ref() == "to_device" {
-                    let target_mem = MemorySpace::NPUHBM; // Can be enhanced later to parse arg
-                    base_ty = Type::Pinned(
-                        Box::new(base_ty),
-                        Topology::NPU(Box::new(Expr::Number(NumberExpr {
-                            value: "0".into(),
-                            ty: Some(ElementType::I32),
-                            span: Span::default(),
-                        }))),
-                    ); // Default to NPU[0]
+                } else if matches!(
+                    _method.as_ref(),
+                    "to_device"
+                        | "to_device_relaxed"
+                        | "to_sram"
+                        | "to_sram_relaxed"
+                        | "to_gpu"
+                        | "to_gpu_relaxed"
+                ) {
+                    // Device-placement transfers. The `_relaxed` variants are the escape
+                    // hatch that omits the synchronizing release / DMA-completion wait.
+                    // Read before reassigning `*expr`, since `_method` borrows from it.
+                    let m = _method.as_ref();
+                    let is_relaxed = m.ends_with("_relaxed");
+                    let target_mem = if m.starts_with("to_sram") {
+                        MemorySpace::LocalSRAM // accelerator-core scratchpad
+                    } else if m.starts_with("to_gpu") {
+                        MemorySpace::GpuHbm // discrete-GPU device memory (NVPTX side)
+                    } else {
+                        MemorySpace::NPUHBM // to_device: default NPU[0]
+                    };
                     *expr = Expr::Transfer(TransferExpr {
                         expr: obj.clone(),
                         space: target_mem,
                         cost: None,
-                        span: Span::default(),
+                        span: method_span,
                     });
+                    // Mark it so the per-seam obligation in `check_transfer_expr` sends
+                    // published payloads to TOP (a stale read).
+                    self.pending_transfer_relaxed = is_relaxed;
+                    return self.check_transfer_expr(expr, consume, silent);
                 } else if _method.as_ref() == "to_host" {
                     let target_mem = MemorySpace::CPUDRAM;
                     base_ty = Type::Pinned(Box::new(base_ty), Topology::CPU);

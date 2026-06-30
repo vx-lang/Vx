@@ -184,6 +184,9 @@ pub enum DiagnosticCode {
     E6002,
     /// Cannot transfer non-reference type
     E6003,
+    /// Transfer violates the boundary contract at a seam (per-seam local-completeness
+    /// / soundness obligation is `sat`; a stale read can violate the contract).
+    E6004,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

@@ -327,6 +327,20 @@ impl CompilerDriver {
             }
         }
 
+        // Eval metric M1: per-seam proof cost discharged during this compile. The
+        // one-time solver startup is reported separately from the marginal per-seam
+        // solving time (the persistent solver is spawned once and reused).
+        if checker.seam_checks > 0 {
+            eprintln!(
+                "[seam] {} obligation(s): solver init {:.3} ms (once) + {:.3} ms solving \
+                 total = {:.4} ms/seam marginal",
+                checker.seam_checks,
+                checker.solver_init_time.as_secs_f64() * 1e3,
+                checker.seam_check_time.as_secs_f64() * 1e3,
+                checker.seam_check_time.as_secs_f64() * 1e3 / checker.seam_checks as f64,
+            );
+        }
+
         if has_errors {
             let error_count = checker.errors.error_count();
             for diag in checker.errors.iter() {

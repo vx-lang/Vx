@@ -41,6 +41,12 @@ impl Default for TransferCostGraph {
         graph.add_transfer_edge(MemorySpace::CPUDRAM, MemorySpace::NPUHBM, 50);
         graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::CPUDRAM, 50);
 
+        // Host <-> discrete-GPU HBM (x86-TSO host <-> NVPTX scoped-RC11 device).
+        // The seam at this boundary is checked by the per-seam obligation; the
+        // device kernel is lowered through the NVPTX backend (see eval G1).
+        graph.add_transfer_edge(MemorySpace::CPUDRAM, MemorySpace::GpuHbm, 50);
+        graph.add_transfer_edge(MemorySpace::GpuHbm, MemorySpace::CPUDRAM, 50);
+
         // HBM <-> SRAM
         graph.add_transfer_edge(MemorySpace::NPUHBM, MemorySpace::LocalSRAM, 10);
         graph.add_transfer_edge(MemorySpace::LocalSRAM, MemorySpace::NPUHBM, 10);
@@ -64,6 +70,8 @@ impl Default for TransferCostGraph {
         graph.add_visibility_edge(Topology::AMX, MemorySpace::CPUDRAM);
         graph.add_visibility_edge(Topology::ANE, MemorySpace::CPUDRAM);
         graph.add_visibility_edge(Topology::GPU, MemorySpace::CPUDRAM);
+        // A discrete GPU also reaches its own device HBM.
+        graph.add_visibility_edge(Topology::GPU, MemorySpace::GpuHbm);
 
         // ANE also accesses HBM
         graph.add_visibility_edge(Topology::ANE, MemorySpace::NPUHBM);
@@ -99,7 +107,7 @@ impl TransferCostGraph {
             Topology::AccCore(_) => MemorySpace::LocalSRAM,
             Topology::AMX => MemorySpace::CPUDRAM,
             Topology::ANE => MemorySpace::NPUHBM,
-            Topology::GPU => MemorySpace::CPUDRAM,
+            Topology::GPU => MemorySpace::GpuHbm,
             Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
             Topology::Current => {
                 unreachable!("Must specify a concrete topology other than Current")
@@ -112,6 +120,7 @@ impl TransferCostGraph {
         let spaces = [
             MemorySpace::CPUDRAM,
             MemorySpace::NPUHBM,
+            MemorySpace::GpuHbm,
             MemorySpace::LocalSRAM,
             MemorySpace::NicRam,
             MemorySpace::RemoteHbm,
@@ -162,6 +171,9 @@ impl TransferCostGraph {
             return true;
         }
         if active_kind == syntax::TopologyKind::AccCore && target_mem == MemorySpace::LocalSRAM {
+            return true;
+        }
+        if active_kind == syntax::TopologyKind::GPU && target_mem == MemorySpace::GpuHbm {
             return true;
         }
 
@@ -309,9 +321,11 @@ mod tests {
             TransferCostGraph::default_memory_for(&Topology::CPU),
             MemorySpace::CPUDRAM
         );
+        // A discrete GPU's home memory is its own device HBM (not host DRAM):
+        // the host<->device boundary is a real seam, checked by the per-seam obligation.
         assert_eq!(
             TransferCostGraph::default_memory_for(&Topology::GPU),
-            MemorySpace::CPUDRAM
+            MemorySpace::GpuHbm
         );
         assert_eq!(
             TransferCostGraph::default_memory_for(&Topology::AMX),
@@ -347,16 +361,17 @@ mod tests {
     fn test_accessibility_host_unified_memory() {
         let graph = TransferCostGraph::default();
         let ty = make_tensor();
-        // AMX, ANE, GPU can read variables stored in Host topology
+        // AMX, ANE, GPU can read variables stored in Host topology (unified-memory
+        // fallback: each has a visibility edge to CPUDRAM).
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::GPU, &Topology::CPU, &ty));
 
-        // But under formal graph memory, since ANE/GPU default to CPUDRAM (for GPU) and NPUHBM (for ANE),
-        // and Host can see both CPUDRAM and NPUHBM, Host can technically read those memory spaces.
-        // The formal graph makes memory spaces the single source of truth!
+        // ANE defaults to NPUHBM, which Host can see, so Host can read an ANE var.
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ty));
-        assert!(graph.is_type_accessible(&Topology::CPU, &Topology::GPU, &ty));
+        // A discrete GPU's var lives in GPU HBM, which the host CANNOT see directly:
+        // the host<->device boundary is exactly the seam the obligation guards.
+        assert!(!graph.is_type_accessible(&Topology::CPU, &Topology::GPU, &ty));
     }
 
     #[test]

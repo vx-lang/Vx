@@ -42,6 +42,7 @@ pub enum Topology {
 pub enum MemorySpace {
     CPUDRAM,
     NPUHBM,
+    GpuHbm,
     LocalSRAM,
     NicRam,
     RemoteHbm,

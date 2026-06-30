@@ -69,6 +69,7 @@ impl<'a> Parser<'a> {
         match ident.as_ref() {
             "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
             "NPU_HBM" => Ok(MemorySpace::NPUHBM),
+            "GPU_HBM" => Ok(MemorySpace::GpuHbm),
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
             "NIC_RAM" => Ok(MemorySpace::NicRam),
             "Remote_HBM" => Ok(MemorySpace::RemoteHbm),

@@ -18,6 +18,7 @@ pub mod env;
 pub mod expr;
 pub mod lower_ast;
 pub mod prover;
+pub mod seam;
 pub mod stmt;
 
 pub use bytecode::*;

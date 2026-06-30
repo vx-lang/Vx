@@ -106,6 +106,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         let target_topology_id = match self.space {
             syntax::MemorySpace::CPUDRAM => 0,
             syntax::MemorySpace::NPUHBM => 100,
+            syntax::MemorySpace::GpuHbm => 500,
             syntax::MemorySpace::LocalSRAM => 200,
             syntax::MemorySpace::NicRam | syntax::MemorySpace::RemoteHbm => 300,
         };
