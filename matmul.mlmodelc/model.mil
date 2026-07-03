@@ -1,0 +1,15 @@
+program(1.0)
+[buildInfo = dict<tensor<string, []>, tensor<string, []>>({{"coremlc-component-MIL", "3520.4.1"}, {"coremlc-version", "3520.5.1"}, {"coremltools-component-milinternal", ""}, {"coremltools-version", "9.0"}})]
+{
+    func main<ios15>(tensor<fp32, [4, 4]> w, tensor<fp32, [4, 4]> x) {
+            tensor<bool, []> matmul_0_transpose_x_0 = const()[name = tensor<string, []>("matmul_0_transpose_x_0"), val = tensor<bool, []>(false)];
+            tensor<bool, []> matmul_0_transpose_y_0 = const()[name = tensor<string, []>("matmul_0_transpose_y_0"), val = tensor<bool, []>(false)];
+            tensor<string, []> w_to_fp16_dtype_0 = const()[name = tensor<string, []>("w_to_fp16_dtype_0"), val = tensor<string, []>("fp16")];
+            tensor<string, []> x_to_fp16_dtype_0 = const()[name = tensor<string, []>("x_to_fp16_dtype_0"), val = tensor<string, []>("fp16")];
+            tensor<fp16, [4, 4]> x_to_fp16 = cast(dtype = x_to_fp16_dtype_0, x = x)[name = tensor<string, []>("cast_1")];
+            tensor<fp16, [4, 4]> w_to_fp16 = cast(dtype = w_to_fp16_dtype_0, x = w)[name = tensor<string, []>("cast_2")];
+            tensor<fp16, [4, 4]> matmul_0_cast_fp16 = matmul(transpose_x = matmul_0_transpose_x_0, transpose_y = matmul_0_transpose_y_0, x = w_to_fp16, y = x_to_fp16)[name = tensor<string, []>("matmul_0_cast_fp16")];
+            tensor<string, []> matmul_0_cast_fp16_to_fp32_dtype_0 = const()[name = tensor<string, []>("matmul_0_cast_fp16_to_fp32_dtype_0"), val = tensor<string, []>("fp32")];
+            tensor<fp32, [4, 4]> matmul_0 = cast(dtype = matmul_0_cast_fp16_to_fp32_dtype_0, x = matmul_0_cast_fp16)[name = tensor<string, []>("cast_0")];
+        } -> (matmul_0);
+}

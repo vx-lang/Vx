@@ -7,8 +7,8 @@ from coremltools.converters.mil.mil.types.symbolic import any_symbolic
 
 @mb.program(
     input_specs=[
-        mb.TensorSpec(shape=(any_symbolic, any_symbolic)), # w: (d, n)
-        mb.TensorSpec(shape=(any_symbolic, 1))             # x: (n, 1)
+        mb.TensorSpec(shape=(4, 4)), # w: (d, n)
+        mb.TensorSpec(shape=(4, 4))  # x: (n, d)
     ]
 )
 def matmul_prog(w, x):

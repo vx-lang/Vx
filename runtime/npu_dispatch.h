@@ -8,6 +8,15 @@
 extern "C" {
 #endif
 
+// A simple memref struct mapped to what MLIR generates for a 1D memref
+typedef struct {
+    float *allocated;
+    float *aligned;
+    int64_t offset;
+    int64_t sizes[1];
+    int64_t strides[1];
+} MemRef1D;
+
 // A simple memref struct mapped to what MLIR generates for a 2D memref
 typedef struct {
     float *allocated;
@@ -20,6 +29,7 @@ typedef struct {
 // Dispatch the matmul to the AMX (Accelerate) or ANE (CoreML)
 int vx_dispatch_amx(float* xout, float* x, float* w, int n, int d);
 int vx_dispatch_ane(float* xout, float* x, float* w, int n, int d);
+int vx_dispatch_ane_affine(float* out, float* x, float alpha, float beta, int length);
 
 #ifdef __cplusplus
 }

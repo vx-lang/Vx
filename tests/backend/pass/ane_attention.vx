@@ -1,0 +1,106 @@
+//===- ane_attention.vx - Vx Compiler -------------------------------*- Vx -*-===//
+// REQUIRES: macos
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
+// -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"
+// -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
+// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o 
+// EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t 
+// EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
+
+fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
+  let mut q_host = Tensor<f32>([ 4, 4 ]);
+  let mut k_host = Tensor<f32>([ 4, 4 ]);
+  let mut v_host = Tensor<f32>([ 4, 4 ]);
+  let mut k_t_host = Tensor<f32>([ 4, 4 ]);
+  let mut score_host = Tensor<f32>([ 4, 4 ]);
+  let mut att_host = Tensor<f32>([ 4, 4 ]);
+  let mut result_host = Tensor<f32>([ 4, 4 ]);
+
+  for i in 0..4 {
+    for j in 0..4 {
+      q_host[i][j] = 1.0;
+      k_host[i][j] = 1.0;
+      v_host[i][j] = 1.0;
+      score_host[i][j] = 0.0;
+      result_host[i][j] = 0.0;
+    }
+  }
+
+  // CPU: Transpose K
+  for i in 0..4 {
+    for j in 0..4 {
+      k_t_host[j][i] = k_host[i][j];
+    }
+  }
+
+  let q = transfer(q_host, Memory::NPU_HBM);
+  let k_t = transfer(k_t_host, Memory::NPU_HBM);
+  let mut score = transfer(score_host, Memory::NPU_HBM);
+
+  // ANE Phase 1: Q * K^T (Matmul 1)
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      for j in 0..4 {
+        for k in 0..4 {
+          score[i][j] += q[i][k] * k_t[k][j];
+        }
+      }
+    }
+  }
+
+  // Sync back to CPU (implicit in Vx upon access) for Softmax
+  // Q=1.0, K=1.0 -> Q*K^T = 4.0 everywhere.
+  // Softmax(4.0) over 4 elements = 0.25.
+  for i in 0..4 {
+    for j in 0..4 {
+      // In a real kernel we'd compute score[i][j].exp() / sum
+      att_host[i][j] = 0.25;
+    }
+  }
+
+  let att = transfer(att_host, Memory::NPU_HBM);
+  let v = transfer(v_host, Memory::NPU_HBM);
+  let mut result = transfer(result_host, Memory::NPU_HBM);
+
+  // ANE Phase 2: Att * V (Matmul 2)
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      for j in 0..4 {
+        for k in 0..4 {
+          result[i][j] += att[i][k] * v[k][j];
+        }
+      }
+    }
+  }
+
+  // Result: 0.25 * 4 * 1.0 = 1.0 everywhere.
+  print(result);
+
+  return Verified(result);
+}
+
+// EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
+// EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
+// EXPECT: Unranked Memref base@
+// EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
+// EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
+// EXPECT: Unranked Memref base@
+// EXPECT: [[1,   1,   1,   1], 
+// EXPECT:  [1,   1,   1,   1], 
+// EXPECT:  [1,   1,   1,   1], 
+// EXPECT:  [1,   1,   1,   1]]
+
+// FRONTEND-LABEL: module {
+// FRONTEND: func.func @test_f32() -> i32
+
+// MLIR-LABEL: module {
+// MLIR: func.func @test_f32() -> i32
+
+// LLVM-LABEL: module {
+// LLVM: llvm.func @test_f32() -> i32

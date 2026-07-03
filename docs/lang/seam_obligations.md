@@ -42,7 +42,7 @@ Two contract forms are extracted automatically, in priority order:
    value-level counterexample. The value comes from either:
    - a **consumer assertion** `assert(buf == N)` (see below), or
    - the **producer's** own compile-time-known constant.
-2. **Visibility contract** — for an opaque buffer (e.g. a tensor whose contents
+1. **Visibility contract** — for an opaque buffer (e.g. a tensor whose contents
    are unknown), the obligation falls back to the coarsest sound abstraction:
    the buffer must be *definite* (not `TOP`) after the transfer.
 

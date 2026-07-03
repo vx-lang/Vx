@@ -59,10 +59,74 @@ fn main() {
     if cfg!(target_os = "macos") {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.h");
+        println!("cargo:rerun-if-changed=scripts/generate_ane_primitives.py");
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
         let lib_path = PathBuf::from(&out_dir).join("libnpu_dispatch.a");
+
+        // --- Automate ANE Primitive Generation ---
+        println!("cargo:warning=Building ANE primitive models via CoreML...");
+
+        let py_status = Command::new("python3")
+            .args([
+                "scripts/generate_ane_primitives.py",
+                "--out-dir",
+                &out_dir,
+                "--dim",
+                "4",
+            ])
+            .status();
+
+        if let Ok(status) = py_status {
+            if status.success() {
+                // Compile the .mlpackage into .mlmodelc
+                for model_name in &["matmul_4x4", "affine_4"] {
+                    let pkg_path =
+                        PathBuf::from(&out_dir).join(format!("{}.mlpackage", model_name));
+                    let modelc_path =
+                        PathBuf::from(&out_dir).join(format!("{}.mlmodelc", model_name));
+
+                    // coremlc compile <pkg> <out_dir>
+                    let coremlc_status = Command::new("xcrun")
+                        .args(["coremlc", "compile", pkg_path.to_str().unwrap(), &out_dir])
+                        .status();
+
+                    if let Ok(c_status) = coremlc_status {
+                        if c_status.success() {
+                            // Copy to project root so tests/runtime can easily find them
+                            let root_dir = env::current_dir().unwrap();
+                            let target_modelc = root_dir.join(format!("{}.mlmodelc", model_name));
+                            // Delete old one if exists
+                            let _ = std::fs::remove_dir_all(&target_modelc);
+                            let cp_status = Command::new("cp")
+                                .args([
+                                    "-R",
+                                    modelc_path.to_str().unwrap(),
+                                    target_modelc.to_str().unwrap(),
+                                ])
+                                .status();
+
+                            if cp_status.is_ok() && cp_status.unwrap().success() {
+                                println!(
+                                    "cargo:warning=Successfully compiled {}.mlmodelc",
+                                    model_name
+                                );
+                            }
+                        } else {
+                            println!(
+                                "cargo:warning=Failed to compile {} with coremlc",
+                                model_name
+                            );
+                        }
+                    }
+                }
+            } else {
+                println!("cargo:warning=Python script failed to generate ANE models.");
+            }
+        } else {
+            println!("cargo:warning=Failed to invoke python3. Make sure python3 and coremltools are installed.");
+        }
 
         // Determine compiler and flags
         let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());

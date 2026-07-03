@@ -1,0 +1,97 @@
+//===- ane_conv.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+// REQUIRES: macos
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
+// -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"
+// -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
+// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
+// EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
+// EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
+
+fn main() -> Verified<Pinned<Tensor<f32, [ 2, 2 ]>, Topology::NPU[0]>> {
+  let mut x_host = Tensor<f32>([ 3, 3 ]);
+  let mut w_host = Tensor<f32>([ 2, 2 ]);
+  let mut result_host = Tensor<f32>([ 2, 2 ]);
+
+  for i in 0..3 {
+    for j in 0..3 {
+      x_host[i][j] = 1.0;
+    }
+  }
+
+  for i in 0..2 {
+    for j in 0..2 {
+      w_host[i][j] = 1.0;
+    }
+  }
+
+  // im2col: Flatten 4 patches of 2x2 into a 4x4 matrix
+  let mut im2col_host = Tensor<f32>([ 4, 4 ]);
+  let mut w_flat_host = Tensor<f32>([ 4, 4 ]);
+  let mut matmul_res_host = Tensor<f32>([ 4, 4 ]);
+
+  // Pad the 2x2 weights into a 4x1 vector, stored in the first column of a 4x4 matrix
+  w_flat_host[0][0] = w_host[0][0];
+  w_flat_host[1][0] = w_host[0][1];
+  w_flat_host[2][0] = w_host[1][0];
+  w_flat_host[3][0] = w_host[1][1];
+  // Zeros for the rest
+  for i in 0..4 {
+    for j in 1..4 {
+      w_flat_host[i][j] = 0.0;
+    }
+  }
+
+  // Patches
+  im2col_host[0][0] = x_host[0][0]; im2col_host[0][1] = x_host[0][1]; im2col_host[0][2] = x_host[1][0]; im2col_host[0][3] = x_host[1][1];
+  im2col_host[1][0] = x_host[0][1]; im2col_host[1][1] = x_host[0][2]; im2col_host[1][2] = x_host[1][1]; im2col_host[1][3] = x_host[1][2];
+  im2col_host[2][0] = x_host[1][0]; im2col_host[2][1] = x_host[1][1]; im2col_host[2][2] = x_host[2][0]; im2col_host[2][3] = x_host[2][1];
+  im2col_host[3][0] = x_host[1][1]; im2col_host[3][1] = x_host[1][2]; im2col_host[3][2] = x_host[2][1]; im2col_host[3][3] = x_host[2][2];
+
+  let im2col = transfer(im2col_host, Memory::NPU_HBM);
+  let w_flat = transfer(w_flat_host, Memory::NPU_HBM);
+  let mut matmul_res = transfer(matmul_res_host, Memory::NPU_HBM);
+
+  // ANE Matrix Multiplication (implicitly executed on ANE via our dynamic dispatcher)
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      for j in 0..4 {
+        for k in 0..4 {
+          matmul_res[i][j] += im2col[i][k] * w_flat[k][j];
+        }
+      }
+    }
+  }
+
+  // Extract the convolution result from the first column of the matmul result
+  result_host[0][0] = matmul_res[0][0];
+  result_host[0][1] = matmul_res[1][0];
+  result_host[1][0] = matmul_res[2][0];
+  result_host[1][1] = matmul_res[3][0];
+
+  let result = transfer(result_host, Memory::NPU_HBM);
+
+  // 2x2 convolution with 1.0 inputs and 1.0 weights should yield 4.0 everywhere
+  print(result);
+
+  return Verified(result);
+}
+
+// EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
+// EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
+// EXPECT: [[4,   4],
+// EXPECT:  [4,   4]]
+
+// FRONTEND-LABEL: module {
+// FRONTEND: func.func @test_f32() -> i32
+
+// MLIR-LABEL: module {
+// MLIR: func.func @test_f32() -> i32
+
+// LLVM-LABEL: module {
+// LLVM: llvm.func @test_f32() -> i32

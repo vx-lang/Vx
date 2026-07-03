@@ -50,13 +50,13 @@ fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
   return Verified(result);
 }
 
-// EXEC: [Vx Hardware Dispatcher] Offloading computation to Apple Silicon
-// accelerators... EXEC: [Vx Hardware Dispatcher] Accelerator SGEMM execution
-// completed successfully. EXEC: Unranked Memref EXEC: [24,   24,   24,   24]
-// EXEC: [24,   24,   24,   24]
-// EXEC: [24,   24,   24,   24]
-// EXEC: [24,   24,   24,   24]
-// NO_EXEC
+// EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
+// EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
+// EXPECT: Unranked Memref base@
+// EXPECT: [[24,   24,   24,   24], 
+// EXPECT:  [24,   24,   24,   24], 
+// EXPECT:  [24,   24,   24,   24], 
+// EXPECT:  [24,   24,   24,   24]]
 
 // FRONTEND-LABEL: module {
 // FRONTEND: func.func @test_f32() -> i32
