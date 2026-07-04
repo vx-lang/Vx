@@ -404,7 +404,7 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
     let mut final_out = String::with_capacity(formatted.len());
     let mut iter = formatted.split('\n').peekable();
     while let Some(line) = iter.next() {
-        final_out.push_str(line.trim_end_matches(|c: char| c == ' ' || c == '\t'));
+        final_out.push_str(line.trim_end_matches([' ', '\t']));
         if iter.peek().is_some() {
             final_out.push('\n');
         }
