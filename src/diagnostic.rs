@@ -80,6 +80,10 @@ pub enum DiagnosticCode {
     W1022,
     /// Spawn on Topology::Current (no-op)
     W1023,
+    /// Implicit cross-topology transfer inserted via a `Transfer` impl (a real data
+    /// movement happens silently at the use site; write the transfer explicitly to
+    /// silence). See docs/discussions/brainstorming/hardware_monad_topology.md.
+    W1024,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

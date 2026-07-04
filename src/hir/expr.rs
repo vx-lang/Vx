@@ -665,6 +665,33 @@ impl<'a> TypeChecker<'a> {
                                 }
 
                                 if implements_transfer {
+                                    // The type opted into implicit movement (it `impl`s
+                                    // `Transfer`), so we insert the `.transfer()` call for the
+                                    // programmer. Surface it: a real data movement happens
+                                    // silently at this use site, and the opt-in lives far away at
+                                    // the type definition. Report the cost so it isn't a hidden
+                                    // performance surprise (explicit-seam policy, "implicit but
+                                    // visible"). Write `{name}.transfer()` explicitly to silence.
+                                    let cost_note = match self.transfer_cost_graph.reachable(
+                                        &self.active_topology,
+                                        &top,
+                                        &ty,
+                                    ) {
+                                        crate::arch::Reachability::NeedsSeam { cost } => {
+                                            format!(" (cost {cost})")
+                                        }
+                                        _ => String::new(),
+                                    };
+                                    self.errors.warn(
+                                        crate::diagnostic::DiagnosticCode::W1024,
+                                        format!(
+                                            "implicit transfer of '{}' to {:?} inserted here via its \
+                                             `Transfer` impl{}; write `{}.transfer()` explicitly to silence",
+                                            name, self.active_topology, cost_note, name
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                                    );
+
                                     let _active_mem =
                                         crate::arch::TransferCostGraph::default_memory_for(
                                             &self.active_topology,
