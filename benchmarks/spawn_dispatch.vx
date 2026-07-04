@@ -1,0 +1,29 @@
+//===- spawn_dispatch.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Microbenchmark: the marginal cost of a `spawn on(...)` dispatch.
+//
+// Each iteration launches an outlined kernel across the topology boundary (lowered
+// to the runtime dispatch shim), with a trivial body, so the wall time is dominated
+// by per-spawn dispatch overhead rather than compute. Prints elapsed seconds.
+//===----------------------------------------------------------------------===//
+import std::time;
+
+fn main() -> i32 {
+  let N : i32 = 100000;
+
+  let start : f32 = now();
+  for i in 0..N {
+    spawn on(Topology::CPU) {
+      let x = 1;
+    }
+  }
+  let end : f32 = now();
+  let elapsed : f32 = end - start;
+  println!("{}", elapsed);
+  return 0;
+}

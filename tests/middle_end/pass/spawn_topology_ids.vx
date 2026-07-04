@@ -1,0 +1,40 @@
+//===- spawn_topology_ids.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `spawn on(D)` lowers to a `vx.spawn topology(N)` op carrying the outlined body
+// as a region terminated by `vx.yield`, where N is the topology id (GPU = 500,
+// NPU[0] = 100; see topology_to_i32 in src/codegen/lower/mod.rs). This pins the
+// device dispatch id and the op structure for both a device with unified host
+// visibility (GPU) and one requiring an explicit transfer (NPU).
+
+fn on_gpu() -> i32 {
+  // GPU has unified-memory visibility to host DRAM, so `t` is read directly.
+  let t : Tensor<f32> = 1.0;
+  spawn on(Topology::GPU) {
+    let x = t;
+  }
+  return 0;
+}
+
+fn on_npu() -> i32 {
+  let t : Tensor<f32> = 1.0;
+  let td = transfer(t, Memory::NPU_HBM);
+  spawn on(Topology::NPU[0]) {
+    let x = td;
+  }
+  return 0;
+}
+
+// CHECK: func.func @on_gpu
+// CHECK: vx.spawn topology(500)
+// CHECK: vx.yield
+// CHECK: func.func @on_npu
+// CHECK: "vx.transfer"
+// CHECK: vx.spawn topology(100)
+// CHECK: vx.yield
