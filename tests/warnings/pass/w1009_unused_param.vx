@@ -1,0 +1,11 @@
+// W1009: a function parameter that is never used in the body.
+// WARN: W1009
+// WARN: Unused function parameter 'unused_p'
+
+fn g(unused_p: i32) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return g(5);
+}

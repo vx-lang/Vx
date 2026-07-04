@@ -219,6 +219,93 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// Warning Runner: type-checks the file (which must succeed with no errors) and asserts
+// that every `// WARN:` directive appears in the emitted warning diagnostics (matched as a
+// substring against the rendered warning, so either the code `W1024` or its message works).
+fn run_warning_test(path: &Path) -> Result<(), String> {
+    let source = fs::read_to_string(path).expect("Failed to read test file");
+    let want: Vec<String> = source
+        .lines()
+        .filter(|l| l.trim().starts_with("// WARN:"))
+        .map(|l| l.split_once("WARN:").unwrap().1.trim().to_string())
+        .collect();
+    if want.is_empty() {
+        return Err(format!("Warning test {:?} has no `// WARN:` directives", path));
+    }
+
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    loader
+        .load_main(path.to_str().unwrap())
+        .map_err(|e| format!("Parse failed on {:?}: {}", path, e))?;
+    let mut program_arr = loader.into_programs();
+    let syntax_idx = program_arr
+        .iter()
+        .position(|p| p.module_path.as_ref() == path.to_str().unwrap())
+        .unwrap();
+    let mut program = program_arr.remove(syntax_idx);
+
+    let mut global_macros = std::collections::HashMap::new();
+    for p in &program_arr {
+        for mac in &p.macros {
+            global_macros.insert(mac.name.clone(), mac.rules.clone());
+        }
+    }
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
+    for p in &mut program_arr {
+        expander
+            .expand_module(p)
+            .map_err(|e| format!("Macro expansion failed on {}: {}", p.module_path, e))?;
+    }
+    expander
+        .expand_module(&mut program)
+        .map_err(|e| format!("Macro expansion failed on {:?}: {}", path, e))?;
+
+    let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
+    let mut all_programs = program_arr.clone();
+    all_programs.push(program.clone());
+    let env = vxc::hir::GlobalAstEnv::build(&all_programs);
+    let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(&env, &mut worker);
+    for f in &mut program.functions {
+        checker.check_function(f);
+    }
+
+    let errors: Vec<String> = checker
+        .errors
+        .iter()
+        .filter(|d| d.level == vxc::diagnostic::DiagnosticLevel::Error)
+        .map(|d| d.to_string())
+        .collect();
+    if !errors.is_empty() {
+        return Err(format!(
+            "Warning test {:?} must type-check cleanly, but got errors:\n{}",
+            path,
+            errors.join("\n")
+        ));
+    }
+
+    let warnings: Vec<String> = checker
+        .errors
+        .iter()
+        .filter(|d| d.level == vxc::diagnostic::DiagnosticLevel::Warning)
+        .map(|d| d.to_string())
+        .collect();
+    for w in &want {
+        if !warnings.iter().any(|got| got.contains(w.as_str())) {
+            return Err(format!(
+                "WARN check failed on {:?}: expected a warning containing `{}`.\nGot warnings:\n{}",
+                path,
+                w,
+                warnings.join("\n")
+            ));
+        }
+    }
+    Ok(())
+}
+
 // Backend Runner
 fn run_backend_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
@@ -469,6 +556,33 @@ fn test_middle_end() -> Result<(), String> {
         if !errors.is_empty() {
             return Err(format!(
                 "The following tests failed:\n\n{}",
+                errors.join("\n\n")
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_warnings() -> Result<(), String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/warnings/pass");
+    if dir.exists() {
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        let errors: Vec<String> = entries
+            .into_par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vx") {
+                    if let Err(e) = run_warning_test(&path) {
+                        return Some(e);
+                    }
+                }
+                None
+            })
+            .collect();
+        if !errors.is_empty() {
+            return Err(format!(
+                "The following warning tests failed:\n\n{}",
                 errors.join("\n\n")
             ));
         }

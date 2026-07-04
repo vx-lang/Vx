@@ -1,0 +1,8 @@
+// W1001: an unused `let` binding.
+// WARN: W1001
+// WARN: Unused variable 'x'
+
+fn main() -> i32 {
+  let x = 5;
+  return 0;
+}

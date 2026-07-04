@@ -1,0 +1,28 @@
+// W1024: a value whose type `impl`s `Transfer` is accessed across a topology
+// boundary, so the compiler implicitly inserts `.transfer()` -- a real data
+// movement surfaced at the use site with its cost.
+// WARN: W1024
+// WARN: implicit transfer of 'm_host'
+
+struct MyModel {
+  weights: Tensor<f32>,
+}
+
+impl Transfer for MyModel {
+  fn transfer(self: MyModel) -> MyModel {
+    return self;
+  }
+}
+
+fn process(m_host: MyModel) -> MyModel {
+  spawn on(Topology::NPU[0]) {
+    let m_device = m_host;
+  }
+  return MyModel {
+    weights: Tensor<f32>()
+  };
+}
+
+fn main() -> i32 {
+  return 0;
+}

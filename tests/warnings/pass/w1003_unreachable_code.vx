@@ -1,0 +1,12 @@
+// W1003: a statement after `return` is unreachable.
+// WARN: W1003
+// WARN: Unreachable code
+
+fn f() -> i32 {
+  return 1;
+  return 2;
+}
+
+fn main() -> i32 {
+  return f();
+}
