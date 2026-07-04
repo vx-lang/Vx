@@ -53,6 +53,13 @@ pub struct MeliorGenerator<'c> {
     pub(crate) i128_ty: Type<'c>,
     pub(crate) ptr_ty: Type<'c>,
     pub(crate) none_ty: Type<'c>,
+    /// Whether to transport host-proven `assert` facts across a device `spawn` seam as
+    /// `llvm.intr.assume` certificates (`vxc --emit-seam-certs`). Off by default so
+    /// ordinary lowering is unchanged. See `crate::codegen::lower::seam_cert`.
+    pub emit_seam_certs: bool,
+    /// Host-proven facts (the conditions of `assert`s lowered so far in the current
+    /// function) available for transport into a device kernel body. Reset per function.
+    pub(crate) assert_facts: Vec<syntax::Expr>,
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -352,6 +359,8 @@ impl<'c> MeliorGenerator<'c> {
             i128_ty,
             ptr_ty,
             none_ty,
+            emit_seam_certs: false,
+            assert_facts: Vec::new(),
         }
     }
 
@@ -675,6 +684,10 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         self.current_return_type = Some(ret_ty);
+        // Facts are scoped to the function being lowered so a proven `assert` cannot be
+        // transported into a device kernel in an unrelated function (which could name the
+        // same variable but bind a different, non-dominating SSA value).
+        self.assert_facts.clear();
         for stmt in &func.body {
             if is_main {
                 if let Statement::Return(_) = stmt {
@@ -766,8 +779,14 @@ impl<'c> MeliorGenerator<'c> {
             Statement::CompoundAssign(s) => LowerToMelior::lower(s, self, block),
             Statement::ExprStmt(s) => LowerToMelior::lower(s, self, block),
             Statement::ForLoop(s) => LowerToMelior::lower(s, self, block),
-            Statement::Assert(_) => {
-                // TODO: Lower to `scf.if` with panic/abort for runtime checks
+            Statement::Assert(s) => {
+                // TODO: Lower to `scf.if` with panic/abort for runtime checks.
+                // The condition is a fact the host proves; record it so it can be
+                // transported across a device `spawn` seam as an `llvm.intr.assume`
+                // certificate (see `crate::codegen::lower::seam_cert`).
+                if self.emit_seam_certs {
+                    self.assert_facts.push((*s.expr).clone());
+                }
                 Ok(Some(block))
             }
             Statement::Loop(s) => LowerToMelior::lower(s, self, block),

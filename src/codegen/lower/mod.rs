@@ -23,6 +23,7 @@ use melior::ir::{
 use crate::syntax;
 mod control_flow;
 mod expr;
+mod seam_cert;
 mod stmt;
 mod tensors;
 

@@ -1,0 +1,38 @@
+//===- seam_cert_blockskip.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir --emit-seam-certs 2>&1 | FileCheck %s
+// EMIT-SEAM-CERTS
+//
+// The causal block-skip: the host proves an upper-triangle relation
+// (`kblk_start > qblk_end`), then launches a GPU kernel whose masked-block guard
+// depends on it. The relation is opaque to the device backend once it crosses the
+// launch boundary as runtime kernel arguments. With --emit-seam-certs the proven
+// relation is transported into the kernel body as an `llvm.intr.assume`, so the
+// device `-O3` can fold the guard and DCE the masked block. This mirrors the CGO
+// paper's `cert_fold`, but the certificate is derived and inserted automatically
+// at the seam instead of hand-written as `__builtin_assume`.
+//
+// Checks are ordered substring matches: inside the spawn, the certificate's own
+// comparison, then the assume, then the kernel's guard comparison it dominates.
+//
+// CHECK: vx.spawn
+// CHECK: arith.cmpi sgt
+// CHECK: llvm.intr.assume
+// CHECK: arith.cmpi sgt
+
+fn main() -> i32 {
+  let kblk_start = 9;
+  let qblk_end = 7;
+  assert(kblk_start > qblk_end);
+
+  spawn on(Topology::GPU) {
+    let _masked = kblk_start > qblk_end;
+  };
+
+  return 0;
+}

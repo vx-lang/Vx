@@ -84,6 +84,13 @@ pub struct DriverOptions {
     #[arg(long = "verify-seams")]
     pub verify_seams: bool,
 
+    /// Transport host-proven `assert` facts across a host->device `spawn` seam as
+    /// `llvm.intr.assume` certificates at the kernel entry, so the device backend's
+    /// `-O3` can fold on a relation that would otherwise be opaque past the launch
+    /// boundary. Off by default. See `crate::codegen::lower::seam_cert`.
+    #[arg(long = "emit-seam-certs")]
+    pub emit_seam_certs: bool,
+
     /// Disable Vx optimizations
     #[arg(long = "disable-vx-optimizations")]
     pub disable_vx_optimizations: bool,
@@ -401,6 +408,7 @@ impl CompilerDriver {
         codegen::register_vx_dialect(&context);
 
         let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
+        codegen.emit_seam_certs = self.options.emit_seam_certs;
         codegen
             .generate(&monomorphized_ast, &module_syntaxes)
             .map_err(|e| format!("Codegen Error: {:?}", e))?;

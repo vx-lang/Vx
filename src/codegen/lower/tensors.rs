@@ -19,6 +19,20 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
         let mut body_block = region.append_block(melior::ir::Block::new(&[]));
         let prev_in_spawn = gen.in_spawn;
         gen.in_spawn = true;
+
+        // Transport host-proven `assert` facts into the device kernel as
+        // `llvm.intr.assume` certificates before the body is lowered, so they dominate
+        // the guard they let the device backend fold. Host targets get nothing (the
+        // relation never crossed a launch boundary). Off unless `--emit-seam-certs`.
+        let is_device = !matches!(
+            self.top,
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon | Topology::Current
+        );
+        if gen.emit_seam_certs && is_device {
+            body_block =
+                super::seam_cert::emit_seam_certificates(gen, &self.stmts, &self.ret, body_block)?;
+        }
+
         for stmt in &self.stmts {
             if let Some(b) = gen.generate_statement(stmt, body_block)? {
                 body_block = b;

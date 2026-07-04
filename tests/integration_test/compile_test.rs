@@ -200,6 +200,8 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let module_syntaxes = std::collections::HashMap::new();
 
     let mut codegen = vxc::codegen::MeliorGenerator::new(&context, "test".to_string());
+    // Opt-in directive: exercise seam-certificate emission (`--emit-seam-certs`).
+    codegen.emit_seam_certs = source.contains("// EMIT-SEAM-CERTS");
     codegen
         .generate(&monomorphized_program, &module_syntaxes)
         .unwrap();
