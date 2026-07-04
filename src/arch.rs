@@ -28,6 +28,24 @@ pub struct TransferCostGraph {
     visibility_edges: HashMap<syntax::TopologyKind, Vec<MemorySpace>>,
 }
 
+/// Verdict of the type-level USE rule: can a value on `var_topology` be read while
+/// running on `active_topology`?
+///
+/// - `Visible`: readable in place — a visibility edge / unified memory (cost 0, no
+///   data movement). The value stays where it is.
+/// - `NeedsSeam`: a transfer path exists but the location is not directly visible,
+///   so under the explicit-seam policy the programmer must write `transfer(...)`.
+/// - `Unreachable`: no transfer path exists at all.
+///
+/// See `docs/discussions/brainstorming/hardware_monad_topology.md` (the USE-DIRECT /
+/// USE-NEEDS-SEAM rules).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reachability {
+    Visible,
+    NeedsSeam { cost: u32 },
+    Unreachable,
+}
+
 impl Default for TransferCostGraph {
     fn default() -> Self {
         let mut graph = Self {
@@ -195,6 +213,38 @@ impl TransferCostGraph {
         }
 
         false
+    }
+
+    /// The memory space where a value of type `ty` owned by `var_topology` lives.
+    fn memory_of(var_topology: &Topology, ty: &Type) -> MemorySpace {
+        match ty {
+            Type::Pinned(_, top) => Self::default_memory_for(top),
+            Type::Ref(_, mem) => mem.clone(),
+            _ => Self::default_memory_for(var_topology),
+        }
+    }
+
+    /// The type-level USE verdict for reading a `var_topology` value (type `ty`) from
+    /// `active_topology`. `Visible` is the existing accessibility relation (unified
+    /// memory / same location, no move); otherwise we report whether a transfer path
+    /// exists (`NeedsSeam`, carrying its cost) or not (`Unreachable`). This is purely
+    /// a refinement of `is_type_accessible` used to produce precise diagnostics; it
+    /// does not change what is accepted. See `Reachability`.
+    pub fn reachable(
+        &self,
+        active_topology: &Topology,
+        var_topology: &Topology,
+        ty: &Type,
+    ) -> Reachability {
+        if self.is_type_accessible(active_topology, var_topology, ty) {
+            return Reachability::Visible;
+        }
+        let var_mem = Self::memory_of(var_topology, ty);
+        let active_mem = Self::default_memory_for(active_topology);
+        match self.transfer_path(&var_mem, &active_mem) {
+            Some((cost, _)) => Reachability::NeedsSeam { cost },
+            None => Reachability::Unreachable,
+        }
     }
 
     /// Determines the minimum data movement cost and path between two memory spaces using Dijkstra's algorithm.
@@ -625,6 +675,38 @@ mod tests {
         let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
         // NPU sees NPUHBM and CPUDRAM, not LocalSRAM
         assert!(!graph.is_type_accessible(&make_npu(), &make_acc_core(), &ref_sram));
+    }
+
+    #[test]
+    fn test_reachable_same_topology_is_visible() {
+        let graph = TransferCostGraph::default();
+        assert_eq!(
+            graph.reachable(&Topology::GPU, &Topology::GPU, &make_tensor()),
+            Reachability::Visible
+        );
+    }
+
+    #[test]
+    fn test_reachable_host_to_gpu_needs_seam() {
+        let graph = TransferCostGraph::default();
+        // A discrete-GPU value lives in GPU HBM, not visible from the host: a transfer
+        // path exists (GpuHbm -> CPUDRAM, cost 50), so the verdict is NeedsSeam.
+        assert_eq!(
+            graph.reachable(&Topology::CPU, &Topology::GPU, &make_tensor()),
+            Reachability::NeedsSeam { cost: 50 }
+        );
+    }
+
+    #[test]
+    fn test_reachable_unreachable_when_no_path() {
+        let graph = TransferCostGraph::default();
+        // RemoteHbm has no outgoing edges, so a value pinned there is unreachable from
+        // the host. Use a non-CPU var_topology to avoid the host-unified-memory shortcut.
+        let ref_remote = Type::Ref(Box::new(make_tensor()), MemorySpace::RemoteHbm);
+        assert_eq!(
+            graph.reachable(&Topology::CPU, &Topology::GPU, &ref_remote),
+            Reachability::Unreachable
+        );
     }
 
     #[test]

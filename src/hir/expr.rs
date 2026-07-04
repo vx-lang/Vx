@@ -686,10 +686,34 @@ impl<'a> TypeChecker<'a> {
                                     self.allow_cross_topology = old_allow;
                                     return ret_ty;
                                 } else {
-                                    let msg = format!(
-                                        "Cross-topology access error: Variable '{}' belongs to {:?} (type: {:?}), but accessed from {:?}",
-                                        name, top, ty, self.active_topology
-                                    );
+                                    // USE-NEEDS-SEAM (explicit-seam policy): the value is not
+                                    // visible from the active topology and has no `Transfer` impl,
+                                    // so point at the fix. Distinguish "a transfer path exists,
+                                    // write one" from "no path at all". See the hardware-monad doc.
+                                    use crate::arch::Reachability;
+                                    let msg = match self.transfer_cost_graph.reachable(
+                                        &self.active_topology,
+                                        &top,
+                                        &ty,
+                                    ) {
+                                        Reachability::NeedsSeam { cost } => format!(
+                                            "Cross-topology access error: '{}' (type: {:?}) is not \
+                                             visible from {:?}; insert an explicit transfer to {:?} \
+                                             (cost {})",
+                                            name, ty, self.active_topology, self.active_topology, cost
+                                        ),
+                                        Reachability::Unreachable => format!(
+                                            "Cross-topology access error: '{}' (type: {:?}) is \
+                                             unreachable from {:?}: no transfer path exists",
+                                            name, ty, self.active_topology
+                                        ),
+                                        // Not visible here by construction; fall back to the plain message.
+                                        Reachability::Visible => format!(
+                                            "Cross-topology access error: Variable '{}' belongs to {:?} \
+                                             (type: {:?}), but accessed from {:?}",
+                                            name, top, ty, self.active_topology
+                                        ),
+                                    };
                                     self.errors.push(msg);
                                 }
                             }
