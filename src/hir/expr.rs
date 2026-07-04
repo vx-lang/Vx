@@ -1416,12 +1416,14 @@ impl<'a> TypeChecker<'a> {
                         let _t1 = self.check_expr_type(start);
                         let _t2 = self.check_expr_type(end);
                     }
+                    // No index expression to validate (Custom carries only a name).
                     Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
                     | Topology::GPU
                     | Topology::CpuAvx512
                     | Topology::CpuNeon
+                    | Topology::Custom(_)
                     | Topology::Current => {}
                 }
 

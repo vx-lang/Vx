@@ -1,0 +1,25 @@
+//===- custom_topology.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A user-defined topology needs no language edit: `Topology::MyTPU` is not a
+// built-in, so it parses to `Topology::Custom("MyTPU")`, type-checks, and lowers
+// to a `vx.spawn` with a stable per-name dispatch id (FNV-1a of the name in the
+// 1000..1999 band; "MyTPU" -> 1502). Its memory model comes from the topology
+// registry (a plugin describes it via arch::register_topology); unregistered here,
+// it defaults to host-like placement, which is enough to compile and dispatch.
+
+fn main() -> i32 {
+  spawn on(Topology::MyTPU) {
+    let x = 1;
+  }
+  return 0;
+}
+
+// CHECK: vx.spawn topology(1502)
+// CHECK: vx.yield

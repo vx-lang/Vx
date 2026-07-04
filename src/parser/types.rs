@@ -55,7 +55,11 @@ impl<'a> Parser<'a> {
             "GPU" => Ok(Topology::GPU),
             "CpuAvx512" | "CPU_AVX512" => Ok(Topology::CpuAvx512),
             "CpuNeon" | "CPU_Neon" => Ok(Topology::CpuNeon),
-            _ => Err(self.error(&format!("Unknown topology {}", ident))),
+            // Any other identifier is a user-defined topology, resolved by name against
+            // the topology registry (`crate::arch::topology_descriptor`); a plugin
+            // describes it via `register_topology`. Because the topology set is open, an
+            // unknown built-in typo is indistinguishable from a custom name here.
+            other => Ok(Topology::Custom(crate::symbol::Symbol::from(other))),
         }
     }
 

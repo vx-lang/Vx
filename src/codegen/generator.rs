@@ -1194,6 +1194,19 @@ impl<'c> MeliorGenerator<'c> {
             Some(syntax::Topology::AMX) => 3,
             Some(syntax::Topology::ANE) => 4,
             Some(syntax::Topology::GPU) => 5,
+            // User-defined topology: address space follows its registered default memory
+            // space (same encoding as the built-ins above).
+            Some(syntax::Topology::Custom(name)) => {
+                use syntax::MemorySpace::*;
+                match crate::arch::topology_descriptor(&syntax::TopologyKind::Custom(name.clone()))
+                    .map(|d| d.default_space)
+                {
+                    Some(NPUHBM) => 1,
+                    Some(LocalSRAM) => 2,
+                    Some(GpuHbm) => 5,
+                    _ => 0,
+                }
+            }
             None => 0,
         };
 

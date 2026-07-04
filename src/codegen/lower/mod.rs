@@ -149,6 +149,18 @@ pub(crate) fn topology_to_i32(top: &syntax::Topology) -> i32 {
         CpuAvx512 => 600,
         CpuNeon => 700,
         Slice(_, _, _) => 900,
+        // User-defined topology: a stable per-name dispatch id in the 1000..1999 band.
+        // FNV-1a (not DefaultHasher, whose algorithm may change between Rust releases) so
+        // the dispatch id is reproducible across toolchains -- it is part of the runtime
+        // dispatch contract.
+        Custom(name) => {
+            let mut hash: u32 = 2166136261;
+            for b in name.as_bytes() {
+                hash ^= *b as u32;
+                hash = hash.wrapping_mul(16777619);
+            }
+            1000 + (hash % 1000) as i32
+        }
         Current => 0,
     }
 }

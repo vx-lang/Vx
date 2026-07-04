@@ -35,6 +35,10 @@ pub enum Topology {
     CpuAvx512,
     CpuNeon,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
+    /// A user-defined topology, identified by name and described in the topology
+    /// registry (`crate::arch::topology_descriptor`). This is the open identity that
+    /// lets users add their own topologies without editing the language.
+    Custom(Symbol),
     Current,
 }
 
@@ -59,6 +63,7 @@ pub enum TopologyKind {
     CpuAvx512,
     CpuNeon,
     Slice,
+    Custom(Symbol),
     Current,
 }
 
@@ -74,6 +79,7 @@ impl Topology {
             Topology::CpuAvx512 => TopologyKind::CpuAvx512,
             Topology::CpuNeon => TopologyKind::CpuNeon,
             Topology::Slice(..) => TopologyKind::Slice,
+            Topology::Custom(name) => TopologyKind::Custom(name.clone()),
             Topology::Current => TopologyKind::Current,
         }
     }

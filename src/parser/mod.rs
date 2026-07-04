@@ -286,6 +286,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_topology_custom() {
+        // Any identifier that is not a built-in is a user-defined topology.
+        assert_eq!(
+            parse_topology("Topology::MyTPU"),
+            Topology::Custom(crate::symbol::Symbol::from("MyTPU"))
+        );
+    }
+
+    #[test]
     fn test_parse_topology_npu_with_index() {
         let top = parse_topology("Topology::NPU[0]");
         if let Topology::NPU(expr) = top {
@@ -314,14 +323,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_topology_unknown_variant_error() {
-        let input = "Topology::Quantum";
-        let mut lexer = Lexer::new(input);
-        let tokens = lexer.tokenize();
-        let mut parser = Parser::new(&tokens, input);
-        let err = parser.parse_topology().unwrap_err();
-        let msg = err.format(input);
-        assert!(msg.contains("Unknown topology Quantum"), "Got: {}", msg);
+    fn test_parse_topology_non_builtin_is_custom() {
+        // The topology set is open: a non-built-in identifier parses as a user-defined
+        // topology rather than erroring (its memory model comes from the registry).
+        assert_eq!(
+            parse_topology("Topology::Quantum"),
+            Topology::Custom(crate::symbol::Symbol::from("Quantum"))
+        );
     }
 
     #[test]

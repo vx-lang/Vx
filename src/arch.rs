@@ -750,6 +750,36 @@ mod tests {
     }
 
     #[test]
+    fn test_custom_topology_end_to_end() {
+        // A user-defined topology: register a descriptor, then the enum identity
+        // `Topology::Custom(name)` flows through default_memory_for + is_type_accessible
+        // with no hardcoded arm. Uses a unique name so it can't perturb other tests.
+        let name = crate::symbol::Symbol::from("MyTPU");
+        register_topology(
+            syntax::TopologyKind::Custom(name.clone()),
+            TopologyDescriptor {
+                default_space: MemorySpace::LocalSRAM,
+                visibility: vec![MemorySpace::LocalSRAM],
+            },
+        );
+        let top = Topology::Custom(name);
+
+        // Placement comes from the registered descriptor.
+        assert_eq!(
+            TransferCostGraph::default_memory_for(&top),
+            MemorySpace::LocalSRAM
+        );
+
+        let graph = TransferCostGraph::default();
+        // It can read its own memory space...
+        let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
+        assert!(graph.is_type_accessible(&top, &Topology::CPU, &ref_sram));
+        // ...but not a space it does not list.
+        let ref_gpu = Type::Ref(Box::new(make_tensor()), MemorySpace::GpuHbm);
+        assert!(!graph.is_type_accessible(&top, &Topology::GPU, &ref_gpu));
+    }
+
+    #[test]
     fn test_transfer_path_npu_to_remote_via_nic() {
         let graph = TransferCostGraph::default();
         let result = graph.transfer_path(&MemorySpace::NPUHBM, &MemorySpace::RemoteHbm);
