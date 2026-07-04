@@ -22,10 +22,8 @@ pub struct TransferCostGraph {
 
     /// Cached all-pairs shortest paths for data transfers.
     cost_matrix: HashMap<(MemorySpace, MemorySpace), u32>,
-
-    /// Adjacency list for Topology to MemorySpace visibility.
-    /// Directed edge from Top -> Mem means Top can directly read/write Mem.
-    visibility_edges: HashMap<syntax::TopologyKind, Vec<MemorySpace>>,
+    // Topology→MemorySpace visibility now lives in the global topology registry
+    // (`topology_descriptor`), not on the graph.
 }
 
 /// Verdict of the type-level USE rule: can a value on `var_topology` be read while
@@ -46,12 +44,67 @@ pub enum Reachability {
     Unreachable,
 }
 
+/// Declarative description of a topology's memory behaviour — the data that used to be
+/// hardcoded across `default_memory_for` and the special-cases in `is_type_accessible`.
+///
+/// A topology is described by where its values live (`default_space`) and which memory
+/// spaces it can directly address (`visibility`, i.e. unified-memory reach; this always
+/// includes `default_space`). Seeded with the built-in topologies below; `register_topology`
+/// lets a plugin add or override one. This is the first substrate step toward user-definable
+/// topologies (see `docs/discussions/brainstorming/hardware_monad_topology.md`, "registry
+/// behind the enum"): the metadata is now data, not `match` arms. (Introducing a *new*
+/// topology *identity* from source still needs a `Topology::Custom`-style variant + parser
+/// support; this step opens the description, not yet the name.)
+#[derive(Debug, Clone)]
+pub struct TopologyDescriptor {
+    pub default_space: MemorySpace,
+    pub visibility: Vec<MemorySpace>,
+}
+
+/// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
+/// `visibility` includes each topology's own `default_space`, which subsumes the old
+/// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,
+/// GPU→GpuHbm).
+fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescriptor> {
+    use crate::syntax::TopologyKind as K;
+    use MemorySpace::*;
+    let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
+        default_space,
+        visibility: visibility.to_vec(),
+    };
+    let mut m = HashMap::new();
+    m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm, CPUDRAM]));
+    m.insert(K::NPU, d(NPUHBM, &[NPUHBM]));
+    m.insert(K::ANE, d(NPUHBM, &[NPUHBM, CPUDRAM]));
+    m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM]));
+    m.insert(K::AccCore, d(LocalSRAM, &[LocalSRAM]));
+    m.insert(K::CpuAvx512, d(CPUDRAM, &[CPUDRAM]));
+    m.insert(K::CpuNeon, d(CPUDRAM, &[CPUDRAM]));
+    m.insert(K::Slice, d(NPUHBM, &[NPUHBM]));
+    m
+}
+
+static TOPOLOGY_REGISTRY: std::sync::LazyLock<
+    std::sync::RwLock<HashMap<crate::syntax::TopologyKind, TopologyDescriptor>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(builtin_descriptors()));
+
+/// The description registered for a topology kind, if any.
+pub fn topology_descriptor(kind: &crate::syntax::TopologyKind) -> Option<TopologyDescriptor> {
+    TOPOLOGY_REGISTRY.read().unwrap().get(kind).cloned()
+}
+
+/// Register (or override) the description for a topology kind. The extension hook a hardware
+/// plugin uses to describe its memory model to the compiler.
+pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescriptor) {
+    TOPOLOGY_REGISTRY.write().unwrap().insert(kind, desc);
+}
+
 impl Default for TransferCostGraph {
     fn default() -> Self {
         let mut graph = Self {
             transfer_edges: HashMap::new(),
             cost_matrix: HashMap::new(),
-            visibility_edges: HashMap::new(),
         };
 
         // Standard Transfer Paths
@@ -80,22 +133,8 @@ impl Default for TransferCostGraph {
         // NIC -> RemoteGPU (Cost 20)
         graph.add_transfer_edge(MemorySpace::NicRam, MemorySpace::RemoteHbm, 20);
 
-        // Standard Visibility Paths
-        // Host can access DRAM and HBM
-        graph.add_visibility_edge(Topology::CPU, MemorySpace::CPUDRAM);
-        graph.add_visibility_edge(Topology::CPU, MemorySpace::NPUHBM);
-        // GPUs, AMX, ANE can access DRAM (Unified Memory Fallback)
-        graph.add_visibility_edge(Topology::AMX, MemorySpace::CPUDRAM);
-        graph.add_visibility_edge(Topology::ANE, MemorySpace::CPUDRAM);
-        graph.add_visibility_edge(Topology::GPU, MemorySpace::CPUDRAM);
-        // A discrete GPU also reaches its own device HBM.
-        graph.add_visibility_edge(Topology::GPU, MemorySpace::GpuHbm);
-
-        // ANE also accesses HBM
-        graph.add_visibility_edge(Topology::ANE, MemorySpace::NPUHBM);
-
-        // NPU and Slice reach HBM (we handle dynamic NPU IDs in the accessor method)
-        // AccCore reaches SRAM (handled dynamically as well)
+        // Topology→MemorySpace visibility is described by the topology registry
+        // (`builtin_descriptors`), not built here.
 
         graph.precompute_costs();
         graph
@@ -110,27 +149,15 @@ impl TransferCostGraph {
             .push((dst, cost));
     }
 
-    pub fn add_visibility_edge(&mut self, top: Topology, mem: MemorySpace) {
-        self.visibility_edges
-            .entry(top.kind())
-            .or_default()
-            .push(mem);
-    }
-
-    /// Returns the default memory space for a given topology.
+    /// Returns the default memory space for a given topology, from its registered
+    /// descriptor (see `topology_descriptor`).
     pub fn default_memory_for(topology: &Topology) -> MemorySpace {
-        match topology {
-            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => MemorySpace::CPUDRAM,
-            Topology::NPU(_) => MemorySpace::NPUHBM,
-            Topology::AccCore(_) => MemorySpace::LocalSRAM,
-            Topology::AMX => MemorySpace::CPUDRAM,
-            Topology::ANE => MemorySpace::NPUHBM,
-            Topology::GPU => MemorySpace::GpuHbm,
-            Topology::Slice(_, _, _) => MemorySpace::NPUHBM,
-            Topology::Current => {
-                unreachable!("Must specify a concrete topology other than Current")
-            }
+        if let Topology::Current = topology {
+            unreachable!("Must specify a concrete topology other than Current")
         }
+        topology_descriptor(&topology.kind())
+            .map(|d| d.default_space)
+            .unwrap_or(MemorySpace::CPUDRAM)
     }
 
     /// Precomputes the all-pairs shortest path transfer costs.
@@ -180,35 +207,18 @@ impl TransferCostGraph {
             }
         };
 
-        // If the variable lives in its own default space, check visibility graph
-        // Handle dynamic topologies
+        // Visibility is now data: consult the active topology's descriptor. Its
+        // `visibility` set includes its own default space, subsuming the old
+        // NPU→NPUHBM / AccCore→LocalSRAM / GPU→GpuHbm special-cases.
         let active_kind = active_topology.kind();
-
-        // Hardcode the dynamic matching rules that aren't easily static HashMap entries
-        if active_kind == syntax::TopologyKind::NPU && target_mem == MemorySpace::NPUHBM {
-            return true;
-        }
-        if active_kind == syntax::TopologyKind::AccCore && target_mem == MemorySpace::LocalSRAM {
-            return true;
-        }
-        if active_kind == syntax::TopologyKind::GPU && target_mem == MemorySpace::GpuHbm {
-            return true;
-        }
-
-        // Check formal visibility edges
-        if let Some(visible_mems) = self.visibility_edges.get(&active_kind) {
-            if visible_mems.contains(&target_mem) {
+        if let Some(desc) = topology_descriptor(&active_kind) {
+            if desc.visibility.contains(&target_mem) {
                 return true;
             }
-        }
-
-        // Host unified memory fallback (handled by graph edges but we can explicitly check if needed)
-        // Check if var_topology is Host, and active_topology has visibility to CPUDRAM
-        if *var_topology == Topology::CPU {
-            if let Some(visible_mems) = self.visibility_edges.get(&active_kind) {
-                if visible_mems.contains(&MemorySpace::CPUDRAM) {
-                    return true;
-                }
+            // Host-resident data is visible to any topology that can see host DRAM
+            // (unified-memory fallback).
+            if *var_topology == Topology::CPU && desc.visibility.contains(&MemorySpace::CPUDRAM) {
+                return true;
             }
         }
 
@@ -707,6 +717,36 @@ mod tests {
             graph.reachable(&Topology::CPU, &Topology::GPU, &ref_remote),
             Reachability::Unreachable
         );
+    }
+
+    #[test]
+    fn test_registry_seeded_with_builtins() {
+        // Topology metadata is data (builtin_descriptors), not `match` arms.
+        let gpu = topology_descriptor(&syntax::TopologyKind::GPU).unwrap();
+        assert_eq!(gpu.default_space, MemorySpace::GpuHbm);
+        assert!(gpu.visibility.contains(&MemorySpace::GpuHbm)); // its own device memory
+        assert!(gpu.visibility.contains(&MemorySpace::CPUDRAM)); // unified-memory reach
+
+        let npu = topology_descriptor(&syntax::TopologyKind::NPU).unwrap();
+        assert_eq!(npu.default_space, MemorySpace::NPUHBM);
+        // NPU cannot directly address host DRAM (matches is_type_accessible expectations).
+        assert!(!npu.visibility.contains(&MemorySpace::CPUDRAM));
+    }
+
+    #[test]
+    fn test_register_topology_extends_registry() {
+        // The extension hook: registering a descriptor makes it queryable. Uses the
+        // otherwise-undescribed `Current` kind so this cannot perturb other tests.
+        assert!(topology_descriptor(&syntax::TopologyKind::Current).is_none());
+        register_topology(
+            syntax::TopologyKind::Current,
+            TopologyDescriptor {
+                default_space: MemorySpace::LocalSRAM,
+                visibility: vec![MemorySpace::LocalSRAM],
+            },
+        );
+        let d = topology_descriptor(&syntax::TopologyKind::Current).unwrap();
+        assert_eq!(d.default_space, MemorySpace::LocalSRAM);
     }
 
     #[test]
