@@ -230,7 +230,10 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
         .map(|l| l.split_once("WARN:").unwrap().1.trim().to_string())
         .collect();
     if want.is_empty() {
-        return Err(format!("Warning test {:?} has no `// WARN:` directives", path));
+        return Err(format!(
+            "Warning test {:?} has no `// WARN:` directives",
+            path
+        ));
     }
 
     let mut loader = vxc::module_loader::ModuleLoader::new();

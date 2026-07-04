@@ -1,8 +1,8 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
-// Note: On macOS, `libunwind` from a signal handler truncates the stack trace 
-// when crossing JIT frames. It usually stops after capturing the faulting frame 
-// (or the frame it got inlined into, like `_f4` here). Therefore, we only check 
+// Note: On macOS, `libunwind` from a signal handler truncates the stack trace
+// when crossing JIT frames. It usually stops after capturing the faulting frame
+// (or the frame it got inlined into, like `_f4` here). Therefore, we only check
 // what is actually reliably captured.
 
 // CHECK: Caught SIGSEGV: Segmentation Fault!

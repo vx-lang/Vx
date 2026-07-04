@@ -9,8 +9,8 @@
 // EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
 // -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"
 // -expand-strided-metadata -finalize-memref-to-llvm -reconcile-unrealized-casts
-// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o 
-// EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t 
+// | mlir-translate -mlir-to-llvmir | llc -filetype=obj -o %t.o
+// EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
 // EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
 
 fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
@@ -91,9 +91,9 @@ fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
 // EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args
 // EXPECT: --- EXECUTING ON APPLE NEURAL ENGINE ---
 // EXPECT: Unranked Memref base@
-// EXPECT: [[1,   1,   1,   1], 
-// EXPECT:  [1,   1,   1,   1], 
-// EXPECT:  [1,   1,   1,   1], 
+// EXPECT: [[1,   1,   1,   1],
+// EXPECT:  [1,   1,   1,   1],
+// EXPECT:  [1,   1,   1,   1],
 // EXPECT:  [1,   1,   1,   1]]
 
 // FRONTEND-LABEL: module {
