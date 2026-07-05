@@ -585,6 +585,123 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// In-place topology-variable substitution over a body statement (and its sub-
+    /// expressions): specializes an explicit `spawn on(D)` and `Pinned<_, D>` annotation
+    /// *inside* a generic body. The signature is handled separately in `instantiate_function`.
+    fn subst_topo_in_stmt(
+        stmt: &mut crate::syntax::Statement,
+        tm: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
+    ) {
+        use crate::syntax::Statement as S;
+        match stmt {
+            S::LetDecl(l) => {
+                if let Some(ty) = l.ty_ann.take() {
+                    l.ty_ann = Some(Self::substitute_topology_in_type(ty, tm));
+                }
+                Self::subst_topo_in_expr(&mut l.expr, tm);
+            }
+            S::ExprStmt(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            S::Return(r) => Self::subst_topo_in_expr(&mut r.expr, tm),
+            S::Assign(a) => {
+                Self::subst_topo_in_expr(&mut a.lhs, tm);
+                Self::subst_topo_in_expr(&mut a.rhs, tm);
+            }
+            S::CompoundAssign(a) => {
+                Self::subst_topo_in_expr(&mut a.lhs, tm);
+                Self::subst_topo_in_expr(&mut a.rhs, tm);
+            }
+            S::ForLoop(f) => {
+                Self::subst_topo_in_expr(&mut f.iterable, tm);
+                for s in &mut f.body {
+                    Self::subst_topo_in_stmt(s, tm);
+                }
+            }
+            S::Loop(l) => {
+                for s in &mut l.body {
+                    Self::subst_topo_in_stmt(s, tm);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn subst_topo_in_expr(
+        expr: &mut Expr,
+        tm: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
+    ) {
+        use crate::syntax::Expr as E;
+        let recur_block = |stmts: &mut Vec<crate::syntax::Statement>| {
+            for s in stmts {
+                Self::subst_topo_in_stmt(s, tm);
+            }
+        };
+        match expr {
+            E::SpawnOn(e) => {
+                e.top = Self::substitute_topology(e.top.clone(), tm);
+                recur_block(&mut e.stmts);
+                if let Some(r) = e.ret.as_deref_mut() {
+                    Self::subst_topo_in_expr(r, tm);
+                }
+            }
+            E::If(e) => {
+                Self::subst_topo_in_expr(&mut e.cond, tm);
+                recur_block(&mut e.then_block);
+                if let Some(eb) = &mut e.else_block {
+                    recur_block(eb);
+                }
+            }
+            E::UnsafeBlock(e) => {
+                recur_block(&mut e.stmts);
+                if let Some(r) = e.ret.as_deref_mut() {
+                    Self::subst_topo_in_expr(r, tm);
+                }
+            }
+            E::ComptimeBlock(e) => {
+                recur_block(&mut e.stmts);
+                if let Some(r) = e.ret.as_deref_mut() {
+                    Self::subst_topo_in_expr(r, tm);
+                }
+            }
+            E::BinaryOp(e) => {
+                Self::subst_topo_in_expr(&mut e.lhs, tm);
+                Self::subst_topo_in_expr(&mut e.rhs, tm);
+            }
+            E::RelationalOp(e) => {
+                Self::subst_topo_in_expr(&mut e.lhs, tm);
+                Self::subst_topo_in_expr(&mut e.rhs, tm);
+            }
+            E::LogicalOp(e) => {
+                Self::subst_topo_in_expr(&mut e.lhs, tm);
+                Self::subst_topo_in_expr(&mut e.rhs, tm);
+            }
+            E::UnaryOp(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            E::Dereference(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            E::Borrow(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            E::AsCast(e) => {
+                e.target_ty = Self::substitute_topology_in_type(e.target_ty.clone(), tm);
+                Self::subst_topo_in_expr(&mut e.expr, tm);
+            }
+            E::Transfer(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            E::IndexAccess(e) => {
+                Self::subst_topo_in_expr(&mut e.base, tm);
+                Self::subst_topo_in_expr(&mut e.index, tm);
+            }
+            E::MemberAccess(e) => Self::subst_topo_in_expr(&mut e.base, tm),
+            E::FunctionCall(e) => {
+                for a in &mut e.args {
+                    Self::subst_topo_in_expr(a, tm);
+                }
+            }
+            E::MethodCall(e) => {
+                Self::subst_topo_in_expr(&mut e.base, tm);
+                for a in &mut e.args {
+                    Self::subst_topo_in_expr(a, tm);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn instantiate_function(
         &mut self,
         generic_func: &Function,
@@ -622,7 +739,13 @@ impl<'a> TypeChecker<'a> {
         let new_body = generic_func
             .body
             .iter()
-            .map(|s| s.substitute(mapping))
+            .map(|s| {
+                let mut s = s.substitute(mapping);
+                if !topo_mapping.is_empty() {
+                    Self::subst_topo_in_stmt(&mut s, topo_mapping);
+                }
+                s
+            })
             .collect();
 
         Function {

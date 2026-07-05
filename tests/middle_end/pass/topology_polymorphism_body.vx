@@ -1,0 +1,31 @@
+//===- topology_polymorphism_body.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Body-level topology substitution: a `<D: Topology>` kernel that dispatches with an
+// explicit `spawn on(Topology::D)` in its *body* is specialized per device. Deduced
+// D = GPU (from the Pinned<i32, GPU> argument), so the body spawn lowers to the GPU
+// dispatch id (500) -- not a `Custom("D")` id -- in the monomorphized `run_on$GPU`.
+
+fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+  spawn on(Topology::D) {
+    let y = x;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let g = spawn on(Topology::GPU) {
+    5
+  };
+  run_on(g);
+  return 0;
+}
+
+// CHECK: func.func @run_on$GPU
+// CHECK: vx.spawn topology(500)
