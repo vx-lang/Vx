@@ -238,13 +238,11 @@ seeds into.
    source-level `topology { … }` declaration (below), and the `Transfer<From,To>` /
    `Topology` traits.
 1. **[SUBSTANTIALLY LANDED, as data]** **`Transfer` + `Topology` "traits".** The
-   object (`TopologyDescriptor`) and the morphism (`TransferEdge { from, to, cost,
-   sync }`) exist as data with a language surface (`Topology <Name> { memory / visible
-   / transfer ... }`); the cost graph *is* their closure (`seed_from_topology_registry`
-   + Dijkstra); the consistency grade (`sync`/`relaxed`) is discharged via the seam
-   engine in coherence checking. *Not done:* exposing these as first-class Vx `trait`s
-   you `impl` per user type (`impl Transfer<A,B> for ...`) — largely redundant with the
-   declaration surface, so deprioritized.
+   object (`TopologyDescriptor`) and the morphism (`TransferEdge { from, to, cost, sync }`) exist as data with a language surface (`Topology <Name> { memory / visible / transfer ... }`); the cost graph *is* their closure (`seed_from_topology_registry`
+   - Dijkstra); the consistency grade (`sync`/`relaxed`) is discharged via the seam
+     engine in coherence checking. *Not done:* exposing these as first-class Vx `trait`s
+     you `impl` per user type (`impl Transfer<A,B> for ...`) — largely redundant with the
+     declaration surface, so deprioritized.
 1. **[LANDED]** **User declarations + coherence check.** `Topology <Name> { … }`
    registers descriptors in-language; admitted iff coherence obligations discharge
    (E6005 / W1026 / W1027, the last via `hir::seam`). Typo-safety: W1025 for an
@@ -278,3 +276,112 @@ monad, independent of the full refactor. **Both landed.**
   paper's scoped-RC11 scopes as richer grades.
 - Inference limits with topology variables — likely require annotations at
   kernel/function boundaries (mostly already true).
+
+## Use cases for topology polymorphism
+
+Concrete scenarios that motivate `<D: Topology>` and pin down what the feature must
+support. Each says what breaks *without* polymorphism and which existing machinery it
+leans on, so the use cases double as design constraints.
+
+### 1. Write-once library kernels
+
+A library author writes an accelerator kernel *once*, generic over the device:
+
+```
+fn layernorm<D: Topology>(x: Pinned<Tensor<f32>, D>) on D -> Pinned<Tensor<f32>, D> {
+    spawn on(D) { /* uses x @D; USE needs Visible(D,D) = identity, OK */ }
+}
+```
+
+`layernorm` runs on `GPU`, `ANE`, or a vendor's `Topology MyTPU { … }` with no edit to
+the library. **Without polymorphism** the author either duplicates the kernel per device
+or hardcodes a closed `Topology` set — exactly the coupling this whole effort removes.
+**Leans on:** the open topology identity (already landed) + the `on D` binding; the body
+type-checks because a value `@D` used on `D` is the cost-0 identity morphism.
+**Demands:** a topology generic-param kind, `on D`, and monomorphization over the
+concrete `D` at each call.
+
+### 2. Portable models across accelerators (the practical payoff)
+
+Write a transformer layer — or the whole llama2 model in `benchmarks/` — with its
+compute parameterized by `<D: Topology>`, then instantiate it on GPU, ANE, or `MyTPU`
+by supplying the topology. One model, N backends, no per-backend fork. This is the
+end-to-end version of use case 1 and the concrete answer to "why bother": a vendor ships
+a `Topology` descriptor and every generic model runs on their silicon. **Without it:**
+`matmul_ane` vs `matmul` forks (as in the current benchmark) multiply per device.
+**Demands:** the same as (1), at whole-program scale.
+
+### 3. Generic data staging with a *proven* path
+
+A data-movement library (prefetch, double-buffer, tiling) written once for every device
+pair:
+
+```
+fn stage<S: Topology, D: Topology>(x: Pinned<T, S>) -> Pinned<T, D>
+    where Transfer<S, D>          // a morphism S ⇝ D must exist
+{ transfer(x, D) }
+```
+
+`stage` works for host→GPU, GPU→NPU, NPU→remote — the `where Transfer<S, D>` is the
+evidence a path exists, discharged against the cost graph (`transfer_path`; multi-hop
+allowed, the grade is the join of the hops). **Without it:** one `stage` per ordered
+device pair. **Leans on:** the cost graph as the morphism closure + the seam consistency
+grade (both landed). **Demands:** `where`-clause constraint solving over topology
+variables — carried as an assumption for polymorphic code, discharged at instantiation
+(like a trait bound). This is the hard part.
+
+### 4. Cost-directed device selection
+
+Let the type system *and the cost monoid* pick the device:
+
+```
+fn run<D: Topology>(x: Tensor<T>) -> Pinned<T, D>  where Reachable<Host, D>
+```
+
+A scheduler instantiates `run` on whichever reachable `D` minimizes transfer cost —
+`TransferCostGraph` already finds the cheapest morphism via Dijkstra, so "choose `D`" is
+"minimize the grade." **Without it:** placement is hand-coded. **Demands:** everything in
+(3) plus a policy that *chooses* the instantiation rather than taking it as given — the
+most speculative use case, but it falls straight out of the graded-monad structure.
+
+### 5. Topology-agnostic seam certificates
+
+Ties to `--emit-seam-certs`. A guarded kernel written once, for all devices:
+
+```
+fn masked_block<D: Topology>(kblk_start: i32, qblk_end: i32, x: Pinned<T, D>) on D {
+    assert(kblk_start > qblk_end);       // host-proven relation
+    spawn on(D) { if kblk_start > qblk_end { /* skip */ } else { expensive(x) } }
+}
+```
+
+The host-proven relation is transported into the `spawn on(D)` body as an
+`llvm.intr.assume` regardless of `D` — the causal block-skip (the CGO `cert_fold`
+result) written once and specialized per accelerator. **Leans on:** the seam-certificate
+emission (landed) + polymorphism. **Demands:** cert emission already keys off the spawn
+seam, so this mostly needs `on D` to exist; a nice proof that the two features compose.
+
+### 6. Mock topologies for hardware-free testing
+
+Declare a host-backed stand-in and instantiate a generic kernel over it:
+
+```
+Topology MockNPU { memory: Memory::CPU_DRAM }          // host-backed
+// test: layernorm::<MockNPU>(x) runs on CI with no accelerator
+```
+
+Generic (`<D: Topology>`) accelerator code becomes testable on CI without the hardware,
+and the coherence check still validates the mock's declaration. **Leans on:**
+user-definable topologies + coherence (landed) + polymorphism. **Demands:** only that a
+generic kernel can be instantiated at a user-declared `D` — the cheapest use case to
+reach once (1) works, and a strong argument to build (1) first.
+
+### What the use cases tell the design
+
+- (1),(2),(5),(6) need only the **monomorphic core**: a topology generic-param kind,
+  `on D` / `Pinned<T, D>` over a variable, and instantiation over a concrete `D`. That is
+  a self-contained first slice and unlocks four of the six.
+- (3),(4) need **constraint solving** over topology variables (`where Transfer<S,D>` /
+  `Reachable<Host,D>`) — a second slice, and (4) additionally a *selection* policy.
+- Build order therefore: **monomorphic `<D: Topology>` first** (use cases 1/2/5/6), then
+  `where`-constraints (3), then cost-directed selection (4).
