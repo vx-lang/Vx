@@ -2296,6 +2296,28 @@ impl<'a> TypeChecker<'a> {
         if success {
             let topo_mapping = std::mem::take(&mut self.pending_topo_bindings);
             self.pending_topo_vars.clear();
+
+            // Discharge `where Transfer<A, B>` now that the topology variables are bound:
+            // a transfer path from A's memory to B's must exist in the cost graph.
+            for (a, b) in &generic_func.where_transfers {
+                if let (Some(ta), Some(tb)) =
+                    (topo_mapping.get(a), topo_mapping.get(b))
+                {
+                    let ma = crate::arch::TransferCostGraph::default_memory_for(ta);
+                    let mb = crate::arch::TransferCostGraph::default_memory_for(tb);
+                    if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
+                        if !silent {
+                            self.errors.push(format!(
+                                "unsatisfied `where Transfer<{}, {}>` in call to '{}': no transfer \
+                                 path from {:?} to {:?}",
+                                a, b, name, ta, tb
+                            ));
+                        }
+                        return None;
+                    }
+                }
+            }
+
             let mut inst_func =
                 self.instantiate_function(generic_func, &mapping, &topo_mapping);
             let inst_ret = inst_func.return_type.clone();
@@ -3646,6 +3668,7 @@ impl<'a> TypeChecker<'a> {
                     return_type: ret_ty.clone(),
                     requires: vec![],
                     ensures: vec![],
+                    where_transfers: vec![],
                     body: body_stmts,
                     doc_comment: None,
                 };

@@ -37,6 +37,10 @@ pub struct Function {
     pub return_type: Type,
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
+    /// `where Transfer<S, D>` constraints: pairs of topology names (generic topology
+    /// variables or concrete topologies) that must have a transfer path in the cost
+    /// graph. Discharged at each generic call once the variables are bound.
+    pub where_transfers: Vec<(Symbol, Symbol)>,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
 }
@@ -51,6 +55,7 @@ impl Function {
             return_type: self.return_type.clone(),
             requires: self.requires.clone(),
             ensures: self.ensures.clone(),
+            where_transfers: self.where_transfers.clone(),
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {

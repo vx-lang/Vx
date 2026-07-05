@@ -115,6 +115,32 @@ impl<'a> Parser<'a> {
             ensures.push(self.parse_expr()?);
         }
 
+        // `where Transfer<A, B> [, Transfer<C, D>]*` -- topology transfer constraints.
+        let mut where_transfers: Vec<(crate::symbol::Symbol, crate::symbol::Symbol)> = Vec::new();
+        if self.match_token(&TokenType::Where) {
+            loop {
+                // `Transfer` (capitalized) is an identifier, not the lowercase `transfer`
+                // keyword used for the transfer intrinsic.
+                let cname =
+                    self.expect_identifier("Expected a `Transfer<A, B>` constraint after 'where'")?;
+                if cname != "Transfer" {
+                    return Err(self.error(&format!(
+                        "Unsupported where-constraint '{}' (only `Transfer<A, B>` is supported)",
+                        cname
+                    )));
+                }
+                self.consume(&TokenType::LeftAngle, "Expected '<' after Transfer")?;
+                let a = self.expect_identifier("Expected a topology name in Transfer<A, B>")?;
+                self.consume(&TokenType::Comma, "Expected ',' in Transfer<A, B>")?;
+                let b = self.expect_identifier("Expected a topology name in Transfer<A, B>")?;
+                self.consume(&TokenType::RightAngle, "Expected '>' after Transfer<A, B>")?;
+                where_transfers.push((a.into(), b.into()));
+                if !self.match_token(&TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
         let mut body = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -149,6 +175,7 @@ impl<'a> Parser<'a> {
             return_type,
             requires,
             ensures,
+            where_transfers,
             body,
             doc_comment: None,
         })

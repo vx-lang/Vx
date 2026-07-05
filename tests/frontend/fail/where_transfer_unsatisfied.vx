@@ -1,0 +1,28 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `where Transfer<S, D>` is unsatisfiable here: Island's memory (IslandRAM) has no
+// transfer edge, so there is no path from GPU to Island. The constraint is rejected
+// at the call site.
+
+Topology Island {
+  memory: Memory::IslandRAM
+}
+
+fn move_between<S: Topology, D: Topology>(src: Pinned<i32, Topology::S>, dst: Pinned<i32, Topology::D>) -> i32
+  where Transfer<S, D>
+{
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = spawn on(Topology::GPU) {
+    5
+  };
+  let b = spawn on(Topology::Island) {
+    7
+  };
+  move_between(a, b);
+  return 0;
+}
+
+// CHECK: unsatisfied

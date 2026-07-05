@@ -39,6 +39,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
+            where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
         }],
@@ -96,6 +97,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             return_type: Type::Struct("Vector".into(), None),
             requires: Vec::new(),
             ensures: Vec::new(),
+            where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
         }],
@@ -152,6 +154,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             return_type: Type::Scalar(vxc::syntax::ElementType::Bool),
             requires: Vec::new(),
             ensures: Vec::new(),
+            where_transfers: Vec::new(),
             body: vec![],
             doc_comment: None,
         }],
@@ -203,6 +206,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             return_type: Type::Scalar(vxc::syntax::ElementType::Bool),
             requires: Vec::new(),
             ensures: Vec::new(),
+            where_transfers: Vec::new(),
             // let c: Config = ...;
             body: vec![Statement::LetDecl(LetDeclStmt {
                 name: "c".into(),

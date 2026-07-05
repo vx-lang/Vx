@@ -764,6 +764,8 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|e| e.substitute(mapping))
                 .collect(),
+            // Constraints were discharged at the call site before instantiation.
+            where_transfers: Vec::new(),
             body: new_body,
             doc_comment: generic_func.doc_comment.clone(),
         }

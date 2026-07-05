@@ -29,6 +29,7 @@ pub enum TokenTypeBase<S, C> {
     Return,
     Spawn,
     On,
+    Where,
     Transfer,
     Unroll,
     Across,
@@ -129,6 +130,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Return => write!(f, "return"),
             TokenTypeBase::Spawn => write!(f, "spawn"),
             TokenTypeBase::On => write!(f, "on"),
+            TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
             TokenTypeBase::Unroll => write!(f, "unroll"),
             TokenTypeBase::Across => write!(f, "across"),
@@ -239,6 +241,7 @@ static KEYWORDS: Lazy<
     m.insert("return", TokenTypeBase::Return);
     m.insert("spawn", TokenTypeBase::Spawn);
     m.insert("on", TokenTypeBase::On);
+    m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
     m.insert("unroll", TokenTypeBase::Unroll);
     m.insert("across", TokenTypeBase::Across);
@@ -732,6 +735,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
             TokenTypeBase::On => TokenTypeBase::On,
+            TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
@@ -833,6 +837,7 @@ impl OwnedToken {
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
             TokenTypeBase::On => TokenTypeBase::On,
+            TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
