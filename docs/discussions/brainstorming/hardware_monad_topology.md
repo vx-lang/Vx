@@ -249,12 +249,17 @@ seeds into.
    undeclared/unregistered custom topology. Coherence is scoped per-program (no
    cross-file leakage). *Still open:* a full "unknown-unless-declared" hard error
    (kept a warning so plugin-registered topologies still work).
-1. **[NOT STARTED — the big remaining one]** **Topology polymorphism.** `<D: Topology>`
-   params and `where Transfer<S,D>` constraint solving. Needs a new generic-param kind
-   (today `GenericParam` is only `Type`/`Const`; `Function.topology` is a single fixed
-   `Topology`), topology-variable substitution in monomorphization, an `on D` binding,
-   and constraint solving over topology variables at instantiation. A dedicated,
-   design-first effort — not a tail-end slice.
+1. **[MONOMORPHIC CORE LANDED]** **Topology polymorphism.** `<D: Topology>` parses
+   (the `Topology` keyword is accepted as a bound); a `Pinned<_, D>` parameter deduces
+   `D` from the argument's concrete topology (`pending_topo_vars` + a `Pinned` arm in
+   `unify_types`), and `instantiate_function` substitutes the topology variable in the
+   `on` topology and `Pinned<_, D>` param/return types, mangling per topology
+   (`identity_on` → `identity_on$GPU`). *Still open:* (a) **body-level** substitution —
+   a `spawn on(D)` / `Pinned<_, D>` annotation *inside* a generic body (the `layernorm`
+   use case); today only signatures are specialized. (b) **`where Transfer<S,D>`
+   constraint solving** — deduce/verify a morphism exists between topology variables at
+   instantiation (use cases 3/4). Both are follow-on slices; the monomorphic core
+   (`identity_on<D>`) unlocks the signature-only cases.
 
 ## Highest-leverage first slice
 
