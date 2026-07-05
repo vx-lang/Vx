@@ -315,6 +315,31 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_topology_decl_with_transfer() {
+        // A `transfer <from> -> <to> : <cost>` clause becomes a declared morphism (a cost
+        // graph edge). Unique name; a new GpuHbm->LocalSRAM edge overrides no built-in path.
+        let input = "Topology EdgeTPU { memory: Memory::Local_SRAM \
+                     transfer Memory::GPU_HBM -> Memory::Local_SRAM : 7 }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse_topology_decl().unwrap();
+
+        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
+            crate::symbol::Symbol::from("EdgeTPU"),
+        ))
+        .unwrap();
+        assert_eq!(
+            d.transfers,
+            vec![(
+                crate::syntax::MemorySpace::GpuHbm,
+                crate::syntax::MemorySpace::LocalSRAM,
+                7
+            )]
+        );
+    }
+
+    #[test]
     fn test_parse_topology_npu_with_index() {
         let top = parse_topology("Topology::NPU[0]");
         if let Topology::NPU(expr) = top {

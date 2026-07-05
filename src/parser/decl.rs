@@ -172,8 +172,29 @@ impl<'a> Parser<'a> {
 
         let mut default_space: Option<MemorySpace> = None;
         let mut visibility: Vec<MemorySpace> = Vec::new();
+        let mut transfers: Vec<(MemorySpace, MemorySpace, u32)> = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            // `transfer Memory::<From> -> Memory::<To> : <cost>` -- a declared morphism (an
+            // edge added to the cost graph). Uses the `transfer` keyword, so no colon.
+            if self.check(&TokenType::Transfer) {
+                self.advance();
+                let from = self.parse_memory_space()?;
+                self.consume(&TokenType::Arrow, "Expected '->' in transfer clause")?;
+                let to = self.parse_memory_space()?;
+                self.consume(&TokenType::Colon, "Expected ':' before transfer cost")?;
+                let cost_str = match &self.advance().kind {
+                    TokenType::Number(s) => s.to_string(),
+                    _ => return Err(self.error("Expected an integer transfer cost")),
+                };
+                let cost: u32 = cost_str
+                    .parse()
+                    .map_err(|_| self.error("Transfer cost must be a non-negative integer"))?;
+                transfers.push((from, to, cost));
+                self.match_token(&TokenType::Comma);
+                continue;
+            }
+
             let field = match &self.advance().kind {
                 TokenType::Identifier(s) => s.to_string(),
                 other => {
@@ -215,6 +236,7 @@ impl<'a> Parser<'a> {
             crate::arch::TopologyDescriptor {
                 default_space,
                 visibility,
+                transfers,
             },
         );
         Ok(())

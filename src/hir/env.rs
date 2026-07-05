@@ -201,7 +201,13 @@ impl<'a> TypeChecker<'a> {
             allow_cross_topology: false,
             active_topology: Topology::CPU,
             active_memory: crate::arch::TransferCostGraph::default_memory_for(&Topology::CPU),
-            transfer_cost_graph: crate::arch::TransferCostGraph::default(),
+            transfer_cost_graph: {
+                // Real compilation path: fold in transfer edges declared by user-defined
+                // topologies (parsed before the checker runs). default() stays hermetic.
+                let mut g = crate::arch::TransferCostGraph::default();
+                g.seed_from_topology_registry();
+                g
+            },
             active_borrows: HashMap::new(),
             constraints: Vec::new(),
             return_constraints: Vec::new(),

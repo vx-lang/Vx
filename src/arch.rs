@@ -59,6 +59,10 @@ pub enum Reachability {
 pub struct TopologyDescriptor {
     pub default_space: MemorySpace,
     pub visibility: Vec<MemorySpace>,
+    /// Transfer edges `(from, to, cost)` this topology contributes to the cost graph —
+    /// the morphisms it declares. Seeded into a `TransferCostGraph` via
+    /// `seed_from_topology_registry`.
+    pub transfers: Vec<(MemorySpace, MemorySpace, u32)>,
 }
 
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
@@ -71,6 +75,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
     let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
         default_space,
         visibility: visibility.to_vec(),
+        transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -98,6 +103,11 @@ pub fn topology_descriptor(kind: &crate::syntax::TopologyKind) -> Option<Topolog
 /// plugin uses to describe its memory model to the compiler.
 pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescriptor) {
     TOPOLOGY_REGISTRY.write().unwrap().insert(kind, desc);
+}
+
+/// A snapshot of every registered descriptor (built-in + user-defined).
+pub fn all_topology_descriptors() -> Vec<TopologyDescriptor> {
+    TOPOLOGY_REGISTRY.read().unwrap().values().cloned().collect()
 }
 
 impl Default for TransferCostGraph {
@@ -147,6 +157,25 @@ impl TransferCostGraph {
             .entry(src)
             .or_default()
             .push((dst, cost));
+    }
+
+    /// Add a descriptor's declared transfer edges to the graph (does not recompute costs —
+    /// call `precompute_costs` after, or use `seed_from_topology_registry`).
+    pub fn apply_descriptor_edges(&mut self, desc: &TopologyDescriptor) {
+        for (from, to, cost) in &desc.transfers {
+            self.add_transfer_edge(from.clone(), to.clone(), *cost);
+        }
+    }
+
+    /// Add the transfer edges declared by every registered topology (built-in + user-defined)
+    /// and recompute shortest paths. `TransferCostGraph::default()` deliberately does *not* do
+    /// this so it stays hermetic; the real compiler path (`TypeChecker::new`) calls this so
+    /// user-declared morphisms take effect.
+    pub fn seed_from_topology_registry(&mut self) {
+        for desc in all_topology_descriptors() {
+            self.apply_descriptor_edges(&desc);
+        }
+        self.precompute_costs();
     }
 
     /// Returns the default memory space for a given topology, from its registered
@@ -743,6 +772,7 @@ mod tests {
             TopologyDescriptor {
                 default_space: MemorySpace::LocalSRAM,
                 visibility: vec![MemorySpace::LocalSRAM],
+                transfers: Vec::new(),
             },
         );
         let d = topology_descriptor(&syntax::TopologyKind::Current).unwrap();
@@ -760,6 +790,7 @@ mod tests {
             TopologyDescriptor {
                 default_space: MemorySpace::LocalSRAM,
                 visibility: vec![MemorySpace::LocalSRAM],
+                transfers: Vec::new(),
             },
         );
         let top = Topology::Custom(name);
@@ -777,6 +808,30 @@ mod tests {
         // ...but not a space it does not list.
         let ref_gpu = Type::Ref(Box::new(make_tensor()), MemorySpace::GpuHbm);
         assert!(!graph.is_type_accessible(&top, &Topology::GPU, &ref_gpu));
+    }
+
+    #[test]
+    fn test_descriptor_transfer_edges_applied() {
+        // A declared topology contributes transfer edges (morphisms) to the graph.
+        // Hermetic: applies a local descriptor's edges to a fresh graph, no global state.
+        let mut graph = TransferCostGraph::default();
+        // No direct GpuHbm -> LocalSRAM edge in the built-in graph.
+        let before = graph.transfer_path(&MemorySpace::GpuHbm, &MemorySpace::LocalSRAM);
+        let desc = TopologyDescriptor {
+            default_space: MemorySpace::LocalSRAM,
+            visibility: vec![MemorySpace::LocalSRAM],
+            transfers: vec![(MemorySpace::GpuHbm, MemorySpace::LocalSRAM, 7)],
+        };
+        graph.apply_descriptor_edges(&desc);
+        graph.precompute_costs();
+        assert_eq!(
+            graph
+                .transfer_path(&MemorySpace::GpuHbm, &MemorySpace::LocalSRAM)
+                .map(|(c, _)| c),
+            Some(7),
+            "declared edge should give a direct cost-7 morphism (was {:?})",
+            before.map(|(c, _)| c)
+        );
     }
 
     #[test]

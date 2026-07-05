@@ -1,0 +1,30 @@
+//===- custom_topology_transfer.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A user-defined topology can also declare its transfer edges (morphisms), not
+// just placement: the `transfer <from> -> <to> : <cost>` clause adds an edge to
+// the cost graph the type checker uses (seeded from the topology registry in
+// TypeChecker::new). Here a new GPU_HBM -> Local_SRAM edge is declared; the
+// topology then compiles and lowers like any other.
+
+Topology EdgeTPU {
+  memory: Memory::Local_SRAM
+  transfer Memory::GPU_HBM -> Memory::Local_SRAM : 7
+}
+
+fn main() -> i32 {
+  spawn on(Topology::EdgeTPU) {
+    let x = 1;
+  }
+  return 0;
+}
+
+// CHECK: func.func @main
+// CHECK: vx.spawn topology(
+// CHECK: vx.yield
