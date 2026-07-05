@@ -254,12 +254,14 @@ seeds into.
    `D` from the argument's concrete topology (`pending_topo_vars` + a `Pinned` arm in
    `unify_types`), and `instantiate_function` substitutes the topology variable in the
    `on` topology and `Pinned<_, D>` param/return types, mangling per topology
-   (`identity_on` → `identity_on$GPU`). *Still open:* (a) **body-level** substitution —
-   a `spawn on(D)` / `Pinned<_, D>` annotation *inside* a generic body (the `layernorm`
-   use case); today only signatures are specialized. (b) **`where Transfer<S,D>`
-   constraint solving** — deduce/verify a morphism exists between topology variables at
-   instantiation (use cases 3/4). Both are follow-on slices; the monomorphic core
-   (`identity_on<D>`) unlocks the signature-only cases.
+   (`identity_on` → `identity_on$GPU`). **Body-level substitution also landed:** an
+   explicit `spawn on(Topology::D)` or `Pinned<_, D>` annotation *inside* a generic body
+   is specialized too (in-place `subst_topo_in_stmt`/`_expr` over the instantiated body),
+   so the `layernorm<D>` shape works — `run_on<D>(x: Pinned<i32, Topology::D>)` with a
+   body `spawn on(Topology::D)` lowers to the GPU dispatch id in `run_on$GPU`. *Still
+   open:* **`where Transfer<S,D>` constraint solving** — deduce/verify a morphism exists
+   between topology variables at instantiation (use cases 3/4). This is the last slice;
+   the monomorphic core (use cases 1/2/5/6) is in.
 
 ## Highest-leverage first slice
 
