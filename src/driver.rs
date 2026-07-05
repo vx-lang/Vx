@@ -319,6 +319,9 @@ impl CompilerDriver {
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.verify_seams = self.options.verify_seams;
 
+        // Reject/flag incoherent user-defined topology declarations before checking bodies.
+        checker.check_topology_coherence();
+
         for f in &mut ast.functions {
             checker.check_function(f);
         }

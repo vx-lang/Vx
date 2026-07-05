@@ -88,6 +88,12 @@ pub enum DiagnosticCode {
     /// `Topology <Name> { ... }` and not registered by a plugin). Often a typo of a
     /// built-in; defaults to host-like placement.
     W1025,
+    /// A user-defined topology's memory is unreachable from the host (no transfer path),
+    /// so data can never be moved to it. See the topology coherence check.
+    W1026,
+    /// A declared `relaxed` transfer edge does not preserve visibility (the seam engine
+    /// shows a consumer may read stale data). See the topology coherence check.
+    W1027,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -195,6 +201,9 @@ pub enum DiagnosticCode {
     /// Transfer violates the boundary contract at a seam (per-seam local-completeness
     /// / soundness obligation is `sat`; a stale read can violate the contract).
     E6004,
+    /// A user-defined topology declaration is incoherent: it cannot see its own default
+    /// memory space (`default_space ∉ visibility`). See the topology coherence check.
+    E6005,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

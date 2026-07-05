@@ -1098,6 +1098,75 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Check the coherence obligations of every user-defined topology registered for this
+    /// compilation, emitting diagnostics for incoherent declarations.
+    ///
+    /// Graph-decidable obligations (`default_space` visible, memory reachable from the host)
+    /// come from `arch::descriptor_coherence`. The consistency obligation is discharged
+    /// through the seam engine: a declared `relaxed` edge is modeled as a relaxed transfer of
+    /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
+    /// can be read stale) means the edge does not preserve visibility.
+    pub fn check_topology_coherence(&mut self) {
+        for (name, desc) in crate::arch::custom_topology_descriptors() {
+            for issue in crate::arch::descriptor_coherence(&desc, &self.transfer_cost_graph) {
+                match issue {
+                    crate::arch::CoherenceIssue::DefaultNotVisible => {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6005,
+                            format!(
+                                "topology '{name}' is incoherent: it cannot see its own default \
+                                 memory space (not in its visibility set)"
+                            ),
+                            None,
+                        );
+                    }
+                    crate::arch::CoherenceIssue::MemoryUnreachableFromHost => {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1026,
+                            format!(
+                                "topology '{name}': its memory is unreachable from the host; \
+                                 declare a `transfer` edge so data can reach it"
+                            ),
+                            None,
+                        );
+                    }
+                }
+            }
+
+            // Consistency obligation, discharged via the seam engine: a relaxed edge that
+            // carries a payload does not preserve the buffer's visibility.
+            for edge in &desc.transfers {
+                if edge.sync {
+                    continue;
+                }
+                use crate::hir::seam::{AbsState, Cell, Transfer, Verdict};
+                let reached = AbsState {
+                    cells: vec![("payload".into(), Cell::constant(1))],
+                };
+                let transfer = Transfer::Relaxed {
+                    published: vec!["payload".into()],
+                };
+                if self.seam_solver.is_none() {
+                    self.seam_solver = Some(crate::hir::seam::Solver::new());
+                }
+                let solver = self.seam_solver.as_mut().unwrap();
+                if let Ok(Verdict::Reject { .. }) =
+                    solver.check_seam_buffers(&reached, &transfer, &["payload".to_string()])
+                {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1027,
+                        format!(
+                            "topology '{name}': declared relaxed transfer {:?} -> {:?} does not \
+                             preserve visibility; a consumer may read stale data",
+                            edge.from, edge.to
+                        ),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_seam_hop(
         &mut self,

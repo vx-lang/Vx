@@ -172,11 +172,12 @@ impl<'a> Parser<'a> {
 
         let mut default_space: Option<MemorySpace> = None;
         let mut visibility: Vec<MemorySpace> = Vec::new();
-        let mut transfers: Vec<(MemorySpace, MemorySpace, u32)> = Vec::new();
+        let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
-            // `transfer Memory::<From> -> Memory::<To> : <cost>` -- a declared morphism (an
-            // edge added to the cost graph). Uses the `transfer` keyword, so no colon.
+            // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
+            // morphism (an edge added to the cost graph), with an optional consistency grade
+            // (default synchronizing). Uses the `transfer` keyword, so no colon.
             if self.check(&TokenType::Transfer) {
                 self.advance();
                 let from = self.parse_memory_space()?;
@@ -190,7 +191,29 @@ impl<'a> Parser<'a> {
                 let cost: u32 = cost_str
                     .parse()
                     .map_err(|_| self.error("Transfer cost must be a non-negative integer"))?;
-                transfers.push((from, to, cost));
+                // Optional trailing `relaxed` / `sync` consistency marker.
+                let marker = if let TokenType::Identifier(s) = &self.peek().kind {
+                    Some(s.to_string())
+                } else {
+                    None
+                };
+                let sync = match marker.as_deref() {
+                    Some("relaxed") => {
+                        self.advance();
+                        false
+                    }
+                    Some("sync") => {
+                        self.advance();
+                        true
+                    }
+                    _ => true,
+                };
+                transfers.push(crate::arch::TransferEdge {
+                    from,
+                    to,
+                    cost,
+                    sync,
+                });
                 self.match_token(&TokenType::Comma);
                 continue;
             }

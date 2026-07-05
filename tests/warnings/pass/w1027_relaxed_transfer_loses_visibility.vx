@@ -1,0 +1,17 @@
+// W1027: a declared `relaxed` transfer edge does not preserve visibility. The seam
+// engine (hir::seam) proves a consumer may read the payload stale, so the coherence
+// check flags the declaration.
+// WARN: W1027
+// WARN: does not preserve visibility
+
+Topology RelaxedTPU {
+  memory: Memory::Local_SRAM
+  transfer Memory::CPU_DRAM -> Memory::Local_SRAM : 5 relaxed
+}
+
+fn main() -> i32 {
+  spawn on(Topology::RelaxedTPU) {
+    let x = 1;
+  }
+  return 0;
+}

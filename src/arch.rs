@@ -55,14 +55,59 @@ pub enum Reachability {
 /// behind the enum"): the metadata is now data, not `match` arms. (Introducing a *new*
 /// topology *identity* from source still needs a `Topology::Custom`-style variant + parser
 /// support; this step opens the description, not yet the name.)
+/// A declared transfer edge (morphism): a hop `from -> to` with a `cost` grade and a
+/// consistency grade. `sync` = a synchronizing transfer (release/acquire) that preserves a
+/// boundary contract; `!sync` = a relaxed escape hatch whose visibility the seam engine
+/// cannot guarantee (see coherence checking in `hir`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEdge {
+    pub from: MemorySpace,
+    pub to: MemorySpace,
+    pub cost: u32,
+    pub sync: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct TopologyDescriptor {
     pub default_space: MemorySpace,
     pub visibility: Vec<MemorySpace>,
-    /// Transfer edges `(from, to, cost)` this topology contributes to the cost graph —
-    /// the morphisms it declares. Seeded into a `TransferCostGraph` via
-    /// `seed_from_topology_registry`.
-    pub transfers: Vec<(MemorySpace, MemorySpace, u32)>,
+    /// Transfer edges (morphisms) this topology contributes to the cost graph. Seeded into
+    /// a `TransferCostGraph` via `seed_from_topology_registry`.
+    pub transfers: Vec<TransferEdge>,
+}
+
+/// A way a declared topology fails its coherence obligations. Graph-decidable here; the
+/// consistency obligation (a relaxed edge losing visibility) is discharged separately via
+/// `hir::seam`. See `descriptor_coherence`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoherenceIssue {
+    /// The topology cannot see its own default memory space (`default_space ∉ visibility`).
+    DefaultNotVisible,
+    /// No transfer path reaches the topology's memory from the host, so data can never be
+    /// moved there.
+    MemoryUnreachableFromHost,
+}
+
+/// The graph-decidable coherence obligations for one descriptor, checked against `graph`
+/// (which must already be seeded with the topology's edges). Pure; the consistency
+/// obligation is handled by the caller via the seam engine.
+pub fn descriptor_coherence(
+    desc: &TopologyDescriptor,
+    graph: &TransferCostGraph,
+) -> Vec<CoherenceIssue> {
+    let mut issues = Vec::new();
+    if !desc.visibility.contains(&desc.default_space) {
+        issues.push(CoherenceIssue::DefaultNotVisible);
+    }
+    let reachable = desc.visibility.contains(&MemorySpace::CPUDRAM)
+        || desc.default_space == MemorySpace::CPUDRAM
+        || graph
+            .transfer_path(&MemorySpace::CPUDRAM, &desc.default_space)
+            .is_some();
+    if !reachable {
+        issues.push(CoherenceIssue::MemoryUnreachableFromHost);
+    }
+    issues
 }
 
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
@@ -108,6 +153,19 @@ pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescri
 /// A snapshot of every registered descriptor (built-in + user-defined).
 pub fn all_topology_descriptors() -> Vec<TopologyDescriptor> {
     TOPOLOGY_REGISTRY.read().unwrap().values().cloned().collect()
+}
+
+/// The user-defined (`Custom`) topologies, with their names — for coherence checking.
+pub fn custom_topology_descriptors() -> Vec<(crate::symbol::Symbol, TopologyDescriptor)> {
+    TOPOLOGY_REGISTRY
+        .read()
+        .unwrap()
+        .iter()
+        .filter_map(|(k, d)| match k {
+            crate::syntax::TopologyKind::Custom(name) => Some((name.clone(), d.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 impl Default for TransferCostGraph {
@@ -162,8 +220,8 @@ impl TransferCostGraph {
     /// Add a descriptor's declared transfer edges to the graph (does not recompute costs —
     /// call `precompute_costs` after, or use `seed_from_topology_registry`).
     pub fn apply_descriptor_edges(&mut self, desc: &TopologyDescriptor) {
-        for (from, to, cost) in &desc.transfers {
-            self.add_transfer_edge(from.clone(), to.clone(), *cost);
+        for e in &desc.transfers {
+            self.add_transfer_edge(e.from.clone(), e.to.clone(), e.cost);
         }
     }
 
@@ -831,7 +889,12 @@ mod tests {
         let desc = TopologyDescriptor {
             default_space: MemorySpace::LocalSRAM,
             visibility: vec![MemorySpace::LocalSRAM],
-            transfers: vec![(MemorySpace::GpuHbm, MemorySpace::LocalSRAM, 7)],
+            transfers: vec![TransferEdge {
+                from: MemorySpace::GpuHbm,
+                to: MemorySpace::LocalSRAM,
+                cost: 7,
+                sync: true,
+            }],
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -854,13 +917,47 @@ mod tests {
         let desc = TopologyDescriptor {
             default_space: acme.clone(),
             visibility: vec![acme.clone()],
-            transfers: vec![(MemorySpace::CPUDRAM, acme.clone(), 25)],
+            transfers: vec![TransferEdge {
+                from: MemorySpace::CPUDRAM,
+                to: acme.clone(),
+                cost: 25,
+                sync: true,
+            }],
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
         // precompute_costs now covers custom spaces, so the cached cost is available.
         assert_eq!(graph.transfer_cost(&MemorySpace::CPUDRAM, &acme), Some(25));
         assert!(graph.can_transfer(&MemorySpace::CPUDRAM, &acme));
+    }
+
+    #[test]
+    fn test_descriptor_coherence() {
+        let graph = TransferCostGraph::default();
+        // An island: a custom memory space with no edge from the host is unreachable.
+        let island = MemorySpace::Custom(crate::symbol::Symbol::from("IslandRAM"));
+        let bad = TopologyDescriptor {
+            default_space: island.clone(),
+            visibility: vec![island.clone()],
+            transfers: Vec::new(),
+        };
+        assert!(descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost));
+
+        // default_space not in visibility -> DefaultNotVisible.
+        let bad2 = TopologyDescriptor {
+            default_space: MemorySpace::LocalSRAM,
+            visibility: vec![MemorySpace::CPUDRAM],
+            transfers: Vec::new(),
+        };
+        assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
+
+        // A built-in-backed topology reachable from host is coherent.
+        let good = TopologyDescriptor {
+            default_space: MemorySpace::NPUHBM,
+            visibility: vec![MemorySpace::NPUHBM],
+            transfers: Vec::new(),
+        };
+        assert!(descriptor_coherence(&good, &graph).is_empty());
     }
 
     #[test]

@@ -1,0 +1,15 @@
+// W1026: a user-defined topology whose (novel) memory space has no transfer edge from
+// the host is unreachable -- data can never be moved there. Coherence check.
+// WARN: W1026
+// WARN: unreachable from the host
+
+Topology IslandTPU {
+  memory: Memory::IslandRAM
+}
+
+fn main() -> i32 {
+  spawn on(Topology::IslandTPU) {
+    let x = 1;
+  }
+  return 0;
+}

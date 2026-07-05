@@ -331,11 +331,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             d.transfers,
-            vec![(
-                crate::syntax::MemorySpace::GpuHbm,
-                crate::syntax::MemorySpace::LocalSRAM,
-                7
-            )]
+            vec![crate::arch::TransferEdge {
+                from: crate::syntax::MemorySpace::GpuHbm,
+                to: crate::syntax::MemorySpace::LocalSRAM,
+                cost: 7,
+                sync: true,
+            }]
         );
     }
 
