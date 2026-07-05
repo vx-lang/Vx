@@ -1,0 +1,25 @@
+//===- spawn_result_located.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A device kernel's result is *located* on that device: a `spawn on(D)` whose body
+// yields a bare value `v` has type `Pinned<v, D>`, not `v`. So it matches a Pinned
+// return annotation directly (and reading it elsewhere would require a transfer).
+// This only type-checks because the spawn result is wrapped in Pinned.
+
+fn make() -> Pinned<i32, Topology::NPU[0]> {
+  spawn on(Topology::NPU[0]) {
+    5
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: module

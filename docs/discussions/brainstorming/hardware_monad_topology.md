@@ -250,11 +250,13 @@ seeds into.
 ## Highest-leverage first slice
 
 Two small changes convert the *informal* index tracking into the *real* indexed
-monad, independent of the full refactor:
+monad, independent of the full refactor. **Both landed.**
 
-1. Make `spawn` return `Pinned<B, d>` (`expr.rs:1389`).
-1. Turn `is_type_accessible` into `reachable` returning a morphism (visibility =
-   cost-0 case), so USE-DIRECT vs USE-NEEDS-SEAM is explicit.
+1. **[LANDED]** `spawn on(D)` returns `Pinned<B, d>` for a bare result `B` (a result
+   already `Pinned<..>` is passed through, not double-wrapped; a void spawn is
+   unchanged) — `check_spawnon_expr`.
+1. **[LANDED]** `is_type_accessible` → `reachable` returning a morphism (visibility =
+   cost-0 case); USE-DIRECT vs USE-NEEDS-SEAM is an explicit diagnostic.
 
 ## Open questions
 

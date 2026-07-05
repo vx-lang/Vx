@@ -1543,6 +1543,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_block(stmts, consume, silent);
 
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
+                let has_ret = ret.is_some();
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume, silent);
                 }
@@ -1552,7 +1553,16 @@ impl<'a> TypeChecker<'a> {
                 self.active_topology = prev_top;
                 self.active_memory = prev_mem;
 
-                ret_ty
+                // The result of a device kernel is located ON that device: return
+                // `Pinned<ret_ty, d>` so reading it on another topology re-triggers the USE
+                // rule (visibility or an explicit transfer) instead of being silently treated
+                // as host-local. A void spawn (no result) has nothing to locate; a result the
+                // body already produced as `Pinned<..>` is already located, so don't re-wrap.
+                if has_ret && !matches!(ret_ty, Type::Pinned(..)) {
+                    Type::Pinned(Box::new(ret_ty), (*top).clone())
+                } else {
+                    ret_ty
+                }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
