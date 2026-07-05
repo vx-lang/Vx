@@ -237,15 +237,26 @@ seeds into.
    its memory model is supplied via `register_topology` (plugin API). *Not yet:* a
    source-level `topology { … }` declaration (below), and the `Transfer<From,To>` /
    `Topology` traits.
-1. **`Transfer` + `Topology` traits.** Model morphisms as `Transfer<From,To>` impls
-   and objects as `Topology` impls; the graph becomes their closure.
-1. **User declarations + coherence check.** A `topology { … }` surface that
-   registers descriptors in-language (today: only via the `register_topology` plugin
-   API), admitted iff the coherence obligations discharge. Also restores
-   "unknown-unless-declared" checking (the open parser currently reads a built-in typo
-   as a custom name).
-1. **Topology polymorphism.** `<D: Topology>` params and `where Transfer<S,D>`
-   constraint solving.
+1. **[SUBSTANTIALLY LANDED, as data]** **`Transfer` + `Topology` "traits".** The
+   object (`TopologyDescriptor`) and the morphism (`TransferEdge { from, to, cost,
+   sync }`) exist as data with a language surface (`Topology <Name> { memory / visible
+   / transfer ... }`); the cost graph *is* their closure (`seed_from_topology_registry`
+   + Dijkstra); the consistency grade (`sync`/`relaxed`) is discharged via the seam
+   engine in coherence checking. *Not done:* exposing these as first-class Vx `trait`s
+   you `impl` per user type (`impl Transfer<A,B> for ...`) — largely redundant with the
+   declaration surface, so deprioritized.
+1. **[LANDED]** **User declarations + coherence check.** `Topology <Name> { … }`
+   registers descriptors in-language; admitted iff coherence obligations discharge
+   (E6005 / W1026 / W1027, the last via `hir::seam`). Typo-safety: W1025 for an
+   undeclared/unregistered custom topology. Coherence is scoped per-program (no
+   cross-file leakage). *Still open:* a full "unknown-unless-declared" hard error
+   (kept a warning so plugin-registered topologies still work).
+1. **[NOT STARTED — the big remaining one]** **Topology polymorphism.** `<D: Topology>`
+   params and `where Transfer<S,D>` constraint solving. Needs a new generic-param kind
+   (today `GenericParam` is only `Type`/`Const`; `Function.topology` is a single fixed
+   `Topology`), topology-variable substitution in monomorphization, an `on D` binding,
+   and constraint solving over topology variables at instantiation. A dedicated,
+   design-first effort — not a tail-end slice.
 
 ## Highest-leverage first slice
 
