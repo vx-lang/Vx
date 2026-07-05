@@ -1,0 +1,18 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A topology whose explicit `visible` set excludes its own default memory space is
+// incoherent -- it cannot see its own memory. The coherence check rejects it (E6005).
+
+Topology BadTPU {
+  memory: Memory::Local_SRAM
+  visible: [Memory::CPU_DRAM]
+}
+
+fn main() -> i32 {
+  spawn on(Topology::BadTPU) {
+    let x = 1;
+  }
+  return 0;
+}
+
+// CHECK: E6005

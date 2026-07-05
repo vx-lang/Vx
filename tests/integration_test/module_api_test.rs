@@ -58,6 +58,7 @@ fn test_ak_module_add_function() -> Result<(), String> {
         impls: vec![],
         macros: vec![],
         functions: vec![],
+        topologies: vec![],
     };
 
     // The 'pub' keyword is automatically stripped by our From<&str> implementation

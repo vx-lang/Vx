@@ -320,7 +320,7 @@ impl CompilerDriver {
         checker.verify_seams = self.options.verify_seams;
 
         // Reject/flag incoherent user-defined topology declarations before checking bodies.
-        checker.check_topology_coherence();
+        checker.check_topology_coherence(&ast.topologies);
 
         for f in &mut ast.functions {
             checker.check_function(f);

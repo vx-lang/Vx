@@ -298,7 +298,8 @@ mod tests {
     fn test_parse_topology_decl_registers_descriptor() {
         // A `Topology <Name> { memory: ... }` declaration registers a descriptor. Uses a
         // unique name so parse-time global registration can't perturb other tests.
-        let input = "Topology MyDeclTPU { memory: Memory::Local_SRAM, visible: [Memory::CPU_DRAM] }";
+        let input =
+            "Topology MyDeclTPU { memory: Memory::Local_SRAM, visible: [Memory::CPU_DRAM, Memory::Local_SRAM] }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);

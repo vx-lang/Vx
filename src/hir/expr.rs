@@ -1106,8 +1106,13 @@ impl<'a> TypeChecker<'a> {
     /// through the seam engine: a declared `relaxed` edge is modeled as a relaxed transfer of
     /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
     /// can be read stale) means the edge does not preserve visibility.
-    pub fn check_topology_coherence(&mut self) {
-        for (name, desc) in crate::arch::custom_topology_descriptors() {
+    pub fn check_topology_coherence(&mut self, declared: &[crate::symbol::Symbol]) {
+        for name in declared {
+            let Some(desc) =
+                crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
+            else {
+                continue;
+            };
             for issue in crate::arch::descriptor_coherence(&desc, &self.transfer_cost_graph) {
                 match issue {
                     crate::arch::CoherenceIssue::DefaultNotVisible => {

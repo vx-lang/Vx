@@ -89,6 +89,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
+    checker.check_topology_coherence(&program.topologies);
     for f in &mut program.functions {
         checker.check_function(f);
     }
@@ -272,7 +273,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
-    checker.check_topology_coherence();
+    checker.check_topology_coherence(&program.topologies);
     for f in &mut program.functions {
         checker.check_function(f);
     }

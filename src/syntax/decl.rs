@@ -156,6 +156,11 @@ pub struct Program {
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,
+    /// Names of user-defined topologies declared in this program (`Topology <Name> { ... }`).
+    /// Descriptors live in the (process-global) topology registry; this per-program list
+    /// scopes coherence checking to the topologies this compilation actually declared, so
+    /// one program's declarations don't leak diagnostics into another's.
+    pub topologies: Vec<Symbol>,
 }
 
 pub type VxModule = Program;
@@ -181,6 +186,7 @@ impl Program {
                 .iter()
                 .map(|f| f.clone_signature(false))
                 .collect(),
+            topologies: self.topologies.clone(),
         }
     }
 }

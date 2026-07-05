@@ -162,7 +162,7 @@ impl<'a> Parser<'a> {
     /// The whole effect is registering the descriptor in the global topology registry
     /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
     /// then resolve to `Topology::Custom(<Name>)` and pick up this description.
-    pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, ()> {
+    pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::symbol::Symbol> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => crate::symbol::Symbol::from(s.as_ref()),
@@ -172,6 +172,7 @@ impl<'a> Parser<'a> {
 
         let mut default_space: Option<MemorySpace> = None;
         let mut visibility: Vec<MemorySpace> = Vec::new();
+        let mut visible_given = false;
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -230,6 +231,7 @@ impl<'a> Parser<'a> {
             match field.as_str() {
                 "memory" => default_space = Some(self.parse_memory_space()?),
                 "visible" => {
+                    visible_given = true;
                     self.consume(&TokenType::LeftBracket, "Expected '[' after 'visible'")?;
                     while !self.check(&TokenType::RightBracket) && !self.check(&TokenType::Eof) {
                         visibility.push(self.parse_memory_space()?);
@@ -249,20 +251,22 @@ impl<'a> Parser<'a> {
             Some(s) => s,
             None => return Err(self.error("topology declaration needs a `memory:` field")),
         };
-        // The default space is always visible.
-        if !visibility.contains(&default_space) {
+        // With no explicit `visible`, a topology sees exactly its own default space. An
+        // explicit `visible` list is respected verbatim, so an inconsistent one (default
+        // not listed) is caught by the coherence check (E6005) rather than silently fixed.
+        if !visible_given {
             visibility.push(default_space.clone());
         }
 
         crate::arch::register_topology(
-            crate::syntax::TopologyKind::Custom(name),
+            crate::syntax::TopologyKind::Custom(name.clone()),
             crate::arch::TopologyDescriptor {
                 default_space,
                 visibility,
                 transfers,
             },
         );
-        Ok(())
+        Ok(name)
     }
 
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
@@ -562,6 +566,7 @@ impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> ParseResult<'a, Program> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
+        let mut topologies = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut traits = Vec::new();
@@ -607,7 +612,7 @@ impl<'a> Parser<'a> {
                 // `Topology <Name> { memory: Memory::X, visible: [Memory::Y, ...] }` declares a
                 // user-defined topology. It registers a descriptor in the global topology
                 // registry and is not stored in the AST (its whole effect is the registration).
-                self.parse_topology_decl()?;
+                topologies.push(self.parse_topology_decl()?);
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -625,6 +630,7 @@ impl<'a> Parser<'a> {
             traits,
             impls,
             functions,
+            topologies,
         })
     }
 }
