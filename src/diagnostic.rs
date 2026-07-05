@@ -84,6 +84,10 @@ pub enum DiagnosticCode {
     /// movement happens silently at the use site; write the transfer explicitly to
     /// silence). See docs/discussions/brainstorming/hardware_monad_topology.md.
     W1024,
+    /// Use of a user-defined topology with no registered descriptor (not declared via
+    /// `Topology <Name> { ... }` and not registered by a plugin). Often a typo of a
+    /// built-in; defaults to host-like placement.
+    W1025,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

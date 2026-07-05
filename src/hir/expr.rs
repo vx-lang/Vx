@@ -1398,11 +1398,34 @@ impl<'a> TypeChecker<'a> {
                 top,
                 stmts,
                 ret,
-                span: _,
+                span,
             }) => {
+                let spawn_span = *span;
                 let mut actual_top = top.clone();
                 if actual_top == Topology::Current {
                     actual_top = self.active_topology.clone();
+                }
+
+                // Typo-safety for the open topology set: a user-defined topology with no
+                // registered descriptor (not declared via `Topology <Name> { ... }` and not
+                // registered by a plugin) is often a misspelled built-in. Warn; it still
+                // compiles with host-like placement.
+                if let Topology::Custom(name) = &actual_top {
+                    if crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
+                        name.clone(),
+                    ))
+                    .is_none()
+                    {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1025,
+                            format!(
+                                "unknown topology '{}': not declared (`Topology {} {{ ... }}`) \
+                                 or registered by a plugin; defaulting to host-like placement",
+                                name, name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                        );
+                    }
                 }
 
                 // Validate topology index expressions BEFORE switching context,

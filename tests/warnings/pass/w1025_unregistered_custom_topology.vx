@@ -1,0 +1,11 @@
+// W1025: a user-defined topology used without a registered descriptor (not declared
+// with `Topology <Name> { ... }` and not registered by a plugin) -- often a typo.
+// WARN: W1025
+// WARN: unknown topology 'Undeclaredxyz'
+
+fn main() -> i32 {
+  spawn on(Topology::Undeclaredxyz) {
+    let x = 1;
+  }
+  return 0;
+}

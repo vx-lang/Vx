@@ -295,6 +295,26 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_topology_decl_registers_descriptor() {
+        // A `Topology <Name> { memory: ... }` declaration registers a descriptor. Uses a
+        // unique name so parse-time global registration can't perturb other tests.
+        let input = "Topology MyDeclTPU { memory: Memory::Local_SRAM, visible: [Memory::CPU_DRAM] }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse_topology_decl().unwrap();
+
+        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
+            crate::symbol::Symbol::from("MyDeclTPU"),
+        ))
+        .expect("descriptor should be registered by the declaration");
+        assert_eq!(d.default_space, crate::syntax::MemorySpace::LocalSRAM);
+        // Declared `visible` plus the always-visible default space.
+        assert!(d.visibility.contains(&crate::syntax::MemorySpace::CPUDRAM));
+        assert!(d.visibility.contains(&crate::syntax::MemorySpace::LocalSRAM));
+    }
+
+    #[test]
     fn test_parse_topology_npu_with_index() {
         let top = parse_topology("Topology::NPU[0]");
         if let Topology::NPU(expr) = top {

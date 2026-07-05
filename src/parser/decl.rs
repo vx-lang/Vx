@@ -152,6 +152,74 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse a user-defined topology declaration and register its descriptor:
+    ///
+    ///     Topology <Name> {
+    ///         memory: Memory::<Space>            // required: default placement
+    ///         visible: [Memory::<Space>, ...]    // optional: extra unified-memory reach
+    ///     }
+    ///
+    /// The whole effect is registering the descriptor in the global topology registry
+    /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
+    /// then resolve to `Topology::Custom(<Name>)` and pick up this description.
+    pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, ()> {
+        self.consume(&TokenType::Topology, "Expected 'Topology'")?;
+        let name = match &self.advance().kind {
+            TokenType::Identifier(s) => crate::symbol::Symbol::from(s.as_ref()),
+            _ => return Err(self.error("Expected a name after 'Topology'")),
+        };
+        self.consume(&TokenType::LeftBrace, "Expected '{' in topology declaration")?;
+
+        let mut default_space: Option<MemorySpace> = None;
+        let mut visibility: Vec<MemorySpace> = Vec::new();
+
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let field = match &self.advance().kind {
+                TokenType::Identifier(s) => s.to_string(),
+                other => {
+                    return Err(
+                        self.error(&format!("Expected a topology field name, got {:?}", other))
+                    )
+                }
+            };
+            self.consume(&TokenType::Colon, "Expected ':' after topology field")?;
+            match field.as_str() {
+                "memory" => default_space = Some(self.parse_memory_space()?),
+                "visible" => {
+                    self.consume(&TokenType::LeftBracket, "Expected '[' after 'visible'")?;
+                    while !self.check(&TokenType::RightBracket) && !self.check(&TokenType::Eof) {
+                        visibility.push(self.parse_memory_space()?);
+                        if !self.match_token(&TokenType::Comma) {
+                            break;
+                        }
+                    }
+                    self.consume(&TokenType::RightBracket, "Expected ']' after visible list")?;
+                }
+                other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
+            }
+            self.match_token(&TokenType::Comma);
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}' to close topology declaration")?;
+
+        let default_space = match default_space {
+            Some(s) => s,
+            None => return Err(self.error("topology declaration needs a `memory:` field")),
+        };
+        // The default space is always visible.
+        if !visibility.contains(&default_space) {
+            visibility.push(default_space.clone());
+        }
+
+        crate::arch::register_topology(
+            crate::syntax::TopologyKind::Custom(name),
+            crate::arch::TopologyDescriptor {
+                default_space,
+                visibility,
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
@@ -490,6 +558,11 @@ impl<'a> Parser<'a> {
                 let mut f = self.parse_function()?;
                 f.doc_comment = doc_comment;
                 functions.push(f);
+            } else if self.check(&TokenType::Topology) {
+                // `Topology <Name> { memory: Memory::X, visible: [Memory::Y, ...] }` declares a
+                // user-defined topology. It registers a descriptor in the global topology
+                // registry and is not stored in the AST (its whole effect is the registration).
+                self.parse_topology_decl()?;
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",

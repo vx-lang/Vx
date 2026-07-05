@@ -224,16 +224,26 @@ seeds into.
 
 ## Migration path (incremental, enum-as-seed)
 
-1. **Registry behind the enum.** Introduce a `TopologyDescriptor` registry; seed it
-   with today's variants so `Topology::GPU` is sugar for a registered descriptor.
-   No behavior change.
-1. **Route hardcoded logic through it.** Replace `default_memory_for`, the
-   `is_type_accessible` special-cases, and `topology_to_i32` with registry lookups.
-   Most of the hardcoding falls out here — before any user defines a topology.
+1. **[LANDED]** **Registry behind the enum.** `TopologyDescriptor` +
+   `topology_descriptor()` / `register_topology()` in `arch.rs`, seeded from
+   `builtin_descriptors()`.
+1. **[LANDED]** **Route hardcoded logic through it.** `default_memory_for` and
+   `is_type_accessible` read the registry; the NPU/AccCore/GPU special-cases and the
+   `visibility_edges` field are gone. (`topology_to_i32` still matches, plus a hashed
+   id for `Custom`.)
+1. **[LANDED, identity only]** **Open identity.** `Topology::Custom(Symbol)` +
+   `TopologyKind::Custom(Symbol)`; the parser resolves any non-built-in
+   `Topology::<Name>` to `Custom`. A user topology now flows parse→typecheck→MLIR;
+   its memory model is supplied via `register_topology` (plugin API). *Not yet:* a
+   source-level `topology { … }` declaration (below), and the `Transfer<From,To>` /
+   `Topology` traits.
 1. **`Transfer` + `Topology` traits.** Model morphisms as `Transfer<From,To>` impls
    and objects as `Topology` impls; the graph becomes their closure.
 1. **User declarations + coherence check.** A `topology { … }` surface that
-   registers descriptors, admitted iff the coherence obligations discharge.
+   registers descriptors in-language (today: only via the `register_topology` plugin
+   API), admitted iff the coherence obligations discharge. Also restores
+   "unknown-unless-declared" checking (the open parser currently reads a built-in typo
+   as a custom name).
 1. **Topology polymorphism.** `<D: Topology>` params and `where Transfer<S,D>`
    constraint solving.
 
