@@ -189,16 +189,27 @@ impl TransferCostGraph {
             .unwrap_or(MemorySpace::CPUDRAM)
     }
 
-    /// Precomputes the all-pairs shortest path transfer costs.
+    /// Precomputes the all-pairs shortest path transfer costs. Covers the built-in spaces
+    /// plus any user-defined (`Custom`) spaces that appear in declared transfer edges, so
+    /// `transfer_cost`/`can_transfer` work for custom memory too.
     pub fn precompute_costs(&mut self) {
-        let spaces = [
+        let mut spaces: std::collections::HashSet<MemorySpace> = [
             MemorySpace::CPUDRAM,
             MemorySpace::NPUHBM,
             MemorySpace::GpuHbm,
             MemorySpace::LocalSRAM,
             MemorySpace::NicRam,
             MemorySpace::RemoteHbm,
-        ];
+        ]
+        .into_iter()
+        .collect();
+        for (src, neighbors) in &self.transfer_edges {
+            spaces.insert(src.clone());
+            for (dst, _) in neighbors {
+                spaces.insert(dst.clone());
+            }
+        }
+        let spaces: Vec<MemorySpace> = spaces.into_iter().collect();
         for src in &spaces {
             for dst in &spaces {
                 if let Some((cost, _)) = self.transfer_path(src, dst) {
@@ -832,6 +843,24 @@ mod tests {
             "declared edge should give a direct cost-7 morphism (was {:?})",
             before.map(|(c, _)| c)
         );
+    }
+
+    #[test]
+    fn test_custom_memory_space_edge() {
+        // A user-defined memory space flows through the cost graph via a declared edge.
+        // Hermetic: local graph + local descriptor, no global registry.
+        let acme = MemorySpace::Custom(crate::symbol::Symbol::from("AcmeSRAM"));
+        let mut graph = TransferCostGraph::default();
+        let desc = TopologyDescriptor {
+            default_space: acme.clone(),
+            visibility: vec![acme.clone()],
+            transfers: vec![(MemorySpace::CPUDRAM, acme.clone(), 25)],
+        };
+        graph.apply_descriptor_edges(&desc);
+        graph.precompute_costs();
+        // precompute_costs now covers custom spaces, so the cached cost is available.
+        assert_eq!(graph.transfer_cost(&MemorySpace::CPUDRAM, &acme), Some(25));
+        assert!(graph.can_transfer(&MemorySpace::CPUDRAM, &acme));
     }
 
     #[test]

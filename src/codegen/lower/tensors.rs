@@ -123,6 +123,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             syntax::MemorySpace::GpuHbm => 500,
             syntax::MemorySpace::LocalSRAM => 200,
             syntax::MemorySpace::NicRam | syntax::MemorySpace::RemoteHbm => 300,
+            syntax::MemorySpace::Custom(_) => 400, // user-defined memory space
         };
 
         let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();

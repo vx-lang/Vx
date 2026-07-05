@@ -340,6 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_topology_decl_custom_memory_space() {
+        // A declaration can name a novel (user-defined) memory space, not just a built-in.
+        let input = "Topology AcmeMemTPU { memory: Memory::AcmeSRAM }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser.parse_topology_decl().unwrap();
+
+        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
+            crate::symbol::Symbol::from("AcmeMemTPU"),
+        ))
+        .unwrap();
+        assert_eq!(
+            d.default_space,
+            crate::syntax::MemorySpace::Custom(crate::symbol::Symbol::from("AcmeSRAM"))
+        );
+    }
+
+    #[test]
     fn test_parse_topology_npu_with_index() {
         let top = parse_topology("Topology::NPU[0]");
         if let Topology::NPU(expr) = top {
@@ -405,14 +424,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_memory_space_unknown_error() {
+    fn test_parse_memory_space_non_builtin_is_custom() {
+        // The memory-space set is open: a non-built-in identifier parses as a user-defined
+        // memory space rather than erroring.
         let input = "Memory::GDDR";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
-        let err = parser.parse_memory_space().unwrap_err();
-        let msg = err.format(input);
-        assert!(msg.contains("Unknown memory space GDDR"), "Got: {}", msg);
+        assert_eq!(
+            parser.parse_memory_space().unwrap(),
+            crate::syntax::MemorySpace::Custom(crate::symbol::Symbol::from("GDDR"))
+        );
     }
 
     #[test]

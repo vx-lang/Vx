@@ -1323,6 +1323,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     MemorySpace::GpuHbm => Topology::GPU,
                     MemorySpace::CPUDRAM => Topology::CPU,
+                    // A value in a user-defined memory space is pinned on the like-named
+                    // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
+                    MemorySpace::Custom(name) => Topology::Custom(name.clone()),
                 };
                 Type::Pinned(Box::new(inner_ty.clone()), pinned_top)
             }
@@ -1357,6 +1360,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     MemorySpace::GpuHbm => Topology::GPU,
                     MemorySpace::CPUDRAM => Topology::CPU,
+                    // A value in a user-defined memory space is pinned on the like-named
+                    // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
+                    MemorySpace::Custom(name) => Topology::Custom(name.clone()),
                 };
                 Type::Pinned(base, pinned_top)
             }

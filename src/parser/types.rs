@@ -77,7 +77,9 @@ impl<'a> Parser<'a> {
             "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
             "NIC_RAM" => Ok(MemorySpace::NicRam),
             "Remote_HBM" => Ok(MemorySpace::RemoteHbm),
-            _ => Err(self.error(&format!("Unknown memory space {}", ident))),
+            // Any other identifier is a user-defined memory space (the set is open, like
+            // topologies), so a custom topology can declare a novel memory.
+            other => Ok(MemorySpace::Custom(crate::symbol::Symbol::from(other))),
         }
     }
 

@@ -891,6 +891,7 @@ impl<'c> MeliorGenerator<'c> {
                         Some(MemorySpace::GpuHbm) => 1,
                         Some(MemorySpace::LocalSRAM) => 2,
                         Some(MemorySpace::NicRam) | Some(MemorySpace::RemoteHbm) => 3,
+                        Some(MemorySpace::Custom(_)) => 4, // user-defined memory space
                         Some(MemorySpace::CPUDRAM) | None => 0,
                     };
                     format!("!llvm.ptr<{}>", addr_space)

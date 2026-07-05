@@ -50,6 +50,9 @@ pub enum MemorySpace {
     LocalSRAM,
     NicRam,
     RemoteHbm,
+    /// A user-defined memory space, identified by name. Lets a custom topology declare a
+    /// novel memory (not one of the built-ins). See `Topology::Custom`.
+    Custom(Symbol),
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
