@@ -184,6 +184,13 @@ pub struct TypeChecker<'a> {
     /// z3 checks). Off by default so ordinary compilation pays nothing and needs no
     /// solver; enabled with `vxc --verify-seams`. See `crate::hir::seam`.
     pub verify_seams: bool,
+    /// Topology generic parameters (`<D: Topology>`) of the function currently being
+    /// instantiated. Set around the deduction unify at a generic call so `unify_types`
+    /// can bind a `Pinned<_, D>` param's topology variable instead of demanding equality.
+    pub(crate) pending_topo_vars: std::collections::HashSet<crate::symbol::Symbol>,
+    /// Topology bindings (`D -> concrete topology`) deduced during that unify, consumed by
+    /// `instantiate_function` to specialize `on D` and `Pinned<_, D>`.
+    pub(crate) pending_topo_bindings: std::collections::HashMap<crate::symbol::Symbol, Topology>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -231,6 +238,8 @@ impl<'a> TypeChecker<'a> {
             seam_solver: None,
             seam_contracts: std::collections::HashMap::new(),
             verify_seams: false,
+            pending_topo_vars: std::collections::HashSet::new(),
+            pending_topo_bindings: std::collections::HashMap::new(),
         }
     }
 
@@ -525,7 +534,54 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
+            (Type::Pinned(t1, top1), Type::Pinned(t2, top2)) => {
+                // A topology variable (`Pinned<_, D>` with D a `<D: Topology>` param) binds
+                // to the argument's concrete topology; a concrete topology must match. Then
+                // unify the payload (which may itself carry type variables).
+                let tops_ok = match top1 {
+                    Topology::Custom(name) if self.pending_topo_vars.contains(name) => {
+                        self.pending_topo_bindings
+                            .insert(name.clone(), top2.clone());
+                        true
+                    }
+                    _ => top1 == top2,
+                };
+                tops_ok && self.unify_types_internal(t1, t2, mapping)
+            }
             (t1, t2) => t1 == t2,
+        }
+    }
+
+    /// Replace a topology variable (`Custom(name)` with `name` in `topo_mapping`) by its
+    /// bound concrete topology; leave everything else unchanged.
+    fn substitute_topology(
+        top: Topology,
+        topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
+    ) -> Topology {
+        if let Topology::Custom(name) = &top {
+            if let Some(bound) = topo_mapping.get(name) {
+                return bound.clone();
+            }
+        }
+        top
+    }
+
+    /// Apply `substitute_topology` to the topology component of every located type
+    /// (`Pinned`/`Ref`) inside `ty`.
+    fn substitute_topology_in_type(
+        ty: Type,
+        topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
+    ) -> Type {
+        match ty {
+            Type::Pinned(inner, top) => Type::Pinned(
+                Box::new(Self::substitute_topology_in_type(*inner, topo_mapping)),
+                Self::substitute_topology(top, topo_mapping),
+            ),
+            Type::Ref(inner, mem) => Type::Ref(
+                Box::new(Self::substitute_topology_in_type(*inner, topo_mapping)),
+                mem,
+            ),
+            other => other,
         }
     }
 
@@ -533,6 +589,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         generic_func: &Function,
         mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
+        topo_mapping: &std::collections::HashMap<crate::symbol::Symbol, Topology>,
     ) -> Function {
         let mut mangled_name = generic_func.name.to_string();
         let mut sorted_keys: Vec<&crate::symbol::Symbol> = mapping.keys().collect();
@@ -542,17 +599,25 @@ impl<'a> TypeChecker<'a> {
                 mangled_name.push_str(&format!("${}", ty.mangle()));
             }
         }
+        // Distinguish topology instantiations (`f$GPU` vs `f$NPU`).
+        let mut topo_keys: Vec<&crate::symbol::Symbol> = topo_mapping.keys().collect();
+        topo_keys.sort();
+        for g_name in topo_keys {
+            if let Some(top) = topo_mapping.get(g_name) {
+                mangled_name.push_str(&format!("${:?}", top.kind()));
+            }
+        }
 
         let new_params = generic_func
             .params
             .iter()
             .map(|(n, t)| {
-                let substituted = t.substitute(mapping);
-
+                let substituted = Self::substitute_topology_in_type(t.substitute(mapping), topo_mapping);
                 (n.clone(), substituted)
             })
             .collect();
-        let new_ret = generic_func.return_type.substitute(mapping);
+        let new_ret =
+            Self::substitute_topology_in_type(generic_func.return_type.substitute(mapping), topo_mapping);
 
         let new_body = generic_func
             .body
@@ -564,7 +629,7 @@ impl<'a> TypeChecker<'a> {
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
-            topology: generic_func.topology.clone(),
+            topology: Self::substitute_topology(generic_func.topology.clone(), topo_mapping),
             return_type: new_ret,
             requires: generic_func
                 .requires

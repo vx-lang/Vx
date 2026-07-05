@@ -1,0 +1,29 @@
+//===- topology_polymorphism.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Topology polymorphism (monomorphic core): a function generic over a topology
+// `<D: Topology>` with a `Pinned<_, D>` parameter is monomorphized at the call
+// site. The topology variable `D` is deduced from the argument's concrete topology
+// (here `GPU`, from `spawn on(Topology::GPU)` whose result is `Pinned<i32, GPU>`),
+// and the specialized instance is `identity_on$GPU`.
+
+fn identity_on<D: Topology>(x: Pinned<i32, Topology::D>) -> Pinned<i32, Topology::D> {
+  return x;
+}
+
+fn main() -> i32 {
+  let g = spawn on(Topology::GPU) {
+    5
+  };
+  let r = identity_on(g);
+  return 0;
+}
+
+// CHECK: func.func @identity_on$GPU
+// CHECK: call @identity_on$GPU

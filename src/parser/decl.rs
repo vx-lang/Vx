@@ -61,6 +61,8 @@ impl<'a> Parser<'a> {
                     if self.match_token(&TokenType::Colon) {
                         bound = match self.advance().kind.clone() {
                             TokenType::Identifier(s) => Some(s.to_string()),
+                            // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
+                            TokenType::Topology => Some("Topology".to_string()),
                             _ => return Err(self.error("Expected trait bound identifier")),
                         };
                     }

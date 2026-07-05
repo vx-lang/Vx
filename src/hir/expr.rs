@@ -2153,6 +2153,7 @@ impl<'a> TypeChecker<'a> {
                                 .into_iter()
                                 .map(|(k, v)| (k.into(), v))
                                 .collect(),
+                            &std::collections::HashMap::new(),
                         );
                         let inst_ret = inst_func.return_type.clone();
                         let inst_name = inst_func.name.clone();
@@ -2214,6 +2215,20 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<Type> {
         let mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type> = HashMap::new();
         let mut success = true;
+        // Topology generic parameters (`<D: Topology>`): make `unify_types` bind a
+        // `Pinned<_, D>` param's topology to the argument's concrete topology.
+        self.pending_topo_vars = generic_func
+            .generics
+            .iter()
+            .filter_map(|g| match g {
+                decl::GenericParam::Type {
+                    name,
+                    bound: Some(b),
+                } if b.as_ref() == "Topology" => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        self.pending_topo_bindings.clear();
         if args.len() != generic_func.params.len() {
             if !silent {
                 self.errors.push(format!(
@@ -2279,7 +2294,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         if success {
-            let mut inst_func = self.instantiate_function(generic_func, &mapping);
+            let topo_mapping = std::mem::take(&mut self.pending_topo_bindings);
+            self.pending_topo_vars.clear();
+            let mut inst_func =
+                self.instantiate_function(generic_func, &mapping, &topo_mapping);
             let inst_ret = inst_func.return_type.clone();
             let inst_name = inst_func.name.clone();
 
@@ -2694,7 +2712,8 @@ impl<'a> TypeChecker<'a> {
                             bound: None,
                         })
                         .collect();
-                    let mut method_func = self.instantiate_function(&modified_func, &mapping);
+                    let mut method_func =
+                        self.instantiate_function(&modified_func, &mapping, &std::collections::HashMap::new());
 
                     // Create a unique mangled name for the method based on the target type
                     let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
