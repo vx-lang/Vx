@@ -70,10 +70,25 @@ but `Ref<T, GpuHbm>` got 1 for the same buffer. All four codegen sites are thin 
 
 ## Tier 3 — stubs / unwired paths (device codegen honesty)
 
-### 5. `VxHardwarePlugin` is not wired into the pipeline `[ ]`
+### 5. `VxHardwarePlugin` is not wired into the pipeline `[~]`
 
 `apple_npe.lower_to_binary` returns MLIR-string bytes (`src/plugin/apple_npe.rs:38`), and
 nothing in `driver.rs`/`codegen/` calls the plugin trait. Architecture-only.
+
+**Partially landed (selection + consultation):** the trait is now consulted during
+compilation. `plugin::plugin_for(dispatch_id)` exposes a static built-in `PluginRegistry`
+(seeded with `AppleNPEPlugin` on macOS), and the `vx.spawn` lowering
+(`codegen/lower/tensors.rs`) looks it up by the region's topology dispatch id — stamping a
+`plugin = "<name>"` attribute on the op so the emitted IR records which backend owns the
+region. `AppleNPEPlugin::target_topology()` was reconciled to the real ANE dispatch id
+(`arch::topology_dispatch_id(ANE)` = 400) instead of the stale hardcoded `3`. Tests:
+`plugin::tests::apple_npe_is_selected_by_ane_dispatch_id` and the macOS-gated
+`ane_plugin_dispatch.vx` (`run_middle_end_test` now honors `// REQUIRES: macos`).
+
+**Still open (issue #171):** `lower_to_binary` is still a byte passthrough (honestly
+documented now, not a fake "compiled model"); the trait's MLIR types are mocks
+(`mlir::Module { text: String }`) rather than real melior handles, so `is_op_supported` /
+`register_passes` / a genuine device-binary lowering path remain future work.
 
 ### 6. `--emit-llvm` / `--target` are shallow `[x]`
 
@@ -133,11 +148,12 @@ separately-scoped change.
 architecture). #1 and #4 build directly on the topology work already landed and are the
 highest value-per-effort.
 
-**Status:** items 1, 2, 3, 4, 6, 8 are landed (see the `[x]` sections above); #9 is
-partially landed (the per-compilation snapshot-reset). Remaining — larger, separately-scoped
-device/architecture work:
+**Status:** items 1, 2, 3, 4, 6, 8 are landed (see the `[x]` sections above); #5 and #9 are
+partially landed (plugin selection/consultation, and the per-compilation snapshot-reset).
+Remaining — larger, separately-scoped device/architecture work:
 
-- **#5** wire `VxHardwarePlugin` into the pipeline (needs a real device-binary path).
+- **#5** (remainder) a real device-binary `lower_to_binary` + porting the trait onto real
+  melior MLIR handles (so `is_op_supported` / `register_passes` can run).
 - **#7** generalize the ANE dispatcher beyond the 4×4 demo shapes (bounded by fixed-shape
   CoreML primitives — realistically a documented demo limit until real device models exist).
 - **#9** (remainder) thread a fully thread-isolated per-compilation registry rather than the

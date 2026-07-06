@@ -1,0 +1,25 @@
+//===- ane_plugin_dispatch.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The compiler consults the hardware-plugin registry while lowering a device
+// `spawn`: a region targeting a topology a plugin claims (ANE, dispatch id 400)
+// is stamped with that plugin's identity, so the emitted IR records which backend
+// owns it. This is a compile-time MLIR check (no ANE hardware needed), gated to
+// macOS where the Apple NPE plugin is registered.
+//
+// REQUIRES: macos
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  spawn on(Topology::ANE) {
+    let _x = 1;
+  }
+  return 0;
+}
+
+// CHECK: vx.spawn topology(400)
+// CHECK: plugin = "Apple_NPE_v1"

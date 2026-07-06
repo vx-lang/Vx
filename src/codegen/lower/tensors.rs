@@ -73,6 +73,18 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
             .add_attributes(&[(Identifier::new(gen.context, "topology"), top_attr)])
             .add_regions([region]);
 
+        // Topology → plugin selection: if a hardware plugin claims this topology, record its
+        // identity on the op so the emitted IR reflects which backend owns the region (a
+        // later lowering / the runtime dispatcher can route on it). This is the point where
+        // the `VxHardwarePlugin` trait is actually consulted during compilation.
+        if let Some(plugin) = crate::plugin::plugin_for(topology_id as u32) {
+            let plugin_attr =
+                melior::ir::attribute::StringAttribute::new(gen.context, &plugin.plugin_name())
+                    .into();
+            spawn_builder = spawn_builder
+                .add_attributes(&[(Identifier::new(gen.context, "plugin"), plugin_attr)]);
+        }
+
         if !result_types.is_empty() {
             spawn_builder = spawn_builder.add_results(&result_types);
         }

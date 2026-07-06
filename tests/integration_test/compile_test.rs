@@ -163,6 +163,12 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
 fn run_middle_end_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
+    // Host-gated MLIR checks (e.g. a device plugin only registered on macOS) are skipped
+    // where the precondition does not hold, mirroring the backend runner's lit-style gate.
+    if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
     // Extract // CHECK: lines
     let check_lines: Vec<String> = source
         .lines()

@@ -23,8 +23,9 @@ impl VxHardwarePlugin for AppleNPEPlugin {
     }
 
     fn target_topology(&self) -> TopologyID {
-        // Assume ANE has topology ID 3 based on src/codegen.rs Topology matching
-        3
+        // The ANE's runtime dispatch id, from the single source of truth in `arch`, so the
+        // plugin is keyed by the same number codegen stamps on `vx.spawn topology(N)`.
+        crate::arch::topology_dispatch_id(&crate::syntax::Topology::ANE) as TopologyID
     }
 
     fn preferred_tensor_layout(&self) -> TensorLayout {
@@ -36,9 +37,10 @@ impl VxHardwarePlugin for AppleNPEPlugin {
     }
 
     fn lower_to_binary(&self, module: mlir::Module) -> Result<Vec<u8>, PluginError> {
-        // In a real implementation, this would invoke the Apple Neural Engine compiler
-        // or emit a compiled model. Since we use MLIR string emission, we simply
-        // return the string bytes so `codegen.rs` can embed it.
+        // Placeholder: a real backend would invoke the ANE/CoreML compiler (as `build.rs`
+        // does for the fixed-shape primitives) and return a compiled model. Until the trait
+        // is ported onto real melior types, this passes the serialized module bytes through
+        // unchanged rather than fabricating a "compiled" artifact. See issue #171.
         Ok(module.text.into_bytes())
     }
 }
