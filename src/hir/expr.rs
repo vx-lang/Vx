@@ -593,7 +593,10 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                         );
                     }
-                    return Type::Tensor(ElementType::F32, vec![], None);
+                    // Poison the result rather than lying that it's an f32 tensor: the
+                    // diagnostic above already fails compilation, and `Unknown` unifies with
+                    // anything so it does not spawn cascade errors downstream.
+                    return Type::Unknown;
                 } else if lookup_res.is_none() {
                     if let Some((ret_ty, _, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
@@ -757,7 +760,7 @@ impl<'a> TypeChecker<'a> {
                             let msg = format!("Undefined variable '{}'", name);
                             self.errors.push(msg);
                         }
-                        Type::Tensor(ElementType::F32, vec![], None) // Default placeholder on error
+                        Type::Unknown // Poison, not a silent f32 tensor (see `Undefined variable`)
                     }
                 }
             }
@@ -1305,7 +1308,7 @@ impl<'a> TypeChecker<'a> {
                         source_mem, target_mem
                     ));
                 }
-                return Type::Tensor(ElementType::F32, vec![], None);
+                return Type::Unknown; // Poison: no valid transfer, don't fake an f32 tensor
             }
 
             let (cost, path) = path_result.unwrap();

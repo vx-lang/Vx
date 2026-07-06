@@ -17,7 +17,7 @@ a bare range or `vec![]` in an unexpected position crashes the compiler.
 unsupported construct (or lower `Range`/`VecMacro` properly); `MacroCall` stays an
 `unreachable!` (must be expanded before codegen) but with a clear message.
 
-### 2. Type-checker masks errors with a placeholder `[ ]`
+### 2. Type-checker masks errors with a placeholder `[x]`
 
 `src/hir/expr.rs:760` returns `Type::Tensor(F32, [], None)` as a "Default placeholder on
 error"; a failed lookup silently becomes an f32 tensor → wrong downstream codegen. Similar
@@ -25,6 +25,13 @@ error"; a failed lookup silently becomes an f32 tensor → wrong downstream code
 
 **Fix:** emit a diagnostic and return a dedicated poison/unknown type that suppresses
 cascade errors rather than an f32 tensor that silently type-checks.
+
+**Landed:** the three genuine error paths (undefined variable, use-of-moved `E4001`, and
+"no hardware transfer path") now return `Type::Unknown` after their diagnostic instead of a
+fake f32 tensor. `Unknown` already prints as `?` and unifies with anything, so it poisons
+the result without spawning cascade errors. The `expr.rs:332` numeric coercion and
+`expr.rs:2810` built-in transfer methods are load-bearing *policy* (literal→f32 coercion,
+`.to_device()`/`.with_memory()` lowering), not error masking, and are intentionally kept.
 
 ### 3. Internal-invariant panics on the codegen hot path `[ ]`
 
