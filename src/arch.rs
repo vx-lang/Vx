@@ -152,7 +152,12 @@ pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescri
 
 /// A snapshot of every registered descriptor (built-in + user-defined).
 pub fn all_topology_descriptors() -> Vec<TopologyDescriptor> {
-    TOPOLOGY_REGISTRY.read().unwrap().values().cloned().collect()
+    TOPOLOGY_REGISTRY
+        .read()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect()
 }
 
 /// The user-defined (`Custom`) topologies, with their names — for coherence checking.
@@ -941,7 +946,9 @@ mod tests {
             visibility: vec![island.clone()],
             transfers: Vec::new(),
         };
-        assert!(descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost));
+        assert!(
+            descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
+        );
 
         // default_space not in visibility -> DefaultNotVisible.
         let bad2 = TopologyDescriptor {

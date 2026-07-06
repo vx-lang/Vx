@@ -1110,9 +1110,9 @@ impl<'a> TypeChecker<'a> {
     /// can be read stale) means the edge does not preserve visibility.
     pub fn check_topology_coherence(&mut self, declared: &[crate::symbol::Symbol]) {
         for name in declared {
-            let Some(desc) =
-                crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
-            else {
+            let Some(desc) = crate::arch::topology_descriptor(
+                &crate::syntax::TopologyKind::Custom(name.clone()),
+            ) else {
                 continue;
             };
             for issue in crate::arch::descriptor_coherence(&desc, &self.transfer_cost_graph) {
@@ -2310,9 +2310,7 @@ impl<'a> TypeChecker<'a> {
             // Discharge `where Transfer<A, B>` now that the topology variables are bound:
             // a transfer path from A's memory to B's must exist in the cost graph.
             for (a, b) in &generic_func.where_transfers {
-                if let (Some(ta), Some(tb)) =
-                    (topo_mapping.get(a), topo_mapping.get(b))
-                {
+                if let (Some(ta), Some(tb)) = (topo_mapping.get(a), topo_mapping.get(b)) {
                     let ma = crate::arch::TransferCostGraph::default_memory_for(ta);
                     let mb = crate::arch::TransferCostGraph::default_memory_for(tb);
                     if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
@@ -2328,8 +2326,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            let mut inst_func =
-                self.instantiate_function(generic_func, &mapping, &topo_mapping);
+            let mut inst_func = self.instantiate_function(generic_func, &mapping, &topo_mapping);
             let inst_ret = inst_func.return_type.clone();
             let inst_name = inst_func.name.clone();
 
@@ -2744,8 +2741,11 @@ impl<'a> TypeChecker<'a> {
                             bound: None,
                         })
                         .collect();
-                    let mut method_func =
-                        self.instantiate_function(&modified_func, &mapping, &std::collections::HashMap::new());
+                    let mut method_func = self.instantiate_function(
+                        &modified_func,
+                        &mapping,
+                        &std::collections::HashMap::new(),
+                    );
 
                     // Create a unique mangled name for the method based on the target type
                     let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);

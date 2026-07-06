@@ -738,12 +738,15 @@ impl<'a> TypeChecker<'a> {
             .params
             .iter()
             .map(|(n, t)| {
-                let substituted = Self::substitute_topology_in_type(t.substitute(mapping), topo_mapping);
+                let substituted =
+                    Self::substitute_topology_in_type(t.substitute(mapping), topo_mapping);
                 (n.clone(), substituted)
             })
             .collect();
-        let new_ret =
-            Self::substitute_topology_in_type(generic_func.return_type.substitute(mapping), topo_mapping);
+        let new_ret = Self::substitute_topology_in_type(
+            generic_func.return_type.substitute(mapping),
+            topo_mapping,
+        );
 
         let new_body = generic_func
             .body

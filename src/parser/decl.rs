@@ -183,10 +183,12 @@ impl<'a> Parser<'a> {
 
     /// Parse a user-defined topology declaration and register its descriptor:
     ///
-    ///     Topology <Name> {
-    ///         memory: Memory::<Space>            // required: default placement
-    ///         visible: [Memory::<Space>, ...]    // optional: extra unified-memory reach
-    ///     }
+    /// ```text
+    /// Topology <Name> {
+    ///     memory: Memory::<Space>            // required: default placement
+    ///     visible: [Memory::<Space>, ...]    // optional: extra unified-memory reach
+    /// }
+    /// ```
     ///
     /// The whole effect is registering the descriptor in the global topology registry
     /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
@@ -194,10 +196,13 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::symbol::Symbol> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         let name = match &self.advance().kind {
-            TokenType::Identifier(s) => crate::symbol::Symbol::from(s.as_ref()),
+            TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
             _ => return Err(self.error("Expected a name after 'Topology'")),
         };
-        self.consume(&TokenType::LeftBrace, "Expected '{' in topology declaration")?;
+        self.consume(
+            &TokenType::LeftBrace,
+            "Expected '{' in topology declaration",
+        )?;
 
         let mut default_space: Option<MemorySpace> = None;
         let mut visibility: Vec<MemorySpace> = Vec::new();
@@ -274,7 +279,10 @@ impl<'a> Parser<'a> {
             }
             self.match_token(&TokenType::Comma);
         }
-        self.consume(&TokenType::RightBrace, "Expected '}' to close topology declaration")?;
+        self.consume(
+            &TokenType::RightBrace,
+            "Expected '}' to close topology declaration",
+        )?;
 
         let default_space = match default_space {
             Some(s) => s,

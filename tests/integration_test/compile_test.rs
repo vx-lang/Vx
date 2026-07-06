@@ -36,6 +36,49 @@ use rayon::prelude::*;
 use vxc::hir::TypeChecker;
 use vxc::jit::execute_mlir;
 
+// Whether the ANE/CoreML backend is actually available: the CoreML primitive models are
+// built by build.rs (needs coremltools + `xcrun coremlc`) into the project root. When they
+// are absent the dispatcher falls back to CPU, so tests asserting ANE execution are skipped.
+fn ane_models_available() -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("matmul_4x4.mlmodelc")
+        .exists()
+}
+
+// Minimal FileCheck-style match for an EXPECT line: a `{{...}}` hole matches any text, so
+// the literal segments around the holes must appear in order in `out`. Without a hole this
+// is a plain substring check. (Lets tests use `{{[0-9]+}}` for non-deterministic values like
+// a JIT kernel counter without pulling in a regex engine.)
+fn expect_matches(out: &str, expect: &str) -> bool {
+    if !expect.contains("{{") {
+        return out.contains(expect);
+    }
+    let mut segments: Vec<&str> = Vec::new();
+    let mut rest = expect;
+    while let Some(start) = rest.find("{{") {
+        segments.push(&rest[..start]);
+        match rest[start..].find("}}") {
+            Some(end) => rest = &rest[start + end + 2..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    segments.push(rest);
+    let mut idx = 0;
+    for seg in segments {
+        if seg.is_empty() {
+            continue;
+        }
+        match out[idx..].find(seg) {
+            Some(pos) => idx += pos + seg.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let _source = fs::read_to_string(path).expect("Failed to read test file");
@@ -451,10 +494,16 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    // Tests that assert real ANE execution need the CoreML models (built by build.rs).
+    // Absent them the dispatcher runs on the CPU fallback, which won't print the ANE output.
+    if source.contains("// REQUIRES: ane") && !ane_models_available() {
+        return Ok(());
+    }
+
     let out = execute_mlir(&mlir_str, vec![], 0, false).expect("JIT execution failed");
 
     for expect in expect_lines {
-        if !out.contains(&expect) {
+        if !expect_matches(&out, &expect) {
             return Err(format!(
                 "Backend output mismatch on {:?}.\nExpected to find: `{}`\nActual Output:\n{}",
                 path, expect, out

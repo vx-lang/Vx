@@ -312,7 +312,9 @@ mod tests {
         assert_eq!(d.default_space, crate::syntax::MemorySpace::LocalSRAM);
         // Declared `visible` plus the always-visible default space.
         assert!(d.visibility.contains(&crate::syntax::MemorySpace::CPUDRAM));
-        assert!(d.visibility.contains(&crate::syntax::MemorySpace::LocalSRAM));
+        assert!(d
+            .visibility
+            .contains(&crate::syntax::MemorySpace::LocalSRAM));
     }
 
     #[test]
