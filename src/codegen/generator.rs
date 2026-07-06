@@ -905,14 +905,9 @@ impl<'c> MeliorGenerator<'c> {
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
                 } else {
-                    let addr_space = match mem {
-                        Some(MemorySpace::NPUHBM) => 1,
-                        Some(MemorySpace::GpuHbm) => 1,
-                        Some(MemorySpace::LocalSRAM) => 2,
-                        Some(MemorySpace::NicRam) | Some(MemorySpace::RemoteHbm) => 3,
-                        Some(MemorySpace::Custom(_)) => 4, // user-defined memory space
-                        Some(MemorySpace::CPUDRAM) | None => 0,
-                    };
+                    let addr_space = mem
+                        .as_ref()
+                        .map_or(0, crate::arch::memory_space_address_space);
                     format!("!llvm.ptr<{}>", addr_space)
                 }
             }
@@ -1204,31 +1199,9 @@ impl<'c> MeliorGenerator<'c> {
             shape_str.push('x');
         }
 
-        let addr_space = match top {
-            Some(syntax::Topology::CPU)
-            | Some(syntax::Topology::CpuAvx512)
-            | Some(syntax::Topology::CpuNeon)
-            | Some(syntax::Topology::Current) => 0,
-            Some(syntax::Topology::NPU(_)) | Some(syntax::Topology::Slice(_, _, _)) => 1,
-            Some(syntax::Topology::AccCore(_)) => 2,
-            Some(syntax::Topology::AMX) => 3,
-            Some(syntax::Topology::ANE) => 4,
-            Some(syntax::Topology::GPU) => 5,
-            // User-defined topology: address space follows its registered default memory
-            // space (same encoding as the built-ins above).
-            Some(syntax::Topology::Custom(name)) => {
-                use syntax::MemorySpace::*;
-                match crate::arch::topology_descriptor(&syntax::TopologyKind::Custom(name.clone()))
-                    .map(|d| d.default_space)
-                {
-                    Some(NPUHBM) => 1,
-                    Some(LocalSRAM) => 2,
-                    Some(GpuHbm) => 5,
-                    _ => 0,
-                }
-            }
-            None => 0,
-        };
+        // Address space follows the topology's default memory space (single source of truth
+        // in `arch`), so on-`Topology` and in-`MemorySpace` values of one buffer agree.
+        let addr_space = top.as_ref().map_or(0, crate::arch::topology_address_space);
 
         let memref_str = if addr_space != 0 {
             format!("memref<{}{}, {}>", shape_str, ty_str, addr_space)

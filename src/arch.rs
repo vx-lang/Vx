@@ -110,6 +110,86 @@ pub fn descriptor_coherence(
     issues
 }
 
+// ---- Runtime dispatch ids ----------------------------------------------------------------
+// The device a `vx.spawn topology(N)` / `vx.transfer target_topology = N` targets. Kept here
+// (next to the topology registry) so the topology-based and memory-space-based mappings stay
+// adjacent and cannot silently diverge: a topology and its canonical memory space share an id
+// (e.g. GPU and GpuHbm are both 500), and `Custom` uses the same FNV scheme in both.
+
+/// A stable per-name dispatch id in the 1000..1999 band. FNV-1a (not `DefaultHasher`, whose
+/// algorithm may change between Rust releases) so the id is reproducible across toolchains --
+/// it is part of the runtime dispatch contract.
+fn fnv_dispatch_id(name: &str) -> i32 {
+    let mut hash: u32 = 2166136261;
+    for b in name.as_bytes() {
+        hash ^= *b as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    1000 + (hash % 1000) as i32
+}
+
+fn topology_index(expr: &crate::syntax::Expr) -> i32 {
+    if let crate::syntax::Expr::Number(n) = expr {
+        n.value.parse::<i32>().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// Dispatch id for a topology (`vx.spawn topology(N)`). Single source of truth.
+pub fn topology_dispatch_id(top: &Topology) -> i32 {
+    match top {
+        Topology::CPU | Topology::Current => 0,
+        Topology::NPU(e) => 100 + topology_index(e),
+        Topology::AccCore(e) => 200 + topology_index(e),
+        Topology::AMX => 300,
+        Topology::ANE => 400,
+        Topology::GPU => 500,
+        Topology::CpuAvx512 => 600,
+        Topology::CpuNeon => 700,
+        Topology::Slice(..) => 900,
+        Topology::Custom(name) => fnv_dispatch_id(name),
+    }
+}
+
+/// Dispatch id for a memory-space transfer target (`vx.transfer target_topology = N`). Each
+/// space maps to its canonical owning topology's id, so it agrees with `topology_dispatch_id`.
+pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
+    match mem {
+        MemorySpace::CPUDRAM => 0,     // CPU
+        MemorySpace::NPUHBM => 100,    // NPU
+        MemorySpace::LocalSRAM => 200, // AccCore
+        MemorySpace::GpuHbm => 500,    // GPU
+        // Network memory has no dedicated topology; kept at 300 (overlaps AMX) for now.
+        MemorySpace::NicRam | MemorySpace::RemoteHbm => 300,
+        MemorySpace::Custom(name) => fnv_dispatch_id(name),
+    }
+}
+
+/// The MLIR/LLVM address space for a memory space. Distinct from the dispatch ids above: this
+/// is the coarse `memref<..., N>` / `!llvm.ptr<N>` annotation the backend understands, not a
+/// runtime device id.
+pub fn memory_space_address_space(mem: &MemorySpace) -> i32 {
+    match mem {
+        MemorySpace::CPUDRAM => 0,
+        // Device global memory (NVPTX/AMDGPU global is addrspace 1).
+        MemorySpace::NPUHBM | MemorySpace::GpuHbm => 1,
+        MemorySpace::LocalSRAM => 2, // on-chip scratchpad
+        MemorySpace::NicRam | MemorySpace::RemoteHbm => 3,
+        MemorySpace::Custom(_) => 4,
+    }
+}
+
+/// The address space for a topology, derived from its default memory space so that a value
+/// expressed as `Pinned<T, GPU>` and one as `Ref<T, GpuHbm>` land in the same address space
+/// (previously two separate maps disagreed -- GPU was 5 but GpuHbm was 1).
+pub fn topology_address_space(top: &Topology) -> i32 {
+    if matches!(top, Topology::Current) {
+        return 0;
+    }
+    memory_space_address_space(&TransferCostGraph::default_memory_for(top))
+}
+
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
 /// `visibility` includes each topology's own `default_space`, which subsumes the old
 /// "a topology sees its own memory" special-cases (NPU→NPUHBM, AccCore→LocalSRAM,

@@ -116,15 +116,9 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         let (src_val, src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
 
-        // Map memory space to topology target.
-        let target_topology_id = match self.space {
-            syntax::MemorySpace::CPUDRAM => 0,
-            syntax::MemorySpace::NPUHBM => 100,
-            syntax::MemorySpace::GpuHbm => 500,
-            syntax::MemorySpace::LocalSRAM => 200,
-            syntax::MemorySpace::NicRam | syntax::MemorySpace::RemoteHbm => 300,
-            syntax::MemorySpace::Custom(_) => 400, // user-defined memory space
-        };
+        // Map memory space to its canonical topology's dispatch id (single source of truth
+        // in `arch`, adjacent to `topology_dispatch_id` so the two mappings stay in sync).
+        let target_topology_id = crate::arch::memory_space_dispatch_id(&self.space);
 
         let top_attr = IntegerAttribute::new(gen.i32_ty, target_topology_id as i64).into();
 

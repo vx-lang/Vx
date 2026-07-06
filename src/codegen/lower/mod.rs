@@ -125,44 +125,10 @@ impl MeliorOpInfo for LogicalOp {
     }
 }
 
+/// Runtime dispatch id for a topology. Thin delegate to the single source of truth in
+/// `arch`, which co-locates this with the memory-space mapping so the two cannot diverge.
 pub(crate) fn topology_to_i32(top: &syntax::Topology) -> i32 {
-    use syntax::Topology::*;
-    match top {
-        CPU => 0,
-        NPU(expr) => {
-            if let syntax::Expr::Number(n) = &**expr {
-                100 + n.value.parse::<i32>().unwrap_or(0)
-            } else {
-                100
-            }
-        }
-        AccCore(expr) => {
-            if let syntax::Expr::Number(n) = &**expr {
-                200 + n.value.parse::<i32>().unwrap_or(0)
-            } else {
-                200
-            }
-        }
-        AMX => 300,
-        ANE => 400,
-        GPU => 500,
-        CpuAvx512 => 600,
-        CpuNeon => 700,
-        Slice(_, _, _) => 900,
-        // User-defined topology: a stable per-name dispatch id in the 1000..1999 band.
-        // FNV-1a (not DefaultHasher, whose algorithm may change between Rust releases) so
-        // the dispatch id is reproducible across toolchains -- it is part of the runtime
-        // dispatch contract.
-        Custom(name) => {
-            let mut hash: u32 = 2166136261;
-            for b in name.as_bytes() {
-                hash ^= *b as u32;
-                hash = hash.wrapping_mul(16777619);
-            }
-            1000 + (hash % 1000) as i32
-        }
-        Current => 0,
-    }
+    crate::arch::topology_dispatch_id(top)
 }
 
 pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, String> {

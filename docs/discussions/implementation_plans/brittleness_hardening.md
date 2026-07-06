@@ -34,7 +34,7 @@ where a diagnostic belongs. (Tracked together with #4.)
 
 ## Tier 2 — hardcoded / duplicated (divergence risk)
 
-### 4. Three separate hardcoded topology→int maps `[ ]`
+### 4. Three separate hardcoded topology→int maps `[x]`
 
 `topology_to_i32` (`src/codegen/lower/mod.rs:146`), a *different* `target_topology_id`
 (`src/codegen/lower/tensors.rs:120`), and two `addr_space` matches
@@ -43,6 +43,14 @@ single source of truth. `Custom` gets an FNV-hash id (`mod.rs:162`, collision-pr
 
 **Fix:** add `dispatch_id()` / `address_space()` to the topology registry (or derive from
 the descriptor), route all four sites through it, delete the duplicated matches.
+
+**Landed:** `arch` now owns all four mappings as the single source of truth —
+`topology_dispatch_id` / `memory_space_dispatch_id` (runtime `vx.spawn`/`vx.transfer` ids,
+sharing the FNV scheme for `Custom` so a topology and its canonical memory space agree) and
+`memory_space_address_space` / `topology_address_space` (the coarse `memref<…, N>` /
+`!llvm.ptr<N>` annotation). The topology address space now *derives* from the topology's
+default memory space, fixing a latent divergence where `Pinned<T, GPU>` got address space 5
+but `Ref<T, GpuHbm>` got 1 for the same buffer. All four codegen sites are thin delegates.
 
 ## Tier 3 — stubs / unwired paths (device codegen honesty)
 
