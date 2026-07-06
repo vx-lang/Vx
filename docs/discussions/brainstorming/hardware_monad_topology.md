@@ -258,10 +258,15 @@ seeds into.
    explicit `spawn on(Topology::D)` or `Pinned<_, D>` annotation *inside* a generic body
    is specialized too (in-place `subst_topo_in_stmt`/`_expr` over the instantiated body),
    so the `layernorm<D>` shape works — `run_on<D>(x: Pinned<i32, Topology::D>)` with a
-   body `spawn on(Topology::D)` lowers to the GPU dispatch id in `run_on$GPU`. *Still
-   open:* **`where Transfer<S,D>` constraint solving** — deduce/verify a morphism exists
-   between topology variables at instantiation (use cases 3/4). This is the last slice;
-   the monomorphic core (use cases 1/2/5/6) is in.
+   body `spawn on(Topology::D)` lowers to the GPU dispatch id in `run_on$GPU`.
+   **`where Transfer<S,D>` also landed:** `where` is a keyword; the constraints are
+   recorded on the function and, at a generic call, discharged against the cost graph
+   once the variables are deduced (a `transfer_path` from A's memory to B's must exist,
+   else the call is rejected). This completes use case 3 and the constraint half of 4.
+   *Remaining nicety:* **D-inference from the return type** — so
+   `stage<S,D>(x: Pinned<T,S>) -> Pinned<T,D>` binds D from the call's expected type
+   rather than needing D to appear in an argument; today every topology variable must be
+   deducible from the arguments.
 
 ## Highest-leverage first slice
 
