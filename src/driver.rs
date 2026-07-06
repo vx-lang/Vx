@@ -91,6 +91,11 @@ pub struct DriverOptions {
     #[arg(long = "emit-seam-certs")]
     pub emit_seam_certs: bool,
 
+    /// Target backend for emitted LLVM IR: tags the module with the target triple and
+    /// data layout (x86_64, aarch64, nvptx64, amdgcn). Affects `--emit-llvm` output.
+    #[arg(long = "target")]
+    pub target: Option<String>,
+
     /// Disable Vx optimizations
     #[arg(long = "disable-vx-optimizations")]
     pub disable_vx_optimizations: bool,
@@ -458,7 +463,12 @@ impl CompilerDriver {
 
         match self.options.action {
             Action::EmitMlir | Action::EmitLlvm => {
-                let mlir_str = format!("{}", module.as_operation());
+                let mut mlir_str = format!("{}", module.as_operation());
+                if self.options.action == Action::EmitLlvm {
+                    if let Some(target) = &self.options.target {
+                        mlir_str = tag_llvm_target(&mlir_str, target);
+                    }
+                }
                 println!("{}", mlir_str);
             }
             Action::RunJit => {
@@ -621,6 +631,49 @@ pub fn apply_mlir_opt(
 
     let out_str = std::fs::read_to_string(temp_out.path()).unwrap_or_default();
     Ok(out_str)
+}
+
+/// The LLVM target triple and data layout for a named backend.
+fn target_triple_and_datalayout(target: &str) -> Option<(&'static str, &'static str)> {
+    match target {
+        "x86_64" | "x86-64" | "x86" => Some((
+            "x86_64-unknown-linux-gnu",
+            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+        )),
+        "aarch64" | "arm64" => Some((
+            "aarch64-unknown-linux-gnu",
+            "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+        )),
+        "nvptx64" | "nvptx" => Some((
+            "nvptx64-nvidia-cuda",
+            "e-i64:64-i128:128-v16:16-v32:32-n16:32:64",
+        )),
+        "amdgcn" | "amdgpu" => Some((
+            "amdgcn-amd-amdhsa",
+            "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8:9",
+        )),
+        _ => None,
+    }
+}
+
+/// Tag an emitted LLVM-dialect module with the backend's target triple and data layout, so
+/// `--emit-llvm --target <backend>` produces IR carrying the right `llvm.target_triple` /
+/// `llvm.data_layout` (which `mlir-translate` then propagates to the `.ll` module).
+fn tag_llvm_target(mlir_str: &str, target: &str) -> String {
+    let Some((triple, datalayout)) = target_triple_and_datalayout(target) else {
+        return mlir_str.to_string();
+    };
+    let attrs = format!(
+        "llvm.target_triple = \"{}\", llvm.data_layout = \"{}\"",
+        triple, datalayout
+    );
+    if let Some(rest) = mlir_str.strip_prefix("module attributes {") {
+        format!("module attributes {{{}, {}", attrs, rest)
+    } else if let Some(rest) = mlir_str.strip_prefix("module {") {
+        format!("module attributes {{{}}} {{{}", attrs, rest)
+    } else {
+        mlir_str.to_string()
+    }
 }
 
 pub fn translate_to_llvm_ir(
