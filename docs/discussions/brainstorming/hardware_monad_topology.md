@@ -263,10 +263,12 @@ seeds into.
    recorded on the function and, at a generic call, discharged against the cost graph
    once the variables are deduced (a `transfer_path` from A's memory to B's must exist,
    else the call is rejected). This completes use case 3 and the constraint half of 4.
-   *Remaining nicety:* **D-inference from the return type** — so
-   `stage<S,D>(x: Pinned<T,S>) -> Pinned<T,D>` binds D from the call's expected type
-   rather than needing D to appear in an argument; today every topology variable must be
-   deducible from the arguments.
+   **Return-type inference also landed:** a return-only topology variable is deduced
+   from the call's expected type (a `let x: T = …` annotation or a typed `return`), so
+   `stage<S,D>(x: Pinned<T,S>) -> Pinned<T,D>` binds D from context — D need not appear
+   in an argument. With that, the polymorphism arc (use cases 1–6) is complete;
+   multi-constraint pipelines (`where Transfer<A,B>, Transfer<B,C>`) work and report the
+   specific failing hop.
 
 ## Highest-leverage first slice
 
