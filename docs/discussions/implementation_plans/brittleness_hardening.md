@@ -122,3 +122,10 @@ snapshot at `TypeChecker::new`.
 1 → 4 → 2 → 3 → 8 → 6, with 5/7/9 as separate scoped efforts (real device backends /
 architecture). #1 and #4 build directly on the topology work already landed and are the
 highest value-per-effort.
+
+**Status:** items 1, 2, 3, 4, 6, 8 are landed (see the `[x]` sections above). Remaining —
+all deliberately deferred as larger, separately-scoped device/architecture work:
+
+- **#5** wire `VxHardwarePlugin` into the pipeline (needs a real device-binary path).
+- **#7** generalize the ANE dispatcher beyond the 4×4 demo shapes.
+- **#9** thread a per-compilation topology registry instead of the process-global one.
