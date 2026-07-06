@@ -38,8 +38,10 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Width of the value field of a GID cell, in bits.
-const VAL_BITS: u32 = 8;
+/// Width of the value field of a GID cell, in bits. 64 so a value contract can pin any
+/// `u64` payload; narrower widths silently downgraded larger constants to the coarse
+/// visibility-only check.
+const VAL_BITS: u32 = 64;
 
 /// Constant-propagation lattice tag, encoded as 2 bits (BOT=00, CONST=01, TOP=11).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -122,13 +124,15 @@ fn apply_transfer(state: &AbsState, t: &Transfer) -> AbsState {
 }
 
 fn hex(v: u64) -> String {
-    // VAL_BITS-wide hex literal, e.g. #x2a for 8 bits.
+    // VAL_BITS-wide hex literal, e.g. #x2a for 8 bits, #x000000000000002a for 64.
     let nybbles = (VAL_BITS as usize) / 4;
-    format!(
-        "#x{:0width$x}",
-        v & ((1u64 << VAL_BITS) - 1),
-        width = nybbles
-    )
+    // `1 << 64` overflows; a full-width field masks to all of u64.
+    let mask = if VAL_BITS >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << VAL_BITS) - 1
+    };
+    format!("#x{:0width$x}", v & mask, width = nybbles)
 }
 
 /// One-time QF_BV preamble: model production, logic, and the lattice-tag definitions.
@@ -569,6 +573,39 @@ mod tests {
             }
             Verdict::Accept => panic!("relaxed transfer must violate the value contract for x"),
         }
+    }
+
+    #[test]
+    fn value_contract_holds_for_value_above_old_8bit_field() {
+        // 70_000 does not fit the former 8-bit value field (> 255). Under the old width it
+        // was masked (70_000 & 0xff == 0x70) or rejected outright, downgrading the seam to
+        // the coarse visibility check. With VAL_BITS = 64 the exact payload is pinned.
+        const BIG: u64 = 70_000;
+        let state = AbsState {
+            cells: vec![("x".into(), Cell::constant(BIG))],
+        };
+        let mut s = Solver::new();
+        let sync = s
+            .check_seam_value(&state, &Transfer::Sync, "x", BIG)
+            .unwrap();
+        assert_eq!(sync, Verdict::Accept);
+        let t = Transfer::Relaxed {
+            published: vec!["x".into()],
+        };
+        match s.check_seam_value(&state, &t, "x", BIG).unwrap() {
+            Verdict::Reject { counterexample } => {
+                assert!(counterexample.contains("val_x"), "model: {counterexample}");
+            }
+            Verdict::Accept => panic!("relaxed transfer must violate the value contract for x"),
+        }
+    }
+
+    #[test]
+    fn hex_is_full_width_64_bit() {
+        // 16 nybbles, exact value preserved (the old 8-bit field would mask 70_000 -> #x70).
+        assert_eq!(hex(0x2a), "#x000000000000002a");
+        assert_eq!(hex(70_000), "#x0000000000011170");
+        assert_eq!(hex(u64::MAX), "#xffffffffffffffff");
     }
 
     #[test]

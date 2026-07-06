@@ -1077,11 +1077,11 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         let Some((i, n)) = pair else { return };
-        let Ok(v) = n.value.as_ref().parse::<f64>() else {
-            return;
-        };
-        if v.fract() == 0.0 && (0.0..256.0).contains(&v) {
-            out.insert(i.name.as_ref().to_string(), v as u64);
+        // Any non-negative integer that fits `u64` is a valid value-contract payload (the
+        // seam field is `VAL_BITS = 64` wide). Parsing as u64 rejects negatives and floats
+        // exactly, without the precision loss an f64 round-trip would introduce.
+        if let Ok(v) = n.value.as_ref().parse::<u64>() {
+            out.insert(i.name.as_ref().to_string(), v);
         }
     }
 
@@ -1093,8 +1093,11 @@ impl<'a> TypeChecker<'a> {
         let sym = crate::symbol::Symbol::from(name);
         for env in self.eval_env.iter().rev() {
             if let Some(crate::hir::env::Value::Number(n)) = env.get(&sym) {
-                // Must be a non-negative integer fitting the 8-bit value field (seam::VAL_BITS).
-                if n.fract() == 0.0 && *n >= 0.0 && *n < 256.0 {
+                // A non-negative integer the value field (seam::VAL_BITS = 64) can pin. The
+                // source is an f64, so cap at 2^53 where every integer is still exact rather
+                // than risk pinning a rounded value.
+                const F64_EXACT_INT_MAX: f64 = (1u64 << 53) as f64;
+                if n.fract() == 0.0 && *n >= 0.0 && *n <= F64_EXACT_INT_MAX {
                     return Some(*n as u64);
                 }
                 return None;

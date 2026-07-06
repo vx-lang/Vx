@@ -89,11 +89,18 @@ Generalize (or keep as a documented 4×4 demo primitive).
 
 ## Tier 4 — limits
 
-### 8. Seam value contracts capped at 0-255 `[ ]`
+### 8. Seam value contracts capped at 0-255 `[x]`
 
 `VAL_BITS = 8` (`src/hir/seam.rs:42`) + the `(0.0..256.0)` guard (`src/hir/expr.rs:1080`)
 silently downgrade any contract with a constant > 255 to the coarse visibility check.
 **Fix:** widen `VAL_BITS` (e.g. 64) and drop the guard.
+
+**Landed:** `VAL_BITS = 64`, and `hex()` masks with `u64::MAX` at full width to avoid the
+`1 << 64` overflow. `extract_pins` now parses the literal directly as `u64` (exact; rejects
+negatives/floats with no cap), and `const_value_of` accepts any non-negative integer up to
+`2^53` (the f64 exact-integer limit, since its source value is an f64). New unit tests
+`value_contract_holds_for_value_above_old_8bit_field` (70_000 now pins instead of masking to
+`0x70`) and `hex_is_full_width_64_bit`.
 
 ### 9. Global topology registry `[ ]`
 
