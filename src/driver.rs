@@ -225,6 +225,11 @@ impl CompilerDriver {
         filename: &str,
         mlir_args: &[String],
     ) -> Result<(), String> {
+        // Start from a clean topology registry so a prior compilation's `topology`
+        // declarations (registered at parse time, in process-global state) do not leak into
+        // this one when several programs are compiled in the same process.
+        crate::arch::reset_topology_registry();
+
         let mut program_arr = self.load_and_expand(filename)?;
 
         if self.options.action == Action::ParseOnly {

@@ -230,6 +230,17 @@ pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescri
     TOPOLOGY_REGISTRY.write().unwrap().insert(kind, desc);
 }
 
+/// Reset the process-global topology registry to just the built-ins, discarding every
+/// user-defined (`Custom`) topology. Topologies are registered at *parse* time (see
+/// `parser::decl::parse_topology_decl`), so without this a `topology` declared while
+/// compiling one program would leak into the next when several are compiled in one process
+/// (the Rust test binary, a build server, an LSP). The driver calls this at the start of
+/// each compilation. (A fully thread-isolated per-compilation registry is a larger,
+/// separately-scoped change; this snapshot-reset fixes the sequential-reuse leak.)
+pub fn reset_topology_registry() {
+    *TOPOLOGY_REGISTRY.write().unwrap() = builtin_descriptors();
+}
+
 /// A snapshot of every registered descriptor (built-in + user-defined).
 pub fn all_topology_descriptors() -> Vec<TopologyDescriptor> {
     TOPOLOGY_REGISTRY
@@ -537,6 +548,18 @@ impl TransferCostGraph {
 mod tests {
     use super::*;
     use syntax::{ElementType, Expr, NumberExpr, Span};
+
+    /// Serializes the tests that globally mutate `TOPOLOGY_REGISTRY`. `reset_topology_registry`
+    /// wipes it, so it must not overlap the additive `register_topology` tests (which read
+    /// their own entry back). Built-ins survive a reset, so read-only builtin tests are safe
+    /// without this guard.
+    static REGISTRY_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_registry() -> std::sync::MutexGuard<'static, ()> {
+        REGISTRY_MUTATION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     fn make_tensor() -> Type {
         Type::Tensor(ElementType::F32, vec![], None)
@@ -918,6 +941,7 @@ mod tests {
 
     #[test]
     fn test_register_topology_extends_registry() {
+        let _serial = lock_registry();
         // The extension hook: registering a descriptor makes it queryable. Uses the
         // otherwise-undescribed `Current` kind so this cannot perturb other tests.
         assert!(topology_descriptor(&syntax::TopologyKind::Current).is_none());
@@ -935,6 +959,7 @@ mod tests {
 
     #[test]
     fn test_custom_topology_end_to_end() {
+        let _serial = lock_registry();
         // A user-defined topology: register a descriptor, then the enum identity
         // `Topology::Custom(name)` flows through default_memory_for + is_type_accessible
         // with no hardcoded arm. Uses a unique name so it can't perturb other tests.
@@ -962,6 +987,31 @@ mod tests {
         // ...but not a space it does not list.
         let ref_gpu = Type::Ref(Box::new(make_tensor()), MemorySpace::GpuHbm);
         assert!(!graph.is_type_accessible(&top, &Topology::GPU, &ref_gpu));
+    }
+
+    #[test]
+    fn reset_clears_custom_topologies_but_keeps_builtins() {
+        let _serial = lock_registry();
+        // A parse-time registration standing in for a previous compilation.
+        let name = crate::symbol::Symbol::from("AcmeReset");
+        register_topology(
+            syntax::TopologyKind::Custom(name.clone()),
+            TopologyDescriptor {
+                default_space: MemorySpace::LocalSRAM,
+                visibility: vec![MemorySpace::LocalSRAM],
+                transfers: Vec::new(),
+            },
+        );
+        assert!(topology_descriptor(&syntax::TopologyKind::Custom(name.clone())).is_some());
+
+        // Starting the next compilation resets to the built-in baseline.
+        reset_topology_registry();
+        assert!(
+            topology_descriptor(&syntax::TopologyKind::Custom(name)).is_none(),
+            "custom topology leaked past reset"
+        );
+        // Built-ins are restored, not wiped.
+        assert!(topology_descriptor(&syntax::TopologyKind::GPU).is_some());
     }
 
     #[test]

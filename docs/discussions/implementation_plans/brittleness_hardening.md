@@ -111,11 +111,21 @@ negatives/floats with no cap), and `const_value_of` accepts any non-negative int
 `value_contract_holds_for_value_above_old_8bit_field` (70_000 now pins instead of masking to
 `0x70`) and `hex_is_full_width_64_bit`.
 
-### 9. Global topology registry `[ ]`
+### 9. Global topology registry `[~]`
 
 Parse-time registration mutates process-global state; coherence is per-program-scoped now,
 but name lookups remain global. **Fix (later):** thread a per-compilation registry, or
 snapshot at `TypeChecker::new`.
+
+**Partially landed (snapshot-reset):** `arch::reset_topology_registry()` restores the
+built-in baseline, and the driver calls it at the start of each compilation
+(`execute_vx_pipeline`, before `load_and_expand` parses). This closes the concrete leak — a
+`topology` declared while compiling one program no longer bleeds into the next when several
+are compiled in one process (the Rust test binary, a build server, an LSP). New unit test
+`reset_clears_custom_topologies_but_keeps_builtins`; the additive registry tests now share a
+mutex so they can't race the wipe. **Still open:** a fully thread-isolated per-compilation
+registry (concurrent in-process compilations still share one global) is the larger,
+separately-scoped change.
 
 ## Recommended order
 
@@ -123,9 +133,12 @@ snapshot at `TypeChecker::new`.
 architecture). #1 and #4 build directly on the topology work already landed and are the
 highest value-per-effort.
 
-**Status:** items 1, 2, 3, 4, 6, 8 are landed (see the `[x]` sections above). Remaining —
-all deliberately deferred as larger, separately-scoped device/architecture work:
+**Status:** items 1, 2, 3, 4, 6, 8 are landed (see the `[x]` sections above); #9 is
+partially landed (the per-compilation snapshot-reset). Remaining — larger, separately-scoped
+device/architecture work:
 
 - **#5** wire `VxHardwarePlugin` into the pipeline (needs a real device-binary path).
-- **#7** generalize the ANE dispatcher beyond the 4×4 demo shapes.
-- **#9** thread a per-compilation topology registry instead of the process-global one.
+- **#7** generalize the ANE dispatcher beyond the 4×4 demo shapes (bounded by fixed-shape
+  CoreML primitives — realistically a documented demo limit until real device models exist).
+- **#9** (remainder) thread a fully thread-isolated per-compilation registry rather than the
+  process-global one.
