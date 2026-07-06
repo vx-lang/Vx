@@ -1,0 +1,31 @@
+//===- comptime_transfer_generic.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `Transfer<A, B>` as a comptime predicate over a *topology variable*: a `<D: Topology>`
+// kernel branches at compile time on whether the host can reach D. During monomorphization
+// the variable in `Transfer<Topology::CPU, D>` is substituted (D = GPU), the predicate is
+// evaluated against the cost graph (CPU -> GPU exists), and the branch is specialized in
+// `dispatch$GPU`.
+
+fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+  if comptime Transfer<Topology::CPU, D> {
+    let reachable = 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let g = spawn on(Topology::GPU) {
+    5
+  };
+  dispatch(g);
+  return 0;
+}
+
+// CHECK: func.func @dispatch$GPU

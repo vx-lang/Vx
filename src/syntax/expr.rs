@@ -134,6 +134,17 @@ pub struct TransferExpr {
     pub cost: Option<u32>, // Added by sema
     pub span: Span,
 }
+
+/// `Transfer<A, B>` used as a value: a compile-time boolean, true iff a transfer path exists
+/// from `from` to `to` in the cost graph. Evaluated at comptime (e.g. inside
+/// `comptime { if Transfer<A, B> { … } }`); topology variables are substituted during
+/// monomorphization first.
+#[derive(Debug, PartialEq, Clone)]
+pub struct TransferPredicateExpr {
+    pub from: Topology,
+    pub to: Topology,
+    pub span: Span,
+}
 impl TransferExpr {
     pub fn new(expr: Box<Expr>, space: MemorySpace, span: Span) -> Self {
         Self {
@@ -655,6 +666,7 @@ pub enum Expr {
     Number(NumberExpr),
     StringLiteral(StringLiteralExpr),
     Transfer(TransferExpr),
+    TransferPredicate(TransferPredicateExpr),
     FunctionCall(FunctionCallExpr),
     IndirectCall(IndirectCallExpr),
     Array(ArrayExpr),
@@ -697,6 +709,7 @@ macro_rules! delegate_expr {
             Expr::Number(e) => e.$method.clone(),
             Expr::StringLiteral(e) => e.$method.clone(),
             Expr::Transfer(e) => e.$method.clone(),
+            Expr::TransferPredicate(e) => e.$method.clone(),
             Expr::FunctionCall(e) => e.$method.clone(),
             Expr::IndirectCall(e) => e.$method.clone(),
             Expr::Array(e) => e.$method.clone(),
@@ -765,6 +778,9 @@ impl Expr {
                 cost: e.cost,
                 span: e.span,
             }),
+            // Type substitution does not touch topologies; topology substitution is done
+            // separately during monomorphization.
+            Expr::TransferPredicate(e) => Expr::TransferPredicate(e.clone()),
             Expr::ComptimeBlock(e) => Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),

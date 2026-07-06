@@ -283,6 +283,16 @@ impl<'a> Parser<'a> {
             }));
         }
 
+        // `Transfer<A, B>` as a value: a comptime transferability predicate.
+        if call_name == "Transfer" && self.check(&TokenType::LeftAngle) {
+            self.advance(); // consume '<'
+            let from = self.parse_topology_operand()?;
+            self.consume(&TokenType::Comma, "Expected ',' in Transfer<A, B>")?;
+            let to = self.parse_topology_operand()?;
+            self.consume(&TokenType::RightAngle, "Expected '>' after Transfer<A, B>")?;
+            return Ok(Expr::TransferPredicate(TransferPredicateExpr { from, to, span }));
+        }
+
         let mut parsed_type_args = None;
         if self.check(&TokenType::LeftAngle) {
             let saved_pos = self.pos;

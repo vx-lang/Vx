@@ -454,6 +454,17 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // `Transfer<A, B>`: true iff a transfer path exists in the cost graph. Topology
+            // variables have already been substituted during monomorphization.
+            Expr::TransferPredicate(e) => {
+                let mfrom = crate::arch::TransferCostGraph::default_memory_for(&e.from);
+                let mto = crate::arch::TransferCostGraph::default_memory_for(&e.to);
+                Some(Value::Bool(
+                    self.transfer_cost_graph
+                        .transfer_path(&mfrom, &mto)
+                        .is_some(),
+                ))
+            }
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) if n.as_ref() == "true" => {
                 Some(Value::Bool(true))
             }

@@ -120,6 +120,8 @@ impl<'a> TypeChecker<'a> {
                 false, // const
             ),
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume, silent),
+            // `Transfer<A, B>` is a comptime boolean.
+            Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
             Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume, silent),
             Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume, silent),
             Expr::If(..) => self.check_if_expr(expr, consume, silent),

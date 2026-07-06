@@ -687,6 +687,10 @@ impl<'a> TypeChecker<'a> {
                 Self::subst_topo_in_expr(&mut e.expr, tm);
             }
             E::Transfer(e) => Self::subst_topo_in_expr(&mut e.expr, tm),
+            E::TransferPredicate(e) => {
+                e.from = Self::substitute_topology(e.from.clone(), tm);
+                e.to = Self::substitute_topology(e.to.clone(), tm);
+            }
             E::IndexAccess(e) => {
                 Self::subst_topo_in_expr(&mut e.base, tm);
                 Self::subst_topo_in_expr(&mut e.index, tm);

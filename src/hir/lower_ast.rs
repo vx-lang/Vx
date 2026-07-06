@@ -22,6 +22,15 @@ impl HirArena {
             Expr::StringLiteral(e) => HirExpr::StringLiteral(self.lower_stringliteralexpr(e)),
             Expr::SpawnOn(e) => HirExpr::SpawnOn(self.lower_spawnonexpr(e)),
             Expr::Transfer(e) => HirExpr::Transfer(self.lower_transferexpr(e)),
+            // Comptime-only: evaluated to a boolean during type-checking, so it should not
+            // reach HIR lowering. Placeholder literal if it ever does.
+            Expr::TransferPredicate(e) => {
+                HirExpr::Number(self.lower_numberexpr(&crate::syntax::NumberExpr::new(
+                    "1".to_string(),
+                    Some(crate::syntax::ElementType::Bool),
+                    e.span,
+                )))
+            }
             Expr::FunctionCall(e) => HirExpr::FunctionCall(self.lower_functioncallexpr(e)),
             Expr::AsCast(e) => HirExpr::AsCast(self.lower_ascastexpr(e)),
             Expr::IndirectCall(e) => HirExpr::IndirectCall(self.lower_indirectcallexpr(e)),
