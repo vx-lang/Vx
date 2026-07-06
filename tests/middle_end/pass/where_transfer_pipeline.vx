@@ -1,0 +1,35 @@
+//===- where_transfer_pipeline.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Multiple `where Transfer` constraints over three topology variables: a staged
+// pipeline A -> B -> C requires both hops to have a transfer path. Deduced
+// A = GPU, B = CPU, C = NPU[0]; GPU->CPU and CPU->NPU both exist, so it monomorphizes
+// to `pipeline$GPU$CPU$NPU`.
+
+fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32
+  where Transfer<A, B>, Transfer<B, C>
+{
+  return 0;
+}
+
+fn main() -> i32 {
+  let ga = spawn on(Topology::GPU) {
+    1
+  };
+  let cb = spawn on(Topology::CPU) {
+    2
+  };
+  let nc = spawn on(Topology::NPU[0]) {
+    3
+  };
+  pipeline(ga, cb, nc);
+  return 0;
+}
+
+// CHECK: func.func @pipeline$GPU$CPU$NPU

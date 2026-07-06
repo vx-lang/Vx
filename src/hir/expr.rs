@@ -2255,6 +2255,14 @@ impl<'a> TypeChecker<'a> {
                     success = false;
                 }
             }
+            // Deduce return-only variables (a topology `D` in `-> Pinned<T, D>`, or a
+            // return-only type generic) from the call's expected type, if known. Best-effort:
+            // the return-type unify binds topology variables into `pending_topo_bindings`
+            // (via the `Pinned` arm) and type generics into `mapping`.
+            if let Some(expected) = self.expected_type.clone() {
+                let ret_ty = generic_func.return_type.clone();
+                let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
+            }
         }
 
         if success {

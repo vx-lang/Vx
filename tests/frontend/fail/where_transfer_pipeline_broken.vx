@@ -1,0 +1,31 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A staged pipeline A -> B -> C where the *second* hop is unsatisfiable: the middle
+// stage reaches Island, whose memory (IslandRAM) has no transfer edge. The specific
+// failing constraint `Transfer<B, C>` is reported (the first hop, GPU -> CPU, is fine).
+
+Topology Island {
+  memory: Memory::IslandRAM
+}
+
+fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32
+  where Transfer<A, B>, Transfer<B, C>
+{
+  return 0;
+}
+
+fn main() -> i32 {
+  let ga = spawn on(Topology::GPU) {
+    1
+  };
+  let cb = spawn on(Topology::CPU) {
+    2
+  };
+  let ic = spawn on(Topology::Island) {
+    3
+  };
+  pipeline(ga, cb, ic);
+  return 0;
+}
+
+// CHECK: unsatisfied `where Transfer<B, C>`

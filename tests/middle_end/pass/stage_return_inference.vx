@@ -1,0 +1,32 @@
+//===- stage_return_inference.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Return-type-driven topology inference: in `stage<S, D>(x: Pinned<_, S>) -> Pinned<_, D>`
+// the destination `D` appears *only* in the return type. It is deduced from the call's
+// expected type -- here the `let dst: Pinned<i32, Topology::CPU>` annotation -- while `S`
+// comes from the argument. `where Transfer<S, D>` (GPU -> CPU) is then discharged, and the
+// call monomorphizes to `stage$CPU$GPU`.
+
+fn stage<S: Topology, D: Topology>(x: Pinned<i32, Topology::S>) -> Pinned<i32, Topology::D>
+  where Transfer<S, D>
+{
+  spawn on(Topology::D) {
+    0
+  }
+}
+
+fn main() -> i32 {
+  let src = spawn on(Topology::GPU) {
+    5
+  };
+  let dst: Pinned<i32, Topology::CPU> = stage(src);
+  return 0;
+}
+
+// CHECK: func.func @stage$CPU$GPU

@@ -108,7 +108,12 @@ impl<'a> TypeChecker<'a> {
                 self.declared_vars.push((name.clone(), *span));
 
                 self.current_assignment_target = Some(name.to_string());
+                // Forward the annotation as an expected-type hint so a generic call can
+                // deduce a return-only topology/type variable from it.
+                let prev_expected = self.expected_type.take();
+                self.expected_type = ty_ann.clone();
                 let ty = self.check_expr_type_flag(expr, consume, silent);
+                self.expected_type = prev_expected;
                 self.current_assignment_target = None;
 
                 let mut tmp_env = HashMap::new();
@@ -302,7 +307,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Statement::Return(ReturnStmt { expr, span }) => {
+                let prev_expected = self.expected_type.take();
+                self.expected_type = Some(return_type.clone());
                 let ty = self.check_expr_type_flag(expr, consume, silent);
+                self.expected_type = prev_expected;
 
                 let mut expected_ty = return_type.clone();
                 if let Some(Type::Unknown) = self.current_return_type {

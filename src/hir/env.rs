@@ -191,6 +191,10 @@ pub struct TypeChecker<'a> {
     /// Topology bindings (`D -> concrete topology`) deduced during that unify, consumed by
     /// `instantiate_function` to specialize `on D` and `Pinned<_, D>`.
     pub(crate) pending_topo_bindings: std::collections::HashMap<crate::symbol::Symbol, Topology>,
+    /// Expected type of the expression currently being checked, from a `let x: T = …` or a
+    /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
+    /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
+    pub(crate) expected_type: Option<Type>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -240,6 +244,7 @@ impl<'a> TypeChecker<'a> {
             verify_seams: false,
             pending_topo_vars: std::collections::HashSet::new(),
             pending_topo_bindings: std::collections::HashMap::new(),
+            expected_type: None,
         }
     }
 
