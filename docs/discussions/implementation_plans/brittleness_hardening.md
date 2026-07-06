@@ -33,11 +33,20 @@ the result without spawning cascade errors. The `expr.rs:332` numeric coercion a
 `expr.rs:2810` built-in transfer methods are load-bearing *policy* (literal→f32 coercion,
 `.to_device()`/`.with_memory()` lowering), not error masking, and are intentionally kept.
 
-### 3. Internal-invariant panics on the codegen hot path `[ ]`
+### 3. Internal-invariant panics on the codegen hot path `[x]`
 
 ~15 `panic!` / `unwrap_or_else(|| panic!)` in `generator.rs` ("Failed to parse MLIR type",
 "Generic … should be instantiated", "Matrix type not supported"). Each is a hard crash
 where a diagnostic belongs. (Tracked together with #4.)
+
+**Landed:** `lower_type` / `lower_type_str` / `lower_tensor_type` already return
+`Result<_, LowerError>`, so every reachable panic in them now `return Err(LowerError::…)`:
+`Matrix` type, unparseable lowered MLIR/memref/enum-layout strings, wrong generic arity,
+missing generic struct/enum, and const/unmonomorphized-generic leaks. The messages tagged
+`internal:` are should-never-happen invariants that now degrade to a diagnostic instead of
+aborting the process. The two debug `println!`s that dumped struct/enum keys were removed.
+`Type::parse` on hardcoded constant strings (`i32`, `!llvm.ptr`, …) stays `.unwrap()` — it
+cannot fail — and `Statement::MacroCall` stays a `panic!` (must be expanded before codegen).
 
 ## Tier 2 — hardcoded / duplicated (divergence risk)
 

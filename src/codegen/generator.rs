@@ -882,11 +882,19 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I128 | ElementType::U128 => self.i128_ty,
                     ElementType::Bool => self.i1_ty,
                     ElementType::Generic(_) => {
-                        panic!("Generic element type should be instantiated before codegen")
+                        return Err(LowerError::from(
+                            "internal: generic element type reached codegen (monomorphization \
+                             should have instantiated it)"
+                                .to_string(),
+                        ));
                     }
                 });
             }
-            syntax::Type::Matrix => panic!("Matrix type not supported"),
+            syntax::Type::Matrix => {
+                return Err(LowerError::from(
+                    "codegen does not support the `Matrix` type".to_string(),
+                ))
+            }
             syntax::Type::Ref(inner, _mem) => {
                 return self.lower_type(inner);
             }
@@ -928,11 +936,13 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Ok(Type::parse(
+                        return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap_or_else(|| panic!("Failed to parse enum struct type")));
+                        .ok_or_else(|| {
+                            LowerError::from("failed to parse Option enum layout".to_string())
+                        });
                     }
                     return Ok(self.i32_ty);
                 }
@@ -964,7 +974,12 @@ impl<'c> MeliorGenerator<'c> {
                         > = std::collections::HashMap::new();
                         for (i, param) in decl.generics.iter().enumerate() {
                             if i >= args.len() {
-                                panic!("Not enough arguments for generic instance {} (expected {}, got {})", name, decl.generics.len(), args.len());
+                                return Err(LowerError::from(format!(
+                                    "generic type `{}` expects {} type argument(s), got {}",
+                                    name,
+                                    decl.generics.len(),
+                                    args.len()
+                                )));
                             }
                             mapping.insert(param.name().into(), args[i].clone());
                         }
@@ -979,8 +994,8 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a).unwrap();
-                                lowered
+                                let lowered = self.lower_type_str(a)?;
+                                Ok(lowered
                                     .replace("!", "")
                                     .replace("<", "_")
                                     .replace(">", "_")
@@ -989,9 +1004,9 @@ impl<'c> MeliorGenerator<'c> {
                                     .replace("\"", "")
                                     .replace("(", "_")
                                     .replace(")", "_")
-                                    .replace(".", "_")
+                                    .replace(".", "_"))
                             })
-                            .collect();
+                            .collect::<Result<Vec<_>, LowerError>>()?;
                         format!(
                             "!llvm.struct<\"{}_{}\", ({})>",
                             name,
@@ -999,7 +1014,12 @@ impl<'c> MeliorGenerator<'c> {
                             field_types.join(", ")
                         )
                     } else if let Some(enum_def) = self.enums.get(name).cloned() {
-                        let ty_arg = args.first().unwrap();
+                        let ty_arg = args.first().ok_or_else(|| {
+                            LowerError::from(format!(
+                                "generic enum `{}` used with no type argument",
+                                name
+                            ))
+                        })?;
                         let mut payload_ty_str = "none".to_string();
                         for (v_name, payload) in enum_def {
                             if v_name == "Some".into() {
@@ -1024,8 +1044,8 @@ impl<'c> MeliorGenerator<'c> {
                         let args_str: Vec<String> = args
                             .iter()
                             .map(|a| {
-                                let lowered = self.lower_type_str(a).unwrap();
-                                lowered
+                                let lowered = self.lower_type_str(a)?;
+                                Ok(lowered
                                     .replace("!", "")
                                     .replace("<", "_")
                                     .replace(">", "_")
@@ -1034,9 +1054,9 @@ impl<'c> MeliorGenerator<'c> {
                                     .replace("\"", "")
                                     .replace("(", "_")
                                     .replace(")", "_")
-                                    .replace(".", "_")
+                                    .replace(".", "_"))
                             })
-                            .collect();
+                            .collect::<Result<Vec<_>, LowerError>>()?;
 
                         format!(
                             "!llvm.struct<\"{}_{}\", (i32, {})>",
@@ -1045,19 +1065,22 @@ impl<'c> MeliorGenerator<'c> {
                             payload_ty_str
                         )
                     } else {
-                        println!("Keys in structs: {:?}", self.structs.keys());
-                        println!("Keys in enums: {:?}", self.enums.keys());
-                        panic!("Generic struct/enum {} not found", name);
+                        return Err(LowerError::from(format!(
+                            "generic struct or enum `{}` not found during codegen",
+                            name
+                        )));
                     }
                 } else {
-                    panic!("GenericInstance base is not a Struct!");
+                    return Err(LowerError::from(
+                        "internal: generic-instance base is not a struct".to_string(),
+                    ));
                 }
             }
             syntax::Type::Generic(_, _) => {
-                panic!(
-                    "Generic types should have been monomorphized before codegen! Got type: {:?}",
+                return Err(LowerError::from(format!(
+                    "internal: generic type reached codegen (should have been monomorphized): {:?}",
                     ty
-                );
+                )));
             }
             syntax::Type::Simd(el_ty, n) => {
                 let ty_str = match el_ty {
@@ -1073,7 +1096,11 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
                     ElementType::Generic(_) => {
-                        panic!("Generic element type should be instantiated before codegen")
+                        return Err(LowerError::from(
+                            "internal: generic element type reached codegen (monomorphization \
+                             should have instantiated it)"
+                                .to_string(),
+                        ));
                     }
                 };
                 format!("vector<{}x{}>", n, ty_str)
@@ -1095,11 +1122,13 @@ impl<'c> MeliorGenerator<'c> {
                                 }
                             }
                         }
-                        return Ok(Type::parse(
+                        return Type::parse(
                             self.context,
                             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
                         )
-                        .unwrap_or_else(|| panic!("Failed to parse enum struct type")));
+                        .ok_or_else(|| {
+                            LowerError::from("failed to parse Option enum layout".to_string())
+                        });
                     }
                 }
                 "i32".to_string()
@@ -1112,16 +1141,17 @@ impl<'c> MeliorGenerator<'c> {
             }
             syntax::Type::Module(..) => "none".to_string(),
             syntax::Type::Const(expr) => {
-                panic!(
-                    "Cannot lower a const generic argument to an MLIR type: {:?}",
+                return Err(LowerError::from(format!(
+                    "cannot lower a const generic argument to an MLIR type: {:?}",
                     expr
-                );
+                )));
             }
             syntax::Type::Unknown => "unknown".to_string(),
         };
 
-        Ok(Type::parse(self.context, &ty_str)
-            .unwrap_or_else(|| panic!("Failed to parse MLIR type: {}", ty_str)))
+        Type::parse(self.context, &ty_str).ok_or_else(|| {
+            LowerError::from(format!("failed to parse lowered MLIR type `{}`", ty_str))
+        })
     }
 
     pub(crate) fn lower_type_str(
@@ -1168,7 +1198,11 @@ impl<'c> MeliorGenerator<'c> {
             ElementType::I128 | ElementType::U128 => "i128",
             ElementType::Bool => "i1",
             ElementType::Generic(_) => {
-                panic!("Generic element type should be instantiated before codegen")
+                return Err(LowerError::from(
+                    "internal: generic element type reached codegen (monomorphization \
+                     should have instantiated it)"
+                        .to_string(),
+                ));
             }
         };
 
@@ -1209,8 +1243,12 @@ impl<'c> MeliorGenerator<'c> {
             format!("memref<{}{}>", shape_str, ty_str)
         };
 
-        Ok(Type::parse(self.context, &memref_str)
-            .unwrap_or_else(|| panic!("Failed to parse MLIR memref type: {}", memref_str)))
+        Type::parse(self.context, &memref_str).ok_or_else(|| {
+            LowerError::from(format!(
+                "failed to parse lowered memref type `{}`",
+                memref_str
+            ))
+        })
     }
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
