@@ -75,12 +75,21 @@ but `Ref<T, GpuHbm>` got 1 for the same buffer. All four codegen sites are thin 
 `apple_npe.lower_to_binary` returns MLIR-string bytes (`src/plugin/apple_npe.rs:38`), and
 nothing in `driver.rs`/`codegen/` calls the plugin trait. Architecture-only.
 
-### 6. `--emit-llvm` / `--target` are shallow `[ ]`
+### 6. `--emit-llvm` / `--target` are shallow `[x]`
 
 The VX `--emit-llvm` path prints **LLVM-dialect MLIR, not real `.ll`**
 (`src/driver.rs:465`); `translate_to_llvm_ir` (real `mlir-translate`) is only used for the
 MLIR-language input path. `--target` **text-injects** the triple. Fix: optional real `.ll`
 emission + set the triple as a real module attribute.
+
+**Landed:** `--emit-llvm` alone still prints the portable, target-independent LLVM-dialect
+MLIR (a legitimate view many backend tests assert against). Pairing it with a concrete
+backend — `--emit-llvm --target <x86_64|aarch64|nvptx64|amdgcn>` — now sets that target's
+`llvm.target_triple` / `llvm.data_layout` as **real module attributes** (via
+`Operation::set_attribute`, replacing the fragile string-injection `tag_llvm_target`, which
+was deleted) and runs `translate_to_llvm_ir`, so the output is genuine `.ll` with `target triple` / `target datalayout` / `define`. `llvm_backends.vx` checks the real `.ll` for
+x86_64/aarch64/nvptx64; amdgcn is documented as a clean failure (valid AMDGPU `.ll` needs
+addrspace(5) allocas, i.e. target-specific lowering that is out of scope for now).
 
 ### 7. ANE dispatcher hardcodes shapes `[ ]`
 

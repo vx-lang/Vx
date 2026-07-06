@@ -463,13 +463,32 @@ impl CompilerDriver {
 
         match self.options.action {
             Action::EmitMlir | Action::EmitLlvm => {
-                let mut mlir_str = format!("{}", module.as_operation());
+                // `--emit-llvm` alone prints the portable, target-independent LLVM-dialect
+                // MLIR. Asking for a concrete backend (`--target`) means you want real IR for
+                // it: set that target's triple / data layout as real module attributes (which
+                // `mlir-translate` propagates to the `.ll`) and translate to actual `.ll`.
                 if self.options.action == Action::EmitLlvm {
                     if let Some(target) = &self.options.target {
-                        mlir_str = tag_llvm_target(&mlir_str, target);
+                        if let Some((triple, datalayout)) = target_triple_and_datalayout(target) {
+                            use melior::ir::operation::OperationMutLike;
+                            module.as_operation_mut().set_attribute(
+                                "llvm.target_triple",
+                                melior::ir::attribute::StringAttribute::new(&context, triple)
+                                    .into(),
+                            );
+                            module.as_operation_mut().set_attribute(
+                                "llvm.data_layout",
+                                melior::ir::attribute::StringAttribute::new(&context, datalayout)
+                                    .into(),
+                            );
+                        }
+                        let mlir_str = format!("{}", module.as_operation());
+                        let llvm_ir = translate_to_llvm_ir(&mlir_str, main_file)?;
+                        println!("{}", llvm_ir);
+                        return Ok(());
                     }
                 }
-                println!("{}", mlir_str);
+                println!("{}", module.as_operation());
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());
@@ -653,26 +672,6 @@ fn target_triple_and_datalayout(target: &str) -> Option<(&'static str, &'static 
             "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8:9",
         )),
         _ => None,
-    }
-}
-
-/// Tag an emitted LLVM-dialect module with the backend's target triple and data layout, so
-/// `--emit-llvm --target <backend>` produces IR carrying the right `llvm.target_triple` /
-/// `llvm.data_layout` (which `mlir-translate` then propagates to the `.ll` module).
-fn tag_llvm_target(mlir_str: &str, target: &str) -> String {
-    let Some((triple, datalayout)) = target_triple_and_datalayout(target) else {
-        return mlir_str.to_string();
-    };
-    let attrs = format!(
-        "llvm.target_triple = \"{}\", llvm.data_layout = \"{}\"",
-        triple, datalayout
-    );
-    if let Some(rest) = mlir_str.strip_prefix("module attributes {") {
-        format!("module attributes {{{}, {}", attrs, rest)
-    } else if let Some(rest) = mlir_str.strip_prefix("module {") {
-        format!("module attributes {{{}}} {{{}", attrs, rest)
-    } else {
-        mlir_str.to_string()
     }
 }
 
