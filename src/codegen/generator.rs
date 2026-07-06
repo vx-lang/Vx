@@ -837,7 +837,26 @@ impl<'c> MeliorGenerator<'c> {
             Expr::InlineMlir(e) => LowerToMelior::lower(e, self, block),
             Expr::Topology(e) => LowerToMelior::lower(e, self, block),
             Expr::SizeOf(e) => LowerToMelior::lower(e, self, block),
-            _ => todo!("{:?}", expr),
+            // Constructs with no runtime lowering: report a diagnostic instead of a
+            // `todo!()` panic. (Match is exhaustive so a new Expr variant forces a decision.)
+            Expr::Range(_) => Err(LowerError::from(
+                "a range (`a..b`) is only valid as a `for`-loop bound, not as a value".to_string(),
+            )),
+            Expr::MemorySpace(_) => Err(LowerError::from(
+                "a memory space (`Memory::...`) is not a runtime value".to_string(),
+            )),
+            Expr::VecMacro(_) => Err(LowerError::from(
+                "`vec![...]` is not supported at this codegen position".to_string(),
+            )),
+            Expr::TransferPredicate(_) => Err(LowerError::from(
+                "`Transfer<A, B>` is a comptime predicate; it may only appear as an \
+                 `if comptime` condition"
+                    .to_string(),
+            )),
+            Expr::MacroCall(_) => Err(LowerError::from(
+                "internal error: macro call reached codegen (macros must be expanded first)"
+                    .to_string(),
+            )),
         }
     }
 

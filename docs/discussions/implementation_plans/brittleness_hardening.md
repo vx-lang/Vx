@@ -6,7 +6,7 @@
 
 ## Tier 1 — crash risk / correctness
 
-### 1. `generate_expr` panics on unhandled AST nodes `[ ]`
+### 1. `generate_expr` panics on unhandled AST nodes `[x]`
 
 `src/codegen/generator.rs:840` is `_ => todo!("{:?}", expr)`. Five `Expr` variants fall
 through and **panic at codegen** instead of erroring: `Range`, `VecMacro`, `MemorySpace`,
