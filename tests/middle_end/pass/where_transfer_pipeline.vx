@@ -10,11 +10,13 @@
 // Multiple `where Transfer` constraints over three topology variables: a staged
 // pipeline A -> B -> C requires both hops to have a transfer path. Deduced
 // A = GPU, B = CPU, C = NPU[0]; GPU->CPU and CPU->NPU both exist, so it monomorphizes
-// to `pipeline$GPU$CPU$NPU`.
+// to `pipeline$GPU$CPU$NPU`. The body performs a real transfer, so the specialized
+// function contains a `vx.transfer` op we can check.
 
 fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32
   where Transfer<A, B>, Transfer<B, C>
 {
+  let staged = transfer(a, Memory::CPU_DRAM);
   return 0;
 }
 
@@ -33,3 +35,6 @@ fn main() -> i32 {
 }
 
 // CHECK: func.func @pipeline$GPU$CPU$NPU
+// The body's `transfer(a, Memory::CPU_DRAM)` lowers to a vx.transfer targeting the host (0).
+// CHECK: "vx.transfer"
+// CHECK: target_topology = 0
