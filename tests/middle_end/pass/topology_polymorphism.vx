@@ -7,23 +7,201 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 //
-// Topology polymorphism (monomorphic core): a function generic over a topology
-// `<D: Topology>` with a `Pinned<_, D>` parameter is monomorphized at the call
-// site. The topology variable `D` is deduced from the argument's concrete topology
-// (here `GPU`, from `spawn on(Topology::GPU)` whose result is `Pinned<i32, GPU>`),
-// and the specialized instance is `identity_on$GPU`.
+// One file for the whole topology-polymorphism surface (kept together so the test
+// suite links vxc once, not per case). The full emitted MLIR is checked; regenerate
+// the CHECK lines with `cargo run --bin update_mlir_test_checks -- <this file>`.
+//
+//   identity_on   -- signature-level `<D: Topology>` monomorphization
+//   run_on        -- body-level substitution (`spawn on(Topology::D)` in the body)
+//   move_between  -- `where Transfer<S, D>` + a real `transfer` in the body
+//   pipeline      -- multiple constraints `where Transfer<A,B>, Transfer<B,C>`
+//   stage         -- return-type-driven inference of D (from the `let` annotation)
+//   dispatch      -- `Transfer<A, B>` as a comptime predicate over a topology variable
+//   prune_demo    -- a statically-false comptime `Transfer` prunes its (invalid) branch
+
+// A host-backed novel memory that is unreachable, for the false comptime predicate.
+Topology Island {
+  memory: Memory::IslandRAM
+}
 
 fn identity_on<D: Topology>(x: Pinned<i32, Topology::D>) -> Pinned<i32, Topology::D> {
   return x;
 }
 
-fn main() -> i32 {
-  let g = spawn on(Topology::GPU) {
-    5
-  };
-  let r = identity_on(g);
+fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+  spawn on(Topology::D) {
+    let y = x;
+  }
   return 0;
 }
 
-// CHECK: func.func @identity_on$GPU
-// CHECK: call @identity_on$GPU
+fn move_between<S: Topology, D: Topology>(src: Pinned<i32, Topology::S>, dst: Pinned<i32, Topology::D>) -> i32 where Transfer<S, D> {
+  let staged = transfer(src, Memory::CPU_DRAM);
+  return 0;
+}
+
+fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32 where Transfer<A, B>, Transfer<B, C> {
+  let staged = transfer(a, Memory::CPU_DRAM);
+  return 0;
+}
+
+fn stage<S: Topology, D: Topology>(x: Pinned<i32, Topology::S>) -> Pinned<i32, Topology::D> where Transfer<S, D> {
+  spawn on(Topology::D) {
+    0
+  }
+}
+
+fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+  if comptime Transfer<Topology::CPU, D> {
+    let reachable = 1;
+  }
+  return 0;
+}
+
+fn prune_demo() -> i32 {
+  // GPU -> Island has no path, so this branch (with an undefined call) is pruned.
+  if comptime Transfer<Topology::GPU, Topology::Island> {
+    let bad = undefined_pruned_away();
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let ga = spawn on(Topology::GPU) {
+    5
+  };
+  identity_on(ga);
+
+  let gb = spawn on(Topology::GPU) {
+    5
+  };
+  run_on(gb);
+
+  let gc = spawn on(Topology::GPU) {
+    5
+  };
+  let cc = spawn on(Topology::CPU) {
+    7
+  };
+  move_between(gc, cc);
+
+  let gd = spawn on(Topology::GPU) {
+    1
+  };
+  let cd = spawn on(Topology::CPU) {
+    2
+  };
+  let nd = spawn on(Topology::NPU[0]) {
+    3
+  };
+  pipeline(gd, cd, nd);
+
+  let ge = spawn on(Topology::GPU) {
+    5
+  };
+  let dst: Pinned<i32, Topology::CPU> = stage(ge);
+
+  let gf = spawn on(Topology::GPU) {
+    5
+  };
+  dispatch(gf);
+
+  prune_demo();
+  return 0;
+}
+
+// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}} {
+// CHECK:   func.func private @printMemrefF32(memref<*xf32>)
+// CHECK:   func.func private @printMemrefF64(memref<*xf64>)
+// CHECK:   func.func private @printMemrefI32(memref<*xi32>)
+// CHECK:   func.func private @printMemrefI64(memref<*xi64>)
+// CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @identity_on$GPU(%arg0: i32) -> i32 {
+// CHECK:     return %arg0 : i32
+// CHECK:   }
+// CHECK:   func.func @run_on$GPU(%arg0: i32) -> i32 {
+// CHECK:     vx.spawn topology(500) {
+// CHECK:       vx.yield
+// CHECK:     }
+// CHECK:     %c0 = arith.constant 0 : index
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @move_between$CPU$GPU(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:     %0 = "vx.transfer"(%arg0) <{target_topology = 0 : i32}> : (i32) -> i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @pipeline$GPU$CPU$NPU(%arg0: i32, %arg1: i32, %arg2: i32) -> i32 {
+// CHECK:     %0 = "vx.transfer"(%arg0) <{target_topology = 0 : i32}> : (i32) -> i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @stage$CPU$GPU(%arg0: i32) -> i32 {
+// CHECK:     %0 = vx.spawn topology(0) {
+// CHECK:       %c0_i32 = arith.constant 0 : i32
+// CHECK:       vx.yield %c0_i32 : i32
+// CHECK:     } : i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK:   func.func @dispatch$GPU(%arg0: i32) -> i32 {
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %c0 = arith.constant 0
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @prune_demo() -> i32 {
+// CHECK:     %c0 = arith.constant 0
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @main() -> i32 attributes {llvm.emit_c_interface} {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %0 = vx.spawn topology(500) {
+// CHECK:       %c5_i32 = arith.constant 5 : i32
+// CHECK:       vx.yield %c5_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %1 = call @identity_on$GPU(%0) : (i32) -> i32
+// CHECK:     %2 = vx.spawn topology(500) {
+// CHECK:       %c5_i32 = arith.constant 5 : i32
+// CHECK:       vx.yield %c5_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %3 = call @run_on$GPU(%2) : (i32) -> i32
+// CHECK:     %4 = vx.spawn topology(500) {
+// CHECK:       %c5_i32 = arith.constant 5 : i32
+// CHECK:       vx.yield %c5_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %5 = vx.spawn topology(0) {
+// CHECK:       %c7_i32 = arith.constant 7 : i32
+// CHECK:       vx.yield %c7_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %6 = call @move_between$CPU$GPU(%4, %5) : (i32, i32) -> i32
+// CHECK:     %7 = vx.spawn topology(500) {
+// CHECK:       %c1_i32 = arith.constant 1 : i32
+// CHECK:       vx.yield %c1_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %8 = vx.spawn topology(0) {
+// CHECK:       %c2_i32 = arith.constant 2 : i32
+// CHECK:       vx.yield %c2_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %9 = vx.spawn topology(100) {
+// CHECK:       %c3_i32 = arith.constant 3 : i32
+// CHECK:       vx.yield %c3_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %10 = call @pipeline$GPU$CPU$NPU(%7, %8, %9) : (i32, i32, i32) -> i32
+// CHECK:     %11 = vx.spawn topology(500) {
+// CHECK:       %c5_i32 = arith.constant 5 : i32
+// CHECK:       vx.yield %c5_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %12 = call @stage$CPU$GPU(%11) : (i32) -> i32
+// CHECK:     %13 = vx.spawn topology(500) {
+// CHECK:       %c5_i32 = arith.constant 5 : i32
+// CHECK:       vx.yield %c5_i32 : i32
+// CHECK:     } : i32
+// CHECK:     %14 = call @dispatch$GPU(%13) : (i32) -> i32
+// CHECK:     %15 = call @prune_demo() : () -> i32
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

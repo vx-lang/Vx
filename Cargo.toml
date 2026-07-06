@@ -73,6 +73,14 @@ path = "src/bin/cargo-vx-bench.rs"
 test = false
 bench = false
 
+# Regenerates `// CHECK:` lines in MLIR tests from actual output
+# (`cargo run --bin update_mlir_test_checks -- <test.vx>`).
+[[bin]]
+name = "update_mlir_test_checks"
+path = "utils/update_mlir_test_checks.rs"
+test = false
+bench = false
+
 [profile.release]
 strip = "debuginfo"      # Strip debuginfo but keep symbols for dynamic linking
 lto = "thin"      # Thin LTO drops dead LLVM code without taking 10 minutes to link
