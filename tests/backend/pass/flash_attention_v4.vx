@@ -1,0 +1,168 @@
+//===- flash_attention_v4.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention-4 in Vx -- the flagship. This brings together every FA-4 innovation that
+// lives at the algorithm level (Zadouri et al., arXiv:2603.05451v1), fused into one placed
+// kernel. See docs/discussions/walkthrough/flash_attention.md.
+//
+//   (1) Online softmax (§3.1.4): stream K/V in tiles, keep a running max m, normalizer l,
+//       and rescaled output accumulator O -- the score matrix is never materialized.
+//   (2) Conditional rescaling (§3.1.4, eq. 6): only apply the e^(m-m_new) rescale when the
+//       running max grows past tau = log2(256) = 8. Exact; cuts vector rescales.
+//   (3) Software-emulated exponential (§3.1.3): `exp_poly` computes exp WITHOUT libm --
+//       range-reduce exp(x) = 2^(x*log2e) = 2^n * 2^f, a degree-4 polynomial for the
+//       fractional 2^f, integer 2^n by scaling. Max relative error vs libm over the softmax
+//       range is < 1e-3 (below BF16 precision), matching the paper's Table 2. In FA-4 this
+//       exists to offload the MUFU exponential unit onto FMA units; here it is the same math
+//       with no dependency on a device libm -- and it is bound `on Topology::GPU`, so it is a
+//       real device-side helper called from within the spawn.
+//   (4) Heterogeneous placement: a declared memory hierarchy (GPU_HBM within CPU_DRAM, with
+//       capacity + bandwidth), Q/K/V/O `transfer`ed into GPU_HBM (each move capacity-checked
+//       and costed from bandwidth), and the whole kernel inside `spawn on(Topology::GPU)`.
+//
+// Result matches the reference oracle within the polynomial's error: 2.8448.. for the
+// non-uniform query, 1.5 for the all-zero query. (The pure-libm path in flash_attention.vx
+// gives 2.84482; this software-emulated path gives 2.84484.)
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(500)
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GB, bandwidth: 3 TB/s
+}
+
+// FA-4's software-emulated exponential, as a device helper (no libm exp).
+fn exp_poly(x : f32) on Topology::GPU -> f32 {
+  let log2e : f32 = 1.442695;
+  let y : f32 = x * log2e;
+  // n = floor(y): truncate toward zero, then adjust down for negatives.
+  let t : i32 = y as i32;
+  let tf : f32 = t as f32;
+  let n : i32 = if tf > y {
+    t - 1
+  } else {
+    t
+  };
+  let f : f32 = y - (n as f32);
+  // 2^f for f in [0,1), degree-4 Horner.
+  let two_f : f32 = 1.0 + f * (0.6931472 + f * (0.2401596 + f * (0.0555829 + f * 0.0096147)));
+  // 2^n by scaling (fixed-bound loop; n is small over the softmax range).
+  let mut pw : f32 = 1.0;
+  let mut nn : i32 = if n < 0 {
+    0 - n
+  } else {
+    n
+  };
+  if n < 0 {
+    for _i in 0..40 {
+      if nn > 0 {
+        pw = pw * 0.5;
+        nn = nn - 1;
+      }
+    }
+  } else {
+    for _i in 0..40 {
+      if nn > 0 {
+        pw = pw * 2.0;
+        nn = nn - 1;
+      }
+    }
+  }
+  return two_f * pw;
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([2, 4]);
+  let mut k_h = Tensor<f32>([4, 4]);
+  let mut v_h = Tensor<f32>([4, 4]);
+  let mut o_h = Tensor<f32>([2, 4]);
+  for d in 0..4 {
+    q_h[0][d] = 1.0;
+    q_h[1][d] = 0.0;
+    k_h[0][d] = 0.0;
+    k_h[1][d] = 1.0;
+    k_h[2][d] = 2.0;
+    k_h[3][d] = 3.0;
+    v_h[0][d] = 0.0;
+    v_h[1][d] = 1.0;
+    v_h[2][d] = 2.0;
+    v_h[3][d] = 3.0;
+  }
+  for i in 0..2 {
+    for d in 0..4 {
+      o_h[i][d] = 0.0;
+    }
+  }
+
+  // Stage operands in device memory (capacity-checked, bandwidth-costed).
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+  let tau : f32 = 8.0;
+
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([1, 2]);
+    for i in 0..2 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..2 {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          let mut acc : f32 = 0.0;
+          for d in 0..4 {
+            acc += q[i][d] * k[j][d];
+          }
+          let sij : f32 = acc * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        let m_cand : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        // (2) conditional rescaling, using (3) the emulated exp
+        if m_cand - m > tau {
+          let corr : f32 = exp_poly(m - m_cand);
+          l = l * corr;
+          for d in 0..4 {
+            o[i][d] = o[i][d] * corr;
+          }
+          m = m_cand;
+        }
+        // (1) online-softmax tile accumulation, again via the emulated exp
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          let p : f32 = exp_poly(ts[0][jj] - m);
+          l = l + p;
+          for d in 0..4 {
+            o[i][d] = o[i][d] + p * v[j][d];
+          }
+        }
+      }
+      for d in 0..4 {
+        o[i][d] = o[i][d] / l;
+      }
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[2.8448
+// EXPECT: [1.5,
