@@ -27,10 +27,10 @@ fn distributed_matmul(a: Tensor<f32, [M, K]>, b: Tensor<f32, [K, N]>) -> Tensor<
     comptime {
         assert(a.shape[1] == b.shape[0], "Inner dimensions must match for matmul!");
     }
-    // Spawn computation on a specific NPU core
-    spawn on(Topology::Acc1Core[0]) {
+    // Spawn computation on a specific accelerator core
+    spawn on(Topology::AccCore[0]) {
         let result = custom_matmul(a, b);
-        // Compute happens entirely on Acc1Core[0]
+        // Compute happens entirely on AccCore[0]
         result
     }
 }
@@ -91,18 +91,94 @@ fn process() {
 }
 ```
 
+### 3.1 User-Defined Topologies
+
+The set of topologies is **open**: a program can declare its own with a `Topology` block,
+registered at parse time. `memory:` (the topology's default memory space) is required;
+`visible:` defaults to just that space when omitted; and each `transfer` clause adds an edge
+— with an integer cost and a `relaxed`/`sync` consistency marker (default `sync`) — to the
+compiler's transfer cost graph. The memory space may itself be a novel, custom name.
+
+```rust
+Topology AcmeTPU {
+    memory: Memory::Local_SRAM,
+    visible: [Memory::Local_SRAM, Memory::CPU_DRAM],
+    transfer Memory::CPU_DRAM -> Memory::Local_SRAM : 40 sync,
+}
+
+// A topology backed by an entirely custom memory space.
+Topology Island {
+    memory: Memory::IslandRAM
+}
+```
+
+Declared topologies are checked for *coherence* (e.g. the default space must be visible and
+reachable from the host); see [`seam_obligations.md`](./seam_obligations.md) and the
+[`hardware_monad.md`](./hardware_monad.md) design note.
+
+### 3.2 Topology-Polymorphic Functions
+
+A function can be generic over a topology with a `D: Topology` bound. Inside the signature
+and body the variable is written `Topology::D`, and a `Pinned<T, Topology::D>` result carries
+the binding. Monomorphization specializes the function per concrete topology at the call site.
+
+```rust
+fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+    spawn on(Topology::D) {
+        let y = x;
+    }
+    return 0;
+}
+```
+
+**`where Transfer<A, B>` constraints.** When a polymorphic function moves data between two
+topology variables it must state that a transfer between them is possible. The
+`where Transfer<S, D>` clause is discharged at each call site against the transfer cost graph
+— instantiating `S`/`D` with a pair that has no path is a compile error. Multiple constraints
+are comma-separated.
+
+```rust
+fn move_between<S: Topology, D: Topology>(
+    src: Pinned<i32, Topology::S>,
+    dst: Pinned<i32, Topology::D>,
+) -> i32 where Transfer<S, D> {
+    let staged = transfer(src, Memory::CPU_DRAM);
+    return 0;
+}
+
+fn pipeline<A: Topology, B: Topology, C: Topology>( /* ... */ )
+    -> i32 where Transfer<A, B>, Transfer<B, C> { /* ... */ }
+```
+
+**`Transfer<A, B>` as a comptime predicate.** The same relation is also a compile-time
+boolean: `Transfer<A, B>` evaluates to whether a transfer path exists, where each argument is
+a concrete topology (`Topology::CPU`) or a topology variable (`D`). Inside `if comptime`, a
+statically-false predicate prunes its branch entirely, so an otherwise-invalid body never has
+to type-check.
+
+```rust
+fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
+    if comptime Transfer<Topology::CPU, D> {
+        let reachable = 1;   // only compiled when CPU -> D is reachable
+    }
+    return 0;
+}
+```
+
 ## 4. Logical and Relational Operators
 
-- Compound assignment: `+=`, `*=`
+- Compound assignment: `+=` (currently the only compound-assignment operator; `*=`, `-=`, `/=` are not yet parsed)
+- Arithmetic: `+`, `-`, `*`, `/`, and `@` (matrix multiply)
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
+- Range: `..` (e.g. `0..4`, and inside a topology index such as `NPU[0..4]`)
 
 ## 5. Semantics of Data Movement: `transfer`
 
 Data cannot be implicitly moved across address spaces. Moving data requires the `transfer` primitive, which explicitly tracks ownership and liveness across boundaries.
 
 ```rust
-fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
+fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::CPU_DRAM>) {
     spawn on(Topology::NPU[0]) {
         // Explicitly transfer data from Host DRAM to NPU HBM
         let local_data = transfer(host_input, Memory::NPU_HBM);
@@ -111,7 +187,7 @@ fn heterogeneous_pipeline(host_input: Ref<Tensor, Memory::Host_DRAM>) {
         let result = process(local_data);
 
         // Transfer result back to Host DRAM
-        let host_result = transfer(result, Memory::Host_DRAM);
+        let host_result = transfer(result, Memory::CPU_DRAM);
     }
 }
 ```
@@ -156,10 +232,6 @@ unroll across(Topology::NPU[0..4]) { |npu_id|
 ## 7. Foreign Function Interface (FFI) & Safety
 
 Vx supports calling external C functions via the `extern` block. By default, all external functions are considered `unsafe` because the compiler cannot statically verify their memory safety across the language boundary. Calling an `unsafe` function requires an `unsafe { ... }` block.
-
-> [!WARNING]
-> **Experimental / Unimplemented Feature**
-> The `safe` keyword for FFI functions is currently planned but not yet implemented in the parser.
 
 However, many C functions (like simple math functions, standard library I/O, or thoroughly tested user kernels) are inherently safe or have been manually verified by the programmer. Vx allows you to claim responsibility for this safety by annotating the FFI declaration with the `safe` keyword:
 

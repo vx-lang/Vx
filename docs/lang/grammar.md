@@ -7,7 +7,7 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | struct_decl | enum_decl | function_decl )*
+program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | struct_decl | enum_decl | topology_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
@@ -32,12 +32,24 @@ struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ",
 
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 
-function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
+function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type where_clause? ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
+
+where_clause ::= "where" transfer_constraint ( "," transfer_constraint )*
+transfer_constraint ::= "Transfer" "<" identifier "," identifier ">"
 
 generic_params ::= "<" ( generic_param ","? )* ">"
-generic_param ::= "const" identifier ":" type | identifier ( ":" identifier )?
+generic_param ::= "const" identifier ":" type | identifier ( ":" ( "Topology" | identifier ) )?
 
 param_list ::= ( identifier ":" type ","? )*
+
+// A user-defined topology, registered at parse time. `memory:` is required; an omitted
+// `visible:` defaults to just the topology's own memory. `transfer` clauses contribute
+// morphisms (with a cost and a `relaxed`/`sync` consistency marker) to the cost graph.
+topology_decl ::= "Topology" identifier "{" ( topology_field ","? )* "}"
+topology_field ::=
+    | "memory" ":" memory_space
+    | "visible" ":" "[" ( memory_space ","? )* "]"
+    | "transfer" memory_space "->" memory_space ":" number ( "relaxed" | "sync" )?
 ```
 
 ## 3. Statements
@@ -92,7 +104,9 @@ primary_expr ::=
     | "unsafe" "{" statement* "}"
     | "if" "comptime"? expr "{" statement* "}" ( "else" ( "if" primary_expr | "{" statement* "}" ) )?
     | "match" expr "{" ( pattern "=>" ( "{" statement* "}" | statement ) ","? )* "}"
+    | "spawn" "on" "(" topology ")" "{" statement* "}"   // routes its body to a topology; yields Pinned<T, topology>
     | "transfer" "(" expr "," memory_space ")"
+    | "Transfer" "<" topology "," topology ">"            // comptime transferability predicate (a bool)
     | "[" ( expr ","? )* "]"
     | "Memory" "::" identifier
     | "Topology" "::" identifier
@@ -140,22 +154,35 @@ named_type ::=
     | element_type
     | identifier ( "<" type ( "," type )* ">" )?
 
-element_type ::= "f32" | "f64" | "i32" | "i64" | "i128" | "bool"
+element_type ::=
+    | "i4" | "i8" | "i16" | "i32" | "i64" | "i128"
+    | "u4" | "u8" | "u16" | "u32" | "u64" | "u128"
+    | "f16" | "bf16" | "f32" | "f64"
+    | "bool"
 
-memory_space ::= "CPU_DRAM" | "NPU_HBM" | "Local_SRAM" | "NIC_RAM" | "Remote_HBM"
+// Any identifier that is not a built-in name is a user-defined (custom) memory space,
+// so a `Topology` declaration can introduce a novel memory.
+memory_space ::= "Memory" "::" ( "CPU_DRAM" | "NPU_HBM" | "GPU_HBM" | "Local_SRAM" | "NIC_RAM" | "Remote_HBM" | identifier )
 
-topology ::= 
-    | "Topology" "::" "CPU"
-    | "Topology" "::" "Current"
-    | "Topology" "::" "NPU" "[" expr "]"
-    | "Topology" "::" "NPU" "[" expr ".." expr "]"   // Slice: spawns across a range of NPUs
-    | "Topology" "::" "AccCore" "[" expr "]"
-    | "Topology" "::" "AMX"
-    | "Topology" "::" "ANE"
-    | "Topology" "::" "GPU"
-    | "Topology" "::" "CpuAvx512"
-    | "Topology" "::" "CpuNeon"
+topology ::= "Topology" "::" topology_kind
+topology_kind ::= 
+    | "CPU"
+    | "Current"
+    | "GPU"
+    | "AMX"
+    | "ANE"
+    | "CpuAvx512"                        // also accepts "CPU_AVX512"
+    | "CpuNeon"                          // also accepts "CPU_Neon"
+    | "NPU" "[" expr "]"
+    | "NPU" "[" expr ".." expr "]"       // Slice: spawns across a range of NPUs
+    | "AccCore" "[" expr "]"
+    | identifier                         // a user-declared `Topology`
 ```
+
+> **Reserved but not yet parsed.** The lexer reserves `unroll`, `across`, and `HardwareState`
+> as keywords, but the parser does not yet accept them (see the "unimplemented" notes in
+> `syntax.md` / `types.md`). `safe` (on `extern` functions) and the `..` range operator are
+> parsed and implemented. Only `+=` compound assignment is supported (`*=` is not).
 
 ## 6. ABI Mangling
 

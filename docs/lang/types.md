@@ -13,7 +13,7 @@ The fundamental data reference type is `Ref<T, Memory>`.
 
 ```rust
 // A reference to a generic Matrix located in the Host's DRAM
-let host_matrix: Ref<Matrix, Memory::Host_DRAM> = ...;
+let host_matrix: Ref<Matrix, Memory::CPU_DRAM> = ...;
 
 // A reference to a Tensor with statically known layouts [128, 256] in NPU's High Bandwidth Memory
 let npu_tensor: Ref<Tensor<f32, [128, 256]>, Memory::NPU_HBM> = ...;
@@ -78,15 +78,25 @@ let strict_task: Pinned<Tensor, Topology::NPU[0]> = matmul(A, B);
 
 ### 3.3 Pinned Cross-Topology Access Rules
 
-A `Pinned<T, TopologyA>` value can only be accessed from topologies that have visibility to `TopologyA`'s default memory space. The compiler enforces this statically via the accessibility matrix:
+A `Pinned<T, TopologyA>` value can only be accessed from topologies that have visibility to `TopologyA`'s default memory space. The compiler enforces this statically from the topology registry (`arch::builtin_descriptors`); the built-in visibility sets are:
 
-| Active Topology | Visible Memory Spaces |
-|---|---|
-| CPU | CPU_DRAM |
-| GPU, ANE, AMX | CPU_DRAM (unified host memory) |
-| CpuAvx512, CpuNeon | CPU_DRAM |
-| NPU | NPU_HBM, CPU_DRAM |
-| AccCore | Local_SRAM, NPU_HBM, CPU_DRAM |
+| Active Topology | Default space | Directly visible memory spaces |
+|---|---|---|
+| CPU | CPU_DRAM | CPU_DRAM, NPU_HBM |
+| GPU | GPU_HBM | GPU_HBM, CPU_DRAM |
+| NPU[i] | NPU_HBM | NPU_HBM |
+| ANE | NPU_HBM | NPU_HBM, CPU_DRAM |
+| AMX | CPU_DRAM | CPU_DRAM |
+| AccCore[i] | Local_SRAM | Local_SRAM |
+| CpuAvx512 | CPU_DRAM | CPU_DRAM |
+| CpuNeon | CPU_DRAM | CPU_DRAM |
+
+> [!NOTE]
+> The table lists *direct* visibility (the `Visible` verdict). Where a space is not directly
+> visible but a **transfer path exists**, access is still possible via an explicit
+> `transfer(...)` (the `NeedsSeam` verdict); only a space with no path at all is truly
+> `Unreachable`. User-defined `Topology` declarations (see [syntax.md](./syntax.md#31-user-defined-topologies))
+> contribute their own visibility sets and transfer edges to this matrix.
 
 **Example — rejected at compile time:**
 
@@ -107,6 +117,16 @@ fn invalid_cross_access() -> i32 {
 
 > [!WARNING]
 > This check applies to both explicit `Pinned<T, Topology>` types and any variable that was transferred to a topology-specific memory space (e.g., `transfer(t, Memory::NPU_HBM)` pins the data to NPU).
+
+### 3.4 Topology-Polymorphic Types
+
+`Pinned<T, Topology>` can be abstracted over the topology: a function generic with a
+`D: Topology` bound takes and returns `Pinned<T, Topology::D>`, and the compiler monomorphizes
+it per concrete target at each call site. Moving a value between two topology variables
+requires a `where Transfer<S, D>` constraint (discharged against the transfer cost graph), and
+the same relation is available as a compile-time `Transfer<A, B>` predicate for `if comptime`
+branch pruning. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
+surface syntax and [`hardware_monad.md`](./hardware_monad.md) for the categorical model.
 
 ## 4. The Hardware State Monad
 
@@ -130,11 +150,11 @@ enum HardwareState<T, Topo> {
 
 ```rust
 let compute_task: Verified<Tensor> = matmul(A, B);
-let target: HardwareState<Tensor, Topology::Acc1Core> = compute_task.try_pin(Topology::Acc1Core);
+let target: HardwareState<Tensor, Topology::AccCore[0]> = compute_task.try_pin(Topology::AccCore[0]);
 
 match target {
     HardwareState::Available(pinned_task) => {
-        // Safe to execute strictly on Acc1Core
+        // Safe to execute strictly on AccCore[0]
         pinned_task.execute();
     },
     HardwareState::Saturated(agile_task) => {
@@ -160,7 +180,7 @@ Functions that incur significant effects must explicitly document them in their 
 // This function signature indicates that it performs asynchronous data
 // movement to the NPU and has temporal side-effects.
 fn pipeline() -> Verified<()>
-    effects(DataMovement(Memory::Host_DRAM -> Memory::NPU_HBM))
+    effects(DataMovement(Memory::CPU_DRAM -> Memory::NPU_HBM))
 {
     // ...
 }
@@ -229,7 +249,7 @@ Vx uses a **linear type discipline** for resource-owning types. A linear value m
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32> = 1.0;` |
 | `Matrix` | `let m : Matrix = ...;` |
-| `Ref<T, Memory>` | `let r : Ref<Tensor, Host_DRAM> = ...;` |
+| `Ref<T, Memory>` | `let r : Ref<Tensor, Memory::CPU_DRAM> = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor, NPU[0]> = ...;` |
 | `struct` instances | `let cfg = Config { value: 1.0 };` |

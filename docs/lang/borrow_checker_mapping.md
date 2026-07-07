@@ -4,7 +4,7 @@ This design document outlines the strategy for integrating the `Vx` compiler's f
 
 ## 1. Problem Statement
 
-`Vx` treats data distributed across heterogeneous memory spaces (Host DRAM, NPU HBM) as first-class, affine/linear types. When a variable of type `Ref<T, Memory::Host_DRAM>` is moved via a `transfer(a, Memory::NPU_HBM)`, the original `a` is consumed and can no longer be accessed.
+`Vx` treats data distributed across heterogeneous memory spaces (Host DRAM, NPU HBM) as first-class, affine/linear types. When a variable of type `Ref<T, Memory::CPU_DRAM>` is moved via a `transfer(a, Memory::NPU_HBM)`, the original `a` is consumed and can no longer be accessed.
 
 However, the actual execution happens by calling into Rust FFI functions (like `vx_transfer_host_to_npu`). Rust's borrow checker cannot enforce lifetimes across an opaque C FFI boundary dynamically. If `Vx` passes a raw pointer `*mut T`, Rust assumes no lifecycle invariants.
 
@@ -41,8 +41,8 @@ pub unsafe extern "C" fn vx_tensor_f32_add(
 In the `Vx` semantic analyzer (`sema.rs`), calling an FFI function that maps to a consuming operation *must* drop the variable from the active `SymbolMap`.
 
 ```vx
-let a: Ref<Tensor, Host_DRAM> = Tensor::new([128]);
-let b: Ref<Tensor, Host_DRAM> = Tensor::new([128]);
+let a: Ref<Tensor, Memory::CPU_DRAM> = Tensor::new([128]);
+let b: Ref<Tensor, Memory::CPU_DRAM> = Tensor::new([128]);
 
 // The `add` operation consumes `a` and `b`.
 let c = a + b;

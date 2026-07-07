@@ -36,7 +36,7 @@ Standard languages employ a flat memory model (`*mut T`). Vx uses a partitioned 
 
 ### 2.1 Spatial Isolation
 
-If variable $v$ is of type `Ref<T, Memory::HostDRAM>` and execution context is `Topology::NPU[0]`, attempting to dereference $v$ triggers a **spatial fault** (caught statically at compile-time by the Semantic Analyzer).
+If variable $v$ is of type `Ref<T, Memory::CPU_DRAM>` and execution context is `Topology::NPU[0]`, attempting to dereference $v$ triggers a **spatial fault** (caught statically at compile-time by the Semantic Analyzer).
 
 ### 2.2 The `transfer` Primitive
 
