@@ -1,0 +1,133 @@
+//===- flash_attention_backward.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 5 (see docs/discussions/implementation_plans/flash_attention.md):
+// the backward pass. Given the output gradient dO, attention backprops as (paper §2.1):
+//
+//   dV = P^T . dO
+//   dP = dO . V^T
+//   dS = dsoftmax(dP):  dS_ij = P_ij (dP_ij - sum_k P_ik dP_ik)   (the softmax Jacobian)
+//   dQ = scale . dS . K
+//   dK = scale . dS^T . Q
+//
+// P is recomputed from Q, K by the forward softmax. With dO = 1 and a fixed 2x2x2 case
+// (scale = 1), the gradients below were computed independently (a separate reference
+// implementation), so matching them checks the whole backward chain:
+//   dV = [[1.23106, 1.23106], [0.76894, 0.76894]]
+//   dQ = [[-0.78645, 0],      [-1, 0]]
+//   dK = [[-0.78645, -1],     [0.78645, 1]]
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 2]);
+  let mut k = Tensor<f32>([2, 2]);
+  let mut v = Tensor<f32>([2, 2]);
+  let mut p = Tensor<f32>([2, 2]);  // softmax(scale * Q K^T)
+  let mut dp = Tensor<f32>([2, 2]);
+  let mut ds = Tensor<f32>([2, 2]);
+  let mut dv = Tensor<f32>([2, 2]);
+  let mut dq = Tensor<f32>([2, 2]);
+  let mut dk = Tensor<f32>([2, 2]);
+
+  q[0][0] = 1.0; q[0][1] = 0.0; q[1][0] = 0.0; q[1][1] = 1.0;
+  k[0][0] = 1.0; k[0][1] = 1.0; k[1][0] = 0.0; k[1][1] = 1.0;
+  v[0][0] = 1.0; v[0][1] = 2.0; v[1][0] = 3.0; v[1][1] = 4.0;
+  let scale : f32 = 1.0;
+
+  // Forward: P = softmax(scale * Q . K^T), row-wise, numerically stable.
+  for i in 0..2 {
+    let mut mx : f32 = -1000000.0;
+    for j in 0..2 {
+      let mut a : f32 = 0.0;
+      for d in 0..2 {
+        a += q[i][d] * k[j][d];
+      }
+      p[i][j] = a * scale;
+      if p[i][j] > mx {
+        mx = p[i][j];
+      }
+    }
+    let mut sum : f32 = 0.0;
+    for j in 0..2 {
+      let e : f32 = (p[i][j] - mx).exp();
+      p[i][j] = e;
+      sum += e;
+    }
+    for j in 0..2 {
+      p[i][j] = p[i][j] / sum;
+    }
+  }
+
+  // dO = ones (loss = sum of O). dV = P^T . dO
+  for m in 0..2 {
+    for d in 0..2 {
+      let mut a : f32 = 0.0;
+      for i in 0..2 {
+        a += p[i][m] * 1.0;
+      }
+      dv[m][d] = a;
+    }
+  }
+  // dP = dO . V^T
+  for i in 0..2 {
+    for j in 0..2 {
+      let mut a : f32 = 0.0;
+      for d in 0..2 {
+        a += 1.0 * v[j][d];
+      }
+      dp[i][j] = a;
+    }
+  }
+  // dS_ij = P_ij (dP_ij - sum_k P_ik dP_ik)
+  for i in 0..2 {
+    let mut rd : f32 = 0.0;
+    for kk in 0..2 {
+      rd += p[i][kk] * dp[i][kk];
+    }
+    for j in 0..2 {
+      ds[i][j] = p[i][j] * (dp[i][j] - rd);
+    }
+  }
+  // dQ = scale . dS . K
+  for i in 0..2 {
+    for d in 0..2 {
+      let mut a : f32 = 0.0;
+      for j in 0..2 {
+        a += ds[i][j] * k[j][d];
+      }
+      dq[i][d] = a * scale;
+    }
+  }
+  // dK = scale . dS^T . Q
+  for j in 0..2 {
+    for d in 0..2 {
+      let mut a : f32 = 0.0;
+      for i in 0..2 {
+        a += ds[i][j] * q[i][d];
+      }
+      dk[j][d] = a * scale;
+    }
+  }
+
+  print(dv);
+  print(dq);
+  print(dk);
+  return 0;
+}
+
+// dV:
+// EXPECT: [[1.23106,
+// EXPECT: [0.768941,
+// dQ:
+// EXPECT: [[-0.786448,
+// EXPECT: [-1,
+// dK:
+// EXPECT: [0.786448,
