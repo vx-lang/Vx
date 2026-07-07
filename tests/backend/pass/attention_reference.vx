@@ -1,0 +1,88 @@
+//===- attention_reference.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 1 (see docs/discussions/implementation_plans/flash_attention.md):
+// the *reference* (non-flash) attention that serves as the correctness oracle. It
+// materializes the full score matrix S = scale * Q * K^T, applies a real row-wise softmax
+// (max -> exp(.-max) -> sum -> divide), then O = P * V. This is the softmax the existing
+// ane_attention.vx stubs out as the constant 0.25 -- here it is computed for real.
+//
+// Inputs are chosen so the result is hand-checkable and *discriminates* a real softmax:
+//   K row j = j, V row j = j (as vectors), D = 4, scale = 1/2.
+//   Query 0 = [1,1,1,1] -> raw scores Q0.Kj = 4j -> scaled [0,2,4,6]. softmax weights the
+//     largest key heavily; O0 = sum_j w_j * j = 2.84482 (NOT the stub's uniform mean 1.5).
+//   Query 1 = [0,0,0,0] -> scores [0,0,0,0] -> uniform softmax -> O1 = mean(0,1,2,3) = 1.5.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 4]);
+  let mut k = Tensor<f32>([4, 4]);
+  let mut v = Tensor<f32>([4, 4]);
+  let mut s = Tensor<f32>([2, 4]);
+  let mut o = Tensor<f32>([2, 4]);
+
+  for d in 0..4 {
+    q[0][d] = 1.0;
+    q[1][d] = 0.0;
+    k[0][d] = 0.0;
+    k[1][d] = 1.0;
+    k[2][d] = 2.0;
+    k[3][d] = 3.0;
+    v[0][d] = 0.0;
+    v[1][d] = 1.0;
+    v[2][d] = 2.0;
+    v[3][d] = 3.0;
+  }
+
+  let scale : f32 = 0.5;
+
+  for i in 0..2 {
+    // S_i = scale * Q_i . K^T  (dot over the head dim; no explicit transpose of K)
+    for j in 0..4 {
+      let mut acc : f32 = 0.0;
+      for d in 0..4 {
+        acc += q[i][d] * k[j][d];
+      }
+      s[i][j] = acc * scale;
+    }
+    // row-wise softmax of S_i, numerically stable (subtract the row max)
+    let mut mx : f32 = s[i][0];
+    for j in 1..4 {
+      let x : f32 = s[i][j];
+      if x > mx {
+        mx = x;
+      }
+    }
+    let mut sum : f32 = 0.0;
+    for j in 0..4 {
+      let e : f32 = (s[i][j] - mx).exp();
+      s[i][j] = e;
+      sum += e;
+    }
+    for j in 0..4 {
+      s[i][j] = s[i][j] / sum;
+    }
+    // O_i = P_i . V
+    for j in 0..4 {
+      let mut acc : f32 = 0.0;
+      for m in 0..4 {
+        acc += s[i][m] * v[m][j];
+      }
+      o[i][j] = acc;
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[2.84482,
+// EXPECT: [1.5,
