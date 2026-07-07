@@ -211,6 +211,8 @@ pub enum DiagnosticCode {
     E6007,
     /// A `Memory` declaration has a non-positive `capacity`, `bandwidth`, or `granule`.
     E6008,
+    /// A statically-shaped tensor placed in a memory space exceeds that space's `capacity`.
+    E6009,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

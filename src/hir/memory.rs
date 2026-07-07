@@ -14,8 +14,39 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::syntax::{Bandwidth, ByteSize, MemoryDecl, MemorySpace};
+use crate::syntax::{Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace};
 use std::collections::{HashMap, HashSet};
+
+/// Bit width of a tensor element; `None` for an un-instantiated generic element.
+pub fn element_bits(elem: &ElementType) -> Option<u64> {
+    Some(match elem {
+        ElementType::Bool => 1,
+        ElementType::I4 | ElementType::U4 => 4,
+        ElementType::I8 | ElementType::U8 => 8,
+        ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
+        ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
+        ElementType::F64 | ElementType::I64 | ElementType::U64 => 64,
+        ElementType::I128 | ElementType::U128 => 128,
+        ElementType::Generic(_) => return None,
+    })
+}
+
+/// Byte size of a statically-shaped tensor: `ceil(element_bits × Π(dims) / 8)`. `None` when the
+/// shape is empty or any dimension is not a compile-time integer literal (so the size — and thus
+/// any capacity check — is unknown).
+pub fn static_tensor_bytes(elem: &ElementType, dims: &[Expr]) -> Option<u64> {
+    if dims.is_empty() {
+        return None;
+    }
+    let mut count: u64 = 1;
+    for d in dims {
+        let Expr::Number(num) = d else {
+            return None;
+        };
+        count = count.checked_mul(num.value.as_ref().parse::<u64>().ok()?)?;
+    }
+    Some(element_bits(elem)?.checked_mul(count)?.div_ceil(8))
+}
 
 /// A per-compilation view of the declared memory hierarchy. Nodes are `MemorySpace`s (a
 /// declared space's identity is `MemorySpace::from_name(name)`, so `Memory GPU_HBM { ... }`
@@ -298,6 +329,53 @@ mod tests {
                 .filter(|i| matches!(i, MemoryCoherenceIssue::NonPositiveProperty { .. }))
                 .count(),
             2
+        );
+    }
+
+    fn dim(n: &str) -> Expr {
+        Expr::Number(crate::syntax::NumberExpr::new(
+            n.to_string(),
+            None,
+            crate::syntax::Span::default(),
+        ))
+    }
+
+    #[test]
+    fn tensor_bytes_dense_and_subbyte() {
+        // 256x256 f32 = 262144 bytes (256 KiB).
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F32, &[dim("256"), dim("256")]),
+            Some(256 * 1024)
+        );
+        // 8x8 i4 = 64 elems * 4 bits = 256 bits = 32 bytes (sub-byte packs).
+        assert_eq!(
+            static_tensor_bytes(&ElementType::I4, &[dim("8"), dim("8")]),
+            Some(32)
+        );
+        // 3 bools = 3 bits -> ceil to 1 byte.
+        assert_eq!(
+            static_tensor_bytes(&ElementType::Bool, &[dim("3")]),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn tensor_bytes_dynamic_shape_is_unknown() {
+        // A non-literal dimension (an identifier) => size unknown => no check possible.
+        let dyn_dim = Expr::Identifier(crate::syntax::IdentifierExpr {
+            name: "N".into(),
+            span: crate::syntax::Span::default(),
+        });
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F32, &[dyn_dim, dim("4")]),
+            None
+        );
+        // Empty shape (scalar-broadcast tensor) is also unknown.
+        assert_eq!(static_tensor_bytes(&ElementType::F32, &[]), None);
+        // Un-instantiated generic element is unknown.
+        assert_eq!(
+            static_tensor_bytes(&ElementType::Generic("T".into()), &[dim("4")]),
+            None
         );
     }
 }

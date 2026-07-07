@@ -1,0 +1,24 @@
+//===- memory_capacity_exceeded.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor transferred into a memory space must fit that space's declared capacity
+// (E6009). Here a 64x64 f32 tile (16 KiB) is transferred into a 1 KiB NPU_HBM.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory NPU_HBM {
+  capacity: 1 KB
+}
+
+fn main() -> i32 {
+  let big: Tensor<f32, [64, 64]> = Tensor<f32>([64, 64]);
+  let staged = transfer(big, Memory::NPU_HBM);
+  return 0;
+}
+
+// CHECK: E6009
+// CHECK-SAME: 16384 bytes

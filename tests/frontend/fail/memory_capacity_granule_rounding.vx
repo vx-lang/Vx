@@ -1,0 +1,25 @@
+//===- memory_capacity_granule_rounding.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Capacity is checked after granule rounding. A 68x64 f32 tile is 17408 bytes, which
+// fits the 20 KiB (20480 B) space raw -- but rounded up to the 16 KiB allocation granule
+// it needs 32768 bytes, which does not fit. So the granule is what makes this fail (E6009).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory NPU_HBM {
+  capacity: 20 KB, granule: 16 KB
+}
+
+fn main() -> i32 {
+  let t: Tensor<f32, [68, 64]> = Tensor<f32>([68, 64]);
+  let staged = transfer(t, Memory::NPU_HBM);
+  return 0;
+}
+
+// CHECK: E6009
+// CHECK-SAME: 32768 bytes

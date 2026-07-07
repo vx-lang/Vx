@@ -226,10 +226,15 @@ parallel and do not block on these.
   per-compilation env, so it needs no scoping list (unlike topologies). Wired into the driver
   and the frontend test harness. Tests: 7 unit + 3 `.vx` (cycle, capacity-exceeds-parent,
   well-formed sibling hierarchy).
-- **M3 — Capacity checking + allocation-into-space.** `size_of(tile)` vs `capacity` (granule-
-  rounded) at `Ref`/`Pinned`/allocation sites; the `in Memory::X` (or `with`) surface form.
-  Tests: a too-big tile is rejected with the byte numbers; a fitting one compiles.
-  *Pulled by FlashAttention Phase 4 (place tiles in SMEM/TMEM).*
+- **M3 — Capacity checking. ✅ Landed (allocation sugar deferred to #184).**
+  `hir::memory::static_tensor_bytes` computes `ceil(element_bits × Π(dims) / 8)` (sub-byte types
+  like `i4` pack; dynamic/generic shapes are skipped). `TypeChecker::check_capacity` rounds up to
+  the space's `granule` and compares to its `capacity`, emitting **E6009** with the byte numbers.
+  Hooked at two syntax-free sites: `transfer(tensor, Memory::X)` (the FlashAttention path) and
+  `Ref`/`Pinned` `let`-annotations (`check_type_placement`). Tests: 2 unit (dense + sub-byte +
+  dynamic/generic) and 3 `.vx` (over-capacity, granule tips it over, fitting). The dedicated
+  `in Memory::X` **allocation** surface form is a separate additive change (#184) — capacity
+  checking works today via `Ref`/`transfer`. *Pulled by FlashAttention Phase 4.*
 - **M4 — Derived, bandwidth-parameterized costs.** `TransferCost::PerByte`, size-aware cost-graph
   query, derived hop costs from the tree; explicit `transfer … : C` still overrides. Test that a
   declared bandwidth reproduces a paper-style cycle count for a given tile size.

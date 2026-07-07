@@ -1234,6 +1234,75 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The `(element, dims)` of the tensor at the core of a (possibly wrapped) type, if any.
+    fn tensor_of(ty: &Type) -> Option<(&ElementType, &[Expr])> {
+        match ty {
+            Type::Tensor(e, d, _) => Some((e, d.as_slice())),
+            Type::Ref(inner, _) | Type::Pinned(inner, _) | Type::Verified(inner) => {
+                Self::tensor_of(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// If a statically-shaped `Tensor<elem, dims>` placed in `space` exceeds that space's
+    /// declared `capacity` (after granule rounding), emit E6009. No-op for a dynamic shape, an
+    /// undeclared space, or a space with no `capacity`.
+    fn check_capacity(
+        &mut self,
+        elem: &ElementType,
+        dims: &[Expr],
+        space: &MemorySpace,
+        context: &str,
+    ) {
+        let overflow = {
+            let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+            let Some(decl) = h.descriptor(space) else {
+                return;
+            };
+            let Some(crate::syntax::ByteSize(cap)) = decl.capacity else {
+                return;
+            };
+            let Some(raw) = crate::hir::memory::static_tensor_bytes(elem, dims) else {
+                return;
+            };
+            let rounded = match decl.granule {
+                Some(crate::syntax::ByteSize(g)) if g > 0 => raw.div_ceil(g) * g,
+                _ => raw,
+            };
+            (rounded > cap).then_some((rounded, cap))
+        };
+        if let Some((bytes, cap)) = overflow {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6009,
+                format!(
+                    "{context} needs {bytes} bytes but memory space '{}' has capacity {cap} bytes",
+                    space.name()
+                ),
+                None,
+            );
+        }
+    }
+
+    /// Walk a declared type for a `Ref`/`Pinned` tensor bound to a capacity-bearing space and
+    /// check it fits. Used on `let` annotations.
+    pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str) {
+        match ty {
+            Type::Ref(inner, mem) => {
+                if let Some((e, d)) = Self::tensor_of(inner) {
+                    self.check_capacity(e, d, mem, context);
+                }
+            }
+            Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
+                if let Some((e, d)) = Self::tensor_of(inner) {
+                    let space = crate::arch::TransferCostGraph::default_memory_for(top);
+                    self.check_capacity(e, d, &space, context);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_seam_hop(
         &mut self,
@@ -1353,6 +1422,11 @@ impl<'a> TypeChecker<'a> {
                 }
             };
             target_mem = t.space.clone();
+
+            // Capacity: a statically-shaped tensor transferred into a declared space must fit.
+            if let Some((e, d)) = Self::tensor_of(&inner_ty) {
+                self.check_capacity(e, d, &target_mem, "transferred tensor");
+            }
 
             let path_result = self
                 .transfer_cost_graph
