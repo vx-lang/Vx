@@ -55,6 +55,36 @@ pub enum MemorySpace {
     Custom(Symbol),
 }
 
+impl MemorySpace {
+    /// Map a surface name (as written after `Memory::`) to a space: the built-in names map to
+    /// their variants; any other identifier is a user-defined `Custom` space. Single source of
+    /// truth shared by the parser and the memory hierarchy.
+    pub fn from_name(name: &str) -> MemorySpace {
+        match name {
+            "CPU_DRAM" => MemorySpace::CPUDRAM,
+            "NPU_HBM" => MemorySpace::NPUHBM,
+            "GPU_HBM" => MemorySpace::GpuHbm,
+            "Local_SRAM" => MemorySpace::LocalSRAM,
+            "NIC_RAM" => MemorySpace::NicRam,
+            "Remote_HBM" => MemorySpace::RemoteHbm,
+            other => MemorySpace::Custom(Symbol::from(other)),
+        }
+    }
+
+    /// The surface name of a space (the inverse of `from_name`), for diagnostics.
+    pub fn name(&self) -> String {
+        match self {
+            MemorySpace::CPUDRAM => "CPU_DRAM".to_string(),
+            MemorySpace::NPUHBM => "NPU_HBM".to_string(),
+            MemorySpace::GpuHbm => "GPU_HBM".to_string(),
+            MemorySpace::LocalSRAM => "Local_SRAM".to_string(),
+            MemorySpace::NicRam => "NIC_RAM".to_string(),
+            MemorySpace::RemoteHbm => "Remote_HBM".to_string(),
+            MemorySpace::Custom(s) => s.as_ref().to_string(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum TopologyKind {
     CPU,

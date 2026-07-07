@@ -217,8 +217,15 @@ parallel and do not block on these.
   index it in `GlobalAstEnv.memories`; `Ref<T, Memory::X>` resolves through the env; codegen reads
   it from the `Program`. No process-global registry, no reset (see §4). Unit tests for parse +
   env indexing + `Program`-clone round-trip. *Unblocks: naming TMEM/SMEM with real semantics.*
-- **M2 — Hierarchy (`within:`) + coherence.** The space tree, acyclicity + capacity-monotonic
-  checks, containment/NCA queries. Tests for nested declarations and rejected cycles.
+- **M2 — Hierarchy (`within:`) + coherence. ✅ Landed.** `src/hir/memory.rs`'s
+  `MemoryHierarchy` (built per-compilation from `Program.memories`, keyed by
+  `MemorySpace::from_name`) provides `parent` / `ancestors` / `contains` /
+  `nearest_common_ancestor` (all cycle-safe) and `coherence_issues`. `check_memory_coherence`
+  on the `TypeChecker` emits `E6006` (a `within:` cycle), `E6007` (a sub-space larger than its
+  parent), and `E6008` (a non-positive `capacity`/`bandwidth`/`granule`); it reads the
+  per-compilation env, so it needs no scoping list (unlike topologies). Wired into the driver
+  and the frontend test harness. Tests: 7 unit + 3 `.vx` (cycle, capacity-exceeds-parent,
+  well-formed sibling hierarchy).
 - **M3 — Capacity checking + allocation-into-space.** `size_of(tile)` vs `capacity` (granule-
   rounded) at `Ref`/`Pinned`/allocation sites; the `in Memory::X` (or `with`) surface form.
   Tests: a too-big tile is rejected with the byte numbers; a fitting one compiles.
@@ -251,10 +258,10 @@ point of the language.
 1. **Units in the lexer.** `256 KB`, `8 TB/s`, `128 B/cyc` need literal-with-unit parsing.
    Simplest: parse `number` then a unit identifier in `parse_memory_decl` (no lexer change);
    store normalized to bytes and bytes/cycle.
-1. **Siblings vs nesting for TMEM/SMEM.** Are TMEM and SMEM nested (`TMEM within SMEM`) or peers
-   inside a device (`both within HBM`)? They are physically peers per-SM; the tree should model
-   them as siblings, with the shared parent being the device space. M2 should pick "siblings"
-   and document why.
+1. **Siblings vs nesting for TMEM/SMEM. Resolved: siblings.** TMEM (256 KB) and SMEM (~228 KB)
+   are physically peers per-SM — TMEM is not *inside* SMEM — so they are modeled as siblings,
+   both `within: HBM` (the device space). Nesting them would (correctly) trip the
+   capacity-monotonic check (`E6007`). The `memory_hierarchy.vx` test encodes this.
 1. **Relationship to `Custom`.** A declared `Memory` and an undeclared `Memory::Foo` both map to
    `MemorySpace::Custom(name)` at the value level; the *descriptor* is what differs. Keep the
    value representation unchanged so existing custom-memory code (and the topology `memory:` /

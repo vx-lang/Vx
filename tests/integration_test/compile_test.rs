@@ -133,6 +133,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     checker.check_topology_coherence(&program.topologies);
+    checker.check_memory_coherence();
     for f in &mut program.functions {
         checker.check_function(f);
     }
@@ -323,6 +324,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
     checker.check_topology_coherence(&program.topologies);
+    checker.check_memory_coherence();
     for f in &mut program.functions {
         checker.check_function(f);
     }

@@ -1180,6 +1180,60 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check coherence of the program's declared memory spaces (`Memory <Name> { ... }`):
+    /// `within:` is acyclic, a sub-space's capacity does not exceed its parent's, and declared
+    /// properties are positive. Reads descriptors from the per-compilation env (`self.env`),
+    /// not a process-global registry, so it needs no scoping list (unlike topologies).
+    pub fn check_memory_coherence(&mut self) {
+        use crate::hir::memory::{MemoryCoherenceIssue, MemoryHierarchy};
+        let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();
+        for issue in issues {
+            match issue {
+                MemoryCoherenceIssue::Cycle { space } => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6006,
+                        format!(
+                            "memory space '{}' is in a `within:` cycle (a space cannot contain \
+                             itself)",
+                            space.name()
+                        ),
+                        None,
+                    );
+                }
+                MemoryCoherenceIssue::CapacityExceedsParent {
+                    child,
+                    parent,
+                    child_bytes,
+                    parent_bytes,
+                } => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6007,
+                        format!(
+                            "memory space '{}' ({} bytes) is larger than its parent '{}' ({} \
+                             bytes); a sub-space cannot exceed what contains it",
+                            child.name(),
+                            child_bytes,
+                            parent.name(),
+                            parent_bytes
+                        ),
+                        None,
+                    );
+                }
+                MemoryCoherenceIssue::NonPositiveProperty { space, property } => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6008,
+                        format!(
+                            "memory space '{}' has a non-positive `{}`",
+                            space.name(),
+                            property
+                        ),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_seam_hop(
         &mut self,

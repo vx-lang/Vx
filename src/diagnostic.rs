@@ -204,6 +204,13 @@ pub enum DiagnosticCode {
     /// A user-defined topology declaration is incoherent: it cannot see its own default
     /// memory space (`default_space ∉ visibility`). See the topology coherence check.
     E6005,
+    /// A `Memory` declaration's `within:` hierarchy forms a cycle (a space contains itself).
+    E6006,
+    /// A `Memory` sub-space's `capacity` exceeds its parent's capacity (a child cannot be
+    /// larger than what contains it).
+    E6007,
+    /// A `Memory` declaration has a non-positive `capacity`, `bandwidth`, or `granule`.
+    E6008,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

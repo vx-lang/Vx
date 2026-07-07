@@ -1,0 +1,23 @@
+//===- memory_within_cycle.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `within:` cycle in the memory hierarchy is incoherent and rejected (E6006).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory Ring0 {
+  within: Memory::Ring1
+}
+Memory Ring1 {
+  within: Memory::Ring0
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: E6006

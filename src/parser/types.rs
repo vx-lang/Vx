@@ -81,17 +81,9 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected memory identifier after Memory::")),
         };
-        match ident.as_ref() {
-            "CPU_DRAM" => Ok(MemorySpace::CPUDRAM),
-            "NPU_HBM" => Ok(MemorySpace::NPUHBM),
-            "GPU_HBM" => Ok(MemorySpace::GpuHbm),
-            "Local_SRAM" => Ok(MemorySpace::LocalSRAM),
-            "NIC_RAM" => Ok(MemorySpace::NicRam),
-            "Remote_HBM" => Ok(MemorySpace::RemoteHbm),
-            // Any other identifier is a user-defined memory space (the set is open, like
-            // topologies), so a custom topology can declare a novel memory.
-            other => Ok(MemorySpace::Custom(crate::symbol::Symbol::from(other))),
-        }
+        // Built-in names map to their variants; any other identifier is a user-defined space
+        // (the set is open, like topologies). Single source of truth: `MemorySpace::from_name`.
+        Ok(MemorySpace::from_name(&ident))
     }
 
     pub(crate) fn parse_type(&mut self) -> ParseResult<'a, Type> {

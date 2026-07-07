@@ -1,0 +1,27 @@
+//===- memory_hierarchy.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A well-formed memory hierarchy: SMEM and TMEM are siblings inside HBM (peers within a
+// device, not nested), each fits within its parent. Coherence accepts it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory Hbm {
+  capacity: 192 GB, bandwidth: 8 TB/s
+}
+Memory Smem {
+  within: Memory::Hbm, capacity: 228 KB, bandwidth: 128 B/cyc, managed: explicit
+}
+Memory Tmem {
+  within: Memory::Hbm, capacity: 256 KB, granule: 16 KB, managed: explicit
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: func.func @main

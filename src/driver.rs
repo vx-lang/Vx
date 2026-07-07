@@ -331,6 +331,8 @@ impl CompilerDriver {
 
         // Reject/flag incoherent user-defined topology declarations before checking bodies.
         checker.check_topology_coherence(&ast.topologies);
+        // Reject incoherent memory-space declarations (cycles, oversized sub-spaces, ...).
+        checker.check_memory_coherence();
 
         for f in &mut ast.functions {
             checker.check_function(f);

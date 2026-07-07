@@ -17,6 +17,7 @@ pub mod bytecode;
 pub mod env;
 pub mod expr;
 pub mod lower_ast;
+pub mod memory;
 pub mod prover;
 pub mod seam;
 pub mod stmt;
