@@ -235,9 +235,20 @@ parallel and do not block on these.
   dynamic/generic) and 3 `.vx` (over-capacity, granule tips it over, fitting). The dedicated
   `in Memory::X` **allocation** surface form is a separate additive change (#184) — capacity
   checking works today via `Ref`/`transfer`. *Pulled by FlashAttention Phase 4.*
-- **M4 — Derived, bandwidth-parameterized costs.** `TransferCost::PerByte`, size-aware cost-graph
-  query, derived hop costs from the tree; explicit `transfer … : C` still overrides. Test that a
-  declared bandwidth reproduces a paper-style cycle count for a given tile size.
+- **M4 — Derived, bandwidth-parameterized costs. ✅ Landed (additive, not a TransferEdge
+  rewrite).** `MemoryHierarchy::derived_transfer_cost(src, dst, bytes)` computes the paper's
+  roofline — `Σ ceil(bytes / bandwidth)` over each non-NCA space on the tree path (so a tile read
+  into SMEM at 128 B/cyc costs `bytes/128` cycles). Sema computes it from the transferred tensor's
+  static byte size and stamps it on the (previously vestigial) `TransferExpr.cost`; codegen emits
+  it as a `cost` attribute on `vx.transfer`. **Design choice:** rather than change
+  `TransferEdge.cost: u32` into a `Fixed | PerByte` enum (which would ripple into
+  reachability/seam — the flagged risk), the derived cost is an *additive, size-aware query* over
+  the memory hierarchy; the fixed cost graph and `transfer_path` are untouched, so reachability
+  and seam behavior are byte-for-byte unchanged. A `cost` attribute appears **only** when a
+  bandwidth makes it derivable (bandwidth-less transfers emit nothing, as before). Explicit
+  topology `transfer … : C` edges remain the fixed reachability cost (a full override-precedence
+  is a later refinement). Tests: 3 unit (single-hop roofline, two-hop sum, the non-derivable
+  cases incl. mixed units) + 1 `.vx` (`cost = 128` on `vx.transfer`).
   *Pulled by FlashAttention Phase 4 (the roofline / seam story).*
 - **M5 — Management-driven transfer obligation.** `managed: explicit|cached` decides when an
   implicit cross-space use is an error vs allowed; wire into the seam engine. Tests: implicit use

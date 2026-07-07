@@ -1,0 +1,27 @@
+//===- memory_derived_cost.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The transfer cost is derived from declared bandwidth (the paper's roofline) and emitted
+// on the `vx.transfer` op. NPU_HBM is 128 B/cyc; a 64x64 f32 tile is 16384 bytes, so the
+// move costs 16384 / 128 = 128 cycles. Reachability still uses the built-in CPU_DRAM ->
+// NPU_HBM path (unaffected).
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory NPU_HBM {
+  within: Memory::CPU_DRAM, bandwidth: 128 B/cyc
+}
+
+fn main() -> i32 {
+  let t: Tensor<f32, [64, 64]> = Tensor<f32>([64, 64]);
+  let staged = transfer(t, Memory::NPU_HBM);
+  return 0;
+}
+
+// CHECK: vx.transfer
+// CHECK: cost = 128

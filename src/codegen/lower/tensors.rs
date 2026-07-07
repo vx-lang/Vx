@@ -146,9 +146,19 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             target_ty = Type::parse(gen.context, &target_ty_str).unwrap_or(src_ty);
         }
 
-        let transfer_op = OperationBuilder::new("vx.transfer", location)
+        let mut transfer_builder = OperationBuilder::new("vx.transfer", location)
             .add_operands(&[src_val])
-            .add_attributes(&[(Identifier::new(gen.context, "target_topology"), top_attr)])
+            .add_attributes(&[(Identifier::new(gen.context, "target_topology"), top_attr)]);
+
+        // The bandwidth-derived roofline cost (set by sema when the memory hierarchy declares
+        // bandwidths). Emitting it makes the paper's data-movement cost visible in the IR.
+        if let Some(cost) = self.cost {
+            let cost_attr = IntegerAttribute::new(gen.i32_ty, cost as i64).into();
+            transfer_builder = transfer_builder
+                .add_attributes(&[(Identifier::new(gen.context, "cost"), cost_attr)]);
+        }
+
+        let transfer_op = transfer_builder
             .add_results(&[target_ty])
             .build()
             .expect("Failed to build vx.transfer operation");

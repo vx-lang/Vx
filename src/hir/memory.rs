@@ -14,8 +14,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::syntax::{Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace};
+use crate::syntax::{Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace, RatePer};
 use std::collections::{HashMap, HashSet};
+
+/// A bandwidth-derived transfer cost, in the bandwidth's rate unit (cycles for `B/cyc`,
+/// seconds for `B/s`). This is the paper's roofline: `T = bytes / bandwidth`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct DerivedCost {
+    pub value: u64,
+    pub per: RatePer,
+}
 
 /// Bit width of a tensor element; `None` for an un-instantiated generic element.
 pub fn element_bits(elem: &ElementType) -> Option<u64> {
@@ -128,6 +136,56 @@ impl<'a> MemoryHierarchy<'a> {
         self.ancestors(b)
             .into_iter()
             .find(|anc| a_chain.contains(anc))
+    }
+
+    /// The bandwidth-derived cost of moving `bytes` from `src` to `dst` along the containment
+    /// tree: the sum, over each space on the path *excluding* their nearest common ancestor, of
+    /// `ceil(bytes / bandwidth)`. This is the paper's roofline (`T = bytes / (B/cyc)`); e.g. a
+    /// tile read into SMEM at 128 B/cyc costs `bytes/128` cycles.
+    ///
+    /// Returns `None` when the cost is not derivable: `src == dst`, no common ancestor, a path
+    /// space lacks a `bandwidth`, or the path's bandwidths mix rate units (cycles vs seconds).
+    /// (Explicit topology-declared `transfer … : C` edges remain the fixed reachability cost;
+    /// this is the additive roofline estimate, not a replacement for that graph.)
+    pub fn derived_transfer_cost(
+        &self,
+        src: &MemorySpace,
+        dst: &MemorySpace,
+        bytes: u64,
+    ) -> Option<DerivedCost> {
+        if src == dst {
+            return None;
+        }
+        let nca = self.nearest_common_ancestor(src, dst)?;
+        // Spaces on the path, excluding the NCA: each endpoint and its ancestors up to (but not
+        // including) the NCA. The NCA is the shared reservoir and adds no bandwidth term.
+        let mut path: Vec<MemorySpace> = Vec::new();
+        for endpoint in [src, dst] {
+            for s in std::iter::once(endpoint.clone()).chain(self.ancestors(endpoint)) {
+                if s == nca {
+                    break;
+                }
+                path.push(s);
+            }
+        }
+        let mut total: u64 = 0;
+        let mut unit: Option<RatePer> = None;
+        for s in &path {
+            let bw = self.descriptor(s)?.bandwidth?;
+            if bw.bytes == 0 {
+                return None;
+            }
+            match unit {
+                None => unit = Some(bw.per),
+                Some(u) if u == bw.per => {}
+                _ => return None, // mixed rate units cannot be summed
+            }
+            total = total.saturating_add(bytes.div_ceil(bw.bytes));
+        }
+        Some(DerivedCost {
+            value: total,
+            per: unit?,
+        })
     }
 
     /// True if `space` is part of a `within:` cycle (reachable from itself).
@@ -356,6 +414,90 @@ mod tests {
         assert_eq!(
             static_tensor_bytes(&ElementType::Bool, &[dim("3")]),
             Some(1)
+        );
+    }
+
+    fn mem_bw(name: &str, parent: Option<&str>, bw_bytes: u64, per: RatePer) -> MemoryDecl {
+        let mut d = mem(name, parent, None);
+        d.bandwidth = Some(Bandwidth {
+            bytes: bw_bytes,
+            per,
+        });
+        d
+    }
+
+    #[test]
+    fn derived_cost_single_hop_roofline() {
+        // Leaf at 128 B/cyc within Root. A 16384-byte tile: 16384/128 = 128 cycles.
+        let decls = vec![
+            mem("Root", None, None),
+            mem_bw("Leaf", Some("Root"), 128, RatePer::Cycle),
+        ];
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("Root"), &space("Leaf"), 16384),
+            Some(DerivedCost {
+                value: 128,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn derived_cost_two_hop_sums_bandwidths() {
+        // A (128 B/cyc) and B (256 B/cyc) are siblings under Root; A->B goes via Root, touching
+        // both: 16384/128 + 16384/256 = 128 + 64 = 192 cycles.
+        let decls = vec![
+            mem("Root", None, None),
+            mem_bw("A", Some("Root"), 128, RatePer::Cycle),
+            mem_bw("B", Some("Root"), 256, RatePer::Cycle),
+        ];
+        let h = MemoryHierarchy::build(&decls);
+        assert_eq!(
+            h.derived_transfer_cost(&space("A"), &space("B"), 16384),
+            Some(DerivedCost {
+                value: 192,
+                per: RatePer::Cycle
+            })
+        );
+    }
+
+    #[test]
+    fn derived_cost_none_when_not_derivable() {
+        // Missing bandwidth on a path space.
+        let no_bw = vec![mem("Root", None, None), mem("NoBw", Some("Root"), None)];
+        assert_eq!(
+            MemoryHierarchy::build(&no_bw).derived_transfer_cost(
+                &space("Root"),
+                &space("NoBw"),
+                16384
+            ),
+            None
+        );
+        // Same space (a no-op move).
+        let one = vec![mem_bw("X", None, 128, RatePer::Cycle)];
+        assert_eq!(
+            MemoryHierarchy::build(&one).derived_transfer_cost(&space("X"), &space("X"), 100),
+            None
+        );
+        // Unrelated spaces (no common ancestor).
+        let two_roots = vec![
+            mem_bw("P", None, 128, RatePer::Cycle),
+            mem_bw("Q", None, 128, RatePer::Cycle),
+        ];
+        assert_eq!(
+            MemoryHierarchy::build(&two_roots).derived_transfer_cost(&space("P"), &space("Q"), 100),
+            None
+        );
+        // Mixed rate units (cyc + s) cannot be summed.
+        let mixed = vec![
+            mem("Root", None, None),
+            mem_bw("Cyc", Some("Root"), 10, RatePer::Cycle),
+            mem_bw("Sec", Some("Root"), 10, RatePer::Second),
+        ];
+        assert_eq!(
+            MemoryHierarchy::build(&mixed).derived_transfer_cost(&space("Cyc"), &space("Sec"), 100),
+            None
         );
     }
 

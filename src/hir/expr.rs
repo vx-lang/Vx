@@ -1428,6 +1428,18 @@ impl<'a> TypeChecker<'a> {
                 self.check_capacity(e, d, &target_mem, "transferred tensor");
             }
 
+            // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the
+            // memory declarations make it computable it becomes the transfer's cost (emitted on
+            // `vx.transfer`); otherwise the fixed cost-graph value is kept. This does not touch
+            // reachability/seam, which still use `transfer_path` below.
+            let derived_cost: Option<u32> = Self::tensor_of(&inner_ty)
+                .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d))
+                .and_then(|bytes| {
+                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied())
+                        .derived_transfer_cost(&source_mem, &target_mem, bytes)
+                        .map(|dc| dc.value.min(u32::MAX as u64) as u32)
+                });
+
             let path_result = self
                 .transfer_cost_graph
                 .transfer_path(&source_mem, &target_mem);
@@ -1442,11 +1454,14 @@ impl<'a> TypeChecker<'a> {
                 return Type::Unknown; // Poison: no valid transfer, don't fake an f32 tensor
             }
 
-            let (cost, path) = path_result.unwrap();
+            let (_cost, path) = path_result.unwrap();
             if path.len() > 2 {
                 do_rewrite = Some(path);
             } else {
-                t.cost = Some(cost);
+                // Record the bandwidth-derived roofline cost when the hierarchy provides one;
+                // otherwise leave it unset (the fixed reachability cost stays internal, so
+                // bandwidth-less transfers emit no `cost` attribute — unchanged output).
+                t.cost = derived_cost;
                 // Single hop (`path == [source_mem, target_mem]`): discharge the
                 // per-seam local-completeness / soundness obligation. Multi-hop paths
                 // are rewritten into a chain of single-hop transfers below, each of
