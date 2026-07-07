@@ -362,6 +362,97 @@ mod tests {
         );
     }
 
+    fn parse_memory_decl(input: &str) -> crate::syntax::MemoryDecl {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        parser
+            .parse_memory_decl()
+            .expect("Failed to parse memory declaration")
+    }
+
+    #[test]
+    fn test_parse_memory_decl_full() {
+        use crate::syntax::{Bandwidth, ByteSize, Management, MemorySpace, RatePer};
+        let d = parse_memory_decl(
+            "Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KB, \
+             bandwidth: 128 B/cyc, managed: explicit, granule: 16 KB }",
+        );
+        assert_eq!(d.name, crate::symbol::Symbol::from("SMEM"));
+        assert_eq!(d.parent, Some(MemorySpace::GpuHbm));
+        assert_eq!(d.capacity, Some(ByteSize(228 * 1024)));
+        assert_eq!(
+            d.bandwidth,
+            Some(Bandwidth {
+                bytes: 128,
+                per: RatePer::Cycle
+            })
+        );
+        assert_eq!(d.managed, Management::Explicit);
+        assert_eq!(d.granule, Some(ByteSize(16 * 1024)));
+    }
+
+    #[test]
+    fn test_parse_memory_decl_minimal_defaults() {
+        use crate::syntax::Management;
+        // Only a name: every field optional, `managed` defaults to `cached`.
+        let d = parse_memory_decl("Memory RMEM {}");
+        assert_eq!(d.name, crate::symbol::Symbol::from("RMEM"));
+        assert_eq!(d.parent, None);
+        assert_eq!(d.capacity, None);
+        assert_eq!(d.bandwidth, None);
+        assert_eq!(d.granule, None);
+        assert_eq!(d.managed, Management::Cached);
+    }
+
+    #[test]
+    fn test_parse_memory_decl_custom_parent_and_units() {
+        use crate::syntax::{Bandwidth, ByteSize, MemorySpace, RatePer};
+        // A novel parent space and decimal-ish TB/s bandwidth.
+        let d = parse_memory_decl(
+            "Memory L2 { within: Memory::AcmePool, capacity: 192 GB, bandwidth: 8 TB/s }",
+        );
+        assert_eq!(
+            d.parent,
+            Some(MemorySpace::Custom(crate::symbol::Symbol::from("AcmePool")))
+        );
+        assert_eq!(d.capacity, Some(ByteSize(192 * 1024 * 1024 * 1024)));
+        assert_eq!(
+            d.bandwidth,
+            Some(Bandwidth {
+                bytes: 8 * 1024 * 1024 * 1024 * 1024,
+                per: RatePer::Second
+            })
+        );
+    }
+
+    #[test]
+    fn test_memory_decl_collected_and_indexed_in_global_env() {
+        // A `Memory` decl at top level lands on `Program.memories` (not a global registry),
+        // is preserved by clone_signature, and is indexed by GlobalAstEnv for sema.
+        let input = "Memory TMEM { capacity: 256 KB }\nfn main() -> i32 { return 0; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().expect("program should parse");
+
+        assert_eq!(program.memories.len(), 1);
+        assert_eq!(
+            program.memories[0].name,
+            crate::symbol::Symbol::from("TMEM")
+        );
+        // Descriptors survive the signature clone used across the pipeline.
+        assert_eq!(program.clone_signature().memories, program.memories);
+
+        let programs = vec![program];
+        let env = crate::hir::GlobalAstEnv::build(&programs);
+        let m = env
+            .memories
+            .get(&crate::symbol::Symbol::from("TMEM"))
+            .expect("TMEM should be indexed in GlobalAstEnv");
+        assert_eq!(m.capacity, Some(crate::syntax::ByteSize(256 * 1024)));
+    }
+
     #[test]
     fn test_parse_topology_npu_with_index() {
         let top = parse_topology("Topology::NPU[0]");

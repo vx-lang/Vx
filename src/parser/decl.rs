@@ -306,6 +306,152 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` -- a first-class
+    /// memory-space declaration. Every field is optional except the name. Returned as a
+    /// `MemoryDecl` on the AST (no global registration, unlike `parse_topology_decl`).
+    pub(crate) fn parse_memory_decl(&mut self) -> ParseResult<'a, crate::syntax::MemoryDecl> {
+        self.consume(&TokenType::Memory, "Expected 'Memory'")?;
+        let name = match &self.advance().kind {
+            TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
+            _ => return Err(self.error("Expected a name after 'Memory'")),
+        };
+        self.consume(&TokenType::LeftBrace, "Expected '{' in memory declaration")?;
+
+        let mut parent: Option<MemorySpace> = None;
+        let mut capacity: Option<crate::syntax::ByteSize> = None;
+        let mut bandwidth: Option<crate::syntax::Bandwidth> = None;
+        let mut managed = crate::syntax::Management::default();
+        let mut granule: Option<crate::syntax::ByteSize> = None;
+
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            let field = match &self.advance().kind {
+                TokenType::Identifier(s) => s.to_string(),
+                other => {
+                    return Err(
+                        self.error(&format!("Expected a memory field name, got {:?}", other))
+                    )
+                }
+            };
+            self.consume(&TokenType::Colon, "Expected ':' after memory field")?;
+            match field.as_str() {
+                "within" => parent = Some(self.parse_memory_space()?),
+                "capacity" => capacity = Some(self.parse_byte_size()?),
+                "granule" => granule = Some(self.parse_byte_size()?),
+                "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
+                "managed" => {
+                    let kind = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.to_string(),
+                        other => {
+                            return Err(self.error(&format!(
+                                "Expected 'explicit' or 'cached' for `managed:`, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    managed = match kind.as_str() {
+                        "explicit" => crate::syntax::Management::Explicit,
+                        "cached" => crate::syntax::Management::Cached,
+                        other => {
+                            return Err(self.error(&format!(
+                                "`managed:` expects 'explicit' or 'cached', got '{}'",
+                                other
+                            )))
+                        }
+                    };
+                }
+                other => return Err(self.error(&format!("Unknown memory field '{}'", other))),
+            }
+            self.match_token(&TokenType::Comma);
+        }
+        self.consume(
+            &TokenType::RightBrace,
+            "Expected '}' to close memory declaration",
+        )?;
+
+        Ok(crate::syntax::MemoryDecl {
+            name,
+            parent,
+            capacity,
+            bandwidth,
+            managed,
+            granule,
+            doc_comment: None,
+        })
+    }
+
+    /// A size literal like `256 KB`, normalized to bytes (binary multipliers).
+    fn parse_byte_size(&mut self) -> ParseResult<'a, crate::syntax::ByteSize> {
+        let value = self.parse_number_f64("a byte size")?;
+        let mult = self.parse_byte_unit()?;
+        Ok(crate::syntax::ByteSize((value * mult as f64).round() as u64))
+    }
+
+    /// A bandwidth literal like `8 TB/s` or `128 B/cyc`.
+    fn parse_bandwidth(&mut self) -> ParseResult<'a, crate::syntax::Bandwidth> {
+        let value = self.parse_number_f64("a bandwidth")?;
+        let mult = self.parse_byte_unit()?;
+        self.consume(
+            &TokenType::Slash,
+            "Expected '/' in bandwidth (e.g. `8 TB/s`)",
+        )?;
+        let per_str = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            other => {
+                return Err(self.error(&format!(
+                    "Expected 's' or 'cyc' after '/' in bandwidth, got {:?}",
+                    other
+                )))
+            }
+        };
+        let per = match per_str.as_str() {
+            "s" => crate::syntax::RatePer::Second,
+            "cyc" => crate::syntax::RatePer::Cycle,
+            other => {
+                return Err(self.error(&format!(
+                    "bandwidth denominator must be 's' or 'cyc', got '{}'",
+                    other
+                )))
+            }
+        };
+        Ok(crate::syntax::Bandwidth {
+            bytes: (value * mult as f64).round() as u64,
+            per,
+        })
+    }
+
+    fn parse_number_f64(&mut self, what: &str) -> ParseResult<'a, f64> {
+        let s = match &self.advance().kind {
+            TokenType::Number(s) => s.to_string(),
+            other => return Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        };
+        s.parse::<f64>()
+            .map_err(|_| self.error(&format!("Expected {}, got an invalid number '{}'", what, s)))
+    }
+
+    /// A binary byte-unit suffix: `B`, `KB`, `MB`, `GB`, `TB`.
+    fn parse_byte_unit(&mut self) -> ParseResult<'a, u64> {
+        let unit = match &self.advance().kind {
+            TokenType::Identifier(s) => s.to_string(),
+            other => {
+                return Err(self.error(&format!(
+                    "Expected a size unit (B/KB/MB/GB/TB), got {:?}",
+                    other
+                )))
+            }
+        };
+        match unit.as_str() {
+            "B" => Ok(1),
+            "KB" => Ok(1024),
+            "MB" => Ok(1024 * 1024),
+            "GB" => Ok(1024 * 1024 * 1024),
+            "TB" => Ok(1024u64 * 1024 * 1024 * 1024),
+            other => Err(self.error(&format!(
+                "Unknown size unit '{}' (expected B/KB/MB/GB/TB)",
+                other
+            ))),
+        }
+    }
+
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
@@ -604,6 +750,7 @@ impl<'a> Parser<'a> {
         let mut imports = Vec::new();
         let mut externs = Vec::new();
         let mut topologies = Vec::new();
+        let mut memories = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut traits = Vec::new();
@@ -650,6 +797,13 @@ impl<'a> Parser<'a> {
                 // user-defined topology. It registers a descriptor in the global topology
                 // registry and is not stored in the AST (its whole effect is the registration).
                 topologies.push(self.parse_topology_decl()?);
+            } else if self.check(&TokenType::Memory) {
+                // `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` declares
+                // a first-class memory space. The full descriptor is stored on the AST (not a
+                // global registry); sema indexes it via `GlobalAstEnv`.
+                let mut m = self.parse_memory_decl()?;
+                m.doc_comment = doc_comment;
+                memories.push(m);
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -668,6 +822,7 @@ impl<'a> Parser<'a> {
             impls,
             functions,
             topologies,
+            memories,
         })
     }
 }

@@ -7,7 +7,7 @@ This document provides a complete, formal description of the syntax and grammati
 A Vx program consists of a sequence of module-level declarations.
 
 ```ebnf
-program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | struct_decl | enum_decl | topology_decl | function_decl )*
+program ::= ( import_decl | macro_def | extern_block | trait_decl | impl_block | struct_decl | enum_decl | topology_decl | memory_decl | function_decl )*
 
 import_decl ::= "import" identifier ( "::" identifier )* ";"
 
@@ -50,6 +50,19 @@ topology_field ::=
     | "memory" ":" memory_space
     | "visible" ":" "[" ( memory_space ","? )* "]"
     | "transfer" memory_space "->" memory_space ":" number ( "relaxed" | "sync" )?
+
+// A first-class memory space (all fields optional except the name). Unlike a topology, the
+// descriptor is stored on the AST, not a global registry. `within:` forms the hierarchy tree.
+memory_decl  ::= "Memory" identifier "{" ( memory_field ","? )* "}"
+memory_field ::=
+    | "within"    ":" memory_space
+    | "capacity"  ":" size_literal
+    | "bandwidth" ":" rate_literal
+    | "granule"   ":" size_literal
+    | "managed"   ":" ( "explicit" | "cached" )
+
+size_literal ::= number ( "B" | "KB" | "MB" | "GB" | "TB" )   // binary multipliers (KB = 1024)
+rate_literal ::= size_literal "/" ( "s" | "cyc" )
 ```
 
 ## 3. Statements

@@ -150,6 +150,55 @@ pub struct MacroRule {
     pub transcriber: Vec<TokenTree>,
 }
 
+/// A byte quantity, e.g. `256 KB`, normalized to bytes (binary multipliers: `KB` = 1024).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct ByteSize(pub u64);
+
+/// The denominator of a bandwidth rate.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RatePer {
+    /// `/s`
+    Second,
+    /// `/cyc`
+    Cycle,
+}
+
+/// A bandwidth, e.g. `8 TB/s` or `128 B/cyc`; the numerator is normalized to bytes.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Bandwidth {
+    pub bytes: u64,
+    pub per: RatePer,
+}
+
+/// How a memory space is managed (M5 uses this to decide the transfer obligation).
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum Management {
+    /// Programmer-managed: movement in/out requires an explicit `transfer`.
+    Explicit,
+    /// Hardware-cached: movement may be implicit. The default.
+    #[default]
+    Cached,
+}
+
+/// A first-class memory-space declaration:
+/// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }`.
+///
+/// Carried on the AST (`Program.memories`) and indexed by `GlobalAstEnv` for semantic
+/// analysis; codegen reads it from the `Program`. Deliberately *not* registered in a
+/// process-global registry (unlike topologies), so declarations cannot leak between
+/// compilations. See `docs/discussions/implementation_plans/first_class_memory_spaces.md`.
+#[derive(Debug, PartialEq, Clone)]
+pub struct MemoryDecl {
+    pub name: Symbol,
+    /// `within: Memory::X` — the parent space in the hierarchy tree; `None` for a root.
+    pub parent: Option<MemorySpace>,
+    pub capacity: Option<ByteSize>,
+    pub bandwidth: Option<Bandwidth>,
+    pub managed: Management,
+    pub granule: Option<ByteSize>,
+    pub doc_comment: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {
     pub module_path: Symbol,
@@ -166,6 +215,10 @@ pub struct Program {
     /// scopes coherence checking to the topologies this compilation actually declared, so
     /// one program's declarations don't leak diagnostics into another's.
     pub topologies: Vec<Symbol>,
+    /// User-defined memory spaces declared in this program (`Memory <Name> { ... }`). Unlike
+    /// topologies, the full descriptors live here on the AST (not a global registry); sema
+    /// indexes them via `GlobalAstEnv` and codegen reads them from the `Program`.
+    pub memories: Vec<MemoryDecl>,
 }
 
 pub type VxModule = Program;
@@ -192,6 +245,7 @@ impl Program {
                 .map(|f| f.clone_signature(false))
                 .collect(),
             topologies: self.topologies.clone(),
+            memories: self.memories.clone(),
         }
     }
 }

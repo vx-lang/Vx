@@ -44,6 +44,9 @@ pub struct GlobalAstEnv<'a> {
         HashMap<crate::symbol::Symbol, (Type, bool, Vec<Type>, Topology, Vec<Expr>, Vec<Expr>)>,
     pub syntax_functions: HashMap<crate::symbol::Symbol, &'a Function>,
     pub generic_functions: HashMap<crate::symbol::Symbol, (&'a Function, u64)>, // (func, origin_module_hash)
+    /// User-defined memory spaces (`Memory <Name> { ... }`), indexed by name. Populated from
+    /// `Program.memories` — the per-compilation home for memory descriptors (no global registry).
+    pub memories: HashMap<crate::symbol::Symbol, &'a MemoryDecl>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -61,11 +64,15 @@ impl<'a> GlobalAstEnv<'a> {
             functions: HashMap::new(),
             syntax_functions: HashMap::new(),
             generic_functions: HashMap::new(),
+            memories: HashMap::new(),
         };
 
         for &module in modules {
             for s in &module.structs {
                 env.structs.insert(s.name.clone(), s);
+            }
+            for m in &module.memories {
+                env.memories.insert(m.name.clone(), m);
             }
             for e in &module.enums {
                 env.enums.insert(e.name.clone(), e);
