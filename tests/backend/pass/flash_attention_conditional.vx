@@ -1,0 +1,115 @@
+//===- flash_attention_conditional.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 3 (see docs/discussions/implementation_plans/flash_attention.md):
+// FA-4's *conditional softmax rescaling* (Zadouri et al., eq. 6). The online-softmax rescale
+// of the (l, O_acc) state by e^(m - m_new) is only needed when the running max actually grows
+// a lot; FA-4 skips it unless m_new - m > tau, with tau = log2(256) = 8. Skipping is exact --
+// the running-max reference cancels in the final O_acc / l ratio, and e^(S - m) stays bounded
+// by e^tau = 256 (no overflow) -- so it cuts vector rescales with no change to the result.
+//
+// This is the same computation as flash_attention.vx, so the output is unchanged
+// (2.84482 / 1.5). The extra `stats` value is the number of rescales actually skipped: for
+// this workload the growth on each query's second tile (4 and 0) is <= 8, so 2 are skipped --
+// proving the tau branch is exercised, not dead.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 4]);
+  let mut k = Tensor<f32>([4, 4]);
+  let mut v = Tensor<f32>([4, 4]);
+  let mut o = Tensor<f32>([2, 4]);
+  let mut ts = Tensor<f32>([1, 2]);
+  let mut stats = Tensor<f32>([1, 1]);
+
+  for d in 0..4 {
+    q[0][d] = 1.0;
+    q[1][d] = 0.0;
+    k[0][d] = 0.0;
+    k[1][d] = 1.0;
+    k[2][d] = 2.0;
+    k[3][d] = 3.0;
+    v[0][d] = 0.0;
+    v[1][d] = 1.0;
+    v[2][d] = 2.0;
+    v[3][d] = 3.0;
+  }
+
+  let scale : f32 = 0.5;
+  let tau : f32 = 8.0; // log2(256): skip rescaling below a 256x growth in the running max
+  let mut skips : f32 = 0.0;
+
+  for i in 0..2 {
+    let mut m : f32 = -1000000.0;
+    let mut l : f32 = 0.0;
+    for d in 0..4 {
+      o[i][d] = 0.0;
+    }
+
+    for t in 0..2 {
+      let mut tm : f32 = -1000000.0;
+      for jj in 0..2 {
+        let j = t * 2 + jj;
+        let mut acc : f32 = 0.0;
+        for d in 0..4 {
+          acc += q[i][d] * k[j][d];
+        }
+        let sij : f32 = acc * scale;
+        ts[0][jj] = sij;
+        if sij > tm {
+          tm = sij;
+        }
+      }
+
+      let m_cand : f32 = if tm > m {
+        tm
+      } else {
+        m
+      };
+      // Conditional rescaling: renormalize the running state only when the max jumps past tau.
+      if m_cand - m > tau {
+        let corr : f32 = (m - m_cand).exp();
+        l = l * corr;
+        for d in 0..4 {
+          o[i][d] = o[i][d] * corr;
+        }
+        m = m_cand;
+      } else {
+        skips += 1.0;
+      }
+
+      // Accumulate the tile relative to the current (possibly un-updated) running max.
+      for jj in 0..2 {
+        let j = t * 2 + jj;
+        let p : f32 = (ts[0][jj] - m).exp();
+        l = l + p;
+        for d in 0..4 {
+          o[i][d] = o[i][d] + p * v[j][d];
+        }
+      }
+    }
+
+    for d in 0..4 {
+      o[i][d] = o[i][d] / l;
+    }
+  }
+
+  stats[0][0] = skips;
+  print(o);
+  print(stats);
+  return 0;
+}
+
+// Same result as the always-rescale flash forward:
+// EXPECT: [[2.84482,
+// EXPECT: [1.5,
+// ... and the tau branch was taken: 2 rescales skipped.
+// EXPECT: [[2]]
