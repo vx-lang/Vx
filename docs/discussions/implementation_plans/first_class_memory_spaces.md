@@ -250,9 +250,17 @@ parallel and do not block on these.
   is a later refinement). Tests: 3 unit (single-hop roofline, two-hop sum, the non-derivable
   cases incl. mixed units) + 1 `.vx` (`cost = 128` on `vx.transfer`).
   *Pulled by FlashAttention Phase 4 (the roofline / seam story).*
-- **M5 — Management-driven transfer obligation.** `managed: explicit|cached` decides when an
-  implicit cross-space use is an error vs allowed; wire into the seam engine. Tests: implicit use
-  of an `explicit` space is rejected; a `cached` space is fine.
+- **M5 — Management-driven transfer obligation. ✅ Landed.** `managed: cached` (hardware-coherent)
+  vs `explicit`/undeclared (programmer-managed) now drives two checks, both via one helper
+  (`space_is_cached`, reading the per-compilation env). **Access facet (always-on):** the
+  cross-space access error (`NeedsSeam`) is suppressed when the value's memory space — taken from
+  its *type* (`Ref`'s space / `Pinned`'s topology default), not its binding scope — is `cached`;
+  so declaring `Memory NPU_HBM { managed: cached }` legalizes an otherwise-rejected cross-topology
+  use. **Seam facet (`--verify-seams`):** a relaxed transfer into a `cached` space skips the
+  coherence obligation (E6004), while an `explicit` space enforces it — the proposal's "relaxed
+  move into an explicit space is where a seam is discharged." Undeclared spaces stay strict, so
+  nothing regresses. Tests: 3 `.vx` (cached allows cross-access; relaxed→explicit rejected;
+  relaxed→cached fine) — the seam ones via a new `// VERIFY-SEAMS` harness directive.
 
 ### Mapping to the FlashAttention plan
 

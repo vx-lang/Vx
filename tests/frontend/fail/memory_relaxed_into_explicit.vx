@@ -1,0 +1,25 @@
+//===- memory_relaxed_into_explicit.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// M5 (seam facet): a *relaxed* transfer into a `managed: explicit` (programmer-managed) space
+// must discharge the coherence seam -- the buffer carries no synchronizing release, so a
+// consumer may read it stale (E6004). Requires seam verification.
+//
+// VERIFY-SEAMS
+// RUN: not vxc %s --verify-seams 2>&1 | FileCheck %s
+
+Memory Local_SRAM {
+  managed: explicit
+}
+
+fn main() -> i32 {
+  let t : Tensor<f32> = 1.0;
+  let staged = t.to_sram_relaxed();
+  return 0;
+}
+
+// CHECK: E6004

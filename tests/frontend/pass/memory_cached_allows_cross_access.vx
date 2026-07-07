@@ -1,0 +1,29 @@
+//===- memory_cached_allows_cross_access.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// M5: a value in a `managed: cached` space may be used implicitly across spaces (hardware
+// coherence keeps it visible), so no explicit transfer is required. The same program without
+// the `managed: cached` declaration is rejected (see fail/illegal_npu_to_gpu.vx): declaring
+// NPU_HBM cached is exactly what makes this legal.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory NPU_HBM {
+  managed: cached
+}
+
+fn main() -> i32 {
+  let t : Tensor<f32> = 1.0;
+  let t_npu = transfer(t, Memory::NPU_HBM);
+  spawn on(Topology::GPU) {
+    // NPU_HBM is cached, so accessing the NPU-pinned value from GPU is allowed.
+    let ok = t_npu;
+  }
+  return 0;
+}
+
+// CHECK: func.func @main

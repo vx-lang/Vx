@@ -81,7 +81,7 @@ fn expect_matches(out: &str, expect: &str) -> bool {
 
 // Frontend Runner
 fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
-    let _source = fs::read_to_string(path).expect("Failed to read test file");
+    let source = fs::read_to_string(path).expect("Failed to read test file");
 
     let mut loader = vxc::module_loader::ModuleLoader::new();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
@@ -132,6 +132,8 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
+    // Opt-in directive: discharge per-seam boundary obligations (as `--verify-seams` does).
+    checker.verify_seams = source.contains("// VERIFY-SEAMS");
     checker.check_topology_coherence(&program.topologies);
     checker.check_memory_coherence();
     for f in &mut program.functions {
@@ -323,6 +325,8 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     let env = vxc::hir::GlobalAstEnv::build(&all_programs);
     let mut worker = vxc::session::LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(&env, &mut worker);
+    // Opt-in directive: discharge per-seam boundary obligations (as `--verify-seams` does).
+    checker.verify_seams = source.contains("// VERIFY-SEAMS");
     checker.check_topology_coherence(&program.topologies);
     checker.check_memory_coherence();
     for f in &mut program.functions {

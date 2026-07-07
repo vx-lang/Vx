@@ -723,11 +723,20 @@ impl<'a> TypeChecker<'a> {
                                     // so point at the fix. Distinguish "a transfer path exists,
                                     // write one" from "no path at all". See the hardware-monad doc.
                                     use crate::arch::Reachability;
-                                    let msg = match self.transfer_cost_graph.reachable(
+                                    let reach = self.transfer_cost_graph.reachable(
                                         &self.active_topology,
                                         &top,
                                         &ty,
-                                    ) {
+                                    );
+                                    // M5: an implicit cross-space use is allowed when the value's
+                                    // memory space is declared `managed: cached` (hardware-coherent)
+                                    // and a path exists (`NeedsSeam`). `explicit`/undeclared spaces
+                                    // and truly `Unreachable` ones still require an explicit transfer.
+                                    let allowed = matches!(reach, Reachability::NeedsSeam { .. })
+                                        && self
+                                            .space_is_cached(&self.value_memory_space(&ty, &top));
+                                    if !allowed {
+                                        let msg = match reach {
                                         Reachability::NeedsSeam { cost } => format!(
                                             "Cross-topology access error: '{}' (type: {:?}) is not \
                                              visible from {:?}; insert an explicit transfer to {:?} \
@@ -745,8 +754,9 @@ impl<'a> TypeChecker<'a> {
                                              (type: {:?}), but accessed from {:?}",
                                             name, top, ty, self.active_topology
                                         ),
-                                    };
-                                    self.errors.push(msg);
+                                        };
+                                        self.errors.push(msg);
+                                    }
                                 }
                             }
                         }
@@ -1284,6 +1294,32 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
+    /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
+    /// spaces are treated as `explicit` (the strict default), preserving the pre-M5 behavior.
+    fn space_is_cached(&self, space: &MemorySpace) -> bool {
+        self.env.memories.values().any(|d| {
+            d.managed == crate::syntax::Management::Cached
+                && MemorySpace::from_name(d.name.as_ref()) == *space
+        })
+    }
+
+    /// The memory space a value of type `ty` actually lives in: a `Ref`'s space, a `Pinned`'s
+    /// topology default space, else the space of `fallback_top` (the binding's topology). Used
+    /// to find the space whose `managed` policy governs an implicit cross-space use.
+    fn value_memory_space(&self, ty: &Type, fallback_top: &Topology) -> MemorySpace {
+        match ty {
+            Type::Ref(_, mem) => mem.clone(),
+            Type::Pinned(_, topo) if !matches!(topo, Topology::Current) => {
+                crate::arch::TransferCostGraph::default_memory_for(topo)
+            }
+            _ if !matches!(fallback_top, Topology::Current) => {
+                crate::arch::TransferCostGraph::default_memory_for(fallback_top)
+            }
+            _ => MemorySpace::CPUDRAM,
+        }
+    }
+
     /// Walk a declared type for a `Ref`/`Pinned` tensor bound to a capacity-bearing space and
     /// check it fits. Used on `let` annotations.
     pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str) {
@@ -1315,6 +1351,12 @@ impl<'a> TypeChecker<'a> {
         silent: bool,
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
+
+        // M5: a relaxed transfer into a `managed: cached` space is safe — hardware coherence
+        // keeps the buffer visible, so there is no seam obligation to discharge.
+        if relaxed && self.space_is_cached(dst) {
+            return;
+        }
 
         // Reached state at the producer side: the transferred buffer is established.
         // If the producer value is statically known we pin it (a value contract);

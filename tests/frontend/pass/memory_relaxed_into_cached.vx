@@ -1,0 +1,25 @@
+//===- memory_relaxed_into_cached.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// M5 (seam facet): a relaxed transfer into a `managed: cached` space needs no seam discharge
+// -- hardware coherence keeps the buffer visible. The same program with `managed: explicit`
+// is rejected (see fail/memory_relaxed_into_explicit.vx). Requires seam verification.
+//
+// VERIFY-SEAMS
+// RUN: vxc %s --verify-seams --action emit-mlir 2>&1 | FileCheck %s
+
+Memory Local_SRAM {
+  managed: cached
+}
+
+fn main() -> i32 {
+  let t : Tensor<f32> = 1.0;
+  let staged = t.to_sram_relaxed();
+  return 0;
+}
+
+// CHECK: func.func @main
