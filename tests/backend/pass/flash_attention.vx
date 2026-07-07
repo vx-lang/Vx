@@ -1,0 +1,103 @@
+//===- flash_attention.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 2 (see docs/discussions/implementation_plans/flash_attention.md):
+// the tiled forward pass with *online softmax*. It never materializes the full N-by-M score
+// matrix -- for each query row it streams over K/V in blocks of Bc = 2, maintaining a running
+// max `m`, a running normalizer `l`, and a rescaled output accumulator `o`, rescaling the
+// accumulated state by e^(m - m_new) whenever the running max grows (Dao et al., FA-1/2; the
+// recurrence FA-4 builds on).
+//
+// Same inputs as attention_reference.vx (the Phase 1 oracle), so the output must match it
+// bit-for-bit: a non-uniform query -> 2.84482, an all-zero query -> the uniform mean 1.5.
+// That equality is the correctness check: tiled online softmax == full-materialized softmax.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 4]);
+  let mut k = Tensor<f32>([4, 4]);
+  let mut v = Tensor<f32>([4, 4]);
+  let mut o = Tensor<f32>([2, 4]);
+  let mut ts = Tensor<f32>([1, 2]); // scores for the current K/V tile (Bc = 2)
+
+  for d in 0..4 {
+    q[0][d] = 1.0;
+    q[1][d] = 0.0;
+    k[0][d] = 0.0;
+    k[1][d] = 1.0;
+    k[2][d] = 2.0;
+    k[3][d] = 3.0;
+    v[0][d] = 0.0;
+    v[1][d] = 1.0;
+    v[2][d] = 2.0;
+    v[3][d] = 3.0;
+  }
+
+  let scale : f32 = 0.5;
+
+  for i in 0..2 {
+    let mut m : f32 = -1000000.0; // running max
+    let mut l : f32 = 0.0;        // running normalizer (sum of exp)
+    for d in 0..4 {
+      o[i][d] = 0.0;              // running output accumulator O_acc
+    }
+
+    // Stream over K/V tiles [t*2 .. t*2+2). No full score row is ever materialized.
+    for t in 0..2 {
+      // Tile scores S_ij = scale * Q_i . K_j, and the tile's max.
+      let mut tm : f32 = -1000000.0;
+      for jj in 0..2 {
+        let j = t * 2 + jj;
+        let mut acc : f32 = 0.0;
+        for d in 0..4 {
+          acc += q[i][d] * k[j][d];
+        }
+        let sij : f32 = acc * scale;
+        ts[0][jj] = sij;
+        if sij > tm {
+          tm = sij;
+        }
+      }
+
+      // Online-softmax update: renormalize the running state to the new max, then add the tile.
+      let m_new : f32 = if tm > m {
+        tm
+      } else {
+        m
+      };
+      let corr : f32 = (m - m_new).exp();
+      l = l * corr;
+      for d in 0..4 {
+        o[i][d] = o[i][d] * corr;
+      }
+      for jj in 0..2 {
+        let j = t * 2 + jj;
+        let p : f32 = (ts[0][jj] - m_new).exp();
+        l = l + p;
+        for d in 0..4 {
+          o[i][d] = o[i][d] + p * v[j][d];
+        }
+      }
+      m = m_new;
+    }
+
+    // Final normalization by the true running total.
+    for d in 0..4 {
+      o[i][d] = o[i][d] / l;
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[2.84482,
+// EXPECT: [1.5,
