@@ -180,6 +180,22 @@ pub enum Management {
     Cached,
 }
 
+/// The execution level at which a memory space is private / replicated. Ordered broadest to
+/// narrowest — locality *narrows* going down a `within:` hierarchy (a per-SM space sits inside
+/// a per-device space, never the reverse). Lets `capacity` be read as a per-scope budget:
+/// a `Sm`-scoped 256 KB is one SM's TMEM, not a global pool.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+pub enum Scope {
+    /// The whole device (HBM, L2).
+    Device,
+    /// One streaming multiprocessor (SMEM, TMEM).
+    Sm,
+    /// One cooperative thread array / thread block.
+    Cta,
+    /// One thread (registers).
+    Thread,
+}
+
 /// A first-class memory-space declaration:
 /// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }`.
 ///
@@ -196,6 +212,12 @@ pub struct MemoryDecl {
     pub bandwidth: Option<Bandwidth>,
     pub managed: Management,
     pub granule: Option<ByteSize>,
+    /// The execution level this space is private to (`scope: sm` etc.); `None` = unscoped.
+    pub scope: Option<Scope>,
+    /// `overcommit`: opt out of the *cumulative* budget error — the working set placed here may
+    /// exceed `capacity` (downgraded to a warning). The programmer asserts the tiles do not all
+    /// coexist, so the conservative sum should not block them.
+    pub overcommit: bool,
     pub doc_comment: Option<String>,
 }
 

@@ -187,6 +187,16 @@ pub struct TypeChecker<'a> {
     /// (checked before the consumer's `spawn` body) can consult the downstream
     /// contract on the buffer it produces. See `collect_assert_contracts`.
     pub(crate) seam_contracts: std::collections::HashMap<String, u64>,
+    /// Per-function working set: `memory space -> {buffer key -> granule-rounded bytes}`. Every
+    /// tile placed in a declared space (via `transfer`/`Ref` annotation) is recorded here so the
+    /// *cumulative* budget check can sum them and flag a space whose total exceeds `capacity`.
+    /// Reset per function. See `check_cumulative_capacity`.
+    pub(crate) memory_placements: std::collections::HashMap<
+        crate::syntax::MemorySpace,
+        std::collections::HashMap<String, u64>,
+    >,
+    /// Monotonic id for placements with no binding name (so they still count toward the sum).
+    pub(crate) placement_site: usize,
     /// Whether to discharge per-seam boundary obligations (the assert pre-scan and the
     /// z3 checks). Off by default so ordinary compilation pays nothing and needs no
     /// solver; enabled with `vxc --verify-seams`. See `crate::hir::seam`.
@@ -248,6 +258,8 @@ impl<'a> TypeChecker<'a> {
             solver_init_time: std::time::Duration::ZERO,
             seam_solver: None,
             seam_contracts: std::collections::HashMap::new(),
+            memory_placements: std::collections::HashMap::new(),
+            placement_site: 0,
             verify_seams: false,
             pending_topo_vars: std::collections::HashSet::new(),
             pending_topo_bindings: std::collections::HashMap::new(),
@@ -891,6 +903,10 @@ impl<'a> TypeChecker<'a> {
                 });
             }
         }
+
+        // The whole function has been checked; verify the working set of each memory space
+        // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
+        self.check_cumulative_capacity();
 
         self.pop_scope();
         self.current_return_type = prev_ret_ty;

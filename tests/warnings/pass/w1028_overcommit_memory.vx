@@ -1,0 +1,36 @@
+//===- w1028_overcommit_memory.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The cumulative budget check is conservative -- it assumes every tile placed in a space is
+// live at once. A programmer who knows their tiles do NOT all coexist (or who is exploring)
+// can declare the space `overcommit`, which downgrades the working-set error (E6010) to a
+// warning (W1028) and does not block compilation. Same over-budget program as
+// fail/memory_working_set_overflow.vx, but with `overcommit`.
+//
+// WARN: W1028
+// WARN: overcommit
+
+Memory Local_SRAM {
+  scope: sm, capacity: 228 KB, overcommit
+}
+
+fn main() -> i32 {
+  let mut qt = Tensor<f32>([128, 256]);
+  let mut kt = Tensor<f32>([128, 256]);
+  let mut vt = Tensor<f32>([128, 256]);
+  for i in 0..128 {
+    for j in 0..256 {
+      qt[i][j] = 1.0;
+      kt[i][j] = 1.0;
+      vt[i][j] = 1.0;
+    }
+  }
+  let q = transfer(qt, Memory::Local_SRAM);
+  let k = transfer(kt, Memory::Local_SRAM);
+  let v = transfer(vt, Memory::Local_SRAM);
+  return 0;
+}

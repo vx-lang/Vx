@@ -60,6 +60,8 @@ memory_field ::=
     | "bandwidth" ":" rate_literal
     | "granule"   ":" size_literal
     | "managed"   ":" ( "explicit" | "cached" )
+    | "scope"     ":" ( "device" | "sm" | "cta" | "thread" )   // execution level the space is private to
+    | "overcommit"                                             // bare flag: allow the working set to exceed capacity (warn, not error)
 
 size_literal ::= number ( "B" | "KB" | "MB" | "GB" | "TB" )   // binary multipliers (KB = 1024)
 rate_literal ::= size_literal "/" ( "s" | "cyc" )

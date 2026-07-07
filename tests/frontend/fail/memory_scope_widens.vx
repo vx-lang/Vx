@@ -1,0 +1,26 @@
+//===- memory_scope_widens.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Locality must narrow (never widen) going down the memory hierarchy: a sub-space cannot be
+// scoped more broadly than the space that contains it. A `device`-scoped space declared
+// `within` an `sm`-scoped one is incoherent (E6011). The faithful B200 shape is the reverse --
+// per-SM SMEM/TMEM inside the per-device HBM.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory OneSm {
+  scope: sm
+}
+Memory Wider {
+  within: Memory::OneSm, scope: device
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: E6011

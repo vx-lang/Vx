@@ -94,6 +94,9 @@ pub enum DiagnosticCode {
     /// A declared `relaxed` transfer edge does not preserve visibility (the seam engine
     /// shows a consumer may read stale data). See the topology coherence check.
     W1027,
+    /// The working set of a memory space exceeds `capacity`, but the space is declared
+    /// `overcommit`, so the cumulative-budget error (E6010) is downgraded to this warning.
+    W1028,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -213,6 +216,11 @@ pub enum DiagnosticCode {
     E6008,
     /// A statically-shaped tensor placed in a memory space exceeds that space's `capacity`.
     E6009,
+    /// The working set placed in a memory space (the sum of its tiles) exceeds `capacity`.
+    /// Downgraded to W1028 when the space is declared `overcommit`.
+    E6010,
+    /// A sub-space's `scope` is broader than its parent's (locality must narrow down `within:`).
+    E6011,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

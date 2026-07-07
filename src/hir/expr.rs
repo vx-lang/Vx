@@ -1240,6 +1240,25 @@ impl<'a> TypeChecker<'a> {
                         None,
                     );
                 }
+                MemoryCoherenceIssue::ScopeWidensInChild {
+                    child,
+                    parent,
+                    child_scope,
+                    parent_scope,
+                } => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6011,
+                        format!(
+                            "memory space '{}' has scope {:?}, broader than its parent '{}' \
+                             ({:?}); locality must narrow down the hierarchy, not widen",
+                            child.name(),
+                            child_scope,
+                            parent.name(),
+                            parent_scope
+                        ),
+                        None,
+                    );
+                }
             }
         }
     }
@@ -1265,7 +1284,7 @@ impl<'a> TypeChecker<'a> {
         space: &MemorySpace,
         context: &str,
     ) {
-        let overflow = {
+        let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {
                 return;
@@ -1280,17 +1299,83 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::syntax::ByteSize(g)) if g > 0 => raw.div_ceil(g) * g,
                 _ => raw,
             };
-            (rounded > cap).then_some((rounded, cap))
+            (rounded, cap)
         };
-        if let Some((bytes, cap)) = overflow {
+        let (rounded, cap) = sized;
+        // Precise per-tile check: a single tile larger than the whole space is always wrong.
+        if rounded > cap {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E6009,
                 format!(
-                    "{context} needs {bytes} bytes but memory space '{}' has capacity {cap} bytes",
+                    "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
                     space.name()
                 ),
                 None,
             );
+        }
+        // Record for the cumulative (working-set) budget check at end of function.
+        let key = match &self.current_assignment_target {
+            Some(name) => name.clone(),
+            None => {
+                self.placement_site += 1;
+                format!("@site{}", self.placement_site)
+            }
+        };
+        self.memory_placements
+            .entry(space.clone())
+            .or_default()
+            .insert(key, rounded);
+    }
+
+    /// Cumulative budget check: for each memory space, the sum of the tiles a function places
+    /// there (its working set) must fit `capacity`. This catches the collective overflow that
+    /// the per-tile check (E6009) misses -- e.g. Q/K/V in SMEM or S/P/O in TMEM summing past the
+    /// on-chip budget. Conservative (assumes all placed tiles coexist), so a space declared
+    /// `overcommit` downgrades the error (E6010) to a warning (W1028). Clears the per-function
+    /// placement map. Only fires when >1 tile shares a space (a lone tile is E6009's job).
+    pub(crate) fn check_cumulative_capacity(&mut self) {
+        let placements = std::mem::take(&mut self.memory_placements);
+        self.placement_site = 0;
+        let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+        // (space, total, cap, tile_count, overcommit)
+        let mut violations: Vec<(MemorySpace, u64, u64, usize, bool)> = Vec::new();
+        for (space, tiles) in &placements {
+            if tiles.len() < 2 {
+                continue;
+            }
+            let Some(decl) = h.descriptor(space) else {
+                continue;
+            };
+            let Some(crate::syntax::ByteSize(cap)) = decl.capacity else {
+                continue;
+            };
+            let total: u64 = tiles.values().sum();
+            if total > cap {
+                violations.push((space.clone(), total, cap, tiles.len(), decl.overcommit));
+            }
+        }
+        for (space, total, cap, count, overcommit) in violations {
+            let msg = format!(
+                "the working set placed in memory space '{}' ({} tiles) sums to {} bytes, over \
+                 its {} byte capacity",
+                space.name(),
+                count,
+                total,
+                cap
+            );
+            if overcommit {
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1028,
+                    format!("{msg}; allowed because '{}' is `overcommit`", space.name()),
+                    None,
+                );
+            } else {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6010,
+                    format!("{msg}; place fewer/smaller tiles or declare it `overcommit`"),
+                    None,
+                );
+            }
         }
     }
 

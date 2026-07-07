@@ -290,9 +290,23 @@ point of the language.
    `MemorySpace::Custom(name)` at the value level; the *descriptor* is what differs. Keep the
    value representation unchanged so existing custom-memory code (and the topology `memory:` /
    `transfer` clauses that already accept custom names) keeps working.
-1. **Execution scope, deferred.** If per-SM/per-CTA/per-thread semantics become necessary
-   (e.g. to say "this SMEM is private to one CTA"), add an optional `scope:` tag later; it is out
-   of scope for M1–M5 and does not block them.
+1. **Execution scope. ✅ Landed (the `scope:` tag).** `Memory X { scope: device | sm | cta | thread }` labels the execution level a space is private to, so `capacity` reads as a per-scope
+   budget (an `sm`-scoped 256 KB is one SM's TMEM). Coherence enforces that locality *narrows*
+   down `within:` (a broader-scoped child is `E6011`). Driven by mapping FA-4 tiles to the B200
+   sub-spaces (TMEM/SMEM are per-SM). Full *use-site* scope-crossing enforcement (a value can't
+   escape its thread/CTA) still wants a finer execution model and remains future work.
+
+## Working-set (cumulative) budget check + `overcommit`
+
+Beyond M3's *per-tile* capacity check, the compiler now checks the **cumulative** working set:
+the sum of the tiles a function places in a space must fit its `capacity` (`E6010`), naming the
+space, the total, and the tile count. This catches the collective overflow the per-tile check
+misses — the exact FA-4 constraint of fitting Q/K/V in SMEM or S/P/O in TMEM. Because the sum is
+conservative (it assumes all placed tiles are simultaneously live), a space declared
+`overcommit` downgrades the error to a warning (`W1028`) — the programmer asserts the tiles do
+not all coexist, so the check informs without blocking. The precise per-tile check (a single
+tile larger than the whole space, always impossible) stays a hard `E6009`.
+
 1. **Deliberate divergence from topologies.** Memory descriptors will be AST-carried + env-indexed
    while topology descriptors remain in the process-global `TOPOLOGY_REGISTRY` (§4). This is an
    intentional inconsistency: memories set the better precedent and topologies should migrate to

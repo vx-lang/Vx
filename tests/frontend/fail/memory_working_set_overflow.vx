@@ -1,0 +1,39 @@
+//===- memory_working_set_overflow.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The cumulative budget check (E6010): the *sum* of the tiles placed in a memory space must
+// fit its capacity, even when each tile fits individually. This is the collective-overflow
+// the per-tile check (E6009) misses -- and exactly the constraint FlashAttention-4 agonizes
+// over ("... leaving half the tensor memory for S and P"): here the Q/K/V tiles for an SMEM
+// scratchpad are 128 KiB each and the scratchpad is 228 KiB, so any one fits but three do not
+// (384 KiB > 228 KiB).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory Local_SRAM {
+  scope: sm, capacity: 228 KB
+}
+
+fn main() -> i32 {
+  let mut qt = Tensor<f32>([128, 256]);
+  let mut kt = Tensor<f32>([128, 256]);
+  let mut vt = Tensor<f32>([128, 256]);
+  for i in 0..128 {
+    for j in 0..256 {
+      qt[i][j] = 1.0;
+      kt[i][j] = 1.0;
+      vt[i][j] = 1.0;
+    }
+  }
+  let q = transfer(qt, Memory::Local_SRAM);
+  let k = transfer(kt, Memory::Local_SRAM);
+  let v = transfer(vt, Memory::Local_SRAM);
+  return 0;
+}
+
+// CHECK: E6010
+// CHECK-SAME: working set

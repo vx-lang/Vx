@@ -14,7 +14,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-use crate::syntax::{Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace, RatePer};
+use crate::syntax::{
+    Bandwidth, ByteSize, ElementType, Expr, MemoryDecl, MemorySpace, RatePer, Scope,
+};
 use std::collections::{HashMap, HashSet};
 
 /// A bandwidth-derived transfer cost, in the bandwidth's rate unit (cycles for `B/cyc`,
@@ -79,6 +81,14 @@ pub enum MemoryCoherenceIssue {
     NonPositiveProperty {
         space: MemorySpace,
         property: &'static str,
+    },
+    /// A sub-space's `scope` is *broader* than its parent's — locality must narrow (never
+    /// widen) going down the hierarchy (e.g. a `device`-scoped space inside an `sm` one).
+    ScopeWidensInChild {
+        child: MemorySpace,
+        parent: MemorySpace,
+        child_scope: Scope,
+        parent_scope: Scope,
     },
 }
 
@@ -251,6 +261,19 @@ impl<'a> MemoryHierarchy<'a> {
                         }
                     }
                 }
+                // Locality must narrow (or stay equal) down the hierarchy.
+                if let (Some(child_scope), Some(parent)) = (decl.scope, decl.parent.clone()) {
+                    if let Some(parent_scope) = self.spaces.get(&parent).and_then(|p| p.scope) {
+                        if child_scope < parent_scope {
+                            issues.push(MemoryCoherenceIssue::ScopeWidensInChild {
+                                child: space.clone(),
+                                parent,
+                                child_scope,
+                                parent_scope,
+                            });
+                        }
+                    }
+                }
             }
         }
         // `HashMap` iteration is unordered; sort for stable diagnostics.
@@ -272,6 +295,8 @@ mod tests {
             bandwidth: None,
             managed: Management::default(),
             granule: None,
+            scope: None,
+            overcommit: false,
             doc_comment: None,
         }
     }
@@ -374,6 +399,29 @@ mod tests {
             mem("TMEM", Some("SMEM"), Some(256)), // equal to parent is allowed
         ];
         assert!(MemoryHierarchy::build(&decls).coherence_issues().is_empty());
+    }
+
+    #[test]
+    fn detects_scope_widening_and_accepts_narrowing() {
+        // A device-scoped space nested in an sm-scoped one is incoherent (locality widens).
+        let mut sm = mem("Sm0", None, None);
+        sm.scope = Some(Scope::Sm);
+        let mut wide = mem("Wide", Some("Sm0"), None);
+        wide.scope = Some(Scope::Device);
+        let issues = MemoryHierarchy::build(&[sm.clone(), wide]).coherence_issues();
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, MemoryCoherenceIssue::ScopeWidensInChild { .. })));
+
+        // The faithful B200 direction (sm inside device) is fine.
+        let mut dev = mem("Dev", None, None);
+        dev.scope = Some(Scope::Device);
+        let mut tmem = mem("Tmem", Some("Dev"), None);
+        tmem.scope = Some(Scope::Sm);
+        assert!(!MemoryHierarchy::build(&[dev, tmem])
+            .coherence_issues()
+            .iter()
+            .any(|i| matches!(i, MemoryCoherenceIssue::ScopeWidensInChild { .. })));
     }
 
     #[test]

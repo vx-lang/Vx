@@ -322,6 +322,8 @@ impl<'a> Parser<'a> {
         let mut bandwidth: Option<crate::syntax::Bandwidth> = None;
         let mut managed = crate::syntax::Management::default();
         let mut granule: Option<crate::syntax::ByteSize> = None;
+        let mut scope: Option<crate::syntax::Scope> = None;
+        let mut overcommit = false;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             let field = match &self.advance().kind {
@@ -332,9 +334,38 @@ impl<'a> Parser<'a> {
                     )
                 }
             };
+            // `overcommit` is a bare flag (no `: value`).
+            if field == "overcommit" {
+                overcommit = true;
+                self.match_token(&TokenType::Comma);
+                continue;
+            }
             self.consume(&TokenType::Colon, "Expected ':' after memory field")?;
             match field.as_str() {
                 "within" => parent = Some(self.parse_memory_space()?),
+                "scope" => {
+                    let s = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.to_string(),
+                        other => {
+                            return Err(self.error(&format!(
+                                "`scope:` expects device/sm/cta/thread, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    scope = Some(match s.as_str() {
+                        "device" => crate::syntax::Scope::Device,
+                        "sm" => crate::syntax::Scope::Sm,
+                        "cta" => crate::syntax::Scope::Cta,
+                        "thread" => crate::syntax::Scope::Thread,
+                        other => {
+                            return Err(self.error(&format!(
+                                "`scope:` expects device/sm/cta/thread, got '{}'",
+                                other
+                            )))
+                        }
+                    });
+                }
                 "capacity" => capacity = Some(self.parse_byte_size()?),
                 "granule" => granule = Some(self.parse_byte_size()?),
                 "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
@@ -375,6 +406,8 @@ impl<'a> Parser<'a> {
             bandwidth,
             managed,
             granule,
+            scope,
+            overcommit,
             doc_comment: None,
         })
     }
