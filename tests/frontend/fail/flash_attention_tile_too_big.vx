@@ -1,0 +1,34 @@
+//===- flash_attention_tile_too_big.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 4 (capacity facet): the whole point of tiling in FlashAttention is
+// that a Q/K/V tile fits on-chip. If a chosen tile does not fit the declared scratchpad, Vx
+// rejects the placement at compile time with the byte numbers (E6009, milestone M3) -- the
+// static analog of the paper's roofline capacity constraint.
+//
+// Here Local_SRAM (the on-chip scratchpad, "SMEM") is declared with a 16 KiB capacity, and a
+// 128x64 f32 query tile is 32 KiB -- twice too big -- so staging it there is a compile error.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory Local_SRAM {
+  capacity: 16 KB
+}
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([128, 64]);
+  for i in 0..128 {
+    for j in 0..64 {
+      q[i][j] = 1.0;
+    }
+  }
+  // Stage the query tile into SMEM -- 32768 bytes does not fit the 16384-byte scratchpad.
+  let q_smem = transfer(q, Memory::Local_SRAM);
+  return 0;
+}
+
+// CHECK: E6009

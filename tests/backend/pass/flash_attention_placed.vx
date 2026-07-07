@@ -1,0 +1,120 @@
+//===- flash_attention_placed.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention, Phase 4 (see docs/discussions/implementation_plans/flash_attention.md):
+// the convergence of the algorithm with Vx's first-class memory model. This is where the
+// flash forward stops being a plain loop nest and becomes a *heterogeneous* program:
+//
+//   * a declared memory hierarchy -- GPU_HBM is a sub-space of CPU_DRAM with a real capacity
+//     and bandwidth (`Memory { within:, capacity:, bandwidth: }`, milestones M1/M2);
+//   * Q/K/V/O are `transfer`ed into GPU_HBM -- each move is capacity-checked (M3, they fit)
+//     and stamped with a bandwidth-derived roofline cost (M4, emitted as `cost` on
+//     `vx.transfer`);
+//   * the entire online-softmax loop runs inside `spawn on(Topology::GPU)`.
+//
+// The exp-on-device question from Phase 0 is resolved here: the dispatcher falls back to CPU
+// libffi when no GPU backend is present, so the fully-fused kernel (matmul + exp + rescale)
+// JIT-runs and produces the same result as the host reference / plain flash forward
+// (2.84482 for the non-uniform query, 1.5 for the all-zero query).
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The four operand transfers into GPU_HBM carry a bandwidth-derived cost, and the compute is
+// placed on the GPU topology (dispatch id 500):
+// CHECK: vx.transfer
+// CHECK-SAME: cost =
+// CHECK: vx.spawn topology(500)
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GB, bandwidth: 3 TB/s
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([2, 4]);
+  let mut k_h = Tensor<f32>([4, 4]);
+  let mut v_h = Tensor<f32>([4, 4]);
+  let mut o_h = Tensor<f32>([2, 4]);
+  for d in 0..4 {
+    q_h[0][d] = 1.0;
+    q_h[1][d] = 0.0;
+    k_h[0][d] = 0.0;
+    k_h[1][d] = 1.0;
+    k_h[2][d] = 2.0;
+    k_h[3][d] = 3.0;
+    v_h[0][d] = 0.0;
+    v_h[1][d] = 1.0;
+    v_h[2][d] = 2.0;
+    v_h[3][d] = 3.0;
+  }
+  for i in 0..2 {
+    for d in 0..4 {
+      o_h[i][d] = 0.0;
+    }
+  }
+
+  // Stage the operands into device memory. Each transfer is capacity-checked against GPU_HBM
+  // (40 GB) and costed from its 3 TB/s bandwidth.
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+
+  // Fully-fused flash forward on the accelerator.
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([1, 2]);
+    for i in 0..2 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..2 {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          let mut acc : f32 = 0.0;
+          for d in 0..4 {
+            acc += q[i][d] * k[j][d];
+          }
+          let sij : f32 = acc * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        let m_new : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        let corr : f32 = (m - m_new).exp();
+        l = l * corr;
+        for d in 0..4 {
+          o[i][d] = o[i][d] * corr;
+        }
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          let p : f32 = (ts[0][jj] - m_new).exp();
+          l = l + p;
+          for d in 0..4 {
+            o[i][d] = o[i][d] + p * v[j][d];
+          }
+        }
+        m = m_new;
+      }
+      for d in 0..4 {
+        o[i][d] = o[i][d] / l;
+      }
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[2.84482,
+// EXPECT: [1.5,
