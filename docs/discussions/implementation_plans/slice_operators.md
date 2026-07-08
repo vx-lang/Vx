@@ -110,11 +110,12 @@ or write back into a named slice.)
   slice operand (strided view or vector) so whole-tensor loops (scf-to-cf / unroll tests) are
   untouched. Test: `backend/pass/slice_elementwise.vx`. *(Vectorized `exp(a)` via `math.exp` is
   deferred — FA uses its own software-emulated `exp_poly`, which stays scalar.)*
-- **S4 — FA-4 flagship, vectorized. ✅ Done.** `backend/pass/flash_attention_v4_slice.vx` is
-  `flash_attention_v4.vx` with every head-dim loop collapsed: the score `for d`-loop → `dot(q[i], k[j])` (a `vector.reduction`), and the O rescale / accumulate / normalize `for d`-loops →
-  `o[i] = o[i]*corr`, `o[i] = o[i] + p*v[j]`, `o[i] = o[i]/l` (`vector.store`s). Produces the
-  identical `2.8448 / 1.5` as the scalar oracle; the score reduction is a `vector.reduction`, not
-  a scalar loop.
+- **S4 — FA-4 flagship, vectorized. ✅ Done.** The flagship `backend/pass/flash_attention_v4.vx`
+  is now written natively with slice ops — every head-dim loop collapsed: the score `for d`-loop
+  → `dot(q[i], k[j])` (a `vector.reduction`), and the O rescale / accumulate / normalize
+  `for d`-loops → `o[i] = o[i]*corr`, `o[i] = o[i] + p*v[j]`, `o[i] = o[i]/l` (`vector.store`s).
+  It still produces `2.8448 / 1.5`, matching the scalar oracles (`attention_reference.vx`,
+  `flash_attention.vx`); the score reduction is a `vector.reduction`, not a scalar loop.
 
 ### Full-MLIR regression lock
 

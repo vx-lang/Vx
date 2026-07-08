@@ -23,6 +23,11 @@
 //   (4) Heterogeneous placement: a declared memory hierarchy (GPU_HBM within CPU_DRAM, with
 //       capacity + bandwidth), Q/K/V/O `transfer`ed into GPU_HBM (each move capacity-checked
 //       and costed from bandwidth), and the whole kernel inside `spawn on(Topology::GPU)`.
+//   (5) Vectorized at the source with slice operators (S1-S3, see
+//       docs/discussions/implementation_plans/slice_operators.md): the head-dim score reduction
+//       is `dot(q[i], k[j])` (one `vector.reduction`, not a scalar `for d` loop), and the O
+//       rescale / accumulate / normalize are row-level `o[i] = o[i] * corr`,
+//       `o[i] = o[i] + p*v[j]`, `o[i] = o[i] / l` (`vector.store`s). SIMD by construction.
 //
 // Result matches the reference oracle within the polynomial's error: 2.8448.. for the
 // non-uniform query, 1.5 for the all-zero query. (The pure-libm path in flash_attention.vx
@@ -32,6 +37,8 @@
 // CHECK: vx.transfer
 // CHECK-SAME: cost =
 // CHECK: vx.spawn topology(500)
+// CHECK: vector.reduction
+// CHECK: vector.store
 
 import std::math;
 
@@ -120,11 +127,8 @@ fn main() -> i32 {
         let mut tm : f32 = -1000000.0;
         for jj in 0..2 {
           let j = t * 2 + jj;
-          let mut acc : f32 = 0.0;
-          for d in 0..4 {
-            acc += q[i][d] * k[j][d];
-          }
-          let sij : f32 = acc * scale;
+          // Score = <q_i, k_j> * scale: the head-dim dot as one vectorized reduction (S2).
+          let sij : f32 = dot(q[i], k[j]) * scale;
           ts[0][jj] = sij;
           if sij > tm {
             tm = sij;
@@ -139,9 +143,7 @@ fn main() -> i32 {
         if m_cand - m > tau {
           let corr : f32 = exp_poly(m - m_cand);
           l = l * corr;
-          for d in 0..4 {
-            o[i][d] = o[i][d] * corr;
-          }
+          o[i] = o[i] * corr; // rescale the output row (S3: vector.store)
           m = m_cand;
         }
         // (1) online-softmax tile accumulation, again via the emulated exp
@@ -149,14 +151,10 @@ fn main() -> i32 {
           let j = t * 2 + jj;
           let p : f32 = exp_poly(ts[0][jj] - m);
           l = l + p;
-          for d in 0..4 {
-            o[i][d] = o[i][d] + p * v[j][d];
-          }
+          o[i] = o[i] + p * v[j]; // scaled-add into the output row (S3)
         }
       }
-      for d in 0..4 {
-        o[i][d] = o[i][d] / l;
-      }
+      o[i] = o[i] / l; // normalize the output row (S3)
     }
   }
 

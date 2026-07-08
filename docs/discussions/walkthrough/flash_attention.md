@@ -120,6 +120,12 @@ placed device kernel:
    MUFU exponential onto FMA units; here it removes the dependency on a device libm.
 1. **Placement** — declared `GPU_HBM`, `transfer` of operands (capacity-checked + bandwidth-
    costed), the whole kernel in `spawn on(Topology::GPU)`.
+1. **Vectorized at the source** (slice operators, S1–S3 — see
+   [`slice_operators.md`](../implementation_plans/slice_operators.md)) — the head-dim score
+   reduction is `dot(q[i], k[j])` (one `vector.reduction`, not a scalar `for d` loop), and the
+   `O` rescale / accumulate / normalize are row-level `o[i] = o[i]*corr`, `o[i] = o[i] + p*v[j]`,
+   `o[i] = o[i]/l` (`vector.store`s). The kernel is SIMD by construction rather than relying on
+   the autovectorizer to recover it from scalar loops.
 
 Two Vx features come together here. `exp_poly` is declared **`on Topology::GPU`** — a
 *device-bound* function — so it is legal to call from inside the GPU `spawn` (a plain CPU
