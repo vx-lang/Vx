@@ -1,0 +1,51 @@
+//===- tensor_initializer_mlir.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Full-MLIR regression lock for tensor initializer lists. `Tensor<f32>([[..],[..]])` allocates
+// a `memref<?x?xf32>` (constant-sized) and stores each element in row-major order -- no fill
+// loop. Regenerate with:
+//   cargo run --bin update_mlir_test_checks -- tests/optimizations/pass/tensor_initializer_mlir.vx
+//
+// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
+
+fn init() -> i32 {
+  let m = Tensor<f32>([[1.0, 2.0],
+  [3.0, 4.0]]);
+  return 0;
+}
+
+// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}} {
+// CHECK:   func.func private @printMemrefF32(memref<*xf32>)
+// CHECK:   func.func private @printMemrefF64(memref<*xf64>)
+// CHECK:   func.func private @printMemrefI32(memref<*xi32>)
+// CHECK:   func.func private @printMemrefI64(memref<*xi64>)
+// CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @init() -> i32 {
+// CHECK:     %c2 = arith.constant 2 : index
+// CHECK:     %c2_0 = arith.constant 2 : index
+// CHECK:     %alloc = memref.alloc(%c2, %c2_0) : memref<?x?xf32>
+// CHECK:     %cst = arith.constant 1.000000e+00 : f32
+// CHECK:     %c0 = arith.constant 0 : index
+// CHECK:     %c0_1 = arith.constant 0 : index
+// CHECK:     memref.store %cst, %alloc[%c0, %c0_1] : memref<?x?xf32>
+// CHECK:     %cst_2 = arith.constant 2.000000e+00 : f32
+// CHECK:     %c0_3 = arith.constant 0 : index
+// CHECK:     %c1 = arith.constant 1 : index
+// CHECK:     memref.store %cst_2, %alloc[%c0_3, %c1] : memref<?x?xf32>
+// CHECK:     %cst_4 = arith.constant 3.000000e+00 : f32
+// CHECK:     %c1_5 = arith.constant 1 : index
+// CHECK:     %c0_6 = arith.constant 0 : index
+// CHECK:     memref.store %cst_4, %alloc[%c1_5, %c0_6] : memref<?x?xf32>
+// CHECK:     %cst_7 = arith.constant 4.000000e+00 : f32
+// CHECK:     %c1_8 = arith.constant 1 : index
+// CHECK:     %c1_9 = arith.constant 1 : index
+// CHECK:     memref.store %cst_7, %alloc[%c1_8, %c1_9] : memref<?x?xf32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK: }

@@ -14,6 +14,16 @@ use std::collections::HashMap;
 
 use super::*;
 
+/// Build an `i32` numeric dimension expression (used to synthesize a tensor shape from an
+/// initializer list's nesting).
+fn int_dim_expr(n: usize) -> Expr {
+    Expr::Number(NumberExpr {
+        value: n.to_string().into(),
+        ty: Some(ElementType::I32),
+        span: Span::default(),
+    })
+}
+
 impl<'a> TypeChecker<'a> {
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         self.check_expr_type_flag(expr, true, false)
@@ -2690,7 +2700,12 @@ impl<'a> TypeChecker<'a> {
             let mut dims = Vec::new();
             if !args.is_empty() {
                 if let Expr::Array(arr) = &args[0] {
-                    dims = arr.elements.clone();
+                    if let Some(shape) = arr.initializer_shape() {
+                        // Initializer list `Tensor<T>([[..],[..]])`: shape from the nesting.
+                        dims = shape.into_iter().map(int_dim_expr).collect();
+                    } else {
+                        dims = arr.elements.clone();
+                    }
                 } else {
                     dims = args.to_vec();
                 }

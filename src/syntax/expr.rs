@@ -209,6 +209,37 @@ impl ArrayExpr {
     pub fn new(elements: Vec<Expr>, span: Span) -> Self {
         Self { elements, span }
     }
+
+    /// If this is a nested initializer list (its first element is itself an array), return the
+    /// inferred shape: this level's length followed by the sub-shape. A *flat* array returns
+    /// `None` -- the `Tensor` constructor reads a flat array as an explicit dims list (a shape),
+    /// so `Tensor<f32>([2, 4])` stays a 2x4 shape while `Tensor<f32>([[..],[..]])` is data.
+    pub fn initializer_shape(&self) -> Option<Vec<usize>> {
+        match self.elements.first() {
+            Some(Expr::Array(inner)) => {
+                let mut shape = vec![self.elements.len()];
+                match inner.initializer_shape() {
+                    Some(sub) => shape.extend(sub),
+                    None => shape.push(inner.elements.len()),
+                }
+                Some(shape)
+            }
+            _ => None,
+        }
+    }
+
+    /// Row-major flatten of a nested initializer list into its scalar element expressions,
+    /// e.g. `[[a, b], [c, d]]` -> `[a, b, c, d]`.
+    pub fn initializer_values(&self) -> Vec<&Expr> {
+        let mut out = Vec::new();
+        for el in &self.elements {
+            match el {
+                Expr::Array(inner) => out.extend(inner.initializer_values()),
+                other => out.push(other),
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

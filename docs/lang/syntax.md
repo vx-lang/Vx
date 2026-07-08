@@ -305,3 +305,25 @@ macro_rules! create_tensor {
     };
 }
 ```
+
+## 11. Tensor & Slice Initializers
+
+A tensor can be constructed from an **initializer list** — a nested array literal — with its shape
+inferred from the nesting. This replaces an explicit fill loop:
+
+```rust
+// A 2x4 tensor with these values (shape inferred from the [[..],[..]] nesting):
+let q = Tensor<f32>([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]);
+
+// A *flat* array in the constructor is still an explicit shape, not data:
+let z = Tensor<f32>([2, 4]);   // an (uninitialized) 2x4 tensor
+```
+
+A **slice** (a row of a tensor, see the slice operators in
+[`slice_operators.md`](../discussions/implementation_plans/slice_operators.md)) can be initialized
+in place from a flat array literal:
+
+```rust
+let mut o = Tensor<f32>([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]);
+o[0] = [1.0, 2.0, 3.0, 4.0];   // writes row 0
+```

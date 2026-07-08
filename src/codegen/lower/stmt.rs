@@ -167,6 +167,42 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
     ) -> Self::Output {
         let AssignStmt { lhs, rhs, span: _ } = self;
 
+        // Slice/row initializer: `o[i] = [a, b, c, d]`. Lower the LHS partial index to its S1 row
+        // view and store each element. This is cold setup code, so scalar stores are fine.
+        if let (Expr::IndexAccess(_), Expr::Array(arr)) = (lhs, rhs) {
+            let (row, row_ty, mut b) = gen.generate_expr(lhs, block)?;
+            let row_ty_str = row_ty.to_string();
+            if row_ty_str.starts_with("memref<") {
+                let elem_ty_str = row_ty_str
+                    .strip_prefix("memref<")
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|s| s.rsplit('x').next())
+                    .unwrap_or("f32");
+                let elem_ty = Type::parse(gen.context, elem_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType(elem_ty_str.to_string())
+                })?;
+                let index_ty = Type::index(gen.context);
+                for (k, el) in arr.elements.iter().enumerate() {
+                    let (v, vty, nb) = gen.generate_expr(el, b)?;
+                    b = nb;
+                    let v = gen.coerce_type(&b, v, vty, elem_ty)?;
+                    let idx_op = OperationBuilder::new("arith.constant", gen.loc())
+                        .add_attributes(&[(
+                            Identifier::new(gen.context, "value"),
+                            IntegerAttribute::new(index_ty, k as i64).into(),
+                        )])
+                        .add_results(&[index_ty])
+                        .build()?;
+                    let idx = b.append_operation(idx_op).result(0)?.into();
+                    let store = OperationBuilder::new("memref.store", gen.loc())
+                        .add_operands(&[v, row, idx])
+                        .build()?;
+                    b.append_operation(store);
+                }
+                return Ok(Some(b));
+            }
+        }
+
         let mut expected_ty = None;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((_, mem_ty)) = gen.env.get(name) {

@@ -88,27 +88,10 @@ fn exp_poly(x : f32) on Topology::GPU -> f32 {
 }
 
 fn main() -> i32 {
-  let mut q_h = Tensor<f32>([2, 4]);
-  let mut k_h = Tensor<f32>([4, 4]);
-  let mut v_h = Tensor<f32>([4, 4]);
-  let mut o_h = Tensor<f32>([2, 4]);
-  for d in 0..4 {
-    q_h[0][d] = 1.0;
-    q_h[1][d] = 0.0;
-    k_h[0][d] = 0.0;
-    k_h[1][d] = 1.0;
-    k_h[2][d] = 2.0;
-    k_h[3][d] = 3.0;
-    v_h[0][d] = 0.0;
-    v_h[1][d] = 1.0;
-    v_h[2][d] = 2.0;
-    v_h[3][d] = 3.0;
-  }
-  for i in 0..2 {
-    for d in 0..4 {
-      o_h[i][d] = 0.0;
-    }
-  }
+  let q_h = Tensor<f32>([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]);
+  let k_h = Tensor<f32>([[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]]);
+  let v_h = Tensor<f32>([[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]]);
+  let o_h = Tensor<f32>([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]);
 
   // Stage operands in device memory (capacity-checked, bandwidth-costed).
   let q = transfer(q_h, Memory::GPU_HBM);

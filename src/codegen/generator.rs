@@ -1302,7 +1302,20 @@ impl<'c> MeliorGenerator<'c> {
                         _ => syntax::ElementType::F32,
                     };
                     let dims = match fc.args.first() {
-                        Some(Expr::Array(arr)) => arr.elements.clone(),
+                        Some(Expr::Array(arr)) => match arr.initializer_shape() {
+                            // Initializer list `Tensor<T>([[..],[..]])`: shape from the nesting.
+                            Some(shape) => shape
+                                .into_iter()
+                                .map(|n| {
+                                    Expr::Number(syntax::NumberExpr {
+                                        value: n.to_string().into(),
+                                        ty: Some(syntax::ElementType::I32),
+                                        span: syntax::Span::default(),
+                                    })
+                                })
+                                .collect(),
+                            None => arr.elements.clone(),
+                        },
                         _ => fc.args.clone(),
                     };
                     return Some(syntax::Type::Tensor(el_ty, dims, None));

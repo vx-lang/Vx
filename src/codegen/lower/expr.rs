@@ -1573,6 +1573,77 @@ fn lower_slice_reduction<'c>(
     Ok((result, f32_ty, cur))
 }
 
+/// Lower a tensor initializer list (`Tensor<T>([[..],[..]])`): allocate a buffer of the shape
+/// inferred from the nesting and store each constant element in row-major order. The buffer keeps
+/// the dynamic `memref<?x..xT>` type (with constant sizes) that the rest of codegen expects.
+fn lower_tensor_initializer<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    elem_ty_str: &str,
+    shape: &[usize],
+    arr: &ArrayExpr,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let index_ty = Type::index(gen.context);
+    let elem_ty = Type::parse(gen.context, elem_ty_str)
+        .ok_or_else(|| LowerError::ParseType(elem_ty_str.to_string()))?;
+    let rank = shape.len();
+
+    let a_const = |gen: &mut MeliorGenerator<'c>, b: melior::ir::BlockRef<'c, 'c>, n: usize| {
+        let op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(index_ty, n as i64).into(),
+            )])
+            .add_results(&[index_ty])
+            .build()?;
+        Ok::<Value, LowerError>(b.append_operation(op).result(0)?.into())
+    };
+
+    // A dynamic `memref<?x..xT>` sized by constants -- matches how plain `Tensor<T>([n, m])`
+    // buffers are typed, so transfers / slices downstream are unaffected.
+    let ty_str = format!("memref<{}{}>", "?x".repeat(rank), elem_ty_str);
+    let tensor_ty =
+        Type::parse(gen.context, &ty_str).ok_or_else(|| LowerError::ParseType(ty_str.clone()))?;
+    let mut size_vals = Vec::with_capacity(rank);
+    for &d in shape {
+        size_vals.push(a_const(gen, block, d)?);
+    }
+    let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
+        .add_operands(&size_vals)
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[size_vals.len() as i32, 0]).into(),
+        )])
+        .add_results(&[tensor_ty])
+        .build()?;
+    let buf: Value = block.append_operation(alloc_op).result(0)?.into();
+
+    let values = arr.initializer_values();
+    let mut cur = block;
+    for (flat, val_expr) in values.iter().enumerate() {
+        let (v, vty, nb) = gen.generate_expr(val_expr, cur)?;
+        cur = nb;
+        let v = gen.coerce_type(&cur, v, vty, elem_ty)?;
+        // Row-major flat index -> per-dimension coordinates.
+        let mut rem = flat;
+        let mut coords = vec![0usize; rank];
+        for dim in (0..rank).rev() {
+            coords[dim] = rem % shape[dim];
+            rem /= shape[dim];
+        }
+        let mut store = OperationBuilder::new("memref.store", gen.loc()).add_operands(&[v, buf]);
+        let idx_vals: Vec<Value> = coords
+            .iter()
+            .map(|&c| a_const(gen, cur, c))
+            .collect::<Result<_, _>>()?;
+        for iv in &idx_vals {
+            store = store.add_operands(std::slice::from_ref(iv));
+        }
+        cur.append_operation(store.build()?);
+    }
+    Ok((buf, tensor_ty, cur))
+}
+
 /// Static length D of a rank-1 f32 slice value, from its melior type string. Matches a
 /// `vector<Dxf32>` or a rank-1 `memref<Dxf32, ...>` (the S1 row view); returns `None` for
 /// scalars, dynamic dims, and higher-rank memrefs (which are not slice operands).
@@ -1669,6 +1740,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             } else {
                 panic!("Tensor initialization requires an explicit generic type argument");
             };
+            // Initializer list: `Tensor<T>([[..],[..]])` allocates a shaped buffer and stores the
+            // constant values in place, so no fill loop is needed.
+            if let Some(Expr::Array(arr)) = args.first() {
+                if let Some(shape) = arr.initializer_shape() {
+                    return lower_tensor_initializer(gen, &mlir_ty_str, &shape, arr, block);
+                }
+            }
             let mut dynamic_sizes = Vec::new();
             // Number of dynamic dimensions; the type below uses one `?` per dim,
             // so this must equal the number of size operands collected into

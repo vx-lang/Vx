@@ -1,0 +1,32 @@
+//===- tensor_initializer.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Initializer lists for tensors and slices. A nested array literal constructs a tensor with its
+// shape inferred from the nesting -- `Tensor<f32>([[..],[..]])` is a 2x4 buffer of that data,
+// replacing a fill loop. A flat array literal assigned to a row (`o[i] = [a, b, c, d]`)
+// initializes that slice in place (the S1 row view). (A flat array in the constructor is still
+// an explicit shape: `Tensor<f32>([2, 4])` is a 2x4 tensor.)
+//
+// m starts as [[1,2,3,4],[5,6,7,8]]; row 0 is overwritten with [10,20,30,40].
+// dot(row0, row1) = 10*5 + 20*6 + 30*7 + 40*8 = 50+120+210+320 = 700.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+fn main() -> i32 {
+  let mut m = Tensor<f32>([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
+  m[0] = [10.0, 20.0, 30.0, 40.0];
+
+  let mut o = Tensor<f32>([[0.0, 0.0, 0.0]]);
+  o[0][0] = m[0][2];          // 30
+  o[0][1] = m[1][3];          // 8
+  o[0][2] = dot(m[0], m[1]);  // 700
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[30,   8,   700]]
