@@ -18,6 +18,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) module: Module<'c>,
     pub(crate) env: HashMap<crate::symbol::Symbol, (Value<'c, 'c>, Type<'c>)>,
     pub(crate) ast_env: HashMap<crate::symbol::Symbol, syntax::Type>,
+    /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
+    /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
+    pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
     pub(crate) structs: HashMap<crate::symbol::Symbol, syntax::StructDecl>,
     #[allow(clippy::type_complexity)]
     pub(crate) enums:
@@ -322,6 +325,7 @@ impl<'c> MeliorGenerator<'c> {
             module,
             env: HashMap::new(),
             ast_env: HashMap::new(),
+            memories: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
@@ -412,6 +416,10 @@ impl<'c> MeliorGenerator<'c> {
         }
         for e in &program.enums {
             self.enums.insert(e.name.clone(), e.variants.clone());
+        }
+        for m in &program.memories {
+            self.memories
+                .insert(syntax::MemorySpace::from_name(m.name.as_ref()), m.clone());
         }
         for module in modules.values() {
             for s in &module.structs {

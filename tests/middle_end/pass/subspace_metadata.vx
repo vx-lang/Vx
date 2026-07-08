@@ -1,0 +1,38 @@
+//===- subspace_metadata.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// SS1 (docs/discussions/implementation_plans/subspace_scheduling.md): a `transfer` into a declared
+// memory space carries that space's descriptor as IR metadata on `vx.transfer` -- the space name
+// plus its containment (`within`), `granule`, `capacity`, and `scope`. A later vx.* pass reads
+// this to schedule tiles into sub-spaces (TMEM/SMEM); it does not affect the lowering.
+//
+// A sub-space (SMEM, no transfer edges of its own) is reachable via its enclosing space
+// (GPU_HBM), which the CPU can reach -- so the transfer type-checks and the descriptor is emitted.
+// 228 KB = 233472 bytes; 16 KB granule = 16384 bytes.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory GPU_HBM {
+  capacity: 40 GB, bandwidth: 3 TB/s
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f32>([[1.0, 2.0], [3.0, 4.0]]);
+  let s = transfer(t, Memory::SMEM);
+  return 0;
+}
+
+// The vx.transfer preserves the SMEM sub-space descriptor (attributes print in name order):
+// CHECK: vx.transfer
+// CHECK: capacity = 233472
+// CHECK: granule = 16384
+// CHECK: scope = "sm"
+// CHECK: space = "SMEM"
+// CHECK: within = "GPU_HBM"

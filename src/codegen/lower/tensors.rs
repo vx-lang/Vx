@@ -2,7 +2,7 @@ use super::*;
 use crate::syntax;
 use crate::syntax::*;
 use melior::ir::{
-    attribute::{FlatSymbolRefAttribute, IntegerAttribute},
+    attribute::{FlatSymbolRefAttribute, IntegerAttribute, StringAttribute},
     operation::OperationBuilder,
     Identifier, Type, Value,
 };
@@ -156,6 +156,46 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             let cost_attr = IntegerAttribute::new(gen.i32_ty, cost as i64).into();
             transfer_builder = transfer_builder
                 .add_attributes(&[(Identifier::new(gen.context, "cost"), cost_attr)]);
+        }
+
+        // Sub-space descriptor as IR metadata (SS1, subspace_scheduling.md): the target space name
+        // plus, when declared, its containment/granule/capacity/scope. A later vx.* pass reads this
+        // to schedule tiles into sub-spaces (TMEM/SMEM); it does not affect lowering.
+        transfer_builder = transfer_builder.add_attributes(&[(
+            Identifier::new(gen.context, "space"),
+            StringAttribute::new(gen.context, &self.space.name()).into(),
+        )]);
+        if let Some(decl) = gen.memories.get(&self.space) {
+            if let Some(parent) = &decl.parent {
+                transfer_builder = transfer_builder.add_attributes(&[(
+                    Identifier::new(gen.context, "within"),
+                    StringAttribute::new(gen.context, &parent.name()).into(),
+                )]);
+            }
+            if let Some(g) = &decl.granule {
+                transfer_builder = transfer_builder.add_attributes(&[(
+                    Identifier::new(gen.context, "granule"),
+                    IntegerAttribute::new(gen.i64_ty, g.0 as i64).into(),
+                )]);
+            }
+            if let Some(c) = &decl.capacity {
+                transfer_builder = transfer_builder.add_attributes(&[(
+                    Identifier::new(gen.context, "capacity"),
+                    IntegerAttribute::new(gen.i64_ty, c.0 as i64).into(),
+                )]);
+            }
+            if let Some(scope) = &decl.scope {
+                let scope_str = match scope {
+                    syntax::Scope::Device => "device",
+                    syntax::Scope::Sm => "sm",
+                    syntax::Scope::Cta => "cta",
+                    syntax::Scope::Thread => "thread",
+                };
+                transfer_builder = transfer_builder.add_attributes(&[(
+                    Identifier::new(gen.context, "scope"),
+                    StringAttribute::new(gen.context, scope_str).into(),
+                )]);
+            }
         }
 
         let transfer_op = transfer_builder

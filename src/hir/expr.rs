@@ -1577,9 +1577,24 @@ impl<'a> TypeChecker<'a> {
                         .map(|dc| dc.value.min(u32::MAX as u64) as u32)
                 });
 
-            let path_result = self
+            let mut path_result = self
                 .transfer_cost_graph
                 .transfer_path(&source_mem, &target_mem);
+
+            // A sub-space is reachable via its enclosing space: if there is no direct hardware
+            // path (custom sub-spaces like SMEM/TMEM have no transfer edges of their own), resolve
+            // the target to the nearest declared `within:` ancestor that IS reachable -- data moves
+            // into the device that contains the sub-space. See subspace_scheduling.md.
+            if path_result.is_none() {
+                let hierarchy =
+                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+                for anc in hierarchy.ancestors(&target_mem) {
+                    if let Some(p) = self.transfer_cost_graph.transfer_path(&source_mem, &anc) {
+                        path_result = Some(p);
+                        break;
+                    }
+                }
+            }
 
             if path_result.is_none() {
                 if !silent {
