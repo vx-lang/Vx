@@ -294,7 +294,8 @@ point of the language.
    budget (an `sm`-scoped 256 KB is one SM's TMEM). Coherence enforces that locality *narrows*
    down `within:` (a broader-scoped child is `E6011`). Driven by mapping FA-4 tiles to the B200
    sub-spaces (TMEM/SMEM are per-SM). Full *use-site* scope-crossing enforcement (a value can't
-   escape its thread/CTA) still wants a finer execution model and remains future work.
+   escape its thread/CTA) still wants a finer execution model and remains future work — tracked
+   in issue #187.
 
 ## Working-set (cumulative) budget check + `overcommit`
 
