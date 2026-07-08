@@ -85,11 +85,13 @@ that *acts* on the offsets belongs with the device backend and can come later.
 
 ## 3. Milestones
 
-- **SS1 — Sub-space metadata on `vx.transfer` (Slice A).** Plumb `Program.memories` into the codegen
-  generator; emit `space`/`within`/`granule`/`capacity`/`scope` attributes from the `MemoryDecl`.
-  Golden-MLIR test: a kernel declaring `SMEM within HBM { granule, capacity, scope }` and
-  transferring a tile in shows the descriptor in the IR. *Foundational — the metadata every later
-  pass reads.*
+- **SS1 — Sub-space metadata on `vx.transfer` (Slice A). ✅ Done.** `Program.memories` is plumbed
+  into the codegen generator; `vx.transfer` carries `space`/`within`/`granule`/`capacity`/`scope`
+  from the `MemoryDecl` as discardable attributes (no type/lowering change — the CPU JIT is
+  untouched). A sub-space is also now reachable via its enclosing space (the transfer resolves the
+  target to the nearest reachable `within:` ancestor), so `transfer(t, Memory::SMEM)` type-checks
+  instead of failing "no hardware path". Test: `middle_end/pass/subspace_metadata.vx`.
+  *Foundational — the metadata every later pass reads.*
 - **SS2 — Granule-rounded per-sub-space offsets (Slice B, analysis).** Assign each placed tile a
   `offset` within its sub-space via a bump allocator; annotate the transfer. Reuse the sema
   `memory_placements`. Test: two tiles in one sub-space land at `0` and `round_up(size0, granule)`.
