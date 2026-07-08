@@ -1,0 +1,147 @@
+//===- flash_attention_v4_slice.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// FlashAttention-4, rewritten with slice operators (S4, the payoff of
+// docs/discussions/implementation_plans/slice_operators.md). This is
+// flash_attention_v4.vx with every hand-written head-dimension loop collapsed into one
+// vectorized slice op:
+//
+//   for d { acc += q[i][d]*k[j][d] }     -->  dot(q[i], k[j])      (vector.reduction<add>)
+//   for d { o[i][d] = o[i][d] * corr }   -->  o[i] = o[i] * corr    (vector.broadcast+mulf, store)
+//   for d { o[i][d] += p * v[j][d] }     -->  o[i] = o[i] + p*v[j]  (fma-shaped, store)
+//   for d { o[i][d] = o[i][d] / l }      -->  o[i] = o[i] / l       (vector.divf, store)
+//
+// The online-softmax recurrence, conditional rescaling (tau), and the software-emulated
+// exponential are unchanged from v4 -- only the head-dim arithmetic is vectorized. The result
+// must match the scalar v4 / reference oracle: 2.8448.. for the non-uniform query, 1.5 for the
+// all-zero query. The score reduction is now a `vector.reduction`, not a scalar `for d` loop.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vector.reduction
+// CHECK: vector.store
+
+import std::math;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GB, bandwidth: 3 TB/s
+}
+
+// FA-4's software-emulated exponential, as a device helper (no libm exp).
+fn exp_poly(x : f32) on Topology::GPU -> f32 {
+  let log2e : f32 = 1.442695;
+  let y : f32 = x * log2e;
+  let t : i32 = y as i32;
+  let tf : f32 = t as f32;
+  let n : i32 = if tf > y {
+    t - 1
+  } else {
+    t
+  };
+  let f : f32 = y - (n as f32);
+  let two_f : f32 = 1.0 + f * (0.6931472 + f * (0.2401596 + f * (0.0555829 + f * 0.0096147)));
+  let mut pw : f32 = 1.0;
+  let mut nn : i32 = if n < 0 {
+    0 - n
+  } else {
+    n
+  };
+  if n < 0 {
+    for _i in 0..40 {
+      if nn > 0 {
+        pw = pw * 0.5;
+        nn = nn - 1;
+      }
+    }
+  } else {
+    for _i in 0..40 {
+      if nn > 0 {
+        pw = pw * 2.0;
+        nn = nn - 1;
+      }
+    }
+  }
+  return two_f * pw;
+}
+
+fn main() -> i32 {
+  let mut q_h = Tensor<f32>([2, 4]);
+  let mut k_h = Tensor<f32>([4, 4]);
+  let mut v_h = Tensor<f32>([4, 4]);
+  let mut o_h = Tensor<f32>([2, 4]);
+  for d in 0..4 {
+    q_h[0][d] = 1.0;
+    q_h[1][d] = 0.0;
+    k_h[0][d] = 0.0;
+    k_h[1][d] = 1.0;
+    k_h[2][d] = 2.0;
+    k_h[3][d] = 3.0;
+    v_h[0][d] = 0.0;
+    v_h[1][d] = 1.0;
+    v_h[2][d] = 2.0;
+    v_h[3][d] = 3.0;
+  }
+  for i in 0..2 {
+    for d in 0..4 {
+      o_h[i][d] = 0.0;
+    }
+  }
+
+  // Stage operands in device memory (capacity-checked, bandwidth-costed).
+  let q = transfer(q_h, Memory::GPU_HBM);
+  let k = transfer(k_h, Memory::GPU_HBM);
+  let v = transfer(v_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let scale : f32 = 0.5;
+  let tau : f32 = 8.0;
+
+  spawn on(Topology::GPU) {
+    let mut ts = Tensor<f32>([1, 2]);
+    for i in 0..2 {
+      let mut m : f32 = -1000000.0;
+      let mut l : f32 = 0.0;
+      for t in 0..2 {
+        let mut tm : f32 = -1000000.0;
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          // Score = <q_i, k_j> * scale, the head-dim dot as one vector.reduction.
+          let sij : f32 = dot(q[i], k[j]) * scale;
+          ts[0][jj] = sij;
+          if sij > tm {
+            tm = sij;
+          }
+        }
+        let m_cand : f32 = if tm > m {
+          tm
+        } else {
+          m
+        };
+        // (2) conditional rescaling, using (3) the emulated exp
+        if m_cand - m > tau {
+          let corr : f32 = exp_poly(m - m_cand);
+          l = l * corr;
+          o[i] = o[i] * corr;
+          m = m_cand;
+        }
+        // (1) online-softmax tile accumulation, again via the emulated exp
+        for jj in 0..2 {
+          let j = t * 2 + jj;
+          let p : f32 = exp_poly(ts[0][jj] - m);
+          l = l + p;
+          o[i] = o[i] + p * v[j];
+        }
+      }
+      o[i] = o[i] / l;
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[2.8448
+// EXPECT: [1.5,

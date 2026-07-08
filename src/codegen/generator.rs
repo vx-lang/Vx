@@ -1311,6 +1311,9 @@ impl<'c> MeliorGenerator<'c> {
                     .get(&fc.name)
                     .map(|decl| decl.return_type.clone())
             }
+            // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
+            // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
+            Expr::Transfer(e) => self.infer_ast_type(&e.expr),
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
                 if let syntax::Type::Borrow { inner, .. } = base_ty {

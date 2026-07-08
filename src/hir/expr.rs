@@ -2772,7 +2772,10 @@ impl<'a> TypeChecker<'a> {
     /// A rank-1 (or, permissively, any-rank) f32 tensor slice, as produced by `q[i]` (S1).
     fn is_f32_slice(t: &Type) -> bool {
         let inner = match t {
-            Type::Borrow { inner, .. } | Type::Pointer(inner, _, _) => inner.as_ref(),
+            Type::Borrow { inner, .. }
+            | Type::Pointer(inner, _, _)
+            | Type::Pinned(inner, _)
+            | Type::Ref(inner, _) => inner.as_ref(),
             other => other,
         };
         matches!(inner, Type::Tensor(ElementType::F32, _, _))
@@ -2938,12 +2941,24 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.check_expr_type(idx);
-                if let Type::Pointer(inner, _, _) = obj_ty {
+                // Look through a Pinned/Ref device wrapper to the underlying tensor so that
+                // indexing a transferred tensor follows the same rule as a local one.
+                let base = match obj_ty {
+                    Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
+                    other => other,
+                };
+                if let Type::Pointer(inner, _, _) = base {
                     *inner
-                } else if let Type::Borrow { inner, .. } = obj_ty {
+                } else if let Type::Borrow { inner, .. } = base {
                     *inner
-                } else if let Type::Tensor(el_ty, _, _) = obj_ty {
-                    Type::Scalar(el_ty)
+                } else if let Type::Tensor(el_ty, dims, top) = base {
+                    if dims.len() > 1 {
+                        // Partial index (S1): a rank-reduced slice of the remaining dimensions,
+                        // e.g. `q[i]` on Tensor<f32,[N,D]> is a Tensor<f32,[D]> row view.
+                        Type::Tensor(el_ty, dims[1..].to_vec(), top)
+                    } else {
+                        Type::Scalar(el_ty)
+                    }
                 } else {
                     Type::Scalar(ElementType::F32)
                 }

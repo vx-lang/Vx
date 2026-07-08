@@ -94,16 +94,27 @@ or write back into a named slice.)
 
 ## 4. Milestones
 
-- **S1 — Slice indexing.** `q[i]` : `Tensor<f32,[D]>` view (`memref.subview`, rank-reduced).
-  Type inference + codegen. Test: read a row, use it. *Foundational.*
-- **S2 — Slice reductions.** `dot(a, b)`, `sum(a)`, `max(a)`/`min(a)` → scalar, lowering to
-  `vector.load` + `vector.reduction`. Test: `dot` matches the scalar loop *and* the emitted MLIR
-  contains `vector.reduction`; `--emit-llvm` contains `@llvm.vector.reduce`. *The FA dot + rowmax/
-  rowsum — highest payoff.*
-- **S3 — Slice elementwise + map.** `a*b`, `a±scalar`, `exp(a)` → SIMD. *FA's `P = exp(S−m)` and
-  the `O` rescale.*
-- **S4 — Rewrite the FA-4 flagship with slice ops.** Demonstrate the scalar loops collapse; verify
-  identical result and that the kernel emits `vector.*` (no scalar reduction loop).
+- **S1 — Slice indexing. ✅ Done.** `q[i]` : `Tensor<f32,[D]>` view, lowered to a rank-reduced
+  `memref.reinterpret_cast` (strided row view) at the flat offset. Codegen recovers the static
+  tile dims (the memref is `?x?`, but the Vx type carries them: the `Tensor<T>([…])` constructor
+  and `transfer(…)` are taught to `infer_ast_type`; the index type rule peels a `Pinned`/`Ref`
+  device wrapper). Test: `backend/pass/slice_indexing.vx`.
+- **S2 — Slice reductions. ✅ Done.** `dot(a, b)`, `sum(a)`, `max(a)`/`min(a)` → scalar, lowering
+  to `vector.load` (+ `arith.mulf` for dot) + `vector.reduction<add|maximumf|minimumf>`. Reads its
+  operands (not consumed). Verified: `dot` == the scalar-loop oracle; MLIR has `vector.reduction`;
+  `--emit-llvm` has `@llvm.intr.vector.reduce.*`. Tests: `backend/pass/slice_reductions.vx`,
+  `frontend/fail/slice_reduction_non_slice.vx`.
+- **S3 — Slice elementwise + store. ✅ Done.** `a*scalar`, `scalar*a`, `a±b`, `a/scalar` →
+  `vector.broadcast`/`vector.load` + `arith.{mulf,addf,subf,divf}` → `vector<Dxf32>`; the
+  assignment `o[i] = <slice>` becomes a `vector.store` into the S1 row view. Gated on a genuine
+  slice operand (strided view or vector) so whole-tensor loops (scf-to-cf / unroll tests) are
+  untouched. Test: `backend/pass/slice_elementwise.vx`. *(Vectorized `exp(a)` via `math.exp` is
+  deferred — FA uses its own software-emulated `exp_poly`, which stays scalar.)*
+- **S4 — FA-4 flagship, vectorized. ✅ Done.** `backend/pass/flash_attention_v4_slice.vx` is
+  `flash_attention_v4.vx` with every head-dim loop collapsed: the score `for d`-loop → `dot(q[i], k[j])` (a `vector.reduction`), and the O rescale / accumulate / normalize `for d`-loops →
+  `o[i] = o[i]*corr`, `o[i] = o[i] + p*v[j]`, `o[i] = o[i]/l` (`vector.store`s). Produces the
+  identical `2.8448 / 1.5` as the scalar oracle; the score reduction is a `vector.reduction`, not
+  a scalar loop.
 
 ## 5. What FlashAttention becomes
 
