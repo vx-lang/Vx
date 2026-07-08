@@ -92,12 +92,18 @@ that *acts* on the offsets belongs with the device backend and can come later.
   target to the nearest reachable `within:` ancestor), so `transfer(t, Memory::SMEM)` type-checks
   instead of failing "no hardware path". Test: `middle_end/pass/subspace_metadata.vx`.
   *Foundational — the metadata every later pass reads.*
-- **SS2 — Granule-rounded per-sub-space offsets (Slice B, analysis).** Assign each placed tile a
-  `offset` within its sub-space via a bump allocator; annotate the transfer. Reuse the sema
-  `memory_placements`. Test: two tiles in one sub-space land at `0` and `round_up(size0, granule)`.
-- **SS3 — Layout-aware overflow diagnostic.** When the granule-rounded sum exceeds `capacity`, emit
-  a diagnostic that prints the per-tile layout (offset, rounded size) — the FA-4 "half the tensor
-  memory for S and P" budget made legible. Complements `E6010`.
+- **SS2 — Granule-rounded per-sub-space offsets (Slice B, analysis). ✅ Done.** A per-function bump
+  allocator assigns each tile transferred into a granule'd sub-space an `offset` (bytes) and `slots`
+  (granule count), emitted on `vx.transfer`. The tile size is the source tensor's static shape
+  (`infer_ast_type` + `static_tensor_bytes`); the offset is the next free byte, granule-rounded, and
+  the cursor advances (reset per function, since a sub-space is reused across kernels). Scoped to
+  granule'd sub-spaces, so HBM/topology transfers are untouched. Test:
+  `middle_end/pass/subspace_schedule.vx` (two 64 KB tiles → `0` and `65536`, 4 slots each).
+- **SS3 — Granule-aware overflow diagnostic. ✅ Done.** The cumulative-capacity check (`E6010`/
+  `W1028`) rounds each tile up to the granule before summing — a tile smaller than a granule still
+  occupies a whole one — catching over-subscription the raw sum misses. The message names the
+  granule and the rounded total. Test: `frontend/fail/memory_granule_overflow.vx` (96 KB raw fits,
+  192 KB granule-rounded does not).
 - **SS4 — (Later) promote identity into the type / a device pattern.** Once a device backend exists,
   move the sub-space onto the memref (`#vx.memspace<…>` or a real address space) and add a
   `VxLowering` pattern that consumes the SS2 offsets. Gated on hardware; out of scope now.
