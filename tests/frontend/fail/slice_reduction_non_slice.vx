@@ -1,0 +1,21 @@
+//===- slice_reduction_non_slice.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The slice reductions (S2) require rank-1 f32 slices. Passing a scalar to `dot` is a type
+// error -- the reduction has no vector to load.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let x : f32 = 3.0;
+  let y : f32 = 4.0;
+  let d : f32 = dot(x, y);
+  return 0;
+}
+
+// CHECK: dot
+// CHECK-SAME: slice

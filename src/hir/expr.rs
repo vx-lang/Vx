@@ -2070,8 +2070,13 @@ impl<'a> TypeChecker<'a> {
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
-                let is_builtin_ref =
-                    resolved_name == "print".into() || resolved_name == "Verified".into();
+                // Slice reductions (S2) read their operands (a zero-copy view); they do not
+                // consume the linear tensor, so the same slice can feed several reductions.
+                let is_slice_reduction =
+                    matches!(resolved_name.as_ref(), "dot" | "sum" | "max" | "min");
+                let is_builtin_ref = resolved_name == "print".into()
+                    || resolved_name == "Verified".into()
+                    || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
@@ -2725,9 +2730,52 @@ impl<'a> TypeChecker<'a> {
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
             Some(Type::Struct("Option".into(), None))
+        } else if resolved_name == "dot" {
+            // Slice reduction (S2): dot(a, b) over two rank-1 f32 slices -> scalar f32.
+            // Lowers to vector.load + arith.mulf + vector.reduction<add> (SIMD by construction).
+            if args.len() != 2 {
+                self.errors
+                    .push("Function 'dot' expects 2 slice arguments".to_string());
+            }
+            for t in arg_types.iter().take(2) {
+                if !Self::is_f32_slice(t) {
+                    self.errors.push(format!(
+                        "Function 'dot' expects rank-1 f32 slices, got {:?}",
+                        t
+                    ));
+                }
+            }
+            Some(Type::Scalar(ElementType::F32))
+        } else if resolved_name == "sum" || resolved_name == "max" || resolved_name == "min" {
+            // Slice reduction (S2): sum/max/min(a) over a rank-1 f32 slice -> scalar f32.
+            // Lowers to vector.load + vector.reduction<add|maximumf|minimumf>.
+            if args.len() != 1 {
+                self.errors.push(format!(
+                    "Function '{}' expects 1 slice argument",
+                    resolved_name
+                ));
+            }
+            if let Some(t) = arg_types.first() {
+                if !Self::is_f32_slice(t) {
+                    self.errors.push(format!(
+                        "Function '{}' expects a rank-1 f32 slice, got {:?}",
+                        resolved_name, t
+                    ));
+                }
+            }
+            Some(Type::Scalar(ElementType::F32))
         } else {
             None
         }
+    }
+
+    /// A rank-1 (or, permissively, any-rank) f32 tensor slice, as produced by `q[i]` (S1).
+    fn is_f32_slice(t: &Type) -> bool {
+        let inner = match t {
+            Type::Borrow { inner, .. } | Type::Pointer(inner, _, _) => inner.as_ref(),
+            other => other,
+        };
+        matches!(inner, Type::Tensor(ElementType::F32, _, _))
     }
 
     fn check_array_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
