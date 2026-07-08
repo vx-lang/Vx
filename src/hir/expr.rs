@@ -1347,8 +1347,8 @@ impl<'a> TypeChecker<'a> {
         let placements = std::mem::take(&mut self.memory_placements);
         self.placement_site = 0;
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
-        // (space, total, cap, tile_count, overcommit)
-        let mut violations: Vec<(MemorySpace, u64, u64, usize, bool)> = Vec::new();
+        // (space, total, cap, tile_count, overcommit, granule)
+        let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
         for (space, tiles) in &placements {
             if tiles.len() < 2 {
                 continue;
@@ -1359,17 +1359,38 @@ impl<'a> TypeChecker<'a> {
             let Some(crate::syntax::ByteSize(cap)) = decl.capacity else {
                 continue;
             };
-            let total: u64 = tiles.values().sum();
+            // A granule'd sub-space consumes the *granule-rounded* size per tile (SS3): a 1-byte
+            // tile still occupies a whole granule, so the true working set rounds each tile up.
+            let granule = decl.granule.as_ref().map(|g| g.0).filter(|g| *g > 0);
+            let total: u64 = tiles
+                .values()
+                .map(|&b| match granule {
+                    Some(g) => b.div_ceil(g) * g,
+                    None => b,
+                })
+                .sum();
             if total > cap {
-                violations.push((space.clone(), total, cap, tiles.len(), decl.overcommit));
+                violations.push((
+                    space.clone(),
+                    total,
+                    cap,
+                    tiles.len(),
+                    decl.overcommit,
+                    granule,
+                ));
             }
         }
-        for (space, total, cap, count, overcommit) in violations {
+        for (space, total, cap, count, overcommit, granule) in violations {
+            let rounded_note = match granule {
+                Some(g) => format!(" (each rounded up to the {g}-byte granule)"),
+                None => String::new(),
+            };
             let msg = format!(
-                "the working set placed in memory space '{}' ({} tiles) sums to {} bytes, over \
+                "the working set placed in memory space '{}' ({} tiles){} sums to {} bytes, over \
                  its {} byte capacity",
                 space.name(),
                 count,
+                rounded_note,
                 total,
                 cap
             );

@@ -1,0 +1,38 @@
+//===- memory_granule_overflow.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// SS3 (docs/discussions/implementation_plans/subspace_scheduling.md): the cumulative-capacity
+// check (E6010) is granule-aware. A sub-space allocated in fixed granules consumes the
+// *granule-rounded* size per tile -- a tile smaller than a granule still occupies a whole one --
+// so the working set that must fit is the sum of the rounded sizes, not the raw bytes.
+//
+// PAD's granule is 64 KB; each 128x64 f32 tile is 32 KB raw but occupies a full 64 KB granule.
+// Three tiles are 96 KB raw (which *would* fit the 128 KB capacity) but 192 KB granule-rounded,
+// which does not -- the sharper check the raw sum misses.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory GPU_HBM {
+  capacity: 40 GB, bandwidth: 3 TB/s
+}
+Memory PAD {
+  within: Memory::GPU_HBM, capacity: 128 KB, granule: 64 KB
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32>([128, 64]);
+  let b = Tensor<f32>([128, 64]);
+  let c = Tensor<f32>([128, 64]);
+  let sa = transfer(a, Memory::PAD);
+  let sb = transfer(b, Memory::PAD);
+  let sc = transfer(c, Memory::PAD);
+  return 0;
+}
+
+// CHECK: E6010
+// CHECK-SAME: granule
+// CHECK-SAME: 196608 bytes
