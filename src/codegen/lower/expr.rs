@@ -543,6 +543,40 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
         let (mut rhs_val, mut rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
+        // Slice elementwise (S3): if either operand is a rank-1 f32 slice/vector, lower to
+        // `vector.load`/`vector.broadcast` + `arith.{mulf,addf,subf,divf}` -> `vector<Dxf32>`
+        // (SIMD). The result flows to a `vector.store` at the assignment site (see stmt.rs).
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) {
+            let lhs_ty_s = lhs_ty.to_string();
+            let rhs_ty_s = rhs_ty.to_string();
+            let is_slice = is_slice_operand(&lhs_ty_s) || is_slice_operand(&rhs_ty_s);
+            if let Some(d) = is_slice
+                .then(|| slice_vec_len(&lhs_ty_s).or_else(|| slice_vec_len(&rhs_ty_s)))
+                .flatten()
+            {
+                let va = to_vector(gen, lhs_val, &lhs_ty_s, d, block)?;
+                let vb = to_vector(gen, rhs_val, &rhs_ty_s, d, block)?;
+                let vec_ty = Type::parse(gen.context, &format!("vector<{}xf32>", d))
+                    .ok_or_else(|| LowerError::ParseType(format!("vector<{}xf32>", d)))?;
+                let op_name = match op {
+                    BinaryOp::Add => "arith.addf",
+                    BinaryOp::Sub => "arith.subf",
+                    BinaryOp::Mul => "arith.mulf",
+                    BinaryOp::Div => "arith.divf",
+                    BinaryOp::MatMul => unreachable!(),
+                };
+                let arith_op = OperationBuilder::new(op_name, gen.loc())
+                    .add_operands(&[va, vb])
+                    .add_results(&[vec_ty])
+                    .build()?;
+                let res: Value = block.append_operation(arith_op).result(0)?.into();
+                return Ok((res, vec_ty, block));
+            }
+        }
+
         let mut final_ty = lhs_ty;
         let _lhs_ty_str = lhs_ty.to_string();
         let _rhs_ty_str = rhs_ty.to_string();
@@ -1537,6 +1571,69 @@ fn lower_slice_reduction<'c>(
         .build()?;
     let result: Value = cur.append_operation(red_op).result(0)?.into();
     Ok((result, f32_ty, cur))
+}
+
+/// Static length D of a rank-1 f32 slice value, from its melior type string. Matches a
+/// `vector<Dxf32>` or a rank-1 `memref<Dxf32, ...>` (the S1 row view); returns `None` for
+/// scalars, dynamic dims, and higher-rank memrefs (which are not slice operands).
+fn slice_vec_len(ty_str: &str) -> Option<i64> {
+    let inner = ty_str
+        .strip_prefix("vector<")
+        .or_else(|| ty_str.strip_prefix("memref<"))?;
+    // Shape is the text before any `, strided<...>` layout, e.g. `4xf32`; require exactly one
+    // `x` (rank 1) and an f32 element (the slice ops emit vector<Dxf32>).
+    let shape = inner.split(',').next()?.trim_end_matches('>');
+    let parts: Vec<&str> = shape.split('x').collect();
+    if parts.len() == 2 && parts[1] == "f32" {
+        return parts[0].parse().ok();
+    }
+    None
+}
+
+/// Whether an operand should drive the slice-elementwise (S3) vector path: a `vector<...>`
+/// value or a strided slice view (`memref<..., strided<...>>`, as produced by S1). A plain
+/// contiguous `memref<Nxf32>` (a whole 1-D tensor) is deliberately excluded -- those keep the
+/// loop-based lowering that the optimization-pass tests exercise (scf-to-cf, loop unroll).
+fn is_slice_operand(ty_str: &str) -> bool {
+    ty_str.starts_with("vector<") || (ty_str.starts_with("memref<") && ty_str.contains("strided"))
+}
+
+/// Coerce a slice-elementwise operand to `vector<Dxf32>`: a vector passes through, a rank-1
+/// memref is `vector.load`ed, and a scalar is `vector.broadcast`ed to the slice width.
+fn to_vector<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    val: Value<'c, 'c>,
+    ty_str: &str,
+    d: i64,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let vec_ty = Type::parse(gen.context, &format!("vector<{}xf32>", d))
+        .ok_or_else(|| LowerError::ParseType(format!("vector<{}xf32>", d)))?;
+    if ty_str.starts_with("vector<") {
+        return Ok(val);
+    }
+    if ty_str.starts_with("memref<") {
+        let index_ty = Type::index(gen.context);
+        let c0_op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(index_ty, 0).into(),
+            )])
+            .add_results(&[index_ty])
+            .build()?;
+        let c0: Value = block.append_operation(c0_op).result(0)?.into();
+        let load_op = OperationBuilder::new("vector.load", gen.loc())
+            .add_operands(&[val, c0])
+            .add_results(&[vec_ty])
+            .build()?;
+        return Ok(block.append_operation(load_op).result(0)?.into());
+    }
+    // Scalar: broadcast to the slice width.
+    let bcast_op = OperationBuilder::new("vector.broadcast", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[vec_ty])
+        .build()?;
+    Ok(block.append_operation(bcast_op).result(0)?.into())
 }
 
 impl<'c> LowerToMelior<'c> for FunctionCallExpr {

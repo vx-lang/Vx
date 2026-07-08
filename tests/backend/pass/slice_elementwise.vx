@@ -1,0 +1,41 @@
+//===- slice_elementwise.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// S3 (docs/discussions/implementation_plans/slice_operators.md): elementwise arithmetic on
+// the rank-1 row views from S1, with a store back into a writable row. `slice * scalar`,
+// `scalar * slice`, `slice + slice`, `slice / scalar` lower to `vector.load`/`vector.broadcast`
+// + `arith.{mulf,addf,divf}` -> `vector<Dxf32>`, and `o[i] = <slice>` becomes a `vector.store`
+// into the S1 reinterpret_cast row view. These are exactly FlashAttention's O rescale
+// (`o[i] *= corr`), accumulation (`o[i] += p * v[j]`), and normalize (`o[i] /= l`).
+//
+// The whole computation is the axpy-then-normalize:
+//   o[0] = o[0] * corr;        // 1.0 * 0.5           = 0.5
+//   o[0] = o[0] + p * v[1];    // 0.5 + 3.0 * 2.0     = 6.5
+//   o[0] = o[0] / l;           // 6.5 / 4.0           = 1.625
+// row 1 is never written, so it stays 1.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vector.store
+
+fn main() -> i32 {
+  let mut o = Tensor<f32>([2, 4]);
+  let mut v = Tensor<f32>([2, 4]);
+  for i in 0..2 { for d in 0..4 { o[i][d] = 1.0; v[i][d] = 2.0; } }
+
+  let corr : f32 = 0.5;
+  let p : f32 = 3.0;
+  let l : f32 = 4.0;
+
+  o[0] = o[0] * corr;       // slice * scalar
+  o[0] = o[0] + p * v[1];   // slice + (scalar * slice)
+  o[0] = o[0] / l;          // slice / scalar
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[1.625,   1.625,   1.625,   1.625],
+// EXPECT: [1,   1,   1,   1]]

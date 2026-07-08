@@ -3261,6 +3261,30 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // Slice elementwise (S3): arithmetic where at least one operand is a rank-1 f32
+                // slice. `slice OP slice`, `slice OP scalar`, `scalar OP slice` -> the slice's
+                // shape (here `*` is elementwise; matmul is `@`/MatMul, handled above). These
+                // lower to vector ops (load/broadcast + arith.{mulf,addf,subf,divf}).
+                if matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                ) {
+                    let l_slice = Self::is_f32_slice(&lhs_ty);
+                    let r_slice = Self::is_f32_slice(&rhs_ty);
+                    let l_scalar = matches!(lhs_ty, Type::Scalar(ElementType::F32));
+                    let r_scalar = matches!(rhs_ty, Type::Scalar(ElementType::F32));
+                    // At least one slice operand; the other must be a slice or an f32 scalar.
+                    let slice_op = match (l_slice, r_slice) {
+                        (true, true) => true,      // slice OP slice
+                        (true, false) => r_scalar, // slice OP scalar
+                        (false, true) => l_scalar, // scalar OP slice
+                        (false, false) => false,
+                    };
+                    if slice_op {
+                        return if l_slice { lhs_ty } else { rhs_ty };
+                    }
+                }
+
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,

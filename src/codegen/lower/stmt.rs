@@ -198,6 +198,27 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
+        // Slice store (S3): `o[i] = <slice>` where the RHS is a vector<Dxf32> (from a slice
+        // elementwise op). Lower the LHS partial index to its S1 row view (a reinterpret_cast'd
+        // rank-1 memref aliasing `o`) and `vector.store` the result back into it.
+        if rhs_ty.to_string().starts_with("vector<") {
+            let (dst, _dst_ty, block) = gen.generate_expr(lhs, block)?;
+            let index_ty = Type::index(gen.context);
+            let c0_op = OperationBuilder::new("arith.constant", gen.loc())
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(index_ty, 0).into(),
+                )])
+                .add_results(&[index_ty])
+                .build()?;
+            let c0 = block.append_operation(c0_op).result(0)?.into();
+            let store_op = OperationBuilder::new("vector.store", gen.loc())
+                .add_operands(&[rhs_val, dst, c0])
+                .build()?;
+            block.append_operation(store_op);
+            return Ok(Some(block));
+        }
+
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
