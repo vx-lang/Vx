@@ -24,7 +24,11 @@
 fn main() -> i32 {
   let mut o = Tensor<f32>([2, 4]);
   let mut v = Tensor<f32>([2, 4]);
-  for i in 0..2 { for d in 0..4 { o[i][d] = 1.0; v[i][d] = 2.0; } }
+  for i in 0..2 {
+    for d in 0..4 {
+      o[i][d] = 1.0; v[i][d] = 2.0;
+    }
+  }
 
   let corr : f32 = 0.5;
   let p : f32 = 3.0;

@@ -31,7 +31,9 @@ fn main() -> i32 {
 
   // Scalar-loop oracle for the same dot product.
   let mut d_scalar : f32 = 0.0;
-  for k in 0..4 { d_scalar = d_scalar + q[0][k] * q[1][k]; }
+  for k in 0..4 {
+    d_scalar = d_scalar + q[0][k] * q[1][k];
+  }
 
   let mut o = Tensor<f32>([1, 5]);
   o[0][0] = d;
