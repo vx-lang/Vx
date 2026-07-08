@@ -41,6 +41,27 @@ which lowers to `vector.load ×2 → vector.fma → vector.reduction<add>` and t
 So the machinery exists (tensor-op → linalg → LLVM), and the vector path is proven; the two
 gaps are (a) a slice surface, and (b) emitting `vector` ops from it.
 
+## 2.5 Where this lives: standard MLIR, not a `vx` dialect op (decision)
+
+The `vx` dialect is reserved for semantics MLIR **lacks** — Vx's heterogeneity concepts
+(`vx.spawn`, `vx.transfer`, topology, seams). A row dot / reduction / sub-view is **not** novel:
+MLIR already has `vector.reduction`, `linalg.dot`, `memref.subview`. A `vx.dot` op would only
+re-skin `linalg.dot` and add a C++ conversion pass to maintain. And the codebase already sets
+the precedent: `@` and `.map()` emit **`linalg` directly** (not `vx.matmul`), `IndexAccess`
+emits `memref.load` directly.
+
+**Decision: emit standard dialects directly from the Vx codegen** (`src/codegen/lower/`, via
+melior `OperationBuilder`) — `memref.subview` for slicing, `vector.load`/`vector.reduction` for
+reductions. **Not `linalg`**: the pipeline does `convert-linalg-to-loops` with *no* vectorization
+pass, so `linalg` would lower to scalar loops; `vector` lowers to SIMD immediately through the
+existing `convert-vector-to-llvm` (de-risked in §2). The ops live as AST/HIR nodes (the frontend
+must type-check `dot(q[i], k[j])`) and lower straight to MLIR — HIR holds the intent, standard
+dialects are the target.
+
+A `vx.*` op (or, better, `linalg` + a target-aware vectorize pass) would only be justified later
+if we want a *per-hardware lowering strategy* preserved into a pass (e.g. B200 TMEM+MMA vs CPU
+SIMD). Even then the retargetable layer is `linalg`, not a bespoke `vx.dot`. Out of scope now.
+
 ## 3. Design
 
 ### 3.1 Slice indexing
