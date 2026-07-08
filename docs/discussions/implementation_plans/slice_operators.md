@@ -116,6 +116,17 @@ or write back into a named slice.)
   identical `2.8448 / 1.5` as the scalar oracle; the score reduction is a `vector.reduction`, not
   a scalar loop.
 
+### Full-MLIR regression lock
+
+Beyond the behavioural (`EXPECT`) tests, the exact post-codegen MLIR of each slice op is pinned
+line-by-line so the lowering cannot silently regress —
+`tests/optimizations/pass/slice_{indexing,reductions,elementwise}_mlir.vx`. They use minimal
+static-shape kernels (`fn f(q : Tensor<f32,[2,4]>) …`) so the golden MLIR is compact, and are
+run by the FileCheck harness (`run_optimization_test`). `CHECK-NOT: scf.for`/`affine.for` locks
+the core invariant: the ops stay vectorized, never a scalar loop. Regenerate after an intentional
+lowering change with `cargo run --bin update_mlir_test_checks -- <file>` (idempotent; preserves
+the `CHECK-NOT` guards).
+
 ## 5. What FlashAttention becomes
 
 ```rust
