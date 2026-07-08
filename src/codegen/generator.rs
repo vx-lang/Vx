@@ -21,6 +21,10 @@ pub struct MeliorGenerator<'c> {
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
+    /// Next free byte per granule'd sub-space — a bump allocator that assigns each tile a
+    /// granule-rounded `offset` within its sub-space (SS2). Reset at each function boundary, since
+    /// a sub-space (e.g. per-SM SMEM) is reused across kernels.
+    pub(crate) subspace_offsets: HashMap<syntax::MemorySpace, u64>,
     pub(crate) structs: HashMap<crate::symbol::Symbol, syntax::StructDecl>,
     #[allow(clippy::type_complexity)]
     pub(crate) enums:
@@ -326,6 +330,7 @@ impl<'c> MeliorGenerator<'c> {
             env: HashMap::new(),
             ast_env: HashMap::new(),
             memories: HashMap::new(),
+            subspace_offsets: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
@@ -612,6 +617,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
+        self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };

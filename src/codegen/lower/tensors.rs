@@ -128,6 +128,18 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         let (src_val, src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
 
+        // Static byte size of the transferred tile, for the SS2 sub-space bump allocator.
+        let tile_bytes = gen.infer_ast_type(&self.expr).and_then(|ty| {
+            let inner = match ty {
+                syntax::Type::Pinned(b, _) | syntax::Type::Ref(b, _) => *b,
+                other => other,
+            };
+            match inner {
+                syntax::Type::Tensor(e, d, _) => crate::hir::memory::static_tensor_bytes(&e, &d),
+                _ => None,
+            }
+        });
+
         // Map memory space to its canonical topology's dispatch id (single source of truth
         // in `arch`, adjacent to `topology_dispatch_id` so the two mappings stay in sync).
         let target_topology_id = crate::arch::memory_space_dispatch_id(&self.space);
@@ -165,6 +177,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             Identifier::new(gen.context, "space"),
             StringAttribute::new(gen.context, &self.space.name()).into(),
         )]);
+        let mut granule_bytes: Option<u64> = None;
         if let Some(decl) = gen.memories.get(&self.space) {
             if let Some(parent) = &decl.parent {
                 transfer_builder = transfer_builder.add_attributes(&[(
@@ -173,6 +186,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                 )]);
             }
             if let Some(g) = &decl.granule {
+                granule_bytes = Some(g.0);
                 transfer_builder = transfer_builder.add_attributes(&[(
                     Identifier::new(gen.context, "granule"),
                     IntegerAttribute::new(gen.i64_ty, g.0 as i64).into(),
@@ -195,6 +209,29 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
                     Identifier::new(gen.context, "scope"),
                     StringAttribute::new(gen.context, scope_str).into(),
                 )]);
+            }
+        }
+
+        // SS2 — schedule the tile into the sub-space: a granule-rounded bump allocation. When the
+        // target sub-space declares a `granule` and the tile size is statically known, assign the
+        // next free `offset` (bytes) and `slots` (granule count) within the space and advance the
+        // per-function cursor. Later passes / a device backend read these to place the tile.
+        if let (Some(granule), Some(bytes)) = (granule_bytes, tile_bytes) {
+            if granule > 0 {
+                let rounded = bytes.div_ceil(granule) * granule;
+                let offset = *gen.subspace_offsets.entry(self.space.clone()).or_insert(0);
+                gen.subspace_offsets
+                    .insert(self.space.clone(), offset + rounded);
+                transfer_builder = transfer_builder.add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "offset"),
+                        IntegerAttribute::new(gen.i64_ty, offset as i64).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "slots"),
+                        IntegerAttribute::new(gen.i64_ty, (rounded / granule) as i64).into(),
+                    ),
+                ]);
             }
         }
 

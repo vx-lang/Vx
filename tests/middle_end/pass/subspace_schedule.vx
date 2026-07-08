@@ -1,0 +1,41 @@
+//===- subspace_schedule.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// SS2 (docs/discussions/implementation_plans/subspace_scheduling.md): the sub-space scheduler.
+// Each tile transferred into a granule'd sub-space is assigned a granule-rounded `offset` (bytes)
+// and `slots` (granule count) by a per-function bump allocator, emitted on `vx.transfer` for a
+// later pass / device backend to place into TMEM/SMEM.
+//
+// SMEM's granule is 16 KB = 16384 B. A 128x128 f32 tile is 128*128*4 = 65536 B = exactly 4
+// granules, so two tiles land at offset 0 and offset 65536, 4 slots each (128 KB total, within
+// the 228 KB capacity that the E6010 cumulative check enforces).
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory GPU_HBM {
+  capacity: 40 GB, bandwidth: 3 TB/s
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32>([128, 128]);
+  let b = Tensor<f32>([128, 128]);
+  let sa = transfer(a, Memory::SMEM);
+  let sb = transfer(b, Memory::SMEM);
+  return 0;
+}
+
+// First tile: offset 0, 4 granule slots.
+// CHECK: vx.transfer
+// CHECK: offset = 0 : i64
+// CHECK: slots = 4 : i64
+// Second tile: bumped past the first, offset 65536.
+// CHECK: vx.transfer
+// CHECK: offset = 65536 : i64
+// CHECK: slots = 4 : i64
