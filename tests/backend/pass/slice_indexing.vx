@@ -1,0 +1,33 @@
+//===- slice_indexing.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// S1 (docs/discussions/implementation_plans/slice_operators.md): partial indexing of a
+// rank-2 tensor yields a rank-1 *row view*. `q[i]` on a Tensor<f32,[N,D]> is a zero-copy,
+// rank-reduced view of row `i` (lowered to `memref.reinterpret_cast` -> a strided
+// `memref<Dxf32, strided<[1], offset: ?>>`), so element loads through the view read the
+// right cells. This is the foundation the vectorized slice reductions (S2) build on.
+//
+// q row 1 = [10, 11]; row[0] + row[1]*100 = 10 + 1100 = 1110.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: memref.reinterpret_cast
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([4, 2]);
+  q[0][0] = 0.0;  q[0][1] = 1.0;
+  q[1][0] = 10.0; q[1][1] = 11.0;
+  q[2][0] = 20.0; q[2][1] = 21.0;
+  q[3][0] = 30.0; q[3][1] = 31.0;
+
+  let mut o = Tensor<f32>([1, 1]);
+  let row : Tensor<f32, [2]> = q[1];
+  o[0][0] = row[0] + row[1] * 100.0;
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[1110]]

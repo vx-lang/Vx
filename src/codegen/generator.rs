@@ -1288,10 +1288,29 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 None
             }
-            Expr::FunctionCall(fc) => self
-                .syntax_functions
-                .get(&fc.name)
-                .map(|decl| decl.return_type.clone()),
+            Expr::FunctionCall(fc) => {
+                let name = fc.name.to_string();
+                // `Tensor<T>([d0, d1, ...])` constructor: recover the static shape so slice
+                // indexing / vectorized reductions know the tile dims (mirrors sema in hir/expr).
+                if name.starts_with("Tensor")
+                    && !name.ends_with("::from")
+                    && !name.contains('$')
+                    && !name.contains("__")
+                {
+                    let el_ty = match fc.type_args.as_ref().and_then(|a| a.first()) {
+                        Some(syntax::Type::Scalar(el)) => el.clone(),
+                        _ => syntax::ElementType::F32,
+                    };
+                    let dims = match fc.args.first() {
+                        Some(Expr::Array(arr)) => arr.elements.clone(),
+                        _ => fc.args.clone(),
+                    };
+                    return Some(syntax::Type::Tensor(el_ty, dims, None));
+                }
+                self.syntax_functions
+                    .get(&fc.name)
+                    .map(|decl| decl.return_type.clone())
+            }
             Expr::MethodCall(mc) => {
                 let mut base_ty = self.infer_ast_type(&mc.base)?;
                 if let syntax::Type::Borrow { inner, .. } = base_ty {

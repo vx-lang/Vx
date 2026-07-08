@@ -403,6 +403,109 @@ impl<'c> LowerToMelior<'c> for syntax::IndexAccessExpr {
                 "f32".to_string()
             };
 
+            // Slice indexing (S1): fewer indices than the tensor's rank -> a rank-reduced view
+            // of the remaining dimensions (e.g. `q[i]` on Tensor<f32,[N,D]> is row i, a
+            // Tensor<f32,[D]>). The memref lowers to `?x?` but the Vx type carries the static
+            // shape, so we emit a `memref.reinterpret_cast` with a static row size at the flat
+            // offset `sum_m idx_m * stride_m`. This is what makes `dot(q[i], k[j])` (S2) possible.
+            let base_dims: Vec<i64> = match gen.infer_ast_type(self.base.as_ref()) {
+                Some(syntax::Type::Tensor(_, dims, _)) => dims
+                    .iter()
+                    .map(|d| match d {
+                        syntax::Expr::Number(n) => n.value.as_ref().parse::<i64>().ok(),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<i64>>>()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let rank = base_dims.len();
+            if rank >= 2 && indices.len() < rank {
+                let index_ty = Type::index(gen.context);
+                // Flat offset = sum over each leading index of idx_m * prod(dims[m+1..]).
+                let mut offset_val: Option<Value<'c, 'c>> = None;
+                for (m, idx) in indices.iter().enumerate() {
+                    let stride_elems: i64 = base_dims[m + 1..].iter().product();
+                    let term = if stride_elems == 1 {
+                        *idx
+                    } else {
+                        let c_op = OperationBuilder::new("arith.constant", gen.loc())
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(index_ty, stride_elems).into(),
+                            )])
+                            .add_results(&[index_ty])
+                            .build()?;
+                        let c = block.append_operation(c_op).result(0)?.into();
+                        let mul_op = OperationBuilder::new("arith.muli", gen.loc())
+                            .add_operands(&[*idx, c])
+                            .add_results(&[index_ty])
+                            .build()?;
+                        block.append_operation(mul_op).result(0)?.into()
+                    };
+                    offset_val = Some(match offset_val {
+                        None => term,
+                        Some(acc) => {
+                            let add_op = OperationBuilder::new("arith.addi", gen.loc())
+                                .add_operands(&[acc, term])
+                                .add_results(&[index_ty])
+                                .build()?;
+                            block.append_operation(add_op).result(0)?.into()
+                        }
+                    });
+                }
+                let offset_val = offset_val.expect("partial index has >= 1 index");
+
+                let result_dims: Vec<i64> = base_dims[indices.len()..].to_vec();
+                // Row-major contiguous strides for the remaining dims.
+                let mut result_strides: Vec<i64> = vec![1; result_dims.len()];
+                for i in (0..result_dims.len().saturating_sub(1)).rev() {
+                    result_strides[i] = result_strides[i + 1] * result_dims[i + 1];
+                }
+                let dims_str = result_dims
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("x");
+                let strides_str = result_strides
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let result_ty_str = format!(
+                    "memref<{}x{}, strided<[{}], offset: ?>>",
+                    dims_str, inner_ty_str, strides_str
+                );
+                let result_ty = Type::parse(gen.context, &result_ty_str).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType(result_ty_str.clone())
+                })?;
+                let dyn_offset = i64::MIN; // ShapedType::kDynamic marker
+                let reinterp = OperationBuilder::new("memref.reinterpret_cast", gen.loc())
+                    .add_operands(&[base_val, offset_val])
+                    .add_attributes(&[
+                        (
+                            Identifier::new(gen.context, "operandSegmentSizes"),
+                            DenseI32ArrayAttribute::new(gen.context, &[1, 1, 0, 0]).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_offsets"),
+                            DenseI64ArrayAttribute::new(gen.context, &[dyn_offset]).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_sizes"),
+                            DenseI64ArrayAttribute::new(gen.context, &result_dims).into(),
+                        ),
+                        (
+                            Identifier::new(gen.context, "static_strides"),
+                            DenseI64ArrayAttribute::new(gen.context, &result_strides).into(),
+                        ),
+                    ])
+                    .add_results(&[result_ty])
+                    .build()?;
+                let r = block.append_operation(reinterp).result(0)?.into();
+                return Ok((r, result_ty, block));
+            }
+
             let inner_ty = Type::parse(gen.context, &inner_ty_str).ok_or_else(|| {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
