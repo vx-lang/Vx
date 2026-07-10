@@ -50,6 +50,38 @@ Data movement across distinct memory hierarchies is explicit.
 1. The runtime schedules an asynchronous or synchronous DMA transfer from $M_1$ to $M_2$.
 1. Linearity: If $S$ represents uniquely owned data, the `transfer` consumes $S$. Future use of $S$ in space $M_1$ is invalid.
 
+### 2.3 Declared Memory Spaces & Sub-space Scheduling
+
+A `Memory` declaration gives a space real semantics beyond a bare name — its place in the hierarchy, its size, and how it is allocated:
+
+```
+Memory SMEM {
+  within:    Memory::GPU_HBM,   // containment: SMEM ⊂ GPU_HBM
+  capacity:  228 KB,            // the space is bounded
+  bandwidth: 128 B/cyc,         // feeds the roofline transfer cost
+  granule:   16 KB,             // allocation granularity (a TMEM/SMEM sub-scratchpad)
+  scope:     sm,                // the execution level the space is private to
+}
+```
+
+**Placement checking.** A statically-shaped tensor placed into a space (by `transfer`) must fit:
+
+- *Per-tile* (`E6009`): a single tile larger than `capacity` is rejected.
+- *Cumulative* (`E6010`): the **working set** — the sum over all tiles placed in the space — must fit `capacity`. When the space declares a `granule`, each tile is rounded up to the granule first (a tile smaller than a granule still occupies a whole one), so the quantity checked is the granule-rounded working set. Declaring the space `overcommit` downgrades `E6010` to a warning (`W1028`): the programmer asserts the tiles do not all coexist.
+- *Coherence*: `within:` forms a containment tree; a sub-space may not exceed its parent's capacity (`E6007`) nor widen its `scope` below the parent (`E6011`); a `within:` cycle is rejected (`E6006`).
+
+**Sub-space reachability.** A sub-space (SMEM/TMEM) has no hardware transfer edges of its own; a `transfer` into it is reachable **iff its enclosing space is** — the data moves into the device that contains the sub-space, resolved to the nearest reachable `within:` ancestor.
+
+**Sub-space scheduling.** For a space with a `granule`, the compiler assigns each placed tile a concrete position via a granule-rounded bump allocator — a byte `offset` and a `slots` (granule) count within the space — and preserves the full sub-space descriptor together with this assignment as **metadata on the IR** (`vx.transfer`).
+
+**Design choices** (why it takes this shape):
+
+- *Metadata, not the memref type.* The sub-space identity and schedule ride as op-attributes, not as a memref memory-space / address space. This keeps the description available to later passes and a device backend with **zero effect on the lowering** — a typed memory space would break the CPU-fallback address computation. Promoting the identity into the memref type is deferred to a real device backend.
+- *Scoped to granule'd sub-spaces.* Scheduling and granule-rounding apply only to spaces that declare a `granule` (the sub-scratchpads — TMEM/SMEM); device-global spaces (HBM/DRAM) are unaffected.
+- *One budget, two granularities.* The capacity check and the scheduler share a single notion of the working set; the granule-rounded sum is the allocation-accurate refinement of the raw sum, and `overcommit` relaxes both.
+
+> Full design: `docs/discussions/implementation_plans/first_class_memory_spaces.md` (declaring + checking) and `subspace_scheduling.md` (the metadata + scheduler).
+
 ______________________________________________________________________
 
 ## 3. Typestates and Hardware Fallibility
