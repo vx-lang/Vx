@@ -1575,6 +1575,12 @@ impl<'a> TypeChecker<'a> {
             } else {
                 match &inner_ty {
                     Type::Ref(_, mem) => mem.clone(),
+                    // A value pinned on a custom topology lives in the like-named space
+                    // (`Memory::Foo` <-> `Topology::Foo`), not the CPU fallback -- so a re-transfer
+                    // out of a sub-space (SMEM/TMEM) is recognized as starting there.
+                    Type::Pinned(_, Topology::Custom(name)) => {
+                        MemorySpace::from_name(name.as_ref())
+                    }
                     Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
                     _ => MemorySpace::CPUDRAM,
                 }
@@ -1602,17 +1608,26 @@ impl<'a> TypeChecker<'a> {
                 .transfer_cost_graph
                 .transfer_path(&source_mem, &target_mem);
 
-            // A sub-space is reachable via its enclosing space: if there is no direct hardware
-            // path (custom sub-spaces like SMEM/TMEM have no transfer edges of their own), resolve
-            // the target to the nearest declared `within:` ancestor that IS reachable -- data moves
-            // into the device that contains the sub-space. See subspace_scheduling.md.
+            // Sub-spaces have no transfer edges of their own (SMEM/TMEM); a transfer into or
+            // between them is reachable via their enclosing device spaces. If there is no direct
+            // path, resolve each endpoint to itself-or-a-`within:`-ancestor and take the first
+            // reachable pairing -- a sibling->sibling move meets at their common parent. See
+            // subspace_scheduling.md §2.3.
             if path_result.is_none() {
                 let hierarchy =
                     crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
-                for anc in hierarchy.ancestors(&target_mem) {
-                    if let Some(p) = self.transfer_cost_graph.transfer_path(&source_mem, &anc) {
-                        path_result = Some(p);
-                        break;
+                let sources: Vec<MemorySpace> = std::iter::once(source_mem.clone())
+                    .chain(hierarchy.ancestors(&source_mem))
+                    .collect();
+                let targets: Vec<MemorySpace> = std::iter::once(target_mem.clone())
+                    .chain(hierarchy.ancestors(&target_mem))
+                    .collect();
+                'outer: for s in &sources {
+                    for t in &targets {
+                        if let Some(p) = self.transfer_cost_graph.transfer_path(s, t) {
+                            path_result = Some(p);
+                            break 'outer;
+                        }
                     }
                 }
             }

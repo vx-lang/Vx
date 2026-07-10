@@ -5,13 +5,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Sibling sub-spaces (docs/discussions/implementation_plans/subspace_scheduling.md): SMEM and
-// TMEM are B200's per-SM on-chip memories -- physically distinct peers, neither inside the other
-// -- so both are declared `within: Memory::GPU_HBM` (siblings, not nested). Each sub-space has
-// its *own* granule-rounded bump allocator, so their `offset`s are independent: interleaving
-// transfers into SMEM and TMEM, both still start at offset 0 and bump only within their own space.
+// Sibling sub-spaces (docs/discussions/implementation_plans/subspace_scheduling.md §2.3): SMEM
+// and TMEM are B200's per-SM on-chip memories -- physically distinct peers, neither inside the
+// other -- so both are declared `within: Memory::GPU_HBM` (siblings, not nested). The example
+// stages a tile into each, then moves tiles *between* the sub-spaces:
 //
-// A 64x64 f32 tile is 64*64*4 = 16384 B = exactly one 16 KB granule (slots = 1).
+//   - Independent schedules: each sub-space has its own granule-rounded bump allocator, so SMEM
+//     and TMEM both start at offset 0.
+//   - Same-space move (`ta -> TMEM`, `sa -> SMEM`): a fresh slot in the same space, no cost (no
+//     data actually moves off the space).
+//   - Sibling lateral (`ta -> SMEM`): there is no direct SMEM<->TMEM edge, so the move routes
+//     through their nearest common ancestor GPU_HBM and is costed on *both* legs --
+//     16384/256 (TMEM) + 16384/128 (SMEM) = 192 cycles.
+//
+// A 64x64 f32 tile is 64*64*4 = 16384 B = exactly one 16 KB granule (slots = 1). `ta` is read
+// twice (these staged tiles are not linear).
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
@@ -19,42 +27,45 @@ Memory GPU_HBM {
   capacity: 40 GB, bandwidth: 3 TB/s
 }
 Memory SMEM {
-  within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm
+  within: Memory::GPU_HBM, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 16 KB, scope: sm
 }
 Memory TMEM {
-  within: Memory::GPU_HBM, capacity: 256 KB, granule: 16 KB, scope: sm
+  within: Memory::GPU_HBM, capacity: 256 KB, bandwidth: 256 B/cyc, granule: 16 KB, scope: sm
 }
 
 fn main() -> i32 {
   let a = Tensor<f32>([64, 64]);
   let b = Tensor<f32>([64, 64]);
-  let c = Tensor<f32>([64, 64]);
-  let d = Tensor<f32>([64, 64]);
 
-  // Interleave the two siblings to show the cursors are independent.
-  let sa = transfer(a, Memory::SMEM); // SMEM: offset 0
-  let ta = transfer(c, Memory::TMEM); // TMEM: offset 0 (its own cursor, also 0)
-  let sb = transfer(b, Memory::SMEM); // SMEM: offset 16384 (unaffected by the TMEM transfer)
-  let tb = transfer(d, Memory::TMEM); // TMEM: offset 16384
+  // Stage one tile into each sibling from the host.
+  let sa = transfer(a, Memory::SMEM); // CPU -> SMEM: offset 0
+  let ta = transfer(b, Memory::TMEM); // CPU -> TMEM: independent cursor, also offset 0
+
+  // Move between sub-spaces.
+  let tt = transfer(ta, Memory::TMEM); // ta -> TMEM : same space, bumps to 16384
+  let ts = transfer(ta, Memory::SMEM); // ta -> SMEM : sibling lateral via GPU_HBM, cost 192
+  let ss = transfer(sa, Memory::SMEM); // sa -> SMEM : same space, bumps to 32768
   return 0;
 }
 
-// Both siblings live under GPU_HBM; each has its own bump allocator.
-// SMEM tile 1 -> offset 0.
+// sa: CPU -> SMEM, offset 0.
 // CHECK: vx.transfer
 // CHECK: offset = 0 : i64
 // CHECK: space = "SMEM"
-// CHECK: within = "GPU_HBM"
-// TMEM tile 1 -> independent cursor, also offset 0.
+// ta: CPU -> TMEM, its own cursor, also offset 0.
 // CHECK: vx.transfer
 // CHECK: offset = 0 : i64
 // CHECK: space = "TMEM"
-// CHECK: within = "GPU_HBM"
-// SMEM tile 2 -> bumped to 16384, not disturbed by the TMEM transfer between.
-// CHECK: vx.transfer
-// CHECK: offset = 16384 : i64
-// CHECK: space = "SMEM"
-// TMEM tile 2 -> 16384.
+// tt: ta -> TMEM (same space) -> TMEM's cursor bumps to 16384.
 // CHECK: vx.transfer
 // CHECK: offset = 16384 : i64
 // CHECK: space = "TMEM"
+// ts: ta -> SMEM (sibling lateral) -> routed via GPU_HBM, costed on both legs.
+// CHECK: vx.transfer
+// CHECK: cost = 192 : i32
+// CHECK: offset = 16384 : i64
+// CHECK: space = "SMEM"
+// ss: sa -> SMEM (same space) -> SMEM's cursor bumps to 32768.
+// CHECK: vx.transfer
+// CHECK: offset = 32768 : i64
+// CHECK: space = "SMEM"

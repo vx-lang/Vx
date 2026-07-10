@@ -70,7 +70,7 @@ Memory SMEM {
 - *Cumulative* (`E6010`): the **working set** — the sum over all tiles placed in the space — must fit `capacity`. When the space declares a `granule`, each tile is rounded up to the granule first (a tile smaller than a granule still occupies a whole one), so the quantity checked is the granule-rounded working set. Declaring the space `overcommit` downgrades `E6010` to a warning (`W1028`): the programmer asserts the tiles do not all coexist.
 - *Coherence*: `within:` forms a containment tree; a sub-space may not exceed its parent's capacity (`E6007`) nor widen its `scope` below the parent (`E6011`); a `within:` cycle is rejected (`E6006`).
 
-**Sub-space reachability.** A sub-space (SMEM/TMEM) has no hardware transfer edges of its own; a `transfer` into it is reachable **iff its enclosing space is** — the data moves into the device that contains the sub-space, resolved to the nearest reachable `within:` ancestor.
+**Sub-space reachability.** A sub-space (SMEM/TMEM) has no hardware transfer edges of its own; a `transfer` **into or between** sub-spaces is reachable through their enclosing spaces — each endpoint is resolved to itself-or-a-`within:`-ancestor, and a sibling→sibling move (e.g. TMEM→SMEM) meets at their nearest common ancestor and is costed on both legs. A value already resident in a sub-space is recognized as *starting there* when re-transferred.
 
 **Sub-space scheduling.** For a space with a `granule`, the compiler assigns each placed tile a concrete position via a granule-rounded bump allocator — a byte `offset` and a `slots` (granule) count within the space — and preserves the full sub-space descriptor together with this assignment as **metadata on the IR** (`vx.transfer`).
 

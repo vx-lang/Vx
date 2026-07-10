@@ -91,30 +91,33 @@ other** — so both are declared `within: Memory::GPU_HBM` rather than `TMEM wit
 
 ```
 Memory GPU_HBM { capacity: 40 GB, bandwidth: 3 TB/s }
-Memory SMEM   { within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm }
-Memory TMEM   { within: Memory::GPU_HBM, capacity: 256 KB, granule: 16 KB, scope: sm }
+Memory SMEM   { within: Memory::GPU_HBM, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 16 KB, scope: sm }
+Memory TMEM   { within: Memory::GPU_HBM, capacity: 256 KB, bandwidth: 256 B/cyc, granule: 16 KB, scope: sm }
 ```
 
-Three consequences fall out of the model:
+Staging one tile into each sibling and then moving tiles *between* the sub-spaces
+(`middle_end/pass/subspace_siblings.vx`; each 64×64 f32 tile is exactly one 16 KB granule) shows
+all three consequences of the model at once:
+
+| transfer | move | space | offset | cost |
+|---|---|---|---|---|
+| `sa` | host → SMEM | `SMEM` | `0` | — |
+| `ta` | host → TMEM | `TMEM` | `0` | — |
+| `tt` | `ta` → TMEM (same space) | `TMEM` | `16384` | — |
+| `ts` | `ta` → SMEM (sibling lateral) | `SMEM` | `16384` | `192` |
+| `ss` | `sa` → SMEM (same space) | `SMEM` | `32768` | — |
 
 - **Independent schedules.** The bump allocator (§2.2) is *per sub-space*, so siblings do not share
-  a cursor. Interleaving transfers into SMEM and TMEM, each still starts at `offset 0` and bumps
-  only within its own space:
+  a cursor: `sa` and `ta` both start at `offset 0`, and each subsequent placement bumps only within
+  its own space (SMEM: 0 → 16384 → 32768; TMEM: 0 → 16384).
 
-  | transfer | space | offset | slots |
-  |---|---|---|---|
-  | tile a | `SMEM` | `0` | 1 |
-  | tile c | `TMEM` | `0` | 1 |
-  | tile b | `SMEM` | `16384` | 1 |
-  | tile d | `TMEM` | `16384` | 1 |
-
-  (`middle_end/pass/subspace_siblings.vx`; each 64×64 f32 tile is exactly one 16 KB granule.)
-
-- **Lateral moves route through the parent.** There is no direct edge between siblings; a move
-  from one to another goes via their **nearest common ancestor** and is costed touching both legs
-  — e.g. sibling `A` (128 B/cyc) → `B` (256 B/cyc) under `Root` costs `16384/128 + 16384/256 = 192`
-  cycles (`MemoryHierarchy::{nearest_common_ancestor, derived_transfer_cost}`). This mirrors the
-  hardware: staging SMEM↔another on-chip buffer goes through the enclosing HBM/L2.
+- **Lateral moves route through the parent.** There is no direct edge between siblings; a move from
+  one to another (`ts`: TMEM → SMEM) goes via their **nearest common ancestor** GPU_HBM and is costed
+  touching both legs — `16384/256` (TMEM) + `16384/128` (SMEM) = **192** cycles. A same-space move
+  (`tt`, `ss`) allocates a fresh slot but has no cost — no data leaves the space. (A value already in
+  a sub-space is recognized as *starting there* when re-transferred: `Pinned<_, Topology::Foo>` maps
+  back to `Memory::Foo`; reachability then resolves both endpoints to their enclosing space via
+  `MemoryHierarchy::ancestors`, and the cost comes from `derived_transfer_cost` across the NCA.)
 
 - **`within:` is containment/locality, not a byte-subset.** Siblings are separate physical
   memories under a common enclosing scope, so each is checked against the parent's capacity
