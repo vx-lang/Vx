@@ -83,6 +83,44 @@ the `MemoryHierarchy` — all Rust-side. It computes offsets and emits them as a
 golden-MLIR harness (`update_mlir_test_checks` + `run_optimization_test`). A C++ `VxLowering` pattern
 that *acts* on the offsets belongs with the device backend and can come later.
 
+### 2.3 Sibling sub-spaces
+
+Two sub-spaces that share a `within:` parent are **siblings**. The motivating case is B200's
+per-SM on-chip memories — **SMEM and TMEM are physically distinct peers, neither inside the
+other** — so both are declared `within: Memory::GPU_HBM` rather than `TMEM within SMEM`:
+
+```
+Memory GPU_HBM { capacity: 40 GB, bandwidth: 3 TB/s }
+Memory SMEM   { within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm }
+Memory TMEM   { within: Memory::GPU_HBM, capacity: 256 KB, granule: 16 KB, scope: sm }
+```
+
+Three consequences fall out of the model:
+
+- **Independent schedules.** The bump allocator (§2.2) is *per sub-space*, so siblings do not share
+  a cursor. Interleaving transfers into SMEM and TMEM, each still starts at `offset 0` and bumps
+  only within its own space:
+
+  | transfer | space | offset | slots |
+  |---|---|---|---|
+  | tile a | `SMEM` | `0` | 1 |
+  | tile c | `TMEM` | `0` | 1 |
+  | tile b | `SMEM` | `16384` | 1 |
+  | tile d | `TMEM` | `16384` | 1 |
+
+  (`middle_end/pass/subspace_siblings.vx`; each 64×64 f32 tile is exactly one 16 KB granule.)
+
+- **Lateral moves route through the parent.** There is no direct edge between siblings; a move
+  from one to another goes via their **nearest common ancestor** and is costed touching both legs
+  — e.g. sibling `A` (128 B/cyc) → `B` (256 B/cyc) under `Root` costs `16384/128 + 16384/256 = 192`
+  cycles (`MemoryHierarchy::{nearest_common_ancestor, derived_transfer_cost}`). This mirrors the
+  hardware: staging SMEM↔another on-chip buffer goes through the enclosing HBM/L2.
+
+- **`within:` is containment/locality, not a byte-subset.** Siblings are separate physical
+  memories under a common enclosing scope, so each is checked against the parent's capacity
+  individually (`E6007`) but they draw from *separate* budgets — SMEM's 228 KB and TMEM's 256 KB
+  are independent, not carved out of one pool.
+
 ## 3. Milestones
 
 - **SS1 — Sub-space metadata on `vx.transfer` (Slice A). ✅ Done.** `Program.memories` is plumbed
