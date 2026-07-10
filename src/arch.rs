@@ -781,6 +781,86 @@ mod tests {
         );
     }
 
+    // --- Dijkstra shortest-path over a controlled custom graph ---------------------------------
+    // `transfer_path` runs Dijkstra live over the declared edges; `precompute_costs` fills the
+    // cost matrix by Dijkstra over all pairs. These build a small graph of custom spaces (which do
+    // not collide with the built-in edges) to exercise the search in isolation.
+
+    /// A custom memory space named `name`.
+    fn cs(name: &str) -> MemorySpace {
+        MemorySpace::Custom(crate::symbol::Symbol::from(name))
+    }
+
+    #[test]
+    fn dijkstra_prefers_cheaper_multihop_over_direct() {
+        // A direct but expensive edge (10) vs a longer but cheaper chain (1+1+1 = 3).
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("D"), 10);
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        g.add_transfer_edge(cs("B"), cs("C"), 1);
+        g.add_transfer_edge(cs("C"), cs("D"), 1);
+        let (cost, path) = g.transfer_path(&cs("A"), &cs("D")).unwrap();
+        assert_eq!(cost, 3);
+        assert_eq!(path, vec![cs("A"), cs("B"), cs("C"), cs("D")]);
+    }
+
+    #[test]
+    fn dijkstra_relaxes_to_a_shorter_path() {
+        // C is first reachable directly at cost 4, then relaxed to 2 once B is settled.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("C"), 4);
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        g.add_transfer_edge(cs("B"), cs("C"), 1);
+        let (cost, path) = g.transfer_path(&cs("A"), &cs("C")).unwrap();
+        assert_eq!(cost, 2);
+        assert_eq!(path, vec![cs("A"), cs("B"), cs("C")]);
+    }
+
+    #[test]
+    fn dijkstra_diamond_picks_cheaper_branch() {
+        // Two disjoint branches to D: A->B->D = 6 vs A->C->D = 3.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        g.add_transfer_edge(cs("B"), cs("D"), 5);
+        g.add_transfer_edge(cs("A"), cs("C"), 2);
+        g.add_transfer_edge(cs("C"), cs("D"), 1);
+        let (cost, path) = g.transfer_path(&cs("A"), &cs("D")).unwrap();
+        assert_eq!(cost, 3);
+        assert_eq!(path, vec![cs("A"), cs("C"), cs("D")]);
+    }
+
+    #[test]
+    fn dijkstra_edges_are_directed() {
+        // An edge A->B does not imply B->A.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        assert!(g.transfer_path(&cs("A"), &cs("B")).is_some());
+        assert!(g.transfer_path(&cs("B"), &cs("A")).is_none());
+    }
+
+    #[test]
+    fn dijkstra_unreachable_target_is_none() {
+        // `Island` only has an outgoing edge; nothing reaches it, so there is no path.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        g.add_transfer_edge(cs("Island"), cs("B"), 1);
+        assert!(g.transfer_path(&cs("A"), &cs("Island")).is_none());
+    }
+
+    #[test]
+    fn precompute_costs_fills_matrix_via_dijkstra() {
+        // The cached cost matrix is the Dijkstra all-pairs shortest path: the A->C entry is the
+        // cheaper 2-hop (A->B->C), not the direct edge (5), and the reverse direction is absent.
+        let mut g = TransferCostGraph::default();
+        g.add_transfer_edge(cs("A"), cs("B"), 1);
+        g.add_transfer_edge(cs("B"), cs("C"), 1);
+        g.add_transfer_edge(cs("A"), cs("C"), 5);
+        g.precompute_costs();
+        assert_eq!(g.transfer_cost(&cs("A"), &cs("C")), Some(2));
+        assert!(g.can_transfer(&cs("A"), &cs("C")));
+        assert_eq!(g.transfer_cost(&cs("C"), &cs("A")), None);
+    }
+
     #[test]
     fn test_can_transfer_reflexive_all_spaces() {
         let graph = TransferCostGraph::default();
