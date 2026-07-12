@@ -104,24 +104,34 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     Ok(())
 }
 
-/// Parse the given files (in parallel) and return every 256-bit GID the pipeline mints for their
-/// top-level symbols — the exact map `name_resolution_phase` builds to resolve cross-module names.
-/// Exposed for determinism testing: because GIDs are content hashes (module + symbol), not
-/// scheduling-dependent counters, the same files must produce the same set of GIDs regardless of
-/// `rayon`'s scheduling.
-///
-/// (Note: the flat *type stream* — `LocalWorkerState::local_type_stream` — is scaffolding the type
-/// checker does not populate yet, so it is not the observable here; the symbol map is the GID
-/// artifact the pipeline actually produces today.)
-pub fn compile_pipeline_symbol_gids(
+/// Run the frontend through the Phase 6 SIMD patch and return the flattened, patched flat type
+/// stream — the 256-bit GIDs each worker lowered from its functions' type references (via
+/// `emit_function_type_gids`), interned and remapped local->global. Exposed for determinism
+/// testing: because GIDs are content hashes (module + symbol), not scheduling-dependent counters,
+/// the same files must produce the same GID set regardless of `rayon`'s scheduling. Composes the
+/// same phase functions as `compile_pipeline`, minus codegen.
+pub fn compile_pipeline_type_stream(
     file_paths: &[String],
 ) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
     let mut parsed_modules = parse_phase(file_paths)?;
     macro_expansion_phase(&mut parsed_modules)?;
-    let symbol_map = crate::resolver::build_symbol_map(&parsed_modules);
-    Ok(symbol_map
-        .values()
-        .flat_map(|table| table.values().copied())
+    name_resolution_phase(&mut parsed_modules);
+
+    let global_session = std::sync::Arc::new(GlobalSession::new(1));
+    let global_env_modules: Vec<VxModule> =
+        parsed_modules.iter().map(|m| m.clone_signature()).collect();
+    let global_env = GlobalAstEnv::build(&global_env_modules);
+
+    let mut check_results = type_check_phase(&mut parsed_modules, &global_session, &global_env)?;
+    let (_slow, _gen, _off, slow_mappings, gen_mappings) =
+        deduplication_phase(&check_results, &global_session);
+
+    let mut all_type_streams = extract_type_streams(&mut check_results);
+    simd_patch_phase(&mut all_type_streams, &slow_mappings, &gen_mappings);
+
+    Ok(all_type_streams
+        .into_iter()
+        .flat_map(|(_, stream)| stream)
         .collect())
 }
 
@@ -181,6 +191,96 @@ type TypeCheckResult = (
     Vec<syntax::StructDecl>,
 );
 
+// ---- Phase 3: lowering AST types to the flat GID stream ------------------------------------
+// As a worker finishes type-checking a function, it lowers the function's *type references* from
+// AST `Type`s into 256-bit GIDs pushed onto its `local_type_stream` (docs/parallel_compiler_
+// architecture.md §2.5). Nominal types contribute the settled GID `resolve_names` already attached
+// to the AST; a generic instantiation contributes a *deferred* GID (Phase 5 interns it, Phase 6
+// patches it). This is what makes `LocalWorkerState::local_type_stream` -- and thus the dedup and
+// SIMD-patch phases and their verification hooks -- operate on real data rather than an empty Vec.
+
+/// Harvest the GIDs referenced by a function's signature into the worker's flat type stream.
+fn emit_function_type_gids(func: &syntax::Function, worker: &mut LocalWorkerState) {
+    for (_, ty) in &func.params {
+        emit_type_gid(ty, worker);
+    }
+    emit_type_gid(&func.return_type, worker);
+}
+
+/// Push the GID(s) a single type reference lowers to. Recurses through reference/pointer wrappers
+/// to the underlying nominal type; a `GenericInstance` becomes a deferred GID.
+fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
+    use syntax::Type;
+    match ty {
+        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
+            worker.local_type_stream.push(*id); // settled: no deferred bit
+        }
+        Type::GenericInstance(base, args) => {
+            if let Some(base_id) = nominal_gid(base) {
+                let arg_ids: Vec<crate::gid::TypeId> =
+                    args.iter().filter_map(nominal_gid).collect();
+                let deferred = mint_deferred_generic(worker, base_id, arg_ids);
+                worker.local_type_stream.push(deferred);
+            }
+        }
+        Type::Ref(inner, _)
+        | Type::Borrow { inner, .. }
+        | Type::Pointer(inner, _, _)
+        | Type::Verified(inner)
+        | Type::Pinned(inner, _) => emit_type_gid(inner, worker),
+        Type::Function(args, ret) | Type::Closure(args, ret) => {
+            for a in args {
+                emit_type_gid(a, worker);
+            }
+            emit_type_gid(ret, worker);
+        }
+        _ => {}
+    }
+}
+
+/// The GID a type resolves to when it appears as a generic argument or a wrapped nominal: a
+/// resolved nominal's attached GID, or a stable synthetic GID for a primitive scalar (module 0 =
+/// builtin) so that e.g. `List<i32>` and `List<f32>` are distinguishable instantiations.
+fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
+    use syntax::Type;
+    match ty {
+        Type::Struct(_, id) | Type::Enum(_, id) => *id,
+        Type::Scalar(elem) => {
+            let sym =
+                crate::hash::DefPath::Named(&format!("$prim::{elem:?}")).compute_symbol_hash();
+            Some(crate::gid::TypeId::new(0, sym, 0, 0))
+        }
+        Type::Ref(inner, _)
+        | Type::Borrow { inner, .. }
+        | Type::Pointer(inner, _, _)
+        | Type::Verified(inner)
+        | Type::Pinned(inner, _) => nominal_gid(inner),
+        _ => None,
+    }
+}
+
+/// Mint a deferred generic GID: stash the argument GIDs in the worker's local generics arena and
+/// return a GID whose word 2 is that local offset index, with `LOCAL_DEFERRED_BIT` +
+/// `IS_GENERIC_INST_FLAG` set in word 3. Phase 5 (`deduplication_phase`) interns the arena and
+/// Phase 6 (`simd_patch_phase`) remaps word 2 to the global offset index and clears the deferred
+/// bit -- the local->global handoff the escape-hatch design exists for.
+fn mint_deferred_generic(
+    worker: &mut LocalWorkerState,
+    base: crate::gid::TypeId,
+    args: Vec<crate::gid::TypeId>,
+) -> crate::gid::TypeId {
+    let start = worker.local_generics_arena.len();
+    let len = args.len();
+    worker.local_generics_arena.extend(args);
+    let offset_index = worker.local_generics_offsets.len() as u64;
+    worker.local_generics_offsets.push((start, len));
+
+    let mut id = base; // reuse the base type's module (word 0) + symbol (word 1)
+    id.words[2] = offset_index;
+    id.words[3] |= crate::gid::LOCAL_DEFERRED_BIT | crate::gid::IS_GENERIC_INST_FLAG;
+    id
+}
+
 fn type_check_phase(
     parsed_modules: &mut Vec<VxModule>,
     global_session: &std::sync::Arc<GlobalSession>,
@@ -204,6 +304,9 @@ fn type_check_phase(
                     let monos = checker.monomorphized_functions;
                     let gen_structs = checker.generated_structs;
 
+                    // Lower this function's type references to the flat GID stream (Phase 3).
+                    emit_function_type_gids(func, &mut worker);
+
                     (errors, monos, worker, module_idx, gen_structs)
                 })
                 .collect::<Vec<_>>();
@@ -220,6 +323,8 @@ fn type_check_phase(
                         let errors = checker.errors;
                         let monos = checker.monomorphized_functions;
                         let gen_structs = checker.generated_structs;
+
+                        emit_function_type_gids(func, &mut worker);
 
                         (errors, monos, worker, module_idx, gen_structs)
                     })
@@ -386,12 +491,15 @@ fn simd_patch_phase(
                         let local_index = w2 as usize;
                         let is_generic = (w3 & IS_GENERIC_INST_FLAG) != 0;
 
-                        let slow_val = mapping_slow[local_index];
-                        let gen_val = mapping_generics[local_index];
-
-                        // Predicated selection avoiding branch
-                        let is_gen_mask = -(is_generic as i64) as u64; // all 1s if true, 0s if false
-                        let global_index = (gen_val & is_gen_mask) | (slow_val & !is_gen_mask);
+                        // The slow-path and generics arenas have *independent* index spaces, so a
+                        // deferred GID's local index is only valid in its own mapping. (A fully
+                        // branchless variant would need the two mappings padded to a shared index
+                        // space; correctness first.)
+                        let global_index = if is_generic {
+                            mapping_generics[local_index]
+                        } else {
+                            mapping_slow[local_index]
+                        };
 
                         gid.words[2] = global_index;
                         gid.words[3] &= !LOCAL_DEFERRED_BIT;
@@ -483,4 +591,76 @@ fn codegen_and_metadata_phase(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod gid_stream_tests {
+    use super::*;
+    use crate::gid::{TypeId, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT};
+    use std::sync::Arc;
+
+    /// A generic instantiation lowers to a *deferred* GID (word 2 = a local generics-arena offset
+    /// index, deferred + generic flags set). Phase 5 (dedup) interns the arena and Phase 6 (SIMD
+    /// patch) remaps word 2 to the global offset index and clears the deferred bit, while
+    /// preserving the nominal identity in words 0/1. Exercises the escape-hatch local->global
+    /// handoff end-to-end (and guards the fixed per-kind mapping selection).
+    #[test]
+    fn deferred_generic_gid_is_interned_and_patched() {
+        let session = Arc::new(GlobalSession::new(1));
+        let mut worker = LocalWorkerState::new(session.clone());
+
+        let base = TypeId::new(0xAAAA, 0xBBBB, 0, 0);
+        let deferred = mint_deferred_generic(&mut worker, base, vec![TypeId::new(0, 0x1111, 0, 0)]);
+        worker.local_type_stream.push(deferred);
+
+        // Pre-patch: deferred + generic, identity preserved, word 2 = local offset index 0.
+        assert_ne!(deferred.words[3] & LOCAL_DEFERRED_BIT, 0);
+        assert_ne!(deferred.words[3] & IS_GENERIC_INST_FLAG, 0);
+        assert_eq!([deferred.words[0], deferred.words[1]], [0xAAAA, 0xBBBB]);
+        assert_eq!(deferred.words[2], 0);
+
+        let mut check_results: Vec<TypeCheckResult> = vec![(
+            crate::diagnostic::DiagnosticsVec::new(),
+            Vec::new(),
+            worker,
+            0,
+            Vec::new(),
+        )];
+        let (_s, _g, _o, slow_map, gen_map) = deduplication_phase(&check_results, &session);
+        let mut streams = extract_type_streams(&mut check_results);
+        simd_patch_phase(&mut streams, &slow_map, &gen_map);
+
+        let patched = streams[0].1[0];
+        // Post-patch: deferred bit cleared, identity preserved, word 2 = global offset index 0.
+        assert_eq!(patched.words[3] & LOCAL_DEFERRED_BIT, 0);
+        assert_eq!([patched.words[0], patched.words[1]], [0xAAAA, 0xBBBB]);
+        assert_eq!(patched.words[2], 0);
+    }
+
+    /// `emit_type_gid` harvests a settled GID for a resolved nominal type and a deferred GID for a
+    /// generic instantiation (whose argument lands in the local generics arena).
+    #[test]
+    fn emit_type_gid_harvests_nominal_and_generic() {
+        use crate::symbol::Symbol;
+        use syntax::Type;
+        let session = Arc::new(GlobalSession::new(1));
+        let mut worker = LocalWorkerState::new(session);
+
+        let foo = TypeId::new(1, 2, 0, 0);
+        emit_type_gid(&Type::Struct(Symbol::from("Foo"), Some(foo)), &mut worker); // settled
+
+        let list = TypeId::new(3, 4, 0, 0);
+        emit_type_gid(
+            &Type::GenericInstance(
+                Box::new(Type::Struct(Symbol::from("List"), Some(list))),
+                vec![Type::Struct(Symbol::from("Foo"), Some(foo))],
+            ),
+            &mut worker,
+        ); // deferred
+
+        assert_eq!(worker.local_type_stream.len(), 2);
+        assert_eq!(worker.local_type_stream[0], foo);
+        assert_ne!(worker.local_type_stream[1].words[3] & LOCAL_DEFERRED_BIT, 0);
+        assert_eq!(worker.local_generics_arena, vec![foo]); // the one arg
+    }
 }

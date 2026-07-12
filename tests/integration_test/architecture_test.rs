@@ -134,7 +134,7 @@ fn compile_pipeline_gid_stream_is_deterministic() -> Result<(), String> {
     }
 
     let run = || -> Result<Vec<[u64; 4]>, String> {
-        let mut stream = vxc::pipeline::compile_pipeline_symbol_gids(&paths)
+        let mut stream = vxc::pipeline::compile_pipeline_type_stream(&paths)
             .map_err(|e| format!("pipeline failed: {:?}", e))?
             .into_iter()
             .map(|id| id.words)
