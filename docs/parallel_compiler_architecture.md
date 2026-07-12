@@ -1048,7 +1048,9 @@ ______________________________________________________________________
 This section cross-references the design above to the actual sources, with an honest
 implementation status, so the architecture can be cited precisely (papers, reviews). Sections 1–8
 describe the *target* architecture; parts of it are fully implemented, parts are scaffolding whose
-data flow is not yet connected. This map states which is which.
+data flow is not yet connected. This map states which is which. The narrative log of closing these
+gaps (what/why/tests, per commit) is
+[`discussions/parallel_pipeline_convergence.md`](./discussions/parallel_pipeline_convergence.md).
 
 ### 9.1 Design decisions & rationale
 
@@ -1094,7 +1096,7 @@ data flow is not yet connected. This map states which is which.
 | Deferred generic intern + SIMD patch | **Implemented** | `mint_deferred_generic` → `deduplication_phase` → `simd_patch_phase`; `deferred_generic_gid_is_interned_and_patched` |
 | Zero-lock session; AST-carried topologies/memories | **Implemented** | `session.rs`, `arch.rs`, `env.rs`; concurrency-isolation test |
 | Parallel pipeline + verification hooks | **Implemented** | `compile_pipeline` + `verify_phase_*` (debug) |
-| **Frozen `ImmutableGlobalRegistry` wired into the session** | **Scaffolding** | `session.rs` holds a *mock* empty `ImmutableGlobalRegistry {}`; the real one in `registry.rs` (layouts, module_indices, cycle detection) is implemented + unit-tested but **not built from the modules nor stored in `GlobalSession`**. |
+| **Frozen `ImmutableGlobalRegistry` wired into the session** | **Implemented** (pipeline path) | Built at the Phase 2 freeze (`pipeline.rs::build_frozen_registry`) from the resolved modules and stored via `GlobalSession::with_registry`; petgraph cycle detection active (infinite-sized recursive struct → compile error). By-value cycle detection does not yet follow generic instantiations. |
 | `LocalWorkerState::local_hir_stream` (bytecode-like HIR) | **Scaffolding** | never populated; the checker emits the *type* stream, not an HIR instruction stream |
 | `resolve_lifetime` / borrow checker over the GID stream | **Scaffolding** | routing implemented (`session.rs`, `src/borrow.rs`); not driven by the pipeline |
 | Zero-copy metadata end-to-end | **Partial** | serialize/load implemented (`metadata.rs`); not emitted by the production compile |
