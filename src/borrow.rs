@@ -158,3 +158,72 @@ fn evaluate_slow_path_variance(
     // For now, require exact structural match
     a.lifetime_regions == b.lifetime_regions && a.trait_vtables == b.trait_vtables
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gid::TypeId;
+    use crate::session::{GlobalSession, LocalWorkerState};
+    use std::sync::Arc;
+
+    fn worker() -> LocalWorkerState {
+        LocalWorkerState::new(Arc::new(GlobalSession::new(1)))
+    }
+
+    /// A fast-path lifetime GID: param 0 packs `(region, variance)` into word 2 -- exactly what the
+    /// type checker's `lower_to_type_id` produces for a `Borrow`/`Pointer` in `is_assignable`.
+    fn lifetime_gid(region: u16, variance: u8) -> TypeId {
+        let mut id = TypeId::new(0, 0, 0, 0);
+        id.try_set_fast_param(0, region, variance).unwrap();
+        id
+    }
+
+    /// Covariance (`&'a T`): the source lifetime must outlive-or-equal the target. Region 0 is
+    /// `'static`, so a *smaller* region id lives longer -> source region <= target region.
+    #[test]
+    fn covariant_borrow_source_outlives_target_is_assignable() {
+        let w = worker();
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(1, 0x1),
+            &lifetime_gid(3, 0x1),
+            &w
+        ));
+    }
+
+    #[test]
+    fn covariant_borrow_source_shorter_than_target_is_rejected() {
+        let w = worker();
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(3, 0x1),
+            &lifetime_gid(1, 0x1),
+            &w
+        ));
+    }
+
+    /// Invariance (the inner type of `&mut T`): lifetimes must match exactly.
+    #[test]
+    fn invariant_requires_exact_region() {
+        let w = worker();
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(2, 0x0),
+            &lifetime_gid(2, 0x0),
+            &w
+        ));
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(2, 0x0),
+            &lifetime_gid(3, 0x0),
+            &w
+        ));
+    }
+
+    /// A variance mismatch between the two sides is never compatible.
+    #[test]
+    fn variance_mismatch_is_rejected() {
+        let w = worker();
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(1, 0x1),
+            &lifetime_gid(1, 0x2),
+            &w
+        ));
+    }
+}
