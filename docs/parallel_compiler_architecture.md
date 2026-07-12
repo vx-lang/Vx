@@ -1040,3 +1040,70 @@ Verifier::verify_phase_3_5_simd_patch(&flat_type_stream, &new_global_session);
 // ... and so on.
 
 ```
+
+______________________________________________________________________
+
+## 9. Implementation Map — Design Decisions, Code Pointers & Status
+
+This section cross-references the design above to the actual sources, with an honest
+implementation status, so the architecture can be cited precisely (papers, reviews). Sections 1–8
+describe the *target* architecture; parts of it are fully implemented, parts are scaffolding whose
+data flow is not yet connected. This map states which is which.
+
+### 9.1 Design decisions & rationale
+
+| # | Decision | Rationale | Where |
+|---|---|---|---|
+| D1 | **256-bit content-hash GID** (`[u64;4]`), not a monotonic counter | Stable across edits (position-independent) and identical across crates/threads → cross-module identity with no central ID dispenser and no lock | `src/gid.rs`, `src/hash.rs` |
+| D2 | **Word split**: w0 module hash, w1 symbol hash, w2 generic/lifetime, w3 flags | Register-native identity + attribute checks (visibility/POD/inline) with zero pointer-chasing into side tables | `src/gid.rs` (`module_id`/`symbol_id`/`visibility`/`is_trivially_copyable`) |
+| D3 | **Escape-hatch fast/slow path** (w2 bit 63) | ≤4 generic/lifetime params evaluate in registers (the 99% case); outliers spill to an arena index | `src/gid.rs` (`lifetime_context`, `extract_fast_param`) |
+| D4 | **Deferred interning** for generics: local arena + `LOCAL_DEFERRED_BIT`, patched in Phase 6 | Wait-free parallel instantiation — workers never lock a shared intern table; identity is reconciled at the barrier | `src/pipeline.rs` (`mint_deferred_generic`, `deduplication_phase`, `simd_patch_phase`) |
+| D5 | **Zero-lock session**: frozen `Arc<GlobalSession>`, mutable per-thread `LocalWorkerState` | Threads read shared truth by `&`; no `Mutex`/`RwLock` (CI-enforced, §6) | `src/session.rs`; lint in `.github/workflows/ci.yml` |
+| D6 | **AST-carried declarations** (memory spaces, topologies), never a global registry | No process-global *mutable* state → parallel-safe and no cross-compilation leak (§2.7) | `src/syntax/decl.rs` (`Program.{memories,topologies}`), `src/hir/env.rs` (`GlobalAstEnv`), `src/arch.rs` (`TransferCostGraph::seed_from_topologies`) |
+| D7 | **Phase-separated pipeline** with barriers, on `rayon` | Embarrassingly parallel per phase; no fine-grained cross-thread pipelining/locking | `src/pipeline.rs::compile_pipeline` |
+| D8 | **Verification engine** — invariants asserted at phase boundaries, `#[cfg(debug_assertions)]` | Prove isolation/arena-bounds/patch-completeness under parallelism at zero release cost | `src/parallel_architecture_verifier.rs` |
+| D9 | **Zero-copy metadata** (`bytemuck`, dictionary-encoded GIDs) | Cross-crate load without swizzling — GIDs are absolute | `src/metadata.rs`, `src/gid.rs::serialize_metadata_symbols` |
+
+### 9.2 Code pointers (concept → source)
+
+| Concept | Source |
+|---|---|
+| GID type, word layout, flags, fast/slow path | `src/gid.rs` (`TypeId`, `ESCAPE_HATCH_MASK`, `LOCAL_DEFERRED_BIT`, `IS_GENERIC_INST_FLAG`) |
+| Content hashes (module, symbol/DefPath) | `src/hash.rs` (`compute_module_hash`, `DefPath::compute_symbol_hash`) |
+| GID minting for top-level symbols | `src/resolver.rs::build_symbol_map` (parallel `par_iter`) |
+| GID attachment onto the AST | `src/syntax/resolve.rs::resolve_names` → `Type::{Struct,Enum,Generic}(_, Option<TypeId>)` |
+| Frozen session + per-worker state + arenas | `src/session.rs` (`GlobalSession`, `LocalWorkerState`, `resolve_lifetime`) |
+| Frozen nominal registry + cycle detection | `src/registry.rs` (`ImmutableGlobalRegistry::build_and_validate`, petgraph) |
+| Pipeline orchestration (phases) | `src/pipeline.rs::compile_pipeline` |
+| Phase 1 parse (parallel) | `src/pipeline.rs::parse_phase` |
+| Name resolution (build map + resolve) | `src/pipeline.rs::name_resolution_phase` |
+| Phase 3 type-check workers + **GID stream lowering** | `src/pipeline.rs::type_check_phase`, `emit_function_type_gids`/`emit_type_gid` |
+| Phase 5 dedup (local→global intern) | `src/pipeline.rs::deduplication_phase` |
+| Phase 6 SIMD patch (remap deferred w2, clear bit) | `src/pipeline.rs::simd_patch_phase` |
+| Verification hooks (Phases 1–8) | `src/parallel_architecture_verifier.rs::verify_phase_*` |
+| Zero-copy metadata | `src/metadata.rs` |
+| Topology cost graph (per-compilation, lock-free) | `src/arch.rs` (`TransferCostGraph`, `TopologyDecl`) |
+
+### 9.3 Status — implemented vs. scaffolding
+
+| Component | Status | Notes |
+|---|---|---|
+| GID layout, ops, flags, fast/slow path | **Implemented** | `gid.rs` + 7 unit tests |
+| GID minting (symbol map) + AST attachment | **Implemented** | `resolver.rs`/`resolve.rs`; determinism + module-isolation tests |
+| Flat type-stream emission (Phase 3 lowering) | **Implemented** (signatures) | `emit_function_type_gids`; harvests function **signature** type refs. Body-expression inferred types are **not** yet harvested. |
+| Deferred generic intern + SIMD patch | **Implemented** | `mint_deferred_generic` → `deduplication_phase` → `simd_patch_phase`; `deferred_generic_gid_is_interned_and_patched` |
+| Zero-lock session; AST-carried topologies/memories | **Implemented** | `session.rs`, `arch.rs`, `env.rs`; concurrency-isolation test |
+| Parallel pipeline + verification hooks | **Implemented** | `compile_pipeline` + `verify_phase_*` (debug) |
+| **Frozen `ImmutableGlobalRegistry` wired into the session** | **Scaffolding** | `session.rs` holds a *mock* empty `ImmutableGlobalRegistry {}`; the real one in `registry.rs` (layouts, module_indices, cycle detection) is implemented + unit-tested but **not built from the modules nor stored in `GlobalSession`**. |
+| `LocalWorkerState::local_hir_stream` (bytecode-like HIR) | **Scaffolding** | never populated; the checker emits the *type* stream, not an HIR instruction stream |
+| `resolve_lifetime` / borrow checker over the GID stream | **Scaffolding** | routing implemented (`session.rs`, `src/borrow.rs`); not driven by the pipeline |
+| Zero-copy metadata end-to-end | **Partial** | serialize/load implemented (`metadata.rs`); not emitted by the production compile |
+
+### 9.4 The two compile paths (important)
+
+There are currently **two** front-to-back paths, and they are different:
+
+- **Production (`vxc file.vx`)** — the **sequential** driver: `src/driver.rs::execute` → `execute_vx_pipeline` → `run_codegen`. This is AST-based (the working type checker + MLIR codegen); it does **not** use the flat GID streams.
+- **Parallel pipeline** — `src/pipeline.rs::compile_pipeline` (rayon, all phases, verification hooks). This is the data-oriented path this document describes; it is exercised by `tests/integration_test/architecture_test.rs` but is **not yet** the path `vxc` runs.
+
+Converging them (making `vxc` drive `compile_pipeline`, and codegen consume the flat streams) is the remaining integration work; §9.3's "scaffolding" rows are the concrete gaps on that path.
