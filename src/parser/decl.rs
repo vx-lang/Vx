@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
     /// The whole effect is registering the descriptor in the global topology registry
     /// (`crate::arch`), so nothing is stored in the AST. `Topology::<Name>` uses elsewhere
     /// then resolve to `Topology::Custom(<Name>)` and pick up this description.
-    pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::symbol::Symbol> {
+    pub(crate) fn parse_topology_decl(&mut self) -> ParseResult<'a, crate::arch::TopologyDecl> {
         self.consume(&TokenType::Topology, "Expected 'Topology'")?;
         let name = match &self.advance().kind {
             TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
@@ -295,15 +295,16 @@ impl<'a> Parser<'a> {
             visibility.push(default_space.clone());
         }
 
-        crate::arch::register_topology(
-            crate::syntax::TopologyKind::Custom(name.clone()),
-            crate::arch::TopologyDescriptor {
+        // Carry the descriptor on the AST (no global registration): the caller pushes it onto
+        // `Program.topologies`, and sema seeds the per-compilation cost graph from there.
+        Ok(crate::arch::TopologyDecl {
+            name,
+            descriptor: crate::arch::TopologyDescriptor {
                 default_space,
                 visibility,
                 transfers,
             },
-        );
-        Ok(name)
+        })
     }
 
     /// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` -- a first-class
@@ -827,8 +828,9 @@ impl<'a> Parser<'a> {
                 functions.push(f);
             } else if self.check(&TokenType::Topology) {
                 // `Topology <Name> { memory: Memory::X, visible: [Memory::Y, ...] }` declares a
-                // user-defined topology. It registers a descriptor in the global topology
-                // registry and is not stored in the AST (its whole effect is the registration).
+                // user-defined topology. Its descriptor is carried on the AST (`Program.topologies`),
+                // like a memory space -- no global registry -- and seeded into the per-compilation
+                // cost graph by sema.
                 topologies.push(self.parse_topology_decl()?);
             } else if self.check(&TokenType::Memory) {
                 // `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` declares

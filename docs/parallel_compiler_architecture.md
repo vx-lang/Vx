@@ -424,6 +424,31 @@ Because there are *two* arenas (the frozen global one and the mutable local one)
 
 ______________________________________________________________________
 
+## 2.7 Per-Compilation Declarations (No Global Registry)
+
+The zero-lock model has a hard corollary that the CI lint enforces (§6: no `Mutex`/`RwLock` in
+`src/`): **the compiler holds no process-global *mutable* state.** Everything a program declares is
+carried on its AST and indexed per-compilation, so parse workers on one thread and type-check
+workers on another read the same frozen data by `&` — never a shared cell that would need a lock,
+and never state that could leak from one compilation into a concurrent one.
+
+This applies to every declared entity, not just types:
+
+- **Memory spaces** (`Memory <Name> { ... }`) → `Program.memories: Vec<MemoryDecl>`, indexed by
+  `GlobalAstEnv.memories`.
+- **Topologies** (`Topology <Name> { ... }`) → `Program.topologies: Vec<TopologyDecl>`, indexed by
+  `GlobalAstEnv.topologies`, and seeded into each compilation's `arch::TransferCostGraph`
+  (`seed_from_topologies`). The graph carries the descriptors (built-ins + this program's) and is
+  the per-compilation, `&`-shared carrier.
+
+> Anti-pattern to avoid: a `static`/`thread_local`/`LazyLock` registry that parse-time code writes
+> and sema/codegen read. It breaks the parallel pipeline (a topology declared on parse-worker A is
+> invisible to type-check-worker B) *and* trips the lock lint. Topologies used to be exactly this
+> (a global `RwLock` registry); they were migrated to the AST-carried form above so declarations
+> follow the same data-oriented rule as everything else.
+
+______________________________________________________________________
+
 ## 3. The Linear Parallel Pipeline (Phase Separation)
 
 The compiler architecture rejects complex inter-stage pipelining in favor of a clean, phase-separated model bound by explicit synchronization barriers using Rayon's work-stealing thread pool.

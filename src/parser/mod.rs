@@ -295,24 +295,28 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_topology_decl_registers_descriptor() {
-        // A `Topology <Name> { memory: ... }` declaration registers a descriptor. Uses a
-        // unique name so parse-time global registration can't perturb other tests.
+    fn test_parse_topology_decl_returns_descriptor() {
+        // A `Topology <Name> { memory: ... }` declaration parses into a `TopologyDecl` carried on
+        // the AST (no global registration) -- the parser returns it.
         let input =
             "Topology MyDeclTPU { memory: Memory::Local_SRAM, visible: [Memory::CPU_DRAM, Memory::Local_SRAM] }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
-        parser.parse_topology_decl().unwrap();
+        let decl = parser.parse_topology_decl().unwrap();
 
-        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
-            crate::symbol::Symbol::from("MyDeclTPU"),
-        ))
-        .expect("descriptor should be registered by the declaration");
-        assert_eq!(d.default_space, crate::syntax::MemorySpace::LocalSRAM);
+        assert_eq!(decl.name, crate::symbol::Symbol::from("MyDeclTPU"));
+        assert_eq!(
+            decl.descriptor.default_space,
+            crate::syntax::MemorySpace::LocalSRAM
+        );
         // Declared `visible` plus the always-visible default space.
-        assert!(d.visibility.contains(&crate::syntax::MemorySpace::CPUDRAM));
-        assert!(d
+        assert!(decl
+            .descriptor
+            .visibility
+            .contains(&crate::syntax::MemorySpace::CPUDRAM));
+        assert!(decl
+            .descriptor
             .visibility
             .contains(&crate::syntax::MemorySpace::LocalSRAM));
     }
@@ -320,20 +324,16 @@ mod tests {
     #[test]
     fn test_parse_topology_decl_with_transfer() {
         // A `transfer <from> -> <to> : <cost>` clause becomes a declared morphism (a cost
-        // graph edge). Unique name; a new GpuHbm->LocalSRAM edge overrides no built-in path.
+        // graph edge) on the returned descriptor.
         let input = "Topology EdgeTPU { memory: Memory::Local_SRAM \
                      transfer Memory::GPU_HBM -> Memory::Local_SRAM : 7 }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
-        parser.parse_topology_decl().unwrap();
+        let decl = parser.parse_topology_decl().unwrap();
 
-        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
-            crate::symbol::Symbol::from("EdgeTPU"),
-        ))
-        .unwrap();
         assert_eq!(
-            d.transfers,
+            decl.descriptor.transfers,
             vec![crate::arch::TransferEdge {
                 from: crate::syntax::MemorySpace::GpuHbm,
                 to: crate::syntax::MemorySpace::LocalSRAM,
@@ -350,14 +350,10 @@ mod tests {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
-        parser.parse_topology_decl().unwrap();
+        let decl = parser.parse_topology_decl().unwrap();
 
-        let d = crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
-            crate::symbol::Symbol::from("AcmeMemTPU"),
-        ))
-        .unwrap();
         assert_eq!(
-            d.default_space,
+            decl.descriptor.default_space,
             crate::syntax::MemorySpace::Custom(crate::symbol::Symbol::from("AcmeSRAM"))
         );
     }

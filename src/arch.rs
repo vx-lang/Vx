@@ -22,8 +22,14 @@ pub struct TransferCostGraph {
 
     /// Cached all-pairs shortest paths for data transfers.
     cost_matrix: HashMap<(MemorySpace, MemorySpace), u32>,
-    // Topology→MemorySpace visibility now lives in the global topology registry
-    // (`topology_descriptor`), not on the graph.
+
+    /// Every topology's descriptor (built-ins plus the user-declared `Topology { ... }` of *this*
+    /// compilation), held per-instance rather than in a process-global registry. This is the
+    /// data-oriented, lock-free home the parallel pipeline needs (see
+    /// docs/parallel_compiler_architecture.md): the graph is built once per compilation and shared
+    /// across worker threads by `&`, so a topology declared in one program cannot leak into
+    /// another and nothing is synchronized.
+    descriptors: HashMap<crate::syntax::TopologyKind, TopologyDescriptor>,
 }
 
 /// Verdict of the type-level USE rule: can a value on `var_topology` be read while
@@ -49,12 +55,11 @@ pub enum Reachability {
 ///
 /// A topology is described by where its values live (`default_space`) and which memory
 /// spaces it can directly address (`visibility`, i.e. unified-memory reach; this always
-/// includes `default_space`). Seeded with the built-in topologies below; `register_topology`
-/// lets a plugin add or override one. This is the first substrate step toward user-definable
-/// topologies (see `docs/discussions/brainstorming/hardware_monad_topology.md`, "registry
-/// behind the enum"): the metadata is now data, not `match` arms. (Introducing a *new*
-/// topology *identity* from source still needs a `Topology::Custom`-style variant + parser
-/// support; this step opens the description, not yet the name.)
+/// includes `default_space`). The built-ins come from `builtin_descriptors`; a user
+/// `Topology { ... }` declaration is carried on the AST (`TopologyDecl` on `Program.topologies`)
+/// and seeded into the per-compilation `TransferCostGraph` — the metadata is data, not `match`
+/// arms, and not a global registry (see `docs/discussions/brainstorming/hardware_monad_topology.md`,
+/// "registry behind the enum").
 /// A declared transfer edge (morphism): a hop `from -> to` with a `cost` grade and a
 /// consistency grade. `sync` = a synchronizing transfer (release/acquire) that preserves a
 /// boundary contract; `!sync` = a relaxed escape hatch whose visibility the seam engine
@@ -67,13 +72,22 @@ pub struct TransferEdge {
     pub sync: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyDescriptor {
     pub default_space: MemorySpace,
     pub visibility: Vec<MemorySpace>,
     /// Transfer edges (morphisms) this topology contributes to the cost graph. Seeded into
-    /// a `TransferCostGraph` via `seed_from_topology_registry`.
+    /// a `TransferCostGraph` via `seed_from_topologies`.
     pub transfers: Vec<TransferEdge>,
+}
+
+/// A user-declared topology: its name plus its descriptor. Carried on the AST
+/// (`Program.topologies`) and indexed per-compilation by `GlobalAstEnv`, exactly like
+/// `MemoryDecl` — *not* a process-global registry. Parsed by `parser::decl::parse_topology_decl`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyDecl {
+    pub name: crate::symbol::Symbol,
+    pub descriptor: TopologyDescriptor,
 }
 
 /// A way a declared topology fails its coherence obligations. Graph-decidable here; the
@@ -187,7 +201,18 @@ pub fn topology_address_space(top: &Topology) -> i32 {
     if matches!(top, Topology::Current) {
         return 0;
     }
-    memory_space_address_space(&TransferCostGraph::default_memory_for(top))
+    // The topology's default memory space determines its address space. Built-ins are known
+    // statically; a custom topology maps to its like-named space (`Memory::Foo <-> Topology::Foo`,
+    // address space 4). Codegen only needs this coarse backend address space, not the
+    // per-compilation descriptor.
+    let space = builtin_descriptors()
+        .get(&top.kind())
+        .map(|d| d.default_space.clone())
+        .unwrap_or_else(|| match top {
+            Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
+            _ => MemorySpace::CPUDRAM,
+        });
+    memory_space_address_space(&space)
 }
 
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
@@ -215,62 +240,17 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
     m
 }
 
-thread_local! {
-    /// The topology registry, held per-thread. The compiler runs single-threaded per compilation,
-    /// so a `thread_local` (rather than a global lock) gives each compilation an isolated registry:
-    /// a `topology` declared while compiling one program cannot leak into a *concurrent* one, and
-    /// no synchronization primitive is needed. `reset_topology_registry` restores the built-in
-    /// baseline for *sequential* compilations that reuse a thread (a build server, an LSP).
-    static TOPOLOGY_REGISTRY: std::cell::RefCell<
-        HashMap<crate::syntax::TopologyKind, TopologyDescriptor>,
-    > = std::cell::RefCell::new(builtin_descriptors());
-}
-
-/// The description registered for a topology kind, if any.
-pub fn topology_descriptor(kind: &crate::syntax::TopologyKind) -> Option<TopologyDescriptor> {
-    TOPOLOGY_REGISTRY.with(|r| r.borrow().get(kind).cloned())
-}
-
-/// Register (or override) the description for a topology kind. The extension hook a hardware
-/// plugin uses to describe its memory model to the compiler.
-pub fn register_topology(kind: crate::syntax::TopologyKind, desc: TopologyDescriptor) {
-    TOPOLOGY_REGISTRY.with(|r| {
-        r.borrow_mut().insert(kind, desc);
-    });
-}
-
-/// Reset the topology registry to just the built-ins, discarding every user-defined (`Custom`)
-/// topology. Topologies are registered at *parse* time (see `parser::decl::parse_topology_decl`),
-/// so without this a `topology` declared while compiling one program would leak into the next when
-/// several are compiled sequentially on one thread (a build server, an LSP). The driver calls this
-/// at the start of each compilation.
-pub fn reset_topology_registry() {
-    TOPOLOGY_REGISTRY.with(|r| *r.borrow_mut() = builtin_descriptors());
-}
-
-/// A snapshot of every registered descriptor (built-in + user-defined).
-pub fn all_topology_descriptors() -> Vec<TopologyDescriptor> {
-    TOPOLOGY_REGISTRY.with(|r| r.borrow().values().cloned().collect())
-}
-
-/// The user-defined (`Custom`) topologies, with their names — for coherence checking.
-pub fn custom_topology_descriptors() -> Vec<(crate::symbol::Symbol, TopologyDescriptor)> {
-    TOPOLOGY_REGISTRY.with(|r| {
-        r.borrow()
-            .iter()
-            .filter_map(|(k, d)| match k {
-                crate::syntax::TopologyKind::Custom(name) => Some((name.clone(), d.clone())),
-                _ => None,
-            })
-            .collect()
-    })
-}
+// Topology descriptors are no longer a process-global registry. A `TransferCostGraph` carries
+// them per-compilation (`descriptors` field, seeded from the built-ins plus `Program.topologies`
+// via `seed_from_topologies`); see `descriptor` / `default_memory_for` methods below. This is the
+// data-oriented, lock-free model of docs/parallel_compiler_architecture.md.
 
 impl Default for TransferCostGraph {
     fn default() -> Self {
         let mut graph = Self {
             transfer_edges: HashMap::new(),
             cost_matrix: HashMap::new(),
+            descriptors: builtin_descriptors(),
         };
 
         // Standard Transfer Paths
@@ -327,21 +307,35 @@ impl TransferCostGraph {
     /// and recompute shortest paths. `TransferCostGraph::default()` deliberately does *not* do
     /// this so it stays hermetic; the real compiler path (`TypeChecker::new`) calls this so
     /// user-declared morphisms take effect.
-    pub fn seed_from_topology_registry(&mut self) {
-        for desc in all_topology_descriptors() {
-            self.apply_descriptor_edges(&desc);
+    /// Fold in the topologies declared by *this* compilation (`Program.topologies`): record each
+    /// descriptor and add its transfer edges, then recompute the shortest-path matrix. The
+    /// per-compilation replacement for the old global-registry seed.
+    pub fn seed_from_topologies(&mut self, topologies: &[TopologyDecl]) {
+        for decl in topologies {
+            self.apply_descriptor_edges(&decl.descriptor);
+            self.descriptors.insert(
+                crate::syntax::TopologyKind::Custom(decl.name.clone()),
+                decl.descriptor.clone(),
+            );
         }
         self.precompute_costs();
     }
 
     /// Returns the default memory space for a given topology, from its registered
     /// descriptor (see `topology_descriptor`).
-    pub fn default_memory_for(topology: &Topology) -> MemorySpace {
+    /// The descriptor for a topology kind (built-in or a topology declared in this compilation),
+    /// from the graph's per-compilation `descriptors` — no global registry.
+    pub fn descriptor(&self, kind: &crate::syntax::TopologyKind) -> Option<&TopologyDescriptor> {
+        self.descriptors.get(kind)
+    }
+
+    /// The default memory space a topology's values live in.
+    pub fn default_memory_for(&self, topology: &Topology) -> MemorySpace {
         if let Topology::Current = topology {
             unreachable!("Must specify a concrete topology other than Current")
         }
-        topology_descriptor(&topology.kind())
-            .map(|d| d.default_space)
+        self.descriptor(&topology.kind())
+            .map(|d| d.default_space.clone())
             .unwrap_or(MemorySpace::CPUDRAM)
     }
 
@@ -387,9 +381,9 @@ impl TransferCostGraph {
             if pinned_top == active_topology {
                 return true;
             }
-            let mem = Self::default_memory_for(pinned_top);
+            let mem = self.default_memory_for(pinned_top);
             let mock_ty = Type::Ref(Box::new(Type::Scalar(syntax::ElementType::F32)), mem);
-            return Self::is_type_accessible(self, active_topology, pinned_top, &mock_ty);
+            return self.is_type_accessible(active_topology, pinned_top, &mock_ty);
         }
 
         // Determine the memory space of the variable
@@ -399,7 +393,7 @@ impl TransferCostGraph {
                 if var_topology == active_topology {
                     return true;
                 }
-                Self::default_memory_for(var_topology)
+                self.default_memory_for(var_topology)
             }
         };
 
@@ -407,7 +401,7 @@ impl TransferCostGraph {
         // `visibility` set includes its own default space, subsuming the old
         // NPU→NPUHBM / AccCore→LocalSRAM / GPU→GpuHbm special-cases.
         let active_kind = active_topology.kind();
-        if let Some(desc) = topology_descriptor(&active_kind) {
+        if let Some(desc) = self.descriptor(&active_kind) {
             if desc.visibility.contains(&target_mem) {
                 return true;
             }
@@ -422,11 +416,11 @@ impl TransferCostGraph {
     }
 
     /// The memory space where a value of type `ty` owned by `var_topology` lives.
-    fn memory_of(var_topology: &Topology, ty: &Type) -> MemorySpace {
+    fn memory_of(&self, var_topology: &Topology, ty: &Type) -> MemorySpace {
         match ty {
-            Type::Pinned(_, top) => Self::default_memory_for(top),
+            Type::Pinned(_, top) => self.default_memory_for(top),
             Type::Ref(_, mem) => mem.clone(),
-            _ => Self::default_memory_for(var_topology),
+            _ => self.default_memory_for(var_topology),
         }
     }
 
@@ -445,8 +439,8 @@ impl TransferCostGraph {
         if self.is_type_accessible(active_topology, var_topology, ty) {
             return Reachability::Visible;
         }
-        let var_mem = Self::memory_of(var_topology, ty);
-        let active_mem = Self::default_memory_for(active_topology);
+        let var_mem = self.memory_of(var_topology, ty);
+        let active_mem = self.default_memory_for(active_topology);
         match self.transfer_path(&var_mem, &active_mem) {
             Some((cost, _)) => Reachability::NeedsSeam { cost },
             None => Reachability::Unreachable,
@@ -577,32 +571,16 @@ mod tests {
 
     #[test]
     fn test_default_memory_mappings() {
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::CPU),
-            MemorySpace::CPUDRAM
-        );
+        let g = TransferCostGraph::default();
+        assert_eq!(g.default_memory_for(&Topology::CPU), MemorySpace::CPUDRAM);
         // A discrete GPU's home memory is its own device HBM (not host DRAM):
         // the host<->device boundary is a real seam, checked by the per-seam obligation.
+        assert_eq!(g.default_memory_for(&Topology::GPU), MemorySpace::GpuHbm);
+        assert_eq!(g.default_memory_for(&Topology::AMX), MemorySpace::CPUDRAM);
+        assert_eq!(g.default_memory_for(&Topology::ANE), MemorySpace::NPUHBM);
+        assert_eq!(g.default_memory_for(&make_npu()), MemorySpace::NPUHBM);
         assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::GPU),
-            MemorySpace::GpuHbm
-        );
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::AMX),
-            MemorySpace::CPUDRAM
-        );
-
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::ANE),
-            MemorySpace::NPUHBM
-        );
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&make_npu()),
-            MemorySpace::NPUHBM
-        );
-
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&make_acc_core()),
+            g.default_memory_for(&make_acc_core()),
             MemorySpace::LocalSRAM
         );
     }
@@ -914,12 +892,13 @@ mod tests {
 
     #[test]
     fn test_default_memory_cpuavx512_and_cpuneon() {
+        let g = TransferCostGraph::default();
         assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::CpuAvx512),
+            g.default_memory_for(&Topology::CpuAvx512),
             MemorySpace::CPUDRAM
         );
         assert_eq!(
-            TransferCostGraph::default_memory_for(&Topology::CpuNeon),
+            g.default_memory_for(&Topology::CpuNeon),
             MemorySpace::CPUDRAM
         );
     }
@@ -940,7 +919,7 @@ mod tests {
             ))),
         );
         assert_eq!(
-            TransferCostGraph::default_memory_for(&slice),
+            TransferCostGraph::default().default_memory_for(&slice),
             MemorySpace::NPUHBM
         );
     }
@@ -948,7 +927,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Must specify a concrete topology")]
     fn test_default_memory_for_current_panics() {
-        let _ = TransferCostGraph::default_memory_for(&Topology::Current);
+        let _ = TransferCostGraph::default().default_memory_for(&Topology::Current);
     }
 
     #[test]
@@ -1001,58 +980,59 @@ mod tests {
 
     #[test]
     fn test_registry_seeded_with_builtins() {
-        // Topology metadata is data (builtin_descriptors), not `match` arms.
-        let gpu = topology_descriptor(&syntax::TopologyKind::GPU).unwrap();
+        // Topology metadata is data (builtin_descriptors), not `match` arms. A fresh graph
+        // carries the built-in descriptors.
+        let g = TransferCostGraph::default();
+        let gpu = g.descriptor(&syntax::TopologyKind::GPU).unwrap();
         assert_eq!(gpu.default_space, MemorySpace::GpuHbm);
         assert!(gpu.visibility.contains(&MemorySpace::GpuHbm)); // its own device memory
         assert!(gpu.visibility.contains(&MemorySpace::CPUDRAM)); // unified-memory reach
 
-        let npu = topology_descriptor(&syntax::TopologyKind::NPU).unwrap();
+        let npu = g.descriptor(&syntax::TopologyKind::NPU).unwrap();
         assert_eq!(npu.default_space, MemorySpace::NPUHBM);
         // NPU cannot directly address host DRAM (matches is_type_accessible expectations).
         assert!(!npu.visibility.contains(&MemorySpace::CPUDRAM));
     }
 
-    #[test]
-    fn test_register_topology_extends_registry() {
-        // The extension hook: registering a descriptor makes it queryable. Uses the
-        // otherwise-undescribed `Current` kind so this cannot perturb other tests.
-        assert!(topology_descriptor(&syntax::TopologyKind::Current).is_none());
-        register_topology(
-            syntax::TopologyKind::Current,
-            TopologyDescriptor {
-                default_space: MemorySpace::LocalSRAM,
-                visibility: vec![MemorySpace::LocalSRAM],
+    /// A `TopologyDecl` for tests, standing in for a parsed `Topology <name> { ... }`.
+    fn topo_decl(name: &str, default_space: MemorySpace) -> TopologyDecl {
+        TopologyDecl {
+            name: crate::symbol::Symbol::from(name),
+            descriptor: TopologyDescriptor {
+                default_space: default_space.clone(),
+                visibility: vec![default_space],
                 transfers: Vec::new(),
             },
-        );
-        let d = topology_descriptor(&syntax::TopologyKind::Current).unwrap();
+        }
+    }
+
+    #[test]
+    fn seed_from_topologies_makes_descriptor_queryable() {
+        // The AST-carried model: seeding a declared topology into a graph makes it queryable
+        // on *that* graph (no global registry).
+        let decl = topo_decl("MyTPU", MemorySpace::LocalSRAM);
+        let mut g = TransferCostGraph::default();
+        assert!(g
+            .descriptor(&syntax::TopologyKind::Custom("MyTPU".into()))
+            .is_none());
+        g.seed_from_topologies(std::slice::from_ref(&decl));
+        let d = g
+            .descriptor(&syntax::TopologyKind::Custom("MyTPU".into()))
+            .unwrap();
         assert_eq!(d.default_space, MemorySpace::LocalSRAM);
     }
 
     #[test]
     fn test_custom_topology_end_to_end() {
-        // A user-defined topology: register a descriptor, then the enum identity
-        // `Topology::Custom(name)` flows through default_memory_for + is_type_accessible
-        // with no hardcoded arm. Uses a unique name so it can't perturb other tests.
-        let name = crate::symbol::Symbol::from("MyTPU");
-        register_topology(
-            syntax::TopologyKind::Custom(name.clone()),
-            TopologyDescriptor {
-                default_space: MemorySpace::LocalSRAM,
-                visibility: vec![MemorySpace::LocalSRAM],
-                transfers: Vec::new(),
-            },
-        );
-        let top = Topology::Custom(name);
+        // A user-defined topology, seeded into a graph: the enum identity `Topology::Custom(name)`
+        // flows through default_memory_for + is_type_accessible with no hardcoded arm.
+        let decl = topo_decl("MyTPU", MemorySpace::LocalSRAM);
+        let top = Topology::Custom("MyTPU".into());
+        let mut graph = TransferCostGraph::default();
+        graph.seed_from_topologies(std::slice::from_ref(&decl));
 
-        // Placement comes from the registered descriptor.
-        assert_eq!(
-            TransferCostGraph::default_memory_for(&top),
-            MemorySpace::LocalSRAM
-        );
-
-        let graph = TransferCostGraph::default();
+        // Placement comes from the seeded descriptor.
+        assert_eq!(graph.default_memory_for(&top), MemorySpace::LocalSRAM);
         // It can read its own memory space...
         let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
         assert!(graph.is_type_accessible(&top, &Topology::CPU, &ref_sram));
@@ -1062,27 +1042,26 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_custom_topologies_but_keeps_builtins() {
-        // A parse-time registration standing in for a previous compilation.
-        let name = crate::symbol::Symbol::from("AcmeReset");
-        register_topology(
-            syntax::TopologyKind::Custom(name.clone()),
-            TopologyDescriptor {
-                default_space: MemorySpace::LocalSRAM,
-                visibility: vec![MemorySpace::LocalSRAM],
-                transfers: Vec::new(),
-            },
-        );
-        assert!(topology_descriptor(&syntax::TopologyKind::Custom(name.clone())).is_some());
+    fn topologies_are_per_graph_not_global() {
+        // The whole point of the AST-carried model: a topology seeded into one compilation's
+        // graph does not exist in another's -- isolation by construction, no reset needed.
+        let decl = topo_decl("AcmeCore", MemorySpace::LocalSRAM);
+        let mut a = TransferCostGraph::default();
+        a.seed_from_topologies(std::slice::from_ref(&decl));
+        let b = TransferCostGraph::default(); // a separate compilation, not seeded
 
-        // Starting the next compilation resets to the built-in baseline.
-        reset_topology_registry();
+        let kind = syntax::TopologyKind::Custom("AcmeCore".into());
         assert!(
-            topology_descriptor(&syntax::TopologyKind::Custom(name)).is_none(),
-            "custom topology leaked past reset"
+            a.descriptor(&kind).is_some(),
+            "seeded graph has the topology"
         );
-        // Built-ins are restored, not wiped.
-        assert!(topology_descriptor(&syntax::TopologyKind::GPU).is_some());
+        assert!(
+            b.descriptor(&kind).is_none(),
+            "unseeded graph must not see another compilation's topology"
+        );
+        // Built-ins are present in both.
+        assert!(a.descriptor(&syntax::TopologyKind::GPU).is_some());
+        assert!(b.descriptor(&syntax::TopologyKind::GPU).is_some());
     }
 
     #[test]

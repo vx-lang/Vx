@@ -707,10 +707,9 @@ impl<'a> TypeChecker<'a> {
                                         Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                                     );
 
-                                    let _active_mem =
-                                        crate::arch::TransferCostGraph::default_memory_for(
-                                            &self.active_topology,
-                                        );
+                                    let _active_mem = self
+                                        .transfer_cost_graph
+                                        .default_memory_for(&self.active_topology);
                                     let method_name = crate::symbol::Symbol::from("transfer");
                                     let method_call =
                                         Expr::MethodCall(crate::syntax::expr::MethodCallExpr {
@@ -1134,14 +1133,12 @@ impl<'a> TypeChecker<'a> {
     /// through the seam engine: a declared `relaxed` edge is modeled as a relaxed transfer of
     /// a published payload and handed to `seam::check_seam_buffers`; a `Reject` (the buffer
     /// can be read stale) means the edge does not preserve visibility.
-    pub fn check_topology_coherence(&mut self, declared: &[crate::symbol::Symbol]) {
-        for name in declared {
-            let Some(desc) = crate::arch::topology_descriptor(
-                &crate::syntax::TopologyKind::Custom(name.clone()),
-            ) else {
-                continue;
-            };
-            for issue in crate::arch::descriptor_coherence(&desc, &self.transfer_cost_graph) {
+    pub fn check_topology_coherence(&mut self, declared: &[crate::arch::TopologyDecl]) {
+        for decl in declared {
+            let name = &decl.name;
+            for issue in
+                crate::arch::descriptor_coherence(&decl.descriptor, &self.transfer_cost_graph)
+            {
                 match issue {
                     crate::arch::CoherenceIssue::DefaultNotVisible => {
                         self.errors.error_with_code(
@@ -1168,7 +1165,7 @@ impl<'a> TypeChecker<'a> {
 
             // Consistency obligation, discharged via the seam engine: a relaxed edge that
             // carries a payload does not preserve the buffer's visibility.
-            for edge in &desc.transfers {
+            for edge in &decl.descriptor.transfers {
                 if edge.sync {
                     continue;
                 }
@@ -1427,10 +1424,10 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Type::Ref(_, mem) => mem.clone(),
             Type::Pinned(_, topo) if !matches!(topo, Topology::Current) => {
-                crate::arch::TransferCostGraph::default_memory_for(topo)
+                self.transfer_cost_graph.default_memory_for(topo)
             }
             _ if !matches!(fallback_top, Topology::Current) => {
-                crate::arch::TransferCostGraph::default_memory_for(fallback_top)
+                self.transfer_cost_graph.default_memory_for(fallback_top)
             }
             _ => MemorySpace::CPUDRAM,
         }
@@ -1447,7 +1444,7 @@ impl<'a> TypeChecker<'a> {
             }
             Type::Pinned(inner, top) if !matches!(top, Topology::Current) => {
                 if let Some((e, d)) = Self::tensor_of(inner) {
-                    let space = crate::arch::TransferCostGraph::default_memory_for(top);
+                    let space = self.transfer_cost_graph.default_memory_for(top);
                     self.check_capacity(e, d, &space, context);
                 }
             }
@@ -1581,7 +1578,7 @@ impl<'a> TypeChecker<'a> {
                     Type::Pinned(_, Topology::Custom(name)) => {
                         MemorySpace::from_name(name.as_ref())
                     }
-                    Type::Pinned(_, top) => crate::arch::TransferCostGraph::default_memory_for(top),
+                    Type::Pinned(_, top) => self.transfer_cost_graph.default_memory_for(top),
                     _ => MemorySpace::CPUDRAM,
                 }
             };
@@ -1830,10 +1827,10 @@ impl<'a> TypeChecker<'a> {
                 // registered by a plugin) is often a misspelled built-in. Warn; it still
                 // compiles with host-like placement.
                 if let Topology::Custom(name) = &actual_top {
-                    if crate::arch::topology_descriptor(&crate::syntax::TopologyKind::Custom(
-                        name.clone(),
-                    ))
-                    .is_none()
+                    if self
+                        .transfer_cost_graph
+                        .descriptor(&crate::syntax::TopologyKind::Custom(name.clone()))
+                        .is_none()
                     {
                         self.errors.warn(
                             crate::diagnostic::DiagnosticCode::W1025,
@@ -1872,8 +1869,7 @@ impl<'a> TypeChecker<'a> {
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = actual_top.clone();
-                self.active_memory =
-                    crate::arch::TransferCostGraph::default_memory_for(&actual_top);
+                self.active_memory = self.transfer_cost_graph.default_memory_for(&actual_top);
 
                 *top = actual_top;
 
@@ -2653,8 +2649,8 @@ impl<'a> TypeChecker<'a> {
             // a transfer path from A's memory to B's must exist in the cost graph.
             for (a, b) in &generic_func.where_transfers {
                 if let (Some(ta), Some(tb)) = (topo_mapping.get(a), topo_mapping.get(b)) {
-                    let ma = crate::arch::TransferCostGraph::default_memory_for(ta);
-                    let mb = crate::arch::TransferCostGraph::default_memory_for(tb);
+                    let ma = self.transfer_cost_graph.default_memory_for(ta);
+                    let mb = self.transfer_cost_graph.default_memory_for(tb);
                     if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
                         if !silent {
                             self.errors.push(format!(

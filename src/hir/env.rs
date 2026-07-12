@@ -47,6 +47,10 @@ pub struct GlobalAstEnv<'a> {
     /// User-defined memory spaces (`Memory <Name> { ... }`), indexed by name. Populated from
     /// `Program.memories` — the per-compilation home for memory descriptors (no global registry).
     pub memories: HashMap<crate::symbol::Symbol, &'a MemoryDecl>,
+    /// User-defined topologies (`Topology <Name> { ... }`), indexed by name. Populated from
+    /// `Program.topologies`; the per-compilation home for topology descriptors, seeded into each
+    /// `TransferCostGraph` — no global registry (see docs/parallel_compiler_architecture.md).
+    pub topologies: HashMap<crate::symbol::Symbol, &'a crate::arch::TopologyDecl>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -65,6 +69,7 @@ impl<'a> GlobalAstEnv<'a> {
             syntax_functions: HashMap::new(),
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
+            topologies: HashMap::new(),
         };
 
         for &module in modules {
@@ -73,6 +78,9 @@ impl<'a> GlobalAstEnv<'a> {
             }
             for m in &module.memories {
                 env.memories.insert(m.name.clone(), m);
+            }
+            for t in &module.topologies {
+                env.topologies.insert(t.name.clone(), t);
             }
             for e in &module.enums {
                 env.enums.insert(e.name.clone(), e);
@@ -219,6 +227,18 @@ impl<'a> TypeChecker<'a> {
         env: &'a GlobalAstEnv<'a>,
         worker: &'a mut crate::session::LocalWorkerState,
     ) -> Self {
+        // Build the per-compilation cost graph first: fold in the topologies this compilation
+        // declared (carried on the AST, indexed by `env.topologies`) so it holds both their
+        // descriptors and transfer edges. No global registry -- the graph is the per-compilation,
+        // lock-free carrier the parallel pipeline shares by `&`.
+        let transfer_cost_graph = {
+            let mut g = crate::arch::TransferCostGraph::default();
+            let decls: Vec<crate::arch::TopologyDecl> =
+                env.topologies.values().map(|&d| d.clone()).collect();
+            g.seed_from_topologies(&decls);
+            g
+        };
+        let active_memory = transfer_cost_graph.default_memory_for(&Topology::CPU);
         Self {
             env,
             worker,
@@ -228,14 +248,8 @@ impl<'a> TypeChecker<'a> {
             in_unsafe_block: false,
             allow_cross_topology: false,
             active_topology: Topology::CPU,
-            active_memory: crate::arch::TransferCostGraph::default_memory_for(&Topology::CPU),
-            transfer_cost_graph: {
-                // Real compilation path: fold in transfer edges declared by user-defined
-                // topologies (parsed before the checker runs). default() stays hermetic.
-                let mut g = crate::arch::TransferCostGraph::default();
-                g.seed_from_topology_registry();
-                g
-            },
+            active_memory,
+            transfer_cost_graph,
             active_borrows: HashMap::new(),
             constraints: Vec::new(),
             return_constraints: Vec::new(),
@@ -819,8 +833,9 @@ impl<'a> TypeChecker<'a> {
         let prev_top = self.active_topology.clone();
         let prev_mem = self.active_memory.clone();
         self.active_topology = func.topology.clone();
-        self.active_memory =
-            crate::arch::TransferCostGraph::default_memory_for(&self.active_topology);
+        self.active_memory = self
+            .transfer_cost_graph
+            .default_memory_for(&self.active_topology);
 
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());

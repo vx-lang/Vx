@@ -232,11 +232,11 @@ pub struct Program {
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<ImplBlock>,
     pub functions: Vec<Function>,
-    /// Names of user-defined topologies declared in this program (`Topology <Name> { ... }`).
-    /// Descriptors live in the (process-global) topology registry; this per-program list
-    /// scopes coherence checking to the topologies this compilation actually declared, so
-    /// one program's declarations don't leak diagnostics into another's.
-    pub topologies: Vec<Symbol>,
+    /// User-defined topologies declared in this program (`Topology <Name> { ... }`). Like
+    /// `memories`, the full descriptors live here on the AST — *not* a process-global registry —
+    /// so declarations never leak between compilations and the parallel pipeline needs no lock.
+    /// Sema indexes them via `GlobalAstEnv` and seeds the per-compilation transfer cost graph.
+    pub topologies: Vec<crate::arch::TopologyDecl>,
     /// User-defined memory spaces declared in this program (`Memory <Name> { ... }`). Unlike
     /// topologies, the full descriptors live here on the AST (not a global registry); sema
     /// indexes them via `GlobalAstEnv` and codegen reads them from the `Program`.
