@@ -1098,7 +1098,7 @@ gaps (what/why/tests, per commit) is
 | Parallel pipeline + verification hooks | **Implemented** | `compile_pipeline` + `verify_phase_*` (debug) |
 | **Frozen `ImmutableGlobalRegistry` wired into the session** | **Implemented** (pipeline path) | Built at the Phase 2 freeze (`pipeline.rs::build_frozen_registry`) from the resolved modules and stored via `GlobalSession::with_registry`; petgraph cycle detection active (infinite-sized recursive struct → compile error). By-value cycle detection does not yet follow generic instantiations. |
 | `LocalWorkerState::local_hir_stream` (bytecode-like HIR) | **Scaffolding** | never populated; the checker emits the *type* stream, not an HIR instruction stream |
-| `resolve_lifetime` / borrow checker over the GID stream | **Scaffolding** | routing implemented (`session.rs`, `src/borrow.rs`); not driven by the pipeline |
+| `resolve_lifetime` / GID fast-path borrow check | **Implemented** (fast path) | `TypeChecker::is_assignable` lowers `Borrow`/`Pointer` subtyping to lifetime GIDs (`lower_to_type_id`) and checks variance via `borrow::verify_subtyping_bounds` + `session.rs::resolve_lifetime`. Runs in both compile paths; tested in `borrow.rs`. Slow-path (>4 params / arena) variance is a stub (`evaluate_slow_path_variance`). |
 | Zero-copy metadata end-to-end | **Partial** | serialize/load implemented (`metadata.rs`); not emitted by the production compile |
 
 ### 9.4 The two compile paths (important)

@@ -94,12 +94,35 @@ cross-module by-value deps only resolve when `resolve_names` attached the cross-
 
 ______________________________________________________________________
 
+## Entry 3 — Correction: the GID borrow check was already wired (+ tests)
+
+**Commit:** `50ef7e0`
+
+**Correction.** §9.3 had listed "`resolve_lifetime` / borrow over the GID stream" as *scaffolding,
+not driven*. That was **wrong**. The 256-bit-GID fast-path borrow checker is real and *driven*:
+`TypeChecker::is_assignable` (`src/hir/expr.rs`), for `Borrow`/`Pointer` subtyping, lowers both
+sides to lifetime GIDs via `lower_to_type_id` (packing the borrow's region + variance into word 2)
+and calls `borrow::verify_subtyping_bounds`, which decodes the fast-path bitfield via
+`session.rs::resolve_lifetime` and applies invariance / covariance / contravariance rules. This runs
+in *both* compile paths (the checker is shared).
+
+**What was actually missing:** tests. `borrow.rs` had none.
+
+**What we did.** Added unit tests for the fast-path comparison: covariance (source lifetime must
+outlive-or-equal target; region 0 = `'static`, so a smaller region id lives longer), invariance
+(exact region), and variance mismatch. Corrected the §9.3 row.
+
+**Scope / not yet.** The slow-path (>4 params, or arena-backed) variance evaluation is a stub
+(`evaluate_slow_path_variance` in `borrow.rs`).
+
+______________________________________________________________________
+
 ## Remaining gaps (next entries)
 
-- **`local_hir_stream`** — the bytecode-like HIR instruction stream is still unpopulated; we lower
-  the *type* stream, not an instruction stream.
-- **`resolve_lifetime` / borrow checking over the GID stream** — routing exists (`session.rs`,
-  `src/borrow.rs`) but is not driven by the pipeline.
+- **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
+  lowering function bodies to it is a real instruction-selection pass (and codegen would need to
+  consume it — currently codegen is AST-based).
+- **Slow-path variance** — `evaluate_slow_path_variance` (`borrow.rs`) is a stub.
 - **Path convergence** — `vxc` still runs the sequential driver (`driver.rs::execute` →
   `run_codegen`); making it drive `compile_pipeline` (and codegen consume the flat streams) is the
   end goal that turns all of the above from "exercised by tests" into "the production compile".
