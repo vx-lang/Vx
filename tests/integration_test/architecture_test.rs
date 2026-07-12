@@ -88,3 +88,64 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
 
     Ok(())
 }
+
+/// The core parallel-architecture guarantee: compilations are isolated because the compiler holds
+/// no process-global *mutable* state (docs/parallel_compiler_architecture.md §2.7). Many threads
+/// each compile a program that declares a topology with the *same name* `Dev` but a *different*
+/// default memory. Each thread must see only its own declaration in its own per-compilation
+/// `TransferCostGraph`. A global registry (the old `RwLock`, or the `thread_local` stopgap) would
+/// let these declarations race/leak across threads and this assertion would fire.
+#[test]
+fn concurrent_compilations_have_isolated_topologies() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    const THREADS: usize = 64;
+    let gate = Arc::new(Barrier::new(THREADS));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|i| {
+            let gate = gate.clone();
+            thread::spawn(move || {
+                // Same topology *name*, different default memory per thread.
+                let mem = if i % 2 == 0 { "Local_SRAM" } else { "GPU_HBM" };
+                let src = format!(
+                    "Topology Dev {{ memory: Memory::{mem}, visible: [Memory::CPU_DRAM, Memory::{mem}] }}\n\
+                     fn main() -> i32 {{ return 0; }}"
+                );
+
+                // Release all threads into the parse+check at once, for maximum contention on any
+                // (accidental) shared state.
+                gate.wait();
+
+                let mut lexer = vxc::lexer::Lexer::new(&src);
+                let tokens = lexer.tokenize();
+                let mut parser = vxc::parser::Parser::new(&tokens, &src);
+                let program = parser.parse().expect("parse failed");
+                let programs = vec![program];
+
+                let env = vxc::hir::GlobalAstEnv::build(&programs);
+                let session = Arc::new(vxc::session::GlobalSession::new(1));
+                let mut worker = vxc::session::LocalWorkerState::new(session);
+                let checker = vxc::hir::TypeChecker::new(&env, &mut worker);
+
+                // The topology descriptor this compilation sees for `Dev`.
+                let desc = checker
+                    .transfer_cost_graph
+                    .descriptor(&vxc::syntax::TopologyKind::Custom("Dev".into()))
+                    .cloned();
+                (i, mem, desc)
+            })
+        })
+        .collect();
+
+    for h in handles {
+        let (i, mem, desc) = h.join().expect("worker thread panicked");
+        let desc = desc.unwrap_or_else(|| panic!("thread {i}: its own topology `Dev` is missing"));
+        let expected = vxc::syntax::MemorySpace::from_name(mem);
+        assert_eq!(
+            desc.default_space, expected,
+            "thread {i} declared Dev on {mem} but saw a leaked topology from another compilation"
+        );
+    }
+}
