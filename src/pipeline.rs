@@ -49,9 +49,15 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     macro_expansion_phase(&mut parsed_modules)?;
     name_resolution_phase(&mut parsed_modules);
 
-    // Phase 2: Sequential Global Registry Build & Cycle Detection
-    println!("Built Global Immutable Registry");
-    let global_session = std::sync::Arc::new(GlobalSession::new(1));
+    // Phase 2: Sequential Global Registry Build & Cycle Detection (the freeze point). Builds the
+    // frozen nominal-type registry from the resolved modules; an infinite-sized recursive struct
+    // (a by-value cycle) fails here.
+    let registry = build_frozen_registry(&parsed_modules)?;
+    println!(
+        "Built Global Immutable Registry ({} types)",
+        registry.layouts.len()
+    );
+    let global_session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     #[cfg(debug_assertions)]
     verify_phase_2_registry(&global_session.registry);
 
@@ -117,7 +123,8 @@ pub fn compile_pipeline_type_stream(
     macro_expansion_phase(&mut parsed_modules)?;
     name_resolution_phase(&mut parsed_modules);
 
-    let global_session = std::sync::Arc::new(GlobalSession::new(1));
+    let registry = build_frozen_registry(&parsed_modules)?;
+    let global_session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     let global_env_modules: Vec<VxModule> =
         parsed_modules.iter().map(|m| m.clone_signature()).collect();
     let global_env = GlobalAstEnv::build(&global_env_modules);
@@ -279,6 +286,75 @@ fn mint_deferred_generic(
     id.words[2] = offset_index;
     id.words[3] |= crate::gid::LOCAL_DEFERRED_BIT | crate::gid::IS_GENERIC_INST_FLAG;
     id
+}
+
+// ---- Phase 2: the freeze point (build + validate the frozen registry) ----------------------
+// Collects every module's top-level structs/enums into `TypeDefinition`s -- their GIDs (from the
+// symbol map, matching what `resolve_names` attached) plus by-value dependency edges -- and runs
+// cycle detection. An infinite-sized recursive struct (a by-value cycle) is a compile error. The
+// resulting `ImmutableGlobalRegistry` is frozen into the `GlobalSession` and shared read-only.
+
+/// Build and validate the frozen registry from post-`resolve_names` modules.
+fn build_frozen_registry(
+    modules: &[VxModule],
+) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
+    use crate::registry::TypeDefinition;
+    let symbol_map = crate::resolver::build_symbol_map(modules);
+    let mut defs: Vec<TypeDefinition> = Vec::new();
+
+    let push_def = |defs: &mut Vec<TypeDefinition>,
+                    mod_syms: &crate::resolver::SymbolTable,
+                    name: &crate::symbol::Symbol,
+                    by_value_dependencies: Vec<crate::gid::TypeId>| {
+        if let Some(&id) = mod_syms.get(name) {
+            defs.push(TypeDefinition {
+                id,
+                name: name.to_string(),
+                size_bytes: 0,
+                align_bytes: 0,
+                by_value_dependencies,
+            });
+        }
+    };
+
+    for module in modules {
+        let Some(mod_syms) = symbol_map.get(&module.module_path) else {
+            continue;
+        };
+        for s in &module.structs {
+            let deps = s
+                .fields
+                .iter()
+                .filter_map(|(_, ty)| by_value_nominal_gid(ty))
+                .collect();
+            push_def(&mut defs, mod_syms, &s.name, deps);
+        }
+        for e in &module.enums {
+            let deps = e
+                .variants
+                .iter()
+                .flat_map(|(_, payload)| payload.iter().flatten())
+                .filter_map(by_value_nominal_gid)
+                .collect();
+            push_def(&mut defs, mod_syms, &e.name, deps);
+        }
+    }
+
+    crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
+        .map_err(PipelineError::Semantic)
+}
+
+/// The GID of a type held *by value* (a nominal struct/enum, seen through location wrappers that
+/// add no indirection). A `Ref`/`Pointer`/`Borrow` breaks containment (and any cycle), so it is
+/// not a by-value dependency and returns `None`. (Generic instantiations are not yet followed for
+/// by-value cycle detection.)
+fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
+    use syntax::Type;
+    match ty {
+        Type::Struct(_, id) | Type::Enum(_, id) => *id,
+        Type::Pinned(inner, _) | Type::Verified(inner) => by_value_nominal_gid(inner),
+        _ => None,
+    }
 }
 
 fn type_check_phase(
@@ -662,5 +738,42 @@ mod gid_stream_tests {
         assert_eq!(worker.local_type_stream[0], foo);
         assert_ne!(worker.local_type_stream[1].words[3] & LOCAL_DEFERRED_BIT, 0);
         assert_eq!(worker.local_generics_arena, vec![foo]); // the one arg
+    }
+
+    fn parse_and_resolve(path: &str, src: &str) -> VxModule {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut prog = parser.parse().expect("parse failed");
+        prog.module_path = path.into();
+        let mut mods = vec![prog];
+        let symbol_map = crate::resolver::build_symbol_map(&mods);
+        mods[0].resolve_names(&symbol_map);
+        mods.pop().unwrap()
+    }
+
+    /// The Phase 2 freeze runs cycle detection: an infinite-sized recursive struct (a by-value
+    /// self-cycle) is a compile error.
+    #[test]
+    fn frozen_registry_detects_infinite_recursion() {
+        let m = parse_and_resolve("crate::m", "struct List { next: List }");
+        match build_frozen_registry(std::slice::from_ref(&m)) {
+            Err(PipelineError::Semantic(msg)) => {
+                assert!(msg.contains("Infinite-sized recursive layout"), "{msg}")
+            }
+            other => panic!("expected a Semantic cycle error, got {other:?}"),
+        }
+    }
+
+    /// Indirection (a reference) breaks the by-value cycle; the registry then builds with the
+    /// nominal types registered.
+    #[test]
+    fn frozen_registry_accepts_indirection_and_registers_types() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "struct Node { next: &Node, val: i32 }\nstruct Pair { a: i32, b: i32 }",
+        );
+        let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        assert_eq!(reg.layouts.len(), 2);
     }
 }

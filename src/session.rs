@@ -18,8 +18,10 @@ use crate::gid::{
 use crate::hir::HirInstruction;
 use std::sync::Arc;
 
-// Mock ImmutableGlobalRegistry
-pub struct ImmutableGlobalRegistry {}
+// The frozen nominal-type registry (layouts + module indices + cycle-checked). Built once per
+// compilation at the Phase 2 freeze point and shared read-only across worker threads. Re-exported
+// here so `GlobalSession` and the verifier name it via `session`, but the type lives in `registry`.
+pub use crate::registry::ImmutableGlobalRegistry;
 
 /// Represents the frozen past of the compilation process.
 /// It contains everything compiled before the current phase.
@@ -51,10 +53,21 @@ pub struct GlobalSession {
 }
 
 impl GlobalSession {
+    /// A session with an *empty* frozen registry — for callers that don't build one (the
+    /// sequential driver, unit tests). The parallel pipeline uses [`Self::with_registry`].
     pub fn new(epoch: u64) -> Self {
+        Self::with_registry(
+            epoch,
+            ImmutableGlobalRegistry::build_and_validate(Vec::new())
+                .expect("an empty registry is always valid"),
+        )
+    }
+
+    /// A session holding the frozen registry built at the Phase 2 freeze point.
+    pub fn with_registry(epoch: u64, registry: ImmutableGlobalRegistry) -> Self {
         Self {
             epoch,
-            registry: Arc::new(ImmutableGlobalRegistry {}),
+            registry: Arc::new(registry),
             slow_path_arena: Arc::new(Vec::new()),
             generics_arena: Arc::new(Vec::new()),
             generics_offsets: Arc::new(Vec::new()),
