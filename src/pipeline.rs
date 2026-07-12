@@ -104,6 +104,27 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     Ok(())
 }
 
+/// Parse the given files (in parallel) and return every 256-bit GID the pipeline mints for their
+/// top-level symbols — the exact map `name_resolution_phase` builds to resolve cross-module names.
+/// Exposed for determinism testing: because GIDs are content hashes (module + symbol), not
+/// scheduling-dependent counters, the same files must produce the same set of GIDs regardless of
+/// `rayon`'s scheduling.
+///
+/// (Note: the flat *type stream* — `LocalWorkerState::local_type_stream` — is scaffolding the type
+/// checker does not populate yet, so it is not the observable here; the symbol map is the GID
+/// artifact the pipeline actually produces today.)
+pub fn compile_pipeline_symbol_gids(
+    file_paths: &[String],
+) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
+    let mut parsed_modules = parse_phase(file_paths)?;
+    macro_expansion_phase(&mut parsed_modules)?;
+    let symbol_map = crate::resolver::build_symbol_map(&parsed_modules);
+    Ok(symbol_map
+        .values()
+        .flat_map(|table| table.values().copied())
+        .collect())
+}
+
 fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
     let modules: Result<Vec<VxModule>, PipelineError> = file_paths
         .par_iter()

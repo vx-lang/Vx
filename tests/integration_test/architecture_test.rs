@@ -89,6 +89,75 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
     Ok(())
 }
 
+/// End-to-end determinism: parsing a fileset (in parallel) and minting its 256-bit GIDs twice
+/// must yield an *identical* set. Because GIDs are content hashes (module + symbol), not
+/// scheduling-dependent counters, `rayon`'s work-stealing cannot change the result -- this is the
+/// reproducibility guarantee the whole GID scheme exists to provide. Drives the real file-based
+/// pipeline entry (`compile_pipeline_symbol_gids`), complementing the in-process
+/// `build_symbol_map` unit test in `resolver.rs`.
+#[test]
+fn compile_pipeline_gid_stream_is_deterministic() -> Result<(), String> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/modules/determinism_test");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("Failed to create test dir");
+
+    // A few modules with structs + generic functions, to mint a rich GID stream (fast path) plus
+    // a slow-path (5+ param) signature.
+    let modules = [
+        (
+            "alpha.vx",
+            r#"
+            struct Widget { id: i32, active: bool }
+            fn identity<T>(v: T) -> T { return v; }
+            fn run_alpha() -> Widget {
+                let w = Widget { id: 1i32, active: true };
+                let _r = identity(7i32);
+                return w;
+            }
+            "#,
+        ),
+        (
+            "beta.vx",
+            r#"
+            struct Widget { id: i32, active: bool }
+            fn combine(a: i32, b: i32, c: i32, d: i32, e: i32, f: u64) -> i32 { return a; }
+            fn run_beta() -> i32 { return combine(1i32, 2i32, 3i32, 4i32, 5i32, 6u64); }
+            "#,
+        ),
+    ];
+
+    let mut paths = Vec::new();
+    for (name, src) in modules {
+        let p = dir.join(name);
+        fs::write(&p, src).unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+
+    let run = || -> Result<Vec<[u64; 4]>, String> {
+        let mut stream = vxc::pipeline::compile_pipeline_symbol_gids(&paths)
+            .map_err(|e| format!("pipeline failed: {:?}", e))?
+            .into_iter()
+            .map(|id| id.words)
+            .collect::<Vec<_>>();
+        // Order-independent: the *set* of emitted GIDs is the determinism guarantee, robust to
+        // parallel scheduling of the phases.
+        stream.sort_unstable();
+        Ok(stream)
+    };
+
+    let first = run()?;
+    let second = run()?;
+
+    assert!(!first.is_empty(), "expected a non-empty GID stream");
+    assert_eq!(
+        first, second,
+        "compile_pipeline emitted a different GID stream on a second run (non-deterministic)"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// The core parallel-architecture guarantee: compilations are isolated because the compiler holds
 /// no process-global *mutable* state (docs/parallel_compiler_architecture.md §2.7). Many threads
 /// each compile a program that declares a topology with the *same name* `Dev` but a *different*
