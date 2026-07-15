@@ -286,6 +286,42 @@ signature types, generic-param non-binding, recursive + cross-module enum payloa
 cross-module by-value recursion detected, broken by indirection, recursive enum detected. Full suite
 green (283 lib + 65 integration). Resolution is now trusted enough to lower on top of.
 
+## Entry 9 — C1.1: flatten scalar bodies to HIR bytecode (#197)
+
+**Commit:** `1af30aa`. Plan: [`../implementation_plans/hir_flattening.md`](../implementation_plans/hir_flattening.md).
+
+**Gap.** `local_hir_stream` (`hir/bytecode.rs`) was defined but never populated — the flat pipeline
+carried signature type-refs (`emit_function_type_gids`) but no function *bodies*, so codegen still had
+to walk the AST. C1 is the instruction-selection pass that fills it; this entry starts it.
+
+**What we did (`src/hir/flatten.rs`).** A new pass, `lower_function_to_hir(func, worker)`, lowers a
+function body to flat `Vec<HirInstruction>`. Conventions it establishes (C2 must honor): **SSA by
+position** — instruction at index `i` defines `Register(i)`, operands name earlier instructions by
+index, no destination field; `type_idx` indexes `local_type_stream`; **params** become `Load`
+instructions at the top; **locals** are pure SSA aliases (`let x = e` binds `x` to `e`'s register).
+
+*C1.1 subset:* scalar params, int/float literals (`Const` + raw `imm`), identifier reads,
+arithmetic (`Add`/`Sub`/`Mul`/`Div`/`Matmul`), `return` (`Ret`), expression statements. Everything
+else (calls, control flow, structs, non-scalar params, generics) is out of scope.
+
+**Keep-green invariant.** Lowering is **atomic per function**: any unsupported construct aborts and
+the worker is left untouched, so `local_hir_stream` is *only ever a complete, correct lowering or
+empty*. This lets the corpus grow safely and lets C2's differential testing trust every non-empty
+stream. Distinct from `hir/lower_ast.rs` (arena *tree* HIR) — this is the flat bytecode.
+
+**Coherence.** The primitive-scalar GID is now one shared `scalar_gid` (pipeline's `nominal_gid`
+reuses it), so `i32` has identical identity in a signature and in a lowered body — required once the
+type stream mixes both.
+
+**Wiring + verification.** Runs in `type_check_phase` next to `emit_function_type_gids` (function and
+impl-method loops), with a debug `verify_hir_stream` hook (type_idx in-bounds; SSA operand
+dominance). Tests: six unit (arithmetic/return, let reuse, int/float immediates, atomic abort on
+unsupported + on non-scalar param) plus an end-to-end pipeline test proving a scalar body lowers
+through the real parallel phase. Full suite green (290 lib + 65 integration).
+
+**Next.** C1.2 — control flow (`if`/loops → branch opcodes), calls (`Call`), mutable locals
+(`Store`/reload), comparisons; then C1.3 — struct/field/tensor/`vx`-dialect surface.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;

@@ -57,7 +57,8 @@ a flat `Vec<HirInstruction>` (`src/hir/bytecode.rs`: `{opcode, operand1, operand
 with `type_idx` indexing the (now populated) `local_type_stream`. Runs in `type_check_phase` next to
 `emit_function_type_gids`. Grow it by the corpus:
 
-- C1.1 — literals, locals, arithmetic, `return`.
+- C1.1 — literals, locals, arithmetic, `return`. **✅ done** (`1af30aa`, `src/hir/flatten.rs`;
+  atomic per-function lowering, journal Entry 9).
 - C1.2 — calls, struct/field access, control flow (`if`/loops → branch opcodes).
 - C1.3 — memory ops, tensor/slice ops, spawn/transfer (the `vx`-dialect surface).
 
