@@ -38,6 +38,20 @@ pub enum Opcode {
     Neg = 13,
     /// Logical/bitwise not (`!x`); `operand1` the source value.
     Not = 14,
+    /// Allocate a stack slot for a named local; the result register is the slot handle, `type_idx`
+    /// its element type (matches the AST codegen's `alloca`-backed locals). Used only when a
+    /// function has control flow, so values survive across basic blocks via memory.
+    Alloca = 15,
+    /// Load a value from a slot: `operand1` the slot handle; the result is the loaded value.
+    SlotLoad = 16,
+    /// Unconditional branch; `imm` is the target basic-block id.
+    Br = 17,
+    /// Conditional branch on `operand1` (a bool); `imm` packs the two targets as
+    /// `then_block | (else_block << 32)`.
+    CondBr = 18,
+    /// Marks the entry of basic block `imm`. Branch targets are block ids; codegen turns each
+    /// `BlockStart` into an MLIR block.
+    BlockStart = 19,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

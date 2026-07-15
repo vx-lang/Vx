@@ -33,11 +33,25 @@ pub fn scalar_gid(elem: &ElementType) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// `type_idx` sentinel for *effect* instructions (`Store`/`Br`/`CondBr`/`BlockStart`) that produce
+/// no result value and therefore have no result type.
+const NO_TYPE: u32 = u32::MAX;
+
 /// A lowered value: the SSA register holding it and its (scalar) element type.
 #[derive(Clone)]
 struct Val {
     reg: Register,
     ty: ElementType,
+}
+
+/// How an in-scope name is materialized.
+#[derive(Clone)]
+enum Binding {
+    /// Straight-line SSA: the name aliases an existing value register (no control flow).
+    Reg(Val),
+    /// Memory model: the name is a stack slot (`Alloca`); reads emit `SlotLoad`, writes `Store`, so
+    /// the value survives across basic blocks. `ty` is the slot's element type.
+    Slot { reg: Register, ty: ElementType },
 }
 
 /// Per-function lowering accumulator. Instructions and their result-type GIDs are built into local
@@ -46,7 +60,13 @@ struct Val {
 struct Lowerer {
     code: Vec<HirInstruction>,
     types: Vec<TypeId>,
-    scope: HashMap<Symbol, Val>,
+    scope: HashMap<Symbol, Binding>,
+    /// When set, named locals live in memory (`Alloca`/`Store`/`SlotLoad`) so values survive across
+    /// basic blocks — chosen for functions with control flow, matching the AST codegen's
+    /// `alloca`-backed locals. Straight-line functions stay pure-SSA (bindings are `Reg`).
+    memory: bool,
+    /// Next basic-block id to hand out (0 is the entry block).
+    next_block: u32,
 }
 
 impl Lowerer {
@@ -55,13 +75,14 @@ impl Lowerer {
             code: Vec::new(),
             types: Vec::new(),
             scope: HashMap::new(),
+            memory: false,
+            next_block: 1,
         }
     }
 
-    /// Emit one instruction defining a fresh SSA register (= its stream position) with result type
-    /// `ty`, and return the value it produces. Each emitted instruction contributes exactly one
-    /// entry to the type buffer (`type_idx` local index == instruction index).
-    fn emit(
+    /// Emit a *value* instruction defining a fresh SSA register (= its stream position) with result
+    /// type `ty`, and return the value it produces.
+    fn emit_value(
         &mut self,
         opcode: Opcode,
         o1: Register,
@@ -77,29 +98,88 @@ impl Lowerer {
         Val { reg, ty }
     }
 
+    /// Emit an *effect* instruction (no result value): `type_idx` is the [`NO_TYPE`] sentinel.
+    fn emit_effect(&mut self, opcode: Opcode, o1: Register, o2: Register, imm: u64) {
+        self.code
+            .push(HirInstruction::new(opcode, o1, o2, TypeIdx(NO_TYPE), imm));
+    }
+
+    fn new_block(&mut self) -> u32 {
+        let b = self.next_block;
+        self.next_block += 1;
+        b
+    }
+
+    /// Whether the last emitted instruction is a block terminator — so we don't append a second one
+    /// (e.g. a `Br` to the merge after a branch already `return`ed).
+    fn block_terminated(&self) -> bool {
+        matches!(
+            self.code.last().map(|i| i.opcode),
+            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr)
+        )
+    }
+
+    /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
+    /// (+ initializing `Store`) in memory mode.
+    fn bind_local(&mut self, name: Symbol, v: Val) {
+        if self.memory {
+            let slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), v.ty.clone(), 0);
+            self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+            self.scope.insert(
+                name,
+                Binding::Slot {
+                    reg: slot.reg,
+                    ty: v.ty,
+                },
+            );
+        } else {
+            self.scope.insert(name, Binding::Reg(v));
+        }
+    }
+
+    /// Assign to an already-bound name: a `Store` to its slot (memory mode) or an SSA rebind
+    /// (straight-line). `None` if the name is unbound.
+    fn assign_local(&mut self, name: &Symbol, v: Val) -> Option<()> {
+        match self.scope.get(name)?.clone() {
+            Binding::Slot { reg, .. } => {
+                self.emit_effect(Opcode::Store, reg, v.reg, 0);
+                Some(())
+            }
+            Binding::Reg(_) => {
+                self.scope.insert(name.clone(), Binding::Reg(v));
+                Some(())
+            }
+        }
+    }
+
     /// Lower an expression to the register holding its result (emitting instructions as needed).
-    /// Returns `None` for anything outside the C1.1 scalar subset — the caller then aborts.
+    /// Returns `None` for anything outside the current subset — the caller then aborts.
     fn lower_expr(&mut self, e: &Expr) -> Option<Val> {
         match e {
             Expr::Number(n) => {
                 let elem = number_elem(n)?;
                 let imm = encode_imm(n.value.as_ref(), &elem)?;
-                Some(self.emit(Opcode::Const, Register(0), Register(0), elem, imm))
+                Some(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
             }
-            // A name read yields the register the local/param is bound to (pure SSA, no instruction).
-            Expr::Identifier(id) => self.scope.get(&id.name).cloned(),
+            // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot.
+            Expr::Identifier(id) => match self.scope.get(&id.name)?.clone() {
+                Binding::Reg(v) => Some(v),
+                Binding::Slot { reg, ty } => {
+                    Some(self.emit_value(Opcode::SlotLoad, reg, Register(0), ty, 0))
+                }
+            },
             Expr::BinaryOp(b) => {
                 let l = self.lower_expr(&b.lhs)?;
                 let r = self.lower_expr(&b.rhs)?;
                 let op = binop_opcode(&b.op)?;
                 // Operands are type-checked to a common type; the result carries the lhs type.
-                Some(self.emit(op, l.reg, r.reg, l.ty, 0))
+                Some(self.emit_value(op, l.reg, r.reg, l.ty, 0))
             }
             // A comparison yields a `bool`; the relation is carried in `imm`.
             Expr::RelationalOp(r) => {
                 let l = self.lower_expr(&r.lhs)?;
                 let rhs = self.lower_expr(&r.rhs)?;
-                Some(self.emit(
+                Some(self.emit_value(
                     Opcode::Cmp,
                     l.reg,
                     rhs.reg,
@@ -113,48 +193,103 @@ impl Lowerer {
                     UnaryOp::Neg => Opcode::Neg,
                     UnaryOp::Not => Opcode::Not,
                 };
-                Some(self.emit(op, v.reg, Register(0), v.ty, 0))
+                Some(self.emit_value(op, v.reg, Register(0), v.ty, 0))
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
                 let v = self.lower_expr(&c.expr)?;
                 let target = scalar_of(&c.target_ty)?;
-                Some(self.emit(Opcode::Cast, v.reg, Register(0), target, 0))
+                Some(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
             }
             _ => None,
         }
+    }
+
+    /// Lower an `if`/`else` statement to basic blocks + branches (memory mode only, so mutated or
+    /// cross-block locals are already in slots). Early `return` in a branch is honored: the trailing
+    /// `Br` to the merge is skipped when the branch already terminated.
+    fn lower_if(&mut self, e: &crate::syntax::IfExpr) -> Option<()> {
+        let cond = self.lower_expr(&e.cond)?;
+        let then_b = self.new_block();
+        let (else_b, merge_b) = match &e.else_block {
+            Some(_) => (self.new_block(), self.new_block()),
+            None => {
+                let m = self.new_block();
+                (m, m) // no else: the "else" edge goes straight to the merge block
+            }
+        };
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(then_b, else_b),
+        );
+
+        // then block
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), then_b as u64);
+        for s in &e.then_block {
+            self.lower_stmt(s)?;
+        }
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+        }
+
+        // else block (only when distinct from the merge)
+        if let Some(else_stmts) = &e.else_block {
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), else_b as u64);
+            for s in else_stmts {
+                self.lower_stmt(s)?;
+            }
+            if !self.block_terminated() {
+                self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+            }
+        }
+
+        // merge block — subsequent statements continue here
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
+        Some(())
     }
 
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
-            // `let x = e` binds `x` to `e`'s result register (immutable SSA alias; C1.1 has no store).
             Statement::LetDecl(l) => {
                 let v = self.lower_expr(&l.expr)?;
-                self.scope.insert(l.name.clone(), v);
+                self.bind_local(l.name.clone(), v);
                 Some(())
             }
             Statement::Return(r) => {
                 let v = self.lower_expr(&r.expr)?;
-                self.emit(Opcode::Ret, v.reg, Register(0), v.ty, 0);
+                self.emit_value(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Some(())
             }
-            Statement::ExprStmt(e) => {
-                self.lower_expr(&e.expr)?;
-                Some(())
+            // `name = expr` (simple identifier target only).
+            Statement::Assign(a) => {
+                let name = simple_ident(&a.lhs)?;
+                let v = self.lower_expr(&a.rhs)?;
+                self.assign_local(&name, v)
             }
+            Statement::ExprStmt(e) => match &e.expr {
+                Expr::If(iff) => self.lower_if(iff),
+                other => {
+                    self.lower_expr(other)?;
+                    Some(())
+                }
+            },
             _ => None,
         }
     }
 
     /// Append the built stream onto the worker: body types extend `local_type_stream` (after any
-    /// signature types already there), and each instruction's local `type_idx` is rebased to the
-    /// absolute index in that stream.
+    /// signature types already there), and each value instruction's local `type_idx` is rebased to
+    /// the absolute index in that stream (effect instructions keep the [`NO_TYPE`] sentinel).
     fn commit(self, worker: &mut LocalWorkerState) {
         let base = worker.local_type_stream.len() as u32;
         worker.local_type_stream.extend(self.types);
         for mut ins in self.code {
-            ins.type_idx = TypeIdx(ins.type_idx.0 + base);
+            if ins.type_idx.0 != NO_TYPE {
+                ins.type_idx = TypeIdx(ins.type_idx.0 + base);
+            }
             worker.local_hir_stream.push(ins);
         }
     }
@@ -176,16 +311,43 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
 
 fn try_lower(func: &Function) -> Option<Lowerer> {
     let mut lw = Lowerer::new();
-    // Parameters become `Load` instructions at the top (imm = param index), giving each a register.
+    // Control flow forces the memory model so locals survive across basic blocks (like the AST
+    // codegen). Straight-line functions stay pure-SSA.
+    lw.memory = body_has_control_flow(&func.body);
+    if lw.memory {
+        lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
+    }
+    // Parameters: materialize the incoming value (`Load` imm = index), then bind (a slot in memory
+    // mode, an SSA register otherwise).
     for (i, (name, ty)) in func.params.iter().enumerate() {
         let elem = scalar_of(ty)?;
-        let val = lw.emit(Opcode::Load, Register(0), Register(0), elem, i as u64);
-        lw.scope.insert(name.clone(), val);
+        let incoming = lw.emit_value(Opcode::Load, Register(0), Register(0), elem, i as u64);
+        lw.bind_local(name.clone(), incoming);
     }
     for stmt in &func.body {
         lw.lower_stmt(stmt)?;
     }
     Some(lw)
+}
+
+/// Whether the (top-level) body contains an `if` statement — the trigger for the memory model. A
+/// nested `if` rides on its enclosing top-level `if`, and `lower_if` recurses in memory mode.
+fn body_has_control_flow(stmts: &[Statement]) -> bool {
+    stmts
+        .iter()
+        .any(|s| matches!(s, Statement::ExprStmt(e) if matches!(e.expr, Expr::If(_))))
+}
+
+fn simple_ident(e: &Expr) -> Option<Symbol> {
+    match e {
+        Expr::Identifier(id) => Some(id.name.clone()),
+        _ => None,
+    }
+}
+
+/// Pack an `if`'s two branch targets into `CondBr`'s `imm`: `then | (else << 32)`.
+fn pack_targets(then_b: u32, else_b: u32) -> u64 {
+    (then_b as u64) | ((else_b as u64) << 32)
 }
 
 /// The scalar element type of a parameter type, or `None` for non-scalars / generic scalars (which
@@ -261,20 +423,32 @@ fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
     }
 }
 
-/// Debug-only structural check on a worker's flat HIR: every `type_idx` is in-bounds, and every
-/// operand an opcode actually reads names a strictly-earlier instruction (SSA dominance for the
-/// straight-line subset). One worker holds exactly one function's stream.
+/// Debug-only structural check on a worker's flat HIR: every value `type_idx` is in-bounds (effect
+/// instructions carry the [`NO_TYPE`] sentinel), every operand an opcode reads names a
+/// strictly-earlier instruction (temporaries are block-local, so the linear check still captures SSA
+/// dominance), and every branch targets a declared block. One worker holds exactly one function's
+/// stream.
 #[cfg(debug_assertions)]
 pub fn verify_hir_stream(worker: &LocalWorkerState) {
     let n_types = worker.local_type_stream.len() as u32;
+    // Declared basic blocks (a `BlockStart` per block id) — branch targets must land in this set.
+    let blocks: std::collections::HashSet<u64> = worker
+        .local_hir_stream
+        .iter()
+        .filter(|ins| ins.opcode == Opcode::BlockStart)
+        .map(|ins| ins.imm)
+        .collect();
+
     for (i, ins) in worker.local_hir_stream.iter().enumerate() {
         let i = i as u32;
-        assert!(
-            ins.type_idx.0 < n_types,
-            "HIR type_idx {} out of bounds ({}) at instruction {i}",
-            ins.type_idx.0,
-            n_types
-        );
+        if ins.type_idx.0 != NO_TYPE {
+            assert!(
+                ins.type_idx.0 < n_types,
+                "HIR type_idx {} out of bounds ({}) at instruction {i}",
+                ins.type_idx.0,
+                n_types
+            );
+        }
         match ins.opcode {
             // Binary: both operands read.
             Opcode::Add
@@ -282,16 +456,33 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Mul
             | Opcode::Div
             | Opcode::Matmul
-            | Opcode::Cmp => {
+            | Opcode::Cmp
+            | Opcode::Store => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
                 );
             }
             // Unary: operand1 read.
-            Opcode::Ret | Opcode::Cast | Opcode::Neg | Opcode::Not => assert!(
+            Opcode::Ret | Opcode::Cast | Opcode::Neg | Opcode::Not | Opcode::SlotLoad => assert!(
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"
+            ),
+            Opcode::CondBr => {
+                assert!(
+                    ins.operand1.0 < i,
+                    "HIR cond not dominated at instruction {i}"
+                );
+                let then_b = ins.imm & 0xFFFF_FFFF;
+                let else_b = ins.imm >> 32;
+                assert!(
+                    blocks.contains(&then_b) && blocks.contains(&else_b),
+                    "HIR CondBr targets undeclared block(s) at instruction {i}"
+                );
+            }
+            Opcode::Br => assert!(
+                blocks.contains(&ins.imm),
+                "HIR Br targets an undeclared block at instruction {i}"
             ),
             _ => {}
         }
@@ -318,6 +509,78 @@ mod tests {
 
     fn opcodes(w: &LocalWorkerState) -> Vec<Opcode> {
         w.local_hir_stream.iter().map(|i| i.opcode).collect()
+    }
+
+    fn count(w: &LocalWorkerState, op: Opcode) -> usize {
+        w.local_hir_stream.iter().filter(|i| i.opcode == op).count()
+    }
+
+    #[test]
+    fn if_else_lowers_to_basic_blocks_and_memory_locals() {
+        let f = parse_fn(
+            "fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } else { x = 1; } return x; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        // Control flow forced the memory model: slots for `a` and `x`.
+        assert!(count(&w, Opcode::Alloca) >= 2, "alloca slots for a and x");
+        assert!(count(&w, Opcode::SlotLoad) >= 1);
+        assert_eq!(count(&w, Opcode::CondBr), 1);
+        assert_eq!(
+            count(&w, Opcode::Br),
+            2,
+            "then and else each branch to merge"
+        );
+        assert_eq!(count(&w, Opcode::BlockStart), 4, "entry, then, else, merge");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn if_without_else_targets_merge_directly() {
+        let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } return x; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(count(&w, Opcode::CondBr), 1);
+        assert_eq!(
+            count(&w, Opcode::Br),
+            1,
+            "then branches to merge; else edge is merge"
+        );
+        assert_eq!(count(&w, Opcode::BlockStart), 3, "entry, then, merge");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn early_return_in_branch_emits_no_trailing_branch() {
+        let f = parse_fn("fn c(a: i32) -> i32 { if a < 0 { return 0; } return a; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        // The then-block terminates with Ret, so no `Br` to the merge is appended.
+        assert_eq!(
+            count(&w, Opcode::Br),
+            0,
+            "returning branch emits no trailing Br"
+        );
+        assert_eq!(count(&w, Opcode::Ret), 2);
+        assert_eq!(count(&w, Opcode::CondBr), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn straight_line_reassignment_stays_pure_ssa() {
+        // No control flow -> SSA mode: reassignment is a rebind, no memory ops or blocks.
+        let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; x = a + a; return x; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(count(&w, Opcode::Alloca), 0);
+        assert_eq!(count(&w, Opcode::Store), 0);
+        assert_eq!(count(&w, Opcode::BlockStart), 0);
+        assert_eq!(
+            opcodes(&w),
+            vec![Opcode::Load, Opcode::Add, Opcode::Ret],
+            "a materialized once, x rebinds to a+a"
+        );
+        verify_hir_stream(&w);
     }
 
     #[test]
