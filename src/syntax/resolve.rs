@@ -134,11 +134,17 @@ impl<'a> ResolutionScope<'a> {
 impl Type {
     pub fn resolve_names(&mut self, scope: &ResolutionScope) {
         match self {
-            Type::Struct(name, id) | Type::Enum(name, id) | Type::Generic(name, id) => {
+            Type::Struct(name, id) | Type::Enum(name, id) => {
                 if let Some(tid) = scope.resolve_nominal(name) {
                     *id = Some(tid);
                 }
             }
+            // A `Type::Generic` is a generic *parameter* — a type variable the parser already
+            // classified as such from the in-scope generic list (`parser/types.rs`). It is not a
+            // nominal type, so it must NOT bind to a same-named struct/enum (that would conflate a
+            // type variable with a concrete type). Its `id` is unused downstream (every consumer
+            // binds it to `_`); leave it None.
+            Type::Generic(..) => {}
             Type::Tensor(_, dims, top) => {
                 for dim in dims {
                     dim.resolve_names(scope);
@@ -337,9 +343,18 @@ impl StructDecl {
 }
 
 impl EnumDecl {
-    pub fn resolve_names(&mut self, _scope: &ResolutionScope) {
-        // Enum variants are resolved during type checking or
-        // as part of the Type::Enum resolution.
+    pub fn resolve_names(&mut self, scope: &ResolutionScope) {
+        // Resolve nominal GIDs inside variant payloads (`Node(Tree, i32)`), so the frozen registry
+        // sees enum by-value dependencies (recursive-layout / cross-module cycle detection) and the
+        // flat type stream carries the payload identity. Previously a no-op — fine for the AST
+        // type-checker, which re-resolves, but the flat pipeline relies on these GIDs being attached.
+        for (_, payload) in &mut self.variants {
+            if let Some(types) = payload {
+                for ty in types {
+                    ty.resolve_names(scope);
+                }
+            }
+        }
     }
 }
 

@@ -832,4 +832,52 @@ mod gid_stream_tests {
             "Bar carries A::Foo (cross-module) as a by-value dependency"
         );
     }
+
+    /// Cross-module *by-value* recursion is still an infinite-sized layout: A::Node holds B::Other
+    /// by value and B::Other holds A::Node by value. The Phase-2 freeze must detect the cycle across
+    /// the module boundary — the cross-module GIDs from #194 make both edges resolvable, so
+    /// `toposort` sees the loop.
+    #[test]
+    fn frozen_registry_detects_cross_module_by_value_recursion() {
+        let mut modules = vec![
+            parse_only("A", "struct Node { o: B::Other }"),
+            parse_only("B", "struct Other { n: A::Node }"),
+        ];
+        name_resolution_phase(&mut modules);
+        match build_frozen_registry(&modules) {
+            Err(PipelineError::Semantic(msg)) => {
+                assert!(msg.contains("Infinite-sized recursive layout"), "{msg}")
+            }
+            other => panic!("expected a cross-module cycle error, got {other:?}"),
+        }
+    }
+
+    /// A recursive *enum* held by value is infinite-sized too: `enum Tree { Leaf, Node(Tree) }`.
+    /// With variant payloads now resolved, the registry sees the `Tree -> Tree` by-value edge and
+    /// detects the cycle. (Regression guard for enum payload resolution.)
+    #[test]
+    fn frozen_registry_detects_recursive_enum_by_value() {
+        let mut modules = vec![parse_only("m", "enum Tree { Leaf, Node(Tree) }")];
+        name_resolution_phase(&mut modules);
+        match build_frozen_registry(&modules) {
+            Err(PipelineError::Semantic(msg)) => {
+                assert!(msg.contains("Infinite-sized recursive layout"), "{msg}")
+            }
+            other => panic!("expected an enum cycle error, got {other:?}"),
+        }
+    }
+
+    /// Indirection across the module boundary breaks the cycle: `n: &A::Node` is a reference, not a
+    /// by-value dependency, so the registry builds with both types registered.
+    #[test]
+    fn frozen_registry_cross_module_cycle_broken_by_indirection() {
+        let mut modules = vec![
+            parse_only("A", "struct Node { o: B::Other }"),
+            parse_only("B", "struct Other { n: &A::Node }"),
+        ];
+        name_resolution_phase(&mut modules);
+        let reg =
+            build_frozen_registry(&modules).expect("indirection breaks the cross-module cycle");
+        assert_eq!(reg.layouts.len(), 2);
+    }
 }
