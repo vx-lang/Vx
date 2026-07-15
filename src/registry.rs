@@ -38,6 +38,19 @@ pub struct ImmutableGlobalRegistry {
 }
 
 impl ImmutableGlobalRegistry {
+    /// Cross-module symbol lookup: resolve `symbol` *defined in* the module whose hash is
+    /// `module_hash` (GID word 0) to its `TypeId`. This is the `module_indices` read path the
+    /// design describes (doc §7, Step 3) — the frozen-registry counterpart of the `symbol_map`
+    /// lookup `resolve_names` uses on the AST (#194). Returns `None` if the module or symbol is
+    /// absent.
+    pub fn resolve_in_module(
+        &self,
+        module_hash: u64,
+        symbol: &crate::symbol::Symbol,
+    ) -> Option<TypeId> {
+        self.module_indices.get(&module_hash)?.get(symbol).copied()
+    }
+
     /// Builds and validates the registry from a collection of local module thread maps.
     /// Runs a fast cycle-detection pass to ensure no infinite-sized recursive layouts exist.
     pub fn build_and_validate(definitions: Vec<TypeDefinition>) -> Result<Self, String> {
@@ -197,5 +210,36 @@ mod tests {
         let mod2 = reg.module_indices.get(&2).unwrap();
         assert_eq!(mod2.len(), 1);
         assert!(mod2.contains_key("Baz"));
+    }
+
+    #[test]
+    fn resolve_in_module_reads_module_indices_across_modules() {
+        // The cross-module lookup path (#194): a symbol defined in module 1 is found by that
+        // module's hash + name, and is *not* visible under a different module's hash even when the
+        // name collides.
+        let m1_foo = make_def("Foo", 1, 100, vec![]);
+        let m2_foo = make_def("Foo", 2, 999, vec![]); // same name, different module
+        let reg = ImmutableGlobalRegistry::build_and_validate(vec![m1_foo, m2_foo]).unwrap();
+
+        assert_eq!(
+            reg.resolve_in_module(1, &crate::symbol::Symbol::from("Foo")),
+            Some(TypeId::new(1, 100, 0, 0)),
+            "resolves the module-1 Foo by its defining module hash"
+        );
+        assert_eq!(
+            reg.resolve_in_module(2, &crate::symbol::Symbol::from("Foo")),
+            Some(TypeId::new(2, 999, 0, 0)),
+            "module isolation: module 2's Foo is a distinct GID"
+        );
+        assert_eq!(
+            reg.resolve_in_module(3, &crate::symbol::Symbol::from("Foo")),
+            None,
+            "absent module -> None"
+        );
+        assert_eq!(
+            reg.resolve_in_module(1, &crate::symbol::Symbol::from("Missing")),
+            None,
+            "absent symbol -> None"
+        );
     }
 }

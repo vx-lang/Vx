@@ -243,6 +243,29 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
+
+        // Qualified nominal path: `Mod::Sub::Name`. The leading segments name the *defining* module
+        // and the leaf is the type; name resolution (`resolve_names`, #194) splits it back and
+        // attaches the defining module's GID. Builtins (`Tensor`, scalars) are never qualified, so
+        // only take this branch when a `::` actually follows the first segment. The full `::`-joined
+        // path is kept as the nominal's name Symbol so the AST shape is unchanged.
+        if self.check(&TokenType::DoubleColon) {
+            let mut segments = vec![ident];
+            while self.match_token(&TokenType::DoubleColon) {
+                segments
+                    .push(self.expect_identifier("Expected identifier after '::' in type path")?);
+            }
+            let base_type = Type::Struct(
+                crate::symbol::Symbol::from(segments.join("::").as_ref()),
+                None,
+            );
+            if self.match_token(&TokenType::LeftAngle) {
+                let type_args = self.parse_generic_type_args()?;
+                return Ok(Type::GenericInstance(Box::new(base_type), type_args));
+            }
+            return Ok(base_type);
+        }
+
         match ident.as_ref() {
             "Tensor" => {
                 let mut el_ty = ElementType::F32;
