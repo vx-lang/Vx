@@ -20,7 +20,9 @@ use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
-use crate::syntax::{BinaryOp, ElementType, Expr, Function, NumberExpr, Statement, Type};
+use crate::syntax::{
+    BinaryOp, ElementType, Expr, Function, NumberExpr, RelationalOp, Statement, Type, UnaryOp,
+};
 use std::collections::HashMap;
 
 /// The stable GID of a primitive scalar type: module 0 (builtin) + a content hash of the element
@@ -92,6 +94,32 @@ impl Lowerer {
                 let op = binop_opcode(&b.op)?;
                 // Operands are type-checked to a common type; the result carries the lhs type.
                 Some(self.emit(op, l.reg, r.reg, l.ty, 0))
+            }
+            // A comparison yields a `bool`; the relation is carried in `imm`.
+            Expr::RelationalOp(r) => {
+                let l = self.lower_expr(&r.lhs)?;
+                let rhs = self.lower_expr(&r.rhs)?;
+                Some(self.emit(
+                    Opcode::Cmp,
+                    l.reg,
+                    rhs.reg,
+                    ElementType::Bool,
+                    rel_code(&r.op),
+                ))
+            }
+            Expr::UnaryOp(u) => {
+                let v = self.lower_expr(&u.expr)?;
+                let op = match u.op {
+                    UnaryOp::Neg => Opcode::Neg,
+                    UnaryOp::Not => Opcode::Not,
+                };
+                Some(self.emit(op, v.reg, Register(0), v.ty, 0))
+            }
+            // A scalar `as` cast: the result carries the (scalar) target type.
+            Expr::AsCast(c) => {
+                let v = self.lower_expr(&c.expr)?;
+                let target = scalar_of(&c.target_ty)?;
+                Some(self.emit(Opcode::Cast, v.reg, Register(0), target, 0))
             }
             _ => None,
         }
@@ -180,6 +208,18 @@ fn binop_opcode(op: &BinaryOp) -> Option<Opcode> {
     })
 }
 
+/// The `Cmp` relation code stored in `imm` (kept in sync with codegen's decoding).
+fn rel_code(op: &RelationalOp) -> u64 {
+    match op {
+        RelationalOp::Eq => 0,
+        RelationalOp::NotEq => 1,
+        RelationalOp::Lt => 2,
+        RelationalOp::Gt => 3,
+        RelationalOp::Le => 4,
+        RelationalOp::Ge => 5,
+    }
+}
+
 /// The element type of a numeric literal: its checked annotation when concrete, else inferred from
 /// the spelling.
 fn number_elem(n: &NumberExpr) -> Option<ElementType> {
@@ -236,15 +276,22 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             n_types
         );
         match ins.opcode {
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Matmul => {
+            // Binary: both operands read.
+            Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Matmul
+            | Opcode::Cmp => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
                 );
             }
-            Opcode::Ret => assert!(
+            // Unary: operand1 read.
+            Opcode::Ret | Opcode::Cast | Opcode::Neg | Opcode::Not => assert!(
                 ins.operand1.0 < i,
-                "HIR ret operand not dominated at instruction {i}"
+                "HIR operand not dominated at instruction {i}"
             ),
             _ => {}
         }
@@ -343,6 +390,52 @@ mod tests {
         let mut w = worker();
         assert!(lower_function_to_hir(&f, &mut w));
         assert_eq!(w.local_hir_stream[0].imm, 0.5f64.to_bits());
+    }
+
+    #[test]
+    fn lowers_comparison_to_bool() {
+        let f = parse_fn("fn lt(a: i32, b: i32) -> bool { return a < b; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(
+            opcodes(&w),
+            vec![Opcode::Load, Opcode::Load, Opcode::Cmp, Opcode::Ret]
+        );
+        let cmp = w.local_hir_stream[2];
+        assert_eq!((cmp.operand1.0, cmp.operand2.0), (0, 1));
+        assert_eq!(cmp.imm, 2, "Lt relation code");
+        // The Cmp result type is bool.
+        assert_eq!(
+            w.local_type_stream[cmp.type_idx.0 as usize],
+            scalar_gid(&ElementType::Bool)
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn lowers_scalar_cast_with_target_type() {
+        let f = parse_fn("fn widen(a: i32) -> i64 { return a as i64; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Cast, Opcode::Ret]);
+        let cast = w.local_hir_stream[1];
+        assert_eq!(cast.operand1.0, 0, "cast reads the source");
+        assert_eq!(
+            w.local_type_stream[cast.type_idx.0 as usize],
+            scalar_gid(&ElementType::I64),
+            "cast result carries the target type"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn lowers_unary_negation() {
+        let f = parse_fn("fn neg(a: i32) -> i32 { return -a; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Neg, Opcode::Ret]);
+        assert_eq!(w.local_hir_stream[1].operand1.0, 0);
+        verify_hir_stream(&w);
     }
 
     #[test]

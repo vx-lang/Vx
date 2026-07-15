@@ -29,6 +29,15 @@ pub enum Opcode {
     Call = 8,
     Ret = 9,
     Matmul = 10,
+    /// Scalar comparison; the relation (0=Eq,1=Ne,2=Lt,3=Gt,4=Le,5=Ge) is carried in `imm`, result
+    /// is a `bool`.
+    Cmp = 11,
+    /// Scalar conversion (`as`); `type_idx` is the *target* type, `operand1` the source value.
+    Cast = 12,
+    /// Arithmetic negation (`-x`); `operand1` the source value.
+    Neg = 13,
+    /// Logical/bitwise not (`!x`); `operand1` the source value.
+    Not = 14,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
