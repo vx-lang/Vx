@@ -216,6 +216,43 @@ aliases with renaming (`import a::b as c;`) — the parser has no `as` form yet;
 Next C0 gap: a stable, project-controlled hash (#195) so this identity is reproducible across runs
 and toolchains.
 
+## Entry 7 — C0.3: project-controlled stable hash + collision guard (#195)
+
+**Commit:** `3973058`.
+
+**Gap.** GID word 0/1 content hashes used `FxHasher` — non-cryptographic **and not stable across
+`rustc_hash` versions** — while the architecture doc claimed a "cryptographic" hash "rendering
+collisions mathematically impossible." The reproducible-build and cross-crate-identity guarantees
+both rest on a *stable, project-owned* algorithm; the doc claim was also indefensible for a paper
+(design review M1). Ironically `arch.rs` had *already* hand-rolled FNV-1a for dispatch ids
+"specifically to avoid unstable std hashing."
+
+**What we did.**
+
+- `src/hash.rs`: replaced `FxHasher` with a hand-rolled **64-bit FNV-1a** (standard offset basis
+  `0xcbf29ce484222325` + prime `0x100000001b3`). It is streaming, so a multi-field `DefPath` folds
+  as one FNV stream, with the two `u64` fields of `Anonymous` written in a fixed little-endian byte
+  order (architecture-independent). GIDs now reproduce byte-for-byte across toolchains and machines.
+- `src/registry.rs`: `build_and_validate` now **deterministically rejects a GID collision** — two
+  *distinct* symbols landing on the same 256-bit identity is a hard error, not a silent conflation.
+  (Re-listing the same type — same id *and* same name — stays allowed.) This backs the honest
+  framing: FNV is stable but not cryptographic, so we *catch* the improbable collision instead of
+  asserting it away.
+- Docs: `parallel_compiler_architecture.md` §2 and the zero-swizzle section now say
+  "project-controlled stable content hash (FNV-1a), negligible-but-not-impossible collisions caught
+  at registry-build time," and note a keyed 128-bit hash (SipHash-1-3 / truncated BLAKE3) is a
+  layout-compatible future upgrade.
+
+**Tests.** FNV-1a **golden values** (pin the exact algorithm + constants so a silent swap back to a
+std hasher is caught), empty-input = offset basis, `build_rejects_gid_collision_between_distinct_types`,
+`build_allows_same_type_listed_twice`. Full suite green (280 lib + 52 integration) — changing the
+hash broke nothing, confirming no code depended on the old `FxHasher` values.
+
+**This closes C0.** The flat pipeline now has coherent identity: one word-2 codec (#193),
+cross-module resolution (#194), and a stable, collision-checked hash (#195). Next is **C1 — HIR
+lowering**: populating `local_hir_stream` so the flat streams carry function *bodies*, not just
+signature type references.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;

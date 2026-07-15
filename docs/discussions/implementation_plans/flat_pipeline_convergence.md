@@ -44,8 +44,11 @@ Behaviour-preserving; no change to the production path. Unblocks everything down
   registry exposes `resolve_in_module` (the `module_indices` read path), exercised end-to-end.
   Journal: [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 6.
   Deferred: `import … as` renames, glob imports, method/associated paths.
-- **C0.3 — Stable, project-controlled hash.** [#195](https://github.com/hiraditya/Vx/issues/195).
-  Identity must be reproducible before we depend on it for codegen + metadata.
+- **C0.3 — Stable, project-controlled hash. ✅ done** (`3973058`).
+  [#195](https://github.com/hiraditya/Vx/issues/195). GID hashes are now hand-rolled FNV-1a
+  (reproducible across toolchains), with a deterministic duplicate-GID guard at registry-build time
+  and the doc claims corrected. Journal:
+  [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 7.
 
 ### C1 — HIR lowering (populate `local_hir_stream`)
 
@@ -86,8 +89,9 @@ after a soak, remove the AST middle/back-end.
 ## Sequencing
 
 C0 (parallelizable: #193 → then #194, #195 alongside) → C1 (incremental by corpus) → C2 (behind a
-flag, differential) → C3 (flip + soak + remove). **C0.1 (#193) and C0.2 (#194) are done**; next is
-**C0.3 (#195 stable, project-controlled hash)**, the last C0 prerequisite before HIR lowering (C1).
+flag, differential) → C3 (flip + soak + remove). **C0 is complete** — C0.1 (#193 word-2 codec),
+C0.2 (#194 cross-module resolution), and C0.3 (#195 stable hash) have all landed. Next is
+**C1 — HIR lowering** (populate `local_hir_stream`), the long pole, grown incrementally by corpus.
 
 ## Risk register
 
