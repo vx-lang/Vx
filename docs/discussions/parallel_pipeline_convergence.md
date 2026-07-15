@@ -253,6 +253,39 @@ cross-module resolution (#194), and a stable, collision-checked hash (#195). Nex
 lowering**: populating `local_hir_stream` so the flat streams carry function *bodies*, not just
 signature type references.
 
+## Entry 8 — Hardening symbol resolution for recursion + corner cases (pre-C1)
+
+**Commits:** `544d566` (local fast-path), `4083a10` (corner-case suite + two fixes).
+
+**Why now.** C1 (HIR lowering) builds directly on the GIDs that resolution attaches, so before
+lowering we stress-tested the resolver against recursion and self-reference — the classic places a
+naive resolver loops or mis-binds. Resolution walks the AST and **never follows a type's
+definition**, so recursive types can't loop it; the value was in confirming the *right* GID lands,
+and the suite surfaced two real gaps.
+
+**Fast-path (`544d566`).** A qualified reference to the *current* module (`A::Foo` inside `A`) took
+the two-level `symbol_map` lookup even though `current` *is* `symbol_map[current_path]`. The scope
+now carries the current module path (owned `Arc<str>`) and short-circuits self-references to the
+local table — module-local refs dominate. Correctness-equivalent (same GID).
+
+**Two gaps fixed (`4083a10`).**
+
+1. **Generic parameters bound to same-named nominals.** A parser-produced `Type::Generic` is a type
+   *variable* (types.rs classifies it from the in-scope generic list), yet it shared the nominal
+   resolution arm, so a param `T` would bind to a `struct T`. Dropped `Type::Generic` from the arm —
+   its `id` is dead (every consumer binds it `_`), so this is pure correctness, no behaviour change.
+2. **Enum variant payloads never resolved.** `EnumDecl::resolve_names` was a no-op, so
+   `enum Tree { Node(Tree) }` left payload GIDs `None`. Fine for the AST checker (it re-resolves) but
+   the **flat pipeline reads these GIDs**, so `build_frozen_registry` missed enum by-value deps —
+   recursive / cross-module enum cycles went undetected. Now it walks the payload types.
+
+**Coverage added.** Integration: self-recursive struct, mutually recursive structs (same-module +
+cross-module), recursion through a generic instance, recursion under `&`, qualified self-recursion,
+multi-segment module paths, unresolved qualified module → `None` (no panic), recursive-function
+signature types, generic-param non-binding, recursive + cross-module enum payloads. Pipeline/registry:
+cross-module by-value recursion detected, broken by indirection, recursive enum detected. Full suite
+green (283 lib + 65 integration). Resolution is now trusted enough to lower on top of.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
