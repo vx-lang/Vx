@@ -120,8 +120,12 @@ impl LocalWorkerState {
             } => {
                 let i = index as usize;
                 match scope {
-                    Word2Scope::Local => LifetimeSignature::SlowPath(&self.local_slow_path_arena[i]),
-                    Word2Scope::Global => LifetimeSignature::SlowPath(&self.global.slow_path_arena[i]),
+                    Word2Scope::Local => {
+                        LifetimeSignature::SlowPath(&self.local_slow_path_arena[i])
+                    }
+                    Word2Scope::Global => {
+                        LifetimeSignature::SlowPath(&self.global.slow_path_arena[i])
+                    }
                 }
             }
         }

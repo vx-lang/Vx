@@ -788,4 +788,48 @@ mod gid_stream_tests {
         let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
         assert_eq!(reg.layouts.len(), 2);
     }
+
+    fn parse_only(path: &str, src: &str) -> VxModule {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut prog = parser.parse().expect("parse failed");
+        prog.module_path = path.into();
+        prog
+    }
+
+    /// End-to-end cross-module identity through the flat pipeline (#194): module A defines `Foo`,
+    /// module B holds it *by value* as `struct Bar { f: A::Foo }`. After name resolution attaches
+    /// A's GID to the qualified reference, `build_frozen_registry` (Phase 2 freeze) must both index
+    /// `Foo` under A's module hash and resolve Bar's by-value edge to A's `Foo` node -- proving the
+    /// registry carries cross-module identity and the `module_indices` read path works end to end.
+    #[test]
+    fn frozen_registry_carries_cross_module_by_value_identity() {
+        let mut modules = vec![
+            parse_only("A", "struct Foo { x: i32 }"),
+            parse_only("B", "struct Bar { f: A::Foo }"),
+        ];
+        // Resolve names across *both* modules (the parallel phase builds one symbol map for all).
+        name_resolution_phase(&mut modules);
+
+        // Builds only if Bar's by-value dependency on A::Foo resolved to a registered node.
+        let reg = build_frozen_registry(&modules).expect("cross-module by-value dep resolves");
+
+        let a_hash = crate::hash::compute_module_hash("A");
+        let foo = reg
+            .resolve_in_module(a_hash, &crate::symbol::Symbol::from("Foo"))
+            .expect("A::Foo indexed under A's module hash");
+        assert_eq!(foo.module_id(), a_hash, "word 0 is A's module hash");
+
+        let bar = reg
+            .resolve_in_module(
+                crate::hash::compute_module_hash("B"),
+                &crate::symbol::Symbol::from("Bar"),
+            )
+            .expect("Bar indexed under B's module hash");
+        assert!(
+            reg.layouts[&bar].by_value_dependencies.contains(&foo),
+            "Bar carries A::Foo (cross-module) as a by-value dependency"
+        );
+    }
 }

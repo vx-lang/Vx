@@ -462,7 +462,8 @@ mod tests {
         // 63) free. Pack every param to the max and assert the escape hatch stays clear.
         let mut tid = TypeId::new(0, 0, 0, 0);
         for p in 0..4 {
-            tid.try_set_fast_param(p, FAST_PARAM_REGION_MAX, 0xFF).unwrap();
+            tid.try_set_fast_param(p, FAST_PARAM_REGION_MAX, 0xFF)
+                .unwrap();
         }
         assert_eq!(
             tid.words[2] & ESCAPE_HATCH_MASK,
