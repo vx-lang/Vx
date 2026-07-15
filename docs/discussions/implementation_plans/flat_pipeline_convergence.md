@@ -1,0 +1,96 @@
+# Making the Flat-Array Pipeline First-Class (Convergence Epic)
+
+> Decision on [#197](https://github.com/hiraditya/Vx/issues/197): **Option A — converge.** The
+> flat-array parallel pipeline becomes the production compile path, because that is the core claim of
+> the Vx architecture ([`../../parallel_compiler_architecture.md`](../../parallel_compiler_architecture.md)).
+> This is a multi-stage effort; this doc is the roadmap. Narrative log:
+> [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md).
+
+## North star
+
+`vxc` drives `src/pipeline.rs::compile_pipeline`; codegen consumes the flat GID / HIR streams
+(`LocalWorkerState::{local_type_stream, local_hir_stream}`) and the frozen registry; the sequential
+AST middle/back-end is retired.
+
+## Guiding principle — keep-green via differential testing
+
+The sequential AST path (`driver.rs::execute` → `run_codegen`) **remains the production path and the
+test oracle** until the flat path passes the *entire* suite. We never ship a half-converted compiler:
+
+1. Each milestone lands with the full suite green.
+1. The flat codegen is brought up **behind a flag**, run **alongside** the AST codegen, and
+   **differential-tested** — emitted MLIR (or JIT results) from the flat path must match the AST path
+   across the whole `tests/` corpus — *before* it becomes default.
+1. `vxc` flips to the flat path only after parity; the AST path stays behind `--legacy-codegen` for a
+   soak, then is removed.
+
+This makes the AST path the oracle that proves the flat path correct, and means a regression in the
+flat path is caught as a diff, not as a broken release.
+
+## Milestones
+
+### C0 — Coherent flat infrastructure (prerequisites)
+
+Behaviour-preserving; no change to the production path. Unblocks everything downstream.
+
+- **C0.1 — Word-2 codec unification.** [#193](https://github.com/hiraditya/Vx/issues/193), plan in
+  [`gid_word2_codec.md`](./gid_word2_codec.md). One codec owns word 2 so generic + lifetime GIDs stop
+  colliding — required the moment the HIR stream mixes them.
+- **C0.2 — Cross-module GID resolution.** [#194](https://github.com/hiraditya/Vx/issues/194).
+  `resolve_names` must attach the *defining* module's GID for cross-module references, and the
+  registry's `module_indices` must actually be read. Without it the flat streams carry only
+  intra-module identity.
+- **C0.3 — Stable, project-controlled hash.** [#195](https://github.com/hiraditya/Vx/issues/195).
+  Identity must be reproducible before we depend on it for codegen + metadata.
+
+### C1 — HIR lowering (populate `local_hir_stream`)
+
+The long pole. An instruction-selection pass lowering each type-checked function body from the AST to
+a flat `Vec<HirInstruction>` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx, imm}`),
+with `type_idx` indexing the (now populated) `local_type_stream`. Runs in `type_check_phase` next to
+`emit_function_type_gids`. Grow it by the corpus:
+
+- C1.1 — literals, locals, arithmetic, `return`.
+- C1.2 — calls, struct/field access, control flow (`if`/loops → branch opcodes).
+- C1.3 — memory ops, tensor/slice ops, spawn/transfer (the `vx`-dialect surface).
+
+Verified structurally (well-formed stream, in-bounds `type_idx`) and — where feasible — by
+re-execution parity against the AST path.
+
+### C2 — Flat codegen (consume the streams)
+
+A backend that lowers `local_hir_stream` + the type stream + the registry to MLIR — reusing the
+existing melior emission (`src/codegen/`) at the leaves where possible, but driven by the flat
+instruction array instead of an AST walk. Brought up behind `--flat-codegen`, differential-tested
+against the AST path across `tests/` (MLIR text and/or JIT results). This is where "O(1) array
+codegen" (doc Phase 7) becomes real.
+
+### C3 — Switch `vxc`
+
+Once C2 is at parity on the full suite: `vxc` drives `compile_pipeline`; the AST path moves behind
+`--legacy-codegen`; the parallel verification hooks (`parallel_architecture_verifier`) run in debug;
+after a soak, remove the AST middle/back-end.
+
+## Also on the path (fold in)
+
+- [#196](https://github.com/hiraditya/Vx/issues/196) — assert stream **order** determinism (codegen
+  will index the stream, so order becomes contractual).
+- The `vx` dialect (`vx.spawn`/`vx.transfer`/topology/seams) and all the front-end work already done
+  (memory spaces, slice ops, sub-space scheduling) are **orthogonal and preserved** — C2 must emit
+  the same `vx` dialect ops the AST codegen does; the differential tests enforce that.
+
+## Sequencing
+
+C0 (parallelizable: #193 → then #194, #195 alongside) → C1 (incremental by corpus) → C2 (behind a
+flag, differential) → C3 (flip + soak + remove). Start: **C0.1 (#193 word-2 codec)** — self-contained
+and behaviour-preserving.
+
+## Risk register
+
+| Risk | Mitigation |
+|---|---|
+| HIR lowering is a large surface (C1) | Grow by corpus; the AST path is the oracle; parity-test per subset |
+| Flat codegen regressions | Behind a flag + differential testing before default |
+| Losing the `vx`-dialect / front-end semantics | C2 emits the same dialect; diff tests enforce identical output |
+| Determinism of stream order | #196, assert before codegen depends on it |
+| Word-2 / identity incoherence | C0.1/C0.2/C0.3 land first |

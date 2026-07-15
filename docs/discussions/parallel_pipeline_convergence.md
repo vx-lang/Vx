@@ -117,6 +117,16 @@ outlive-or-equal target; region 0 = `'static`, so a smaller region id lives long
 
 ______________________________________________________________________
 
+## Entry 4 — Decision: make the flat pipeline first-class (#197)
+
+**Decision.** Per [#197](https://github.com/hiraditya/Vx/issues/197): **converge** — the flat-array
+pipeline becomes the production compile path, because that is the core claim of the Vx architecture.
+The staged roadmap and keep-green strategy are in
+[`../implementation_plans/flat_pipeline_convergence.md`](../implementation_plans/flat_pipeline_convergence.md);
+#197 is the tracking epic. Prerequisites first (C0: word-2 codec #193, cross-module resolution #194,
+stable hash #195), then HIR lowering (C1), flat codegen behind a flag with differential testing (C2),
+then flip `vxc` (C3). The AST path stays production + oracle throughout.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;

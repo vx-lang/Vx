@@ -1109,3 +1109,8 @@ There are currently **two** front-to-back paths, and they are different:
 - **Parallel pipeline** — `src/pipeline.rs::compile_pipeline` (rayon, all phases, verification hooks). This is the data-oriented path this document describes; it is exercised by `tests/integration_test/architecture_test.rs` but is **not yet** the path `vxc` runs.
 
 Converging them (making `vxc` drive `compile_pipeline`, and codegen consume the flat streams) is the remaining integration work; §9.3's "scaffolding" rows are the concrete gaps on that path.
+
+**Decision (2026-07, [#197](https://github.com/hiraditya/Vx/issues/197)): converge.** The flat-array
+pipeline will become the production path — that is the architecture's core claim. The staged,
+keep-green roadmap (the AST path stays the oracle until the flat path is at parity via differential
+testing) is [`discussions/implementation_plans/flat_pipeline_convergence.md`](./discussions/implementation_plans/flat_pipeline_convergence.md).
