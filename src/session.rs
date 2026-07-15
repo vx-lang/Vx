@@ -12,9 +12,7 @@
 // of Vx source code to MLIR.
 //
 //===----------------------------------------------------------------------===//
-use crate::gid::{
-    TypeId, UnboundedFunctionMetadata, ESCAPE_HATCH_MASK, INDEX_MASK, LOCAL_DEFERRED_BIT,
-};
+use crate::gid::{TypeId, UnboundedFunctionMetadata};
 use crate::hir::HirInstruction;
 use std::sync::Arc;
 
@@ -105,20 +103,27 @@ impl LocalWorkerState {
 
     #[inline(always)]
     pub fn resolve_lifetime<'a>(&'a self, type_id: &TypeId) -> LifetimeSignature<'a> {
-        let word_2 = type_id.words[2];
-
-        if (word_2 & ESCAPE_HATCH_MASK) != 0 {
-            let index = (word_2 & INDEX_MASK) as usize;
-
-            // Check the bit to determine routing
-            // Bit 43 in Word 3 is LOCAL_DEFERRED_BIT
-            if (type_id.words[3] & LOCAL_DEFERRED_BIT) != 0 {
-                LifetimeSignature::SlowPath(&self.local_slow_path_arena[index])
-            } else {
-                LifetimeSignature::SlowPath(&self.global.slow_path_arena[index])
+        use crate::gid::{Word2, Word2Arena, Word2Scope};
+        match type_id.classify_word2() {
+            Word2::FastLifetime(bits) => LifetimeSignature::FastPath(bits),
+            // A *pure* generic instantiation carries no lifetime metadata (its arena holds only type
+            // arguments), so it is lifetime-unconstrained ('static). A type that is both generic and
+            // borrowed lives in the SlowMeta arena, which carries the lifetimes.
+            Word2::Index {
+                arena: Word2Arena::Generics,
+                ..
+            } => LifetimeSignature::FastPath(0),
+            Word2::Index {
+                index,
+                arena: Word2Arena::SlowMeta,
+                scope,
+            } => {
+                let i = index as usize;
+                match scope {
+                    Word2Scope::Local => LifetimeSignature::SlowPath(&self.local_slow_path_arena[i]),
+                    Word2Scope::Global => LifetimeSignature::SlowPath(&self.global.slow_path_arena[i]),
+                }
             }
-        } else {
-            LifetimeSignature::FastPath(word_2)
         }
     }
 }

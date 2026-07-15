@@ -283,8 +283,11 @@ fn mint_deferred_generic(
     worker.local_generics_offsets.push((start, len));
 
     let mut id = base; // reuse the base type's module (word 0) + symbol (word 1)
-    id.words[2] = offset_index;
-    id.words[3] |= crate::gid::LOCAL_DEFERRED_BIT | crate::gid::IS_GENERIC_INST_FLAG;
+    id.set_arena_index(
+        offset_index,
+        crate::gid::Word2Arena::Generics,
+        crate::gid::Word2Scope::Local,
+    );
     id
 }
 
@@ -548,8 +551,7 @@ fn simd_patch_phase(
     generics_thread_mappings: &[Vec<u64>],
 ) {
     println!("Executing Phase 6: SIMD Patch Pass over Flat Type Streams");
-    const LOCAL_DEFERRED_BIT: u64 = crate::gid::LOCAL_DEFERRED_BIT; // Word 3
-    const IS_GENERIC_INST_FLAG: u64 = crate::gid::IS_GENERIC_INST_FLAG; // Word 3
+    use crate::gid::{Word2, Word2Scope};
 
     all_type_streams
         .par_iter_mut()
@@ -559,26 +561,21 @@ fn simd_patch_phase(
 
             for chunk in stream.chunks_mut(8) {
                 for gid in chunk.iter_mut() {
-                    let w2 = gid.words[2];
-                    let w3 = gid.words[3];
-                    let is_deferred = (w3 & LOCAL_DEFERRED_BIT) != 0;
-
-                    if is_deferred {
-                        let local_index = w2 as usize;
-                        let is_generic = (w3 & IS_GENERIC_INST_FLAG) != 0;
-
-                        // The slow-path and generics arenas have *independent* index spaces, so a
-                        // deferred GID's local index is only valid in its own mapping. (A fully
-                        // branchless variant would need the two mappings padded to a shared index
-                        // space; correctness first.)
-                        let global_index = if is_generic {
-                            mapping_generics[local_index]
-                        } else {
-                            mapping_slow[local_index]
+                    // Only worker-local arena indices need patching to their global offset. The
+                    // codec (`classify_word2`) is the single decoder: it masks the index and routes
+                    // by arena, so the slow-path and generics index spaces (independent) can't be
+                    // confused, and a fast-path lifetime bitfield is never touched.
+                    if let Word2::Index {
+                        index,
+                        arena,
+                        scope: Word2Scope::Local,
+                    } = gid.classify_word2()
+                    {
+                        let global_index = match arena {
+                            crate::gid::Word2Arena::Generics => mapping_generics[index as usize],
+                            crate::gid::Word2Arena::SlowMeta => mapping_slow[index as usize],
                         };
-
-                        gid.words[2] = global_index;
-                        gid.words[3] &= !LOCAL_DEFERRED_BIT;
+                        gid.set_arena_index(global_index, arena, Word2Scope::Global);
                     }
                 }
             }
@@ -672,7 +669,7 @@ fn codegen_and_metadata_phase(
 #[cfg(test)]
 mod gid_stream_tests {
     use super::*;
-    use crate::gid::{TypeId, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT};
+    use crate::gid::{TypeId, Word2, Word2Arena, Word2Scope, LOCAL_DEFERRED_BIT};
     use std::sync::Arc;
 
     /// A generic instantiation lowers to a *deferred* GID (word 2 = a local generics-arena offset
@@ -689,11 +686,18 @@ mod gid_stream_tests {
         let deferred = mint_deferred_generic(&mut worker, base, vec![TypeId::new(0, 0x1111, 0, 0)]);
         worker.local_type_stream.push(deferred);
 
-        // Pre-patch: deferred + generic, identity preserved, word 2 = local offset index 0.
-        assert_ne!(deferred.words[3] & LOCAL_DEFERRED_BIT, 0);
-        assert_ne!(deferred.words[3] & IS_GENERIC_INST_FLAG, 0);
+        // Pre-patch: word 2 is a *local* generics-arena index (offset 0), identity preserved in
+        // words 0/1. Under the codec, index 0 still carries the escape-hatch bit — that is exactly
+        // what distinguishes "arena index 0" from an empty fast-path lifetime bitfield (#193).
         assert_eq!([deferred.words[0], deferred.words[1]], [0xAAAA, 0xBBBB]);
-        assert_eq!(deferred.words[2], 0);
+        assert_eq!(
+            deferred.classify_word2(),
+            Word2::Index {
+                index: 0,
+                arena: Word2Arena::Generics,
+                scope: Word2Scope::Local,
+            }
+        );
 
         let mut check_results: Vec<TypeCheckResult> = vec![(
             crate::diagnostic::DiagnosticsVec::new(),
@@ -707,10 +711,18 @@ mod gid_stream_tests {
         simd_patch_phase(&mut streams, &slow_map, &gen_map);
 
         let patched = streams[0].1[0];
-        // Post-patch: deferred bit cleared, identity preserved, word 2 = global offset index 0.
-        assert_eq!(patched.words[3] & LOCAL_DEFERRED_BIT, 0);
+        // Post-patch: word 2 is now a *global* generics-arena index (offset 0), scope flipped
+        // local->global, identity preserved. Still an arena index (escape-hatch set), not a
+        // lifetime bitfield.
         assert_eq!([patched.words[0], patched.words[1]], [0xAAAA, 0xBBBB]);
-        assert_eq!(patched.words[2], 0);
+        assert_eq!(
+            patched.classify_word2(),
+            Word2::Index {
+                index: 0,
+                arena: Word2Arena::Generics,
+                scope: Word2Scope::Global,
+            }
+        );
     }
 
     /// `emit_type_gid` harvests a settled GID for a resolved nominal type and a deferred GID for a

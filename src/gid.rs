@@ -21,9 +21,12 @@ pub const INDEX_MASK: u64 = !ESCAPE_HATCH_MASK;
 // Bitmask Constants for Word 3
 const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
 
-// Fast Param Constants
+// Fast Param Constants. Each 16-bit slot is [region:12][variance:3][reserved:1]. The reserved top
+// bit keeps the *4th* param's slot from touching word-2 bit 63 (`ESCAPE_HATCH_MASK`), so a fast-path
+// lifetime bitfield can never be misread as an arena index (#193). Variance only needs 2 bits
+// (invariant/covariant/contravariant), so 3 is ample.
 pub const FAST_PARAM_REGION_MAX: u16 = 0x0FFF;
-pub const FAST_PARAM_VARIANCE_MASK: u16 = 0x000F;
+pub const FAST_PARAM_VARIANCE_MASK: u16 = 0x0007;
 
 // Specific High-Frequency Attribute Flags
 pub const ATTR_INLINE: u64 = 1 << 52;
@@ -448,6 +451,51 @@ mod tests {
             assert_eq!(meta.trait_vtables[0], 100);
         } else {
             panic!("Expected SlowPath");
+        }
+    }
+
+    #[test]
+    fn fast_param_never_touches_escape_hatch_bit() {
+        // W2 (#193): the 4th fast param's variance field must not reach bit 63, or a fully-packed
+        // fast-path lifetime GID would be misread as an arena index. With FAST_PARAM_VARIANCE_MASK
+        // = 0x0007 the variance occupies bits 12..15 of each slot, leaving slot bit 15 (word-2 bit
+        // 63) free. Pack every param to the max and assert the escape hatch stays clear.
+        let mut tid = TypeId::new(0, 0, 0, 0);
+        for p in 0..4 {
+            tid.try_set_fast_param(p, FAST_PARAM_REGION_MAX, 0xFF).unwrap();
+        }
+        assert_eq!(
+            tid.words[2] & ESCAPE_HATCH_MASK,
+            0,
+            "a fully-packed fast-path word 2 must leave bit 63 clear"
+        );
+        assert!(matches!(tid.classify_word2(), Word2::FastLifetime(_)));
+    }
+
+    #[test]
+    fn generic_deferred_gid_is_not_misread_as_lifetime() {
+        // W4 (#193): the word-2 double-booking bug. A generic deferred GID sets the escape-hatch
+        // bit with its arena index in word 2; before the codec, `resolve_lifetime` read that index
+        // as a lifetime slow-path index (SlowPath) or, on the fast branch, as a lifetime bitfield.
+        // Now it routes via `classify_word2`: a pure generic instantiation carries no lifetime, so
+        // it must resolve to FastPath(0) — never to a slow-path arena lookup keyed by the generics
+        // index (which would read the wrong arena / panic).
+        use crate::session::{GlobalSession, LocalWorkerState};
+        let global = std::sync::Arc::new(GlobalSession::new(1));
+        let worker = LocalWorkerState::new(global);
+
+        let mut g = TypeId::new(0xAA, 0xBB, 0, 0);
+        // Offset index 3 in the local generics arena, exactly as `mint_deferred_generic` encodes it.
+        g.set_arena_index(3, Word2Arena::Generics, Word2Scope::Local);
+
+        match worker.resolve_lifetime(&g) {
+            LifetimeSignature::FastPath(bits) => assert_eq!(
+                bits, 0,
+                "a generic GID is lifetime-unconstrained, not a bitfield carrying its arena index"
+            ),
+            LifetimeSignature::SlowPath(_) => {
+                panic!("generic GID must not route to the lifetime slow-path arena")
+            }
         }
     }
 
