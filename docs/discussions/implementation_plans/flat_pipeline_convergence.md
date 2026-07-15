@@ -33,9 +33,11 @@ flat path is caught as a diff, not as a broken release.
 
 Behaviour-preserving; no change to the production path. Unblocks everything downstream.
 
-- **C0.1 — Word-2 codec unification.** [#193](https://github.com/hiraditya/Vx/issues/193), plan in
-  [`gid_word2_codec.md`](./gid_word2_codec.md). One codec owns word 2 so generic + lifetime GIDs stop
-  colliding — required the moment the HIR stream mixes them.
+- **C0.1 — Word-2 codec unification. ✅ done** (`cf9d5c4` + `a947b60`).
+  [#193](https://github.com/hiraditya/Vx/issues/193), plan in [`gid_word2_codec.md`](./gid_word2_codec.md).
+  One codec owns word 2 so generic + lifetime GIDs stop colliding — required the moment the HIR
+  stream mixes them. W1–W4 landed; W5 (borrowed-generic composite) deferred until borrowed generics
+  are emitted. Journal: [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 5.
 - **C0.2 — Cross-module GID resolution.** [#194](https://github.com/hiraditya/Vx/issues/194).
   `resolve_names` must attach the *defining* module's GID for cross-module references, and the
   registry's `module_indices` must actually be read. Without it the flat streams carry only
@@ -82,8 +84,8 @@ after a soak, remove the AST middle/back-end.
 ## Sequencing
 
 C0 (parallelizable: #193 → then #194, #195 alongside) → C1 (incremental by corpus) → C2 (behind a
-flag, differential) → C3 (flip + soak + remove). Start: **C0.1 (#193 word-2 codec)** — self-contained
-and behaviour-preserving.
+flag, differential) → C3 (flip + soak + remove). **C0.1 (#193 word-2 codec) is done**; next is
+**C0.2 (#194 cross-module GID resolution)**, with **C0.3 (#195 stable hash)** alongside.
 
 ## Risk register
 

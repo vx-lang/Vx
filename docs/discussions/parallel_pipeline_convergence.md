@@ -127,6 +127,45 @@ The staged roadmap and keep-green strategy are in
 stable hash #195), then HIR lowering (C1), flat codegen behind a flag with differential testing (C2),
 then flip `vxc` (C3). The AST path stays production + oracle throughout.
 
+## Entry 5 — C0.1: word-2 codec unification, end to end (#193)
+
+**Commits:** `cf9d5c4` (W1 codec) → `a947b60` (W2/W3/W4).
+
+**Gap.** Word 2 of the 256-bit GID was *triple-booked*: a fast-path lifetime bitfield, a lifetime
+slow-path arena index, and a generic deferred arena index — signalled by **two disagreeing** flags
+(`ESCAPE_HATCH_MASK` on word 2 vs `LOCAL_DEFERRED_BIT` on word 3) and read with **two index
+conventions** (masked vs raw). The generic path even left the escape-hatch bit *clear* while storing
+a raw index, so the moment the HIR stream mixes generic and lifetime GIDs they collide (design review
+H1, [`parallel_pipeline_design_review.md`](./parallel_pipeline_design_review.md)). This is the first
+C0 prerequisite for making the flat pipeline first-class (#197).
+
+**What we did.** One codec now owns word 2 (`gid.rs`): `classify_word2` / `set_arena_index` over a
+`Word2 { FastLifetime(u64) | Index { index, arena: {Generics,SlowMeta}, scope: {Local,Global} } }`.
+The discriminant is a *single* bit — `ESCAPE_HATCH_MASK` — and the word-3 flags only pick
+*arena*/*scope*, never "is this an index". All three touch points were routed through it:
+
+- `mint_deferred_generic` → `set_arena_index(offset, Generics, Local)` (now sets the escape-hatch bit
+  even for index 0 — that is exactly what distinguishes "arena index 0" from an empty bitfield);
+- `simd_patch_phase` → `classify_word2` → remap local→global → `set_arena_index(global, arena, Global)`
+  (the patched GID stays an *index*, not a bitfield);
+- `resolve_lifetime` → `classify_word2`: `FastLifetime → FastPath`, pure `Generics → FastPath(0)`
+  (lifetime-unconstrained), `SlowMeta → SlowPath` in the local/global arena by scope.
+
+W2 reserved word-2 bit 63 by narrowing `FAST_PARAM_VARIANCE_MASK` `0x000F → 0x0007`, so a fully
+packed 4-param fast GID can never set the escape-hatch bit (variance only needs 2 bits).
+
+**Invariant established.** Word 2 is always *exactly one of* {inline lifetime bitfield, one arena
+index}. A type that is both borrowed and generic will ride the `SlowMeta` composite arena
+(`UnboundedFunctionMetadata` already carries `type_arguments` + `lifetime_regions`) — that is W5,
+deferred until borrowed generics are actually emitted.
+
+**Tests.** `fast_param_never_touches_escape_hatch_bit` (W2), `generic_deferred_gid_is_not_misread_as_lifetime`
+(W4, the H1 symptom), and the interning/patch end-to-end test now asserts via the codec. Full suite
+green (274 lib + 49 integration). Behaviour-preserving for the current surface.
+
+**Scope / not yet.** W5 (borrowed-generic composite). Next C0 gaps: cross-module GID resolution
+(#194) and a stable, project-controlled hash (#195).
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;

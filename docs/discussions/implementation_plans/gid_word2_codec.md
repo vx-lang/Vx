@@ -34,9 +34,18 @@ index}** — never two things. A type that is *both* borrowed and generic rides 
 | verifier masks (`word2 & INDEX_MASK`), simd-patch does not | `parallel_architecture_verifier.rs::verify_phase_3_isolation` vs `pipeline.rs::simd_patch_phase` |
 | `try_set_fast_param` param 3 writes bits 48–63 — variance top bit == escape-hatch bit | `gid.rs::try_set_fast_param` |
 
+## Status
+
+**W1–W4 landed** (`cf9d5c4` codec; `a947b60` W2/W3/W4). Word 2 is now read/written *only* through
+`classify_word2` / `set_arena_index`, across all three touch points (`mint_deferred_generic`,
+`simd_patch_phase`, `resolve_lifetime`). Behaviour-preserving: full suite green (274 lib + 49
+integration). **W5 is deferred** — it only matters once borrowed generics are actually emitted, which
+they are not yet; the invariant (word 2 holds exactly one thing) already forces the composite when
+they are. #193 is fixed for the current surface; keep it open only if we want W5 tracked there.
+
 ## Milestones
 
-- **W1 — The codec (no behaviour change yet).** In `gid.rs`, add:
+- **W1 — The codec (no behaviour change yet). ✅ `cf9d5c4`.** In `gid.rs`, add:
 
   ```
   enum Arena { Generics, SlowMeta }
@@ -55,22 +64,22 @@ index}** — never two things. A type that is *both* borrowed and generic rides 
   `IS_GENERIC_INST_FLAG` / `LOCAL_DEFERRED_BIT`. Unit-test the round-trip matrix here (fast-lifetime,
   slow-lifetime local/global, generic local/global). *Foundational; nothing else changes yet.*
 
-- **W2 — Reserve bit 63 in the fast path.** Fix `try_set_fast_param` so the 4th param cannot write
+- **W2 — Reserve bit 63 in the fast path. ✅ `a947b60`.** Fix `try_set_fast_param` so the 4th param cannot write
   bit 63 (cap its variance field to 3 bits, or cap fast params at 3.9 — pick and document). Assert
   in a test that a maxed-out 4-param fast GID has bit 63 == 0. *Removes the bonus latent collision.*
 
-- **W3 — Route the generic deferred path through the codec.** `mint_deferred_generic` →
+- **W3 — Route the generic deferred path through the codec. ✅ `a947b60`.** `mint_deferred_generic` →
   `TypeId::with_arena_index(offset, Generics, Local)` (now sets the escape-hatch bit).
   `simd_patch_phase` → `classify_word2`, remap `Local`→`Global` index, write back via
   `with_arena_index(global, Generics, Global)`. Extraction becomes `word2 & INDEX_MASK` everywhere.
   Verify `verify_phase_3_isolation` and `simd_patch_phase` now agree. *This is the actual bug fix.*
 
-- **W4 — `resolve_lifetime` routes by arena.** Use `classify_word2`: `Index{arena: Generics, ..}` →
+- **W4 — `resolve_lifetime` routes by arena. ✅ `a947b60`.** Use `classify_word2`: `Index{arena: Generics, ..}` →
   the generics arena; `Index{arena: SlowMeta, scope}` → local/global slow-path arena;
   `FastLifetime(bits)` → fast path. Regression test: a generic deferred GID is **not** misread as a
   lifetime bitfield (the H1 symptom).
 
-- **W5 — Borrowed-generic → slow-path composite (design closure).** When a type needs both a generic
+- **W5 — Borrowed-generic → slow-path composite (design closure). ⏸ deferred (no borrowed generics emitted yet).** When a type needs both a generic
   entry and lifetime info, `emit_type_gid` routes it to the `UnboundedFunctionMetadata` slow-path
   arena (type_arguments + lifetime_regions) instead of the lean generics arena. Test:
   `&'a List<i32>` produces one `SlowMeta` GID whose arena entry carries both. *Closes the "word 2
