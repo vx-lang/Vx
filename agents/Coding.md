@@ -10,6 +10,7 @@ Write code in Rust by default.
 - Make sure there is a github issue ID attached to each commit unless the commit is cleanup (formatting, minor fixes)
 - If you have finished a walkthrough then save the Walkthrough, Task.md, and Implementation Plan in the docs/discussions/ directory.
 - When planning to add TODO to make progress: better add a `panic!` to prevent accidental usage of the feature and also so that you are forced to implement it when you come back to it. (prefer adding a github issue ID to it as well).
+- Dont write issue numbers, or codewords (like S1, C1.2 etc) in the code itself.
 
 ## Testing
 
