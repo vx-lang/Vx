@@ -89,6 +89,31 @@ fn qualified_reference_is_not_shadowed_by_local_same_name() {
     }
 }
 
+/// A qualified reference to the *current* module (`A::Foo` inside module A) resolves through the
+/// local symbol table (the fast path) to the same GID as the unqualified `Foo` — module-local
+/// references are the common case and must stay both cheap and correct.
+#[test]
+fn qualified_self_reference_resolves_via_local_table() {
+    let mut module_a = parse_module(
+        "A",
+        "struct Foo { x: i32 }\nfn use_foo(f: A::Foo) -> i32 { return 0; }",
+    );
+    let symbol_map = build_symbol_map(&[module_a.clone()]);
+    module_a.resolve_names(&symbol_map);
+
+    let a_foo = symbol_map[&sym("A")][&sym("Foo")];
+    match param_ty(&module_a, 0) {
+        Type::Struct(name, Some(id)) => {
+            assert_eq!(name.as_ref(), "A::Foo");
+            assert_eq!(
+                id, a_foo,
+                "self-qualified ref resolves to the module's own Foo"
+            );
+        }
+        other => panic!("expected resolved Struct, got {other:?}"),
+    }
+}
+
 /// An `import a::Foo;` brings the *unqualified* name `Foo` into scope from module `a`; a plain `Foo`
 /// reference then resolves to `a`'s GID (when the current module has no local `Foo`).
 #[test]

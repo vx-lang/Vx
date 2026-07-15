@@ -23,6 +23,11 @@ use std::collections::HashMap;
 /// bolted onto each AST arm. See #194 / `docs/discussions/parallel_pipeline_design_review.md` (H2).
 pub struct ResolutionScope<'a> {
     current: Option<&'a SymbolTable>,
+    /// The current module's path (`symbol_map` key for `current`). Lets a qualified reference to the
+    /// *current* module (`A::Foo` inside module `A`) short-circuit to the local table instead of a
+    /// second `symbol_map` lookup — module-local references are the common case. Owned (a cheap
+    /// `Arc<str>` bump) so the scope doesn't borrow the `Program` during the mutable walk.
+    current_path: Option<Symbol>,
     symbol_map: &'a SymbolMap,
     imports: ImportIndex,
 }
@@ -46,6 +51,7 @@ fn join_path(segs: &[Symbol]) -> String {
 impl<'a> ResolutionScope<'a> {
     fn new(
         current: Option<&'a SymbolTable>,
+        current_path: Option<Symbol>,
         symbol_map: &'a SymbolMap,
         imports: &[crate::syntax::ImportDecl],
     ) -> Self {
@@ -65,6 +71,7 @@ impl<'a> ResolutionScope<'a> {
         }
         Self {
             current,
+            current_path,
             symbol_map,
             imports: ImportIndex {
                 leaf_to_module,
@@ -84,6 +91,12 @@ impl<'a> ResolutionScope<'a> {
             let module_part = &s[..idx];
             let leaf = Symbol::from(&s[idx + 2..]);
             let module_key = self.resolve_module_path(module_part);
+            // Fast path: a qualified reference to the *current* module hits the local table
+            // directly, skipping the outer `symbol_map` lookup (`current` *is*
+            // `symbol_map[current_path]`). Module-local references dominate.
+            if self.current_path.as_deref() == Some(&*module_key) {
+                return self.current.and_then(|m| m.get(&leaf)).copied();
+            }
             return self.symbol_map.get(&module_key)?.get(&leaf).copied();
         }
         // Unqualified: a local definition wins (as before), else an imported name.
@@ -355,7 +368,12 @@ impl Program {
         // Build the scope up front: it borrows only `symbol_map` (and owns an index cloned from the
         // imports), so it no longer borrows `self` and we can mutably walk the declarations below.
         let current = symbol_map.get(&self.module_path);
-        let scope = ResolutionScope::new(current, symbol_map, &self.imports);
+        let scope = ResolutionScope::new(
+            current,
+            Some(self.module_path.clone()),
+            symbol_map,
+            &self.imports,
+        );
         for s in &mut self.structs {
             s.resolve_names(&scope);
         }
