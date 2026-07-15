@@ -38,10 +38,12 @@ Behaviour-preserving; no change to the production path. Unblocks everything down
   One codec owns word 2 so generic + lifetime GIDs stop colliding — required the moment the HIR
   stream mixes them. W1–W4 landed; W5 (borrowed-generic composite) deferred until borrowed generics
   are emitted. Journal: [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 5.
-- **C0.2 — Cross-module GID resolution.** [#194](https://github.com/hiraditya/Vx/issues/194).
-  `resolve_names` must attach the *defining* module's GID for cross-module references, and the
-  registry's `module_indices` must actually be read. Without it the flat streams carry only
-  intra-module identity.
+- **C0.2 — Cross-module GID resolution. ✅ done** (`ce246d7`).
+  [#194](https://github.com/hiraditya/Vx/issues/194). `resolve_names` now attaches the *defining*
+  module's GID for qualified (`A::Foo`) and imported references via a `ResolutionScope`, and the
+  registry exposes `resolve_in_module` (the `module_indices` read path), exercised end-to-end.
+  Journal: [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 6.
+  Deferred: `import … as` renames, glob imports, method/associated paths.
 - **C0.3 — Stable, project-controlled hash.** [#195](https://github.com/hiraditya/Vx/issues/195).
   Identity must be reproducible before we depend on it for codegen + metadata.
 
@@ -84,8 +86,8 @@ after a soak, remove the AST middle/back-end.
 ## Sequencing
 
 C0 (parallelizable: #193 → then #194, #195 alongside) → C1 (incremental by corpus) → C2 (behind a
-flag, differential) → C3 (flip + soak + remove). **C0.1 (#193 word-2 codec) is done**; next is
-**C0.2 (#194 cross-module GID resolution)**, with **C0.3 (#195 stable hash)** alongside.
+flag, differential) → C3 (flip + soak + remove). **C0.1 (#193) and C0.2 (#194) are done**; next is
+**C0.3 (#195 stable, project-controlled hash)**, the last C0 prerequisite before HIR lowering (C1).
 
 ## Risk register
 

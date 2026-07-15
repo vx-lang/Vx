@@ -166,6 +166,56 @@ green (274 lib + 49 integration). Behaviour-preserving for the current surface.
 **Scope / not yet.** W5 (borrowed-generic composite). Next C0 gaps: cross-module GID resolution
 (#194) and a stable, project-controlled hash (#195).
 
+## Entry 6 — C0.2: cross-module GID resolution (#194)
+
+**Commit:** `ce246d7`.
+
+**Gap.** The 256-bit GID exists for *cross-module* identity (word 0 = defining-module hash), but name
+resolution was intra-module only: `Type::resolve_names` looked a nominal type up **only** in the
+current module's `SymbolTable` (`mod_syms.and_then(|m| m.get(name))`), never in the full
+`symbol_map`. A reference to a type in another module got `id = None` — or, worse, was silently
+shadowed by a same-named local. So the flat type stream + frozen registry carried only within-module
+identity, and the registry's `module_indices` (built at the Phase 2 freeze) was never read (design
+review H2, [`parallel_pipeline_design_review.md`](./parallel_pipeline_design_review.md)).
+
+**What we did.**
+
+- **Parser** (`parser/types.rs`): `parse_named_type` now parses a `::`-qualified nominal path
+  (`A::Foo`) and keeps the whole path as the nominal's name `Symbol`, so the AST shape
+  (`Type::Struct(Symbol, Option<TypeId>)`) is unchanged. Builtins (`Tensor`, scalars) are never
+  qualified, so the branch only fires when a `::` actually follows.
+- **Resolution** (`syntax/resolve.rs`): a new `ResolutionScope` is threaded as *one* value through
+  the recursive walk (replacing the `(mod_syms, symbol_map)` pair — a mechanical, contained
+  signature change, all internal to `resolve.rs`; the public `Program::resolve_names(&symbol_map)`
+  entry is unchanged). It centralizes nominal resolution in `resolve_nominal`:
+  - a **qualified** `Mod::…::Name` splits at the last `::`; the module part resolves to a real
+    `symbol_map` key either literally (`crate::a`) or by expanding a leading segment through an
+    `import a::b;` alias; the leaf is looked up in *that* module. A qualified reference **never**
+    falls back to a same-named local type.
+  - an **unqualified** name takes local definitions first (as before), then an `import a::b::Name;`
+    brings `Name` in from module `a::b`.
+- **Registry** (`registry.rs`): `resolve_in_module(module_hash, symbol)` — the frozen-registry
+  counterpart of the symbol-map lookup, i.e. the `module_indices` read path the design (§7 Step 3)
+  describes. It is now the queried path in the end-to-end pipeline test.
+
+**Why the `ResolutionScope` bundle.** The alternative (adding a third `imports` param to every
+`resolve_names` arm) spreads the cross-module policy across ~30 call sites. Bundling
+current-module + symbol map + a pre-built import index behind one reference keeps the policy in one
+place and threads a single value. The scope borrows only `symbol_map` and *owns* an index cloned
+from the imports, so building it before the mutable walk sidesteps a self-borrow conflict.
+
+**Tests.** Qualified cross-module resolution attaches A's GID (word 0 = A's module hash); a qualified
+ref is not shadowed by a same-named local; imported unqualified names resolve cross-module;
+`resolve_in_module` reads `module_indices` with module isolation; and an **end-to-end pipeline** test
+(`frozen_registry_carries_cross_module_by_value_identity`) proves the frozen registry resolves a
+cross-module *by-value dependency* (`struct Bar { f: A::Foo }` in B edges to A's `Foo` node). Full
+suite green (276 lib + 52 integration).
+
+**Scope / not yet.** Method/associated-path resolution (`a::b::method`) beyond nominal types; use
+aliases with renaming (`import a::b as c;`) — the parser has no `as` form yet; and glob imports.
+Next C0 gap: a stable, project-controlled hash (#195) so this identity is reproducible across runs
+and toolchains.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
