@@ -15,6 +15,16 @@ converging the type stream, borrow check, and codegen, plus **two medium** issue
 claims gap in the hash, and unproven order-determinism), and **one strategic** question (the payoff
 needs a codegen rewrite). None are fatal; all are fixable. Details below.
 
+## Tracking
+
+| Finding | Issue | Plan |
+|---|---|---|
+| H1 — word 2 double-booked | [#193](https://github.com/hiraditya/Vx/issues/193) | [`../implementation_plans/gid_word2_codec.md`](../implementation_plans/gid_word2_codec.md) |
+| H2 — cross-module identity not resolved | [#194](https://github.com/hiraditya/Vx/issues/194) | — |
+| M1 — non-crypto hash vs claims | [#195](https://github.com/hiraditya/Vx/issues/195) | — |
+| M2 — determinism is set, not order | [#196](https://github.com/hiraditya/Vx/issues/196) | — |
+| S1 — converge vs research-track (decision) | [#197](https://github.com/hiraditya/Vx/issues/197) | — |
+
 ______________________________________________________________________
 
 ## H1 — Word 2 is double-booked with *contradictory* encodings (High)
