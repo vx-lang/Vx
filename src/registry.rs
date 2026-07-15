@@ -54,7 +54,7 @@ impl ImmutableGlobalRegistry {
     /// Builds and validates the registry from a collection of local module thread maps.
     /// Runs a fast cycle-detection pass to ensure no infinite-sized recursive layouts exist.
     pub fn build_and_validate(definitions: Vec<TypeDefinition>) -> Result<Self, String> {
-        let mut layouts = FxHashMap::default();
+        let mut layouts: FxHashMap<TypeId, TypeDefinition> = FxHashMap::default();
         let mut module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>> =
             FxHashMap::default();
 
@@ -64,6 +64,18 @@ impl ImmutableGlobalRegistry {
         // 1. Register all layouts and build the node map
         for def in definitions {
             let mod_id = def.id.module_id();
+            // Deterministic collision guard (#195): the content hash (FNV-1a) is stable but not
+            // cryptographic, so two *distinct* symbols could in principle land on the same GID.
+            // Catch it here rather than silently conflate two types — an improbable but real
+            // correctness bug. (Re-listing the same type is harmless: same id *and* same name.)
+            if let Some(existing) = layouts.get(&def.id) {
+                if existing.name != def.name {
+                    return Err(format!(
+                        "GID collision: distinct types '{}' and '{}' share the same 256-bit identity {:?}",
+                        existing.name, def.name, def.id
+                    ));
+                }
+            }
             module_indices
                 .entry(mod_id)
                 .or_default()
@@ -210,6 +222,26 @@ mod tests {
         let mod2 = reg.module_indices.get(&2).unwrap();
         assert_eq!(mod2.len(), 1);
         assert!(mod2.contains_key("Baz"));
+    }
+
+    #[test]
+    fn build_rejects_gid_collision_between_distinct_types() {
+        // Two *distinct* symbols that (hypothetically) hash to the same GID must be rejected, not
+        // silently conflated (#195). We simulate a content-hash collision by handing two different
+        // names the same (w0, w1).
+        let a = make_def("Alpha", 7, 42, vec![]);
+        let b = make_def("Beta", 7, 42, vec![]); // same module + symbol hash => same GID
+        let err = ImmutableGlobalRegistry::build_and_validate(vec![a, b]).unwrap_err();
+        assert!(err.contains("GID collision"), "{err}");
+        assert!(err.contains("Alpha") && err.contains("Beta"), "{err}");
+    }
+
+    #[test]
+    fn build_allows_same_type_listed_twice() {
+        // Same id *and* same name is a harmless re-listing, not a collision.
+        let a = make_def("Same", 7, 42, vec![]);
+        let a2 = make_def("Same", 7, 42, vec![]);
+        assert!(ImmutableGlobalRegistry::build_and_validate(vec![a, a2]).is_ok());
     }
 
     #[test]
