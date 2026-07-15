@@ -252,11 +252,9 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     use syntax::Type;
     match ty {
         Type::Struct(_, id) | Type::Enum(_, id) => *id,
-        Type::Scalar(elem) => {
-            let sym =
-                crate::hash::DefPath::Named(&format!("$prim::{elem:?}")).compute_symbol_hash();
-            Some(crate::gid::TypeId::new(0, sym, 0, 0))
-        }
+        // Single source of truth for the primitive GID scheme, shared with HIR lowering so a scalar
+        // has the same identity in a signature and in a lowered body.
+        Type::Scalar(elem) => Some(crate::hir::flatten::scalar_gid(elem)),
         Type::Ref(inner, _)
         | Type::Borrow { inner, .. }
         | Type::Pointer(inner, _, _)
@@ -385,6 +383,11 @@ fn type_check_phase(
 
                     // Lower this function's type references to the flat GID stream (Phase 3).
                     emit_function_type_gids(func, &mut worker);
+                    // Lower the body to flat HIR bytecode (C1); atomic — a no-op for functions
+                    // outside the supported subset.
+                    crate::hir::flatten::lower_function_to_hir(func, &mut worker);
+                    #[cfg(debug_assertions)]
+                    crate::hir::flatten::verify_hir_stream(&worker);
 
                     (errors, monos, worker, module_idx, gen_structs)
                 })
@@ -404,6 +407,9 @@ fn type_check_phase(
                         let gen_structs = checker.generated_structs;
 
                         emit_function_type_gids(func, &mut worker);
+                        crate::hir::flatten::lower_function_to_hir(func, &mut worker);
+                        #[cfg(debug_assertions)]
+                        crate::hir::flatten::verify_hir_stream(&worker);
 
                         (errors, monos, worker, module_idx, gen_structs)
                     })
@@ -850,6 +856,32 @@ mod gid_stream_tests {
             }
             other => panic!("expected a cross-module cycle error, got {other:?}"),
         }
+    }
+
+    /// C1: the real parallel `type_check_phase` lowers a scalar function body into its worker's
+    /// `local_hir_stream` (not just the direct unit-test path). Proves the wiring end-to-end, with
+    /// the debug `verify_hir_stream` hook active.
+    #[test]
+    fn type_check_phase_lowers_scalar_body_to_hir() {
+        use crate::hir::bytecode::Opcode;
+        let mut modules = vec![parse_only(
+            "m",
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }",
+        )];
+        name_resolution_phase(&mut modules);
+        let registry = build_frozen_registry(&modules).expect("registry");
+        let session = Arc::new(GlobalSession::with_registry(1, registry));
+        let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
+        let env = GlobalAstEnv::build(&env_mods);
+
+        let results = type_check_phase(&mut modules, &session, &env).expect("type check ok");
+        let worker = &results[0].2;
+        let ops: Vec<Opcode> = worker.local_hir_stream.iter().map(|i| i.opcode).collect();
+        assert_eq!(
+            ops,
+            vec![Opcode::Load, Opcode::Load, Opcode::Add, Opcode::Ret],
+            "scalar body lowered through the parallel phase"
+        );
     }
 
     /// A recursive *enum* held by value is infinite-sized too: `enum Tree { Leaf, Node(Tree) }`.

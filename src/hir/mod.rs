@@ -16,6 +16,7 @@ pub mod arena;
 pub mod bytecode;
 pub mod env;
 pub mod expr;
+pub mod flatten;
 pub mod lower_ast;
 pub mod memory;
 pub mod prover;
