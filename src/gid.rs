@@ -67,6 +67,86 @@ impl TypeId {
     }
 }
 
+/// Which arena a word-2 arena index points into. The two arenas have *independent* index spaces, so
+/// a GID's index is only valid in its own arena.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Word2Arena {
+    /// Pure generic instantiation: index into the generics arena (`Vec<TypeId>` slices).
+    Generics,
+    /// A lifetime/function slow-path entry (>4 params, or generics *and* lifetimes together): index
+    /// into the `UnboundedFunctionMetadata` slow-path arena, which carries both.
+    SlowMeta,
+}
+
+/// Whether a word-2 arena index is worker-local (pre-Phase-6 patch) or global (post-patch).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Word2Scope {
+    Local,
+    Global,
+}
+
+/// The single interpretation of GID word 2. Every producer/consumer of word 2 goes through
+/// [`TypeId::classify_word2`] / [`TypeId::set_arena_index`] so its three meanings (fast-path
+/// lifetime bitfield, generic arena index, slow-path lifetime index) cannot re-diverge. See
+/// `docs/discussions/implementation_plans/gid_word2_codec.md` (#193).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Word2 {
+    /// Escape-hatch bit clear: word 2 is an inline lifetime/variance bitfield (4×16-bit slots).
+    FastLifetime(u64),
+    /// Escape-hatch bit set: word 2 is an arena index; `arena`/`scope` come from the word-3 flags.
+    Index {
+        index: u64,
+        arena: Word2Arena,
+        scope: Word2Scope,
+    },
+}
+
+impl TypeId {
+    /// Decode word 2 — the single source of truth. `ESCAPE_HATCH_MASK` (bit 63) means "word 2 is an
+    /// arena index"; the word-3 flags `IS_GENERIC_INST_FLAG` / `LOCAL_DEFERRED_BIT` disambiguate
+    /// which arena and which scope.
+    #[inline]
+    pub fn classify_word2(&self) -> Word2 {
+        if self.words[2] & ESCAPE_HATCH_MASK == 0 {
+            return Word2::FastLifetime(self.words[2]);
+        }
+        let arena = if self.words[3] & IS_GENERIC_INST_FLAG != 0 {
+            Word2Arena::Generics
+        } else {
+            Word2Arena::SlowMeta
+        };
+        let scope = if self.words[3] & LOCAL_DEFERRED_BIT != 0 {
+            Word2Scope::Local
+        } else {
+            Word2Scope::Global
+        };
+        Word2::Index {
+            index: self.words[2] & INDEX_MASK,
+            arena,
+            scope,
+        }
+    }
+
+    /// Encode word 2 as an arena index: sets the escape-hatch bit and the `arena`/`scope` word-3
+    /// flags, preserving words 0/1 and the other word-3 bits. The inverse of [`Self::classify_word2`].
+    #[inline]
+    pub fn set_arena_index(&mut self, index: u64, arena: Word2Arena, scope: Word2Scope) {
+        debug_assert!(
+            index & ESCAPE_HATCH_MASK == 0,
+            "arena index must fit in 63 bits"
+        );
+        self.words[2] = ESCAPE_HATCH_MASK | (index & INDEX_MASK);
+        match arena {
+            Word2Arena::Generics => self.words[3] |= IS_GENERIC_INST_FLAG,
+            Word2Arena::SlowMeta => self.words[3] &= !IS_GENERIC_INST_FLAG,
+        }
+        match scope {
+            Word2Scope::Local => self.words[3] |= LOCAL_DEFERRED_BIT,
+            Word2Scope::Global => self.words[3] &= !LOCAL_DEFERRED_BIT,
+        }
+    }
+}
+
 // Mock structure for complex, unbounded parameter layouts (Slow Path)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnboundedFunctionMetadata {
@@ -228,6 +308,37 @@ pub fn deserialize_metadata_symbols(bytes: &[u8]) -> (&[TypeId], &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The word-2 codec round-trips every arena/scope, preserves identity (words 0/1), and keeps a
+    /// fast-path lifetime bitfield distinguishable from an arena index (#193).
+    #[test]
+    fn word2_codec_roundtrips_and_distinguishes_fast_from_arena() {
+        // Fast-path lifetime bitfield: escape-hatch clear -> FastLifetime.
+        let mut fl = TypeId::new(1, 2, 0, 0);
+        fl.try_set_fast_param(0, 7, 0x1).unwrap();
+        assert!(matches!(fl.classify_word2(), Word2::FastLifetime(_)));
+
+        for arena in [Word2Arena::Generics, Word2Arena::SlowMeta] {
+            for scope in [Word2Scope::Local, Word2Scope::Global] {
+                let mut id = TypeId::new(0xAAAA, 0xBBBB, 0, 0);
+                id.set_arena_index(5, arena, scope);
+
+                // Escape-hatch set; identity (words 0/1) preserved.
+                assert_ne!(id.words[2] & ESCAPE_HATCH_MASK, 0);
+                assert_eq!([id.words[0], id.words[1]], [0xAAAA, 0xBBBB]);
+
+                // An arena index is never misread as a fast-path lifetime bitfield (the #193 bug).
+                match id.classify_word2() {
+                    Word2::Index {
+                        index,
+                        arena: a,
+                        scope: s,
+                    } => assert_eq!((index, a, s), (5, arena, scope)),
+                    Word2::FastLifetime(_) => panic!("arena index misread as fast-path lifetime"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_type_id_initialization() {
