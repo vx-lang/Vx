@@ -384,6 +384,33 @@ in the stream, `Alloca` sizing from real layouts, and field/index opcodes — wh
 `transfer`. This is a meaningful new design surface (layout computation, tensor type modelling) and a
 natural checkpoint.
 
+## Entry 12 — C2 start: flat MLIR emitter for scalars (#200)
+
+**Commit:** `01fb868`. `src/codegen/flat.rs`.
+
+**What we did.** First codegen driven by the *flat* stream instead of an AST walk:
+`emit_function_mlir(func, hir, types)` lowers a function's `local_hir_stream` + `local_type_stream`
+to a `func.func`. SSA name of a value = its producing instruction's register; params are block
+arguments (`Load imm=i` → `%argi`); `Const`/`Add`/`Sub`/`Mul`/`Div`/`Ret` map to `arith`/`func` ops.
+Element types are recovered **from the type-stream GIDs** by inverting `scalar_gid` over the finite
+scalar set — the flat-driven counterpart of an AST type walk. This is the first time the whole
+pipeline (parse → resolve → GID → flat HIR → MLIR) runs end to end.
+
+**Scope + keep-green.** Straight-line scalar arithmetic only; anything else (control flow, spawn,
+memory, matmul, non-scalar types) returns `None`, so the AST path stays the oracle and nothing
+half-lowered is emitted. Tests parse **and `verify()`** the emitted MLIR in a real melior context
+(integer add, float mul+add, constant + signed div), and confirm a control-flow function is declined.
+
+**Design note — recovering types from GIDs.** The type stream stores content-hash GIDs, not
+element types, so codegen must invert them. For scalars a finite reverse scan works; for nominals
+(later) the registry maps GID → layout. This is the same "GID is the identity, look up the rest"
+pattern the architecture uses everywhere.
+
+**Next (C2.1).** A real differential harness — JIT-run the flat- and AST-emitted functions and
+compare numeric results — then wire the flat path behind `--flat-codegen` so it runs alongside the
+AST oracle across the corpus. That turns "emits verifiable MLIR" into "provably equal to the AST
+path," the actual convergence criterion.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;

@@ -76,6 +76,14 @@ instruction array instead of an AST walk. Brought up behind `--flat-codegen`, di
 against the AST path across `tests/` (MLIR text and/or JIT results). This is where "O(1) array
 codegen" (doc Phase 7) becomes real.
 
+- **C2.0 — scalar emitter. ✅ done** (`01fb868`, `src/codegen/flat.rs`). `emit_function_mlir` lowers
+  the scalar-arithmetic subset to a verifiable `func.func`; types recovered from GIDs by inverting
+  `scalar_gid`; out-of-subset streams decline to `None`. Journal Entry 12.
+- **C2.1 — differential harness.** JIT the flat- and AST-emitted functions, compare results; then
+  wire behind `--flat-codegen` to run alongside the AST oracle across the corpus.
+- **C2.2+** — grow the emitter with C1's subset (control flow, spawn) and, after #199, the non-scalar
+  surface.
+
 ### C3 — Switch `vxc` — [#201](https://github.com/hiraditya/Vx/issues/201)
 
 Once C2 is at parity on the full suite: `vxc` drives `compile_pipeline`; the AST path moves behind
