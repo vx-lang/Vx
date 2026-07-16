@@ -44,8 +44,12 @@ constructs land, and C2 differential testing (later) can trust every non-empty s
   (`let` + identifier reads), arithmetic (`Add`/`Sub`/`Mul`/`Div`/`Matmul`), `return` (`Ret`), and
   expression statements. Scalar-typed only; any struct/generic/call/control-flow aborts. Verified
   structurally.
-- **C1.2 — control flow & calls.** `if`/loops → branch opcodes; function/method calls → `Call`;
-  mutable locals via `Store`/reload; comparisons.
+- **C1.2 — value ops & control flow.** Comparisons (`Cmp`), `as` casts (`Cast`), unary (`Neg`/`Not`);
+  `if`/`else` and loops (`loop`, `for`-range) → basic blocks (`BlockStart`) + branches
+  (`Br`/`CondBr`) with `break`/`continue`; mutable/loop-carried locals via the **memory model**
+  (`Alloca`/`Store`/`SlotLoad`), matching the AST codegen's `cf`+`alloca` lowering. Straight-line
+  functions stay pure-SSA. Function/method calls are *not* here — they need function-symbol
+  resolution into the flat path (a separate C0.2-style step) and a variadic-arg representation.
 - **C1.3 — memory & the `vx` surface.** Struct/field access, tensor/slice ops, `spawn`/`transfer` —
   the dialect ops codegen must ultimately emit.
 
@@ -64,5 +68,7 @@ subsets add re-execution/parity checks against the AST path (C2).
 
 ## Status
 
-- **C1.1 — in progress.**
-- C1.2, C1.3 — pending.
+- **C1.1 — done** (`1af30aa`): scalar core.
+- **C1.2 — done**: value ops (`0c687a7`), `if`/`else` (`dee88b4`), loops + break/continue (`7d792d6`).
+  Calls deferred (need function-symbol resolution + variadic args).
+- **C1.3 — in progress**: struct/field, tensor/slice, `spawn`/`transfer`.

@@ -322,6 +322,43 @@ through the real parallel phase. Full suite green (290 lib + 65 integration).
 **Next.** C1.2 — control flow (`if`/loops → branch opcodes), calls (`Call`), mutable locals
 (`Store`/reload), comparisons; then C1.3 — struct/field/tensor/`vx`-dialect surface.
 
+## Entry 10 — C1.2: value ops + control flow in the flat HIR (#197)
+
+**Commits:** `0c687a7` (value ops), `dee88b4` (if/else), `7d792d6` (loops).
+
+**What we did.** Grew `flatten.rs` from the C1.1 scalar core to full intra-function control flow:
+
+- **Value ops (model-agnostic):** comparisons → `Cmp` (relation in `imm`, result `bool`), `as` →
+  `Cast` (`type_idx` = target), unary → `Neg`/`Not`.
+- **Control flow:** `if`/`else` and both loops (`loop`, `for i in a..b`) lower to basic blocks
+  (`BlockStart`) + branches (`Br`/`CondBr`, targets in `imm`), with `break`/`continue` driven by a
+  per-function `loop_stack` of `(continue, break)` block ids. `for` puts the induction variable and
+  the once-evaluated bound in slots and routes `continue` to the increment *latch* so it can't skip
+  the step.
+
+**Key decision — the local-variable model.** The existing AST codegen lowers control flow to the
+*unstructured* `cf` dialect with `alloca`-backed locals (the -O0 memory model), so the flat HIR
+mirrors that rather than SSA-block-args or structured `scf`: a **two-tier** scheme selected per
+function — straight-line functions stay pure-SSA (locals alias value registers, cheap), functions
+with control flow switch to the **memory model** (named locals get an `Alloca` slot; reads
+`SlotLoad`, writes `Store`), so values cross blocks without phi/block-args. This makes C2 codegen a
+near-direct translation and keeps differential parity with the AST path tractable. Effect
+instructions (`Store`/`Br`/`CondBr`/`BlockStart`) carry a `NO_TYPE` `type_idx` sentinel — value and
+type index spaces are now decoupled.
+
+**Not here: calls.** Function/method calls were deliberately deferred. They need (a) function-symbol
+resolution wired into the flat path (a separate C0.2-style pass — `resolve_names` resolves *types*,
+not call targets), and (b) a variadic-argument representation the 2-operand instruction can't hold
+directly. Kept out so control flow could land clean.
+
+**Verification.** `verify_hir_stream` now also validates the sentinel, the new opcodes' operand
+dominance (temporaries are block-local, so the linear check still captures SSA dominance), and that
+every branch targets a declared block. The atomic-abort invariant is unchanged — any unsupported
+construct still discards the whole function's stream. Full suite green (302 lib + 65 integration).
+
+**Next.** C1.3 — the memory / `vx`-dialect surface (struct & field access, tensor/slice ops,
+`spawn`/`transfer`).
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
