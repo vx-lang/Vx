@@ -424,6 +424,19 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     for f in &mut program.functions {
         checker.check_function(f);
     }
+    // #203: also check imported modules' non-generic bodies in place, so methods/generics they call
+    // only transitively get monomorphized for codegen (the env borrows `all_programs` clones, so
+    // `program_arr` is free to mutate). Mirrors `driver.rs::run_semantic_analysis`; library-internal
+    // diagnostics are dropped (this pass collects instantiations, it does not re-validate deps).
+    let errors_before_imports = checker.errors.len();
+    for p in &mut program_arr {
+        for f in &mut p.functions {
+            if f.generics.is_empty() {
+                checker.check_function(f);
+            }
+        }
+    }
+    checker.errors.inner.truncate(errors_before_imports);
     if checker
         .errors
         .iter()
@@ -998,6 +1011,19 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     for f in &mut program.functions {
         checker.check_function(f);
     }
+    // #203: also check imported modules' non-generic bodies in place, so methods/generics they call
+    // only transitively get monomorphized for codegen (the env borrows `all_programs` clones, so
+    // `program_arr` is free to mutate). Mirrors `driver.rs::run_semantic_analysis`; library-internal
+    // diagnostics are dropped (this pass collects instantiations, it does not re-validate deps).
+    let errors_before_imports = checker.errors.len();
+    for p in &mut program_arr {
+        for f in &mut p.functions {
+            if f.generics.is_empty() {
+                checker.check_function(f);
+            }
+        }
+    }
+    checker.errors.inner.truncate(errors_before_imports);
     if checker
         .errors
         .iter()

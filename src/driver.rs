@@ -318,10 +318,14 @@ impl CompilerDriver {
     ) -> Result<(), String> {
         let global_session = std::sync::Arc::new(GlobalSession::new(1));
 
-        let cloned_ast_sig = ast.clone_signature();
-        let mut env_modules: Vec<&crate::syntax::Program> = other_asts.values().collect();
-        env_modules.push(&cloned_ast_sig);
-        let env = GlobalAstEnv::build_from_refs(&env_modules);
+        // Build the resolution env from *owned* clones: full bodies for the imported modules (so
+        // their methods/generics can be instantiated) plus the entry module's signature. Owning the
+        // clones leaves `ast` and `other_asts` free to be type-checked *in place* below — which #203
+        // needs, so codegen emits those bodies with method/generic calls rewritten to the
+        // monomorphized instance names.
+        let mut env_progs: Vec<crate::syntax::Program> = other_asts.values().cloned().collect();
+        env_progs.push(ast.clone_signature());
+        let env = GlobalAstEnv::build(&env_progs);
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
@@ -340,6 +344,27 @@ impl CompilerDriver {
                 checker.check_function(f);
             }
         }
+
+        // #203: codegen emits the imported modules' (non-generic) functions too, but above only the
+        // entry module's bodies were checked — so any method or generic those bodies reach *only
+        // transitively* (e.g. `dijkstra` calling `Graph::node_count` / `Vec<i32>::with_capacity`)
+        // was never instantiated, and codegen would fail with "Function ... not found". Check them
+        // *in place* (the env borrows the clones above, so `other_asts` is free to mutate): the
+        // instantiations land in `monomorphized_functions`, and the method/generic calls in the
+        // emitted bodies are rewritten to those instance names. Generic functions were already
+        // dropped from `other_asts`; generic *methods* are instantiated on demand by these calls.
+        let errors_before_imports = checker.errors.len();
+        for p in other_asts.values_mut() {
+            for f in &mut p.functions {
+                if f.generics.is_empty() {
+                    checker.check_function(f);
+                }
+            }
+        }
+        // Diagnostics from imported *library internals* are not the consumer's concern — this pass
+        // exists to collect monomorphizations, not to re-validate dependencies (which are checked
+        // when compiled on their own). Drop anything it added; keep the instantiations.
+        checker.errors.inner.truncate(errors_before_imports);
 
         let has_errors = checker
             .errors
