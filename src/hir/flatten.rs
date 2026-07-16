@@ -67,6 +67,9 @@ struct Lowerer {
     memory: bool,
     /// Next basic-block id to hand out (0 is the entry block).
     next_block: u32,
+    /// Enclosing loops: `(continue_target, break_target)` block ids. `continue` branches to the
+    /// first (the header for `loop`, the increment latch for `for`), `break` to the second (exit).
+    loop_stack: Vec<(u32, u32)>,
 }
 
 impl Lowerer {
@@ -77,6 +80,7 @@ impl Lowerer {
             scope: HashMap::new(),
             memory: false,
             next_block: 1,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -250,6 +254,96 @@ impl Lowerer {
         Some(())
     }
 
+    /// Lower an infinite `loop { body }`: a header block the body branches back to, plus an exit
+    /// block that `break` targets. `continue` re-enters the header.
+    fn lower_loop(&mut self, body: &[Statement]) -> Option<()> {
+        let header = self.new_block();
+        let exit = self.new_block();
+        self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), header as u64);
+        self.loop_stack.push((header, exit)); // continue -> header, break -> exit
+        for s in body {
+            self.lower_stmt(s)?;
+        }
+        self.loop_stack.pop();
+        // Back-edge, unless the body already terminated every path (e.g. ended in `break`/`return`).
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Some(())
+    }
+
+    /// Lower `for i in a..b { body }` over a scalar exclusive range. The induction variable and the
+    /// (once-evaluated) bound live in slots so they cross blocks; `continue` targets the increment
+    /// latch (so it doesn't skip the step), `break` the exit.
+    fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
+        let Expr::Range(range) = &*f.iterable else {
+            return None; // only integer ranges for now
+        };
+        let start = self.lower_expr(&range.start)?;
+        let end = self.lower_expr(&range.end)?;
+        let ty = start.ty.clone();
+        // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
+        let i_slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), ty.clone(), 0);
+        self.emit_effect(Opcode::Store, i_slot.reg, start.reg, 0);
+        let end_slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), ty.clone(), 0);
+        self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
+        self.scope.insert(
+            f.iter.as_str().into(),
+            Binding::Slot {
+                reg: i_slot.reg,
+                ty: ty.clone(),
+            },
+        );
+
+        let header = self.new_block();
+        let body_b = self.new_block();
+        let latch = self.new_block();
+        let exit = self.new_block();
+
+        self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+        // header: cond = i < end
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), header as u64);
+        let i_val = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), ty.clone(), 0);
+        let end_val = self.emit_value(Opcode::SlotLoad, end_slot.reg, Register(0), ty.clone(), 0);
+        let cond = self.emit_value(
+            Opcode::Cmp,
+            i_val.reg,
+            end_val.reg,
+            ElementType::Bool,
+            rel_code(&RelationalOp::Lt),
+        );
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(body_b, exit),
+        );
+
+        // body
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
+        self.loop_stack.push((latch, exit)); // continue -> latch, break -> exit
+        for s in &f.body {
+            self.lower_stmt(s)?;
+        }
+        self.loop_stack.pop();
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), latch as u64);
+        }
+
+        // latch: i = i + 1; back to header
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
+        let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), ty.clone(), 0);
+        let one = self.emit_value(Opcode::Const, Register(0), Register(0), ty.clone(), 1);
+        let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, ty, 0);
+        self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
+        self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Some(())
+    }
+
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
@@ -276,6 +370,19 @@ impl Lowerer {
                     Some(())
                 }
             },
+            Statement::Loop(l) => self.lower_loop(&l.body),
+            Statement::ForLoop(f) => self.lower_for(f),
+            // `break`/`continue` branch to the enclosing loop's exit/continue target.
+            Statement::Break(_) => {
+                let (_, brk) = *self.loop_stack.last()?;
+                self.emit_effect(Opcode::Br, Register(0), Register(0), brk as u64);
+                Some(())
+            }
+            Statement::Continue(_) => {
+                let (cont, _) = *self.loop_stack.last()?;
+                self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
+                Some(())
+            }
             _ => None,
         }
     }
@@ -330,12 +437,15 @@ fn try_lower(func: &Function) -> Option<Lowerer> {
     Some(lw)
 }
 
-/// Whether the (top-level) body contains an `if` statement — the trigger for the memory model. A
-/// nested `if` rides on its enclosing top-level `if`, and `lower_if` recurses in memory mode.
+/// Whether the (top-level) body contains control flow (`if`/`loop`/`for`) — the trigger for the
+/// memory model, so mutated or loop-carried locals survive across basic blocks. Nested control flow
+/// rides on its enclosing top-level construct, and the `lower_*` helpers recurse in memory mode.
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
-    stmts
-        .iter()
-        .any(|s| matches!(s, Statement::ExprStmt(e) if matches!(e.expr, Expr::If(_))))
+    stmts.iter().any(|s| match s {
+        Statement::Loop(_) | Statement::ForLoop(_) => true,
+        Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_)),
+        _ => false,
+    })
 }
 
 fn simple_ident(e: &Expr) -> Option<Symbol> {
@@ -581,6 +691,69 @@ mod tests {
             "a materialized once, x rebinds to a+a"
         );
         verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn for_range_loop_lowers_header_body_latch_exit() {
+        let f = parse_fn(
+            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(count(&w, Opcode::CondBr), 1, "loop condition test");
+        assert_eq!(
+            count(&w, Opcode::BlockStart),
+            5,
+            "entry, header, body, latch, exit"
+        );
+        // entry->header, body->latch, latch->header
+        assert_eq!(count(&w, Opcode::Br), 3);
+        // The induction var increments: an Add feeding a Store in the latch.
+        assert!(
+            count(&w, Opcode::Add) >= 2,
+            "body add + induction increment"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn infinite_loop_with_break_verifies() {
+        let f = parse_fn(
+            "fn f(a: i32) -> i32 { let mut x = a; loop { x = x - 1; if x < 0 { break; } } return x; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert!(count(&w, Opcode::CondBr) >= 1, "the if condition");
+        // loop header/exit + entry + the if's then/merge blocks.
+        assert!(count(&w, Opcode::BlockStart) >= 4);
+        verify_hir_stream(&w); // every branch (incl. the break) targets a declared block
+    }
+
+    #[test]
+    fn for_loop_with_continue_verifies() {
+        let f = parse_fn(
+            "fn f(n: i32) -> i32 { let mut s = 0; for i in 0..n { if i < 2 { continue; } s = s + i; } return s; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn for_over_non_range_aborts() {
+        // A non-range iterable (here a call) is outside the C1.2c subset -> atomic abort.
+        let f = parse_fn("fn f(a: i32) -> i32 { for i in gen() { } return a; }");
+        let mut w = worker();
+        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(w.local_hir_stream.is_empty());
+    }
+
+    #[test]
+    fn break_outside_loop_aborts() {
+        let f = parse_fn("fn f() -> i32 { break; return 0; }");
+        let mut w = worker();
+        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(w.local_hir_stream.is_empty());
     }
 
     #[test]
