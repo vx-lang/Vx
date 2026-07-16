@@ -50,7 +50,7 @@ Behaviour-preserving; no change to the production path. Unblocks everything down
   and the doc claims corrected. Journal:
   [`../parallel_pipeline_convergence.md`](../parallel_pipeline_convergence.md) Entry 7.
 
-### C1 — HIR lowering (populate `local_hir_stream`)
+### C1 — HIR lowering (populate `local_hir_stream`) — [#198](https://github.com/hiraditya/Vx/issues/198)
 
 The long pole. An instruction-selection pass lowering each type-checked function body from the AST to
 a flat `Vec<HirInstruction>` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx, imm}`),
@@ -59,13 +59,16 @@ with `type_idx` indexing the (now populated) `local_type_stream`. Runs in `type_
 
 - C1.1 — literals, locals, arithmetic, `return`. **✅ done** (`1af30aa`, `src/hir/flatten.rs`;
   atomic per-function lowering, journal Entry 9).
-- C1.2 — calls, struct/field access, control flow (`if`/loops → branch opcodes).
-- C1.3 — memory ops, tensor/slice ops, spawn/transfer (the `vx`-dialect surface).
+- C1.2 — value ops + control flow (`if`/`else`, `loop`/`for` with break/continue). **✅ done**
+  (`0c687a7`, `dee88b4`, `7d792d6`). Calls deferred (function-symbol resolution + variadic args).
+- C1.3 — the `vx`-dialect surface. `spawn` region **✅ done** (`77f66d3`); `transfer`/tensor/struct
+  **blocked** on the non-scalar type + layout prerequisite
+  ([#199](https://github.com/hiraditya/Vx/issues/199)).
 
 Verified structurally (well-formed stream, in-bounds `type_idx`) and — where feasible — by
 re-execution parity against the AST path.
 
-### C2 — Flat codegen (consume the streams)
+### C2 — Flat codegen (consume the streams) — [#200](https://github.com/hiraditya/Vx/issues/200)
 
 A backend that lowers `local_hir_stream` + the type stream + the registry to MLIR — reusing the
 existing melior emission (`src/codegen/`) at the leaves where possible, but driven by the flat
@@ -73,7 +76,7 @@ instruction array instead of an AST walk. Brought up behind `--flat-codegen`, di
 against the AST path across `tests/` (MLIR text and/or JIT results). This is where "O(1) array
 codegen" (doc Phase 7) becomes real.
 
-### C3 — Switch `vxc`
+### C3 — Switch `vxc` — [#201](https://github.com/hiraditya/Vx/issues/201)
 
 Once C2 is at parity on the full suite: `vxc` drives `compile_pipeline`; the AST path moves behind
 `--legacy-codegen`; the parallel verification hooks (`parallel_architecture_verifier`) run in debug;
