@@ -1,3 +1,4 @@
+pub mod flat;
 pub mod generator;
 pub mod lower;
 pub use generator::*;
