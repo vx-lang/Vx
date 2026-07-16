@@ -18,22 +18,20 @@ realistic, multi-module workload for the parallel compiler.
 `import graph::core;` resolves because `stdlib` is a module search root
 (`src/module_loader.rs`), alongside `stdlib/std`.
 
-## Building
+## Building & running
 
-Each module compiles on its own through the driver:
+Each module compiles on its own, and the full multi-module test harness compiles
+**and executes**:
 
 ```
-vxc --action emit-mlir stdlib/graph/core.vx
-vxc --action emit-mlir stdlib/graph/shortest_path.vx   # etc.
+vxc --action emit-mlir stdlib/graph/shortest_path.vx   # any single module
+vxc --action run-jit   stdlib/graph/tests.vx           # runs all 10 unit tests
 ```
 
-**Known limitation:** the full multi-module `tests.vx` does *not* yet compile
-end-to-end through the driver — it hits
-[#203](https://github.com/hiraditya/Vx/issues/203) (cross-module *transitive*
-monomorphization is incomplete: a generic like `Vec<i32>::with_capacity` called
-only from an imported algorithm body is not instantiated for codegen). The
-individual algorithm files are unaffected. Closing #203 (or the flat-pipeline
-convergence, #197) makes the whole library link.
+`tests.vx` JIT-executes cleanly (every `assert` passes). Reaching this required
+fixing [#203](https://github.com/hiraditya/Vx/issues/203) — cross-module
+*transitive* monomorphization (a generic like `Vec<i32>::with_capacity` reached
+only from an imported algorithm body is now instantiated for codegen).
 
 ## Parallel-compiler / ThreadSanitizer workload
 
