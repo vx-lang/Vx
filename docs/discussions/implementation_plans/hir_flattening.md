@@ -52,6 +52,14 @@ constructs land, and C2 differential testing (later) can trust every non-empty s
   resolution into the flat path (a separate C0.2-style step) and a variadic-arg representation.
 - **C1.3 — memory & the `vx` surface.** Struct/field access, tensor/slice ops, `spawn`/`transfer` —
   the dialect ops codegen must ultimately emit.
+  - `spawn on (<topology>) { body }` → a `Spawn`/`SpawnEnd` region carrying the topology dispatch
+    id (done; statement-form, straight-line body). Codegen rebuilds `vx.spawn` from the marker pair.
+  - **Blocked (needs new modelling):** `transfer` (its source is a tensor/`Ref`, so it needs
+    non-scalar values in the stream), tensor/slice ops (need tensor types in the type stream), and
+    struct/field access (need field offsets — `ImmutableGlobalRegistry` layouts are currently
+    `size_bytes = 0`; layout computation is a prerequisite). These are the next sub-project: extend
+    the type/value model beyond scalars (aggregate + tensor GIDs, `Alloca` sizing, field/index
+    opcodes), which also unblocks `transfer`.
 
 ## Verification
 
@@ -71,4 +79,5 @@ subsets add re-execution/parity checks against the AST path (C2).
 - **C1.1 — done** (`1af30aa`): scalar core.
 - **C1.2 — done**: value ops (`0c687a7`), `if`/`else` (`dee88b4`), loops + break/continue (`7d792d6`).
   Calls deferred (need function-symbol resolution + variadic args).
-- **C1.3 — in progress**: struct/field, tensor/slice, `spawn`/`transfer`.
+- **C1.3 — in progress**: `spawn` region done (`77f66d3`). `transfer`/tensor/struct **blocked on
+  non-scalar type + layout modelling** (registry layouts are size 0) — the next sub-project.

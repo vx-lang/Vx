@@ -359,6 +359,31 @@ construct still discards the whole function's stream. Full suite green (302 lib 
 **Next.** C1.3 — the memory / `vx`-dialect surface (struct & field access, tensor/slice ops,
 `spawn`/`transfer`).
 
+## Entry 11 — C1.3 start: `spawn` region, and the non-scalar blocker (#197)
+
+**Commit:** `77f66d3`.
+
+**What we did.** Started the `vx`-dialect surface with `spawn on (<topology>) { body }` — the
+signature Vx op. It lowers to a `Spawn`/`SpawnEnd`-delimited region in the flat HIR carrying the
+topology dispatch id (`arch::topology_dispatch_id`, the same id the AST codegen stamps on
+`vx.spawn`'s `topology` attribute); the body lowers inline between the markers. First cut is narrow
+(statement-form, straight-line body/function) so the region is a linear instruction range; codegen
+reconstructs `vx.spawn` from the marker pair.
+
+**The blocker for the rest of C1.3.** `transfer`, tensor/slice ops, and struct/field access all need
+the flat HIR to carry **non-scalar values and types**, which the C1.1–C1.2 model doesn't have:
+
+- `transfer`'s operand is a tensor/`Ref`, not a scalar — `lower_expr` only produces scalar `Val`s.
+- struct field access needs **field offsets**, but `ImmutableGlobalRegistry` layouts are built with
+  `size_bytes = 0` / `align_bytes = 0` (`build_frozen_registry`) — layout/offset computation is a
+  prerequisite that does not exist yet.
+- tensor ops need tensor types (shape + element) in the type stream and index/elementwise opcodes.
+
+So the next sub-project is **extending the type/value model beyond scalars**: aggregate + tensor GIDs
+in the stream, `Alloca` sizing from real layouts, and field/index opcodes — which also unblocks
+`transfer`. This is a meaningful new design surface (layout computation, tensor type modelling) and a
+natural checkpoint.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
