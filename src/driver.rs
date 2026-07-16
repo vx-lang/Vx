@@ -302,9 +302,12 @@ impl CompilerDriver {
             .unwrap();
         let ast = program_arr.remove(syntax_idx);
 
+        // Keep imported modules whole — including their *generic* free functions — so the resolution
+        // env can index them (`GlobalAstEnv.generic_functions`) and instantiate cross-module generic
+        // calls (e.g. `googletest::expect_eq`). Codegen skips the generic templates; only their
+        // concrete instances (collected as monomorphizations) are emitted. See #204.
         let mut module_syntaxes = std::collections::HashMap::new();
-        for mut p in program_arr.drain(..) {
-            p.functions.retain(|f| f.generics.is_empty());
+        for p in program_arr.drain(..) {
             module_syntaxes.insert(p.module_path.clone(), p);
         }
         Ok((ast, module_syntaxes))

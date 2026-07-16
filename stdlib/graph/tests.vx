@@ -10,6 +10,7 @@
 // a rich multi-module input for the parallel compiler (ThreadSanitizer workload).
 //===----------------------------------------------------------------------===//
 import std::vec;
+import std::googletest;
 import graph::core;
 import graph::traversal;
 import graph::shortest_path;
@@ -49,24 +50,24 @@ fn build_undirected() -> Graph {
 fn main() -> i32 {
   let dg: Graph = build_directed();
   // Shortest 0->3 is 0->1->2->3 = 6 (beats 0->2->3 = 11) for all three algorithms.
-  assert(dijkstra(&dg, 0, 3) == 6, "dijkstra 0->3 == 6");
-  assert(bellman_ford(&dg, 0, 3) == 6, "bellman_ford 0->3 == 6");
-  assert(floyd_warshall(&dg, 0, 3) == 6, "floyd_warshall 0->3 == 6");
-  assert(is_dag(&dg) == 1, "directed graph is a DAG");
-  assert(has_cycle(&dg) == 0, "DAG has no cycle");
+  expect_eq(dijkstra(&dg, 0, 3), 6);
+  expect_eq(bellman_ford(&dg, 0, 3), 6);
+  expect_eq(floyd_warshall(&dg, 0, 3), 6);
+  expect_eq(is_dag(&dg), 1);
+  expect_eq(has_cycle(&dg), 0);
   // Reachable ordered pairs: 0->{1,2,3}, 1->{2,3}, 2->{3} = 6.
-  assert(reachable_pair_count(&dg) == 6, "6 reachable pairs");
+  expect_eq(reachable_pair_count(&dg), 6);
 
   let cg: Graph = build_cycle();
-  assert(is_dag(&cg) == 0, "cyclic graph is not a DAG");
-  assert(has_cycle(&cg) == 1, "cycle detected");
+  expect_eq(is_dag(&cg), 0);
+  expect_eq(has_cycle(&cg), 1);
 
   let ug: Graph = build_undirected();
-  assert(bfs_reachable(&ug, 0) == 5, "BFS reaches all 5 nodes");
-  assert(dfs_reachable(&ug, 0) == 5, "DFS reaches all 5 nodes");
-  assert(connected_components(&ug) == 1, "one connected component");
+  expect_eq(bfs_reachable(&ug, 0), 5);
+  expect_eq(dfs_reachable(&ug, 0), 5);
+  expect_eq(connected_components(&ug), 1);
   // MST edges: 0-1 (1), 1-2 (2), 2-3 (3), 3-4 (4) = 10.
-  assert(prim_mst_weight(&ug) == 10, "MST weight == 10");
+  expect_eq(prim_mst_weight(&ug), 10);
 
   return 0;
 }

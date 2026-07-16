@@ -511,7 +511,14 @@ impl<'c> MeliorGenerator<'c> {
         let mut operations = Vec::new();
 
         for module_prog in modules.values() {
-            for func in &module_prog.functions {
+            // Skip generic *templates* — only their concrete instantiations (in `program.functions`,
+            // collected as monomorphizations) are codegen'd. Imported modules now retain their
+            // generic free functions so the env can instantiate cross-module generic calls (#204).
+            for func in module_prog
+                .functions
+                .iter()
+                .filter(|f| f.generics.is_empty())
+            {
                 let ret_ty = self.lower_type(&func.return_type)?;
                 let mut arg_tys = Vec::new();
                 for (_, ty) in &func.params {
@@ -534,9 +541,13 @@ impl<'c> MeliorGenerator<'c> {
                 .insert(func.name.clone(), func.clone());
         }
 
-        // Emit module functions
+        // Emit module functions (concrete only; generic templates are skipped — see above).
         for module_prog in modules.values() {
-            for func in &module_prog.functions {
+            for func in module_prog
+                .functions
+                .iter()
+                .filter(|f| f.generics.is_empty())
+            {
                 operations.push(self.generate_function(func)?);
             }
         }

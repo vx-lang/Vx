@@ -1,0 +1,24 @@
+//===- cross_module_generic.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Regression for #204: a cross-module *generic* free function (googletest's
+// `expect_eq<T>`) is instantiated for the entry module's call. Before the fix,
+// imported generic free functions were dropped and this failed with "Undefined
+// function 'expect_eq'".
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+import std::googletest;
+
+fn six() -> i32 {
+  return 6;
+}
+
+fn main() -> i32 {
+  expect_eq(six(), 6);
+  return 0;
+}
