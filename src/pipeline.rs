@@ -912,4 +912,109 @@ mod gid_stream_tests {
             build_frozen_registry(&modules).expect("indirection breaks the cross-module cycle");
         assert_eq!(reg.layouts.len(), 2);
     }
+
+    /// Order-sensitive determinism (#196): the flat GID stream must be byte-identical **in order**,
+    /// and identical **across thread counts** — codegen (C2) indexes it by position (`type_idx`),
+    /// so a scheduling-dependent race or an order-dependent phase is a correctness bug even when the
+    /// *set* of GIDs matches. Running the whole pipeline under a 1-thread and an 8-thread rayon pool
+    /// catches races the earlier same-pool set-comparison could not.
+    #[test]
+    fn flat_type_stream_order_is_deterministic_across_thread_counts() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_det_types_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let srcs = [
+            (
+                "a.vx",
+                "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+                 fn mul(a: i32, b: i32) -> i32 { return a * b; }",
+            ),
+            (
+                "b.vx",
+                "fn clamp(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+            ),
+        ];
+        let mut paths = Vec::new();
+        for (name, src) in srcs {
+            let p = dir.join(name);
+            std::fs::File::create(&p)
+                .unwrap()
+                .write_all(src.as_bytes())
+                .unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+
+        let run = |threads: usize| -> Vec<[u64; 4]> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                compile_pipeline_type_stream(&paths)
+                    .expect("pipeline")
+                    .into_iter()
+                    .map(|id| id.words)
+                    .collect()
+            })
+        };
+
+        let single = run(1);
+        let many = run(8);
+        assert!(!single.is_empty(), "expected a non-empty stream");
+        assert_eq!(
+            single, many,
+            "flat type stream order differs across thread counts (non-deterministic)"
+        );
+        assert_eq!(many, run(8), "flat type stream order differs across reruns");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The C1 HIR stream is new parallel-produced state whose order is contractual (codegen indexes
+    /// it by register). Assert the concatenated stream is byte-identical across thread counts.
+    #[test]
+    fn hir_stream_is_deterministic_across_thread_counts() {
+        use crate::hir::bytecode::Opcode;
+        let build =
+            || -> Vec<VxModule> {
+                vec![
+                parse_only("m", "fn f(a: i32, b: i32) -> i32 { let x = a * b; return x + a; }"),
+                parse_only(
+                    "n",
+                    "fn g(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+                ),
+            ]
+            };
+        let run = |threads: usize| -> Vec<(Opcode, u32, u32, u64)> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut modules = build();
+                name_resolution_phase(&mut modules);
+                let registry = build_frozen_registry(&modules).expect("registry");
+                let session = Arc::new(GlobalSession::with_registry(1, registry));
+                let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
+                let env = GlobalAstEnv::build(&env_mods);
+                let results = type_check_phase(&mut modules, &session, &env).expect("type check");
+                results
+                    .iter()
+                    .flat_map(|(_, _, w, _, _)| {
+                        w.local_hir_stream
+                            .iter()
+                            .map(|i| (i.opcode, i.operand1.0, i.operand2.0, i.imm))
+                    })
+                    .collect()
+            })
+        };
+        let single = run(1);
+        let many = run(8);
+        assert!(!single.is_empty(), "expected lowered HIR");
+        assert_eq!(
+            single, many,
+            "HIR stream differs across thread counts (non-deterministic)"
+        );
+    }
 }
