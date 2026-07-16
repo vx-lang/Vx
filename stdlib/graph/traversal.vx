@@ -1,0 +1,67 @@
+//===- traversal.vx - Vx Graph Library ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Graph traversals: breadth-first and depth-first reachability.
+//===----------------------------------------------------------------------===//
+import std::vec;
+import graph::core;
+
+// (1) BFS from `src`; returns the number of nodes reachable (including `src`).
+fn bfs_reachable(g: &Graph, src: i32) -> i32 {
+  let n: i32 = g.node_count();
+  let mut visited: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    visited.push(0);
+  }
+  let mut queue: Vec<i32> = Vec<i32>::new();
+  queue.push(src);
+  visited.set(src, 1);
+
+  let mut head: i32 = 0;
+  let mut count: i32 = 0;
+  loop {
+    if head >= queue.len() {
+      break;
+    }
+    let u: i32 = queue.get(head);
+    head = head + 1;
+    count = count + 1;
+    for v in 0..n {
+      if g.has_edge(u, v) != 0 {
+        if visited.get(v) == 0 {
+          visited.set(v, 1);
+          queue.push(v);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+// (2) DFS reachability from `src` (recursive); returns the reachable-node count.
+fn dfs_visit(g: &Graph, u: i32, visited: &mut Vec<i32>) -> i32 {
+  visited.set(u, 1);
+  let n: i32 = g.node_count();
+  let mut count: i32 = 1;
+  for v in 0..n {
+    if g.has_edge(u, v) != 0 {
+      if visited.get(v) == 0 {
+        count = count + dfs_visit(g, v, visited);
+      }
+    }
+  }
+  return count;
+}
+
+fn dfs_reachable(g: &Graph, src: i32) -> i32 {
+  let n: i32 = g.node_count();
+  let mut visited: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    visited.push(0);
+  }
+  return dfs_visit(g, src, &mut visited);
+}

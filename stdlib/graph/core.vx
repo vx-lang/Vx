@@ -1,0 +1,63 @@
+//===- core.vx - Vx Graph Library --------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Core graph type: a weighted directed graph as a dense adjacency matrix stored
+// row-major in a flat `Vec<i32>` (`adj[u*n + v]` = edge weight, 0 = no edge).
+// Simple and allocation-light, and a rich multi-module input for the parallel
+// compiler.
+//===----------------------------------------------------------------------===//
+import std::vec;
+
+// A sentinel "no path" / "infinity" distance for the shortest-path algorithms.
+fn graph_inf() -> i32 {
+  return 1000000000;
+}
+
+struct Graph {
+  n: i32,
+  adj: Vec<i32>,
+}
+
+impl Graph {
+  fn new(n: i32) -> Graph {
+    let mut adj: Vec<i32> = Vec<i32>::with_capacity(n * n);
+    for k in 0..(n * n) {
+      adj.push(0);
+    }
+    return Graph {
+      n: n, adj: adj
+    };
+  }
+
+  fn node_count(self: &Graph) -> i32 {
+    return self.n;
+  }
+
+  // Directed edge u -> v with weight w (w must be non-zero to be an edge).
+  fn add_edge(self: &mut Graph, u: i32, v: i32, w: i32) -> i32 {
+    self.adj.set(u * self.n + v, w);
+    return 0;
+  }
+
+  // Undirected edge u <-> v with weight w.
+  fn add_undirected_edge(self: &mut Graph, u: i32, v: i32, w: i32) -> i32 {
+    self.adj.set(u * self.n + v, w);
+    self.adj.set(v * self.n + u, w);
+    return 0;
+  }
+
+  fn weight(self: &Graph, u: i32, v: i32) -> i32 {
+    return self.adj.get(u * self.n + v);
+  }
+
+  fn has_edge(self: &Graph, u: i32, v: i32) -> i32 {
+    if self.adj.get(u * self.n + v) != 0 {
+      return 1;
+    }
+    return 0;
+  }
+}

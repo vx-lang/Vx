@@ -1,0 +1,72 @@
+//===- tests.vx - Vx Graph Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Unit tests for the graph library: build small graphs with known answers and
+// check each of the 10 algorithms with googletest's `expect_eq`. Also serves as
+// a rich multi-module input for the parallel compiler (ThreadSanitizer workload).
+//===----------------------------------------------------------------------===//
+import std::vec;
+import graph::core;
+import graph::traversal;
+import graph::shortest_path;
+import graph::analysis;
+
+// A small weighted DAG:  0->1 (2), 1->2 (3), 0->2 (10), 2->3 (1).
+fn build_directed() -> Graph {
+  let mut g: Graph = Graph::new(4);
+  g.add_edge(0, 1, 2);
+  g.add_edge(1, 2, 3);
+  g.add_edge(0, 2, 10);
+  g.add_edge(2, 3, 1);
+  return g;
+}
+
+// A 3-cycle: 0->1->2->0.
+fn build_cycle() -> Graph {
+  let mut g: Graph = Graph::new(3);
+  g.add_edge(0, 1, 1);
+  g.add_edge(1, 2, 1);
+  g.add_edge(2, 0, 1);
+  return g;
+}
+
+// A connected weighted undirected graph on 5 nodes:
+//   0-1 (1), 1-2 (2), 2-3 (3), 3-4 (4), 0-2 (5).
+fn build_undirected() -> Graph {
+  let mut g: Graph = Graph::new(5);
+  g.add_undirected_edge(0, 1, 1);
+  g.add_undirected_edge(1, 2, 2);
+  g.add_undirected_edge(2, 3, 3);
+  g.add_undirected_edge(3, 4, 4);
+  g.add_undirected_edge(0, 2, 5);
+  return g;
+}
+
+fn main() -> i32 {
+  let dg: Graph = build_directed();
+  // Shortest 0->3 is 0->1->2->3 = 6 (beats 0->2->3 = 11) for all three algorithms.
+  assert(dijkstra(&dg, 0, 3) == 6, "dijkstra 0->3 == 6");
+  assert(bellman_ford(&dg, 0, 3) == 6, "bellman_ford 0->3 == 6");
+  assert(floyd_warshall(&dg, 0, 3) == 6, "floyd_warshall 0->3 == 6");
+  assert(is_dag(&dg) == 1, "directed graph is a DAG");
+  assert(has_cycle(&dg) == 0, "DAG has no cycle");
+  // Reachable ordered pairs: 0->{1,2,3}, 1->{2,3}, 2->{3} = 6.
+  assert(reachable_pair_count(&dg) == 6, "6 reachable pairs");
+
+  let cg: Graph = build_cycle();
+  assert(is_dag(&cg) == 0, "cyclic graph is not a DAG");
+  assert(has_cycle(&cg) == 1, "cycle detected");
+
+  let ug: Graph = build_undirected();
+  assert(bfs_reachable(&ug, 0) == 5, "BFS reaches all 5 nodes");
+  assert(dfs_reachable(&ug, 0) == 5, "DFS reaches all 5 nodes");
+  assert(connected_components(&ug) == 1, "one connected component");
+  // MST edges: 0-1 (1), 1-2 (2), 2-3 (3), 3-4 (4) = 10.
+  assert(prim_mst_weight(&ug) == 10, "MST weight == 10");
+
+  return 0;
+}

@@ -48,6 +48,9 @@ impl ModuleLoader {
             search_paths.push(PathBuf::from(env_path));
         } else {
             search_paths.push(PathBuf::from("stdlib/std"));
+            // `stdlib` itself is a root so top-level libraries beyond `std` resolve, e.g.
+            // `import graph::traversal` -> `stdlib/graph/traversal.vx`.
+            search_paths.push(PathBuf::from("stdlib"));
         }
 
         search_paths.push(PathBuf::from("."));

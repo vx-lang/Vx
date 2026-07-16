@@ -1,0 +1,121 @@
+//===- shortest_path.vx - Vx Graph Library -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Shortest-path algorithms over the dense adjacency matrix: Dijkstra (O(n^2),
+// non-negative weights), Bellman-Ford (handles negative edges), and
+// Floyd-Warshall (all pairs). Each returns the src->dst distance, or the `inf`
+// sentinel when unreachable.
+//===----------------------------------------------------------------------===//
+import std::vec;
+import graph::core;
+
+// (3) Dijkstra: shortest distance src -> dst with non-negative weights, O(n^2).
+fn dijkstra(g: &Graph, src: i32, dst: i32) -> i32 {
+  let n: i32 = g.node_count();
+  let inf: i32 = graph_inf();
+  let mut dist: Vec<i32> = Vec<i32>::with_capacity(n);
+  let mut done: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    dist.push(inf);
+    done.push(0);
+  }
+  dist.set(src, 0);
+
+  for iter in 0..n {
+    let mut u: i32 = -1;
+    let mut best: i32 = inf;
+    for i in 0..n {
+      if done.get(i) == 0 {
+        if dist.get(i) < best {
+          best = dist.get(i);
+          u = i;
+        }
+      }
+    }
+    if u < 0 {
+      break;
+    }
+    done.set(u, 1);
+    for v in 0..n {
+      let w: i32 = g.weight(u, v);
+      if w != 0 {
+        let nd: i32 = dist.get(u) + w;
+        if nd < dist.get(v) {
+          dist.set(v, nd);
+        }
+      }
+    }
+  }
+  return dist.get(dst);
+}
+
+// (4) Bellman-Ford: shortest distance src -> dst, tolerating negative edges.
+fn bellman_ford(g: &Graph, src: i32, dst: i32) -> i32 {
+  let n: i32 = g.node_count();
+  let inf: i32 = graph_inf();
+  let mut dist: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    dist.push(inf);
+  }
+  dist.set(src, 0);
+
+  for iter in 0..(n - 1) {
+    for u in 0..n {
+      for v in 0..n {
+        let w: i32 = g.weight(u, v);
+        if w != 0 {
+          if dist.get(u) != inf {
+            let nd: i32 = dist.get(u) + w;
+            if nd < dist.get(v) {
+              dist.set(v, nd);
+            }
+          }
+        }
+      }
+    }
+  }
+  return dist.get(dst);
+}
+
+// (5) Floyd-Warshall: all-pairs shortest paths; returns the src -> dst entry.
+fn floyd_warshall(g: &Graph, src: i32, dst: i32) -> i32 {
+  let n: i32 = g.node_count();
+  let inf: i32 = graph_inf();
+  let mut d: Vec<i32> = Vec<i32>::with_capacity(n * n);
+  for i in 0..n {
+    for j in 0..n {
+      if i == j {
+        d.push(0);
+      } else {
+        let w: i32 = g.weight(i, j);
+        if w != 0 {
+          d.push(w);
+        } else {
+          d.push(inf);
+        }
+      }
+    }
+  }
+
+  for k in 0..n {
+    for i in 0..n {
+      for j in 0..n {
+        let dik: i32 = d.get(i * n + k);
+        let dkj: i32 = d.get(k * n + j);
+        if dik != inf {
+          if dkj != inf {
+            let nd: i32 = dik + dkj;
+            if nd < d.get(i * n + j) {
+              d.set(i * n + j, nd);
+            }
+          }
+        }
+      }
+    }
+  }
+  return d.get(src * n + dst);
+}

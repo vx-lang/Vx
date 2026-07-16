@@ -4,6 +4,7 @@ mod integration_test {
     mod borrow_test;
     mod compile_test;
     mod fuzz;
+    mod graph_workload_test;
     mod lint_test;
     mod metadata_test;
     mod mlir_diagnostic_test;

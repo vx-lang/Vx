@@ -1,0 +1,186 @@
+//===- analysis.vx - Vx Graph Library ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Structural analysis: connected components, topological order (Kahn),
+// directed cycle detection, Prim's MST weight, and transitive-closure
+// reachability.
+//===----------------------------------------------------------------------===//
+import std::vec;
+import graph::core;
+
+// (6) Number of connected components (treating edges as undirected), via BFS floods.
+fn connected_components(g: &Graph) -> i32 {
+  let n: i32 = g.node_count();
+  let mut visited: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    visited.push(0);
+  }
+  let mut components: i32 = 0;
+  for s in 0..n {
+    if visited.get(s) == 0 {
+      components = components + 1;
+      let mut queue: Vec<i32> = Vec<i32>::new();
+      queue.push(s);
+      visited.set(s, 1);
+      let mut head: i32 = 0;
+      loop {
+        if head >= queue.len() {
+          break;
+        }
+        let u: i32 = queue.get(head);
+        head = head + 1;
+        for v in 0..n {
+          if g.has_edge(u, v) != 0 {
+            if visited.get(v) == 0 {
+              visited.set(v, 1);
+              queue.push(v);
+            }
+          }
+        }
+      }
+    }
+  }
+  return components;
+}
+
+// (7) Topological sort (Kahn's algorithm): returns 1 if a full topological order
+// exists (the directed graph is acyclic), else 0.
+fn is_dag(g: &Graph) -> i32 {
+  let n: i32 = g.node_count();
+  let mut indeg: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    indeg.push(0);
+  }
+  for u in 0..n {
+    for v in 0..n {
+      if g.has_edge(u, v) != 0 {
+        indeg.set(v, indeg.get(v) + 1);
+      }
+    }
+  }
+
+  let mut queue: Vec<i32> = Vec<i32>::new();
+  for v in 0..n {
+    if indeg.get(v) == 0 {
+      queue.push(v);
+    }
+  }
+  let mut head: i32 = 0;
+  let mut processed: i32 = 0;
+  loop {
+    if head >= queue.len() {
+      break;
+    }
+    let u: i32 = queue.get(head);
+    head = head + 1;
+    processed = processed + 1;
+    for v in 0..n {
+      if g.has_edge(u, v) != 0 {
+        indeg.set(v, indeg.get(v) - 1);
+        if indeg.get(v) == 0 {
+          queue.push(v);
+        }
+      }
+    }
+  }
+  if processed == n {
+    return 1;
+  }
+  return 0;
+}
+
+// (8) Directed cycle detection: the complement of `is_dag`.
+fn has_cycle(g: &Graph) -> i32 {
+  if is_dag(g) == 0 {
+    return 1;
+  }
+  return 0;
+}
+
+// (9) Prim's minimum spanning tree: total weight of the MST of the (undirected,
+// connected) graph, O(n^2).
+fn prim_mst_weight(g: &Graph) -> i32 {
+  let n: i32 = g.node_count();
+  let inf: i32 = graph_inf();
+  let mut inmst: Vec<i32> = Vec<i32>::with_capacity(n);
+  let mut key: Vec<i32> = Vec<i32>::with_capacity(n);
+  for k in 0..n {
+    inmst.push(0);
+    key.push(inf);
+  }
+  key.set(0, 0);
+
+  let mut total: i32 = 0;
+  for iter in 0..n {
+    let mut u: i32 = -1;
+    let mut best: i32 = inf;
+    for i in 0..n {
+      if inmst.get(i) == 0 {
+        if key.get(i) < best {
+          best = key.get(i);
+          u = i;
+        }
+      }
+    }
+    if u < 0 {
+      break;
+    }
+    inmst.set(u, 1);
+    total = total + key.get(u);
+    for v in 0..n {
+      let w: i32 = g.weight(u, v);
+      if w != 0 {
+        if inmst.get(v) == 0 {
+          if w < key.get(v) {
+            key.set(v, w);
+          }
+        }
+      }
+    }
+  }
+  return total;
+}
+
+// (10) Transitive closure: number of ordered pairs (u, v), u != v, with a
+// directed path from u to v (Warshall's reachability).
+fn reachable_pair_count(g: &Graph) -> i32 {
+  let n: i32 = g.node_count();
+  let mut r: Vec<i32> = Vec<i32>::with_capacity(n * n);
+  for i in 0..n {
+    for j in 0..n {
+      if g.has_edge(i, j) != 0 {
+        r.push(1);
+      } else {
+        r.push(0);
+      }
+    }
+  }
+
+  for k in 0..n {
+    for i in 0..n {
+      for j in 0..n {
+        if r.get(i * n + k) != 0 {
+          if r.get(k * n + j) != 0 {
+            r.set(i * n + j, 1);
+          }
+        }
+      }
+    }
+  }
+
+  let mut count: i32 = 0;
+  for i in 0..n {
+    for j in 0..n {
+      if i != j {
+        if r.get(i * n + j) != 0 {
+          count = count + 1;
+        }
+      }
+    }
+  }
+  return count;
+}
