@@ -1114,3 +1114,32 @@ Converging them (making `vxc` drive `compile_pipeline`, and codegen consume the 
 pipeline will become the production path — that is the architecture's core claim. The staged,
 keep-green roadmap (the AST path stays the oracle until the flat path is at parity via differential
 testing) is [`discussions/implementation_plans/flat_pipeline_convergence.md`](./discussions/implementation_plans/flat_pipeline_convergence.md).
+
+### 9.5 Determinism guarantees & regression protection
+
+The architecture's central promise — *output is invariant to thread scheduling* — rests on
+content-hash identity (no counters) and zero shared mutable state (no locks). It is guarded by:
+
+- **Static lock lint (CI):** a `grep` in `.github/workflows/ci.yml` rejects any
+  `Mutex`/`RwLock`/`Condvar`/`OnceLock`/`OnceCell`/`DashMap`/`parking_lot`/`thread::park` in `src/`.
+  Shared mutable state cannot be introduced without the build failing.
+- **Isolation under contention:** `concurrent_compilations_have_isolated_topologies`
+  (`architecture_test.rs`) runs 64 threads through a barrier, each declaring the *same-named*
+  topology with a *different* memory; each must see only its own — a leak/race would fire.
+- **Order determinism across thread counts (not just the set):** codegen indexes
+  `local_type_stream` by position and the HIR stream by register, so *order* is contractual.
+  `flat_type_stream_order_is_deterministic_across_thread_counts` and
+  `hir_stream_is_deterministic_across_thread_counts` (`pipeline.rs`) run the pipeline under a
+  **1-thread and an 8-thread** `rayon` pool and compare the streams **byte-for-byte, in order** —
+  catching scheduling races that same-pool reruns mask. (Closed [#196](https://github.com/hiraditya/Vx/issues/196),
+  which noted the old tests only compared the *set*.)
+- **Content-hash identity:** `parallel_gid_minting_is_deterministic_across_threads` +
+  `gids_are_module_isolated_symbol_hashed_and_deterministic` (`resolver.rs`), and the
+  registry-build GID-collision guard (#195).
+- **Debug verification hooks:** `parallel_architecture_verifier` asserts the phase invariants
+  (worker↔frozen-session identity, arena bounds, dedup uniqueness, no deferred bit post-patch,
+  epoch reclamation, serialization layout) in debug builds.
+
+**Strongest not-yet-done check:** a **ThreadSanitizer** CI job (nightly `-Zsanitizer=thread`) would
+*dynamically* prove data-race freedom rather than infer it from the lock lint. It is the gold
+standard for this architecture's claim; deferred as CI infrastructure.
