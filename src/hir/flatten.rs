@@ -344,6 +344,23 @@ impl Lowerer {
         Some(())
     }
 
+    /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
+    /// topology dispatch id. First cut: statement-form spawn (no yielded value) with a straight-line
+    /// body, in a straight-line function — nested control flow and value-producing spawn are
+    /// deferred so the region stays a linear instruction range.
+    fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Option<()> {
+        if s.ret.is_some() || self.memory || body_has_control_flow(&s.stmts) {
+            return None;
+        }
+        let top_id = crate::arch::topology_dispatch_id(&s.top);
+        self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
+        for stmt in &s.stmts {
+            self.lower_stmt(stmt)?;
+        }
+        self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), 0);
+        Some(())
+    }
+
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
@@ -365,6 +382,7 @@ impl Lowerer {
             }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
+                Expr::SpawnOn(sp) => self.lower_spawn(sp),
                 other => {
                     self.lower_expr(other)?;
                     Some(())
@@ -751,6 +769,42 @@ mod tests {
     #[test]
     fn break_outside_loop_aborts() {
         let f = parse_fn("fn f() -> i32 { break; return 0; }");
+        let mut w = worker();
+        assert!(!lower_function_to_hir(&f, &mut w));
+        assert!(w.local_hir_stream.is_empty());
+    }
+
+    #[test]
+    fn spawn_wraps_body_in_region_markers() {
+        let f = parse_fn(
+            "fn k(a: i32) -> i32 { spawn on (Topology::GPU) { let x = a + 1; } return a; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(count(&w, Opcode::Spawn), 1);
+        assert_eq!(count(&w, Opcode::SpawnEnd), 1);
+        // The Spawn carries the topology dispatch id, and the body (`a + 1`) lowered between the
+        // region markers.
+        let spawn = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Spawn)
+            .unwrap();
+        assert_eq!(
+            spawn.imm,
+            crate::arch::topology_dispatch_id(&crate::syntax::Topology::GPU) as u64
+        );
+        assert!(
+            count(&w, Opcode::Add) >= 1,
+            "body arithmetic lowered inside the region"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn value_producing_spawn_aborts() {
+        // A spawn that yields a value (no trailing `;`) is deferred -> atomic abort.
+        let f = parse_fn("fn k(a: i32) -> i32 { spawn on (Topology::GPU) { a + 1 } }");
         let mut w = worker();
         assert!(!lower_function_to_hir(&f, &mut w));
         assert!(w.local_hir_stream.is_empty());

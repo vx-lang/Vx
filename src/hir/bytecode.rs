@@ -52,6 +52,12 @@ pub enum Opcode {
     /// Marks the entry of basic block `imm`. Branch targets are block ids; codegen turns each
     /// `BlockStart` into an MLIR block.
     BlockStart = 19,
+    /// Opens a `vx.spawn` region on the topology whose dispatch id is `imm`
+    /// (`arch::topology_dispatch_id`). The instructions up to the matching `SpawnEnd` form the
+    /// spawned kernel body.
+    Spawn = 20,
+    /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
+    SpawnEnd = 21,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
