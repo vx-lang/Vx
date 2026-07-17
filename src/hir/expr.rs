@@ -152,7 +152,11 @@ impl<'a> TypeChecker<'a> {
                 if matches!(top, Topology::Current) {
                     *top = self.active_topology.clone();
                 }
-                Type::Tensor(ElementType::F32, vec![], None)
+                // A topology used as a *value* (assigned, pushed into a `Vec<Topology>`,
+                // compared) is its runtime dispatch id: an i32 discriminant. Placement
+                // uses (`Pinned<T, Topology::X>`, `spawn on`) carry the topology in the
+                // type/statement, not through this expression's value type.
+                Type::Scalar(ElementType::I32)
             }
             Expr::UnaryOp(..) => self.check_unaryop_expr(expr, silent),
             Expr::Borrow(..) => self.check_borrow_expr(expr, silent),

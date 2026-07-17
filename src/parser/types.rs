@@ -127,6 +127,15 @@ impl<'a> Parser<'a> {
             let top = self.parse_topology()?;
             self.consume(&TokenType::RightAngle, "Expected '>'")?;
             Ok(Type::Pinned(Box::new(inner), top))
+        } else if self.check(&TokenType::Topology) && self.peek_n(1).kind != TokenType::DoubleColon
+        {
+            // A bare `Topology` in type position (e.g. `Vec<Topology>`, `let t: Topology`)
+            // is the runtime topology-value type: an i32 discriminant, i.e. the stable
+            // `arch::topology_dispatch_id`. Placement annotations like
+            // `Pinned<T, Topology::GPU>` are parsed via `parse_topology` (above), so a
+            // bare `Topology` keyword here is always the value type.
+            self.advance();
+            Ok(Type::Scalar(ElementType::I32))
         } else if self.match_token(&TokenType::LeftAngle) {
             let n = match &self.advance().kind {
                 TokenType::Number(s) => s

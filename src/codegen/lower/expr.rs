@@ -2521,10 +2521,25 @@ impl<'c> LowerToMelior<'c> for TopologyExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
         &self,
-        _gen: &mut MeliorGenerator<'c>,
-        _block: melior::ir::BlockRef<'c, 'c>,
+        gen: &mut MeliorGenerator<'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        panic!("Should not be evaluated directly")
+        // A topology used as a value lowers to its stable runtime dispatch id
+        // (an i32 discriminant, `arch::topology_dispatch_id`). This makes
+        // `Topology::GPU` storable (e.g. in `Vec<Topology>`) and comparable at
+        // runtime. Comptime placement comparisons are folded before codegen, so
+        // a topology reaching here is genuinely being used as a value.
+        let i32_ty = gen.i32_ty;
+        let id = crate::arch::topology_dispatch_id(&self.top) as i64;
+        let op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(i32_ty, id).into(),
+            )])
+            .build()?;
+        let val = block.append_operation(op).result(0)?.into();
+        Ok((val, i32_ty, block))
     }
 }
 
