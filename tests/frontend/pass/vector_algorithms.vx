@@ -2,7 +2,7 @@
 // CHECK: module
 import std::tensor;
 
-fn main() -> void {
+fn main() -> i32 {
   let mut t1 : Tensor<f32> = Tensor<f32>(10, 10);
   let mut t2 : Tensor<f32> = Tensor<f32>(10, 10);
 
@@ -19,4 +19,5 @@ fn main() -> void {
     print!("Error: Tensors should be equal after copy
 ");
   };
+  return 0;
 }

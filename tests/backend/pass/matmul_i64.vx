@@ -29,7 +29,7 @@ b : Pinned<Tensor<i64, [ 4, 4 ]>, Topology::NPU[0]>)
   return Verified(result);
 }
 
-fn main() -> Verified<Ref<Tensor<i64, [ 4, 4 ]>, Memory::NPU_HBM>> {
+fn main() -> i32 {
   let mut a_host = Tensor<i64>([ 4, 4 ]); // Defaults to CPU_DRAM
   let mut b_host = Tensor<i64>([ 4, 4 ]);
 
@@ -45,7 +45,7 @@ fn main() -> Verified<Ref<Tensor<i64, [ 4, 4 ]>, Memory::NPU_HBM>> {
 
   let result = custom_matmul(a, b);
   print(&result);
-  return result;
+  return 0;
 }
 // NO_EXEC
 

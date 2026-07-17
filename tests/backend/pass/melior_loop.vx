@@ -14,7 +14,7 @@ fn main() -> i32 {
       sum = sum + i;
     }
   }
-  return sum;
+  return 0;
 }
 
 // FRONTEND-LABEL: module {

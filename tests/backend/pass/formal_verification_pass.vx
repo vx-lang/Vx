@@ -11,5 +11,5 @@ ensures return > 0 {
 
 fn main() -> i32 {
   let result = tile(5);
-  return result;
+  return 0;
 }

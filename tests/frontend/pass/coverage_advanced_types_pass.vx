@@ -23,10 +23,10 @@ fn test_enum_variant() -> MyEnum {
   return e;
 }
 
-fn main() -> i64 {
+fn main() -> i32 {
   let a : i64 = test_for_loop();
   let b = test_enum_variant();
-  return a;
+  return 0;
 }
 
 // CHECK: module

@@ -1,6 +1,6 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
-fn main() -> Tensor<f32> {
+fn main() -> i32 {
   let mut x : Tensor<f32> = Tensor<f32>();
 
   // Borrow scope 1
@@ -10,5 +10,5 @@ fn main() -> Tensor<f32> {
 
   // Borrow scope 2
   let z = &mut x; // This should be perfectly valid!
-  return 0.0;
+  return 0;
 }

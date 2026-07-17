@@ -713,43 +713,43 @@ impl<'c> MeliorGenerator<'c> {
         // transported into a device kernel in an unrelated function (which could name the
         // same variable but bind a different, non-dominating SSA value).
         self.assert_facts.clear();
+        let mut terminated = false;
         for stmt in &func.body {
-            if is_main {
-                if let Statement::Return(_) = stmt {
-                    continue;
-                }
-            }
             if let Some(b) = self.generate_statement(stmt, current_block)? {
                 current_block = b;
             } else {
+                terminated = true;
                 break;
             }
         }
 
-        if is_main {
-            let i32_ty = self.i32_ty;
-            let c0_op = current_block.append_operation(
-                melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
-                    .add_results(&[i32_ty])
-                    .add_attributes(&[(
-                        melior::ir::Identifier::new(self.context, "value"),
-                        melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into(),
-                    )])
-                    .build()?,
-            );
-            let c0 = c0_op.result(0)?.into();
-            current_block.append_operation(
-                melior::ir::operation::OperationBuilder::new("func.return", self.loc())
-                    .add_operands(&[c0])
-                    .build()?,
-            );
-        } else if let syntax::Type::Struct(name, _) = &func.return_type {
-            if name.as_ref() == "void" {
-                let has_return = func
-                    .body
-                    .last()
-                    .is_some_and(|stmt| matches!(stmt, Statement::Return(_)));
-                if !has_return {
+        // Append a fall-through terminator only when control actually reaches the
+        // end of the body (no explicit `return`/`break` terminated it first).
+        if !terminated {
+            if is_main {
+                // `main` is the C entry point and always lowers to `-> i32`. An
+                // explicit `return <expr>` in main is honored like any other
+                // function (see #210) -- its i32 value becomes the process exit
+                // code -- so we only synthesize `return 0` when the body has no
+                // trailing return (e.g. a main that just prints).
+                let i32_ty = self.i32_ty;
+                let c0_op = current_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
+                        .add_results(&[i32_ty])
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(i32_ty, 0).into(),
+                        )])
+                        .build()?,
+                );
+                let c0 = c0_op.result(0)?.into();
+                current_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("func.return", self.loc())
+                        .add_operands(&[c0])
+                        .build()?,
+                );
+            } else if let syntax::Type::Struct(name, _) = &func.return_type {
+                if name.as_ref() == "void" {
                     current_block.append_operation(
                         melior::ir::operation::OperationBuilder::new("func.return", self.loc())
                             .build()?,

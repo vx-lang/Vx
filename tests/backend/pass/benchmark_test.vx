@@ -15,7 +15,7 @@ extern "C" {
   fn trace_end() -> Tensor<i32>;
 }
 
-fn main() -> Tensor<i32> {
+fn main() -> i32 {
   unsafe {
     trace_start();
     let _dummy1 : Tensor<f32> = start_benchmark();

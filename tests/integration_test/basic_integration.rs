@@ -193,10 +193,10 @@ fn test_integration_function_calls() -> Result<(), String> {
         return x + 1;
     }
 
-    fn main() -> Tensor<f32> {
+    fn main() -> i32 {
         let y = 10;
-        let z = helper(y);
-        return z;
+        let _z = helper(y);
+        return 0;
     }
     "#;
     if run_pipeline(input).is_err() {
@@ -230,7 +230,7 @@ fn test_integration_linear_variable_consumption() -> Result<(), String> {
         return t;
     }
 
-    fn main() -> Tensor<f32> {
+    fn main() -> i32 {
         let x = Tensor<f32>(2, 2);
 
         let mut sum = 0;
@@ -239,9 +239,9 @@ fn test_integration_linear_variable_consumption() -> Result<(), String> {
         }
 
         // Use in function call. This is linear, so it consumes x.
-        let y = helper(x);
+        let _y = helper(x);
 
-        return y;
+        return 0;
     }
     "#;
     if run_pipeline(input).is_err() {

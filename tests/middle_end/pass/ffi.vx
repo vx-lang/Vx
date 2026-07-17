@@ -11,7 +11,7 @@ extern "C" {
   fn malloc(size : Tensor<i32>)->*mut Tensor<f32>;
 }
 
-fn main() -> Tensor<i32> {
+fn main() -> i32 {
   unsafe { let ptr = malloc(1024); }
   return 0;
 }

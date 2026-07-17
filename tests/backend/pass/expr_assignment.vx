@@ -144,7 +144,7 @@ fn main() -> i32 {
     }
   }
 
-  return ret;
+  return 0;
 }
 
 // FRONTEND-LABEL: module {

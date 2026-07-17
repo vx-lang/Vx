@@ -22,10 +22,10 @@ fn process<T : Dimension>(val : T) -> Tensor<i32> {
   return d;
 }
 
-fn main() -> Tensor<i32> {
+fn main() -> i32 {
   let t : Tensor<f32> = 1.0;
   let res = process(t);
-  return res;
+  return 0;
 }
 
 // CHECK: module

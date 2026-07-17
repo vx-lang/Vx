@@ -825,6 +825,16 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
+        // `main` is the C entry point: its return value is the process exit code,
+        // so it must return i32 (#210). A non-i32 `main` is a hard error rather
+        // than a silently-discarded value.
+        if func.name.as_ref() == "main" && func.return_type != Type::Scalar(ElementType::I32) {
+            self.errors.push(format!(
+                "`main` must return i32 (the process exit code), found {:?}",
+                func.return_type
+            ));
+        }
+
         let prev_constraints = self.constraints.clone();
         let prev_ret_ty = self.current_return_type.clone();
         self.current_return_type = Some(func.return_type.clone());

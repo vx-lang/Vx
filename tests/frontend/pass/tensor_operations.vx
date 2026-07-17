@@ -29,8 +29,9 @@ fn tensor_scalar() -> void {
   let s = t1 * t2;
 }
 
-fn main() -> void {
+fn main() -> i32 {
   tensor_add();
   matmul_basic();
   tensor_scalar();
+  return 0;
 }

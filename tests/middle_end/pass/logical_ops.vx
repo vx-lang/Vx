@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-fn main(d : Tensor<i32>) -> Tensor<i32> {
+fn main(d : Tensor<i32>) -> i32 {
   let a : Tensor<i32> = 10;
   let b : Tensor<i32> = 20;
   let c : Tensor<i32> = 10;
@@ -30,7 +30,7 @@ fn main(d : Tensor<i32>) -> Tensor<i32> {
   let inverted = !compound;
   let result = compound2 || inverted;
 
-  return d;
+  return 0;
 }
 
 // Check that MLIR code generates cmpi and logical ops correctly

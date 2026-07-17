@@ -10,5 +10,5 @@ fn apply_func(f : fn(i32)->i32, val : i32) -> i32 {
 
 fn main() -> i32 {
   let result = apply_func(square, 5);
-  return result;
+  return 0;
 }

@@ -23,7 +23,7 @@ fn main() -> i32 {
   let a = test_if(15);
   let b = test_if(10);
   let c = test_if(5);
-  return a + b + c; // 1 + 2 + 3 = 6
+  return 0; // 1 + 2 + 3 = 6
 }
 
 // CHECK: func.func @test_if(%arg0: i32) -> i32 {

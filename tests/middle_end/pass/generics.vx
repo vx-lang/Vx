@@ -12,7 +12,7 @@ fn process<T>(val : T) -> T {
   return val;
 }
 
-fn main() -> Tensor<i32> {
+fn main() -> i32 {
   let t1 : Tensor<f32> = 1;
   let t2 : Tensor<i32> = 2;
 
@@ -20,7 +20,7 @@ fn main() -> Tensor<i32> {
   let res1 = process(t1);
   let res2 = process(t2);
 
-  return res2;
+  return 0;
 }
 
 // CHECK: module

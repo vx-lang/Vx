@@ -14,7 +14,7 @@
 // EXEC_RUN: clang %t.o -Ltarget/debug/build/*/out -lnpu_dispatch -o %t
 // EXEC_RUN: %t | FileCheck %s --check-prefix=EXPECT
 
-fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
+fn main() -> i32 {
   let mut q_host = Tensor<f32>([ 4, 4 ]);
   let mut k_host = Tensor<f32>([ 4, 4 ]);
   let mut v_host = Tensor<f32>([ 4, 4 ]);
@@ -83,7 +83,7 @@ fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
   // Result: 0.25 * 4 * 1.0 = 1.0 everywhere.
   print(result);
 
-  return Verified(result);
+  return 0;
 }
 
 // EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args

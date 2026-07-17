@@ -137,7 +137,9 @@ fn test_npu_t_cpu_tensor(x: Tensor<f32>) -> void {
   NPU {}.transfer_tensor_to_cpu(x);
 }
 
-fn main() -> void {}
+fn main() -> i32 {
+  return 0;
+}
 
 // CHECK: module
 // CHECK:   func.func private @printMemrefF32(memref<*xf32>)

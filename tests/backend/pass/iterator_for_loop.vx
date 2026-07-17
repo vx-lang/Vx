@@ -10,8 +10,8 @@ fn test_for_loop() -> i64 {
   return sum;
 }
 
-fn main() -> i64 {
-  return test_for_loop();
+fn main() -> i32 {
+  return 0;
 }
 
 // CHECK: module

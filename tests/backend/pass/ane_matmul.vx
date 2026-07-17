@@ -15,7 +15,7 @@
 // %s --check-prefix=EXEC RUN: vxc %s --emit-mlir -O0 RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" RUN: vxc %s
 // --emit-llvm
 
-fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
+fn main() -> i32 {
   let mut a_host = Tensor<f32>([ 4, 4 ]);
   let mut b_host = Tensor<f32>([ 4, 4 ]);
   let mut result_host = Tensor<f32>([ 4, 4 ]);
@@ -48,7 +48,7 @@ fn main() -> Verified<Pinned<Tensor<f32, [ 4, 4 ]>, Topology::NPU[0]>> {
   // It should be 2.0 * 3.0 * 4 = 24.0 for all cells!
   print(result);
 
-  return Verified(result);
+  return 0;
 }
 
 // EXPECT: [Vx Dispatcher] Intercepted kernel dispatch: vx_npu_kernel_{{[0-9]+}} with 5 args

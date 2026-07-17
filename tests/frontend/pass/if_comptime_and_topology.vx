@@ -33,11 +33,12 @@ fn check_top2() on Topology::GPU -> void {
   }
 }
 
-fn main() -> void {
+fn main() -> i32 {
   spawn on(Topology::NPU[0]) {
     check_top();
   };
   spawn on(Topology::GPU) {
     check_top2();
   };
+  return 0;
 }
