@@ -1,0 +1,33 @@
+//===- vec_option_elem.vx - Vx Compiler --------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Regression for #208 + #207: an enum value returned from a generic method
+// (`Vec<Option<i32>>::get`) resolves its methods (`is_some`/`is_none`) — the
+// enum type argument keeps a nominal head — and its generic-instance type
+// lowers to the concrete monomorphized enum layout.
+// RUN: vxc %s --action run-jit
+import std::vec;
+import std::io;
+
+fn main() -> i32 {
+  let mut v = Vec<Option<i32>>::new();
+  v.push(Option<i32>::Some(7));
+  v.push(Option<i32>::None());
+
+  let a = v.get(0);
+  let b = v.get(1);
+  if a.is_some() {
+    print!("a=some\n");
+  }
+  if b.is_none() {
+    print!("b=none\n");
+  }
+  return 0;
+}
+
+// EXPECT: a=some
+// EXPECT: b=none

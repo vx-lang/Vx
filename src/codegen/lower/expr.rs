@@ -2670,11 +2670,6 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             .build()?;
         let tag_val = block.append_operation(tag_op).result(0)?.into();
 
-        println!(
-            "EnumVariantExpr: enum_name={}, variant={}, has_payload={}",
-            enum_name, variant_name, has_payload
-        );
-
         if !has_payload {
             return Ok((tag_val, i32_ty, block));
         }

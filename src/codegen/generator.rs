@@ -981,12 +981,26 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(lowered);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
-                } else {
-                    if name.as_ref() == "void" {
-                        "none".to_string()
-                    } else {
-                        format!("!llvm.struct<\"{}\">", name)
+                } else if name.as_ref() == "void" {
+                    "none".to_string()
+                } else if name.contains('<') {
+                    // A generic instance that was flattened to a bracketed nominal
+                    // name during monomorphization (e.g. "Vec<i32>", "Option<i32>")
+                    // — such names arise when a monomorphized value type is
+                    // stringified and re-stored as a plain `Struct`. Re-parse it
+                    // into a proper `GenericInstance` and lower that, which resolves
+                    // to the concrete monomorphized struct body.
+                    let mut lexer = crate::lexer::Lexer::new(name);
+                    let tokens = lexer.tokenize();
+                    let mut parser = crate::parser::Parser::new(&tokens, name);
+                    match parser.parse_type() {
+                        Ok(parsed @ syntax::Type::GenericInstance(..)) => {
+                            return self.lower_type(&parsed);
+                        }
+                        _ => format!("!llvm.struct<\"{}\">", name),
                     }
+                } else {
+                    format!("!llvm.struct<\"{}\">", name)
                 }
             }
             syntax::Type::GenericInstance(base, args) => {
