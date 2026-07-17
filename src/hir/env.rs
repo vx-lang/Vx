@@ -953,7 +953,13 @@ impl<'a> TypeChecker<'a> {
     fn resolve_parsed_type(&self, ty: Type) -> Type {
         match ty {
             Type::Struct(name, id) => {
+                // A nominal type name is a struct *or* an enum (both are represented
+                // as `Type::Struct` nominally). Only demote to a generic type
+                // parameter when the name matches neither — otherwise an enum type
+                // argument like `Option<i32>` keeps a `Generic("Option")` head and
+                // fails to unify against `impl<T> Option<T>` during method resolution.
                 if self.env.structs.contains_key(&name)
+                    || self.env.enums.contains_key(&name)
                     || self.generated_structs.iter().any(|s| s.name == name)
                 {
                     Type::Struct(name, id)
