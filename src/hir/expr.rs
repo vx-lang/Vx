@@ -3922,19 +3922,47 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let expr_ty = self.check_expr_type(match_expr);
 
+                let mut match_ty: Option<Type> = None;
                 for arm in arms {
                     self.push_scope();
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
 
-                    let _arm_ty = if !silent {
+                    let arm_ty = if !silent {
                         self.check_expr_block(&mut arm.body, consume, silent)
                     } else {
                         Type::Tensor(ElementType::F32, vec![], None)
                     };
                     self.pop_scope();
+
+                    // An arm contributes to the match's value type only if its block
+                    // ends in a tail expression (a non-semicolon `ExprStmt`). Arms that
+                    // end in `return`/`break`/`continue`, or in a statement like `assert`,
+                    // diverge or yield unit and do not constrain the match value — this is
+                    // what lets `Option::unwrap` (Some arm `return v`, None arm asserts)
+                    // type-check as `-> T`.
+                    let yields_value = matches!(
+                        arm.body.last(),
+                        Some(Statement::ExprStmt(ExprStmtStmt {
+                            has_semi: false,
+                            ..
+                        }))
+                    );
+                    if yields_value && match_ty.is_none() {
+                        match_ty = Some(arm_ty);
+                    }
                 }
 
-                Type::Tensor(ElementType::F32, vec![], None)
+                // When no arm yields a value the match sits in diverging/statement
+                // position (every arm returns or aborts). Type it as the expected return
+                // type so an implicit `return match { ... }` type-checks; fall back to the
+                // historical placeholder when there is no expected return type.
+                match_ty.unwrap_or_else(|| {
+                    self.current_return_type.clone().unwrap_or(Type::Tensor(
+                        ElementType::F32,
+                        vec![],
+                        None,
+                    ))
+                })
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }

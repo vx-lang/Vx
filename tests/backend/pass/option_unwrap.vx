@@ -1,0 +1,35 @@
+//===- option_unwrap.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Regression for #209: `Option::unwrap` is a `match` in tail position whose arms
+// all diverge (Some => `return v`, None => `assert`), so it produces no tail
+// value. The match must type as the function's return type `T` rather than the
+// placeholder tensor, so `-> T` type-checks. Exercised both directly and on an
+// Option returned from `Vec<Option<i32>>::get` (#208).
+// RUN: vxc %s --action run-jit
+import std::vec;
+import std::io;
+
+fn main() -> i32 {
+  let a = Option<i32>::Some(42);
+  print!(a.unwrap());   // 42
+  print!("
+");
+
+  let mut v = Vec<Option<i32>>::new();
+  v.push(Option<i32>::Some(7));
+  let b = v.get(0);
+  if b.is_some() {
+    print!(b.unwrap());   // 7
+    print!("
+");
+  }
+  return 0;
+}
+
+// EXPECT: 42
+// EXPECT: 7
