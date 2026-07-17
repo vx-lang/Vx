@@ -8,7 +8,19 @@
 import std::closure;
 import std::iter;
 
-import std::alloc;
+// Memory management is delegated to the type-erased byte allocator in
+// `stdlib/rust_core` (collections/vec.rs). Rust owns alignment, growth doubling,
+// `capacity * elem_size` overflow, out-of-memory, and bounds enforcement, so the
+// hand-rolled correctness pitfalls (silent i32 overflow, unchecked malloc, and
+// the compile-time-only `assert` bounds checks) are gone. Vx keeps only a typed
+// `data : *mut T` view into the Rust-managed buffer and does its own typed
+// element loads/stores.
+extern "C" {
+  fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8;
+  fn vx_vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8;
+  fn vx_vec_free(ptr : *mut i8, cap : i64, elem_size : i64) -> i32;
+  fn vx_vec_bounds_check(index : i64, len : i64) -> i32;
+}
 
 struct Vec<T> {
   data : *mut T,
@@ -23,8 +35,7 @@ Vec<T> {
   }
 
   fn with_capacity(capacity : i32) -> Vec<T> {
-    let size_bytes : i64 = (capacity as i64) * sizeof<T>();
-    let ptr : *mut T = unsafe { malloc(size_bytes) };
+    let ptr : *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
     return Vec<T> {
       data : ptr, len : 0, capacity : capacity
     };
@@ -33,7 +44,7 @@ Vec<T> {
   fn free(self : &mut Vec<T>) -> i32 {
     unsafe {
       let ptr_i8 : *mut i8 = self.data;
-      free(ptr_i8);
+      vx_vec_free(ptr_i8, self.capacity as i64, sizeof<T>());
       self.data = 0 as *mut T;
     }
     self.len = 0;
@@ -63,10 +74,13 @@ Vec<T> {
       .capacity > 0 {
         new_cap = self.capacity * 2;
       }
-      let size_bytes : i64 = (new_cap as i64) * sizeof<T>();
-
+      // Rust owns the realloc and the overflow-checked byte-size math; a
+      // capacity that overflows i32 here aborts cleanly in `vx_vec_grow`
+      // instead of silently wrapping to a bogus allocation.
       let ptr : *mut i8 = self.data;
-      self.data = unsafe { realloc(ptr, size_bytes) };
+      self.data = unsafe {
+        vx_vec_grow(ptr, self.capacity as i64, new_cap as i64, sizeof<T>())
+      };
       self.capacity = new_cap;
     }
     unsafe { self.data[self.len] = val; }
@@ -75,14 +89,12 @@ Vec<T> {
   }
 
   fn get(self : &Vec<T>, index: i32) -> T {
-    assert(index >= 0, "Index out of bounds");
-    assert(index < self.len, "Index out of bounds");
+    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     return unsafe { self.data[index] };
   }
 
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
-    assert(index >= 0, "Index out of bounds");
-    assert(index < self.len, "Index out of bounds");
+    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     unsafe { self.data[index] = val; }
     return 0;
   }

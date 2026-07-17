@@ -21,8 +21,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ============================================================================
 
 #[no_mangle]
-pub extern "C" fn vx_sigsegv_handler(_sig: libc::c_int) {
-    println!("Caught SIGSEGV: Segmentation Fault!");
+pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
+    // A wild memory access can surface as either SIGSEGV (unmapped page) or
+    // SIGBUS (e.g. a far out-of-range address on arm64); catch both so the crash
+    // is always reported with a backtrace rather than a silent signal death.
+    if sig == libc::SIGBUS {
+        println!("Caught SIGBUS: Bus Error!");
+    } else {
+        println!("Caught SIGSEGV: Segmentation Fault!");
+    }
     println!(
         "Backtrace:
 {:#?}",
@@ -36,6 +43,10 @@ pub extern "C" fn vx_init_signals() {
     unsafe {
         libc::signal(
             libc::SIGSEGV,
+            vx_sigsegv_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGBUS,
             vx_sigsegv_handler as *const () as libc::sighandler_t,
         );
     }
