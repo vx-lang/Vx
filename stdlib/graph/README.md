@@ -20,26 +20,24 @@ realistic, multi-module workload for the parallel compiler.
 
 ## Building & running
 
-Every module compiles, and `tests.vx` links across all five with `googletest`'s
-`expect_eq`:
+Every module compiles, and `tests.vx` links all five and runs all ten unit tests
+via `googletest`'s `expect_eq`:
 
 ```
 vxc --action emit-mlir stdlib/graph/shortest_path.vx   # any single module
-vxc --action emit-mlir stdlib/graph/tests.vx           # whole multi-module program
+vxc --action run-jit   stdlib/graph/tests.vx           # runs all 10 unit tests
 ```
 
-Reaching this exercised two cross-module driver fixes:
-[#203](https://github.com/hiraditya/Vx/issues/203) (transitive monomorphization —
-a generic like `Vec<i32>::with_capacity` reached only from an imported algorithm
-body) and [#204](https://github.com/hiraditya/Vx/issues/204) (imported *generic*
-free functions like `expect_eq` were dropped).
-
-**Runtime status:** `tests.vx` compiles but does **not** yet pass under
-`--action run-jit` — the algorithms read the adjacency matrix through a `Vec`
-field of `&Graph` inside loops, which hits codegen bug
-[#205](https://github.com/hiraditya/Vx/issues/205) (a `Vec` field accessed via a
-struct reference in a loop returns wrong values). The `expect_eq` checks are
-correct and will pass once #205 is fixed; they currently *expose* it.
+`tests.vx` JIT-executes cleanly — every `expect_eq` passes. Getting here
+exercised three compiler fixes: [#203](https://github.com/hiraditya/Vx/issues/203)
+(cross-module *transitive* monomorphization — a generic like
+`Vec<i32>::with_capacity` reached only from an imported algorithm body),
+[#204](https://github.com/hiraditya/Vx/issues/204) (imported *generic* free
+functions like `expect_eq` were dropped), and
+[#205](https://github.com/hiraditya/Vx/issues/205) (a struct field assigned
+through `&mut self` on a monomorphized generic — e.g. `Vec::push`'s
+`self.len = self.len + 1` — was silently dropped, so the algorithms computed
+wrong results while appearing to compile).
 
 ## Parallel-compiler / ThreadSanitizer workload
 

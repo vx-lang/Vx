@@ -1,0 +1,26 @@
+//===- vec_push_len.vx - Vx Compiler -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Regression for #205: `Vec::push`'s `self.len = self.len + 1` (a field
+// assignment on a monomorphized generic through `&mut self`) must persist.
+// Before the fix every push wrote to index 0 and `len` stayed 0.
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+import std::vec;
+import std::googletest;
+
+fn main() -> i32 {
+  let mut v: Vec<i32> = Vec<i32>::new();
+  v.push(10);
+  v.push(20);
+  v.push(30);
+  expect_eq(v.len(), 3);
+  expect_eq(v.get(0), 10);
+  expect_eq(v.get(2), 30);
+  return 0;
+}

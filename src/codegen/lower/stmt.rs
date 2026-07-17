@@ -158,6 +158,66 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
     }
 }
 
+/// The nominal struct/enum name a type ultimately names, peeling reference/pointer wrappers and
+/// generic instantiation. `&Vec<i32>` -> `Vec`. Used to recover a struct name for field assignment
+/// when the base lowers to a bare `!llvm.ptr` (which carries no struct identity) and sema did not
+/// stamp `struct_name` on the assignment target (#205).
+fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
+    use syntax::Type;
+    match ty {
+        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.clone()),
+        Type::GenericInstance(base, _) => nominal_struct_name(base),
+        Type::Ref(inner, _)
+        | Type::Pointer(inner, _, _)
+        | Type::Verified(inner)
+        | Type::Pinned(inner, _) => nominal_struct_name(inner),
+        Type::Borrow { inner, .. } => nominal_struct_name(inner),
+        _ => None,
+    }
+}
+
+/// Substitution `struct generic param -> concrete type arg`, parsed from a monomorphized struct name
+/// like `Vec<i32>` and the struct's declared generics. Mirrors the read-path logic so a generic
+/// field type (`data: *mut T`) lowers correctly on the *assignment* path (#205), instead of a raw
+/// `T` reaching codegen.
+fn generic_arg_mapping(
+    resolved_struct_name: &str,
+    generics: &[syntax::GenericParam],
+) -> std::collections::HashMap<crate::symbol::Symbol, syntax::Type> {
+    use syntax::Type;
+    let mut mapping = std::collections::HashMap::new();
+    let (Some(lt), true) = (
+        resolved_struct_name.find('<'),
+        resolved_struct_name.ends_with('>'),
+    ) else {
+        return mapping;
+    };
+    let inner = &resolved_struct_name[lt + 1..resolved_struct_name.len() - 1];
+    let inner_tys: Vec<Type> = inner
+        .split(',')
+        .map(|raw| {
+            let a = raw.trim();
+            match a {
+                "i32" => Type::Scalar(syntax::ElementType::I32),
+                "f32" => Type::Scalar(syntax::ElementType::F32),
+                "i64" => Type::Scalar(syntax::ElementType::I64),
+                _ if !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()) => {
+                    Type::Const(Box::new(syntax::Expr::Number(
+                        syntax::expr::NumberExpr::new(a.to_string(), None, syntax::Span::default()),
+                    )))
+                }
+                _ => Type::Struct(a.to_string().into(), None),
+            }
+        })
+        .collect();
+    for (i, param) in generics.iter().enumerate() {
+        if let Some(ty) = inner_tys.get(i) {
+            mapping.insert(param.name().into(), ty.clone());
+        }
+    }
+    mapping
+}
+
 impl<'c> LowerToMelior<'c> for AssignStmt {
     type Output = Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError>;
     fn lower(
@@ -404,15 +464,42 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                         }
                     }
                 }
+                // #205: a `&Struct` base lowers to a bare `!llvm.ptr` with no embedded struct name,
+                // and sema does not always stamp `struct_name` on an assignment target. Without the
+                // name we cannot find the field to store to, and the write is silently dropped (the
+                // bug that broke `Vec::push`'s `self.len = self.len + 1`). Recover it from the base's
+                // AST type.
+                if struct_name_opt.is_none() {
+                    if let Some(ast_ty) = gen.ast_env.get(base_name) {
+                        struct_name_opt = nominal_struct_name(ast_ty);
+                    }
+                }
 
                 let is_ptr = base_ty_str.starts_with("!llvm.ptr");
 
                 if let Some(resolved_struct_name) = struct_name_opt {
-                    if let Some(struct_decl) = gen.structs.get(&*resolved_struct_name).cloned() {
+                    // A monomorphized generic carries its instantiation in the name ("Vec<i32>"),
+                    // but `gen.structs` and the emitted LLVM struct type are keyed by the *base*
+                    // name ("Vec"). Strip the args before looking the declaration up — without this
+                    // the lookup missed and the field store was silently dropped (#205, e.g.
+                    // `Vec::push`'s `self.len = self.len + 1`). The field order (hence offset) is the
+                    // same for every instantiation, so the generic declaration is the right one.
+                    let base_struct: crate::symbol::Symbol = resolved_struct_name
+                        .split('<')
+                        .next()
+                        .unwrap_or(resolved_struct_name.as_ref())
+                        .into();
+                    if let Some(struct_decl) = gen.structs.get(&base_struct).cloned() {
                         if let Some(field_idx) =
                             struct_decl.fields.iter().position(|(n, _)| n == member)
                         {
-                            let field_ty = gen.lower_type(&struct_decl.fields[field_idx].1)?;
+                            // Substitute the struct's generic params (T -> i32, …) so a generic field
+                            // type like `data: *mut T` lowers instead of a raw `T` reaching codegen.
+                            let mapping =
+                                generic_arg_mapping(&resolved_struct_name, &struct_decl.generics);
+                            let field_ty = gen.lower_type(
+                                &struct_decl.fields[field_idx].1.substitute(&mapping),
+                            )?;
                             let mut field_val = rhs_val;
 
                             if rhs_ty != field_ty
@@ -433,7 +520,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 let ptr_ty = gen.ptr_ty;
                                 let mut field_types = Vec::new();
                                 for (_, ty) in &struct_decl.fields {
-                                    let mut lowered = gen.lower_type_str(ty)?;
+                                    let mut lowered =
+                                        gen.lower_type_str(&ty.substitute(&mapping))?;
                                     if lowered.starts_with("memref<") {
                                         lowered = "!llvm.ptr".to_string();
                                     }
@@ -441,7 +529,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                                 }
                                 let struct_llvm_ty_str = format!(
                                     "!llvm.struct<\"{}\", ({})>",
-                                    resolved_struct_name,
+                                    base_struct,
                                     field_types.join(", ")
                                 );
                                 let struct_llvm_ty = Type::parse(gen.context, &struct_llvm_ty_str)
