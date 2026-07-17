@@ -11,7 +11,7 @@ it appears:
    are resolved and enforced entirely at compile time; nothing survives to run
    time except the device dispatch id baked into the emitted `vx.spawn`.
 
-2. **A first-class runtime value** (added in
+1. **A first-class runtime value** (added in
    [#206](https://github.com/hiraditya/Vx/issues/206)). A topology can be stored,
    passed, compared, and dispatched on at run time — its value is a small integer
    **discriminant**. This is what makes `Vec<Topology>` and value-based device

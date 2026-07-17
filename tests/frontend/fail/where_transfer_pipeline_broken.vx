@@ -9,7 +9,7 @@ Topology Island {
 }
 
 fn pipeline<A: Topology, B: Topology, C: Topology>(a: Pinned<i32, Topology::A>, b: Pinned<i32, Topology::B>, c: Pinned<i32, Topology::C>) -> i32
-  where Transfer<A, B>, Transfer<B, C>
+where Transfer<A, B>, Transfer<B, C>
 {
   return 0;
 }

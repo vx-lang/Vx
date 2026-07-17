@@ -274,7 +274,7 @@ local table — module-local refs dominate. Correctness-equivalent (same GID).
    *variable* (types.rs classifies it from the in-scope generic list), yet it shared the nominal
    resolution arm, so a param `T` would bind to a `struct T`. Dropped `Type::Generic` from the arm —
    its `id` is dead (every consumer binds it `_`), so this is pure correctness, no behaviour change.
-2. **Enum variant payloads never resolved.** `EnumDecl::resolve_names` was a no-op, so
+1. **Enum variant payloads never resolved.** `EnumDecl::resolve_names` was a no-op, so
    `enum Tree { Node(Tree) }` left payload GIDs `None`. Fine for the AST checker (it re-resolves) but
    the **flat pipeline reads these GIDs**, so `build_frozen_registry` missed enum by-value deps —
    recursive / cross-module enum cycles went undetected. Now it walks the payload types.

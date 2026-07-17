@@ -36,20 +36,28 @@ trait dispatch {
 impl dispatch for topology_test {
   fn run(self : &topology_test, target : Topology) -> Topology {
     if target == Topology::GPU {
-      spawn on (Topology::GPU) { gpu_kernel(); };
+      spawn on (Topology::GPU) {
+        gpu_kernel();
+      };
       return Topology::GPU;
     }
     if target == Topology::ANE {
-      spawn on (Topology::ANE) { ane_kernel(); };
+      spawn on (Topology::ANE) {
+        ane_kernel();
+      };
       return Topology::ANE;
     }
-    spawn on (Topology::CPU) { cpu_kernel(); };
+    spawn on (Topology::CPU) {
+      cpu_kernel();
+    };
     return Topology::CPU;
   }
 }
 
 fn main() -> i32 {
-  let t = topology_test { workload : 10 };
+  let t = topology_test {
+    workload : 10
+  };
   // `return f()` returns f()'s value (#210): main's exit code is the id of the
   // device it dispatched to (GPU = 500).
   return t.run(Topology::GPU);
@@ -115,7 +123,7 @@ fn main() -> i32 {
 // CHECK:     call @vx_init_signals() : () -> ()
 // CHECK:     %0 = llvm.mlir.undef : !llvm.struct<"topology_test", (i32)>
 // CHECK:     %c10_i32 = arith.constant 10 : i32
-// CHECK:     %1 = llvm.insertvalue %c10_i32, %0[0] : !llvm.struct<"topology_test", (i32)> 
+// CHECK:     %1 = llvm.insertvalue %c10_i32, %0[0] : !llvm.struct<"topology_test", (i32)>
 // CHECK:     %2 = llvm.mlir.constant(1 : i32) : i32
 // CHECK:     %3 = llvm.alloca %2 x !llvm.struct<"topology_test", (i32)> : (i32) -> !llvm.ptr
 // CHECK:     llvm.store %1, %3 : !llvm.struct<"topology_test", (i32)>, !llvm.ptr

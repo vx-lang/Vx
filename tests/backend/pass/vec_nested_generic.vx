@@ -30,11 +30,14 @@ fn main() -> i32 {
   let row0 = outer.get(0);
   let row1 = outer.get(1);
   print!(row0.get(1));   // 22
-  print!("\n");
+  print!("
+");
   print!(row1.get(2));   // 55
-  print!("\n");
+  print!("
+");
   print!(row1.len());    // 3
-  print!("\n");
+  print!("
+");
   return 0;
 }
 

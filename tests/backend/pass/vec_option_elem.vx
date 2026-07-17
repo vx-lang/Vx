@@ -21,10 +21,12 @@ fn main() -> i32 {
   let a = v.get(0);
   let b = v.get(1);
   if a.is_some() {
-    print!("a=some\n");
+    print!("a=some
+");
   }
   if b.is_none() {
-    print!("b=none\n");
+    print!("b=none
+");
   }
   return 0;
 }
