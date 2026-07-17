@@ -223,7 +223,11 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
-        if from_ty == self.i32_ty && (to_ty == self.f32_ty || to_ty == self.f64_ty) {
+        let is_float = |t: Type<'c>| {
+            t == self.f32_ty || t == self.f64_ty || t == self.f16_ty || t == self.bf16_ty
+        };
+
+        if (from_ty == self.i32_ty || from_ty == self.i64_ty) && is_float(to_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
@@ -232,12 +236,49 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
-        if (from_ty == self.f32_ty || from_ty == self.f64_ty) && to_ty == self.i32_ty {
+        if is_float(from_ty) && (to_ty == self.i32_ty || to_ty == self.i64_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
                 .build()
                 .unwrap();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
+        }
+
+        // `index` has no direct fp conversion, so route through i64 (#186). This
+        // is the loop-index-in-float-context path: `for i in 0..n { i as f32 }`,
+        // where `i` is lowered as MLIR `index`. Without this the fallback emits a
+        // bitcast (unrealized_conversion_cast index->f32) that survives LLVM
+        // lowering as an unreconciled `i64 to index` cast and fails translation.
+        if from_ty == self.index_ty && is_float(to_ty) {
+            let to_i64 =
+                melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
+                    .add_operands(&[val])
+                    .add_results(&[self.i64_ty])
+                    .build()
+                    .unwrap();
+            let i64_val: Value<'c, 'c> = block.append_operation(to_i64).result(0)?.into();
+            let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
+                .add_operands(&[i64_val])
+                .add_results(&[to_ty])
+                .build()
+                .unwrap();
+            return Ok(block.append_operation(cast_op).result(0)?.into());
+        }
+
+        if is_float(from_ty) && to_ty == self.index_ty {
+            let to_i64 = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
+                .add_operands(&[val])
+                .add_results(&[self.i64_ty])
+                .build()
+                .unwrap();
+            let i64_val: Value<'c, 'c> = block.append_operation(to_i64).result(0)?.into();
+            let cast_op =
+                melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
+                    .add_operands(&[i64_val])
+                    .add_results(&[to_ty])
+                    .build()
+                    .unwrap();
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
