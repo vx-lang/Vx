@@ -5,29 +5,55 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// Regression for #206: `Topology` is usable as a first-class runtime value type.
-// A bare `Topology` parses in type position (so `Vec<Topology>` works), and a
-// `Topology::X` value lowers to its stable i32 dispatch id (arch::topology_
-// dispatch_id: GPU=500, ANE=400, CPU=0), so topologies can be stored and read
-// back. Placement uses (`Pinned`, `spawn on`) are unaffected — they carry the
-// topology in the type/statement, not through a value.
+// Regression + functional demo for #206: `Topology` is a first-class runtime
+// value (an i32 discriminant = arch::topology_dispatch_id; GPU=500, ANE=400,
+// CPU=0). Topologies can be stored in a `Vec<Topology>`, read back, compared,
+// and used to *dispatch* by value. Placement uses (`Pinned`, `spawn on`) are
+// unaffected — see tests/optimizations/pass/topology_dispatch.vx for the device
+// dispatch + MLIR checks.
 // RUN: vxc %s --action run-jit
 import std::vec;
 import std::io;
 
+// Value-based dispatch: pick a per-device batch size from a runtime topology
+// value. Pure control flow (no `spawn`), so it JIT-executes.
+fn batch_for(target : Topology) -> i32 {
+  if target == Topology::GPU {
+    return 1024;
+  }
+  if target == Topology::ANE {
+    return 256;
+  }
+  return 32;
+}
+
 fn main() -> i32 {
-  let mut v = Vec<Topology>::new();
-  v.push(Topology::GPU);
-  v.push(Topology::ANE);
-  v.push(Topology::CPU);
+  // Topologies stored and read back as data.
+  let mut devices = Vec<Topology>::new();
+  devices.push(Topology::GPU);
+  devices.push(Topology::ANE);
+  devices.push(Topology::CPU);
 
-  print!(v.get(0));   // 500
+  print!(devices.get(0));   // 500
   print!("
 ");
-  print!(v.get(1));   // 400
+  print!(devices.get(1));   // 400
   print!("
 ");
 
+  // Dispatch on each stored topology value.
+  let mut i = 0;
+  loop {
+    if i >= devices.len() {
+      break;
+    }
+    print!(batch_for(devices.get(i)));
+    print!("
+");
+    i = i + 1;
+  }
+
+  // Topology values compare at runtime.
   let t : Topology = Topology::GPU;
   if t == Topology::GPU {
     print!("gpu-match
@@ -38,4 +64,7 @@ fn main() -> i32 {
 
 // EXPECT: 500
 // EXPECT: 400
+// EXPECT: 1024
+// EXPECT: 256
+// EXPECT: 32
 // EXPECT: gpu-match
