@@ -26,6 +26,13 @@ pub extern "C" fn print_i32(val: i32) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn print_i64(val: i64) -> i32 {
+    print!("{}", val);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
+#[no_mangle]
 pub extern "C" fn print_f32(val: f32) -> i32 {
     print!("{}", val);
     let _ = std::io::Write::flush(&mut std::io::stdout());

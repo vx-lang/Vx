@@ -610,6 +610,55 @@ pub(crate) fn lower_print_call<'c>(
 
     let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
+    // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors,
+    // so a bare scalar (`print(x)` where x : f32/f64/i32/i64) must route through the
+    // scalar `print_*` runtime helpers instead of the memref path below.
+    let arg_ty_str = arg_ty.to_string();
+    let scalar_print_fn = match arg_ty_str.as_str() {
+        "i32" => Some("print_i32"),
+        "i64" => Some("print_i64"),
+        "f32" => Some("print_f32"),
+        "f64" => Some("print_f64"),
+        _ => None,
+    };
+    if let Some(fn_name) = scalar_print_fn {
+        if !gen.functions.contains_key(fn_name) {
+            let func_ty = Type::parse(gen.context, &format!("({}) -> i32", arg_ty_str))
+                .ok_or_else(|| LowerError::ParseType(format!("({}) -> i32", arg_ty_str)))?;
+            let func_decl = OperationBuilder::new("func.func", gen.loc())
+                .add_attributes(&[
+                    (
+                        Identifier::new(gen.context, "sym_name"),
+                        StringAttribute::new(gen.context, fn_name).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "function_type"),
+                        TypeAttribute::new(func_ty).into(),
+                    ),
+                    (
+                        Identifier::new(gen.context, "sym_visibility"),
+                        StringAttribute::new(gen.context, "private").into(),
+                    ),
+                ])
+                .add_regions([melior::ir::Region::new()])
+                .build()?;
+            gen.module.body().append_operation(func_decl);
+            gen.functions
+                .insert(fn_name.to_string().into(), (gen.i32_ty, vec![arg_ty]));
+        }
+        let call_op = block.append_operation(
+            OperationBuilder::new("func.call", gen.loc())
+                .add_operands(&[arg_val])
+                .add_results(&[gen.i32_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "callee"),
+                    FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
+                )])
+                .build()?,
+        );
+        return Ok((call_op.result(0)?.into(), gen.none_ty, block));
+    }
+
     let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
 
     let print_fn_name = match el_ty_str {
