@@ -1250,6 +1250,30 @@ mod tests {
     }
 
     #[test]
+    fn flashattention_score_expression_composes() {
+        // The FA inner score `dot(q[i], k[j]) * scale`: index -> reduce -> scalar multiply, proving
+        // the tensor pieces compose end to end into one flat stream.
+        let f = parse_fn(
+            "fn score(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>, scale: f32) -> f32 \
+             { return dot(q[0], k[0]) * scale; }",
+        );
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "the FA score expression should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorIndex), 2, "q[0] and k[0]");
+        assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
+        assert_eq!(count(&w, Opcode::Mul), 1, "the scale multiply");
+        assert_eq!(
+            result_gid(&w, Opcode::Mul),
+            scalar_gid(&ElementType::F32),
+            "the score is a scalar"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
     fn tensor_gid_distinguishes_element_and_shape() {
         let a = tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]);
         let b = tensor_gid(&ElementType::F32, &["4".to_string(), "4".to_string()]);

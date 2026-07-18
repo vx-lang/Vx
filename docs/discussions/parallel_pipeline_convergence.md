@@ -529,6 +529,35 @@ element`, `tensor_partial_index_yields_row_view`. Full suite green (332 lib + 67
 **Next.** Tensor elementwise ops + reductions (the slice-ops surface `dot`/`sum` → `vector.reduction`
 in the flat HIR), tensor allocation/`transfer` lowering, and nested-aggregate/pointer field access.
 
+## Entry 17 — C1.3e: slice reductions + elementwise (the FA payoff) (#199)
+
+**Commits:** `51f7b6f` (`Reduce`), `6c77f29` (elementwise).
+
+**Gap.** The tensor path had identity + indexing (Entry 16) but no way to *compute* on slices — the
+FlashAttention `dot`/softmax surface.
+
+**What we did.**
+- **Reductions.** New `Opcode::Reduce`: a rank-1 slice → a scalar. `operand1` the slice (`operand2` a
+  second slice for `dot`, else `Register(0)`), `imm` the kind (0 dot / 1 sum / 2 max / 3 min),
+  `type_idx` the scalar element. `lower_expr` intercepts the `dot`/`sum`/`max`/`min` `FunctionCall`s;
+  each operand must be a rank-1 tensor slice (`q` or an indexed row `q[i]`). Mirrors the AST codegen's
+  `vector.reduction` (with a fused `mulf` for `dot`).
+- **Elementwise.** No new opcode: an elementwise tensor op is an arith opcode (`Mul`/`Add`/…) whose
+  *result type* is a tensor — the MLIR convention (`arith.mulf` on a vector). The `BinaryOp` arm
+  already flowed tensors through; the fix is the result-type pick — when either operand is a tensor
+  the result is the tensor type, so `s * a` (scalar on the left) broadcasts to a tensor.
+
+**Tests.** dot/sum/max reductions, `dot(q[0], k[0])` on rank-2 tensors (index→reduce), elementwise
+mul + scalar broadcast, and a capstone `flashattention_score_expression_composes`
+(`dot(q[i], k[j]) * scale` → index → reduce → scalar multiply, end to end). Full suite green
+(338 lib + 67 integration).
+
+**Where #199 stands.** The flat HIR now models the whole non-scalar *value* surface — structs
+(layout/params/construction/field access) and tensors (identity/indexing/reductions/elementwise),
+enough to express the FA inner loop. Remaining: `transfer` and tensor *allocation/store* lowering (so
+a produced tensor can be written back), nested-aggregate/pointer field access, and then C2 codegen
+consuming these opcodes.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
