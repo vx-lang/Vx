@@ -1,0 +1,89 @@
+//===- linear_attention.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Linear (kernelized) attention (Katharopoulos et al. 2020): replace softmax
+// with a feature map phi and exploit associativity to avoid the N^2 score
+// matrix. With phi(x) = elu(x)+1 (= x+1 for x >= 0):
+//   S[a][b] = sum_j phi(K[j][a]) * V[j][b]      (a "KV" summary, built once)
+//   z[a]    = sum_j phi(K[j][a])
+//   O[i][b] = (sum_a phi(Q[i][a]) * S[a][b]) / (sum_a phi(Q[i][a]) * z[a])
+// This is O(N * d^2) instead of O(N^2 * d) -- the KV summary is reused across
+// all queries, the defining trick of linear attention.
+//
+// Hand-checkable (d=2, seq=2), K0=[0,0] K1=[1,0], V0=[0,0] V1=[2,4]:
+//   phi(K0)=[1,1], phi(K1)=[2,1] -> S=[[4,8],[2,4]], z=[3,2].
+//   Q0=[1,0] -> phi=[2,1]: num=[10,20], den=8  -> O0=[1.25, 2.5].
+//   Q1=[0,1] -> phi=[1,2]: num=[8,16],  den=7  -> O1=[1.14286, 2.28571].
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([2, 2]);
+  let mut k = Tensor<f32>([2, 2]);
+  let mut v = Tensor<f32>([2, 2]);
+  let mut ss = Tensor<f32>([2, 2]);
+  let mut zz = Tensor<f32>([2, 2]);
+  let mut o = Tensor<f32>([2, 2]);
+
+  // K0=[0,0], K1=[1,0]
+  k[0][0] = 0.0;
+  k[0][1] = 0.0;
+  k[1][0] = 1.0;
+  k[1][1] = 0.0;
+  // V0=[0,0], V1=[2,4]
+  v[0][0] = 0.0;
+  v[0][1] = 0.0;
+  v[1][0] = 2.0;
+  v[1][1] = 4.0;
+  // Q0=[1,0], Q1=[0,1]
+  q[0][0] = 1.0;
+  q[0][1] = 0.0;
+  q[1][0] = 0.0;
+  q[1][1] = 1.0;
+
+  // KV summary: S[a][b] = sum_j phi(K[j][a]) * V[j][b];  z[a] = sum_j phi(K[j][a]).
+  // (z is stored in row 0 of zz for a rank-2 buffer.)
+  for a in 0..2 {
+    zz[0][a] = 0.0;
+    for b in 0..2 {
+      ss[a][b] = 0.0;
+    }
+  }
+  for j in 0..2 {
+    for a in 0..2 {
+      let pk : f32 = k[j][a] + 1.0;
+      zz[0][a] = zz[0][a] + pk;
+      for b in 0..2 {
+        ss[a][b] = ss[a][b] + pk * v[j][b];
+      }
+    }
+  }
+
+  // Per-query readout, reusing the shared summary.
+  for i in 0..2 {
+    let mut den : f32 = 0.0;
+    for a in 0..2 {
+      let pq : f32 = q[i][a] + 1.0;
+      den += pq * zz[0][a];
+    }
+    for b in 0..2 {
+      let mut num : f32 = 0.0;
+      for a in 0..2 {
+        let pq : f32 = q[i][a] + 1.0;
+        num += pq * ss[a][b];
+      }
+      o[i][b] = num / den;
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[1.25,   2.5],
+// EXPECT: [1.14286,   2.28571]]

@@ -1,0 +1,102 @@
+//===- sparse_local_attention.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Sparse / local (sliding-window) attention (Longformer / Mistral style): each
+// query attends only to keys within a fixed window, so the cost is O(N * w)
+// rather than O(N^2). Implemented as a masked softmax -- keys outside the window
+// |i - j| <= 1 are set to a large negative score, so softmax gives them ~0
+// weight. (A production kernel skips them entirely; the mask makes the semantics
+// unambiguous and hand-checkable.)
+//
+// seq=4, D=2, window radius 1, Q rows = [1,1], K row j = j, V row j = j:
+//   i=0 attends {0,1}: softmax(scale*[0,2]) -> O0 ~= 0.88080
+//   i=1 attends {0,1,2}: scores [0,2,4]     -> O1 ~= 1.85093
+//   i=2 attends {1,2,3}: scores [2,4,6]     -> O2 ~= 2.85093
+//   i=3 attends {2,3}:   scores [4,6]        -> O3 ~= 2.88080
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: func.func @main
+
+import std::math;
+
+fn main() -> i32 {
+  let mut q = Tensor<f32>([4, 2]);
+  let mut k = Tensor<f32>([4, 2]);
+  let mut v = Tensor<f32>([4, 2]);
+  let mut s = Tensor<f32>([4, 4]);
+  let mut o = Tensor<f32>([4, 2]);
+
+  for d in 0..2 {
+    q[0][d] = 1.0;
+    q[1][d] = 1.0;
+    q[2][d] = 1.0;
+    q[3][d] = 1.0;
+    k[0][d] = 0.0;
+    k[1][d] = 1.0;
+    k[2][d] = 2.0;
+    k[3][d] = 3.0;
+    v[0][d] = 0.0;
+    v[1][d] = 1.0;
+    v[2][d] = 2.0;
+    v[3][d] = 3.0;
+  }
+
+  let scale : f32 = 1.0;
+
+  for i in 0..4 {
+    // masked scores: keys outside the |i - j| <= 1 window get a large negative
+    for j in 0..4 {
+      let mut acc : f32 = 0.0;
+      for d in 0..2 {
+        acc += q[i][d] * k[j][d];
+      }
+      let di : i32 = (i as i32) - (j as i32);
+      let ad : i32 = if di < 0 {
+        0 - di
+      } else {
+        di
+      };
+      if ad > 1 {
+        s[i][j] = -1000000.0;
+      } else {
+        s[i][j] = acc * scale;
+      }
+    }
+    // numerically-stable softmax over the (masked) row
+    let mut mx : f32 = s[i][0];
+    for j in 1..4 {
+      let x : f32 = s[i][j];
+      if x > mx {
+        mx = x;
+      }
+    }
+    let mut sum : f32 = 0.0;
+    for j in 0..4 {
+      let e : f32 = (s[i][j] - mx).exp();
+      s[i][j] = e;
+      sum += e;
+    }
+    for j in 0..4 {
+      s[i][j] = s[i][j] / sum;
+    }
+    for c in 0..2 {
+      let mut acc : f32 = 0.0;
+      for j in 0..4 {
+        acc += s[i][j] * v[j][c];
+      }
+      o[i][c] = acc;
+    }
+  }
+
+  print(o);
+  return 0;
+}
+
+// EXPECT: [[0.880797,
+// EXPECT: [1.85094,
+// EXPECT: [2.85094,
+// EXPECT: [2.8808,
