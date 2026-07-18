@@ -48,14 +48,22 @@ pub fn tensor_gid(elem: &ElementType, shape: &[String]) -> TypeId {
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
+    let (elem, shape) = tensor_elem_shape(ty)?;
+    Some(tensor_gid(&elem, &shape))
+}
+
+/// The element type + canonical shape of a `Type::Tensor`, or `None` if it is unmodelled (generic
+/// element, or a dim that isn't a literal/name). The shape is what the flat lowerer rank-reduces on
+/// indexing.
+fn tensor_elem_shape(ty: &Type) -> Option<(ElementType, Vec<String>)> {
     let Type::Tensor(elem, dims, _) = ty else {
         return None;
     };
     if matches!(elem, ElementType::Generic(_)) {
         return None;
     }
-    let shape: Option<Vec<String>> = dims.iter().map(tensor_dim_string).collect();
-    Some(tensor_gid(elem, &shape?))
+    let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+    Some((elem.clone(), shape))
 }
 
 /// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
@@ -80,9 +88,13 @@ const NO_TYPE: u32 = u32::MAX;
 enum LoweredTy {
     Scalar(ElementType),
     Aggregate(TypeId),
-    /// A tensor, named by its GID (element + shape). Passed by reference (a memref descriptor), so it
-    /// lives as an SSA value — never `Alloca`'d into a slot like a scalar/aggregate.
-    Tensor(TypeId),
+    /// A tensor by element type + canonical shape. Passed by reference (a memref descriptor), so it
+    /// lives as an SSA value — never `Alloca`'d into a slot. The shape is carried (not just the GID)
+    /// so indexing can rank-reduce it to a row/sub-view or the scalar element.
+    Tensor {
+        elem: ElementType,
+        shape: Vec<String>,
+    },
 }
 
 impl LoweredTy {
@@ -90,7 +102,8 @@ impl LoweredTy {
     fn gid(&self) -> TypeId {
         match self {
             LoweredTy::Scalar(e) => scalar_gid(e),
-            LoweredTy::Aggregate(id) | LoweredTy::Tensor(id) => *id,
+            LoweredTy::Aggregate(id) => *id,
+            LoweredTy::Tensor { elem, shape } => tensor_gid(elem, shape),
         }
     }
 }
@@ -184,7 +197,7 @@ impl<'r> Lowerer<'r> {
         let imm = match &ty {
             // A tensor is a reference (memref), not a stack value, so it is never `Alloca`'d — but
             // keep the match total; if one ever reaches here its size is left unencoded.
-            LoweredTy::Scalar(_) | LoweredTy::Tensor(_) => 0,
+            LoweredTy::Scalar(_) | LoweredTy::Tensor { .. } => 0,
             LoweredTy::Aggregate(id) => self
                 .registry
                 .layouts
@@ -325,6 +338,33 @@ impl<'r> Lowerer<'r> {
                 let offset = field.offset as u64;
                 Some(self.emit_value(Opcode::FieldLoad, slot, Register(0), elem, offset))
             }
+            // Tensor indexing `base[index]`: rank-reduces the base along its outermost dimension.
+            // A remaining shape yields a row/sub-view tensor; an empty one yields the scalar element.
+            // Chained access (`q[i][j]`) recurses through the nested `IndexAccess`.
+            Expr::IndexAccess(ix) => {
+                let base = self.lower_expr(&ix.base)?;
+                let (elem, shape) = match &base.ty {
+                    LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
+                    _ => return None, // only tensor indexing for now
+                };
+                if shape.is_empty() {
+                    return None; // cannot index a rank-0 value
+                }
+                let index = self.lower_expr(&ix.index)?;
+                if !matches!(index.ty, LoweredTy::Scalar(_)) {
+                    return None; // index must be a scalar
+                }
+                let reduced: Vec<String> = shape[1..].to_vec();
+                let result_ty = if reduced.is_empty() {
+                    LoweredTy::Scalar(elem)
+                } else {
+                    LoweredTy::Tensor {
+                        elem,
+                        shape: reduced,
+                    }
+                };
+                Some(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
+            }
             _ => None,
         }
     }
@@ -405,7 +445,8 @@ impl<'r> Lowerer<'r> {
         let end = self.lower_expr(&range.end)?;
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
-            LoweredTy::Aggregate(_) | LoweredTy::Tensor(_) => return None, // ranges are over scalars
+            // ranges are over scalars
+            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } => return None,
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
@@ -627,7 +668,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
     for (i, (name, ty)) in func.params.iter().enumerate() {
         let lty = lowered_ty(ty, registry)?;
         let incoming = lw.emit_typed(Opcode::Load, Register(0), Register(0), lty, i as u64);
-        if matches!(incoming.ty, LoweredTy::Tensor(_)) {
+        if matches!(incoming.ty, LoweredTy::Tensor { .. }) {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
             lw.bind_local(name.clone(), incoming);
@@ -647,8 +688,8 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     if let Some(elem) = scalar_of(ty) {
         return Some(LoweredTy::Scalar(elem));
     }
-    if let Some(id) = tensor_gid_of(ty) {
-        return Some(LoweredTy::Tensor(id));
+    if let Some((elem, shape)) = tensor_elem_shape(ty) {
+        return Some(LoweredTy::Tensor { elem, shape });
     }
     match ty {
         Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
@@ -801,7 +842,8 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Matmul
             | Opcode::Cmp
             | Opcode::Store
-            | Opcode::FieldStore => {
+            | Opcode::FieldStore
+            | Opcode::TensorIndex => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -1017,6 +1059,46 @@ mod tests {
             w.local_type_stream.contains(&expected),
             "the tensor GID is in the type stream"
         );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn tensor_full_index_yields_scalar_element() {
+        // `q[0][1]` on a rank-2 tensor rank-reduces twice: [2,4] -> [4] -> scalar f32.
+        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { return q[0][1]; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "tensor element read should lower"
+        );
+        assert_eq!(
+            count(&w, Opcode::TensorIndex),
+            2,
+            "two rank-reducing indexes"
+        );
+        assert_eq!(count(&w, Opcode::Alloca), 0);
+        // The intermediate row type and the final scalar element are both in the type stream.
+        let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
+        assert!(
+            w.local_type_stream.contains(&row),
+            "row (rank-1) tensor GID present"
+        );
+        assert!(
+            w.local_type_stream.contains(&scalar_gid(&ElementType::F32)),
+            "scalar element GID present"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn tensor_partial_index_yields_row_view() {
+        // `q[0]` on [2,4] yields a rank-1 row view [4] (one TensorIndex, tensor result).
+        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> { return q[0]; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "row view should lower");
+        assert_eq!(count(&w, Opcode::TensorIndex), 1);
+        let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
+        assert!(w.local_type_stream.contains(&row), "row tensor GID present");
         verify_hir_stream(&w);
     }
 

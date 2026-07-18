@@ -66,6 +66,11 @@ pub enum Opcode {
     /// the value to store, and `imm` the field's byte offset. Used to initialize a struct field by
     /// field — the field-addressed counterpart of `Store`.
     FieldStore = 23,
+    /// Index a tensor along its outermost dimension: `operand1` is the base tensor, `operand2` the
+    /// (scalar) index. Rank-reducing — `type_idx` is the result type: a rank-1-smaller tensor (a
+    /// row/sub-view) or, when the last dimension is indexed, the scalar element. Chained for
+    /// multi-dimensional access (`q[i][j]`).
+    TensorIndex = 24,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
