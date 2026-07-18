@@ -444,6 +444,37 @@ payload enum, generic field, by-value cycle, pointer-breaks-cycle) + end-to-end
 layouts; add field/index opcodes + non-scalar `Val`s in the lowerer; then `transfer`/tensor/slice
 lowering (the rest of #199).
 
+## Entry 14 — C1.3b: aggregate values in the flat HIR — struct params + field reads (#199)
+
+**Commits:** `f55466d` (aggregate value type + sized `Alloca`), `a90828a` (`FieldLoad`).
+
+**Gap.** The flat lowerer modelled only scalars — `Val`/`Binding` carried an `ElementType`, every
+type-stream entry was a `scalar_gid` — so a struct parameter or field access couldn't lower. With
+real layouts now at the freeze (Entry 13), the lowerer can carry aggregates.
+
+**What we did.**
+- `LoweredTy { Scalar(ElementType) | Aggregate(TypeId) }` threaded through `Val`/`Binding` and the
+  emitters. `emit_typed` is the general emitter; `emit_value` stays the scalar convenience so scalar
+  GIDs are byte-identical and existing call sites are untouched.
+- The lowerer holds the frozen registry. A struct/enum parameter with a *computed* layout binds as an
+  aggregate and forces the memory model (an aggregate must sit in an addressable slot); `emit_alloca`
+  sizes the slot from `layout.size_bytes` (in the `Alloca`'s `imm`). Its GID flows through
+  `Load`/`Alloca`/`Store`/`SlotLoad`/`Ret`. `lowered_ty` declines (atomic) for an aggregate still on
+  the 0/0 stub — generic, tensor, or otherwise unmodelled field types.
+- `FieldLayout` gains `ty: FieldTy { Scalar | Nominal | Opaque }` so a field read recovers its value
+  type. New `Opcode::FieldLoad` (slot handle + byte offset → field value); `base.member` lowers to it
+  for scalar fields (nested-aggregate/pointer fields declined until addressed sub-views land).
+
+**Tests.** `struct_param_lowers_as_aggregate_slot` (Point param → memory slot, `Alloca.imm == 8`,
+aggregate GID in the type stream), `unmodelled_aggregate_param_is_declined` (tensor-field struct),
+`struct_field_read_lowers_to_field_load` (`p.y` → FieldLoad, imm 4), and
+`field_read_offset_honours_alignment_padding` (`Rec{a:i8,b:i32}`.b at padded offset 4). Full suite
+green (325 lib + 67 integration).
+
+**Next (C1.3c).** Struct *construction* (`S { .. }` → `Alloca` + per-field `FieldStore`) — needs a
+name→GID resolution for the `StructInit` expression (the expression-level analogue of #194). Then
+tensor GIDs + index opcodes, and `transfer`.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
