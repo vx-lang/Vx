@@ -503,6 +503,32 @@ FieldLoad). Full suite green (327 lib + 67 integration).
 read, all layout-driven. Remaining: tensor GIDs + index opcodes (the tensor path), nested-aggregate /
 pointer field access, and `transfer` lowering.
 
+## Entry 16 — C1.3d: the tensor path — identity + indexing (#199)
+
+**Commits:** `f0aa1c2` (tensor GIDs), `0ac1bf5` (`TensorIndex`).
+
+**Gap.** Tensors had no identity in the flat type stream (`emit_type_gid`/`nominal_gid` fell through
+for `Type::Tensor`; the lowerer declined any tensor), and no way to index them.
+
+**What we did.**
+- **Identity.** `flatten::tensor_gid(elem, shape)` / `tensor_gid_of(ty)`: a stable GID (module 0 =
+  builtin) content-hashed from element + canonical shape — same source of truth as `scalar_gid`, so a
+  tensor has one identity in a signature and a lowered body. `pipeline::{emit_type_gid, nominal_gid}`
+  now emit it. Declines a generic element or a non-literal/name dim.
+- **Values.** New `LoweredTy::Tensor { elem, shape }` (shape carried, not just the GID, so indexing
+  can rank-reduce). A tensor is a reference (memref), so a tensor *parameter* binds as an SSA
+  register — never `Alloca`'d.
+- **Indexing.** New `Opcode::TensorIndex` (base + scalar index → rank-reduced result). `base[index]`
+  drops the outermost dim: a remaining shape → a row/sub-view tensor, an empty one → the scalar
+  element. `q[i][j]` recurses the nested `IndexAccess` (`[2,4] → [4] → f32`).
+
+**Tests.** `tensor_param_binds_as_ssa_reg_with_tensor_gid`, `tensor_gid_distinguishes_element_and_
+shape`, `tensor_signature_emits_the_tensor_gid` (signature==body), `tensor_full_index_yields_scalar_
+element`, `tensor_partial_index_yields_row_view`. Full suite green (332 lib + 67 integration).
+
+**Next.** Tensor elementwise ops + reductions (the slice-ops surface `dot`/`sum` → `vector.reduction`
+in the flat HIR), tensor allocation/`transfer` lowering, and nested-aggregate/pointer field access.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
