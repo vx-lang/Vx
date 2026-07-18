@@ -373,10 +373,28 @@ impl<'r> Lowerer<'r> {
                 };
                 Some(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
             }
+            // `transfer(src, Memory::X)`: re-home a tensor into another memory space. The result has
+            // the same element + shape, so the destination is sized to hold the source ("enough
+            // storage on the receiving side").
+            Expr::Transfer(t) => {
+                let src = self.lower_expr(&t.expr)?;
+                let LoweredTy::Tensor { elem, shape } = &src.ty else {
+                    return None; // only tensors transfer
+                };
+                let result_ty = LoweredTy::Tensor {
+                    elem: elem.clone(),
+                    shape: shape.clone(),
+                };
+                let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u64;
+                Some(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
+            }
             // Slice reductions `dot`/`sum`/`max`/`min` over rank-1 tensor slices -> a scalar. `dot`
-            // takes two slices (fused multiply then reduce-add); the rest take one. Other function
-            // calls are not yet lowered in the flat HIR.
+            // takes two slices (fused multiply then reduce-add); the rest take one. `Tensor<T>([..])`
+            // allocates a buffer. Other function calls are not yet lowered in the flat HIR.
             Expr::FunctionCall(fc) => {
+                if fc.name.as_ref() == "Tensor" {
+                    return self.lower_tensor_alloc(fc);
+                }
                 let kind = match fc.name.as_ref() {
                     "dot" => 0u64,
                     "sum" => 1,
@@ -603,6 +621,22 @@ impl<'r> Lowerer<'r> {
         Some(slot)
     }
 
+    /// Lower a tensor allocation `Tensor<T>([d0, d1, ...])` (or `Tensor<T>(d0, d1)`): a `TensorAlloc`
+    /// whose `imm` is the static byte size, so the buffer has room for every element. Declines a
+    /// dynamic/symbolic shape (its byte size isn't statically known) or a non-scalar element.
+    fn lower_tensor_alloc(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
+        let elem = fc.type_args.as_ref()?.first().and_then(scalar_of)?;
+        // `Tensor<T>([d0, d1])` passes the shape as one array arg; `Tensor<T>(d0, d1)` as bare args.
+        let dims: &[Expr] = match fc.args.first() {
+            Some(Expr::Array(arr)) if fc.args.len() == 1 => &arr.elements,
+            _ => &fc.args,
+        };
+        let bytes = crate::hir::memory::static_tensor_bytes(&elem, dims)?;
+        let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+        let ty = LoweredTy::Tensor { elem, shape };
+        Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
@@ -621,7 +655,13 @@ impl<'r> Lowerer<'r> {
                     return Some(());
                 }
                 let v = self.lower_expr(&l.expr)?;
-                self.bind_local(l.name.clone(), v);
+                // A tensor local is a reference (memref) — bind it as an SSA register, not a slot;
+                // stores write through the descriptor to the buffer.
+                if matches!(v.ty, LoweredTy::Tensor { .. }) {
+                    self.scope.insert(l.name.clone(), Binding::Reg(v));
+                } else {
+                    self.bind_local(l.name.clone(), v);
+                }
                 Some(())
             }
             Statement::Return(r) => {
@@ -629,8 +669,20 @@ impl<'r> Lowerer<'r> {
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Some(())
             }
-            // `name = expr` (simple identifier target only).
             Statement::Assign(a) => {
+                // `o[i] = <slice>`: store into a tensor row/sub-view. The left side lowers to a
+                // `TensorIndex` place (which must be a tensor view — scalar-element stores aren't
+                // modelled yet); the right side is the value stored through it.
+                if matches!(&a.lhs, Expr::IndexAccess(_)) {
+                    let place = self.lower_expr(&a.lhs)?;
+                    if !matches!(place.ty, LoweredTy::Tensor { .. }) {
+                        return None;
+                    }
+                    let value = self.lower_expr(&a.rhs)?;
+                    self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
+                    return Some(());
+                }
+                // `name = expr` (simple identifier target).
                 let name = simple_ident(&a.lhs)?;
                 let v = self.lower_expr(&a.rhs)?;
                 self.assign_local(&name, v)
@@ -889,6 +941,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Store
             | Opcode::FieldStore
             | Opcode::TensorIndex
+            | Opcode::TensorStore
             // `Reduce`'s operand2 is a real slice for `dot`, else the dominated `Register(0)`.
             | Opcode::Reduce => {
                 assert!(
@@ -902,7 +955,8 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Neg
             | Opcode::Not
             | Opcode::SlotLoad
-            | Opcode::FieldLoad => assert!(
+            | Opcode::FieldLoad
+            | Opcode::Transfer => assert!(
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"
             ),
@@ -1269,6 +1323,75 @@ mod tests {
             result_gid(&w, Opcode::Mul),
             scalar_gid(&ElementType::F32),
             "the score is a scalar"
+        );
+        verify_hir_stream(&w);
+    }
+
+    fn op_imm(w: &LocalWorkerState, op: Opcode) -> Option<u64> {
+        w.local_hir_stream
+            .iter()
+            .find(|i| i.opcode == op)
+            .map(|i| i.imm)
+    }
+
+    #[test]
+    fn tensor_alloc_sizes_storage_for_the_receiver() {
+        // `Tensor<f32>([2, 4])` allocates a buffer sized for every element (2*4*4 = 32 bytes), so a
+        // later store has room.
+        let f =
+            parse_fn("fn f() -> Tensor<f32, [2, 4]> { let o = Tensor<f32>([2, 4]); return o; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "tensor alloc should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
+        assert_eq!(
+            op_imm(&w, Opcode::TensorAlloc),
+            Some(32),
+            "byte size = 2*4*4"
+        );
+        assert_eq!(
+            result_gid(&w, Opcode::TensorAlloc),
+            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn tensor_row_store_writes_through_the_slice() {
+        // `o[0] = v` stores the row slice `v` into the allocated buffer `o`: alloc + index + store.
+        let f = parse_fn(
+            "fn f(v: Tensor<f32, [4]>) -> Tensor<f32, [2, 4]> \
+             { let o = Tensor<f32>([2, 4]); o[0] = v; return o; }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "row store should lower");
+        assert_eq!(count(&w, Opcode::TensorAlloc), 1, "the destination buffer");
+        assert_eq!(count(&w, Opcode::TensorIndex), 1, "the row place o[0]");
+        assert_eq!(count(&w, Opcode::TensorStore), 1, "the store into it");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn transfer_rehomes_a_tensor_to_a_memory_space() {
+        // `transfer(a, Memory::NPU_HBM)` -> a Transfer carrying the space's dispatch id (100);
+        // the result keeps the shape, so the receiving buffer is sized to hold it.
+        let f = parse_fn(
+            "fn f(a: Tensor<f32, [2, 4]>) -> Tensor<f32, [2, 4]> { return transfer(a, Memory::NPU_HBM); }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "transfer should lower");
+        assert_eq!(count(&w, Opcode::Transfer), 1);
+        assert_eq!(
+            op_imm(&w, Opcode::Transfer),
+            Some(100),
+            "NPU_HBM dispatch id"
+        );
+        assert_eq!(
+            result_gid(&w, Opcode::Transfer),
+            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
+            "same shape -> the destination holds the source",
         );
         verify_hir_stream(&w);
     }

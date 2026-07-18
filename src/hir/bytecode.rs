@@ -76,6 +76,17 @@ pub enum Opcode {
     /// 3 = min); `type_idx` is the scalar element type. Lowers to `vector.reduction` (with an
     /// elementwise `mulf` first for `dot`).
     Reduce = 25,
+    /// Allocate storage for a tensor (`Tensor<T>([..])`): `type_idx` is the tensor type, `imm` its
+    /// static byte size (element size × the product of the dims) — so the receiving side of a store
+    /// has enough room. The result is the tensor buffer.
+    TensorAlloc = 26,
+    /// Store a value into a tensor place (no result): `operand1` is the destination (a row/sub-view
+    /// from `TensorIndex` on the assignment's left side), `operand2` the value. Backs `o[i] = <slice>`.
+    TensorStore = 27,
+    /// Move a tensor to a memory space: `operand1` is the source, `imm` the target space's dispatch
+    /// id (`arch::memory_space_dispatch_id`), `type_idx` the result tensor (same element + shape, so
+    /// the destination is sized to hold it). Backs `transfer(src, Memory::X)`.
+    Transfer = 28,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
