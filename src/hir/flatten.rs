@@ -35,6 +35,39 @@ pub fn scalar_gid(elem: &ElementType) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The stable GID of a tensor type: module 0 (builtin) + a content hash of its element type and
+/// canonical shape, so `Tensor<f32,[2,4]>` and `Tensor<f32,[4,4]>` are distinct and a tensor has the
+/// *same* identity in a signature (`pipeline.rs`) and a lowered body — the flat type stream must
+/// agree on identity, exactly as for scalars.
+pub fn tensor_gid(elem: &ElementType, shape: &[String]) -> TypeId {
+    let sym = crate::hash::DefPath::Named(&format!("$tensor::{elem:?}::[{}]", shape.join(",")))
+        .compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
+/// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
+/// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
+pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
+    let Type::Tensor(elem, dims, _) = ty else {
+        return None;
+    };
+    if matches!(elem, ElementType::Generic(_)) {
+        return None;
+    }
+    let shape: Option<Vec<String>> = dims.iter().map(tensor_dim_string).collect();
+    Some(tensor_gid(elem, &shape?))
+}
+
+/// Canonicalize a tensor dimension for the GID: a numeric literal by value, a const/generic name by
+/// its name. Anything else declines (so the tensor stays unmodelled rather than hashing unstably).
+fn tensor_dim_string(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Number(n) => Some(n.value.as_ref().to_string()),
+        Expr::Identifier(id) => Some(id.name.as_ref().to_string()),
+        _ => None,
+    }
+}
+
 /// `type_idx` sentinel for *effect* instructions (`Store`/`Br`/`CondBr`/`BlockStart`) that produce
 /// no result value and therefore have no result type.
 const NO_TYPE: u32 = u32::MAX;
@@ -47,6 +80,9 @@ const NO_TYPE: u32 = u32::MAX;
 enum LoweredTy {
     Scalar(ElementType),
     Aggregate(TypeId),
+    /// A tensor, named by its GID (element + shape). Passed by reference (a memref descriptor), so it
+    /// lives as an SSA value — never `Alloca`'d into a slot like a scalar/aggregate.
+    Tensor(TypeId),
 }
 
 impl LoweredTy {
@@ -54,7 +90,7 @@ impl LoweredTy {
     fn gid(&self) -> TypeId {
         match self {
             LoweredTy::Scalar(e) => scalar_gid(e),
-            LoweredTy::Aggregate(id) => *id,
+            LoweredTy::Aggregate(id) | LoweredTy::Tensor(id) => *id,
         }
     }
 }
@@ -146,7 +182,9 @@ impl<'r> Lowerer<'r> {
     /// whose element type already implies its size). The result register is the slot handle.
     fn emit_alloca(&mut self, ty: LoweredTy) -> Val {
         let imm = match &ty {
-            LoweredTy::Scalar(_) => 0,
+            // A tensor is a reference (memref), not a stack value, so it is never `Alloca`'d — but
+            // keep the match total; if one ever reaches here its size is left unencoded.
+            LoweredTy::Scalar(_) | LoweredTy::Tensor(_) => 0,
             LoweredTy::Aggregate(id) => self
                 .registry
                 .layouts
@@ -367,7 +405,7 @@ impl<'r> Lowerer<'r> {
         let end = self.lower_expr(&range.end)?;
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
-            LoweredTy::Aggregate(_) => return None, // ranges are over scalars
+            LoweredTy::Aggregate(_) | LoweredTy::Tensor(_) => return None, // ranges are over scalars
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
@@ -584,11 +622,16 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
     }
     // Parameters: materialize the incoming value (`Load` imm = index), then bind (a slot in memory
-    // mode, an SSA register otherwise).
+    // mode, an SSA register otherwise). A tensor is a reference value (memref), so it always binds
+    // as an SSA register — never `Alloca`'d into a slot.
     for (i, (name, ty)) in func.params.iter().enumerate() {
         let lty = lowered_ty(ty, registry)?;
         let incoming = lw.emit_typed(Opcode::Load, Register(0), Register(0), lty, i as u64);
-        lw.bind_local(name.clone(), incoming);
+        if matches!(incoming.ty, LoweredTy::Tensor(_)) {
+            lw.scope.insert(name.clone(), Binding::Reg(incoming));
+        } else {
+            lw.bind_local(name.clone(), incoming);
+        }
     }
     for stmt in &func.body {
         lw.lower_stmt(stmt)?;
@@ -603,6 +646,9 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
 fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
     if let Some(elem) = scalar_of(ty) {
         return Some(LoweredTy::Scalar(elem));
+    }
+    if let Some(id) = tensor_gid_of(ty) {
+        return Some(LoweredTy::Tensor(id));
     }
     match ty {
         Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
@@ -949,6 +995,44 @@ mod tests {
         );
         assert_eq!(count(&w, Opcode::FieldLoad), 1, "p.y read");
         verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn tensor_param_binds_as_ssa_reg_with_tensor_gid() {
+        // A tensor parameter is a reference value (memref): it binds as an SSA register (no Alloca),
+        // and its element+shape GID enters the flat type stream.
+        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> i32 { return 0; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "tensor-param fn should lower"
+        );
+        assert_eq!(
+            count(&w, Opcode::Alloca),
+            0,
+            "a tensor param is a reference, not stack-allocated"
+        );
+        let expected = tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]);
+        assert!(
+            w.local_type_stream.contains(&expected),
+            "the tensor GID is in the type stream"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn tensor_gid_distinguishes_element_and_shape() {
+        let a = tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]);
+        let b = tensor_gid(&ElementType::F32, &["4".to_string(), "4".to_string()]);
+        let c = tensor_gid(&ElementType::F64, &["2".to_string(), "4".to_string()]);
+        assert_ne!(a, b, "different shape => different GID");
+        assert_ne!(a, c, "different element => different GID");
+        // Deterministic, and distinct from the scalar element GID.
+        assert_eq!(
+            a,
+            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()])
+        );
+        assert_ne!(a, scalar_gid(&ElementType::F32));
     }
 
     #[test]

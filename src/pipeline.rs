@@ -222,6 +222,11 @@ fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
         Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
             worker.local_type_stream.push(*id); // settled: no deferred bit
         }
+        Type::Tensor(..) => {
+            if let Some(id) = crate::hir::flatten::tensor_gid_of(ty) {
+                worker.local_type_stream.push(id);
+            }
+        }
         Type::GenericInstance(base, args) => {
             if let Some(base_id) = nominal_gid(base) {
                 let arg_ids: Vec<crate::gid::TypeId> =
@@ -255,6 +260,7 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
         // Single source of truth for the primitive GID scheme, shared with HIR lowering so a scalar
         // has the same identity in a signature and in a lowered body.
         Type::Scalar(elem) => Some(crate::hir::flatten::scalar_gid(elem)),
+        Type::Tensor(..) => crate::hir::flatten::tensor_gid_of(ty),
         Type::Ref(inner, _)
         | Type::Borrow { inner, .. }
         | Type::Pointer(inner, _, _)
@@ -954,6 +960,24 @@ mod gid_stream_tests {
             ops,
             vec![Opcode::Load, Opcode::Load, Opcode::Add, Opcode::Ret],
             "scalar body lowered through the parallel phase"
+        );
+    }
+
+    /// A tensor-typed signature contributes the tensor's GID (element + shape) to the flat type
+    /// stream, matching what the HIR body path (`flatten::tensor_gid_of`) emits — one identity for a
+    /// tensor whether it appears in a signature or a lowered body (#199).
+    #[test]
+    fn tensor_signature_emits_the_tensor_gid() {
+        let m = parse_only("m", "fn f(q: Tensor<f32, [2, 4]>) -> i32 { return 0; }");
+        let mut worker = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
+        emit_function_type_gids(&m.functions[0], &mut worker);
+        let expected = crate::hir::flatten::tensor_gid(
+            &crate::syntax::ElementType::F32,
+            &["2".to_string(), "4".to_string()],
+        );
+        assert!(
+            worker.local_type_stream.contains(&expected),
+            "signature emits the tensor GID matching the body path"
         );
     }
 
