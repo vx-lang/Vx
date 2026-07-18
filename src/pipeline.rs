@@ -296,7 +296,7 @@ fn mint_deferred_generic(
 // resulting `ImmutableGlobalRegistry` is frozen into the `GlobalSession` and shared read-only.
 
 /// Build and validate the frozen registry from post-`resolve_names` modules.
-fn build_frozen_registry(
+pub(crate) fn build_frozen_registry(
     modules: &[VxModule],
 ) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
     use crate::registry::TypeDefinition;

@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
+use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
 use crate::syntax::{
@@ -37,11 +38,31 @@ pub fn scalar_gid(elem: &ElementType) -> TypeId {
 /// no result value and therefore have no result type.
 const NO_TYPE: u32 = u32::MAX;
 
-/// A lowered value: the SSA register holding it and its (scalar) element type.
+/// The type of a lowered value: a primitive scalar, or an aggregate nominal (struct/enum) named by
+/// its GID. Aggregates size their `Alloca` from the frozen-registry layout (#199); scalar ops
+/// (`Add`/`Cmp`/`Cast`) apply only to `Scalar`. This is what the flat *type stream* carries per
+/// value instruction.
+#[derive(Clone)]
+enum LoweredTy {
+    Scalar(ElementType),
+    Aggregate(TypeId),
+}
+
+impl LoweredTy {
+    /// The GID this type contributes to `local_type_stream`.
+    fn gid(&self) -> TypeId {
+        match self {
+            LoweredTy::Scalar(e) => scalar_gid(e),
+            LoweredTy::Aggregate(id) => *id,
+        }
+    }
+}
+
+/// A lowered value: the SSA register holding it and its type.
 #[derive(Clone)]
 struct Val {
     reg: Register,
-    ty: ElementType,
+    ty: LoweredTy,
 }
 
 /// How an in-scope name is materialized.
@@ -50,20 +71,24 @@ enum Binding {
     /// Straight-line SSA: the name aliases an existing value register (no control flow).
     Reg(Val),
     /// Memory model: the name is a stack slot (`Alloca`); reads emit `SlotLoad`, writes `Store`, so
-    /// the value survives across basic blocks. `ty` is the slot's element type.
-    Slot { reg: Register, ty: ElementType },
+    /// the value survives across basic blocks. `ty` is the slot's type.
+    Slot { reg: Register, ty: LoweredTy },
 }
 
 /// Per-function lowering accumulator. Instructions and their result-type GIDs are built into local
 /// buffers and only committed to the worker on full success, so a partial (aborted) lowering leaves
 /// no trace.
-struct Lowerer {
+struct Lowerer<'r> {
     code: Vec<HirInstruction>,
     types: Vec<TypeId>,
     scope: HashMap<Symbol, Binding>,
+    /// The frozen nominal-type registry — the source of aggregate layouts (size/align/field offsets)
+    /// used to size an aggregate's `Alloca` and, later, resolve field offsets.
+    registry: &'r ImmutableGlobalRegistry,
     /// When set, named locals live in memory (`Alloca`/`Store`/`SlotLoad`) so values survive across
-    /// basic blocks — chosen for functions with control flow, matching the AST codegen's
-    /// `alloca`-backed locals. Straight-line functions stay pure-SSA (bindings are `Reg`).
+    /// basic blocks — chosen for functions with control flow (or an aggregate local, which must sit
+    /// in a slot to be addressable), matching the AST codegen's `alloca`-backed locals. Straight-line
+    /// scalar functions stay pure-SSA (bindings are `Reg`).
     memory: bool,
     /// Next basic-block id to hand out (0 is the entry block).
     next_block: u32,
@@ -72,12 +97,13 @@ struct Lowerer {
     loop_stack: Vec<(u32, u32)>,
 }
 
-impl Lowerer {
-    fn new() -> Self {
+impl<'r> Lowerer<'r> {
+    fn new(registry: &'r ImmutableGlobalRegistry) -> Self {
         Self {
             code: Vec::new(),
             types: Vec::new(),
             scope: HashMap::new(),
+            registry,
             memory: false,
             next_block: 1,
             loop_stack: Vec::new(),
@@ -85,7 +111,24 @@ impl Lowerer {
     }
 
     /// Emit a *value* instruction defining a fresh SSA register (= its stream position) with result
-    /// type `ty`, and return the value it produces.
+    /// type `ty` (scalar or aggregate), pushing its GID onto the type stream.
+    fn emit_typed(
+        &mut self,
+        opcode: Opcode,
+        o1: Register,
+        o2: Register,
+        ty: LoweredTy,
+        imm: u64,
+    ) -> Val {
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(ty.gid());
+        let reg = Register(self.code.len() as u32);
+        self.code
+            .push(HirInstruction::new(opcode, o1, o2, type_idx, imm));
+        Val { reg, ty }
+    }
+
+    /// Convenience for the common scalar case: emit a value with a scalar result type.
     fn emit_value(
         &mut self,
         opcode: Opcode,
@@ -94,12 +137,23 @@ impl Lowerer {
         ty: ElementType,
         imm: u64,
     ) -> Val {
-        let type_idx = TypeIdx(self.types.len() as u32);
-        self.types.push(scalar_gid(&ty));
-        let reg = Register(self.code.len() as u32);
-        self.code
-            .push(HirInstruction::new(opcode, o1, o2, type_idx, imm));
-        Val { reg, ty }
+        self.emit_typed(opcode, o1, o2, LoweredTy::Scalar(ty), imm)
+    }
+
+    /// Emit an `Alloca` slot for a value of type `ty`. `type_idx` is the slot's element/aggregate
+    /// GID; for an aggregate `imm` carries its byte size from the registry layout (0 for a scalar,
+    /// whose element type already implies its size). The result register is the slot handle.
+    fn emit_alloca(&mut self, ty: LoweredTy) -> Val {
+        let imm = match &ty {
+            LoweredTy::Scalar(_) => 0,
+            LoweredTy::Aggregate(id) => self
+                .registry
+                .layouts
+                .get(id)
+                .map(|d| d.size_bytes as u64)
+                .unwrap_or(0),
+        };
+        self.emit_typed(Opcode::Alloca, Register(0), Register(0), ty, imm)
     }
 
     /// Emit an *effect* instruction (no result value): `type_idx` is the [`NO_TYPE`] sentinel.
@@ -127,7 +181,7 @@ impl Lowerer {
     /// (+ initializing `Store`) in memory mode.
     fn bind_local(&mut self, name: Symbol, v: Val) {
         if self.memory {
-            let slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), v.ty.clone(), 0);
+            let slot = self.emit_alloca(v.ty.clone());
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
             self.scope.insert(
                 name,
@@ -169,7 +223,7 @@ impl Lowerer {
             Expr::Identifier(id) => match self.scope.get(&id.name)?.clone() {
                 Binding::Reg(v) => Some(v),
                 Binding::Slot { reg, ty } => {
-                    Some(self.emit_value(Opcode::SlotLoad, reg, Register(0), ty, 0))
+                    Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
                 }
             },
             Expr::BinaryOp(b) => {
@@ -177,7 +231,7 @@ impl Lowerer {
                 let r = self.lower_expr(&b.rhs)?;
                 let op = binop_opcode(&b.op)?;
                 // Operands are type-checked to a common type; the result carries the lhs type.
-                Some(self.emit_value(op, l.reg, r.reg, l.ty, 0))
+                Some(self.emit_typed(op, l.reg, r.reg, l.ty, 0))
             }
             // A comparison yields a `bool`; the relation is carried in `imm`.
             Expr::RelationalOp(r) => {
@@ -197,7 +251,7 @@ impl Lowerer {
                     UnaryOp::Neg => Opcode::Neg,
                     UnaryOp::Not => Opcode::Not,
                 };
-                Some(self.emit_value(op, v.reg, Register(0), v.ty, 0))
+                Some(self.emit_typed(op, v.reg, Register(0), v.ty, 0))
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
@@ -283,17 +337,20 @@ impl Lowerer {
         };
         let start = self.lower_expr(&range.start)?;
         let end = self.lower_expr(&range.end)?;
-        let ty = start.ty.clone();
+        let elem = match &start.ty {
+            LoweredTy::Scalar(e) => e.clone(),
+            LoweredTy::Aggregate(_) => return None, // ranges are over scalars
+        };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
-        let i_slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), ty.clone(), 0);
+        let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
         self.emit_effect(Opcode::Store, i_slot.reg, start.reg, 0);
-        let end_slot = self.emit_value(Opcode::Alloca, Register(0), Register(0), ty.clone(), 0);
+        let end_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
         self.emit_effect(Opcode::Store, end_slot.reg, end.reg, 0);
         self.scope.insert(
             f.iter.as_str().into(),
             Binding::Slot {
                 reg: i_slot.reg,
-                ty: ty.clone(),
+                ty: LoweredTy::Scalar(elem.clone()),
             },
         );
 
@@ -305,8 +362,8 @@ impl Lowerer {
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
         // header: cond = i < end
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), header as u64);
-        let i_val = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), ty.clone(), 0);
-        let end_val = self.emit_value(Opcode::SlotLoad, end_slot.reg, Register(0), ty.clone(), 0);
+        let i_val = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
+        let end_val = self.emit_value(Opcode::SlotLoad, end_slot.reg, Register(0), elem.clone(), 0);
         let cond = self.emit_value(
             Opcode::Cmp,
             i_val.reg,
@@ -334,9 +391,9 @@ impl Lowerer {
 
         // latch: i = i + 1; back to header
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
-        let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), ty.clone(), 0);
-        let one = self.emit_value(Opcode::Const, Register(0), Register(0), ty.clone(), 1);
-        let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, ty, 0);
+        let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
+        let one = self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1);
+        let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, 0);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
@@ -371,7 +428,7 @@ impl Lowerer {
             }
             Statement::Return(r) => {
                 let v = self.lower_expr(&r.expr)?;
-                self.emit_value(Opcode::Ret, v.reg, Register(0), v.ty, 0);
+                self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Some(())
             }
             // `name = expr` (simple identifier target only).
@@ -425,7 +482,10 @@ impl Lowerer {
 /// `local_hir_stream` is only ever a complete, correct lowering or empty (keep-green). Returns
 /// `true` when the full body lowered.
 pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> bool {
-    match try_lower(func) {
+    // Cheap `Arc` clone so the borrow of the registry doesn't collide with the later `&mut worker`
+    // in `commit`; the frozen registry is immutable, so this is a pure reference bump.
+    let registry = worker.global.registry.clone();
+    match try_lower(func, &registry) {
         Some(lw) => {
             lw.commit(worker);
             true
@@ -434,25 +494,50 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
     }
 }
 
-fn try_lower(func: &Function) -> Option<Lowerer> {
-    let mut lw = Lowerer::new();
+fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Option<Lowerer<'r>> {
+    let mut lw = Lowerer::new(registry);
     // Control flow forces the memory model so locals survive across basic blocks (like the AST
-    // codegen). Straight-line functions stay pure-SSA.
-    lw.memory = body_has_control_flow(&func.body);
+    // codegen); an aggregate parameter also forces it, since an aggregate must live in an
+    // addressable slot. Straight-line scalar functions stay pure-SSA.
+    let has_aggregate_param = func
+        .params
+        .iter()
+        .any(|(_, ty)| matches!(lowered_ty(ty, registry), Some(LoweredTy::Aggregate(_))));
+    lw.memory = body_has_control_flow(&func.body) || has_aggregate_param;
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
     }
     // Parameters: materialize the incoming value (`Load` imm = index), then bind (a slot in memory
     // mode, an SSA register otherwise).
     for (i, (name, ty)) in func.params.iter().enumerate() {
-        let elem = scalar_of(ty)?;
-        let incoming = lw.emit_value(Opcode::Load, Register(0), Register(0), elem, i as u64);
+        let lty = lowered_ty(ty, registry)?;
+        let incoming = lw.emit_typed(Opcode::Load, Register(0), Register(0), lty, i as u64);
         lw.bind_local(name.clone(), incoming);
     }
     for stmt in &func.body {
         lw.lower_stmt(stmt)?;
     }
     Some(lw)
+}
+
+/// The flat-HIR type of an AST type: a scalar, or an aggregate nominal (struct/enum) whose layout
+/// the frozen registry has actually computed. Returns `None` for a type outside the modelled subset
+/// (generic, tensor, pointer, closure) or an aggregate whose layout is the not-yet-computed 0/0 stub
+/// (`align_bytes == 0`) — the caller then aborts, keeping the lowering atomic.
+fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
+    if let Some(elem) = scalar_of(ty) {
+        return Some(LoweredTy::Scalar(elem));
+    }
+    match ty {
+        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
+            let def = registry.layouts.get(id)?;
+            if def.align_bytes == 0 {
+                return None; // layout not modelled yet (the 0/0 stub)
+            }
+            Some(LoweredTy::Aggregate(*id))
+        }
+        _ => None,
+    }
 }
 
 /// Whether the (top-level) body contains control flow (`if`/`loop`/`for`) — the trigger for the
@@ -641,6 +726,76 @@ mod tests {
 
     fn count(w: &LocalWorkerState, op: Opcode) -> usize {
         w.local_hir_stream.iter().filter(|i| i.opcode == op).count()
+    }
+
+    /// Parse a whole program, resolve names, build the *real* frozen registry (so aggregate layouts
+    /// exist), and attempt to lower `fn_name`. Returns `(did_lower, worker)`.
+    fn lower_with_registry(src: &str, fn_name: &str) -> (bool, LocalWorkerState) {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut prog = parser.parse().expect("parse failed");
+        prog.module_path = "crate::t".into();
+        let mut mods = vec![prog];
+        let symbol_map = crate::resolver::build_symbol_map(&mods);
+        mods[0].resolve_names(&symbol_map);
+        let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
+        let mut worker = LocalWorkerState::new(Arc::new(GlobalSession::with_registry(1, registry)));
+        let func = mods
+            .into_iter()
+            .next()
+            .unwrap()
+            .functions
+            .into_iter()
+            .find(|f| f.name.as_ref() == fn_name)
+            .expect("fn present");
+        let did = lower_function_to_hir(&func, &mut worker);
+        (did, worker)
+    }
+
+    #[test]
+    fn struct_param_lowers_as_aggregate_slot() {
+        // A struct parameter forces the memory model: its `Alloca` is sized from the registry
+        // layout (Point = two i32s = 8 bytes) and its aggregate GID flows through the type stream.
+        let (did, w) = lower_with_registry(
+            "struct Point { x: i32, y: i32 }\nfn id(p: Point) -> Point { return p; }",
+            "id",
+        );
+        assert!(did, "struct-param identity fn should lower");
+        let alloca = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Alloca)
+            .expect("an Alloca slot for the aggregate param");
+        assert_eq!(alloca.imm, 8, "Point Alloca sized from its 8-byte layout");
+        // A scalar's GID lives in module 0; an aggregate GID carries the (nonzero) module hash, so
+        // its presence proves the aggregate type reached the flat type stream.
+        assert!(
+            w.local_type_stream.iter().any(|t| t.module_id() != 0),
+            "the Point aggregate GID is in the type stream"
+        );
+        assert_eq!(count(&w, Opcode::Store), 1, "the incoming struct is stored");
+        assert!(count(&w, Opcode::SlotLoad) >= 1, "return reads the slot");
+        assert_eq!(count(&w, Opcode::Ret), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn unmodelled_aggregate_param_is_declined() {
+        // `Buf` has a tensor field, so its layout is not modelled (the 0/0 stub); a function taking
+        // it by value cannot be sized, so lowering is declined atomically (worker untouched).
+        let (did, w) = lower_with_registry(
+            "struct Buf { data: Tensor<f32, [4]> }\nfn f(b: Buf) -> i32 { return 0; }",
+            "f",
+        );
+        assert!(
+            !did,
+            "an unmodelled aggregate param should decline lowering"
+        );
+        assert!(
+            w.local_hir_stream.is_empty(),
+            "no partial lowering committed"
+        );
     }
 
     #[test]
