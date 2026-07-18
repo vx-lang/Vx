@@ -58,6 +58,10 @@ pub enum Opcode {
     Spawn = 20,
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
     SpawnEnd = 21,
+    /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
+    /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
+    /// is the loaded field value — the field-addressed counterpart of `SlotLoad`.
+    FieldLoad = 22,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

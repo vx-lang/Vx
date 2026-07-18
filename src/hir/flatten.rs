@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
+use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
@@ -258,6 +259,33 @@ impl<'r> Lowerer<'r> {
                 let v = self.lower_expr(&c.expr)?;
                 let target = scalar_of(&c.target_ty)?;
                 Some(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
+            }
+            // A struct field read `base.member`: `base` must be a name bound to an aggregate slot;
+            // the field's offset + type come from the registry layout. First cut: scalar fields
+            // only (a nested-aggregate or pointer field is declined).
+            Expr::MemberAccess(m) => {
+                let base = simple_ident(&m.base)?;
+                let (slot, gid) = match self.scope.get(&base)?.clone() {
+                    Binding::Slot {
+                        reg,
+                        ty: LoweredTy::Aggregate(gid),
+                    } => (reg, gid),
+                    _ => return None,
+                };
+                let field = self
+                    .registry
+                    .layouts
+                    .get(&gid)?
+                    .fields
+                    .iter()
+                    .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                let elem = match &field.ty {
+                    FieldTy::Scalar(e) => e.clone(),
+                    // Nested-aggregate / pointer fields need addressed sub-views — not yet.
+                    FieldTy::Nominal(_) | FieldTy::Opaque => return None,
+                };
+                let offset = field.offset as u64;
+                Some(self.emit_value(Opcode::FieldLoad, slot, Register(0), elem, offset))
             }
             _ => None,
         }
@@ -677,7 +705,12 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
                 );
             }
             // Unary: operand1 read.
-            Opcode::Ret | Opcode::Cast | Opcode::Neg | Opcode::Not | Opcode::SlotLoad => assert!(
+            Opcode::Ret
+            | Opcode::Cast
+            | Opcode::Neg
+            | Opcode::Not
+            | Opcode::SlotLoad
+            | Opcode::FieldLoad => assert!(
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"
             ),
@@ -777,6 +810,43 @@ mod tests {
         assert_eq!(count(&w, Opcode::Store), 1, "the incoming struct is stored");
         assert!(count(&w, Opcode::SlotLoad) >= 1, "return reads the slot");
         assert_eq!(count(&w, Opcode::Ret), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn struct_field_read_lowers_to_field_load() {
+        // `p.y` becomes a `FieldLoad` off the aggregate slot at y's layout offset (4).
+        let (did, w) = lower_with_registry(
+            "struct Point { x: i32, y: i32 }\nfn gety(p: Point) -> i32 { return p.y; }",
+            "gety",
+        );
+        assert!(did, "a scalar field read should lower");
+        let fl = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::FieldLoad)
+            .expect("a FieldLoad instruction");
+        assert_eq!(fl.imm, 4, "y is at byte offset 4 in {{x:i32, y:i32}}");
+        assert_eq!(count(&w, Opcode::FieldLoad), 1);
+        assert_eq!(count(&w, Opcode::Ret), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn field_read_offset_honours_alignment_padding() {
+        // Rec { a: i8, b: i32 } -> b sits at offset 4 (3 bytes of padding after `a`); the FieldLoad
+        // must use that padded offset, proving it comes from the real layout, not field order.
+        let (did, w) = lower_with_registry(
+            "struct Rec { a: i8, b: i32 }\nfn getb(r: Rec) -> i32 { return r.b; }",
+            "getb",
+        );
+        assert!(did);
+        let fl = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::FieldLoad)
+            .expect("a FieldLoad instruction");
+        assert_eq!(fl.imm, 4, "b is at offset 4 after i8 + 3 bytes padding");
         verify_hir_stream(&w);
     }
 

@@ -27,12 +27,22 @@ use crate::gid::TypeId;
 use crate::symbol::Symbol;
 use crate::syntax::{ElementType, EnumDecl, StructDecl, Type};
 
-/// The byte offset and size of a single struct field.
+/// The type of a struct field, enough to recover its value type at a field access. A pointer/ref
+/// field is `Opaque`: modelled for size/offset but not decomposed into a loadable scalar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldTy {
+    Scalar(ElementType),
+    Nominal(TypeId),
+    Opaque,
+}
+
+/// The byte offset, size, and type of a single struct field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldLayout {
     pub name: Symbol,
     pub offset: usize,
     pub size: usize,
+    pub ty: FieldTy,
 }
 
 /// The computed layout of a nominal type: total size, alignment, and (for
@@ -128,12 +138,13 @@ impl<'a> LayoutComputer<'a> {
         let mut align = 1usize;
         let mut fields = Vec::with_capacity(decl.fields.len());
         for (name, ty) in &decl.fields {
-            let (fsize, falign) = self.field_size_align(ty)?;
+            let (fsize, falign, fty) = self.field_info(ty)?;
             let foffset = align_up(offset, falign);
             fields.push(FieldLayout {
                 name: name.clone(),
                 offset: foffset,
                 size: fsize,
+                ty: fty,
             });
             offset = foffset + fsize;
             align = align.max(falign);
@@ -163,19 +174,24 @@ impl<'a> LayoutComputer<'a> {
         })
     }
 
-    /// Size/align of a field type. Nominals recurse (by GID); pointer-like
-    /// wrappers are pointer-sized; location/proof wrappers pass through to the
+    /// Size/align/type of a field. Nominals recurse (by GID); pointer-like wrappers
+    /// are pointer-sized and `Opaque`; location/proof wrappers pass through to the
     /// inner type. Anything not yet modelled (tensor, generic instance, closure,
     /// unresolved nominal, …) returns `None`, making the enclosing layout
     /// incomputable for now.
-    fn field_size_align(&mut self, ty: &Type) -> Option<(usize, usize)> {
+    fn field_info(&mut self, ty: &Type) -> Option<(usize, usize, FieldTy)> {
         match ty {
-            Type::Scalar(et) => scalar_size_align(et),
-            Type::Pointer(..) | Type::Ref(..) | Type::Borrow { .. } => Some((8, 8)),
-            Type::Pinned(inner, _) | Type::Verified(inner) => self.field_size_align(inner),
+            Type::Scalar(et) => {
+                let (size, align) = scalar_size_align(et)?;
+                Some((size, align, FieldTy::Scalar(et.clone())))
+            }
+            Type::Pointer(..) | Type::Ref(..) | Type::Borrow { .. } => {
+                Some((8, 8, FieldTy::Opaque))
+            }
+            Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
-                Some((layout.size, layout.align))
+                Some((layout.size, layout.align, FieldTy::Nominal(*id)))
             }
             _ => None,
         }
