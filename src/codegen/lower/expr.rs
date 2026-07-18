@@ -1187,6 +1187,7 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
         let StructInitExpr {
             name,
             fields,
+            type_id: _,
             span: _,
         } = self;
         let base_name = name.split('<').next().unwrap_or(name).to_string();

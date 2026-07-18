@@ -398,6 +398,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::StructInit(StructInitExpr {
                     name: call_name.into(),
                     fields,
+                    type_id: None,
                     span: Span::default(),
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {

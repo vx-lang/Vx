@@ -31,6 +31,58 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
+    /// The type checker attaches the initialized struct's resolved GID to the `StructInit`
+    /// expression (#199), so the flat-HIR lowerer can reach its registry layout without
+    /// re-resolving the name. The GID matches `GlobalAstEnv::struct_gids` (the resolver's formula).
+    #[test]
+    fn structinit_is_annotated_with_struct_gid() {
+        let input = r#"
+struct Point { x: i32, y: i32 }
+fn make() -> Point {
+    return Point { x: 1, y: 2 };
+}
+"#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let mut program = parser.parse().unwrap();
+        program.module_path = "crate::t".into();
+
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let expected = *env
+            .struct_gids
+            .get(&crate::symbol::Symbol::from("Point"))
+            .expect("Point has a GID");
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut program.functions {
+            checker.check_function(f);
+        }
+        assert_eq!(checker.errors.error_count(), 0, "type-checks cleanly");
+
+        let make = program
+            .functions
+            .iter()
+            .find(|f| f.name.as_ref() == "make")
+            .unwrap();
+        let mut annotated = None;
+        for stmt in &make.body {
+            if let crate::syntax::Statement::Return(r) = stmt {
+                if let crate::syntax::Expr::StructInit(si) = &r.expr {
+                    annotated = si.type_id;
+                }
+            }
+        }
+        assert_eq!(
+            annotated,
+            Some(expected),
+            "the `Point {{ .. }}` construction carries Point's GID"
+        );
+    }
+
     #[test]
     fn test_sema_distributed_matmul() {
         let input = r#"

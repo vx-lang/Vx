@@ -3629,6 +3629,7 @@ impl<'a> TypeChecker<'a> {
             Expr::StructInit(StructInitExpr {
                 name,
                 fields,
+                type_id,
                 span: _,
             }) => {
                 let resolved_name = name.clone();
@@ -3641,6 +3642,16 @@ impl<'a> TypeChecker<'a> {
                     }
                     generic_args = args;
                 }
+
+                // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
+                // reach its registry layout without re-resolving the name (#199). A generic
+                // instance's monomorph has a distinct identity, so its GID is left `None` here.
+                let resolved_gid = if generic_args.is_empty() {
+                    self.env.struct_gids.get(&base_name).copied()
+                } else {
+                    None
+                };
+                *type_id = resolved_gid;
 
                 if let Some(struct_decl) = self
                     .env
@@ -3710,6 +3721,9 @@ impl<'a> TypeChecker<'a> {
                 if !generic_args.is_empty() {
                     Type::GenericInstance(Box::new(Type::Struct(base_name, None)), generic_args)
                 } else {
+                    // The *returned* type keeps GID `None` (as before) so struct type-identity
+                    // comparisons are unchanged; the resolved GID rides on the `type_id` field for
+                    // the flat-HIR lowerer to consume (#199).
                     Type::Struct(resolved_name, None)
                 }
             }
@@ -4153,6 +4167,7 @@ impl<'a> TypeChecker<'a> {
                 *expr = Expr::StructInit(StructInitExpr {
                     name: struct_name.clone().into(),
                     fields,
+                    type_id: None,
                     span: e.span,
                 });
 

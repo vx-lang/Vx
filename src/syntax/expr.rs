@@ -447,11 +447,21 @@ impl ComptimeBlockExpr {
 pub struct StructInitExpr {
     pub name: Symbol,
     pub fields: Vec<(Symbol, Expr)>,
+    /// The resolved GID of the struct being initialized, attached by the type checker
+    /// (`check_structinit_expr`). `None` until type-checked, or for a monomorphized/generated struct
+    /// whose identity isn't a plain module symbol. Lets consumers (e.g. the flat-HIR lowerer) map the
+    /// construction to its registry layout without re-resolving the name (#199).
+    pub type_id: Option<crate::gid::TypeId>,
     pub span: Span,
 }
 impl StructInitExpr {
     pub fn new(name: Symbol, fields: Vec<(Symbol, Expr)>, span: Span) -> Self {
-        Self { name, fields, span }
+        Self {
+            name,
+            fields,
+            type_id: None,
+            span,
+        }
     }
 }
 
@@ -949,6 +959,7 @@ impl Expr {
                         .iter()
                         .map(|(n, ex)| (n.clone(), ex.substitute(mapping)))
                         .collect(),
+                    type_id: e.type_id,
                     span: e.span,
                 })
             }
