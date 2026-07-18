@@ -282,8 +282,16 @@ impl<'r> Lowerer<'r> {
                 let l = self.lower_expr(&b.lhs)?;
                 let r = self.lower_expr(&b.rhs)?;
                 let op = binop_opcode(&b.op)?;
-                // Operands are type-checked to a common type; the result carries the lhs type.
-                Some(self.emit_typed(op, l.reg, r.reg, l.ty, 0))
+                // Operands are type-checked to a common type; the result carries that type. When
+                // either operand is a tensor the op is *elementwise* and the result is the tensor
+                // type (a scalar operand broadcasts) -- an arith opcode with a tensor result type is
+                // the flat HIR's elementwise form, mirroring `arith.mulf` on a vector in codegen.
+                let result_ty = match (&l.ty, &r.ty) {
+                    (LoweredTy::Tensor { .. }, _) => l.ty.clone(),
+                    (_, LoweredTy::Tensor { .. }) => r.ty.clone(),
+                    _ => l.ty.clone(),
+                };
+                Some(self.emit_typed(op, l.reg, r.reg, result_ty, 0))
             }
             // A comparison yields a `bool`; the relation is carried in `imm`.
             Expr::RelationalOp(r) => {
@@ -1146,6 +1154,54 @@ mod tests {
             .iter()
             .find(|i| i.opcode == Opcode::Reduce)
             .map(|i| i.imm)
+    }
+
+    /// The result-type GID of the first instruction with `op`.
+    fn result_gid(w: &LocalWorkerState, op: Opcode) -> TypeId {
+        let ins = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == op)
+            .expect("op present");
+        w.local_type_stream[ins.type_idx.0 as usize]
+    }
+
+    #[test]
+    fn tensor_elementwise_mul_yields_a_tensor() {
+        // `a * b` on two tensors is elementwise: a `Mul` whose *result type* is the tensor.
+        let f = parse_fn(
+            "fn f(a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a * b; }",
+        );
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "elementwise mul should lower"
+        );
+        assert_eq!(count(&w, Opcode::Mul), 1);
+        assert_eq!(
+            result_gid(&w, Opcode::Mul),
+            tensor_gid(&ElementType::F32, &["4".to_string()]),
+            "elementwise result is the tensor type"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn scalar_times_tensor_broadcasts_to_a_tensor() {
+        // `s * a` (scalar on the left) still yields the tensor type -- the result-type pick must
+        // follow the tensor operand, not the lhs.
+        let f = parse_fn("fn f(a: Tensor<f32, [4]>, s: f32) -> Tensor<f32, [4]> { return s * a; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "scalar*tensor should lower"
+        );
+        assert_eq!(
+            result_gid(&w, Opcode::Mul),
+            tensor_gid(&ElementType::F32, &["4".to_string()]),
+            "scalar broadcasts: result is the tensor type"
+        );
+        verify_hir_stream(&w);
     }
 
     #[test]
