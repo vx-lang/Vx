@@ -446,10 +446,56 @@ impl<'r> Lowerer<'r> {
         Some(())
     }
 
+    /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
+    /// layout) then `FieldStore` each field at its layout offset. Returns the slot as an aggregate
+    /// `Val`. First cut: scalar fields only, and the struct's GID must be annotated (by the type
+    /// checker) and its layout computed — otherwise the construction is declined.
+    fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Option<Val> {
+        let gid = si.type_id?;
+        let def = self.registry.layouts.get(&gid)?;
+        if def.align_bytes == 0 {
+            return None; // layout not modelled yet
+        }
+        // Snapshot (name, offset, type) so the immutable registry borrow ends before we emit.
+        let field_layouts: Vec<(Symbol, u64, FieldTy)> = def
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.offset as u64, f.ty.clone()))
+            .collect();
+
+        let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        for (name, offset, fty) in field_layouts {
+            // Only scalar fields for now (nested aggregates need addressed sub-views).
+            if !matches!(fty, FieldTy::Scalar(_)) {
+                return None;
+            }
+            let (_, init_expr) = si
+                .fields
+                .iter()
+                .find(|(n, _)| n.as_ref() == name.as_ref())?;
+            let v = self.lower_expr(init_expr)?;
+            self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
+        }
+        Some(slot)
+    }
+
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
             Statement::LetDecl(l) => {
+                // A struct literal is constructed *in place* into its own slot; the local is that
+                // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
+                if let Expr::StructInit(si) = &l.expr {
+                    let slot = self.lower_struct_init(si)?;
+                    self.scope.insert(
+                        l.name.clone(),
+                        Binding::Slot {
+                            reg: slot.reg,
+                            ty: slot.ty,
+                        },
+                    );
+                    return Some(());
+                }
                 let v = self.lower_expr(&l.expr)?;
                 self.bind_local(l.name.clone(), v);
                 Some(())
@@ -531,7 +577,9 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
         .params
         .iter()
         .any(|(_, ty)| matches!(lowered_ty(ty, registry), Some(LoweredTy::Aggregate(_))));
-    lw.memory = body_has_control_flow(&func.body) || has_aggregate_param;
+    lw.memory = body_has_control_flow(&func.body)
+        || has_aggregate_param
+        || body_constructs_struct(&func.body);
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
     }
@@ -577,6 +625,14 @@ fn body_has_control_flow(stmts: &[Statement]) -> bool {
         Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_)),
         _ => false,
     })
+}
+
+/// Whether the (top-level) body constructs a struct into a local (`let x = S { .. }`) — the trigger
+/// for the memory model, since the constructed aggregate must live in an addressable slot.
+fn body_constructs_struct(stmts: &[Statement]) -> bool {
+    stmts
+        .iter()
+        .any(|s| matches!(s, Statement::LetDecl(l) if matches!(l.expr, Expr::StructInit(_))))
 }
 
 fn simple_ident(e: &Expr) -> Option<Symbol> {
@@ -698,7 +754,8 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Div
             | Opcode::Matmul
             | Opcode::Cmp
-            | Opcode::Store => {
+            | Opcode::Store
+            | Opcode::FieldStore => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -762,7 +819,8 @@ mod tests {
     }
 
     /// Parse a whole program, resolve names, build the *real* frozen registry (so aggregate layouts
-    /// exist), and attempt to lower `fn_name`. Returns `(did_lower, worker)`.
+    /// exist), type-check (so `StructInit`s get their GID annotated), and attempt to lower `fn_name`.
+    /// Returns `(did_lower, worker)`.
     fn lower_with_registry(src: &str, fn_name: &str) -> (bool, LocalWorkerState) {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
@@ -774,6 +832,17 @@ mod tests {
         mods[0].resolve_names(&symbol_map);
         let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
         let mut worker = LocalWorkerState::new(Arc::new(GlobalSession::with_registry(1, registry)));
+
+        // Type-check so the type checker annotates each `StructInit` with its struct GID.
+        let env_mods: Vec<_> = mods.clone();
+        let env = crate::hir::GlobalAstEnv::build(&env_mods);
+        {
+            let mut checker = crate::hir::TypeChecker::new(&env, &mut worker);
+            for f in &mut mods[0].functions {
+                checker.check_function(f);
+            }
+        }
+
         let func = mods
             .into_iter()
             .next()
@@ -847,6 +916,38 @@ mod tests {
             .find(|i| i.opcode == Opcode::FieldLoad)
             .expect("a FieldLoad instruction");
         assert_eq!(fl.imm, 4, "b is at offset 4 after i8 + 3 bytes padding");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn struct_construction_lowers_to_alloca_and_field_stores() {
+        // `let p = Point { .. }` constructs in place: one sized Alloca + a FieldStore per field at
+        // its layout offset; the later `p.y` is a FieldLoad off the same slot.
+        let (did, w) = lower_with_registry(
+            "struct Point { x: i32, y: i32 }\n\
+             fn build() -> i32 { let p = Point { x: 7i32, y: 9i32 }; return p.y; }",
+            "build",
+        );
+        assert!(did, "struct construction + field read should lower");
+        assert_eq!(count(&w, Opcode::Alloca), 1, "one aggregate slot for p");
+        let alloca = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Alloca)
+            .unwrap();
+        assert_eq!(alloca.imm, 8, "Point slot sized from its layout");
+        assert_eq!(count(&w, Opcode::FieldStore), 2, "x and y stored");
+        let store_offsets: Vec<u64> = w
+            .local_hir_stream
+            .iter()
+            .filter(|i| i.opcode == Opcode::FieldStore)
+            .map(|i| i.imm)
+            .collect();
+        assert!(
+            store_offsets.contains(&0) && store_offsets.contains(&4),
+            "fields stored at layout offsets 0 and 4, got {store_offsets:?}"
+        );
+        assert_eq!(count(&w, Opcode::FieldLoad), 1, "p.y read");
         verify_hir_stream(&w);
     }
 

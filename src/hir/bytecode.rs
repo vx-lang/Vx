@@ -62,6 +62,10 @@ pub enum Opcode {
     /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
     /// is the loaded field value — the field-addressed counterpart of `SlotLoad`.
     FieldLoad = 22,
+    /// Store into a struct field (no result): `operand1` is the aggregate's slot handle, `operand2`
+    /// the value to store, and `imm` the field's byte offset. Used to initialize a struct field by
+    /// field — the field-addressed counterpart of `Store`.
+    FieldStore = 23,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
