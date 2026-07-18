@@ -1304,6 +1304,28 @@ mod tests {
     }
 
     #[test]
+    fn flashattention_write_path_composes() {
+        // Allocate the output, weight v by a scaled score, and store the row back -- alloc + index +
+        // dot(reduce) + elementwise + store, the whole non-scalar surface in one flat stream.
+        let f = parse_fn(
+            "fn attn(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>, v: Tensor<f32, [4]>, scale: f32) \
+             -> Tensor<f32, [2, 4]> \
+             { let o = Tensor<f32>([2, 4]); o[0] = v * (dot(q[0], k[0]) * scale); return o; }",
+        );
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "the FA write path should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorAlloc), 1, "output buffer");
+        assert_eq!(count(&w, Opcode::TensorIndex), 3, "q[0], k[0], o[0]");
+        assert_eq!(count(&w, Opcode::Reduce), 1, "the dot");
+        assert_eq!(count(&w, Opcode::Mul), 2, "scale the score, then weight v");
+        assert_eq!(count(&w, Opcode::TensorStore), 1, "o[0] = ...");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
     fn flashattention_score_expression_composes() {
         // The FA inner score `dot(q[i], k[j]) * scale`: index -> reduce -> scalar multiply, proving
         // the tensor pieces compose end to end into one flat stream.

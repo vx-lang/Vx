@@ -558,6 +558,35 @@ enough to express the FA inner loop. Remaining: `transfer` and tensor *allocatio
 a produced tensor can be written back), nested-aggregate/pointer field access, and then C2 codegen
 consuming these opcodes.
 
+## Entry 18 — C1.3f: tensor allocation, store, and transfer (the write side) (#199)
+
+**Commit:** `97626bf`.
+
+**Gap.** Everything tensor so far was read-only (index/reduce/elementwise into a scalar or a value);
+a *produced* tensor couldn't be allocated, written back, or moved. The user's constraint: the
+receiving side of a store must have enough storage.
+
+**What we did.**
+- `Opcode::TensorAlloc` — `Tensor<T>([..])`; `imm` is the static byte size (elem size × Πdims, via
+  `hir::memory::static_tensor_bytes`), so the buffer holds every element. A tensor local binds as an
+  SSA register (a memref descriptor); a dynamic/symbolic shape declines.
+- `Opcode::TensorStore` — `o[i] = <slice>` stores through the row/sub-view place (the assignment's
+  left side lowers to a `TensorIndex`; scalar-element stores aren't modelled yet).
+- `Opcode::Transfer` — `transfer(src, Memory::X)`; `imm` is the space's dispatch id, and the result
+  keeps element + shape, so the destination is sized to hold the source.
+
+**Tests.** alloc sizes the buffer (`Tensor<f32>([2,4])` → 32 bytes), a row store (alloc + index +
+store), a transfer to `Memory::NPU_HBM` (dispatch id 100), and a write-path capstone
+`flashattention_write_path_composes` (`let o = Tensor<f32>([2,4]); o[0] = v * (dot(q[0],k[0]) * scale);
+return o` → alloc + 3 index + reduce + 2 mul + store). Full suite green (342 lib + 67 integration).
+
+**Where #199 stands.** The flat HIR now models the whole non-scalar surface end to end — read *and*
+write — for structs and tensors: layouts, params, construction, field access; tensor identity,
+indexing, reductions, elementwise, allocation, store, transfer. The FlashAttention inner loop lowers
+in both directions. The remaining work is a different phase — **C2 codegen** consuming these opcodes
+(so the flat path emits MLIR, not just a structurally-verified stream) — plus nested-aggregate/pointer
+field access and scalar-element tensor stores.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
