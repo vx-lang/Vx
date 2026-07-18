@@ -411,6 +411,39 @@ compare numeric results — then wire the flat path behind `--flat-codegen` so i
 AST oracle across the corpus. That turns "emits verifiable MLIR" into "provably equal to the AST
 path," the actual convergence criterion.
 
+## Entry 13 — C1.3a: real struct/enum layouts at the freeze (#199)
+
+**Commit:** `3a19fa0`. `src/layout.rs`.
+
+**Gap.** `build_frozen_registry` built every `TypeDefinition` with `size_bytes = 0 / align_bytes = 0`
+— a stub. The flat HIR (C1.3) needs real sizes to size an `Alloca` and field offsets to lower struct
+field access, so the non-scalar surface (`transfer`, tensor, struct) was blocked on layout not
+existing (the #199 prerequisite).
+
+**What we did.** New `LayoutComputer` resolves nested by-value nominals **by GID** (cross-module
+correct — name resolution already ran) and computes, per nominal:
+- struct size/align/field-offsets with C-like natural-alignment packing (fields in decl order, each
+  at the next multiple of its align; struct align = max field align; size rounded up). Matches the
+  AST codegen's non-packed `!llvm.struct` lowering.
+- scalar sizes mirroring `SizeOfExpr` (i8/bool=1, f16/i16=2, i32/f32=4, i64/f64=8, i128=16);
+  pointer-like fields (`*T`/`&T`/`Ref`) = 8/8; `Pinned`/`Verified` pass through; a payload-free enum
+  = an i32 discriminant (4/4).
+
+**Conservative by design.** Incomputable cases stay at the 0/0 stub rather than guessing: a generic
+param field, a not-yet-modelled field type (tensor, closure, generic instance), a payload-carrying
+enum (tagged-union layout must match codegen exactly — deferred), or a by-value cycle (`layout_of`
+returns `None` on the back-edge, so it never loops; the registry's `toposort` still reports the cycle).
+`TypeDefinition` gains `fields: Vec<FieldLayout>`.
+
+**Tests.** 10 unit tests (scalar table, padding/alignment, nested struct, pointer field, C-like vs
+payload enum, generic field, by-value cycle, pointer-breaks-cycle) + end-to-end
+`frozen_registry_computes_real_layouts` (Pair=8/4, Wrap nesting Pair=12/4, enum=4/4). Full suite green
+(321 lib + 67 integration).
+
+**Next (C1.3b).** Model aggregate + tensor GIDs in the flat type stream and size `Alloca` from these
+layouts; add field/index opcodes + non-scalar `Val`s in the lowerer; then `transfer`/tensor/slice
+lowering (the rest of #199).
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
