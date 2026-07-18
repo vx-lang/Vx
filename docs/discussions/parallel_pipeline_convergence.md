@@ -475,6 +475,34 @@ green (325 lib + 67 integration).
 name→GID resolution for the `StructInit` expression (the expression-level analogue of #194). Then
 tensor GIDs + index opcodes, and `transfer`.
 
+## Entry 15 — C1.3c: struct construction + the StructInit GID annotation (#199)
+
+**Commits:** `fe4b414` (sema annotation), `9f19d01` (`FieldStore` + construction lowering).
+
+**Gap.** Struct *construction* (`let s = S { .. }`) needs the struct's GID to reach its registry
+layout, but a `StructInit` expression carried only the struct *name* — unlike a parameter or field,
+whose GID rides on a resolved type. (Design choice, taken with the user: annotate the expression in
+the type checker, the cleanest of the three options.)
+
+**What we did.**
+- **Sema.** `StructInitExpr` gains `type_id: Option<TypeId>`, set by `check_structinit_expr` from a
+  new `GlobalAstEnv::struct_gids` (the resolver's exact GID formula, so it matches the registry key).
+  The expression's *returned* type keeps GID `None` — struct type-identity comparisons are unchanged,
+  the GID is a pure side channel. A struct name defined in two modules is left unannotated (the
+  name-keyed env can't disambiguate; a wrong GID is worse than none — the lowerer then declines).
+- **Flatten.** New `Opcode::FieldStore`. `let x = S { .. }` constructs in place: `Alloca` the
+  aggregate (sized), a `FieldStore` per field at its layout offset, and the local binds directly to
+  that slot. Declines (atomic) when the GID is absent/uncomputed or a field is non-scalar. The
+  flatten test harness now type-checks before lowering (so the annotation exists).
+
+**Tests.** `structinit_is_annotated_with_struct_gid` (sema), `struct_construction_lowers_to_alloca_
+and_field_stores` (`let p = Point{..}; return p.y` → 8-byte Alloca + two FieldStores @0/@4 + a
+FieldLoad). Full suite green (327 lib + 67 integration).
+
+**Where #199 stands.** Structs are now first-class in the flat HIR — params, construction, field
+read, all layout-driven. Remaining: tensor GIDs + index opcodes (the tensor path), nested-aggregate /
+pointer field access, and `transfer` lowering.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
