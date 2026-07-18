@@ -25,6 +25,9 @@ pub struct TypeDefinition {
     pub name: String,
     pub size_bytes: usize,
     pub align_bytes: usize,
+    /// Per-field byte offsets/sizes in declaration order (structs only; empty for
+    /// enums or when the layout is not yet computable). See `crate::layout` (#199).
+    pub fields: Vec<crate::layout::FieldLayout>,
     /// Dependencies represent the types embedded directly (by-value) within this type.
     /// Used to detect infinite-sized recursive structs.
     pub by_value_dependencies: Vec<TypeId>,
@@ -129,6 +132,7 @@ mod tests {
             name: name.to_string(),
             size_bytes: 8,
             align_bytes: 8,
+            fields: Vec::new(),
             by_value_dependencies: deps,
         }
     }

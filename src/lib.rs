@@ -24,6 +24,7 @@ pub mod hash;
 pub mod hir;
 pub mod ide;
 pub mod jit;
+pub mod layout;
 pub mod lexer;
 pub mod metadata;
 pub mod module_loader;

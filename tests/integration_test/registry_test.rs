@@ -30,6 +30,7 @@ fn test_valid_acyclic_registry() -> Result<(), String> {
         name: "A".to_string(),
         size_bytes: 4,
         align_bytes: 4,
+        fields: Vec::new(),
         by_value_dependencies: vec![], // A has no dependencies
     };
 
@@ -38,6 +39,7 @@ fn test_valid_acyclic_registry() -> Result<(), String> {
         name: "B".to_string(),
         size_bytes: 8,
         align_bytes: 4,
+        fields: Vec::new(),
         by_value_dependencies: vec![id_a], // B depends on A by-value
     };
 
@@ -81,6 +83,7 @@ fn test_invalid_cyclic_registry() -> Result<(), String> {
         name: "A".to_string(),
         size_bytes: 8,
         align_bytes: 8,
+        fields: Vec::new(),
         by_value_dependencies: vec![id_b], // A depends on B
     };
 
@@ -89,6 +92,7 @@ fn test_invalid_cyclic_registry() -> Result<(), String> {
         name: "B".to_string(),
         size_bytes: 8,
         align_bytes: 8,
+        fields: Vec::new(),
         by_value_dependencies: vec![id_a], // B depends on A (Cycle!)
     };
 

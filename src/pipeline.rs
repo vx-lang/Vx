@@ -301,43 +301,80 @@ fn build_frozen_registry(
 ) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
     use crate::registry::TypeDefinition;
     let symbol_map = crate::resolver::build_symbol_map(modules);
-    let mut defs: Vec<TypeDefinition> = Vec::new();
 
-    let push_def = |defs: &mut Vec<TypeDefinition>,
-                    mod_syms: &crate::resolver::SymbolTable,
-                    name: &crate::symbol::Symbol,
-                    by_value_dependencies: Vec<crate::gid::TypeId>| {
-        if let Some(&id) = mod_syms.get(name) {
-            defs.push(TypeDefinition {
-                id,
-                name: name.to_string(),
-                size_bytes: 0,
-                align_bytes: 0,
-                by_value_dependencies,
-            });
-        }
-    };
-
+    // Index every nominal decl by its GID so nested by-value fields resolve
+    // cross-module during layout computation (#199). Name resolution ran in the
+    // prior phase, so field `Type::Struct(_, Some(gid))` GIDs are populated.
+    let mut gid_structs = rustc_hash::FxHashMap::default();
+    let mut gid_enums = rustc_hash::FxHashMap::default();
     for module in modules {
         let Some(mod_syms) = symbol_map.get(&module.module_path) else {
             continue;
         };
         for s in &module.structs {
+            if let Some(&id) = mod_syms.get(&s.name) {
+                gid_structs.insert(id, s);
+            }
+        }
+        for e in &module.enums {
+            if let Some(&id) = mod_syms.get(&e.name) {
+                gid_enums.insert(id, e);
+            }
+        }
+    }
+    let mut layout = crate::layout::LayoutComputer::new(gid_structs, gid_enums);
+
+    let mut defs: Vec<TypeDefinition> = Vec::new();
+    for module in modules {
+        let Some(mod_syms) = symbol_map.get(&module.module_path) else {
+            continue;
+        };
+        for s in &module.structs {
+            let Some(&id) = mod_syms.get(&s.name) else {
+                continue;
+            };
             let deps = s
                 .fields
                 .iter()
                 .filter_map(|(_, ty)| by_value_nominal_gid(ty))
                 .collect();
-            push_def(&mut defs, mod_syms, &s.name, deps);
+            // An incomputable layout (generic, tensor field, by-value cycle) keeps
+            // the earlier 0/0 stub; the cycle case is reported by build_and_validate.
+            let (size_bytes, align_bytes, fields) = layout
+                .layout_of(id)
+                .map(|l| (l.size, l.align, l.fields))
+                .unwrap_or((0, 0, Vec::new()));
+            defs.push(TypeDefinition {
+                id,
+                name: s.name.to_string(),
+                size_bytes,
+                align_bytes,
+                fields,
+                by_value_dependencies: deps,
+            });
         }
         for e in &module.enums {
+            let Some(&id) = mod_syms.get(&e.name) else {
+                continue;
+            };
             let deps = e
                 .variants
                 .iter()
                 .flat_map(|(_, payload)| payload.iter().flatten())
                 .filter_map(by_value_nominal_gid)
                 .collect();
-            push_def(&mut defs, mod_syms, &e.name, deps);
+            let (size_bytes, align_bytes) = layout
+                .layout_of(id)
+                .map(|l| (l.size, l.align))
+                .unwrap_or((0, 0));
+            defs.push(TypeDefinition {
+                id,
+                name: e.name.to_string(),
+                size_bytes,
+                align_bytes,
+                fields: Vec::new(),
+                by_value_dependencies: deps,
+            });
         }
     }
 
@@ -793,6 +830,42 @@ mod gid_stream_tests {
         );
         let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
         assert_eq!(reg.layouts.len(), 2);
+    }
+
+    /// The freeze computes real layouts (#199), not the earlier 0/0 stub: field offsets honour
+    /// natural alignment, nested nominals recurse by GID, and a C-like enum is an i32 discriminant.
+    #[test]
+    fn frozen_registry_computes_real_layouts() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "struct Pair { a: i8, b: i32 }\n\
+             struct Wrap { flag: i8, inner: Pair }\n\
+             enum Color { Red, Green, Blue }",
+        );
+        let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let hash = crate::hash::compute_module_hash("crate::m");
+        let lookup = |name: &str| {
+            let id = reg
+                .resolve_in_module(hash, &crate::symbol::Symbol::from(name))
+                .unwrap();
+            reg.layouts[&id].clone()
+        };
+
+        // Pair { a: i8 @0, b: i32 @4 } -> size 8, align 4 (3 bytes of padding after `a`).
+        let pair = lookup("Pair");
+        assert_eq!((pair.size_bytes, pair.align_bytes), (8, 4));
+        assert_eq!(pair.fields[0].offset, 0);
+        assert_eq!(pair.fields[1].offset, 4);
+
+        // Wrap { flag: i8 @0, inner: Pair @4 } -> size 12, align 4 (nested nominal recurses).
+        let wrap = lookup("Wrap");
+        assert_eq!((wrap.size_bytes, wrap.align_bytes), (12, 4));
+        assert_eq!(wrap.fields[1].offset, 4);
+        assert_eq!(wrap.fields[1].size, 8);
+
+        // A payload-free enum is a bare i32 discriminant.
+        let color = lookup("Color");
+        assert_eq!((color.size_bytes, color.align_bytes), (4, 4));
     }
 
     fn parse_only(path: &str, src: &str) -> VxModule {
