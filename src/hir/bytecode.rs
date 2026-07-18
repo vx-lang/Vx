@@ -71,6 +71,11 @@ pub enum Opcode {
     /// row/sub-view) or, when the last dimension is indexed, the scalar element. Chained for
     /// multi-dimensional access (`q[i][j]`).
     TensorIndex = 24,
+    /// Reduce a rank-1 tensor slice to a scalar. `operand1` is the slice (and `operand2` a second
+    /// slice for `dot`, else unused); `imm` is the reduction kind (0 = dot, 1 = sum, 2 = max,
+    /// 3 = min); `type_idx` is the scalar element type. Lowers to `vector.reduction` (with an
+    /// elementwise `mulf` first for `dot`).
+    Reduce = 25,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

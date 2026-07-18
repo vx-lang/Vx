@@ -365,6 +365,43 @@ impl<'r> Lowerer<'r> {
                 };
                 Some(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
             }
+            // Slice reductions `dot`/`sum`/`max`/`min` over rank-1 tensor slices -> a scalar. `dot`
+            // takes two slices (fused multiply then reduce-add); the rest take one. Other function
+            // calls are not yet lowered in the flat HIR.
+            Expr::FunctionCall(fc) => {
+                let kind = match fc.name.as_ref() {
+                    "dot" => 0u64,
+                    "sum" => 1,
+                    "max" => 2,
+                    "min" => 3,
+                    _ => return None,
+                };
+                let arity = if kind == 0 { 2 } else { 1 };
+                if fc.args.len() != arity {
+                    return None;
+                }
+                let mut regs = [Register(0); 2];
+                let mut elem: Option<ElementType> = None;
+                for (n, arg) in fc.args.iter().enumerate() {
+                    let v = self.lower_expr(arg)?;
+                    let LoweredTy::Tensor { elem: e, shape } = &v.ty else {
+                        return None; // reductions are over tensor slices
+                    };
+                    if shape.len() != 1 {
+                        return None; // a rank-1 slice reduces to a scalar; higher ranks don't
+                    }
+                    elem = Some(e.clone());
+                    regs[n] = v.reg;
+                }
+                let elem = elem?;
+                Some(self.emit_typed(
+                    Opcode::Reduce,
+                    regs[0],
+                    regs[1],
+                    LoweredTy::Scalar(elem),
+                    kind,
+                ))
+            }
             _ => None,
         }
     }
@@ -843,7 +880,9 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Cmp
             | Opcode::Store
             | Opcode::FieldStore
-            | Opcode::TensorIndex => {
+            | Opcode::TensorIndex
+            // `Reduce`'s operand2 is a real slice for `dot`, else the dominated `Register(0)`.
+            | Opcode::Reduce => {
                 assert!(
                     ins.operand1.0 < i && ins.operand2.0 < i,
                     "HIR operand not dominated at instruction {i}"
@@ -1099,6 +1138,58 @@ mod tests {
         assert_eq!(count(&w, Opcode::TensorIndex), 1);
         let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
         assert!(w.local_type_stream.contains(&row), "row tensor GID present");
+        verify_hir_stream(&w);
+    }
+
+    fn reduce_imm(w: &LocalWorkerState) -> Option<u64> {
+        w.local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Reduce)
+            .map(|i| i.imm)
+    }
+
+    #[test]
+    fn slice_dot_reduces_two_slices_to_a_scalar() {
+        // `dot(q, k)` over two rank-1 slices -> one Reduce (kind 0 = dot), scalar f32 result.
+        let f = parse_fn(
+            "fn dotp(q: Tensor<f32, [4]>, k: Tensor<f32, [4]>) -> f32 { return dot(q, k); }",
+        );
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "dot should lower");
+        assert_eq!(count(&w, Opcode::Reduce), 1);
+        assert_eq!(reduce_imm(&w), Some(0), "dot kind");
+        assert!(
+            w.local_type_stream.contains(&scalar_gid(&ElementType::F32)),
+            "scalar result GID present"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn slice_sum_reduces_one_slice_to_a_scalar() {
+        let f = parse_fn("fn s(q: Tensor<f32, [4]>) -> f32 { return sum(q); }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "sum should lower");
+        assert_eq!(count(&w, Opcode::Reduce), 1);
+        assert_eq!(reduce_imm(&w), Some(1), "sum kind");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn dot_of_indexed_rows_lowers() {
+        // The FlashAttention shape: `dot(q[i], k[j])` -> index each rank-2 tensor to a row, then
+        // reduce. Two TensorIndex feed one Reduce.
+        let f = parse_fn(
+            "fn score(q: Tensor<f32, [2, 4]>, k: Tensor<f32, [2, 4]>) -> f32 { return dot(q[0], k[0]); }",
+        );
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "dot of rows should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorIndex), 2, "one index per operand");
+        assert_eq!(count(&w, Opcode::Reduce), 1);
+        assert_eq!(reduce_imm(&w), Some(0));
         verify_hir_stream(&w);
     }
 
