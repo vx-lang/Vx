@@ -3,6 +3,7 @@ mod integration_test {
     mod basic_integration;
     mod borrow_test;
     mod compile_test;
+    mod flat_codegen_differential;
     mod fuzz;
     mod graph_workload_test;
     mod lint_test;
