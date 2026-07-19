@@ -387,7 +387,7 @@ pub fn build_frozen_registry(
     let mut registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
         .map_err(PipelineError::Semantic)?;
 
-    // Function signatures for call resolution in the flat HIR (#198, C1 Calls): name -> (GID, return
+    // Function signatures for call resolution in the flat HIR (#198): name -> (GID, return
     // type), GID minted with the resolver's formula. A name defined in more than one module with
     // distinct GIDs is ambiguous for the name-keyed map, so it is dropped rather than resolved wrong.
     let mut ambiguous_fns = std::collections::HashSet::new();
@@ -460,7 +460,7 @@ fn type_check_phase(
 
                     // Lower this function's type references to the flat GID stream (Phase 3).
                     emit_function_type_gids(func, &mut worker);
-                    // Lower the body to flat HIR bytecode (C1); atomic — a no-op for functions
+                    // Lower the body to flat HIR bytecode; atomic — a no-op for functions
                     // outside the supported subset.
                     crate::hir::flatten::lower_function_to_hir(func, &mut worker);
                     #[cfg(debug_assertions)]
@@ -971,7 +971,7 @@ mod gid_stream_tests {
         }
     }
 
-    /// C1: the real parallel `type_check_phase` lowers a scalar function body into its worker's
+    /// The real parallel `type_check_phase` lowers a scalar function body into its worker's
     /// `local_hir_stream` (not just the direct unit-test path). Proves the wiring end-to-end, with
     /// the debug `verify_hir_stream` hook active.
     #[test]
@@ -1045,7 +1045,7 @@ mod gid_stream_tests {
     }
 
     /// Order-sensitive determinism (#196): the flat GID stream must be byte-identical **in order**,
-    /// and identical **across thread counts** — codegen (C2) indexes it by position (`type_idx`),
+    /// and identical **across thread counts** — codegen indexes it by position (`type_idx`),
     /// so a scheduling-dependent race or an order-dependent phase is a correctness bug even when the
     /// *set* of GIDs matches. Running the whole pipeline under a 1-thread and an 8-thread rayon pool
     /// catches races the earlier same-pool set-comparison could not.
@@ -1102,7 +1102,7 @@ mod gid_stream_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The C1 HIR stream is new parallel-produced state whose order is contractual (codegen indexes
+    /// The HIR stream is new parallel-produced state whose order is contractual (codegen indexes
     /// it by register). Assert the concatenated stream is byte-identical across thread counts.
     #[test]
     fn hir_stream_is_deterministic_across_thread_counts() {

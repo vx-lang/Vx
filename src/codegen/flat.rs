@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Flat codegen (C2, #200): lower a function's flat HIR stream (`local_hir_stream`
+// Flat codegen (#200): lower a function's flat HIR stream (`local_hir_stream`
 // + `local_type_stream`, produced by `hir/flatten.rs`) to MLIR, driven by the
 // instruction array instead of an AST walk (doc §Phase 7 "O(1) array codegen").
 //
@@ -259,7 +259,7 @@ pub fn emit_function_mlir(
     //     `memref<T>` needs the slot's element type -> the `Alloca` records it, `Store` reads it back.
     // Calls use it too: a `func.call`'s argument types come from `etypes[arg_reg]`.
     //
-    // Scalar-only today (`ElementType`); brick 3 (#200) widens it to tensor/aggregate types.
+    // Scalar-only today (`ElementType`); widening it to tensor/aggregate types is future work (#200).
     let mut etypes: Vec<Option<ElementType>> = vec![None; hir.len()];
     let elem_at = |etypes: &[Option<ElementType>], r: u32| -> Option<ElementType> {
         etypes.get(r as usize)?.clone()

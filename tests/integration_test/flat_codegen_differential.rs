@@ -5,13 +5,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// C2 (#200): differential testing of the *flat* codegen path against the AST
-// path (the oracle). For a function the flat HIR lowers today (straight-line
-// scalar arithmetic), the flat path (local_hir_stream -> `flat::emit_function_
-// mlir`) must produce MLIR that, run through the *same* production lowering
-// (`lower_to_llvm`) and JIT, yields the *same* result as the AST path. Parity
-// here is what lets `vxc` eventually flip to the flat path (C3). Coverage grows
-// as C1/C2 widen (control flow, calls, then the non-scalar surface #199).
+// Differential testing of the *flat* codegen path against the AST path, the
+// oracle (#200). For a function the flat HIR lowers today, the flat path
+// (local_hir_stream -> `flat::emit_module_mlir`) must produce MLIR that, run
+// through the *same* production lowering (`lower_to_llvm`) and JIT, yields the
+// *same* result as the AST path. Parity here is what lets `vxc` eventually flip
+// to the flat path. Coverage grows as the flat HIR + emitter widen (control
+// flow, calls, then the non-scalar surface #199).
 //===----------------------------------------------------------------------===//
 use vxc::codegen::{lower_to_llvm, register_vx_dialect, MeliorGenerator};
 use vxc::hir::flatten::lower_function_to_hir;

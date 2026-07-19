@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Structural layout computation for nominal types (#199, C1.3 prerequisite).
+// Structural layout computation for nominal types (#199).
 //
 // Computes the byte size, alignment, and per-field offsets of structs (and the
 // size/align of C-like enums) so the frozen registry carries real layouts
-// instead of the earlier `size = 0 / align = 0` stub. The flat HIR (C1.3) uses
+// instead of the earlier `size = 0 / align = 0` stub. The flat HIR uses
 // these to size `Alloca` and resolve field offsets identically to the tree-AST
 // codegen path.
 //

@@ -482,7 +482,7 @@ impl Drop for Solver {
 mod tests {
     use super::*;
 
-    // Reached state after C2: data = const 42, flag = const 1.
+    // The merge-point abstract state under test: data = const 42, flag = const 1.
     fn mp_state() -> AbsState {
         AbsState {
             cells: vec![

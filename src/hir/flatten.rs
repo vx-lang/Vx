@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// HIR lowering (C1, #197): the instruction-selection pass that flattens a
+// HIR lowering (#197): the instruction-selection pass that flattens a
 // type-checked function *body* from the tree AST into the worker's
 // `local_hir_stream` (`Vec<HirInstruction>`), the flat bytecode Phase-7 codegen
 // consumes. Distinct from `hir/lower_ast.rs`, which builds an arena *tree* HIR.
@@ -859,7 +859,7 @@ fn pack_targets(then_b: u32, else_b: u32) -> u64 {
 }
 
 /// The scalar element type of a parameter type, or `None` for non-scalars / generic scalars (which
-/// C1.1 does not lower).
+/// the flat lowering does not model).
 fn scalar_of(ty: &Type) -> Option<ElementType> {
     match ty {
         Type::Scalar(ElementType::Generic(_)) => None,
@@ -1628,7 +1628,7 @@ mod tests {
 
     #[test]
     fn for_over_non_range_aborts() {
-        // A non-range iterable (here a call) is outside the C1.2c subset -> atomic abort.
+        // A non-range iterable (here a call) is outside the supported subset -> atomic abort.
         let f = parse_fn("fn f(a: i32) -> i32 { for i in gen() { } return a; }");
         let mut w = worker();
         assert!(!lower_function_to_hir(&f, &mut w));
@@ -1799,7 +1799,7 @@ mod tests {
 
     #[test]
     fn aborts_atomically_on_unsupported_construct() {
-        // A call is outside the C1.1 subset -> abort, worker untouched.
+        // A call is outside the supported subset -> abort, worker untouched.
         let f = parse_fn("fn f(a: i32) -> i32 { return g(a); }");
         let mut w = worker();
         assert!(!lower_function_to_hir(&f, &mut w));

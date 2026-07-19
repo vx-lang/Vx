@@ -29,7 +29,7 @@ use std::time::Instant;
 
 /// Write `n_modules` independent `.vx` modules, each with `fns_per` non-trivial scalar functions
 /// (params, a loop, an if/else, a mutable local — real work for the parallel type-checker and the
-/// C1 flat-HIR lowering). Returns the file paths.
+/// flat-HIR lowering). Returns the file paths.
 fn generate_corpus(dir: &std::path::Path, n_modules: usize, fns_per: usize) -> Vec<String> {
     std::fs::create_dir_all(dir).unwrap();
     let mut paths = Vec::with_capacity(n_modules);

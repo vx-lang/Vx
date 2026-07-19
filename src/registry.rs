@@ -35,7 +35,7 @@ pub struct TypeDefinition {
 
 /// The signature a call site needs: the callee's GID (its stable identity) and its return type.
 /// Lets the flat-HIR lowerer resolve a call `f(..)` -- identify the callee and type the result --
-/// from the frozen registry it already holds, without a name->AST walk (#198, C1 Calls).
+/// from the frozen registry it already holds, without a name->AST walk (#198).
 #[derive(Debug, Clone)]
 pub struct FnSig {
     pub gid: TypeId,
