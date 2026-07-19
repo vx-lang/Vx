@@ -611,12 +611,64 @@ its N arguments don't fit a two-operand instruction.
 **C1 is now complete** (C1.1–C1.3 + Calls). Follow-ups: void/non-scalar-return calls, and the declined
 edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these opcodes.
 
-## Remaining gaps (next entries)
+## Entry 20 — C2.1: the differential harness + the attention corpus (#200)
 
-- **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
-  lowering function bodies to it is a real instruction-selection pass (and codegen would need to
-  consume it — currently codegen is AST-based).
-- **Slow-path variance** — `evaluate_slow_path_variance` (`borrow.rs`) is a stub.
-- **Path convergence** — `vxc` still runs the sequential driver (`driver.rs::execute` →
-  `run_codegen`); making it drive `compile_pipeline` (and codegen consume the flat streams) is the
-  end goal that turns all of the above from "exercised by tests" into "the production compile".
+**Commits:** `bfe5156` (harness), `9398c4d` (corpus). (Landed alongside Entry 19; grouped here.)
+
+**What we did.**
+- **Differential harness** (`tests/integration_test/flat_codegen_differential.rs`). For a function the
+  flat HIR lowers today (straight-line scalar arithmetic), the flat emitter's MLIR is run through the
+  *same* production `lower_to_llvm` + JIT as the AST path, and the two **process exit codes** must
+  match each other and the expected value. `ast_exit_code` / `flat_exit_code` / `assert_parity`.
+  Cases: `3+4*5`=23, `100-84/2`=58, `(2+3)*(10-3)`=35; plus a control-flow case where the flat path
+  *declines* (outside the C2.0 subset) so the AST path stays the sole oracle — no false parity. This
+  is the first time the flat emitter runs through the real lowering + JIT, not just an arith-level
+  parse+verify. Parity here is the criterion that lets `vxc` eventually flip (C3).
+- **Attention corpus** (`tests/backend/pass/{full_softmax,multi_query,grouped_query,linear,sparse_
+  local}_attention.vx`). Five hand-checkable, JIT-verified attention variants — a real-workload target
+  for the differential harness as C2 grows, and standalone backend coverage now (they run through the
+  AST oracle, like `attention_reference.vx`). Each has `EXPECT` matched to JIT output and hand-derived
+  math in the header.
+
+## Status (2026-07-18) — C0 + C1 done, C2 in progress
+
+**Done.**
+- **C0** — GID word-2 codec (#193), cross-module resolution (#194), stable FNV hash + collision guard
+  (#195). *All closed.*
+- **C1** (#198) — the flat HIR lowers the whole language surface a function body uses:
+  - **C1.1/C1.2** scalar core, value ops, control flow (`if`/`loop`/`for`, break/continue), the
+    two-tier SSA/memory-slot model.
+  - **C1.3** (#199, closed) the non-scalar value surface — struct layouts/params/construction/field
+    read (`FieldLoad`/`FieldStore`), tensor identity/indexing/reductions/elementwise/alloc/store/
+    transfer (`TensorIndex`/`Reduce`/`TensorAlloc`/`TensorStore`/`Transfer`). Read **and** write; the
+    FlashAttention inner loop lowers in both directions.
+  - **Calls** — fixed-arity, value-returning (`Arg` + `Call`, callee via registry `fn_sigs`).
+  - Verified structurally by `verify_hir_stream`; the `flatten` unit tests + `lower_with_registry`
+    exercise every opcode family.
+- **C2 (start)** — the differential harness proves flat==AST for the scalar subset (Entry 20).
+
+**Open.**
+- **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) still handles only straight-line scalar
+  arithmetic; growing it to emit the rest is the bulk of the remaining work. See the C2 roadmap:
+  [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
+- **C1 follow-ups** — void/non-scalar-return calls; the declined flat-HIR edge cases (#212); varargs
+  evaluation (#213).
+- **C3** (#201) — flip `vxc` from the sequential AST driver to `compile_pipeline` + flat codegen, once
+  C2 reaches parity across the corpus.
+- **Other** — slow-path variance (`evaluate_slow_path_variance` in `borrow.rs`) is still a stub; the
+  parallel-test struct/tensor coverage is #211.
+
+## Next: C2 (the flat codegen)
+
+The flat emitter grows opcode-family by opcode-family, each verified by extending the differential
+harness, in this order (details + MLIR mappings in `implementation_plans/c2_flat_codegen.md`):
+
+1. **Control flow** — `BlockStart`/`Br`/`CondBr`/`Alloca`/`Store`/`SlotLoad` → `cf` + `memref.alloca`.
+   Lifts the differential corpus past straight-line (an `if`/loop `main`). Do this first.
+2. **Calls** — needs a *module-level* flat emitter (all functions, not one) + callee GID→name
+   resolution (reverse of registry `fn_sigs`) + call-signature types.
+3. **Non-scalar** — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/`TensorAlloc`/`TensorStore`/
+   `Transfer`, matching the AST codegen's memref/vector lowering so the attention corpus runs through
+   the flat path and differentially checks.
+
+Then **C3**: `--flat-codegen` flag → flip `vxc`.
