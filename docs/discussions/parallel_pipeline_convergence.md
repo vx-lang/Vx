@@ -422,6 +422,7 @@ existing (the #199 prerequisite).
 
 **What we did.** New `LayoutComputer` resolves nested by-value nominals **by GID** (cross-module
 correct — name resolution already ran) and computes, per nominal:
+
 - struct size/align/field-offsets with C-like natural-alignment packing (fields in decl order, each
   at the next multiple of its align; struct align = max field align; size rounded up). Matches the
   AST codegen's non-packed `!llvm.struct` lowering.
@@ -453,6 +454,7 @@ type-stream entry was a `scalar_gid` — so a struct parameter or field access c
 real layouts now at the freeze (Entry 13), the lowerer can carry aggregates.
 
 **What we did.**
+
 - `LoweredTy { Scalar(ElementType) | Aggregate(TypeId) }` threaded through `Val`/`Binding` and the
   emitters. `emit_typed` is the general emitter; `emit_value` stays the scalar convenience so scalar
   GIDs are byte-identical and existing call sites are untouched.
@@ -485,6 +487,7 @@ whose GID rides on a resolved type. (Design choice, taken with the user: annotat
 the type checker, the cleanest of the three options.)
 
 **What we did.**
+
 - **Sema.** `StructInitExpr` gains `type_id: Option<TypeId>`, set by `check_structinit_expr` from a
   new `GlobalAstEnv::struct_gids` (the resolver's exact GID formula, so it matches the registry key).
   The expression's *returned* type keeps GID `None` — struct type-identity comparisons are unchanged,
@@ -495,8 +498,7 @@ the type checker, the cleanest of the three options.)
   that slot. Declines (atomic) when the GID is absent/uncomputed or a field is non-scalar. The
   flatten test harness now type-checks before lowering (so the annotation exists).
 
-**Tests.** `structinit_is_annotated_with_struct_gid` (sema), `struct_construction_lowers_to_alloca_
-and_field_stores` (`let p = Point{..}; return p.y` → 8-byte Alloca + two FieldStores @0/@4 + a
+**Tests.** `structinit_is_annotated_with_struct_gid` (sema), `struct_construction_lowers_to_alloca_ and_field_stores` (`let p = Point{..}; return p.y` → 8-byte Alloca + two FieldStores @0/@4 + a
 FieldLoad). Full suite green (327 lib + 67 integration).
 
 **Where #199 stands.** Structs are now first-class in the flat HIR — params, construction, field
@@ -511,6 +513,7 @@ pointer field access, and `transfer` lowering.
 for `Type::Tensor`; the lowerer declined any tensor), and no way to index them.
 
 **What we did.**
+
 - **Identity.** `flatten::tensor_gid(elem, shape)` / `tensor_gid_of(ty)`: a stable GID (module 0 =
   builtin) content-hashed from element + canonical shape — same source of truth as `scalar_gid`, so a
   tensor has one identity in a signature and a lowered body. `pipeline::{emit_type_gid, nominal_gid}`
@@ -522,9 +525,7 @@ for `Type::Tensor`; the lowerer declined any tensor), and no way to index them.
   drops the outermost dim: a remaining shape → a row/sub-view tensor, an empty one → the scalar
   element. `q[i][j]` recurses the nested `IndexAccess` (`[2,4] → [4] → f32`).
 
-**Tests.** `tensor_param_binds_as_ssa_reg_with_tensor_gid`, `tensor_gid_distinguishes_element_and_
-shape`, `tensor_signature_emits_the_tensor_gid` (signature==body), `tensor_full_index_yields_scalar_
-element`, `tensor_partial_index_yields_row_view`. Full suite green (332 lib + 67 integration).
+**Tests.** `tensor_param_binds_as_ssa_reg_with_tensor_gid`, `tensor_gid_distinguishes_element_and_ shape`, `tensor_signature_emits_the_tensor_gid` (signature==body), `tensor_full_index_yields_scalar_ element`, `tensor_partial_index_yields_row_view`. Full suite green (332 lib + 67 integration).
 
 **Next.** Tensor elementwise ops + reductions (the slice-ops surface `dot`/`sum` → `vector.reduction`
 in the flat HIR), tensor allocation/`transfer` lowering, and nested-aggregate/pointer field access.
@@ -537,6 +538,7 @@ in the flat HIR), tensor allocation/`transfer` lowering, and nested-aggregate/po
 FlashAttention `dot`/softmax surface.
 
 **What we did.**
+
 - **Reductions.** New `Opcode::Reduce`: a rank-1 slice → a scalar. `operand1` the slice (`operand2` a
   second slice for `dot`, else `Register(0)`), `imm` the kind (0 dot / 1 sum / 2 max / 3 min),
   `type_idx` the scalar element. `lower_expr` intercepts the `dot`/`sum`/`max`/`min` `FunctionCall`s;
@@ -567,6 +569,7 @@ a *produced* tensor couldn't be allocated, written back, or moved. The user's co
 receiving side of a store must have enough storage.
 
 **What we did.**
+
 - `Opcode::TensorAlloc` — `Tensor<T>([..])`; `imm` is the static byte size (elem size × Πdims, via
   `hir::memory::static_tensor_bytes`), so the buffer holds every element. A tensor local binds as an
   SSA register (a memref descriptor); a dynamic/symbolic shape declines.
@@ -577,8 +580,7 @@ receiving side of a store must have enough storage.
 
 **Tests.** alloc sizes the buffer (`Tensor<f32>([2,4])` → 32 bytes), a row store (alloc + index +
 store), a transfer to `Memory::NPU_HBM` (dispatch id 100), and a write-path capstone
-`flashattention_write_path_composes` (`let o = Tensor<f32>([2,4]); o[0] = v * (dot(q[0],k[0]) * scale);
-return o` → alloc + 3 index + reduce + 2 mul + store). Full suite green (342 lib + 67 integration).
+`flashattention_write_path_composes` (`let o = Tensor<f32>([2,4]); o[0] = v * (dot(q[0],k[0]) * scale); return o` → alloc + 3 index + reduce + 2 mul + store). Full suite green (342 lib + 67 integration).
 
 **Where #199 stands.** The flat HIR now models the whole non-scalar surface end to end — read *and*
 write — for structs and tensors: layouts, params, construction, field access; tensor identity,
@@ -595,8 +597,8 @@ field access and scalar-element tensor stores.
 its N arguments don't fit a two-operand instruction.
 
 **What we did.**
-- **Callee resolution via the registry.** `ImmutableGlobalRegistry` gains `fn_sigs` (name → `FnSig {
-  gid, ret_ty }`), minted in `build_frozen_registry` with the resolver's GID formula; a name defined
+
+- **Callee resolution via the registry.** `ImmutableGlobalRegistry` gains `fn_sigs` (name → `FnSig { gid, ret_ty }`), minted in `build_frozen_registry` with the resolver's GID formula; a name defined
   in >1 module (distinct GIDs) is dropped (name-keyed, so ambiguous → decline, mirroring the
   struct-GID policy). The lowerer already holds the registry, so no name→AST walk.
 - **N-ary args.** New `Opcode::Arg` marks each argument's value register; N `Arg`s immediately precede
@@ -616,6 +618,7 @@ edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these o
 **Commits:** `bfe5156` (harness), `9398c4d` (corpus). (Landed alongside Entry 19; grouped here.)
 
 **What we did.**
+
 - **Differential harness** (`tests/integration_test/flat_codegen_differential.rs`). For a function the
   flat HIR lowers today (straight-line scalar arithmetic), the flat emitter's MLIR is run through the
   *same* production `lower_to_llvm` + JIT as the AST path, and the two **process exit codes** must
@@ -624,15 +627,49 @@ edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these o
   *declines* (outside the C2.0 subset) so the AST path stays the sole oracle — no false parity. This
   is the first time the flat emitter runs through the real lowering + JIT, not just an arith-level
   parse+verify. Parity here is the criterion that lets `vxc` eventually flip (C3).
-- **Attention corpus** (`tests/backend/pass/{full_softmax,multi_query,grouped_query,linear,sparse_
-  local}_attention.vx`). Five hand-checkable, JIT-verified attention variants — a real-workload target
+- **Attention corpus** (`tests/backend/pass/{full_softmax,multi_query,grouped_query,linear,sparse_ local}_attention.vx`). Five hand-checkable, JIT-verified attention variants — a real-workload target
   for the differential harness as C2 grows, and standalone backend coverage now (they run through the
   AST oracle, like `attention_reference.vx`). Each has `EXPECT` matched to JIT output and hand-derived
   math in the header.
 
+## Entry 21 — C2.2: control flow in the flat emitter (brick 1, #200)
+
+**Commit:** _this session_. The first C2 brick after the harness — the flat emitter now lowers
+intra-function control flow, so an `if`/`for`/`loop` `main` JIT-matches the AST oracle.
+
+**Gap.** `flat.rs::emit_function_mlir` handled only straight-line scalar arithmetic (`Load`/`Const`/
+`Add`/`Sub`/`Mul`/`Div`/`Ret`); a control-flow stream (`BlockStart`/`Br`/`CondBr`/`Alloca`/`Store`/
+`SlotLoad`, plus `Cmp` for the condition) returned `None` and stayed on the AST path.
+
+**What we did.**
+
+- **Per-register element types.** Added a parallel `etypes[reg]` recovered as the stream is walked —
+  the flat-driven stand-in for reading an operand's type off the AST. Needed because `Cmp` (result
+  `bool`) and `Store` (effect sentinel `type_idx`) carry no usable type of their own: a compare reads
+  its operand's tracked type to pick `cmpi`/`cmpf` + predicate; a store reads its *slot*'s (the
+  `Alloca`'s recorded) element type to print `memref<T>`.
+- **Control-flow opcodes → `cf` + rank-0 `memref`.** `BlockStart b` opens block `b` (`b=0` is the
+  func's implicit entry, no label; else `^bbN:`); `Br`/`CondBr` → `cf.br`/`cf.cond_br` (targets
+  unpacked from `imm`'s `then | else<<32`); `Alloca` → `%s = memref.alloca() : memref<T>`, `Store`/
+  `SlotLoad` → `memref.store`/`memref.load %s[]` — matching the AST codegen's scalar locals (rank-0
+  memref) so the shared `lower_to_llvm` + JIT behave identically. `Cmp` → `arith.cmpi/​cmpf`.
+  Terminators are emitted **inline** (not deferred), so each block closes correctly; an unterminated
+  final block falls through to `return` (void) or declines (scalar — unreachable/ill-typed, no value).
+- **Keep-green preserved.** Anything still outside the subset (calls, cast, the non-scalar surface)
+  returns `None`. A scalar `as` cast is the new decline witness (was: the control-flow decline).
+
+**Tests.** `flat.rs`: `emits_verifiable_if_else`, `emits_verifiable_for_loop` (emit + melior verify),
+`declines_out_of_subset_scalar_op`. Differential harness: four **JIT-parity** cases through the real
+`lower_to_llvm` + JIT — `if` no-else (=105), `if/else` (=2), `for` accumulator 0..5 (=10), `loop` +
+`break` (=3) — each `flat == ast == expected`. Full suite green (346 lib + 75 integration).
+
+**Next (brick 2).** Calls — a *module-level* flat emitter (all functions, not one) + callee GID→name
+(reverse of registry `fn_sigs`) + call-signature types.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
+
 - **C0** — GID word-2 codec (#193), cross-module resolution (#194), stable FNV hash + collision guard
   (#195). *All closed.*
 - **C1** (#198) — the flat HIR lowers the whole language surface a function body uses:
@@ -645,11 +682,15 @@ edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these o
   - **Calls** — fixed-arity, value-returning (`Arg` + `Call`, callee via registry `fn_sigs`).
   - Verified structurally by `verify_hir_stream`; the `flatten` unit tests + `lower_with_registry`
     exercise every opcode family.
-- **C2 (start)** — the differential harness proves flat==AST for the scalar subset (Entry 20).
+- **C2 (start + brick 1)** — the differential harness proves flat==AST for the scalar subset
+  (Entry 20), and the flat emitter now also lowers intra-function **control flow** (`if`/`for`/`loop`)
+  to JIT parity (Entry 21).
 
 **Open.**
-- **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) still handles only straight-line scalar
-  arithmetic; growing it to emit the rest is the bulk of the remaining work. See the C2 roadmap:
+
+- **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) now covers scalar arithmetic + control
+  flow; **calls** (brick 2, needs a module-level emitter) and the **non-scalar surface** (brick 3)
+  remain. See the C2 roadmap:
   [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
 - **C1 follow-ups** — void/non-scalar-return calls; the declined flat-HIR edge cases (#212); varargs
   evaluation (#213).
@@ -663,11 +704,11 @@ edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these o
 The flat emitter grows opcode-family by opcode-family, each verified by extending the differential
 harness, in this order (details + MLIR mappings in `implementation_plans/c2_flat_codegen.md`):
 
-1. **Control flow** — `BlockStart`/`Br`/`CondBr`/`Alloca`/`Store`/`SlotLoad` → `cf` + `memref.alloca`.
-   Lifts the differential corpus past straight-line (an `if`/loop `main`). Do this first.
-2. **Calls** — needs a *module-level* flat emitter (all functions, not one) + callee GID→name
+1. ~~**Control flow** — `BlockStart`/`Br`/`CondBr`/`Alloca`/`Store`/`SlotLoad` (+`Cmp`) → `cf` +
+   `memref.alloca`.~~ **Done** (Entry 21): `if`/`for`/`loop` `main`s JIT-match the AST oracle.
+1. **Calls** ← *next* — needs a *module-level* flat emitter (all functions, not one) + callee GID→name
    resolution (reverse of registry `fn_sigs`) + call-signature types.
-3. **Non-scalar** — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/`TensorAlloc`/`TensorStore`/
+1. **Non-scalar** — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/`TensorAlloc`/`TensorStore`/
    `Transfer`, matching the AST codegen's memref/vector lowering so the attention corpus runs through
    the flat path and differentially checks.
 

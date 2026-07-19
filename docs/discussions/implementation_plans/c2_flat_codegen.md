@@ -15,10 +15,12 @@ Reuse the existing melior emission at the leaves conceptually, but the driver is
 ## Current state
 
 `src/codegen/flat.rs::emit_function_mlir(func, hir, types) -> Option<String>` emits a **single**
-`func.func` as **text**, handling only the C2.0 subset: `Load` (param → block arg), `Const`,
-`Add`/`Sub`/`Mul`/`Div`, `Ret`. Everything else returns `None` (the AST path stays the oracle). It is
-string-based: the emitted text is wrapped in `module { … }`, parsed by melior, run through
-`lower_to_llvm`, then JIT'd.
+`func.func` as **text**, handling the C2.0 scalar subset (`Load` → block arg, `Const`,
+`Add`/`Sub`/`Mul`/`Div`, `Ret`) **plus brick 1 — intra-function control flow** (`Cmp` →
+`arith.cmpi/cmpf`; `BlockStart`/`Br`/`CondBr` → `cf`; `Alloca`/`Store`/`SlotLoad` → rank-0
+`memref`), driven by a per-register `etypes[]` type recovery. Everything else returns `None` (the AST
+path stays the oracle). It is string-based: the emitted text is wrapped in `module { … }`, parsed by
+melior, run through `lower_to_llvm`, then JIT'd.
 
 The **differential harness** (`tests/integration_test/flat_codegen_differential.rs`) is the acceptance
 gate: for a `main` the flat path lowers, `flat_exit_code == ast_exit_code == expected` (process exit
@@ -48,14 +50,19 @@ construct — study the AST lowering in `src/codegen/lower/` and match its op ch
 
 ## Bricks (in order)
 
-### Brick 1 — Control flow (do this first)
+### Brick 1 — Control flow ✅ done (Entry 21)
 
-C1.2 opcodes: `BlockStart(imm=block id)`, `Br(imm=target)`, `CondBr(operand1=cond,
-imm=then|else<<32)`, `Alloca(type_idx=elem, → slot)`, `Store(operand1=slot, operand2=val)`,
+**Landed.** `if`/`for`/`loop` `main`s now JIT-match the AST oracle through the differential harness.
+`Cmp` (needed for conditions) joined the subset; terminators are emitted inline; block 0 is the func's
+implicit entry (no label). Per-register `etypes[]` recovery feeds `Cmp`/`Store` their operand/slot
+types. The original brick sketch (kept for reference):
+
+C1.2 opcodes: `BlockStart(imm=block id)`, `Br(imm=target)`, `CondBr(operand1=cond, imm=then|else<<32)`, `Alloca(type_idx=elem, → slot)`, `Store(operand1=slot, operand2=val)`,
 `SlotLoad(operand1=slot)`.
 
 MLIR (match the AST codegen's `cf` + memref/alloca locals — see `MeliorGenerator::generate_function`
 and `codegen/lower/control_flow.rs`):
+
 - `BlockStart b` → open MLIR block `^bbb:` (block 0 is the entry; the flat entry `BlockStart 0` maps to
   the func's entry block). Track a name per block id.
 - `Br t` → `cf.br ^bbt`. `CondBr` → `cf.cond_br %cond, ^bbthen, ^bbelse`.
@@ -86,6 +93,7 @@ Opcodes: `Arg(operand1=arg reg)` (N before a `Call`), `Call(type_idx=callee GID,
 
 Match the AST lowering in `codegen/lower/{expr,tensors,mod}.rs`; the flat opcodes were designed to
 mirror it:
+
 - `Alloca` of an aggregate (imm = size) / `TensorAlloc` (imm = byte size) → `memref.alloc` /
   `llvm.alloca` of the struct/tensor type. `FieldLoad`/`FieldStore` → GEP + `llvm.load`/`store` at the
   layout offset (registry `layouts[gid].fields`). `TensorIndex` → `memref.subview`/`reinterpret_cast`

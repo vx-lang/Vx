@@ -133,10 +133,48 @@ fn flat_matches_ast_with_a_scalar_param_chain() {
 }
 
 #[test]
-fn flat_declines_control_flow_leaving_ast_the_oracle() {
-    // Control flow is outside the C2.0 subset -> the flat path declines, so the
-    // AST path stays the sole oracle (no false parity claim).
-    let src = "fn main() -> i32 { let mut x = 0; if x < 1 { x = 7; } return x; }";
+fn flat_matches_ast_if_without_else() {
+    // `if` with a fall-through merge: the branch runs, then both edges reconverge
+    // and the function returns the mutated local.
+    assert_parity(
+        "fn main() -> i32 { let mut x = 5; if x < 10 { x = x + 100; } return x; }",
+        105,
+    );
+}
+
+#[test]
+fn flat_matches_ast_if_else() {
+    // A full if/else diamond; the taken branch decides the returned value.
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let mut y = 0; if a < 0 { y = 1; } else { y = 2; } return y; }",
+        2,
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_range_accumulator() {
+    // A `for` range loop accumulating 0+1+2+3+4 through slot-backed locals.
+    assert_parity(
+        "fn main() -> i32 { let mut s = 0; for i in 0..5 { s = s + i; } return s; }",
+        10,
+    );
+}
+
+#[test]
+fn flat_matches_ast_loop_with_break() {
+    // An infinite `loop` exited by `break` from a nested `if` — exercises the
+    // loop back-edge, the break target, and a compare inside the body.
+    assert_parity(
+        "fn main() -> i32 { let mut i = 0; loop { if i >= 3 { break; } i = i + 1; } return i; }",
+        3,
+    );
+}
+
+#[test]
+fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
+    // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
+    // opcode lowers to the flat HIR, but the emitter declines it) -> the flat path
+    // yields `None`, so the AST path stays the sole oracle (no false parity claim).
+    let src = "fn main() -> i32 { let a = 7; return a as i64 as i32; }";
     assert!(flat_exit_code(src).is_none());
-    assert_eq!(ast_exit_code(src), 7);
 }

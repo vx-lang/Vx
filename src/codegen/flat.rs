@@ -10,11 +10,14 @@
 // + `local_type_stream`, produced by `hir/flatten.rs`) to MLIR, driven by the
 // instruction array instead of an AST walk (doc §Phase 7 "O(1) array codegen").
 //
-// First increment: the straight-line *scalar arithmetic* subset (params, const,
-// add/sub/mul/div, return). Emits a `func.func` as text (SSA name = producing
-// instruction's register), which the caller parses + verifies with melior. The
-// AST path stays the oracle: `emit_function_mlir` returns `None` for any stream
-// using opcodes outside this subset, so nothing half-lowered is ever emitted.
+// Current subset: scalar arithmetic (params, const, add/sub/mul/div, compare,
+// return) plus intra-function control flow -- basic-block markers, (conditional)
+// branches, and `alloca`/store/load'd scalar locals (the memory model the flat
+// HIR uses so values cross blocks). Emits a `func.func` as text (SSA name =
+// producing instruction's register; blocks become `^bbN:` labels), which the
+// caller parses + verifies with melior. The AST path stays the oracle:
+// `emit_function_mlir` returns `None` for any stream using opcodes outside this
+// subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
@@ -112,9 +115,65 @@ fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     })
 }
 
+/// The `arith.cmp{i,f}` op + textual predicate for a `Cmp` on operands of element type `e`, given
+/// the relation code stored in the instruction's `imm` (0=Eq,1=Ne,2=Lt,3=Gt,4=Le,5=Ge — kept in
+/// sync with `flatten::rel_code`). Integers use signed vs. unsigned predicates by the element's
+/// signedness; floats use the ordered predicates.
+fn cmp_op(rel: u64, e: &ElementType) -> Option<(&'static str, &'static str)> {
+    if is_float(e) {
+        let pred = match rel {
+            0 => "oeq",
+            1 => "one",
+            2 => "olt",
+            3 => "ogt",
+            4 => "ole",
+            5 => "oge",
+            _ => return None,
+        };
+        Some(("arith.cmpf", pred))
+    } else {
+        let s = is_signed(e);
+        let pred = match rel {
+            0 => "eq",
+            1 => "ne",
+            2 => {
+                if s {
+                    "slt"
+                } else {
+                    "ult"
+                }
+            }
+            3 => {
+                if s {
+                    "sgt"
+                } else {
+                    "ugt"
+                }
+            }
+            4 => {
+                if s {
+                    "sle"
+                } else {
+                    "ule"
+                }
+            }
+            5 => {
+                if s {
+                    "sge"
+                } else {
+                    "uge"
+                }
+            }
+            _ => return None,
+        };
+        Some(("arith.cmpi", pred))
+    }
+}
+
 /// Emit a `func.func` for `func` from its flat HIR body, or `None` if the stream uses any construct
-/// outside the C2.0 scalar-arithmetic subset (the AST path stays the oracle there). The returned
-/// text is a bare `func.func` op; wrap it in a `module { … }` before parsing.
+/// outside the current subset (scalar arithmetic + intra-function control flow; the AST path stays
+/// the oracle there). The returned text is a bare `func.func` op; wrap it in a `module { … }` before
+/// parsing.
 pub fn emit_function_mlir(
     func: &Function,
     hir: &[HirInstruction],
@@ -134,13 +193,26 @@ pub fn emit_function_mlir(
     let ty_at = |ti: u32| -> Option<ElementType> { elem_of_gid(*types.get(ti as usize)?) };
 
     let mut names: Vec<String> = vec![String::new(); hir.len()];
+    // The scalar element type each register carries. Value ops record their result type; an `Alloca`
+    // records its *slot* element type so a later `Store` can print `memref<T>`. This is the flat-
+    // driven stand-in for reading an operand's type off the AST — needed because some consumers
+    // (`Cmp`, `Store`) have no usable `type_idx` of their own (a compare's is `bool`; a store's is
+    // the effect sentinel).
+    let mut etypes: Vec<Option<ElementType>> = vec![None; hir.len()];
+    let elem_at = |etypes: &[Option<ElementType>], r: u32| -> Option<ElementType> {
+        etypes.get(r as usize)?.clone()
+    };
     let mut body = String::new();
-    let mut ret_line: Option<String> = None;
+    // Whether the block currently being emitted has a terminator yet (a block must end in one).
+    let mut terminated = false;
 
     for (idx, ins) in hir.iter().enumerate() {
         match ins.opcode {
             // Parameter materialization: the register *is* the block argument, no op emitted.
-            Opcode::Load => names[idx] = format!("%arg{}", ins.imm),
+            Opcode::Load => {
+                names[idx] = format!("%arg{}", ins.imm);
+                etypes[idx] = ty_at(ins.type_idx.0);
+            }
             Opcode::Const => {
                 let e = ty_at(ins.type_idx.0)?;
                 let mt = mlir_scalar(&e)?;
@@ -152,6 +224,7 @@ pub fn emit_function_mlir(
                 let n = format!("%v{idx}");
                 body += &format!("  {n} = arith.constant {lit} : {mt}\n");
                 names[idx] = n;
+                etypes[idx] = Some(e);
             }
             Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
                 let e = ty_at(ins.type_idx.0)?;
@@ -161,22 +234,90 @@ pub fn emit_function_mlir(
                 let b = names.get(ins.operand2.0 as usize)?;
                 let n = format!("%v{idx}");
                 body += &format!("  {n} = {op} {a}, {b} : {mt}\n");
-                names[idx] = n.clone();
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
+            // first operand's tracked type (this instruction's own type is `bool`, the result).
+            Opcode::Cmp => {
+                let e = elem_at(&etypes, ins.operand1.0)?;
+                let mt = mlir_scalar(&e)?;
+                let (op, pred) = cmp_op(ins.imm, &e)?;
+                let a = names.get(ins.operand1.0 as usize)?;
+                let b = names.get(ins.operand2.0 as usize)?;
+                let n = format!("%v{idx}");
+                body += &format!("  {n} = {op} {pred}, {a}, {b} : {mt}\n");
+                names[idx] = n;
+                etypes[idx] = Some(ElementType::Bool);
+            }
+            // A named local's stack slot: a rank-0 memref, matching the AST codegen's scalar locals.
+            Opcode::Alloca => {
+                let e = ty_at(ins.type_idx.0)?;
+                let mt = mlir_scalar(&e)?;
+                let n = format!("%v{idx}");
+                body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Store a value into a slot (no result); the memref type is the slot's element type.
+            Opcode::Store => {
+                let e = elem_at(&etypes, ins.operand1.0)?;
+                let mt = mlir_scalar(&e)?;
+                let slot = names.get(ins.operand1.0 as usize)?;
+                let val = names.get(ins.operand2.0 as usize)?;
+                body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
+            }
+            // Load a value back from a slot; the result type is the slot's element (this
+            // instruction's own `type_idx`).
+            Opcode::SlotLoad => {
+                let e = ty_at(ins.type_idx.0)?;
+                let mt = mlir_scalar(&e)?;
+                let slot = names.get(ins.operand1.0 as usize)?;
+                let n = format!("%v{idx}");
+                body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
+            // params), so it gets no label; every other id opens `^bbN:`.
+            Opcode::BlockStart => {
+                if ins.imm != 0 {
+                    body += &format!("^bb{}:\n", ins.imm);
+                }
+                terminated = false;
+            }
+            Opcode::Br => {
+                body += &format!("  cf.br ^bb{}\n", ins.imm);
+                terminated = true;
+            }
+            // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
+            Opcode::CondBr => {
+                let cond = names.get(ins.operand1.0 as usize)?;
+                let then_b = ins.imm & 0xffff_ffff;
+                let else_b = ins.imm >> 32;
+                body += &format!("  cf.cond_br {cond}, ^bb{then_b}, ^bb{else_b}\n");
+                terminated = true;
             }
             Opcode::Ret => {
                 let e = ty_at(ins.type_idx.0)?;
                 let mt = mlir_scalar(&e)?;
                 let a = names.get(ins.operand1.0 as usize)?;
-                ret_line = Some(format!("  func.return {a} : {mt}\n"));
+                body += &format!("  func.return {a} : {mt}\n");
+                terminated = true;
             }
-            // Anything else (control flow, spawn, memory, matmul, …) is out of the C2.0 subset.
+            // Anything else (calls, spawn, the non-scalar surface, matmul, …) is outside this subset.
             _ => return None,
         }
     }
 
-    // A scalar-returning function must actually return a value.
-    if ret_elem.is_some() && ret_line.is_none() {
-        return None;
+    // Every block must end in a terminator. A void function falls through to a bare `return`; a
+    // scalar-returning function whose final block isn't terminated is either ill-typed or has an
+    // unreachable trailing block (no value to return) — decline it, leaving the AST path the oracle.
+    if !terminated {
+        match ret_elem {
+            None => body += "  func.return\n",
+            Some(_) => return None,
+        }
     }
 
     let ret_sig = match &ret_elem {
@@ -190,7 +331,6 @@ pub fn emit_function_mlir(
         ret_sig
     );
     out += &body;
-    out += &ret_line.unwrap_or_else(|| "  func.return\n".to_string());
     out += "}\n";
     Some(out)
 }
@@ -256,10 +396,36 @@ mod tests {
     }
 
     #[test]
-    fn declines_control_flow_subset() {
-        // A function with control flow lowers to a memory/branch stream that C2.0 doesn't emit yet
-        // -> `None`, so the AST path stays the oracle for it.
-        let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } return x; }");
+    fn emits_verifiable_if_else() {
+        // Control flow: the memory model (alloca/store/load'd locals) + a `cf` diamond. The compare
+        // drives the conditional branch; both branches reconverge at the merge block.
+        let mlir = emit_and_verify(
+            "fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } else { x = 1; } return x; }",
+        );
+        assert!(mlir.contains("memref.alloca() : memref<i32>"), "{mlir}");
+        assert!(mlir.contains("arith.cmpi slt, "), "{mlir}");
+        assert!(mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(mlir.contains("cf.br ^bb"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_for_loop() {
+        // A `for` range loop: header (compare + cond_br), body, increment latch, exit — all wired
+        // through slots for the induction variable and accumulator.
+        let mlir = emit_and_verify(
+            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+        );
+        assert!(mlir.contains("arith.cmpi slt, "), "{mlir}");
+        assert!(mlir.contains("memref.load "), "{mlir}");
+        assert!(mlir.contains("memref.store "), "{mlir}");
+        assert!(mlir.contains("cf.cond_br "), "{mlir}");
+    }
+
+    #[test]
+    fn declines_out_of_subset_scalar_op() {
+        // A scalar `as` cast (`Cast` opcode) lowers to the flat HIR but is outside the emitter's
+        // current subset -> `None`, so the AST path stays the oracle for it.
+        let f = parse_fn("fn c(a: i32) -> i64 { return a as i64; }");
         let mut w = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
         assert!(lower_function_to_hir(&f, &mut w));
         assert!(emit_function_mlir(&f, &w.local_hir_stream, &w.local_type_stream).is_none());
