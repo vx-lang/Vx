@@ -144,6 +144,12 @@ either/or.
 
 ## 4. Roadmap — make the stdlib first-class under the flat pipeline
 
+> **Architectural note:** the stdlib must *not* stay a first-class citizen of the AST as it grows. The
+> companion doc [`stdlib_decoupling_protocol.md`](./stdlib_decoupling_protocol.md) defines a
+> module-interface protocol (registry-backed, precompiled) that lets the frontend resolve stdlib
+> types/methods without loading stdlib source or AST. The steps below are the near-term flat-path work
+> that feeds into it.
+
 The stdlib compiles today through the **AST** path. Convergence (#197) needs it to compile through the
 **flat** path too. That is the real work item behind #217, in dependency order:
 
