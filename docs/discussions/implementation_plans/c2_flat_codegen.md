@@ -21,7 +21,9 @@ present). Handled subset: the C2.0 scalar core (`Load` → block arg, `Const`, `
 `Alloca`/`Store`/`SlotLoad` → rank-0 `memref`); **brick 2 — fixed-arity scalar calls** (`Arg`/`Call`
 → `func.call @name(...)`, callee GID→name via `build_callee_map` over the registry `fn_sigs`); and
 **brick 3a — all-scalar-field structs** (aggregate `Alloca` → `llvm.alloca`; `FieldLoad`/`FieldStore`
-→ `getelementptr` + `llvm.load`/`store`, layout via `build_agg_map`; both bundled into `EmitCtx`).
+→ `getelementptr` + `llvm.load`/`store`, layout via `build_agg_map`); and **brick 3b — tensor alloc +
+scalar element access** (`TensorAlloc` → static `memref.alloc`; scalar `TensorIndex`/`TensorStore` →
+`index_cast` + `memref.load`/`store`, tensor shapes via the side table). All bundled into `EmitCtx`.
 Everything else returns `None` (the AST path stays the oracle). String-based: the text is wrapped in
 `module { … }`, parsed by melior, run through `lower_to_llvm`, then JIT'd.
 
@@ -108,13 +110,18 @@ pointer tracked in `agg_of[reg]`); `FieldLoad`/`FieldStore` → `llvm.getelement
 differential harness + unit-test helper now type-check first (for the `StructInit` GID annotation).
 Deferred: struct params/returns/copy (#215), nested-aggregate/pointer fields (#212).
 
-**3b/3c — Tensors (remaining).** `TensorAlloc` → `memref.alloc` of the tensor type. `TensorIndex` →
-`memref.subview`/`reinterpret_cast` (row) or `memref.load` (element) — see the slice-ops S1 lowering
-(`slice_operators.md`). `Reduce` → `vector.load` (+ `arith.mulf` for `dot`) +
+**3b — Tensor alloc + scalar element access ✅ done (Entry 25).** Backed by the tensor-type side table
+(below): `TensorAlloc` → `memref.alloc()` of a static `memref<NxT>` (shape recovered by GID);
+scalar-element `TensorIndex` → `arith.index_cast` + `memref.load` (read) or a recorded element place
+(`imm = 1`); scalar-element `TensorStore` → `memref.store`. First tensor program JIT-matches the AST.
+
+**3c — Tensors (remaining).** `TensorIndex` sub-views (rows) → `memref.subview`/`reinterpret_cast`
+(slice-ops S1, `slice_operators.md`). `Reduce` → `vector.load` (+ `arith.mulf` for `dot`) +
 `vector.reduction<add|maximumf|minimumf>` (S2). Tensor elementwise (`Mul`/`Add`/… with a tensor result
-type) → `vector.load` + `arith.*` + `vector.store` (S3). `TensorStore` → `vector.store` (row) or
-`memref.store` (scalar element). `Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id).
-The attention corpus (`tests/backend/pass/*_attention.vx`) is the eventual differential target.
+type) → `vector.load` + `arith.*` + `vector.store` (S3). Row `TensorStore` → `vector.store`. `Transfer`
+→ `vx.transfer` (`target_topology` = the imm dispatch id). Tensor params → a `memref` in the func
+signature. The attention corpus (`tests/backend/pass/*_attention.vx`) is the eventual differential
+target.
 
 #### Design decision — tensor-type recovery needs a side table (not GID inversion)
 

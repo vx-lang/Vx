@@ -122,7 +122,11 @@ fn flat_exit_code(src: &str) -> Option<i32> {
             )
         })
         .collect();
-    let body = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry)?;
+    let tensor_types: Vec<_> = lowered
+        .iter()
+        .flat_map(|w| w.local_tensor_types.iter().cloned())
+        .collect();
+    let body = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &tensor_types)?;
 
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{body}}}\n"))
@@ -262,6 +266,19 @@ fn flat_matches_ast_struct_field_in_control_flow() {
     assert_parity(
         "struct Box { lo: i32, hi: i32 }\n\
          fn main() -> i32 { let b = Box { lo: 2, hi: 9 }; let mut r = 0; if b.lo < b.hi { r = b.hi - b.lo; } return r; }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_tensor_element_read() {
+    // The minimal self-contained tensor program: allocate a tensor, fill it with
+    // scalar-element stores, and read one element back (no reduction/cast, so the
+    // result is an i32 exit code). Exercises the tensor-type side table +
+    // memref.alloc/store/load through the real JIT.
+    assert_parity(
+        "fn main() -> i32 { let mut q = Tensor<i32>([4]); q[0] = 5; q[1] = 6; q[2] = 7; \
+         q[3] = 8; return q[2]; }",
         7,
     );
 }

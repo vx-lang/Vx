@@ -777,6 +777,40 @@ store), `scalar_element_store_rank2_indexes_row_then_element_place` (`q[0][0] = 
 remains open. Codegen for this (the `imm = 1` place + scalar `TensorStore`) lands with the tensor
 emitter next.
 
+## Entry 25 — C2.4b: the tensor-type side table + first tensor codegen (#200)
+
+**Commit:** _this session_. The tensor GID isn't invertible (it's a content hash) and tensor types are
+structural (never in the nominal registry), so the emitter couldn't reconstruct a tensor's memref type
+from the stream — most acutely for `TensorAlloc`. This adds the recovery mechanism and the first
+tensor codegen on top of it. (Design rationale: the C2 plan's "tensor-type recovery" note.)
+
+**What we did.**
+
+- **Tensor-type side table.** The lowerer records `GID → (element, shape)` for every tensor-typed
+  value it emits (in `emit_typed`), onto `LocalWorkerState::local_tensor_types`; `commit` transfers it
+  (keyed by the content-hash GID, so no rebasing). The emitter merges each function's table into
+  `EmitCtx.tensors` — the tensor analogue of the registry's struct `layouts`, but sourced from
+  lowering rather than the registry.
+- **First tensor codegen (a self-contained i32 program).** `TensorAlloc` → `memref.alloc()` of a
+  static `memref<NxT>` (shape recovered by GID from the side table; parity is the JIT result, so a
+  static memref stands in for the AST's dynamic one). Scalar-element `TensorIndex` → `arith.index_cast`
+  the index to `index` + `memref.load` (read, `imm = 0`) or a recorded element **place** (`imm = 1`);
+  scalar-element `TensorStore` → `memref.store` into the place. Tensor registers are tracked in
+  `mem_of` (memref type) and `place_of` (a pending element address).
+- Reductions stay f32-only in the AST oracle, so the first differential case reads a scalar element
+  (`return q[2]`) rather than summing — an i32 exit code, no cast.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_alloc_store_read` (module emit + melior verify).
+Differential harness: `flat_matches_ast_tensor_element_read` — allocate `Tensor<i32>([4])`, fill it by
+scalar-element stores, read one element back (= 7) — `flat == ast == expected` through the real JIT.
+This is the first tensor program lowered flat-vs-AST to parity. Full suite green (351 lib + 82
+integration).
+
+**Next.** The rest of the tensor surface: `TensorIndex` sub-views (rows) → `memref.reinterpret_cast`,
+`Reduce` → `vector.load`/`vector.reduction`, tensor elementwise → `vector` ops, row `TensorStore` →
+`vector.store`, `Transfer`, and tensor params (memref in the signature). Then the attention corpus can
+be JIT-compared through the flat path.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
@@ -793,16 +827,18 @@ emitter next.
   - **Calls** — fixed-arity, value-returning (`Arg` + `Call`, callee via registry `fn_sigs`).
   - Verified structurally by `verify_hir_stream`; the `flatten` unit tests + `lower_with_registry`
     exercise every opcode family.
-- **C2 (start + bricks 1–3a)** — the differential harness proves flat==AST (Entry 20); the flat
-  emitter now lowers intra-function **control flow** (`if`/`for`/`loop`, Entry 21), fixed-arity
-  **scalar calls** via a module-level emitter (Entry 22), and **all-scalar-field structs** —
-  construction + field access (Entry 23), all to JIT parity.
+- **C2 (start + bricks 1–3a + first tensor)** — the differential harness proves flat==AST (Entry 20);
+  the flat emitter now lowers intra-function **control flow** (Entry 21), fixed-arity **scalar calls**
+  via a module-level emitter (Entry 22), **all-scalar-field structs** (Entry 23), and a first **tensor**
+  program — alloc + scalar-element store/read via the tensor-type side table (Entry 25) — all to JIT
+  parity.
 
 **Open.**
 
 - **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) now covers scalar arithmetic + control
-  flow + calls + structs; **tensors** (the rest of the non-scalar surface) remain, plus scalar unary
-  ops (#214) and struct params/returns (#215). See the C2 roadmap:
+  flow + calls + structs + tensor alloc/element access; the rest of the **tensor surface** (sub-views,
+  reductions, elementwise, row store, transfer, tensor params) remains, plus scalar unary ops (#214)
+  and struct params/returns (#215). See the C2 roadmap:
   [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
 - **C1 follow-ups** — void/non-scalar-return calls; the declined flat-HIR edge cases (#212); varargs
   evaluation (#213).

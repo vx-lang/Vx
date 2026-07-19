@@ -259,21 +259,30 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
     map
 }
 
-/// The registry-derived resolution context a flat stream references by GID: callee signatures (for
-/// `Call`) and aggregate layouts (for struct `Alloca`/`FieldLoad`/`FieldStore`). Bundling them keeps
-/// the emitter signature stable as more non-scalar families land. `Default` is the empty context for
-/// streams that reference neither (scalar/control-flow-only functions).
+/// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
+/// The tensor analogue of `AggLayout`, but sourced from the lowerer's side table rather than the
+/// registry (tensor types are structural, not nominal). See the C2 plan's tensor-type design note.
+pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
+
+/// The resolution context a flat stream references by GID: callee signatures (for `Call`), aggregate
+/// layouts (for struct ops), and tensor types (for tensor ops). Bundling them keeps the emitter
+/// signature stable as more non-scalar families land. `Default` is the empty context for streams that
+/// reference none (scalar/control-flow-only functions).
 #[derive(Default)]
 pub struct EmitCtx {
     pub callees: CalleeMap,
     pub aggs: AggMap,
+    pub tensors: TensorMap,
 }
 
 impl EmitCtx {
+    /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
+    /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(registry: &ImmutableGlobalRegistry) -> Self {
         Self {
             callees: build_callee_map(registry),
             aggs: build_agg_map(registry),
+            tensors: TensorMap::new(),
         }
     }
 }
@@ -281,17 +290,42 @@ impl EmitCtx {
 /// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
 /// function is outside the current subset (module-level keep-green atomicity: a partially lowered
 /// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
-/// layouts resolve through the frozen registry. Wrap the result in `module { … }` before parsing.
+/// layouts resolve through the frozen registry; `tensor_types` is the concatenation of each function's
+/// lowerer side table (`LocalWorkerState::local_tensor_types`). Wrap the result in `module { … }`.
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
     registry: &ImmutableGlobalRegistry,
+    tensor_types: &[(TypeId, ElementType, Vec<String>)],
 ) -> Option<String> {
-    let ctx = EmitCtx::from_registry(registry);
+    let mut ctx = EmitCtx::from_registry(registry);
+    for (gid, elem, shape) in tensor_types {
+        ctx.tensors
+            .entry(*gid)
+            .or_insert_with(|| (elem.clone(), shape.clone()));
+    }
     let mut out = String::new();
     for (func, hir, types) in funcs {
         out += &emit_function_mlir(func, hir, types, &ctx)?;
     }
     Some(out)
+}
+
+/// The static MLIR memref type string for a tensor type, e.g. `(i32, ["4"]) -> "memref<4xi32>"`. A
+/// non-numeric dim becomes `?` (dynamic). `None` for a non-scalar element.
+fn tensor_memref_ty(elem: &ElementType, shape: &[String]) -> Option<String> {
+    let et = mlir_scalar(elem)?;
+    let dims: String = shape
+        .iter()
+        .map(|d| {
+            let d = if d.parse::<i64>().is_ok() {
+                d.as_str()
+            } else {
+                "?"
+            };
+            format!("{d}x")
+        })
+        .collect();
+    Some(format!("memref<{dims}{et}>"))
 }
 
 /// Emit a `func.func` for `func` from its flat HIR body, or `None` if the stream uses any construct
@@ -343,6 +377,13 @@ pub fn emit_function_mlir(
     // offsets. The aggregate analogue of `etypes` (kept separate: struct slots are pointers, not
     // scalar values).
     let mut agg_of: Vec<Option<TypeId>> = vec![None; hir.len()];
+    // The memref type string for each register that holds a tensor (from `TensorAlloc`), so a
+    // `TensorIndex`/`TensorStore` on it prints the right `memref<...>`.
+    let mut mem_of: Vec<Option<String>> = vec![None; hir.len()];
+    // For a scalar-element *place* register (a `TensorIndex` with `imm = 1`): the base memref name, an
+    // `index`-typed index SSA name, and the base memref type — everything the following `TensorStore`
+    // needs to emit `memref.store %v, %base[%idx]`.
+    let mut place_of: Vec<Option<(String, String, String)>> = vec![None; hir.len()];
     let mut body = String::new();
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
@@ -535,7 +576,49 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 etypes[idx] = Some(e);
             }
-            // Anything else (spawn, the tensor surface, matmul, …) is outside this subset.
+            // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
+            // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
+            Opcode::TensorAlloc => {
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let (elem, shape) = ctx.tensors.get(&gid)?;
+                let memty = tensor_memref_ty(elem, shape)?;
+                let n = format!("%v{idx}");
+                body += &format!("  {n} = memref.alloc() : {memty}\n");
+                names[idx] = n;
+                mem_of[idx] = Some(memty);
+            }
+            // Index a tensor. `operand1` is the base tensor (memref), `operand2` the index; the index
+            // is `arith.index_cast` to `index`. A scalar-element result (`type_idx` is a scalar GID)
+            // is either a value read (`imm = 0` → `memref.load`) or an element *place* (`imm = 1` →
+            // recorded for the following `TensorStore`). A sub-view result (a tensor GID) is not yet
+            // emitted.
+            Opcode::TensorIndex => {
+                let result_gid = *types.get(ins.type_idx.0 as usize)?;
+                let base = names.get(ins.operand1.0 as usize)?.clone();
+                let base_memty = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let imt = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
+                let iname = names.get(ins.operand2.0 as usize)?.clone();
+                let ic = format!("%ic{idx}");
+                body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
+                let e = elem_of_gid(result_gid)?; // sub-view (tensor) results not emitted yet
+                if ins.imm == 1 {
+                    place_of[idx] = Some((base, ic, base_memty));
+                } else {
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
+                }
+            }
+            // Store into a tensor place (no result). A scalar-element place (from an `imm = 1`
+            // `TensorIndex`) → `memref.store`; a row/sub-view place is not yet emitted.
+            Opcode::TensorStore => {
+                let (base, ic, memty) = place_of.get(ins.operand1.0 as usize)?.clone()?;
+                let val = names.get(ins.operand2.0 as usize)?;
+                body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+            }
+            // Anything else (spawn, tensor sub-views/reductions/elementwise, matmul, …) is outside
+            // this subset.
             _ => return None,
         }
     }
@@ -654,7 +737,12 @@ mod tests {
                 )
             })
             .collect();
-        let mlir = emit_module_mlir(&funcs, &session.registry).expect("emits flat module");
+        let tensor_types: Vec<_> = lowered
+            .iter()
+            .flat_map(|w| w.local_tensor_types.iter().cloned())
+            .collect();
+        let mlir =
+            emit_module_mlir(&funcs, &session.registry, &tensor_types).expect("emits flat module");
 
         use melior::ir::operation::OperationLike;
         let dialects = melior::dialect::DialectRegistry::new();
@@ -701,6 +789,20 @@ mod tests {
         assert!(mlir.contains("llvm.getelementptr"), "{mlir}");
         assert!(mlir.contains("llvm.store"), "{mlir}");
         assert!(mlir.contains("llvm.load"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_alloc_store_read() {
+        // A tensor allocated as a static memref, filled by scalar-element stores, then read back:
+        // `memref.alloc` + `arith.index_cast` + `memref.store`/`memref.load`.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<i32>([4]); q[0] = 5; q[1] = 6; q[2] = 7; \
+             q[3] = 8; return q[2]; }",
+        );
+        assert!(mlir.contains("memref.alloc() : memref<4xi32>"), "{mlir}");
+        assert!(mlir.contains("arith.index_cast"), "{mlir}");
+        assert!(mlir.contains("memref.store"), "{mlir}");
+        assert!(mlir.contains("memref.load"), "{mlir}");
     }
 
     #[test]

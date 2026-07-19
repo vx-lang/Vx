@@ -85,6 +85,13 @@ pub struct LocalWorkerState {
     // The flat arrays replacing the AST
     pub local_type_stream: Vec<TypeId>, // array of 256-bit GIDs
     pub local_hir_stream: Vec<HirInstruction>,
+
+    /// Tensor-type side table: `GID -> (element, shape)` for every tensor type this function's stream
+    /// references. Tensor GIDs are content hashes (not invertible) and tensors are structural (never
+    /// in the nominal registry), so codegen can't reconstruct a tensor's memref type from the stream
+    /// alone -- most acutely for `TensorAlloc`. The lowerer records it here as it emits tensor values;
+    /// the flat codegen consumes it (the tensor analogue of the registry's struct `layouts`).
+    pub local_tensor_types: Vec<(TypeId, crate::syntax::ElementType, Vec<String>)>,
 }
 
 use crate::gid::LifetimeSignature;
@@ -98,6 +105,7 @@ impl LocalWorkerState {
             local_generics_offsets: Vec::new(),
             local_type_stream: Vec::new(),
             local_hir_stream: Vec::new(),
+            local_tensor_types: Vec::new(),
         }
     }
 

@@ -145,6 +145,10 @@ struct Lowerer<'r> {
     /// Enclosing loops: `(continue_target, break_target)` block ids. `continue` branches to the
     /// first (the header for `loop`, the increment latch for `for`), `break` to the second (exit).
     loop_stack: Vec<(u32, u32)>,
+    /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
+    /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
+    /// than by inverting the GID (which is impossible). Committed onto the worker.
+    tensor_types: Vec<(TypeId, ElementType, Vec<String>)>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -157,6 +161,7 @@ impl<'r> Lowerer<'r> {
             memory: false,
             next_block: 1,
             loop_stack: Vec::new(),
+            tensor_types: Vec::new(),
         }
     }
 
@@ -172,6 +177,11 @@ impl<'r> Lowerer<'r> {
     ) -> Val {
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
+        // Record tensor types in the side table so codegen can recover the memref shape by GID.
+        if let LoweredTy::Tensor { elem, shape } = &ty {
+            self.tensor_types
+                .push((ty.gid(), elem.clone(), shape.clone()));
+        }
         let reg = Register(self.code.len() as u32);
         self.code
             .push(HirInstruction::new(opcode, o1, o2, type_idx, imm));
@@ -792,6 +802,9 @@ impl<'r> Lowerer<'r> {
     fn commit(self, worker: &mut LocalWorkerState) {
         let base = worker.local_type_stream.len() as u32;
         worker.local_type_stream.extend(self.types);
+        // The tensor side table is keyed by (content-hash) GID, which `commit` does not rebase, so it
+        // transfers as-is.
+        worker.local_tensor_types.extend(self.tensor_types);
         for mut ins in self.code {
             if ins.type_idx.0 != NO_TYPE {
                 ins.type_idx = TypeIdx(ins.type_idx.0 + base);
