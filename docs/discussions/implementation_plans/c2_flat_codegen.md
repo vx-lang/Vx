@@ -19,7 +19,9 @@ recovery. `emit_function_mlir(func, hir, types, callees)` does **one** function;
 present). Handled subset: the C2.0 scalar core (`Load` → block arg, `Const`, `Add`/`Sub`/`Mul`/`Div`,
 `Ret`); **brick 1 — control flow** (`Cmp` → `arith.cmpi/cmpf`; `BlockStart`/`Br`/`CondBr` → `cf`;
 `Alloca`/`Store`/`SlotLoad` → rank-0 `memref`); **brick 2 — fixed-arity scalar calls** (`Arg`/`Call`
-→ `func.call @name(...)`, callee GID→name via `build_callee_map` over the registry `fn_sigs`).
+→ `func.call @name(...)`, callee GID→name via `build_callee_map` over the registry `fn_sigs`); and
+**brick 3a — all-scalar-field structs** (aggregate `Alloca` → `llvm.alloca`; `FieldLoad`/`FieldStore`
+→ `getelementptr` + `llvm.load`/`store`, layout via `build_agg_map`; both bundled into `EmitCtx`).
 Everything else returns `None` (the AST path stays the oracle). String-based: the text is wrapped in
 `module { … }`, parsed by melior, run through `lower_to_llvm`, then JIT'd.
 
@@ -95,20 +97,25 @@ Opcodes: `Arg(operand1=arg reg)` (N before a `Call`), `Call(type_idx=callee GID,
 
 ### Brick 3 — Non-scalar (structs + tensors)
 
-Match the AST lowering in `codegen/lower/{expr,tensors,mod}.rs`; the flat opcodes were designed to
-mirror it:
+The biggest brick, split into: **3a structs ✅ done**, then tensor read, then tensor write. Match the
+AST lowering in `codegen/lower/{expr,tensors,mod}.rs`; the flat opcodes were designed to mirror it.
 
-- `Alloca` of an aggregate (imm = size) / `TensorAlloc` (imm = byte size) → `memref.alloc` /
-  `llvm.alloca` of the struct/tensor type. `FieldLoad`/`FieldStore` → GEP + `llvm.load`/`store` at the
-  layout offset (registry `layouts[gid].fields`). `TensorIndex` → `memref.subview`/`reinterpret_cast`
-  (row) or `memref.load` (element) — see the slice-ops S1 lowering (`slice_operators.md`). `Reduce` →
-  `vector.load` (+ `arith.mulf` for `dot`) + `vector.reduction<add|maximumf|minimumf>` (S2). Tensor
-  elementwise (`Mul`/`Add`/… with a tensor result type) → `vector.load` + `arith.*` + `vector.store`
-  (S3). `TensorStore` → `vector.store`. `Transfer` → `vx.transfer` (`target_topology` = the imm
-  dispatch id).
-- This is the biggest brick; split it (structs first, then tensor read, then tensor write). The
-  attention corpus (`tests/backend/pass/*_attention.vx`) is the eventual differential target — once
-  these emit, a corpus program can be JIT-compared flat-vs-AST.
+**3a — Structs ✅ done (Entry 23).** All-scalar-field struct construction + field access JIT-match the
+AST oracle. `build_agg_map(registry)` → `GID → AggLayout { struct_ty, offsets }` (bundled with the
+callee map into `EmitCtx`); an aggregate `Alloca` → `llvm.alloca` of `!llvm.struct<(...)>` (slot
+pointer tracked in `agg_of[reg]`); `FieldLoad`/`FieldStore` → `llvm.getelementptr %slot[0, idx]`
+(field index recovered by matching the byte offset against the layout) + `llvm.load`/`store`. The
+differential harness + unit-test helper now type-check first (for the `StructInit` GID annotation).
+Deferred: struct params/returns/copy (#215), nested-aggregate/pointer fields (#212).
+
+**3b/3c — Tensors (remaining).** `TensorAlloc` (imm = byte size) → `memref.alloc`/`llvm.alloca` of the
+tensor type. `TensorIndex` → `memref.subview`/`reinterpret_cast` (row) or `memref.load` (element) —
+see the slice-ops S1 lowering (`slice_operators.md`). `Reduce` → `vector.load` (+ `arith.mulf` for
+`dot`) + `vector.reduction<add|maximumf|minimumf>` (S2). Tensor elementwise (`Mul`/`Add`/… with a
+tensor result type) → `vector.load` + `arith.*` + `vector.store` (S3). `TensorStore` → `vector.store`.
+`Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id). Needs the per-register type
+tracking extended to tensor types. The attention corpus (`tests/backend/pass/*_attention.vx`) is the
+eventual differential target — once these emit, a corpus program can be JIT-compared flat-vs-AST.
 
 ## Then C3 (#201)
 

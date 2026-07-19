@@ -204,32 +204,106 @@ pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
         .collect()
 }
 
+/// The MLIR shape of an aggregate (struct) whose fields are all scalar: the `!llvm.struct<(...)>`
+/// type (for the slot `llvm.alloca` and field `getelementptr`) and each field's byte offset in
+/// declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset, recovers the GEP
+/// field index by `offsets.position(|o| o == offset)`.
+pub struct AggLayout {
+    pub struct_ty: String,
+    pub offsets: Vec<u64>,
+}
+
+/// GID → aggregate layout, for the structs a stream constructs/reads. Only all-scalar-field structs
+/// are modelled here (the flat HIR declines nested-aggregate/pointer fields anyway); an aggregate
+/// absent from the map declines, keeping the AST path the oracle.
+pub type AggMap = HashMap<TypeId, AggLayout>;
+
+/// Build the GID→aggregate-layout map from the frozen registry's nominal layouts. Skips a struct
+/// with any non-scalar field or an unmodelled (0-align stub) layout.
+pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
+    use crate::layout::FieldTy;
+    let mut map = AggMap::new();
+    for (gid, def) in &registry.layouts {
+        if def.align_bytes == 0 || def.fields.is_empty() {
+            continue; // unmodelled stub, or an enum/field-less type (no struct body to emit)
+        }
+        let mut field_tys = Vec::with_capacity(def.fields.len());
+        let mut offsets = Vec::with_capacity(def.fields.len());
+        let mut all_scalar = true;
+        for f in &def.fields {
+            match &f.ty {
+                FieldTy::Scalar(e) => match mlir_scalar(e) {
+                    Some(mt) => field_tys.push(mt.to_string()),
+                    None => {
+                        all_scalar = false;
+                        break;
+                    }
+                },
+                FieldTy::Nominal(_) | FieldTy::Opaque => {
+                    all_scalar = false;
+                    break;
+                }
+            }
+            offsets.push(f.offset as u64);
+        }
+        if all_scalar {
+            map.insert(
+                *gid,
+                AggLayout {
+                    struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
+                    offsets,
+                },
+            );
+        }
+    }
+    map
+}
+
+/// The registry-derived resolution context a flat stream references by GID: callee signatures (for
+/// `Call`) and aggregate layouts (for struct `Alloca`/`FieldLoad`/`FieldStore`). Bundling them keeps
+/// the emitter signature stable as more non-scalar families land. `Default` is the empty context for
+/// streams that reference neither (scalar/control-flow-only functions).
+#[derive(Default)]
+pub struct EmitCtx {
+    pub callees: CalleeMap,
+    pub aggs: AggMap,
+}
+
+impl EmitCtx {
+    pub fn from_registry(registry: &ImmutableGlobalRegistry) -> Self {
+        Self {
+            callees: build_callee_map(registry),
+            aggs: build_agg_map(registry),
+        }
+    }
+}
+
 /// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
 /// function is outside the current subset (module-level keep-green atomicity: a partially lowered
-/// module is never emitted, so the AST path stays the oracle for the whole program). Calls resolve
-/// through the frozen registry's `fn_sigs`. Wrap the result in `module { … }` before parsing.
+/// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
+/// layouts resolve through the frozen registry. Wrap the result in `module { … }` before parsing.
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
     registry: &ImmutableGlobalRegistry,
 ) -> Option<String> {
-    let callees = build_callee_map(registry);
+    let ctx = EmitCtx::from_registry(registry);
     let mut out = String::new();
     for (func, hir, types) in funcs {
-        out += &emit_function_mlir(func, hir, types, &callees)?;
+        out += &emit_function_mlir(func, hir, types, &ctx)?;
     }
     Some(out)
 }
 
 /// Emit a `func.func` for `func` from its flat HIR body, or `None` if the stream uses any construct
 /// outside the current subset (scalar arithmetic + intra-function control flow + fixed-arity scalar
-/// calls; the AST path stays the oracle there). `callees` resolves a `Call`'s callee GID to a symbol
-/// name + return type. The returned text is a bare `func.func` op; wrap it in a `module { … }` before
-/// parsing.
+/// calls + all-scalar-field struct construction/field access; the AST path stays the oracle there).
+/// `ctx` resolves the callee/struct GIDs the stream references. The returned text is a bare
+/// `func.func` op; wrap it in a `module { … }` before parsing.
 pub fn emit_function_mlir(
     func: &Function,
     hir: &[HirInstruction],
     types: &[TypeId],
-    callees: &CalleeMap,
+    ctx: &EmitCtx,
 ) -> Option<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven).
     let mut params = Vec::new();
@@ -264,6 +338,11 @@ pub fn emit_function_mlir(
     let elem_at = |etypes: &[Option<ElementType>], r: u32| -> Option<ElementType> {
         etypes.get(r as usize)?.clone()
     };
+    // The aggregate GID for each register that is a struct-slot pointer (from an aggregate `Alloca`),
+    // so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct` type + field
+    // offsets. The aggregate analogue of `etypes` (kept separate: struct slots are pointers, not
+    // scalar values).
+    let mut agg_of: Vec<Option<TypeId>> = vec![None; hir.len()];
     let mut body = String::new();
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
@@ -316,14 +395,29 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 etypes[idx] = Some(ElementType::Bool);
             }
-            // A named local's stack slot: a rank-0 memref, matching the AST codegen's scalar locals.
+            // A named local's stack slot. A scalar slot is a rank-0 memref (matching the AST codegen's
+            // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
+            // type, its pointer tracked in `agg_of` so field ops can address it.
             Opcode::Alloca => {
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
-                let n = format!("%v{idx}");
-                body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
-                names[idx] = n;
-                etypes[idx] = Some(e);
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                if let Some(e) = elem_of_gid(gid) {
+                    let mt = mlir_scalar(&e)?;
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
+                } else {
+                    let agg = ctx.aggs.get(&gid)?;
+                    let cnt = format!("%n{idx}");
+                    let n = format!("%v{idx}");
+                    body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+                    body += &format!(
+                        "  {n} = llvm.alloca {cnt} x {} : (i32) -> !llvm.ptr\n",
+                        agg.struct_ty
+                    );
+                    names[idx] = n;
+                    agg_of[idx] = Some(gid);
+                }
             }
             // Store a value into a slot (no result); the memref type is the slot's element type.
             Opcode::Store => {
@@ -374,11 +468,11 @@ pub fn emit_function_mlir(
             // One argument of the following `Call`: record its value register (no op emitted).
             Opcode::Arg => pending_args.push(ins.operand1.0),
             // A fixed-arity call. `type_idx` is the callee's GID (resolved to name + return type via
-            // `callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
+            // `ctx.callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
             // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
             Opcode::Call => {
                 let gid = *types.get(ins.type_idx.0 as usize)?;
-                let callee = callees.get(&gid)?;
+                let callee = ctx.callees.get(&gid)?;
                 let ret = callee.ret.clone()?; // scalar-returning calls only in this subset
                 let rt = mlir_scalar(&ret)?;
                 let n = ins.imm as usize;
@@ -403,7 +497,45 @@ pub fn emit_function_mlir(
                 names[idx] = nm;
                 etypes[idx] = Some(ret);
             }
-            // Anything else (spawn, the non-scalar surface, matmul, …) is outside this subset.
+            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
+            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
+            // the field index comes from matching the offset against the layout, the value type from
+            // the stored register's tracked type.
+            Opcode::FieldStore => {
+                let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
+                let agg = ctx.aggs.get(&gid)?;
+                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
+                let fty = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
+                let slot = names.get(ins.operand1.0 as usize)?;
+                let val = names.get(ins.operand2.0 as usize)?;
+                let p = format!("%p{idx}");
+                body += &format!(
+                    "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+                    agg.struct_ty
+                );
+                body += &format!("  llvm.store {val}, {p} : {fty}, !llvm.ptr\n");
+            }
+            // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
+            // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
+            // `llvm.load`.
+            Opcode::FieldLoad => {
+                let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
+                let agg = ctx.aggs.get(&gid)?;
+                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
+                let e = ty_at(ins.type_idx.0)?;
+                let mt = mlir_scalar(&e)?;
+                let slot = names.get(ins.operand1.0 as usize)?;
+                let p = format!("%p{idx}");
+                let n = format!("%v{idx}");
+                body += &format!(
+                    "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+                    agg.struct_ty
+                );
+                body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {mt}\n");
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Anything else (spawn, the tensor surface, matmul, …) is outside this subset.
             _ => return None,
         }
     }
@@ -458,7 +590,7 @@ mod tests {
             &f,
             &w.local_hir_stream,
             &w.local_type_stream,
-            &CalleeMap::new(),
+            &EmitCtx::default(),
         )
         .expect("emits flat MLIR");
 
@@ -491,6 +623,18 @@ mod tests {
         mods[0].resolve_names(&symbol_map);
         let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
         let session = Arc::new(GlobalSession::with_registry(1, registry));
+
+        // Type-check so the type checker annotates each `StructInit` with its struct GID (a scratch
+        // worker; the annotation lands on the AST, which the per-function lowering below then reads).
+        let env_mods = mods.clone();
+        let env = crate::hir::GlobalAstEnv::build(&env_mods);
+        {
+            let mut scratch = LocalWorkerState::new(session.clone());
+            let mut checker = crate::hir::TypeChecker::new(&env, &mut scratch);
+            for f in &mut mods[0].functions {
+                checker.check_function(f);
+            }
+        }
 
         let mut lowered = Vec::new();
         for f in &mods[0].functions {
@@ -547,6 +691,19 @@ mod tests {
     }
 
     #[test]
+    fn emits_verifiable_struct_construct_and_field_read() {
+        // A struct built in place (`llvm.alloca` + field stores) then read back (GEP + `llvm.load`).
+        let mlir = emit_module_and_verify(
+            "struct Point { x: i32, y: i32 }\n\
+             fn main() -> i32 { let p = Point { x: 3, y: 4 }; return p.x + p.y; }",
+        );
+        assert!(mlir.contains("llvm.alloca"), "{mlir}");
+        assert!(mlir.contains("llvm.getelementptr"), "{mlir}");
+        assert!(mlir.contains("llvm.store"), "{mlir}");
+        assert!(mlir.contains("llvm.load"), "{mlir}");
+    }
+
+    #[test]
     fn emits_verifiable_float_arithmetic() {
         let mlir = emit_and_verify("fn f(a: f64, b: f64) -> f64 { return a * b + b; }");
         assert!(mlir.contains("arith.mulf"), "{mlir}");
@@ -597,7 +754,7 @@ mod tests {
             &f,
             &w.local_hir_stream,
             &w.local_type_stream,
-            &CalleeMap::new()
+            &EmitCtx::default()
         )
         .is_none());
     }

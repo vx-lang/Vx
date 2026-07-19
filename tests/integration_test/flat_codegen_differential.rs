@@ -88,6 +88,18 @@ fn flat_exit_code(src: &str) -> Option<i32> {
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
+    // Type-check so the type checker annotates each `StructInit` with its struct GID (a scratch
+    // worker; the annotation lands on the AST, which the per-function lowering below then reads).
+    let env_mods = mods.clone();
+    let env = GlobalAstEnv::build(&env_mods);
+    {
+        let mut scratch = LocalWorkerState::new(session.clone());
+        let mut checker = TypeChecker::new(&env, &mut scratch);
+        for f in &mut mods[0].functions {
+            checker.check_function(f);
+        }
+    }
+
     // Lower every function into its own worker; decline the whole program if any
     // function is outside the flat subset (module-level keep-green atomicity).
     let mut lowered: Vec<LocalWorkerState> = Vec::new();
@@ -229,6 +241,28 @@ fn flat_matches_ast_call_from_control_flow() {
         "fn sq(x: i32) -> i32 { return x * x; }\n\
          fn main() -> i32 { let n = 5; let mut r = 0; if n > 0 { r = sq(n); } return r; }",
         25,
+    );
+}
+
+#[test]
+fn flat_matches_ast_struct_field_sum() {
+    // A struct built in place, its fields read back and summed — exercises the
+    // aggregate `llvm.alloca` + GEP + `llvm.load`/`store` field path.
+    assert_parity(
+        "struct Point { x: i32, y: i32 }\n\
+         fn main() -> i32 { let p = Point { x: 3, y: 4 }; return p.x + p.y; }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_struct_field_in_control_flow() {
+    // Bricks 1+3 together: struct fields feed an `if` condition and the returned
+    // value (a struct slot and a scalar slot coexist in the same function).
+    assert_parity(
+        "struct Box { lo: i32, hi: i32 }\n\
+         fn main() -> i32 { let b = Box { lo: 2, hi: 9 }; let mut r = 0; if b.lo < b.hi { r = b.hi - b.lo; } return r; }",
+        7,
     );
 }
 

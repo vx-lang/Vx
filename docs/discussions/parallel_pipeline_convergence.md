@@ -706,6 +706,43 @@ opcodes; the cast-decline harness test guards it).
 `TensorAlloc`/`TensorStore`/`Transfer` — so the attention corpus runs through the flat path. Needs
 `etypes[]` extended to tensor/aggregate recovery (currently scalar-only).
 
+## Entry 23 — C2.4a: structs in the flat emitter (non-scalar surface, part 1, #200)
+
+**Commit:** _this session_. The start of the non-scalar surface — the flat emitter now lowers
+all-scalar-field struct construction + field access, so a `main` that builds a struct locally and
+reads its fields JIT-matches the AST oracle.
+
+**Gap.** The emitter declined every aggregate opcode (`Alloca` of a struct, `FieldLoad`, `FieldStore`)
+and tracked only scalar register types, so structs stayed on the AST path.
+
+**What we did.**
+
+- **Aggregate layout recovery.** New `build_agg_map(registry)` → `GID → AggLayout { struct_ty, offsets }` from the frozen registry's nominal layouts, for structs whose fields are all scalar (the
+  `!llvm.struct<(...)>` type + each field's byte offset). Bundled with the callee map into a new
+  `EmitCtx` (one resolution-context param, so the emitter signature stays stable as more non-scalar
+  families land).
+- **Struct opcodes → the `llvm` dialect.** An aggregate `Alloca` → `llvm.alloca` of the `!llvm.struct`
+  type (its pointer tracked in a new `agg_of[reg]`, the aggregate analogue of `etypes`). `FieldStore`/
+  `FieldLoad` → `llvm.getelementptr %slot[0, idx]` (the field index recovered by matching the
+  instruction's byte offset against the layout) + `llvm.store`/`llvm.load`. Field/value scalar types
+  come from the instruction's own `type_idx` (load) or the stored register's `etypes` (store). Mixes
+  cleanly with `arith`/`memref`/`cf`/`func`, exactly as the AST path does.
+- **Harnesses type-check first.** Struct construction needs the type checker's `StructInit` GID
+  annotation, so the differential harness + the unit-test module helper now run a scratch type-check
+  pass before lowering (mirroring `flatten`'s `lower_with_registry`).
+
+**Tests.** `flat.rs`: `emits_verifiable_struct_construct_and_field_read` (module emit + melior verify).
+Differential harness: two **JIT-parity** cases — a struct field sum (`Point{3,4}` → `p.x+p.y` = 7) and
+struct fields feeding an `if` (structs + control flow, = 7) — each `flat == ast == expected`. Full
+suite green (348 lib + 81 integration).
+
+**Filed.** #215 (struct params, returns, struct-to-struct copy — still declined; the AST path stays
+the oracle). Nested-aggregate/pointer fields remain #212.
+
+**Next (part 2).** Tensors — read first (`TensorIndex`/`Reduce`/elementwise), then write
+(`TensorAlloc`/`TensorStore`/`Transfer`), matching the AST's memref/vector lowering, so the attention
+corpus runs through the flat path. Needs the per-register type tracking extended to tensor types.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
@@ -722,15 +759,17 @@ opcodes; the cast-decline harness test guards it).
   - **Calls** — fixed-arity, value-returning (`Arg` + `Call`, callee via registry `fn_sigs`).
   - Verified structurally by `verify_hir_stream`; the `flatten` unit tests + `lower_with_registry`
     exercise every opcode family.
-- **C2 (start + bricks 1–2)** — the differential harness proves flat==AST (Entry 20); the flat
-  emitter now lowers intra-function **control flow** (`if`/`for`/`loop`, Entry 21) and fixed-arity
-  **scalar calls** via a module-level emitter (Entry 22), both to JIT parity.
+- **C2 (start + bricks 1–3a)** — the differential harness proves flat==AST (Entry 20); the flat
+  emitter now lowers intra-function **control flow** (`if`/`for`/`loop`, Entry 21), fixed-arity
+  **scalar calls** via a module-level emitter (Entry 22), and **all-scalar-field structs** —
+  construction + field access (Entry 23), all to JIT parity.
 
 **Open.**
 
 - **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) now covers scalar arithmetic + control
-  flow + calls; the **non-scalar surface** (brick 3) remains, plus scalar unary ops (#214). See the
-  C2 roadmap: [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
+  flow + calls + structs; **tensors** (the rest of the non-scalar surface) remain, plus scalar unary
+  ops (#214) and struct params/returns (#215). See the C2 roadmap:
+  [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
 - **C1 follow-ups** — void/non-scalar-return calls; the declined flat-HIR edge cases (#212); varargs
   evaluation (#213).
 - **C3** (#201) — flip `vxc` from the sequential AST driver to `compile_pipeline` + flat codegen, once
