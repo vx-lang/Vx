@@ -743,6 +743,40 @@ the oracle). Nested-aggregate/pointer fields remain #212.
 (`TensorAlloc`/`TensorStore`/`Transfer`), matching the AST's memref/vector lowering, so the attention
 corpus runs through the flat path. Needs the per-register type tracking extended to tensor types.
 
+## Entry 24 — Flat HIR: scalar-element tensor stores (#212, unblocks tensor codegen)
+
+**Commit:** _this session_. A flat-HIR (lowering) change, taken as a prerequisite for tensor codegen:
+without it there is no self-contained flat-lowerable tensor program (tensor data can't be
+initialized), so tensor codegen couldn't be JIT-differential-tested the way scalars/calls/structs
+were.
+
+**Gap.** `q[i][j] = <scalar>` didn't lower — the assignment path only modelled row/sub-view stores
+(`o[i] = <slice>`) and declined a scalar-element place. So a program couldn't fill a tensor with
+known values, which is exactly what a differential `main` needs (the JIT runs a param-less `main` and
+reads its exit code; there's no way to pass tensor buffers in).
+
+**What we did.**
+
+- **`lower_place`** (an lvalue lowering for tensor stores). The outer indices produce sub-view tensors
+  as a read does, but the *final scalar* index yields an element **place** — a `TensorIndex` with
+  `imm = 1` — so codegen addresses the element and stores into it rather than loading its value. A
+  still-nonempty shape yields a row/sub-view place (`imm = 0`, identical to the existing read/row-store
+  form). The `Assign` path now uses `lower_place` and lets `TensorStore` carry either a scalar-element
+  or a row place; the store kind is recovered from the place type in codegen.
+- The two-operand instruction shape is preserved: each index is one `TensorIndex` (base, index), and
+  the `imm = 0`/`1` flag distinguishes value vs. place — no new opcode. `verify_hir_stream` already
+  covers it (both operands dominated; `imm` isn't structural).
+
+**Tests.** `scalar_element_store_into_rank1_marks_a_place` (`q[0] = 1.0` → one place index + one
+store), `scalar_element_store_rank2_indexes_row_then_element_place` (`q[0][0] = 1.0` → row value index
+
+- element place). Existing row-store / FA-write-path tests unchanged (they take the `imm = 0` path).
+  Full suite green (350 lib + 81 integration).
+
+**Scope.** The scalar-element-store half of #212; the nested-aggregate/pointer field-access half
+remains open. Codegen for this (the `imm = 1` place + scalar `TensorStore`) lands with the tensor
+emitter next.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

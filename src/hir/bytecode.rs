@@ -73,7 +73,9 @@ pub enum Opcode {
     /// Index a tensor along its outermost dimension: `operand1` is the base tensor, `operand2` the
     /// (scalar) index. Rank-reducing — `type_idx` is the result type: a rank-1-smaller tensor (a
     /// row/sub-view) or, when the last dimension is indexed, the scalar element. Chained for
-    /// multi-dimensional access (`q[i][j]`).
+    /// multi-dimensional access (`q[i][j]`). `imm` selects value vs. place: `0` = a value (the read
+    /// form — codegen loads the scalar element / views the sub-view); `1` = an element **place** on
+    /// the left of an assignment, so the following `TensorStore` writes into it instead of loading.
     TensorIndex = 24,
     /// Reduce a rank-1 tensor slice to a scalar. `operand1` is the slice (and `operand2` a second
     /// slice for `dot`, else unused); `imm` is the reduction kind (0 = dot, 1 = sum, 2 = max,
@@ -84,8 +86,10 @@ pub enum Opcode {
     /// static byte size (element size × the product of the dims) — so the receiving side of a store
     /// has enough room. The result is the tensor buffer.
     TensorAlloc = 26,
-    /// Store a value into a tensor place (no result): `operand1` is the destination (a row/sub-view
-    /// from `TensorIndex` on the assignment's left side), `operand2` the value. Backs `o[i] = <slice>`.
+    /// Store a value into a tensor place (no result): `operand1` is the destination `TensorIndex`
+    /// place, `operand2` the value. The place type selects the store: a row/sub-view place takes a
+    /// slice (`o[i] = <slice>`); a scalar-element place (a `TensorIndex` with `imm = 1`) takes a
+    /// scalar (`q[i][j] = <scalar>`).
     TensorStore = 27,
     /// Move a tensor to a memory space: `operand1` is the source, `imm` the target space's dispatch
     /// id (`arch::memory_space_dispatch_id`), `type_idx` the result tensor (same element + shape, so

@@ -664,6 +664,55 @@ impl<'r> Lowerer<'r> {
         Some(Val { reg, ty: ret_ty })
     }
 
+    /// Lower an assignable tensor place `base[index]` (an lvalue for a following `TensorStore`). The
+    /// outer indices produce sub-view tensors exactly as a read does, but the *final scalar* index
+    /// yields an element **place** — a `TensorIndex` with `imm = 1` — so codegen addresses the element
+    /// and stores into it instead of loading its value. A still-nonempty shape yields a row/sub-view
+    /// place (`imm = 0`, identical to the read form; a slice store writes through it). `None` for any
+    /// non-tensor-index place.
+    fn lower_place(&mut self, e: &Expr) -> Option<Val> {
+        let Expr::IndexAccess(ix) = e else {
+            return None;
+        };
+        let base = self.lower_expr(&ix.base)?;
+        let (elem, shape) = match &base.ty {
+            LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
+            _ => return None,
+        };
+        if shape.is_empty() {
+            return None; // cannot index a rank-0 value
+        }
+        let index = self.lower_expr(&ix.index)?;
+        if !matches!(index.ty, LoweredTy::Scalar(_)) {
+            return None; // the index must be a scalar
+        }
+        let reduced: Vec<String> = shape[1..].to_vec();
+        if reduced.is_empty() {
+            // A scalar element place: the final index, marked `imm = 1` so codegen stores into the
+            // element rather than loading it (`q[i][j] = <scalar>`).
+            Some(self.emit_typed(
+                Opcode::TensorIndex,
+                base.reg,
+                index.reg,
+                LoweredTy::Scalar(elem),
+                1,
+            ))
+        } else {
+            // A row/sub-view place: an addressable sub-view, same shape as the read form
+            // (`o[i] = <slice>`).
+            Some(self.emit_typed(
+                Opcode::TensorIndex,
+                base.reg,
+                index.reg,
+                LoweredTy::Tensor {
+                    elem,
+                    shape: reduced,
+                },
+                0,
+            ))
+        }
+    }
+
     /// Lower a statement. `None` aborts the whole function's lowering.
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
@@ -697,14 +746,12 @@ impl<'r> Lowerer<'r> {
                 Some(())
             }
             Statement::Assign(a) => {
-                // `o[i] = <slice>`: store into a tensor row/sub-view. The left side lowers to a
-                // `TensorIndex` place (which must be a tensor view — scalar-element stores aren't
-                // modelled yet); the right side is the value stored through it.
+                // A tensor place store `place[i] = value`. The left side lowers to a `TensorIndex`
+                // place: a row/sub-view (`o[i] = <slice>`) or a scalar element (`q[i][j] = <scalar>`,
+                // the final index marked `imm = 1`). The store kind is recovered from the place type
+                // in codegen; the right side is the value stored through it.
                 if matches!(&a.lhs, Expr::IndexAccess(_)) {
-                    let place = self.lower_expr(&a.lhs)?;
-                    if !matches!(place.ty, LoweredTy::Tensor { .. }) {
-                        return None;
-                    }
+                    let place = self.lower_place(&a.lhs)?;
                     let value = self.lower_expr(&a.rhs)?;
                     self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
                     return Some(());
@@ -1420,6 +1467,46 @@ mod tests {
         assert_eq!(count(&w, Opcode::TensorAlloc), 1, "the destination buffer");
         assert_eq!(count(&w, Opcode::TensorIndex), 1, "the row place o[0]");
         assert_eq!(count(&w, Opcode::TensorStore), 1, "the store into it");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn scalar_element_store_into_rank1_marks_a_place() {
+        // `q[0] = 1.0` into a rank-1 tensor: the whole tensor is the base, the index is a scalar-
+        // element *place* (imm 1), and one `TensorStore` writes the scalar through it.
+        let f = parse_fn("fn f() -> f32 { let q = Tensor<f32>([4]); q[0] = 1.0; return sum(q); }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "scalar-element store should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorStore), 1);
+        let places = w
+            .local_hir_stream
+            .iter()
+            .filter(|i| i.opcode == Opcode::TensorIndex && i.imm == 1)
+            .count();
+        assert_eq!(places, 1, "the element index is a place (imm = 1)");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn scalar_element_store_rank2_indexes_row_then_element_place() {
+        // `q[0][0] = 1.0`: `q[0]` is a value sub-view index (imm 0), the final `[0]` an element
+        // place (imm 1); exactly one index carries the place flag.
+        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { q[0][0] = 1.0; return q[1][1]; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "nested scalar-element store should lower"
+        );
+        assert_eq!(count(&w, Opcode::TensorStore), 1);
+        let places = w
+            .local_hir_stream
+            .iter()
+            .filter(|i| i.opcode == Opcode::TensorIndex && i.imm == 1)
+            .count();
+        assert_eq!(places, 1, "exactly one element place among the indices");
         verify_hir_stream(&w);
     }
 
