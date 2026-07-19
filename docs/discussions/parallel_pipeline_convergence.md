@@ -934,6 +934,30 @@ params/returns (#215); the `if`-as-value gap (#216); the full attention **corpus
 differential target (needs the harness to compare `print` output, not just exit codes). Then **C3**
 (#201): the `--flat-codegen` flag to run this subset through `vxc`.
 
+## Entry 32 — C2.5: `print` + stdout-output differential (toward the corpus) (#200)
+
+**Commit:** _this session_. The differential harness could only compare exit codes; the attention
+corpus verifies via `print` output. This adds `print` to the flat path and a stdout-comparison mode.
+
+**What we did.**
+
+- **Flat HIR `print`.** New `Opcode::Print` (arg reg + type in `type_idx`); `flatten` lowers `print(x)`
+  as a statement-level effect.
+- **Emitter.** A tensor `Print` → `memref.cast` to an unranked memref + `func.call @printMemref{F32,…}`;
+  a scalar → `func.call @print_{f32,…}`. `emit_module_mlir` prepends `private` declarations for the
+  runtime helpers a module calls (the JIT links their implementations, exactly as the AST path does).
+- **Harness.** `flat_llvm`/`ast_llvm` (the lowered module text) split out of the exit-code helpers;
+  `run_output` runs the JIT and returns **stdout**, `normalize` strips the non-deterministic
+  `printMemref` base pointer (`0x…`), and `assert_output_parity` compares the flat vs AST print output.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_print`. Differential harness:
+`flat_matches_ast_tensor_print_output` — print a filled `Tensor<f32>([2,2])`, the `printMemrefF32` dump
+(shape/strides/data) matches flat-vs-AST after normalization. Full suite green (358 lib + 89
+integration).
+
+**Next.** Run the actual attention corpus (`tests/backend/pass/*_attention.vx`) through
+`assert_output_parity`, iterating on any surface the flat path still declines.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

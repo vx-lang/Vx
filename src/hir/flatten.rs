@@ -774,6 +774,26 @@ impl<'r> Lowerer<'r> {
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp),
+                // `print(x)` is a statement-level effect (no result): lower its one argument and emit
+                // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
+                // routes to the right `print_*`/`printMemref*` runtime helper.
+                Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
+                    let v = self.lower_expr(&fc.args[0])?;
+                    let type_idx = TypeIdx(self.types.len() as u32);
+                    self.types.push(v.ty.gid());
+                    if let LoweredTy::Tensor { elem, shape } = &v.ty {
+                        self.tensor_types
+                            .push((v.ty.gid(), elem.clone(), shape.clone()));
+                    }
+                    self.code.push(HirInstruction::new(
+                        Opcode::Print,
+                        v.reg,
+                        Register(0),
+                        type_idx,
+                        0,
+                    ));
+                    Some(())
+                }
                 other => {
                     self.lower_expr(other)?;
                     Some(())
@@ -1044,6 +1064,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::SlotLoad
             | Opcode::FieldLoad
             | Opcode::Transfer
+            | Opcode::Print
             | Opcode::Arg => assert!(
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"

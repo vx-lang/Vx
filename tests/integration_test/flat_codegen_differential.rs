@@ -54,8 +54,34 @@ fn exit_code(llvm_mlir: &str) -> i32 {
     }
 }
 
-/// Exit code of `main` compiled through the AST codegen (the oracle).
-fn ast_exit_code(src: &str) -> i32 {
+/// Normalize JIT stdout for comparison: the `printMemref*` helper prints a
+/// non-deterministic heap pointer (`base@ = 0x...`); replace every `0x<hex>` with
+/// a placeholder so the shape/strides/data (which *are* deterministic) compare.
+fn normalize(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(pos) = rest.find("0x") {
+        out.push_str(&rest[..pos]);
+        out.push_str("0x<ptr>");
+        let after = &rest[pos + 2..];
+        let hexlen = after.chars().take_while(|c| c.is_ascii_hexdigit()).count();
+        rest = &after[hexlen..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The (normalized) stdout of running the given LLVM-dialect MLIR through the JIT.
+/// Panics if the program exits non-zero (a printing program returns 0).
+fn run_output(llvm_mlir: &str) -> String {
+    match execute_mlir(llvm_mlir, vec![], 0, false) {
+        Ok(out) => normalize(&out),
+        Err(e) => panic!("printing program exited non-zero: {e}"),
+    }
+}
+
+/// The lowered LLVM-dialect MLIR for `main` compiled through the AST codegen (the oracle).
+fn ast_llvm(src: &str) -> String {
     let mut program = parse(src);
     let program_arr = [program.clone()];
     let env = GlobalAstEnv::build(&program_arr);
@@ -72,14 +98,20 @@ fn ast_exit_code(src: &str) -> i32 {
     codegen.generate(&program, &module_syntaxes).unwrap();
     let mut module = codegen.into_module();
     lower_to_llvm(&context, &mut module).expect("AST lower_to_llvm");
-    exit_code(&module.as_operation().to_string())
+    module.as_operation().to_string()
 }
 
-/// Exit code of the program compiled through the *flat* path, or `None` if the
-/// flat HIR / emitter declines any function (outside the current subset). Lowers
-/// the *whole* program (so calls resolve to their callee `func.func`) through the
-/// frozen registry, then emits one module via `flat::emit_module_mlir`.
-fn flat_exit_code(src: &str) -> Option<i32> {
+/// Exit code of `main` compiled through the AST codegen (the oracle).
+fn ast_exit_code(src: &str) -> i32 {
+    exit_code(&ast_llvm(src))
+}
+
+/// The lowered LLVM-dialect MLIR for the whole program compiled through the *flat*
+/// path, or `None` if the flat HIR / emitter declines any function (outside the
+/// current subset). Lowers *all* functions (so calls resolve to their callee
+/// `func.func`) through the frozen registry, then emits one module via
+/// `flat::emit_module_mlir`.
+fn flat_llvm(src: &str) -> Option<String> {
     let mut program = parse(src);
     program.module_path = "crate::diff".into();
     let mut mods = vec![program];
@@ -132,7 +164,25 @@ fn flat_exit_code(src: &str) -> Option<i32> {
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{body}}}\n"))
         .expect("flat MLIR parses");
     lower_to_llvm(&context, &mut module).expect("flat lower_to_llvm");
-    Some(exit_code(&module.as_operation().to_string()))
+    Some(module.as_operation().to_string())
+}
+
+/// Exit code of the program compiled through the *flat* path (`None` if declined).
+fn flat_exit_code(src: &str) -> Option<i32> {
+    Some(exit_code(&flat_llvm(src)?))
+}
+
+/// The parity assertion for a *printing* program: the flat path lowers it, and its
+/// (normalized) JIT stdout equals the AST path's.
+fn assert_output_parity(src: &str) {
+    let flat = flat_llvm(src).expect("flat path lowers this printing program");
+    let ast = ast_llvm(src);
+    let flat_out = run_output(&flat);
+    let ast_out = run_output(&ast);
+    assert_eq!(
+        flat_out, ast_out,
+        "flat print output diverged from the AST path for `{src}`\nflat:\n{flat_out}\nast:\n{ast_out}"
+    );
 }
 
 /// The core parity assertion: the flat path lowers `main`, and its JIT exit code
@@ -367,6 +417,17 @@ fn flat_matches_ast_tensor_transfer() {
          q[0][2] = 3.0; q[0][3] = 4.0; let o = transfer(q, Memory::NPU_HBM); let mut r = 0; \
          if o[0][2] > 2.5 { r = 1; } return r; }",
         1,
+    );
+}
+
+#[test]
+fn flat_matches_ast_tensor_print_output() {
+    // Print a filled tensor and compare the JIT *stdout* (not the exit code) of the
+    // flat path against the AST path -- the printMemrefF32 dump (shape/strides/data)
+    // must match after normalizing the non-deterministic base pointer.
+    assert_output_parity(
+        "fn main() -> i32 { let mut q = Tensor<f32>([2, 2]); q[0][0] = 1.0; q[0][1] = 2.0; \
+         q[1][0] = 3.0; q[1][1] = 4.0; print(q); return 0; }",
     );
 }
 

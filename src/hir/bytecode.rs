@@ -99,6 +99,10 @@ pub enum Opcode {
     /// argument list a fixed two-operand instruction can't hold is spelled as N `Arg`s immediately
     /// preceding the `Call`, in order.
     Arg = 29,
+    /// Print a value (`print(x)`, no result): `operand1` is the argument's value register, `type_idx`
+    /// its type. A scalar routes to the `print_*` FFI helper; a tensor is cast to an unranked memref
+    /// and routed to `printMemref*` — the same runtime helpers the AST path calls.
+    Print = 30,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

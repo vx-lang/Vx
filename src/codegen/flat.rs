@@ -311,7 +311,39 @@ pub fn emit_module_mlir(
     for (func, hir, types) in funcs {
         out += &emit_function_mlir(func, hir, types, &ctx)?;
     }
-    Some(out)
+    // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
+    // their implementations; the AST path declares them the same way).
+    let mut decls = String::new();
+    for (name, sig) in [
+        ("printMemrefF32", "(memref<*xf32>)"),
+        ("printMemrefF64", "(memref<*xf64>)"),
+        ("printMemrefI32", "(memref<*xi32>)"),
+        ("printMemrefI64", "(memref<*xi64>)"),
+        ("print_f32", "(f32) -> i32"),
+        ("print_f64", "(f64) -> i32"),
+        ("print_i32", "(i32) -> i32"),
+        ("print_i64", "(i64) -> i32"),
+    ] {
+        if out.contains(&format!("@{name}(")) {
+            decls += &format!("  func.func private @{name}{sig}\n");
+        }
+    }
+    Some(decls + &out)
+}
+
+/// The element type of a memref type string, e.g. `memref<2x4xf32> -> "f32"`,
+/// `memref<4xf32, strided<…>> -> "f32"`.
+fn memref_elem(memty: &str) -> Option<&str> {
+    memref_lead_dims_and_elem(memty).map(|(_, e)| e)
+}
+
+/// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
+/// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
+fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
+    let inner = memty.strip_prefix("memref<")?;
+    let inner = inner.split(',').next()?.trim_end_matches('>');
+    let elem_start = inner.rfind('x').map(|i| i + 1).unwrap_or(0);
+    Some((&inner[..elem_start], &inner[elem_start..]))
 }
 
 /// The leading static dimension of a memref type string, e.g. `memref<4xf32, strided<…>> -> 4`. Used
@@ -869,6 +901,38 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 mem_of[idx] = Some(dstty);
             }
+            // Print a value (no result). A tensor is `memref.cast`'d to an unranked memref and passed
+            // to the `printMemref*` runtime helper; a scalar goes to `print_*`. These are the same
+            // helpers the AST path calls; `emit_module_mlir` prepends their `private` declarations.
+            Opcode::Print => {
+                let arg = names.get(ins.operand1.0 as usize)?.clone();
+                if let Some(memty) = mem_of.get(ins.operand1.0 as usize)?.clone() {
+                    let et = memref_elem(&memty)?;
+                    let helper = match et {
+                        "f32" => "printMemrefF32",
+                        "f64" => "printMemrefF64",
+                        "i32" => "printMemrefI32",
+                        "i64" => "printMemrefI64",
+                        _ => return None,
+                    };
+                    let c = format!("%pc{idx}");
+                    body += &format!("  {c} = memref.cast {arg} : {memty} to memref<*x{et}>\n");
+                    body += &format!("  func.call @{helper}({c}) : (memref<*x{et}>) -> ()\n");
+                } else if let Some(e) = elem_at(&etypes, ins.operand1.0) {
+                    let et = mlir_scalar(&e)?;
+                    let helper = match et {
+                        "f32" => "print_f32",
+                        "f64" => "print_f64",
+                        "i32" => "print_i32",
+                        "i64" => "print_i64",
+                        _ => return None,
+                    };
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = func.call @{helper}({arg}) : ({et}) -> i32\n");
+                } else {
+                    return None;
+                }
+            }
             // Anything else (spawn, matmul, …) is outside this subset.
             _ => return None,
         }
@@ -1118,6 +1182,22 @@ mod tests {
         );
         assert!(mlir.contains("\"vx.transfer\""), "{mlir}");
         assert!(mlir.contains("target_topology ="), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_print() {
+        // `print(q)` -> memref.cast to an unranked memref + a call to the printMemrefF32 runtime
+        // helper, whose `private` declaration the module emitter prepends.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<f32>([2, 2]); q[0][0] = 1.0; q[0][1] = 2.0; \
+             q[1][0] = 3.0; q[1][1] = 4.0; print(q); return 0; }",
+        );
+        assert!(
+            mlir.contains("func.func private @printMemrefF32(memref<*xf32>)"),
+            "{mlir}"
+        );
+        assert!(mlir.contains("memref.cast"), "{mlir}");
+        assert!(mlir.contains("func.call @printMemrefF32("), "{mlir}");
     }
 
     #[test]
