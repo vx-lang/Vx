@@ -587,6 +587,30 @@ in both directions. The remaining work is a different phase — **C2 codegen** c
 (so the flat path emits MLIR, not just a structurally-verified stream) — plus nested-aggregate/pointer
 field access and scalar-element tensor stores.
 
+## Entry 19 — C1 Calls: fixed-arity function calls (#198)
+
+**Commit:** `08c8d3a`. The last C1 item.
+
+**Gap.** Ordinary calls `f(a, b)` didn't lower: a call needs the callee's identity + result type, and
+its N arguments don't fit a two-operand instruction.
+
+**What we did.**
+- **Callee resolution via the registry.** `ImmutableGlobalRegistry` gains `fn_sigs` (name → `FnSig {
+  gid, ret_ty }`), minted in `build_frozen_registry` with the resolver's GID formula; a name defined
+  in >1 module (distinct GIDs) is dropped (name-keyed, so ambiguous → decline, mirroring the
+  struct-GID policy). The lowerer already holds the registry, so no name→AST walk.
+- **N-ary args.** New `Opcode::Arg` marks each argument's value register; N `Arg`s immediately precede
+  the `Call`, in order. This is the *ordinary-call* encoding for a fixed two-operand instruction —
+  **not** language-level varargs (evaluated separately, #213).
+- **`Call`.** `type_idx` = the callee's GID (C2 resolves name + result type from it), `imm` = arg
+  count. Value-returning calls only for now — a void or unmodelled return declines.
+
+**Tests.** `fixed_arity_call_lowers_to_args_and_call` (`add(3,4)` → 2 `Arg`s + `Call`, callee GID in
+`type_idx`, count in `imm`), `call_to_unknown_fn_declines`. Full suite green (344 lib + 71 integration).
+
+**C1 is now complete** (C1.1–C1.3 + Calls). Follow-ups: void/non-scalar-return calls, and the declined
+edge cases in #212. Next is **C2** (#200) — the flat codegen consuming these opcodes.
+
 ## Remaining gaps (next entries)
 
 - **`local_hir_stream`** — `HirInstruction` (`src/hir/bytecode.rs`: `{opcode, operand1, operand2, type_idx→LOCAL_TYPE_STREAM, imm}`) is a defined flat bytecode, but the stream is never populated;
