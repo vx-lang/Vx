@@ -440,3 +440,27 @@ fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     let src = "fn main() -> i32 { let a = 7; return a as i64 as i32; }";
     assert!(flat_exit_code(src).is_none());
 }
+
+/// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
+/// and license lines are `//` comments the parser ignores.
+fn corpus(name: &str) -> String {
+    std::fs::read_to_string(format!("tests/backend/pass/{name}"))
+        .unwrap_or_else(|e| panic!("read {name}: {e}"))
+}
+
+#[test]
+fn flat_matches_ast_corpus_slice_reductions() {
+    // A real corpus program end to end through the flat path: tensor alloc +
+    // scalar-element stores + typed row bindings + dot/sum/max/min reductions + a
+    // `for`-loop scalar oracle + scalar-element stores of the results + `print(o)`.
+    // The printed output must match the AST oracle.
+    assert_output_parity(&corpus("slice_reductions.vx"));
+}
+
+#[test]
+fn flat_matches_ast_corpus_linear_attention() {
+    // An attention-corpus program (no softmax/exp): tensor allocs, `for` loops,
+    // and `print`. Its printed output must match the AST oracle through the flat
+    // path.
+    assert_output_parity(&corpus("linear_attention.vx"));
+}

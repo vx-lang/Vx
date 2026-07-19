@@ -958,6 +958,29 @@ integration).
 **Next.** Run the actual attention corpus (`tests/backend/pass/*_attention.vx`) through
 `assert_output_parity`, iterating on any surface the flat path still declines.
 
+## Entry 33 — C2.6: real corpus programs run through the flat path (`+=`, #200)
+
+**Commit:** _this session_. Two real backend-corpus programs now lower end to end through the flat
+codegen and match the AST oracle's printed output.
+
+**What we did.**
+
+- **`slice_reductions.vx`** passes as-is — tensor alloc + scalar-element stores + typed row bindings +
+  `dot`/`sum`/`max`/`min` + a `for`-loop scalar oracle + scalar-element stores of the results +
+  `print(o)`.
+- **`linear_attention.vx`** (an attention corpus program, no softmax) needed one missing construct:
+  **compound assignment** `+=`. Added `Statement::CompoundAssign` to `flatten` — `lhs op= rhs` desugars
+  to read the place, combine, and store back (scalar identifier or tensor place). With that it passes:
+  nested `for` loops, variable-index scalar stores (`ss[a][b] = …`), `+=`, `num / den`, and `print(o)`.
+
+**Tests.** `flat.rs`/`flatten`: `compound_assign_desugars_to_op_and_store`. Differential harness:
+`flat_matches_ast_corpus_slice_reductions`, `flat_matches_ast_corpus_linear_attention` (read the real
+`.vx` files, `assert_output_parity`). Full suite green (359 lib + 91 integration).
+
+**Remaining corpus.** The softmax attention files (`full_softmax`/`multi_query`/`grouped_query`/
+`sparse_local`) use `exp` — a math intrinsic the flat HIR doesn't lower yet. That's the next corpus
+step.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

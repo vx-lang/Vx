@@ -771,6 +771,29 @@ impl<'r> Lowerer<'r> {
                 let v = self.lower_expr(&a.rhs)?;
                 self.assign_local(&name, v)
             }
+            // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
+            // value of the place, combine it with the right side, and store back.
+            Statement::CompoundAssign(a) => {
+                let cur = self.lower_expr(&a.lhs)?;
+                let rhs = self.lower_expr(&a.rhs)?;
+                let op = binop_opcode(&a.op)?;
+                // Elementwise if either side is a tensor (the arith opcode carries the tensor result
+                // type), else the scalar result type — mirroring `BinaryOp` in `lower_expr`.
+                let result_ty = match (&cur.ty, &rhs.ty) {
+                    (LoweredTy::Tensor { .. }, _) => cur.ty.clone(),
+                    (_, LoweredTy::Tensor { .. }) => rhs.ty.clone(),
+                    _ => cur.ty.clone(),
+                };
+                let combined = self.emit_typed(op, cur.reg, rhs.reg, result_ty, 0);
+                if matches!(&a.lhs, Expr::IndexAccess(_)) {
+                    let place = self.lower_place(&a.lhs)?;
+                    self.emit_effect(Opcode::TensorStore, place.reg, combined.reg, 0);
+                    Some(())
+                } else {
+                    let name = simple_ident(&a.lhs)?;
+                    self.assign_local(&name, combined)
+                }
+            }
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp),
@@ -1580,6 +1603,25 @@ mod tests {
             tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()])
         );
         assert_ne!(a, scalar_gid(&ElementType::F32));
+    }
+
+    #[test]
+    fn compound_assign_desugars_to_op_and_store() {
+        // `s += a` == `s = s + a`: the current value is read, combined, and stored back. In memory
+        // mode (the loop forces it) that's a `SlotLoad` + `Add` + `Store`.
+        let f =
+            parse_fn("fn f(a: i32) -> i32 { let mut s = 0; for i in 0..a { s += a; } return s; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "compound assign should lower"
+        );
+        assert!(
+            count(&w, Opcode::Add) >= 1,
+            "the += combine (plus the loop step)"
+        );
+        assert!(count(&w, Opcode::Store) >= 1, "s is stored back");
+        verify_hir_stream(&w);
     }
 
     #[test]
