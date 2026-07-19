@@ -245,11 +245,21 @@ pub fn emit_function_mlir(
     let ty_at = |ti: u32| -> Option<ElementType> { elem_of_gid(*types.get(ti as usize)?) };
 
     let mut names: Vec<String> = vec![String::new(); hir.len()];
-    // The scalar element type each register carries. Value ops record their result type; an `Alloca`
-    // records its *slot* element type so a later `Store` can print `memref<T>`. This is the flat-
-    // driven stand-in for reading an operand's type off the AST — needed because some consumers
-    // (`Cmp`, `Store`) have no usable `type_idx` of their own (a compare's is `bool`; a store's is
-    // the effect sentinel).
+    // The scalar element type each register carries, indexed by register (= instruction position in
+    // the stream) — the type-valued parallel to `names` above. As the stream is walked, each value-
+    // producing instruction records its result type here, so any later instruction can recover the
+    // type of a register it *reads*. This is the flat-driven stand-in for reading an operand's type
+    // off the AST: there is no AST node to consult, so we reconstruct types as we go.
+    //
+    // Why not just read each instruction's own `type_idx`? Most values are self-describing that way,
+    // but two consumers need an *operand's* type, which their own `type_idx` doesn't give:
+    //   - `Cmp`: its own result type is `bool`, but choosing `cmpi`/`cmpf` + the signed/unsigned
+    //     predicate needs the *operands'* type -> `etypes[operand1]`.
+    //   - `Store`: an effect instruction (its `type_idx` is the no-type sentinel), but printing
+    //     `memref<T>` needs the slot's element type -> the `Alloca` records it, `Store` reads it back.
+    // Calls use it too: a `func.call`'s argument types come from `etypes[arg_reg]`.
+    //
+    // Scalar-only today (`ElementType`); brick 3 (#200) widens it to tensor/aggregate types.
     let mut etypes: Vec<Option<ElementType>> = vec![None; hir.len()];
     let elem_at = |etypes: &[Option<ElementType>], r: u32| -> Option<ElementType> {
         etypes.get(r as usize)?.clone()
