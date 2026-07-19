@@ -310,6 +310,14 @@ pub fn emit_module_mlir(
     Some(out)
 }
 
+/// Comma-join integers (for `sizes: [..]` / `strides: [..]` lists).
+fn join_i64(xs: &[i64]) -> String {
+    xs.iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The static MLIR memref type string for a tensor type, e.g. `(i32, ["4"]) -> "memref<4xi32>"`. A
 /// non-numeric dim becomes `?` (dynamic). `None` for a non-scalar element.
 fn tensor_memref_ty(elem: &ElementType, shape: &[String]) -> Option<String> {
@@ -587,11 +595,12 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 mem_of[idx] = Some(memty);
             }
-            // Index a tensor. `operand1` is the base tensor (memref), `operand2` the index; the index
-            // is `arith.index_cast` to `index`. A scalar-element result (`type_idx` is a scalar GID)
-            // is either a value read (`imm = 0` → `memref.load`) or an element *place* (`imm = 1` →
-            // recorded for the following `TensorStore`). A sub-view result (a tensor GID) is not yet
-            // emitted.
+            // Index a tensor along its outermost dimension. `operand1` is the base tensor (memref),
+            // `operand2` the index (`arith.index_cast` to `index`). A scalar-element result
+            // (`type_idx` is a scalar GID) is a value read (`imm = 0` → `memref.load`) or an element
+            // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
+            // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
+            // base only; a further sub-view of a strided row is deferred).
             Opcode::TensorIndex => {
                 let result_gid = *types.get(ins.type_idx.0 as usize)?;
                 let base = names.get(ins.operand1.0 as usize)?.clone();
@@ -600,14 +609,55 @@ pub fn emit_function_mlir(
                 let iname = names.get(ins.operand2.0 as usize)?.clone();
                 let ic = format!("%ic{idx}");
                 body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
-                let e = elem_of_gid(result_gid)?; // sub-view (tensor) results not emitted yet
-                if ins.imm == 1 {
-                    place_of[idx] = Some((base, ic, base_memty));
+
+                if let Some(e) = elem_of_gid(result_gid) {
+                    // Scalar element: a value read or a store place (works on a contiguous or a
+                    // strided-row base — `memref.load`/`store` handle both).
+                    if ins.imm == 1 {
+                        place_of[idx] = Some((base, ic, base_memty));
+                    } else {
+                        let n = format!("%v{idx}");
+                        body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                        names[idx] = n;
+                        etypes[idx] = Some(e);
+                    }
                 } else {
+                    // Row sub-view: reinterpret the contiguous base as the row at flat offset
+                    // `index * product(row dims)`, with row-major strides over the remaining dims.
+                    if base_memty.contains("strided") {
+                        return None; // a sub-view of an already-strided row is deferred
+                    }
+                    let (elem, shape) = ctx.tensors.get(&result_gid)?;
+                    let et = mlir_scalar(elem)?;
+                    let dims: Vec<i64> = shape
+                        .iter()
+                        .map(|d| d.parse::<i64>().ok())
+                        .collect::<Option<_>>()?; // symbolic dims not handled
+                    let stride0: i64 = dims.iter().product();
+                    let mut strides = vec![1i64; dims.len()];
+                    for i in (0..dims.len().saturating_sub(1)).rev() {
+                        strides[i] = strides[i + 1] * dims[i + 1];
+                    }
+                    let off = if stride0 == 1 {
+                        ic.clone()
+                    } else {
+                        let cst = format!("%cs{idx}");
+                        let o = format!("%off{idx}");
+                        body += &format!("  {cst} = arith.constant {stride0} : index\n");
+                        body += &format!("  {o} = arith.muli {ic}, {cst} : index\n");
+                        o
+                    };
+                    let sizes_s = join_i64(&dims);
+                    let strides_s = join_i64(&strides);
+                    let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
+                    let result_ty =
+                        format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>>");
                     let n = format!("%v{idx}");
-                    body += &format!("  {n} = memref.load {base}[{ic}] : {base_memty}\n");
+                    body += &format!(
+                        "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
+                    );
                     names[idx] = n;
-                    etypes[idx] = Some(e);
+                    mem_of[idx] = Some(result_ty);
                 }
             }
             // Store into a tensor place (no result). A scalar-element place (from an `imm = 1`
@@ -803,6 +853,18 @@ mod tests {
         assert!(mlir.contains("arith.index_cast"), "{mlir}");
         assert!(mlir.contains("memref.store"), "{mlir}");
         assert!(mlir.contains("memref.load"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_row_subview_read() {
+        // A rank-2 tensor: `q[i]` rank-reduces to a strided row via `memref.reinterpret_cast`, and the
+        // final scalar index loads through that row.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<i32>([2, 3]); q[0][0] = 1; q[0][1] = 2; \
+             q[0][2] = 3; q[1][0] = 4; q[1][1] = 5; q[1][2] = 6; return q[1][2]; }",
+        );
+        assert!(mlir.contains("memref.reinterpret_cast"), "{mlir}");
+        assert!(mlir.contains("strided<[1], offset: ?>"), "{mlir}");
     }
 
     #[test]

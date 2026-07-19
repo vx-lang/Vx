@@ -284,6 +284,18 @@ fn flat_matches_ast_tensor_element_read() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_row_element_read() {
+    // A rank-2 tensor: fill it, then read an element through a row sub-view
+    // (`q[1][2]`) — exercises `memref.reinterpret_cast` (row) + `memref.load`
+    // through the strided row, flat-vs-AST.
+    assert_parity(
+        "fn main() -> i32 { let mut q = Tensor<i32>([2, 3]); q[0][0] = 1; q[0][1] = 2; \
+         q[0][2] = 3; q[1][0] = 4; q[1][1] = 5; q[1][2] = 6; return q[1][2]; }",
+        6,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the

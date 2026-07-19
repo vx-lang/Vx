@@ -811,6 +811,24 @@ integration).
 `vector.store`, `Transfer`, and tensor params (memref in the signature). Then the attention corpus can
 be JIT-compared through the flat path.
 
+## Entry 26 — C2.4c: tensor row sub-views in the flat emitter (#200)
+
+**Commit:** _this session_. Builds on Entry 25 — the flat emitter now rank-reduces a tensor to a row,
+so rank-2 element access (`q[i][j]`) works.
+
+**What we did.** A `TensorIndex` with a tensor (sub-view) result → `memref.reinterpret_cast` of the
+contiguous base to the row at flat offset `index * product(row dims)`, with row-major strides —
+`memref<3xi32, strided<[1], offset: ?>>`, matching the AST's S1 lowering. The row's memref type is
+tracked in `mem_of`, so the following scalar index reads/stores through it (`memref.load`/`store` on a
+strided memref). A sub-view of an already-strided row (a deeper chain, rank ≥ 3) is deferred.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_row_subview_read`. Differential harness:
+`flat_matches_ast_tensor_row_element_read` — fill a `Tensor<i32>([2,3])` by element and read `q[1][2]`
+(= 6) — `flat == ast == expected`. Full suite green (353 lib + 83 integration).
+
+**Next.** `Reduce` (`vector.load`/`vector.reduction`), tensor elementwise (`vector` ops), row
+`TensorStore` (`vector.store`), `Transfer`, tensor params.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
