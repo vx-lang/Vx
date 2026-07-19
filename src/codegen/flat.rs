@@ -11,19 +11,23 @@
 // instruction array instead of an AST walk (doc §Phase 7 "O(1) array codegen").
 //
 // Current subset: scalar arithmetic (params, const, add/sub/mul/div, compare,
-// return) plus intra-function control flow -- basic-block markers, (conditional)
-// branches, and `alloca`/store/load'd scalar locals (the memory model the flat
-// HIR uses so values cross blocks). Emits a `func.func` as text (SSA name =
-// producing instruction's register; blocks become `^bbN:` labels), which the
-// caller parses + verifies with melior. The AST path stays the oracle:
-// `emit_function_mlir` returns `None` for any stream using opcodes outside this
+// return), intra-function control flow (basic-block markers, (conditional)
+// branches, and `alloca`/store/load'd scalar locals — the memory model the flat
+// HIR uses so values cross blocks), and fixed-arity scalar calls (`func.call`,
+// callee resolved via the registry's `fn_sigs`). `emit_function_mlir` emits one
+// `func.func` as text (SSA name = producing instruction's register; blocks become
+// `^bbN:` labels); `emit_module_mlir` emits a whole program (needed for calls).
+// The caller parses + verifies with melior. The AST path stays the oracle: the
+// emitter returns `None` for any stream (or module) using opcodes outside this
 // subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode};
 use crate::hir::flatten::scalar_gid;
+use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::{ElementType, Function, Type};
+use std::collections::HashMap;
 
 /// The MLIR type string for a scalar element type. Integers are signless (signedness lives in the
 /// op, e.g. `divsi`/`divui`); `bool` is `i1`.
@@ -170,14 +174,62 @@ fn cmp_op(rel: u64, e: &ElementType) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// A resolved callee for the flat emitter: the MLIR symbol name to `func.call`, and its scalar
+/// return element type (`None` for a non-scalar/void return, which this subset declines). Keyed by
+/// the callee's GID — the identity a `Call` instruction carries in its `type_idx`.
+pub struct Callee {
+    pub name: String,
+    pub ret: Option<ElementType>,
+}
+
+/// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
+/// to a callee GID; this map recovers the symbol name (for `func.call @name`) and the return type
+/// (for the call's result type) without a name→AST walk.
+pub type CalleeMap = HashMap<TypeId, Callee>;
+
+/// Build the GID→callee map from the frozen registry's function signatures.
+pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
+    registry
+        .fn_sigs
+        .iter()
+        .map(|(name, sig)| {
+            (
+                sig.gid,
+                Callee {
+                    name: name.to_string(),
+                    ret: scalar_of(&sig.ret_ty),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
+/// function is outside the current subset (module-level keep-green atomicity: a partially lowered
+/// module is never emitted, so the AST path stays the oracle for the whole program). Calls resolve
+/// through the frozen registry's `fn_sigs`. Wrap the result in `module { … }` before parsing.
+pub fn emit_module_mlir(
+    funcs: &[(&Function, &[HirInstruction], &[TypeId])],
+    registry: &ImmutableGlobalRegistry,
+) -> Option<String> {
+    let callees = build_callee_map(registry);
+    let mut out = String::new();
+    for (func, hir, types) in funcs {
+        out += &emit_function_mlir(func, hir, types, &callees)?;
+    }
+    Some(out)
+}
+
 /// Emit a `func.func` for `func` from its flat HIR body, or `None` if the stream uses any construct
-/// outside the current subset (scalar arithmetic + intra-function control flow; the AST path stays
-/// the oracle there). The returned text is a bare `func.func` op; wrap it in a `module { … }` before
+/// outside the current subset (scalar arithmetic + intra-function control flow + fixed-arity scalar
+/// calls; the AST path stays the oracle there). `callees` resolves a `Call`'s callee GID to a symbol
+/// name + return type. The returned text is a bare `func.func` op; wrap it in a `module { … }` before
 /// parsing.
 pub fn emit_function_mlir(
     func: &Function,
     hir: &[HirInstruction],
     types: &[TypeId],
+    callees: &CalleeMap,
 ) -> Option<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven).
     let mut params = Vec::new();
@@ -205,6 +257,10 @@ pub fn emit_function_mlir(
     let mut body = String::new();
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
+    // Argument value registers accumulated by the `Arg`s that immediately precede a `Call`; the
+    // `Call` consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s and
+    // the outer ones, so each call's args are exactly the tail — see `flatten::lower_call`).
+    let mut pending_args: Vec<u32> = Vec::new();
 
     for (idx, ins) in hir.iter().enumerate() {
         match ins.opcode {
@@ -305,7 +361,39 @@ pub fn emit_function_mlir(
                 body += &format!("  func.return {a} : {mt}\n");
                 terminated = true;
             }
-            // Anything else (calls, spawn, the non-scalar surface, matmul, …) is outside this subset.
+            // One argument of the following `Call`: record its value register (no op emitted).
+            Opcode::Arg => pending_args.push(ins.operand1.0),
+            // A fixed-arity call. `type_idx` is the callee's GID (resolved to name + return type via
+            // `callees`); `imm` is the arg count, taken from the tail of `pending_args`. Emit
+            // `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`.
+            Opcode::Call => {
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let callee = callees.get(&gid)?;
+                let ret = callee.ret.clone()?; // scalar-returning calls only in this subset
+                let rt = mlir_scalar(&ret)?;
+                let n = ins.imm as usize;
+                if pending_args.len() < n {
+                    return None;
+                }
+                let args = pending_args.split_off(pending_args.len() - n);
+                let mut arg_names = Vec::with_capacity(n);
+                let mut arg_types = Vec::with_capacity(n);
+                for a in &args {
+                    arg_names.push(names.get(*a as usize)?.clone());
+                    let e = elem_at(&etypes, *a)?;
+                    arg_types.push(mlir_scalar(&e)?);
+                }
+                let nm = format!("%v{idx}");
+                body += &format!(
+                    "  {nm} = func.call @{}({}) : ({}) -> {rt}\n",
+                    callee.name,
+                    arg_names.join(", "),
+                    arg_types.join(", "),
+                );
+                names[idx] = nm;
+                etypes[idx] = Some(ret);
+            }
+            // Anything else (spawn, the non-scalar surface, matmul, …) is outside this subset.
             _ => return None,
         }
     }
@@ -356,8 +444,13 @@ mod tests {
         let f = parse_fn(src);
         let mut w = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
         assert!(lower_function_to_hir(&f, &mut w), "function lowers");
-        let mlir = emit_function_mlir(&f, &w.local_hir_stream, &w.local_type_stream)
-            .expect("emits flat MLIR");
+        let mlir = emit_function_mlir(
+            &f,
+            &w.local_hir_stream,
+            &w.local_type_stream,
+            &CalleeMap::new(),
+        )
+        .expect("emits flat MLIR");
 
         use melior::ir::operation::OperationLike;
         let registry = melior::dialect::DialectRegistry::new();
@@ -374,11 +467,73 @@ mod tests {
         mlir
     }
 
+    /// Lower a whole program to flat HIR and emit the module, then check it parses + verifies in a
+    /// real MLIR context — proving the module emitter (calls included) produces valid MLIR end to
+    /// end. Mirrors the pipeline's registry build so callees resolve through `fn_sigs`.
+    fn emit_module_and_verify(src: &str) -> String {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut prog = parser.parse().expect("parse failed");
+        prog.module_path = "crate::t".into();
+        let mut mods = vec![prog];
+        let symbol_map = crate::resolver::build_symbol_map(&mods);
+        mods[0].resolve_names(&symbol_map);
+        let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
+        let session = Arc::new(GlobalSession::with_registry(1, registry));
+
+        let mut lowered = Vec::new();
+        for f in &mods[0].functions {
+            let mut w = LocalWorkerState::new(session.clone());
+            assert!(lower_function_to_hir(f, &mut w), "function lowers");
+            lowered.push(w);
+        }
+        let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
+            .functions
+            .iter()
+            .zip(&lowered)
+            .map(|(f, w)| {
+                (
+                    f,
+                    w.local_hir_stream.as_slice(),
+                    w.local_type_stream.as_slice(),
+                )
+            })
+            .collect();
+        let mlir = emit_module_mlir(&funcs, &session.registry).expect("emits flat module");
+
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&dialects);
+        context.load_all_available_dialects();
+        let module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
+            .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "emitted MLIR failed to verify:\n{mlir}"
+        );
+        mlir
+    }
+
     #[test]
     fn emits_verifiable_integer_add() {
         let mlir = emit_and_verify("fn add(a: i32, b: i32) -> i32 { return a + b; }");
         assert!(mlir.contains("arith.addi %arg0, %arg1 : i32"), "{mlir}");
         assert!(mlir.contains("func.return"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_scalar_call() {
+        // The module emitter emits both `func.func`s; the call site resolves `add` through the
+        // registry's `fn_sigs` and prints a matching call signature.
+        let mlir = emit_module_and_verify(
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+             fn main() -> i32 { return add(3, 4); }",
+        );
+        assert!(mlir.contains("func.call @add("), "{mlir}");
+        assert!(mlir.contains("(i32, i32) -> i32"), "{mlir}");
     }
 
     #[test]
@@ -428,6 +583,12 @@ mod tests {
         let f = parse_fn("fn c(a: i32) -> i64 { return a as i64; }");
         let mut w = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
         assert!(lower_function_to_hir(&f, &mut w));
-        assert!(emit_function_mlir(&f, &w.local_hir_stream, &w.local_type_stream).is_none());
+        assert!(emit_function_mlir(
+            &f,
+            &w.local_hir_stream,
+            &w.local_type_stream,
+            &CalleeMap::new()
+        )
+        .is_none());
     }
 }

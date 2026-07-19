@@ -666,6 +666,46 @@ intra-function control flow, so an `if`/`for`/`loop` `main` JIT-matches the AST 
 **Next (brick 2).** Calls — a *module-level* flat emitter (all functions, not one) + callee GID→name
 (reverse of registry `fn_sigs`) + call-signature types.
 
+## Entry 22 — C2.3: calls in the flat emitter (brick 2, #200)
+
+**Commit:** _this session_. The second C2 brick — the flat emitter now lowers fixed-arity scalar
+calls, and gained a **module-level** entry point so a callee's `func.func` is present for the call.
+
+**Gap.** `emit_function_mlir` did one function and declined `Arg`/`Call`. A call needs (a) the whole
+program in one module (the callee `func.func`), (b) the callee's *name* (the `Call` carries only its
+GID), and (c) the arg + return types for the call signature.
+
+**What we did.**
+
+- **Module-level emitter.** New `emit_module_mlir(funcs, registry)` emits every function's `func.func`
+  and concatenates, declining the whole module if *any* function is outside the subset (keep-green at
+  the module level). The differential harness's flat path now lowers **all** functions (each into its
+  own worker) through the frozen registry and emits one module.
+- **Callee resolution (GID→name).** `build_callee_map(registry)` inverts the registry's name-keyed
+  `fn_sigs` into `GID → Callee { name, ret }` (the reverse of C1's minting). A `Call`'s `type_idx`
+  resolves through it to the `func.call @name` symbol and the result type.
+- **`Arg`/`Call` emission.** `Arg` records its value register into a `pending_args` stack; `Call`
+  consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s and the outer
+  ones, so each call's args are exactly the tail — no bookkeeping beyond a `split_off`). Emits
+  `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret`, arg types from the per-register `etypes[]`, the
+  return type from the callee's `fn_sig`. Scalar-returning calls only; a void/non-scalar return
+  declines (still #198 / brick 3).
+- **Plumbing.** `build_frozen_registry` is now `pub` (the external differential harness — and later
+  C3 — builds the registry to resolve callees).
+
+**Tests.** `flat.rs`: `emits_verifiable_scalar_call` (module emit + melior verify, asserts the
+`func.call` + signature). Differential harness: four **JIT-parity** cases — a scalar helper (`add`=42),
+a call inside an expression (`mul(6,7)-2`=40), **nested** calls (`dbl(inc(9))`=20), and a call from
+inside an `if` (bricks 1+2 together, `sq(5)`=25) — each `flat == ast == expected`. Full suite green
+(347 lib + 79 integration).
+
+**Filed.** #214 (flat emitter scalar unary ops: `as` cast, `-x`, `!x` — the remaining declined scalar
+opcodes; the cast-decline harness test guards it).
+
+**Next (brick 3).** The non-scalar surface — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/
+`TensorAlloc`/`TensorStore`/`Transfer` — so the attention corpus runs through the flat path. Needs
+`etypes[]` extended to tensor/aggregate recovery (currently scalar-only).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
@@ -682,16 +722,15 @@ intra-function control flow, so an `if`/`for`/`loop` `main` JIT-matches the AST 
   - **Calls** — fixed-arity, value-returning (`Arg` + `Call`, callee via registry `fn_sigs`).
   - Verified structurally by `verify_hir_stream`; the `flatten` unit tests + `lower_with_registry`
     exercise every opcode family.
-- **C2 (start + brick 1)** — the differential harness proves flat==AST for the scalar subset
-  (Entry 20), and the flat emitter now also lowers intra-function **control flow** (`if`/`for`/`loop`)
-  to JIT parity (Entry 21).
+- **C2 (start + bricks 1–2)** — the differential harness proves flat==AST (Entry 20); the flat
+  emitter now lowers intra-function **control flow** (`if`/`for`/`loop`, Entry 21) and fixed-arity
+  **scalar calls** via a module-level emitter (Entry 22), both to JIT parity.
 
 **Open.**
 
 - **C2** (#200) — the flat emitter (`src/codegen/flat.rs`) now covers scalar arithmetic + control
-  flow; **calls** (brick 2, needs a module-level emitter) and the **non-scalar surface** (brick 3)
-  remain. See the C2 roadmap:
-  [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
+  flow + calls; the **non-scalar surface** (brick 3) remains, plus scalar unary ops (#214). See the
+  C2 roadmap: [`implementation_plans/c2_flat_codegen.md`](./implementation_plans/c2_flat_codegen.md).
 - **C1 follow-ups** — void/non-scalar-return calls; the declined flat-HIR edge cases (#212); varargs
   evaluation (#213).
 - **C3** (#201) — flip `vxc` from the sequential AST driver to `compile_pipeline` + flat codegen, once
@@ -706,10 +745,11 @@ harness, in this order (details + MLIR mappings in `implementation_plans/c2_flat
 
 1. ~~**Control flow** — `BlockStart`/`Br`/`CondBr`/`Alloca`/`Store`/`SlotLoad` (+`Cmp`) → `cf` +
    `memref.alloca`.~~ **Done** (Entry 21): `if`/`for`/`loop` `main`s JIT-match the AST oracle.
-1. **Calls** ← *next* — needs a *module-level* flat emitter (all functions, not one) + callee GID→name
-   resolution (reverse of registry `fn_sigs`) + call-signature types.
-1. **Non-scalar** — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/`TensorAlloc`/`TensorStore`/
-   `Transfer`, matching the AST codegen's memref/vector lowering so the attention corpus runs through
-   the flat path and differentially checks.
+1. ~~**Calls** — a *module-level* flat emitter (all functions) + callee GID→name (reverse of registry
+   `fn_sigs`) + call-signature types.~~ **Done** (Entry 22): fixed-arity scalar calls JIT-match.
+1. **Non-scalar** ← *next* — `FieldLoad`/`FieldStore`/`TensorIndex`/`Reduce`/`TensorAlloc`/
+   `TensorStore`/`Transfer`, matching the AST codegen's memref/vector lowering so the attention corpus
+   runs through the flat path and differentially checks. Needs `etypes[]` extended to tensor/aggregate
+   recovery.
 
 Then **C3**: `--flat-codegen` flag → flip `vxc`.

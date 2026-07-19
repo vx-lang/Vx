@@ -14,13 +14,14 @@ Reuse the existing melior emission at the leaves conceptually, but the driver is
 
 ## Current state
 
-`src/codegen/flat.rs::emit_function_mlir(func, hir, types) -> Option<String>` emits a **single**
-`func.func` as **text**, handling the C2.0 scalar subset (`Load` → block arg, `Const`,
-`Add`/`Sub`/`Mul`/`Div`, `Ret`) **plus brick 1 — intra-function control flow** (`Cmp` →
-`arith.cmpi/cmpf`; `BlockStart`/`Br`/`CondBr` → `cf`; `Alloca`/`Store`/`SlotLoad` → rank-0
-`memref`), driven by a per-register `etypes[]` type recovery. Everything else returns `None` (the AST
-path stays the oracle). It is string-based: the emitted text is wrapped in `module { … }`, parsed by
-melior, run through `lower_to_llvm`, then JIT'd.
+`src/codegen/flat.rs` emits `func.func`s as **text**, driven by a per-register `etypes[]` type
+recovery. `emit_function_mlir(func, hir, types, callees)` does **one** function; `emit_module_mlir( funcs, registry)` does a **whole program** (needed for calls — the callee's `func.func` must be
+present). Handled subset: the C2.0 scalar core (`Load` → block arg, `Const`, `Add`/`Sub`/`Mul`/`Div`,
+`Ret`); **brick 1 — control flow** (`Cmp` → `arith.cmpi/cmpf`; `BlockStart`/`Br`/`CondBr` → `cf`;
+`Alloca`/`Store`/`SlotLoad` → rank-0 `memref`); **brick 2 — fixed-arity scalar calls** (`Arg`/`Call`
+→ `func.call @name(...)`, callee GID→name via `build_callee_map` over the registry `fn_sigs`).
+Everything else returns `None` (the AST path stays the oracle). String-based: the text is wrapped in
+`module { … }`, parsed by melior, run through `lower_to_llvm`, then JIT'd.
 
 The **differential harness** (`tests/integration_test/flat_codegen_differential.rs`) is the acceptance
 gate: for a `main` the flat path lowers, `flat_exit_code == ast_exit_code == expected` (process exit
@@ -35,18 +36,16 @@ brick emits MLIR that is *semantically equivalent* to what `MeliorGenerator` emi
 construct — study the AST lowering in `src/codegen/lower/` and match its op choices (same dialects, so
 `lower_to_llvm` + JIT behave identically).
 
-## Cross-cutting work (needed before/with brick 2)
+## Cross-cutting work
 
-- **Per-register types.** Emitting most ops needs the *type* of each operand register (e.g.
-  `func.call @f(%a) : (i32) -> i32`, `memref.store %v, %s[...]`). `flat.rs` currently tracks only SSA
-  *names* (`names[idx]`). Add a parallel `types[idx]` (recovered from each producing instruction's
-  `type_idx` → GID → element/aggregate/tensor), so any consumer can print operand types. `elem_of_gid`
-  already inverts scalar GIDs; extend with tensor (invert `tensor_gid`) and aggregate (registry
-  `layouts` GID → `!llvm.struct`/memref) recovery.
-- **Module-level emitter.** `emit_function_mlir` does one function; calls need *all* functions in one
-  module. Add `emit_module_mlir(functions, per-fn streams, registry) -> Option<String>` that emits
-  each function and concatenates, declining the whole module if any function is outside the subset
-  (keep-green atomicity at the module level).
+- **Per-register types.** ✅ *scalar done* (Entry 21). `flat.rs` tracks a parallel `etypes[idx]`
+  (recovered from each producing instruction's `type_idx` → GID via `elem_of_gid`), so consumers
+  (`Cmp`, `Store`, `Call` args) can print operand types. **Brick 3 must extend it** to tensor (invert
+  `tensor_gid`) and aggregate (registry `layouts` GID → `!llvm.struct`/memref) recovery.
+- **Module-level emitter.** ✅ *done* (Entry 22). `emit_module_mlir(funcs, registry)` emits each
+  function and concatenates, declining the whole module if any function is outside the subset
+  (keep-green atomicity at the module level). `build_frozen_registry` is now `pub` so external callers
+  (the differential harness, later C3) can build the registry that resolves callees.
 
 ## Bricks (in order)
 
@@ -75,7 +74,14 @@ Gotcha: the flat stream interleaves value instructions and block markers; emit i
 block, switching on `BlockStart`. Terminators (`Br`/`CondBr`/`Ret`) close a block. The differential
 test's `flat_declines_control_flow_leaving_ast_the_oracle` becomes a *parity* case once this lands.
 
-### Brick 2 — Calls
+### Brick 2 — Calls ✅ done (Entry 22)
+
+**Landed.** Fixed-arity scalar calls JIT-match the AST oracle. `build_callee_map(registry)` inverts
+`fn_sigs` to `GID → Callee { name, ret }`; `Arg`s push value regs onto a `pending_args` stack and the
+`Call` consumes its `imm` trailing entries (nested calls nest cleanly — each call's args are the
+tail); emits `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret` (arg types from `etypes[]`, `Tret` from
+the callee's `fn_sig`). Scalar-returning only; void/non-scalar return declines (#198, brick 3). The
+original brick sketch (kept for reference):
 
 Opcodes: `Arg(operand1=arg reg)` (N before a `Call`), `Call(type_idx=callee GID, imm=arg count)`.
 
@@ -86,8 +92,6 @@ Opcodes: `Arg(operand1=arg reg)` (N before a `Call`), `Call(type_idx=callee GID,
   their types come from the per-register `types[]` (cross-cutting work). Emit
   `%r = func.call @name(%a, %b) : (Ta, Tb) -> Tret` where `Tret` = callee's return type (registry
   `fn_sigs[gid].ret_ty`).
-- Needs the **module-level emitter** so the callee's `func.func` is present. Extend the differential
-  harness with a `main` that calls a scalar helper (`fn add(a,b){a+b} fn main(){ add(3,4) }`).
 
 ### Brick 3 — Non-scalar (structs + tensors)
 

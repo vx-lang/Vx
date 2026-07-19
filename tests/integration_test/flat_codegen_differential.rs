@@ -75,24 +75,42 @@ fn ast_exit_code(src: &str) -> i32 {
     exit_code(&module.as_operation().to_string())
 }
 
-/// Exit code of `main` compiled through the *flat* path, or `None` if the flat
-/// HIR / emitter declines the function (outside the current subset).
+/// Exit code of the program compiled through the *flat* path, or `None` if the
+/// flat HIR / emitter declines any function (outside the current subset). Lowers
+/// the *whole* program (so calls resolve to their callee `func.func`) through the
+/// frozen registry, then emits one module via `flat::emit_module_mlir`.
 fn flat_exit_code(src: &str) -> Option<i32> {
-    let program = parse(src);
-    let main = program
+    let mut program = parse(src);
+    program.module_path = "crate::diff".into();
+    let mut mods = vec![program];
+    let symbol_map = vxc::resolver::build_symbol_map(&mods);
+    mods[0].resolve_names(&symbol_map);
+    let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+
+    // Lower every function into its own worker; decline the whole program if any
+    // function is outside the flat subset (module-level keep-green atomicity).
+    let mut lowered: Vec<LocalWorkerState> = Vec::new();
+    for f in &mods[0].functions {
+        let mut worker = LocalWorkerState::new(session.clone());
+        if !lower_function_to_hir(f, &mut worker) {
+            return None;
+        }
+        lowered.push(worker);
+    }
+    let funcs: Vec<(&_, &[_], &[_])> = mods[0]
         .functions
         .iter()
-        .find(|f| f.name.as_ref() == "main")?;
-
-    let mut worker = LocalWorkerState::new(std::sync::Arc::new(GlobalSession::new(1)));
-    if !lower_function_to_hir(main, &mut worker) {
-        return None;
-    }
-    let body = vxc::codegen::flat::emit_function_mlir(
-        main,
-        &worker.local_hir_stream,
-        &worker.local_type_stream,
-    )?;
+        .zip(&lowered)
+        .map(|(f, w)| {
+            (
+                f,
+                w.local_hir_stream.as_slice(),
+                w.local_type_stream.as_slice(),
+            )
+        })
+        .collect();
+    let body = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry)?;
 
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{body}}}\n"))
@@ -171,10 +189,55 @@ fn flat_matches_ast_loop_with_break() {
 }
 
 #[test]
+fn flat_matches_ast_scalar_helper_call() {
+    // A `main` that calls a scalar helper — exercises the module-level emitter
+    // (both `func.func`s in one module) + callee resolution via `fn_sigs`.
+    assert_parity(
+        "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+         fn main() -> i32 { return add(20, 22); }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_call_inside_expression() {
+    // The call is one operand of a larger arithmetic expression in `main`.
+    assert_parity(
+        "fn mul(a: i32, b: i32) -> i32 { return a * b; }\n\
+         fn main() -> i32 { return mul(6, 7) - 2; }",
+        40,
+    );
+}
+
+#[test]
+fn flat_matches_ast_nested_calls() {
+    // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
+    // pairs, so each `Call` must consume exactly its own trailing args.
+    assert_parity(
+        "fn inc(x: i32) -> i32 { return x + 1; }\n\
+         fn dbl(x: i32) -> i32 { return x + x; }\n\
+         fn main() -> i32 { return dbl(inc(9)); }",
+        20,
+    );
+}
+
+#[test]
+fn flat_matches_ast_call_from_control_flow() {
+    // Bricks 1+2 together: a helper called from inside an `if` in `main`, its
+    // argument read from a slot-backed local.
+    assert_parity(
+        "fn sq(x: i32) -> i32 { return x * x; }\n\
+         fn main() -> i32 { let n = 5; let mut r = 0; if n > 0 { r = sq(n); } return r; }",
+        25,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
-    // opcode lowers to the flat HIR, but the emitter declines it) -> the flat path
-    // yields `None`, so the AST path stays the sole oracle (no false parity claim).
+    // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the
+    // flat path yields `None`, so the AST path stays the sole oracle (no false
+    // parity claim). Becomes a parity case once #214 lands.
     let src = "fn main() -> i32 { let a = 7; return a as i64 as i32; }";
     assert!(flat_exit_code(src).is_none());
 }
