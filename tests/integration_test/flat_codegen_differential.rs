@@ -357,6 +357,20 @@ fn flat_matches_ast_flashattention_write_path() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_transfer() {
+    // `transfer(q, Memory::NPU_HBM)` moves (copies) the tensor to a memory space;
+    // the vx→standard lowering makes it an alloc + memref.copy. Read an element of
+    // the copy back for an i32 exit: o[0][2] = q[0][2] = 3.0 > 2.5 -> r = 1.
+    // Exercises vx.transfer, flat-vs-AST.
+    assert_parity(
+        "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
+         q[0][2] = 3.0; q[0][3] = 4.0; let o = transfer(q, Memory::NPU_HBM); let mut r = 0; \
+         if o[0][2] > 2.5 { r = 1; } return r; }",
+        1,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the

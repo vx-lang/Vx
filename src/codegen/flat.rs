@@ -11,10 +11,14 @@
 // instruction array instead of an AST walk (doc §Phase 7 "O(1) array codegen").
 //
 // Current subset: scalar arithmetic (params, const, add/sub/mul/div, compare,
-// return), intra-function control flow (basic-block markers, (conditional)
+// return); intra-function control flow (basic-block markers, (conditional)
 // branches, and `alloca`/store/load'd scalar locals — the memory model the flat
-// HIR uses so values cross blocks), and fixed-arity scalar calls (`func.call`,
-// callee resolved via the registry's `fn_sigs`). `emit_function_mlir` emits one
+// HIR uses so values cross blocks); fixed-arity scalar calls (`func.call`, callee
+// via the registry's `fn_sigs`); all-scalar-field structs (`llvm.alloca`/GEP +
+// `llvm.load`/`store`); and the tensor surface (`memref` alloc, element + row
+// access, sub-views via `reinterpret_cast`, `vector.reduction`, elementwise
+// `vector` ops, row `vector.store`, and `vx.transfer`; tensor shapes come from a
+// side table the lowerer fills — see the C2 plan). `emit_function_mlir` emits one
 // `func.func` as text (SSA name = producing instruction's register; blocks become
 // `^bbN:` labels); `emit_module_mlir` emits a whole program (needed for calls).
 // The caller parses + verifies with melior. The AST path stays the oracle: the
@@ -845,7 +849,27 @@ pub fn emit_function_mlir(
                     return None;
                 }
             }
-            // Anything else (spawn, transfer, matmul, …) is outside this subset.
+            // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
+            // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
+            // (generic form) with `target_topology`; the vx→standard lowering turns it into an
+            // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
+            // `memref<NxT>`). The extra scheduling attrs the AST adds (`space`, `granule`, …) are
+            // discardable metadata and don't affect lowering.
+            Opcode::Transfer => {
+                let result_gid = *types.get(ins.type_idx.0 as usize)?;
+                let (elem, shape) = ctx.tensors.get(&result_gid)?;
+                let dstty = tensor_memref_ty(elem, shape)?;
+                let src = names.get(ins.operand1.0 as usize)?.clone();
+                let srcty = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let n = format!("%v{idx}");
+                body += &format!(
+                    "  {n} = \"vx.transfer\"({src}) {{target_topology = {} : i32}} : ({srcty}) -> {dstty}\n",
+                    ins.imm
+                );
+                names[idx] = n;
+                mem_of[idx] = Some(dstty);
+            }
+            // Anything else (spawn, matmul, …) is outside this subset.
             _ => return None,
         }
     }
@@ -977,6 +1001,7 @@ mod tests {
         let context = melior::Context::new();
         context.append_dialect_registry(&dialects);
         context.load_all_available_dialects();
+        crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
         let module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
             .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
         assert!(
@@ -1081,6 +1106,18 @@ mod tests {
         assert!(mlir.contains("vector.broadcast"), "{mlir}");
         assert!(mlir.contains("arith.mulf"), "{mlir}");
         assert!(mlir.contains("vector.store"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_transfer() {
+        // `transfer(q, Memory::NPU_HBM)` -> a `vx.transfer` carrying the target topology dispatch id.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
+             q[0][2] = 3.0; q[0][3] = 4.0; let o = transfer(q, Memory::NPU_HBM); let mut r = 0; \
+             if o[0][2] > 2.5 { r = 1; } return r; }",
+        );
+        assert!(mlir.contains("\"vx.transfer\""), "{mlir}");
+        assert!(mlir.contains("target_topology ="), "{mlir}");
     }
 
     #[test]

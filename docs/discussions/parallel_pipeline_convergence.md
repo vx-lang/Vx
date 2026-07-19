@@ -908,6 +908,32 @@ through the real JIT. The FlashAttention inner write path (the workload the flat
 around) now lowers through the flat codegen to parity with the AST oracle. Full suite green (356 lib +
 87 integration).
 
+## Entry 31 — C2.4g: `vx.transfer` — the tensor opcode surface is complete (#200)
+
+**Commit:** _this session_. The last tensor opcode. Every tensor op the flat HIR emits now lowers to
+JIT parity.
+
+**What we did.** `Transfer` → `vx.transfer` (generic form) carrying `target_topology` (the memory-space
+dispatch id, straight from the instruction's `imm`); the vx→standard lowering (`VxLowering.cpp`) turns
+it into an alloc + `memref.copy` + scope-end dealloc. The `Vx_TransferOp` definition requires only
+`src` + `target_topology`, and the lowering reads only those — so the `space`/`granule`/… attributes
+the AST adds are discardable scheduling metadata the flat HIR doesn't need. The result is a plain
+`memref<NxT>` (shape from the side table). The unit-test context now registers the vx dialect.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_transfer`. Differential harness:
+`flat_matches_ast_tensor_transfer` — `let o = transfer(q, Memory::NPU_HBM); … o[0][2] > 2.5 → r = 1` —
+`flat == ast == expected` through the real JIT. Full suite green (357 lib + 88 integration).
+
+**Tensor surface complete.** alloc, scalar element read/store, row sub-views, params + call args,
+reductions (`sum`/`dot`/`max`/`min`), elementwise, row store, and transfer — all at JIT parity, with
+the FlashAttention write path composing end to end (Entry 30). The differential harness now has **21**
+parity cases across the whole subset.
+
+**Remaining for C2/C3.** Deeper index chains (rank ≥ 3); the scalar unary ops (#214) and struct
+params/returns (#215); the `if`-as-value gap (#216); the full attention **corpus** as an end-to-end
+differential target (needs the harness to compare `print` output, not just exit codes). Then **C3**
+(#201): the `--flat-codegen` flag to run this subset through `vxc`.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

@@ -125,10 +125,13 @@ scalar-element `TensorIndex` → `arith.index_cast` + `memref.load` (read) or a 
   `vector.reduction<add|maximumf|minimumf>` (S2, f32; the AST reduces only static-sized rows).
 - ✅ **Elementwise + row store** (Entry 29): elementwise (`arith.{addf,…}` on `vector<Nxf32>`, operands
   coerced via `coerce_vector`) + row `TensorStore` → `vector.store` (S3). The FA write-path shape
-  JIT-matches.
-- ⏳ **Remaining:** `Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id); deeper index
-  chains; the attention corpus (`tests/backend/pass/*_attention.vx`) as the end-to-end differential
-  target.
+  JIT-matches (capstone, Entry 30).
+- ✅ **Transfer** (Entry 31): `Transfer` → `vx.transfer` (generic form, `target_topology` = the imm
+  dispatch id); the vx→standard lowering makes it an alloc + `memref.copy`. **The tensor opcode
+  surface is now complete.**
+- ⏳ **Remaining:** deeper index chains (rank ≥ 3); the attention corpus
+  (`tests/backend/pass/*_attention.vx`) as the end-to-end differential target (needs `print`-output
+  comparison in the harness).
 
 #### Design decision — tensor-type recovery needs a side table (not GID inversion)
 
