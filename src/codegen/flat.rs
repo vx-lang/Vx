@@ -24,7 +24,7 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode};
-use crate::hir::flatten::scalar_gid;
+use crate::hir::flatten::{scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::{ElementType, Function, Type};
 use std::collections::HashMap;
@@ -347,10 +347,20 @@ pub fn emit_function_mlir(
     types: &[TypeId],
     ctx: &EmitCtx,
 ) -> Option<String> {
-    // Signature (taken from the resolved AST signature; the *body* is flat-driven).
+    // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
+    // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
+    // holds it — the param's `Load` recorded it). Anything else declines.
     let mut params = Vec::new();
     for (i, (_, ty)) in func.params.iter().enumerate() {
-        params.push(format!("%arg{}: {}", i, mlir_scalar(&scalar_of(ty)?)?));
+        let pty = if let Some(e) = scalar_of(ty) {
+            mlir_scalar(&e)?.to_string()
+        } else if let Some(gid) = tensor_gid_of(ty) {
+            let (elem, shape) = ctx.tensors.get(&gid)?;
+            tensor_memref_ty(elem, shape)?
+        } else {
+            return None;
+        };
+        params.push(format!("%arg{i}: {pty}"));
     }
     let ret_elem = match &func.return_type {
         Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => Some(e.clone()),
@@ -402,10 +412,17 @@ pub fn emit_function_mlir(
 
     for (idx, ins) in hir.iter().enumerate() {
         match ins.opcode {
-            // Parameter materialization: the register *is* the block argument, no op emitted.
+            // Parameter materialization: the register *is* the block argument, no op emitted. A
+            // scalar param records its element type; a tensor param records its memref type (from the
+            // side table) so later index/store ops address it.
             Opcode::Load => {
                 names[idx] = format!("%arg{}", ins.imm);
-                etypes[idx] = ty_at(ins.type_idx.0);
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                if let Some(e) = elem_of_gid(gid) {
+                    etypes[idx] = Some(e);
+                } else if let Some((elem, shape)) = ctx.tensors.get(&gid) {
+                    mem_of[idx] = tensor_memref_ty(elem, shape);
+                }
             }
             Opcode::Const => {
                 let e = ty_at(ins.type_idx.0)?;
@@ -530,11 +547,16 @@ pub fn emit_function_mlir(
                 }
                 let args = pending_args.split_off(pending_args.len() - n);
                 let mut arg_names = Vec::with_capacity(n);
-                let mut arg_types = Vec::with_capacity(n);
+                let mut arg_types: Vec<String> = Vec::with_capacity(n);
                 for a in &args {
                     arg_names.push(names.get(*a as usize)?.clone());
-                    let e = elem_at(&etypes, *a)?;
-                    arg_types.push(mlir_scalar(&e)?);
+                    // A scalar arg is its element type; a tensor arg is its memref type.
+                    let at = if let Some(e) = elem_at(&etypes, *a) {
+                        mlir_scalar(&e)?.to_string()
+                    } else {
+                        mem_of.get(*a as usize)?.clone()?
+                    };
+                    arg_types.push(at);
                 }
                 let nm = format!("%v{idx}");
                 body += &format!(
@@ -865,6 +887,19 @@ mod tests {
         );
         assert!(mlir.contains("memref.reinterpret_cast"), "{mlir}");
         assert!(mlir.contains("strided<[1], offset: ?>"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_param_and_call() {
+        // A helper taking a tensor param (a `memref` in the signature) called with a tensor argument.
+        let mlir = emit_module_and_verify(
+            "fn get(q: Tensor<i32, [4]>, i: i32) -> i32 { return q[i]; }\n\
+             fn main() -> i32 { let mut q = Tensor<i32>([4]); q[0] = 5; q[1] = 6; q[2] = 7; \
+             q[3] = 8; return get(q, 2); }",
+        );
+        assert!(mlir.contains("@get(%arg0: memref<4xi32>"), "{mlir}");
+        assert!(mlir.contains("func.call @get("), "{mlir}");
+        assert!(mlir.contains("(memref<4xi32>, i32) -> i32"), "{mlir}");
     }
 
     #[test]

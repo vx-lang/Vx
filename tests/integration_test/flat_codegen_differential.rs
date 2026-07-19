@@ -296,6 +296,19 @@ fn flat_matches_ast_tensor_row_element_read() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_param_passed_to_helper() {
+    // A tensor built in `main`, passed by value to a helper with a tensor param
+    // (a `memref` in the signature) that indexes it. Exercises tensor params +
+    // tensor call arguments, flat-vs-AST.
+    assert_parity(
+        "fn get(q: Tensor<i32, [4]>, i: i32) -> i32 { return q[i]; }\n\
+         fn main() -> i32 { let mut q = Tensor<i32>([4]); q[0] = 5; q[1] = 6; q[2] = 7; \
+         q[3] = 8; return get(q, 2); }",
+        7,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the

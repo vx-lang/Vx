@@ -829,6 +829,26 @@ strided memref). A sub-view of an already-strided row (a deeper chain, rank ≥ 
 **Next.** `Reduce` (`vector.load`/`vector.reduction`), tensor elementwise (`vector` ops), row
 `TensorStore` (`vector.store`), `Transfer`, tensor params.
 
+## Entry 27 — C2.4d: tensor params + tensor call arguments (#200)
+
+**Commit:** _this session_. The flat emitter now takes a tensor as a function parameter and passes one
+as a call argument, so a tensor built in `main` can be handed to a helper.
+
+**What we did.** The signature builder recovers a tensor param's `memref` type by GID from the side
+table (`tensor_gid_of(ty)` → `ctx.tensors`), so `%arg0: memref<4xi32>`. The param's `Load` records the
+memref type in `mem_of` (so later index/store address it). The `Call` handler prints a tensor arg's
+type from `mem_of` (a scalar arg still from `etypes`). The callee's memref param type and the caller's
+arg type resolve to the same static `memref` — the tensor GID is a content hash, so both sides agree.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_param_and_call`. Differential harness:
+`flat_matches_ast_tensor_param_passed_to_helper` — `main` fills a `Tensor<i32>([4])` and calls
+`get(q, 2)` returning `q[2]` (= 7) — `flat == ast == expected`. Full suite green (354 lib + 84
+integration).
+
+**Next.** `Reduce` (`vector.load`/`vector.reduction`) — JIT-testable by feeding the f32 result into a
+comparison (`if sum(q) > 9.0 …`) so the exit code is an i32 — then tensor elementwise, row
+`TensorStore`, `Transfer`.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
