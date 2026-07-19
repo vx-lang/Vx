@@ -108,14 +108,47 @@ pointer tracked in `agg_of[reg]`); `FieldLoad`/`FieldStore` → `llvm.getelement
 differential harness + unit-test helper now type-check first (for the `StructInit` GID annotation).
 Deferred: struct params/returns/copy (#215), nested-aggregate/pointer fields (#212).
 
-**3b/3c — Tensors (remaining).** `TensorAlloc` (imm = byte size) → `memref.alloc`/`llvm.alloca` of the
-tensor type. `TensorIndex` → `memref.subview`/`reinterpret_cast` (row) or `memref.load` (element) —
-see the slice-ops S1 lowering (`slice_operators.md`). `Reduce` → `vector.load` (+ `arith.mulf` for
-`dot`) + `vector.reduction<add|maximumf|minimumf>` (S2). Tensor elementwise (`Mul`/`Add`/… with a
-tensor result type) → `vector.load` + `arith.*` + `vector.store` (S3). `TensorStore` → `vector.store`.
-`Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id). Needs the per-register type
-tracking extended to tensor types. The attention corpus (`tests/backend/pass/*_attention.vx`) is the
-eventual differential target — once these emit, a corpus program can be JIT-compared flat-vs-AST.
+**3b/3c — Tensors (remaining).** `TensorAlloc` → `memref.alloc` of the tensor type. `TensorIndex` →
+`memref.subview`/`reinterpret_cast` (row) or `memref.load` (element) — see the slice-ops S1 lowering
+(`slice_operators.md`). `Reduce` → `vector.load` (+ `arith.mulf` for `dot`) +
+`vector.reduction<add|maximumf|minimumf>` (S2). Tensor elementwise (`Mul`/`Add`/… with a tensor result
+type) → `vector.load` + `arith.*` + `vector.store` (S3). `TensorStore` → `vector.store` (row) or
+`memref.store` (scalar element). `Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id).
+The attention corpus (`tests/backend/pass/*_attention.vx`) is the eventual differential target.
+
+#### Design decision — tensor-type recovery needs a side table (not GID inversion)
+
+The plan's original cross-cutting note said to recover an operand's tensor type by "inverting
+`tensor_gid`". **That isn't possible.** `tensor_gid(elem, shape)` is a content **hash**; there is no
+inverse. Contrast the two type families that *are* recoverable:
+
+- **Scalars** — `elem_of_gid` brute-forces the finite set of scalar variants (`scalar_gid(e) == gid`).
+- **Structs** — the frozen registry holds `layouts: GID → TypeDefinition`, so `build_agg_map` recovers
+  the `!llvm.struct` shape by GID lookup.
+
+Tensors have neither: the set of `(elem, shape)` is unbounded, and tensor types are *structural*, so
+they never enter the nominal registry. Yet the emitter must reconstruct a memref type — most acutely
+for **`TensorAlloc`**, which introduces a fresh tensor whose shape exists *only* as the hash in the
+type stream (it can't be derived by forward-propagation from other tracked values the way
+`TensorIndex`/elementwise/`Transfer` results can).
+
+**Decision:** carry a **tensor-type side table** — `GID → (elem, shape)` — recorded by the lowerer
+(`hir/flatten.rs`) as it emits each tensor-typed value, stored on `LocalWorkerState`
+(`local_tensor_types`), merged across functions (the hash is globally consistent), and threaded to the
+emitter via `EmitCtx.tensors`. This is the tensor analogue of struct `layouts`. It keeps the flat type
+stream unchanged (still GIDs) while making tensor shapes recoverable at codegen. (The alternative —
+encoding the full `(elem, shape)` inline in the type stream instead of a hash — is a larger change to
+the stream format and is not pursued.)
+
+Two related constraints found while matching the AST oracle:
+
+- **Reductions are f32-only in the AST** (`lower_slice_reduction` hardcodes `vector<Dxf32>` → `f32`).
+  So a reduction can't produce an i32 exit code, and casts are declined (#214) — early tensor
+  differential tests reduce to a scalar element read (`return q[k]`) rather than a `sum`.
+- **The flat path may use static memrefs** (`memref<4xi32>`) where the AST uses dynamic
+  (`memref<?xi32>` + size operands). Parity is the JIT result, not the text, so either is fine; static
+  is simpler (no dynamic-size operands). Indices are `arith.index_cast`'d to `index` for
+  `memref.load`/`store`, matching the AST.
 
 ## Then C3 (#201)
 
