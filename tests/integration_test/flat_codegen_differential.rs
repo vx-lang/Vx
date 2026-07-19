@@ -337,6 +337,26 @@ fn flat_matches_ast_tensor_elementwise_row_store() {
 }
 
 #[test]
+fn flat_matches_ast_flashattention_write_path() {
+    // Capstone: the FlashAttention inner write path composed end to end through the
+    // flat path -- `o[0] = v[0] * (dot(q[0], k[0]) * scale)`. dot([1,2,3,4],[1,1,1,1])
+    // = 10; * 0.5 = 5; v[0] * 5 = [10,10,10,10]; o[0][0] = 10 > 9 -> r = 1. Exercises
+    // reduction (dot) + scalar multiply + elementwise broadcast + row store + read,
+    // all together, flat-vs-AST.
+    assert_parity(
+        "fn main() -> i32 { \
+           let mut q = Tensor<f32>([1, 4]); q[0][0] = 1.0; q[0][1] = 2.0; q[0][2] = 3.0; q[0][3] = 4.0; \
+           let mut k = Tensor<f32>([1, 4]); k[0][0] = 1.0; k[0][1] = 1.0; k[0][2] = 1.0; k[0][3] = 1.0; \
+           let mut v = Tensor<f32>([1, 4]); v[0][0] = 2.0; v[0][1] = 2.0; v[0][2] = 2.0; v[0][3] = 2.0; \
+           let mut o = Tensor<f32>([1, 4]); \
+           let scale = 0.5; \
+           o[0] = v[0] * (dot(q[0], k[0]) * scale); \
+           let mut r = 0; if o[0][0] > 9.0 { r = 1; } return r; }",
+        1,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the

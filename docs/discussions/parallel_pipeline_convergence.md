@@ -897,6 +897,17 @@ row, stored back into a row.
 vector.store). Full suite green (356 lib + 86 integration). The tensor read **and** write surface now
 lowers to parity; only `Transfer` (a memory-space move) remains.
 
+## Entry 30 — C2 capstone: the FlashAttention write path composes flat-vs-AST (#200)
+
+**Commit:** _this session_. A single differential case proving the tensor pieces compose end to end.
+
+`flat_matches_ast_flashattention_write_path`: `o[0] = v[0] * (dot(q[0], k[0]) * scale)` — a
+reduction (`dot`) → scalar multiply → elementwise scalar-broadcast → row `vector.store`, over rows
+built by scalar-element stores — then read `o[0][0]` and compare for an i32 exit. `dot([1,2,3,4], [1,1,1,1]) = 10`; `* 0.5 = 5`; `v[0] * 5 = [10,…]`; `o[0][0] = 10 > 9 → 1`. `flat == ast == expected`
+through the real JIT. The FlashAttention inner write path (the workload the flat HIR was designed
+around) now lowers through the flat codegen to parity with the AST oracle. Full suite green (356 lib +
+87 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
