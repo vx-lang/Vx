@@ -26,6 +26,10 @@ pub enum Opcode {
     Sub = 5,
     Mul = 6,
     Div = 7,
+    /// Call a function. `type_idx` is the callee's GID (its identity -- C2 resolves the name and the
+    /// result type from it); `imm` is the argument count `N`; the arguments are the `operand1`s of the
+    /// N `Arg` instructions immediately preceding this `Call`. The result value is this instruction's
+    /// register.
     Call = 8,
     Ret = 9,
     Matmul = 10,
@@ -87,6 +91,10 @@ pub enum Opcode {
     /// id (`arch::memory_space_dispatch_id`), `type_idx` the result tensor (same element + shape, so
     /// the destination is sized to hold it). Backs `transfer(src, Memory::X)`.
     Transfer = 28,
+    /// One argument of the following `Call`: `operand1` is the argument's value register. The N-ary
+    /// argument list a fixed two-operand instruction can't hold is spelled as N `Arg`s immediately
+    /// preceding the `Call`, in order.
+    Arg = 29,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

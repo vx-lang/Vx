@@ -390,7 +390,7 @@ impl<'r> Lowerer<'r> {
             }
             // Slice reductions `dot`/`sum`/`max`/`min` over rank-1 tensor slices -> a scalar. `dot`
             // takes two slices (fused multiply then reduce-add); the rest take one. `Tensor<T>([..])`
-            // allocates a buffer. Other function calls are not yet lowered in the flat HIR.
+            // allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) => {
                 if fc.name.as_ref() == "Tensor" {
                     return self.lower_tensor_alloc(fc);
@@ -400,7 +400,7 @@ impl<'r> Lowerer<'r> {
                     "sum" => 1,
                     "max" => 2,
                     "min" => 3,
-                    _ => return None,
+                    _ => return self.lower_call(fc),
                 };
                 let arity = if kind == 0 { 2 } else { 1 };
                 if fc.args.len() != arity {
@@ -635,6 +635,33 @@ impl<'r> Lowerer<'r> {
         let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
         let ty = LoweredTy::Tensor { elem, shape };
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
+    /// Lower an ordinary fixed-arity call `f(a, b, ...)`: resolve the callee via the frozen registry
+    /// (its GID + return type), lower each argument, mark them with `Arg` instructions in order, then
+    /// emit `Call` (callee GID in `type_idx`, arg count in `imm`). Declines an unknown callee (or one
+    /// ambiguous across modules) and a void/unmodelled return -- for now only value-returning calls.
+    fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
+        let sig = self.registry.fn_sigs.get(fc.name.as_ref())?.clone();
+        let ret_ty = lowered_ty(&sig.ret_ty, self.registry)?;
+        let mut arg_regs = Vec::with_capacity(fc.args.len());
+        for arg in &fc.args {
+            arg_regs.push(self.lower_expr(arg)?.reg);
+        }
+        for reg in arg_regs {
+            self.emit_effect(Opcode::Arg, reg, Register(0), 0);
+        }
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(sig.gid);
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::Call,
+            Register(0),
+            Register(0),
+            type_idx,
+            fc.args.len() as u64,
+        ));
+        Some(Val { reg, ty: ret_ty })
     }
 
     /// Lower a statement. `None` aborts the whole function's lowering.
@@ -956,7 +983,8 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::Not
             | Opcode::SlotLoad
             | Opcode::FieldLoad
-            | Opcode::Transfer => assert!(
+            | Opcode::Transfer
+            | Opcode::Arg => assert!(
                 ins.operand1.0 < i,
                 "HIR operand not dominated at instruction {i}"
             ),
@@ -1431,6 +1459,39 @@ mod tests {
             tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()])
         );
         assert_ne!(a, scalar_gid(&ElementType::F32));
+    }
+
+    #[test]
+    fn fixed_arity_call_lowers_to_args_and_call() {
+        // `add(3, 4)` -> two `Arg`s then a `Call` whose type_idx is the callee's GID.
+        let (did, w) = lower_with_registry(
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+             fn main() -> i32 { return add(3i32, 4i32); }",
+            "main",
+        );
+        assert!(did, "a call to a known scalar-returning fn should lower");
+        assert_eq!(count(&w, Opcode::Arg), 2, "two arguments");
+        assert_eq!(count(&w, Opcode::Call), 1);
+        let call = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Call)
+            .unwrap();
+        assert_eq!(call.imm, 2, "arg count in imm");
+        // The Call's type_idx is the callee GID (a real function identity: nonzero module hash),
+        // not a scalar type (whose GID lives in module 0).
+        let callee = w.local_type_stream[call.type_idx.0 as usize];
+        assert_ne!(callee.module_id(), 0, "type_idx is the callee's GID");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn call_to_unknown_fn_declines() {
+        // `mystery` isn't a known function -> not in the registry's fn_sigs -> the call declines,
+        // so the whole function declines (atomic no-op).
+        let (did, w) = lower_with_registry("fn main() -> i32 { return mystery(1i32); }", "main");
+        assert!(!did);
+        assert!(w.local_hir_stream.is_empty());
     }
 
     #[test]

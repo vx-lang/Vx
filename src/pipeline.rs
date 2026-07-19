@@ -384,8 +384,42 @@ pub(crate) fn build_frozen_registry(
         }
     }
 
-    crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
-        .map_err(PipelineError::Semantic)
+    let mut registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
+        .map_err(PipelineError::Semantic)?;
+
+    // Function signatures for call resolution in the flat HIR (#198, C1 Calls): name -> (GID, return
+    // type), GID minted with the resolver's formula. A name defined in more than one module with
+    // distinct GIDs is ambiguous for the name-keyed map, so it is dropped rather than resolved wrong.
+    let mut ambiguous_fns = std::collections::HashSet::new();
+    for module in modules {
+        let module_hash = crate::hash::compute_module_hash(&module.module_path);
+        for f in &module.functions {
+            let gid = crate::gid::TypeId::new(
+                module_hash,
+                crate::hash::DefPath::Named(f.name.as_ref()).compute_symbol_hash(),
+                0,
+                0,
+            );
+            match registry.fn_sigs.get(&f.name) {
+                Some(existing) if existing.gid != gid => {
+                    ambiguous_fns.insert(f.name.clone());
+                }
+                _ => {
+                    registry.fn_sigs.insert(
+                        f.name.clone(),
+                        crate::registry::FnSig {
+                            gid,
+                            ret_ty: f.return_type.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    for name in ambiguous_fns {
+        registry.fn_sigs.remove(&name);
+    }
+    Ok(registry)
 }
 
 /// The GID of a type held *by value* (a nominal struct/enum, seen through location wrappers that

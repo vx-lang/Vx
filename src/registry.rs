@@ -33,11 +33,24 @@ pub struct TypeDefinition {
     pub by_value_dependencies: Vec<TypeId>,
 }
 
+/// The signature a call site needs: the callee's GID (its stable identity) and its return type.
+/// Lets the flat-HIR lowerer resolve a call `f(..)` -- identify the callee and type the result --
+/// from the frozen registry it already holds, without a name->AST walk (#198, C1 Calls).
+#[derive(Debug, Clone)]
+pub struct FnSig {
+    pub gid: TypeId,
+    pub ret_ty: crate::syntax::Type,
+}
+
 /// The globally frozen type registry for parallel compilation phases.
 #[derive(Debug)]
 pub struct ImmutableGlobalRegistry {
     pub layouts: FxHashMap<TypeId, TypeDefinition>,
     pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
+    /// Function signatures by name, for call resolution in the flat HIR. A name defined in more than
+    /// one module (distinct GIDs) is omitted -- the name-keyed map can't disambiguate, so such a
+    /// call declines rather than resolving to the wrong callee (mirrors the struct-GID policy).
+    pub fn_sigs: FxHashMap<crate::symbol::Symbol, FnSig>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -117,6 +130,7 @@ impl ImmutableGlobalRegistry {
         Ok(Self {
             layouts,
             module_indices,
+            fn_sigs: FxHashMap::default(),
         })
     }
 }
