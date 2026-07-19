@@ -310,6 +310,17 @@ pub fn emit_module_mlir(
     Some(out)
 }
 
+/// The leading static dimension of a memref type string, e.g. `memref<4xf32, strided<…>> -> 4`. Used
+/// as the `vector<Nx…>` width when loading a rank-1 slice for a reduction.
+fn memref_lead_dim(memty: &str) -> Option<i64> {
+    memty
+        .strip_prefix("memref<")?
+        .split('x')
+        .next()?
+        .parse::<i64>()
+        .ok()
+}
+
 /// Comma-join integers (for `sizes: [..]` / `strides: [..]` lists).
 fn join_i64(xs: &[i64]) -> String {
     xs.iter()
@@ -682,6 +693,46 @@ pub fn emit_function_mlir(
                     mem_of[idx] = Some(result_ty);
                 }
             }
+            // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
+            // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
+            // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.
+            // Float only, matching the AST oracle (`vector<Nxf32>` → `f32`).
+            Opcode::Reduce => {
+                let e = ty_at(ins.type_idx.0)?;
+                if !is_float(&e) {
+                    return None; // the AST lowers only f32 reductions
+                }
+                let et = mlir_scalar(&e)?;
+                let s0 = names.get(ins.operand1.0 as usize)?.clone();
+                let m0 = mem_of.get(ins.operand1.0 as usize)?.clone()?;
+                let d = memref_lead_dim(&m0)?;
+                let vecty = format!("vector<{d}x{et}>");
+                let c0 = format!("%rc{idx}");
+                body += &format!("  {c0} = arith.constant 0 : index\n");
+                let v0 = format!("%vl{idx}");
+                body += &format!("  {v0} = vector.load {s0}[{c0}] : {m0}, {vecty}\n");
+                let (reduce_in, kind) = match ins.imm {
+                    0 => {
+                        let s1 = names.get(ins.operand2.0 as usize)?.clone();
+                        let m1 = mem_of.get(ins.operand2.0 as usize)?.clone()?;
+                        let v1 = format!("%vr{idx}");
+                        body += &format!("  {v1} = vector.load {s1}[{c0}] : {m1}, {vecty}\n");
+                        let prod = format!("%vp{idx}");
+                        body += &format!("  {prod} = arith.mulf {v0}, {v1} : {vecty}\n");
+                        (prod, "add")
+                    }
+                    1 => (v0, "add"),
+                    2 => (v0, "maximumf"),
+                    3 => (v0, "minimumf"),
+                    _ => return None,
+                };
+                let n = format!("%v{idx}");
+                body += &format!(
+                    "  {n} = vector.reduction <{kind}>, {reduce_in} : {vecty} into {et}\n"
+                );
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
             // Store into a tensor place (no result). A scalar-element place (from an `imm = 1`
             // `TensorIndex`) → `memref.store`; a row/sub-view place is not yet emitted.
             Opcode::TensorStore => {
@@ -900,6 +951,18 @@ mod tests {
         assert!(mlir.contains("@get(%arg0: memref<4xi32>"), "{mlir}");
         assert!(mlir.contains("func.call @get("), "{mlir}");
         assert!(mlir.contains("(memref<4xi32>, i32) -> i32"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_sum_reduction() {
+        // A float `sum` reduction lowers to `vector.load` + `vector.reduction<add>`; the scalar result
+        // feeds a compare so the function still returns an i32.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<f32>([4]); q[0] = 1.0; q[1] = 2.0; q[2] = 3.0; \
+             q[3] = 4.0; let mut r = 0; if sum(q) > 9.0 { r = 1; } return r; }",
+        );
+        assert!(mlir.contains("vector.load"), "{mlir}");
+        assert!(mlir.contains("vector.reduction <add>"), "{mlir}");
     }
 
     #[test]

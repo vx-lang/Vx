@@ -849,6 +849,33 @@ integration).
 comparison (`if sum(q) > 9.0 …`) so the exit code is an i32 — then tensor elementwise, row
 `TensorStore`, `Transfer`.
 
+## Entry 28 — C2.4e: tensor slice reductions in the flat emitter (#200)
+
+**Commit:** _this session_. `sum`/`dot`/`max`/`min` over a rank-1 float slice now lower, so a reduction
+result can drive an i32 exit code (via a compare).
+
+**What we did.** `Reduce` → `arith.constant 0 : index` + `vector.load %slice[c0] : {memref}, vector<Nxf32>`
+per operand (`N` parsed from the slice's memref type), `arith.mulf` for `dot`, then
+`vector.reduction <add|maximumf|minimumf>, %v : vector<Nxf32> into f32` — matching the AST's S2 lowering
+(float only; a non-float reduction declines, as the AST also lowers only f32).
+
+**Two constraints hit.**
+
+- **`if` as a value.** A trailing `if … { return 1 } else { return 0 }` parses as
+  `return (if-expression)`, and the flat HIR lowers `if` only as a *statement* — filed #216. The tests
+  use the statement form (`let mut r = 0; if c { r = 1; } return r;`).
+- **The AST reduces only static-sized slices.** `lower_slice_reduction` parses the slice length from
+  the memref type, so it can't reduce a whole dynamically-allocated tensor (`memref<?xf32>`) — only a
+  row sub-view (`memref<4xf32, strided<…>>`). The differential case therefore reduces `q[0]` (a row),
+  matching how the corpus reduces.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_sum_reduction`. Differential harness:
+`flat_matches_ast_tensor_row_sum_reduction` — `sum(q[0])` over a filled row, `> 9` sets `r = 1` — `flat == ast == expected` through the real JIT (reinterpret_cast + vector.load + vector.reduction). Full suite
+green (355 lib + 85 integration).
+
+**Next.** Tensor elementwise (`vector.load` + `arith.*` + `vector.store`), row `TensorStore`
+(`vector.store`), `Transfer`.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

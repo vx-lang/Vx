@@ -309,6 +309,20 @@ fn flat_matches_ast_tensor_param_passed_to_helper() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_row_sum_reduction() {
+    // A float `sum` over a static-sized row (`q[0]`, a reinterpret_cast sub-view)
+    // fed into a compare so the exit code is an i32: sum([1,2,3,4]) = 10 > 9 sets
+    // r = 1. Exercises reinterpret_cast + vector.load + vector.reduction through
+    // the real JIT, flat-vs-AST. (The AST oracle can only reduce a static-sized
+    // slice, so the reduction is over a row, not the whole dynamic tensor.)
+    assert_parity(
+        "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
+         q[0][2] = 3.0; q[0][3] = 4.0; let mut r = 0; if sum(q[0]) > 9.0 { r = 1; } return r; }",
+        1,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the
