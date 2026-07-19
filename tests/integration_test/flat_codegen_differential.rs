@@ -323,6 +323,20 @@ fn flat_matches_ast_tensor_row_sum_reduction() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_elementwise_row_store() {
+    // The FlashAttention write-path shape: an elementwise scalar-broadcast multiply
+    // over a row (`q[0] * 2.0`) stored back into a row (`o[0] = …`), then an element
+    // read + compare so the exit is an i32. o[0] = [2,4,6,8]; o[0][1] = 4 > 3.5 -> 1.
+    // Exercises vector.load/broadcast + arith.mulf + vector.store, flat-vs-AST.
+    assert_parity(
+        "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
+         q[0][2] = 3.0; q[0][3] = 4.0; let mut o = Tensor<f32>([2, 4]); o[0] = q[0] * 2.0; \
+         let mut r = 0; if o[0][1] > 3.5 { r = 1; } return r; }",
+        1,
+    );
+}
+
+#[test]
 fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
     // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the

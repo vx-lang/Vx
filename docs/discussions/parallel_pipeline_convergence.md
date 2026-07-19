@@ -876,6 +876,27 @@ green (355 lib + 85 integration).
 **Next.** Tensor elementwise (`vector.load` + `arith.*` + `vector.store`), row `TensorStore`
 (`vector.store`), `Transfer`.
 
+## Entry 29 — C2.4f: tensor elementwise + row store (the write side) (#200)
+
+**Commit:** _this session_. The FlashAttention write-path shape now lowers: an elementwise op over a
+row, stored back into a row.
+
+**What we did.**
+
+- **Elementwise** (`Add`/`Sub`/`Mul`/`Div` with a tensor-GID result): each operand is coerced to a
+  `vector<Nxf32>` (`coerce_vector`, matching the AST's `to_vector` — a vector passes through, a rank-1
+  memref is `vector.load`ed, a scalar is `vector.broadcast`ed), then `arith.{addf,subf,mulf,divf}`
+  yields a vector tracked in `vec_of`. Float only. The arith arm now dispatches on scalar-GID vs
+  tensor-GID result.
+- **Row `TensorStore`** (an `imm = 0` `TensorIndex` place, i.e. a row memref) writes an elementwise
+  vector back with `vector.store %v, %row[c0]` — the counterpart of the scalar-element `memref.store`.
+
+**Tests.** `flat.rs`: `emits_verifiable_tensor_elementwise_and_row_store`. Differential harness:
+`flat_matches_ast_tensor_elementwise_row_store` — `o[0] = q[0] * 2.0` then read `o[0][1]` (= 4 > 3.5 →
+`r = 1`) — `flat == ast == expected` through the real JIT (vector.load/broadcast + arith.mulf +
+vector.store). Full suite green (356 lib + 86 integration). The tensor read **and** write surface now
+lowers to parity; only `Transfer` (a memory-space move) remains.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

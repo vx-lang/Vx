@@ -115,15 +115,20 @@ Deferred: struct params/returns/copy (#215), nested-aggregate/pointer fields (#2
 scalar-element `TensorIndex` → `arith.index_cast` + `memref.load` (read) or a recorded element place
 (`imm = 1`); scalar-element `TensorStore` → `memref.store`. First tensor program JIT-matches the AST.
 
-**3c — Tensors (remaining).** ✅ *Row sub-views done (Entry 26):* a `TensorIndex` with a tensor result
-→ `memref.reinterpret_cast` of the contiguous base to the row (flat offset `index * product(row dims)`, row-major strides), tracked in `mem_of` so a following scalar index reads/stores through it;
-rank-2 `q[i][j]` JIT-matches. A deeper chain (sub-view of a strided row) is deferred. Remaining:
-`Reduce` → `vector.load` (+ `arith.mulf` for `dot`) +
-`vector.reduction<add|maximumf|minimumf>` (S2). Tensor elementwise (`Mul`/`Add`/… with a tensor result
-type) → `vector.load` + `arith.*` + `vector.store` (S3). Row `TensorStore` → `vector.store`. `Transfer`
-→ `vx.transfer` (`target_topology` = the imm dispatch id). Tensor params → a `memref` in the func
-signature. The attention corpus (`tests/backend/pass/*_attention.vx`) is the eventual differential
-target.
+**3c — Tensors.** Mostly done (Entries 26–29):
+
+- ✅ **Row sub-views** (Entry 26): `TensorIndex` with a tensor result → `memref.reinterpret_cast` of the
+  contiguous base to the row (flat offset `index * product(row dims)`, row-major strides), tracked in
+  `mem_of`; rank-2 `q[i][j]` JIT-matches. A deeper chain (sub-view of a strided row) is deferred.
+- ✅ **Tensor params** (Entry 27): `memref` in the func signature (recovered by GID) + tensor call args.
+- ✅ **Reductions** (Entry 28): `Reduce` → `vector.load` (+ `arith.mulf` for `dot`) +
+  `vector.reduction<add|maximumf|minimumf>` (S2, f32; the AST reduces only static-sized rows).
+- ✅ **Elementwise + row store** (Entry 29): elementwise (`arith.{addf,…}` on `vector<Nxf32>`, operands
+  coerced via `coerce_vector`) + row `TensorStore` → `vector.store` (S3). The FA write-path shape
+  JIT-matches.
+- ⏳ **Remaining:** `Transfer` → `vx.transfer` (`target_topology` = the imm dispatch id); deeper index
+  chains; the attention corpus (`tests/backend/pass/*_attention.vx`) as the end-to-end differential
+  target.
 
 #### Design decision — tensor-type recovery needs a side table (not GID inversion)
 

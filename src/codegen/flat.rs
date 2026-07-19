@@ -321,6 +321,45 @@ fn memref_lead_dim(memty: &str) -> Option<i64> {
         .ok()
 }
 
+/// Coerce a slice-elementwise operand register to a `vector<Nxf32>` value (matching the AST's
+/// `to_vector`): an already-vector operand passes through, a rank-1 memref is `vector.load`ed, and a
+/// scalar is `vector.broadcast`ed to the slice width. Emits into `body`; returns the vector SSA name.
+/// `tag` disambiguates the emitted SSA names.
+#[allow(clippy::too_many_arguments)]
+fn coerce_vector(
+    body: &mut String,
+    tag: &str,
+    op_reg: u32,
+    vecty: &str,
+    et: &str,
+    names: &[String],
+    mem_of: &[Option<String>],
+    vec_of: &[Option<String>],
+    etypes: &[Option<ElementType>],
+) -> Option<String> {
+    let name = names.get(op_reg as usize)?.clone();
+    if vec_of.get(op_reg as usize)?.is_some() {
+        return Some(name); // already a vector (a prior elementwise result)
+    }
+    if let Some(m) = mem_of.get(op_reg as usize)?.clone() {
+        let c0 = format!("%vc{tag}");
+        let v = format!("%vl{tag}");
+        body.push_str(&format!("  {c0} = arith.constant 0 : index\n"));
+        body.push_str(&format!(
+            "  {v} = vector.load {name}[{c0}] : {m}, {vecty}\n"
+        ));
+        return Some(v);
+    }
+    if etypes.get(op_reg as usize)?.is_some() {
+        let v = format!("%vb{tag}");
+        body.push_str(&format!(
+            "  {v} = vector.broadcast {name} : {et} to {vecty}\n"
+        ));
+        return Some(v);
+    }
+    None
+}
+
 /// Comma-join integers (for `sizes: [..]` / `strides: [..]` lists).
 fn join_i64(xs: &[i64]) -> String {
     xs.iter()
@@ -413,6 +452,9 @@ pub fn emit_function_mlir(
     // `index`-typed index SSA name, and the base memref type — everything the following `TensorStore`
     // needs to emit `memref.store %v, %base[%idx]`.
     let mut place_of: Vec<Option<(String, String, String)>> = vec![None; hir.len()];
+    // The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
+    // `TensorStore` `vector.store`s it and a further elementwise passes it through.
+    let mut vec_of: Vec<Option<String>> = vec![None; hir.len()];
     let mut body = String::new();
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
@@ -448,16 +490,68 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 etypes[idx] = Some(e);
             }
+            // Arithmetic: scalar (a scalar-GID result) or *elementwise* over a rank-1 float slice (a
+            // tensor-GID result). The scalar form is `arith.{addi,mulf,…}`; the elementwise form
+            // coerces each operand to a `vector<Nxf32>` (`vector.load`/`broadcast`), applies
+            // `arith.{addf,subf,mulf,divf}`, and yields a vector that a row `TensorStore` writes back.
             Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
-                let op = arith_op(ins.opcode, &e)?;
-                let a = names.get(ins.operand1.0 as usize)?;
-                let b = names.get(ins.operand2.0 as usize)?;
-                let n = format!("%v{idx}");
-                body += &format!("  {n} = {op} {a}, {b} : {mt}\n");
-                names[idx] = n;
-                etypes[idx] = Some(e);
+                let result_gid = *types.get(ins.type_idx.0 as usize)?;
+                if let Some(e) = elem_of_gid(result_gid) {
+                    let mt = mlir_scalar(&e)?;
+                    let op = arith_op(ins.opcode, &e)?;
+                    let a = names.get(ins.operand1.0 as usize)?;
+                    let b = names.get(ins.operand2.0 as usize)?;
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = {op} {a}, {b} : {mt}\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
+                } else {
+                    let (elem, shape) = ctx.tensors.get(&result_gid)?;
+                    if !is_float(elem) {
+                        return None; // the AST lowers only f32 elementwise
+                    }
+                    let et = mlir_scalar(elem)?;
+                    let d: i64 = shape
+                        .iter()
+                        .map(|s| s.parse::<i64>().ok())
+                        .collect::<Option<Vec<_>>>()?
+                        .iter()
+                        .product();
+                    let vecty = format!("vector<{d}x{et}>");
+                    let va = coerce_vector(
+                        &mut body,
+                        &format!("{idx}a"),
+                        ins.operand1.0,
+                        &vecty,
+                        et,
+                        &names,
+                        &mem_of,
+                        &vec_of,
+                        &etypes,
+                    )?;
+                    let vb = coerce_vector(
+                        &mut body,
+                        &format!("{idx}b"),
+                        ins.operand2.0,
+                        &vecty,
+                        et,
+                        &names,
+                        &mem_of,
+                        &vec_of,
+                        &etypes,
+                    )?;
+                    let op = match ins.opcode {
+                        Opcode::Add => "arith.addf",
+                        Opcode::Sub => "arith.subf",
+                        Opcode::Mul => "arith.mulf",
+                        Opcode::Div => "arith.divf",
+                        _ => return None,
+                    };
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = {op} {va}, {vb} : {vecty}\n");
+                    names[idx] = n;
+                    vec_of[idx] = Some(vecty);
+                }
             }
             // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
             // first operand's tracked type (this instruction's own type is `bool`, the result).
@@ -733,15 +827,25 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 etypes[idx] = Some(e);
             }
-            // Store into a tensor place (no result). A scalar-element place (from an `imm = 1`
-            // `TensorIndex`) → `memref.store`; a row/sub-view place is not yet emitted.
+            // Store into a tensor place (no result). A scalar-element place (an `imm = 1`
+            // `TensorIndex`) → `memref.store`; a row/sub-view place (an `imm = 0` `TensorIndex`, a row
+            // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
             Opcode::TensorStore => {
-                let (base, ic, memty) = place_of.get(ins.operand1.0 as usize)?.clone()?;
-                let val = names.get(ins.operand2.0 as usize)?;
-                body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+                if let Some((base, ic, memty)) = place_of.get(ins.operand1.0 as usize)?.clone() {
+                    let val = names.get(ins.operand2.0 as usize)?;
+                    body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+                } else if let Some(rowty) = mem_of.get(ins.operand1.0 as usize)?.clone() {
+                    let dst = names.get(ins.operand1.0 as usize)?.clone();
+                    let vecname = names.get(ins.operand2.0 as usize)?.clone();
+                    let vecty = vec_of.get(ins.operand2.0 as usize)?.clone()?;
+                    let c0 = format!("%sc{idx}");
+                    body += &format!("  {c0} = arith.constant 0 : index\n");
+                    body += &format!("  vector.store {vecname}, {dst}[{c0}] : {rowty}, {vecty}\n");
+                } else {
+                    return None;
+                }
             }
-            // Anything else (spawn, tensor sub-views/reductions/elementwise, matmul, …) is outside
-            // this subset.
+            // Anything else (spawn, transfer, matmul, …) is outside this subset.
             _ => return None,
         }
     }
@@ -963,6 +1067,20 @@ mod tests {
         );
         assert!(mlir.contains("vector.load"), "{mlir}");
         assert!(mlir.contains("vector.reduction <add>"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_tensor_elementwise_and_row_store() {
+        // `o[0] = q[0] * 2.0`: an elementwise scalar-broadcast multiply over a row, stored back into a
+        // row via `vector.store`.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut q = Tensor<f32>([2, 4]); q[0][0] = 1.0; q[0][1] = 2.0; \
+             q[0][2] = 3.0; q[0][3] = 4.0; let mut o = Tensor<f32>([2, 4]); o[0] = q[0] * 2.0; \
+             let mut r = 0; if o[0][1] > 3.5 { r = 1; } return r; }",
+        );
+        assert!(mlir.contains("vector.broadcast"), "{mlir}");
+        assert!(mlir.contains("arith.mulf"), "{mlir}");
+        assert!(mlir.contains("vector.store"), "{mlir}");
     }
 
     #[test]
