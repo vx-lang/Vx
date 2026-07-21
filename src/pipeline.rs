@@ -419,7 +419,64 @@ pub fn build_frozen_registry(
     for name in ambiguous_fns {
         registry.fn_sigs.remove(&name);
     }
+
+    // Method signatures keyed by (receiver GID, method name), minted from `impl` blocks (#218). This
+    // is the GID-keyed method table that lets the frontend resolve `x.exp()` without walking borrowed
+    // AST `ImplBlock`s in `GlobalAstEnv`. The method's GID is minted from its mangled name
+    // (`<type>$<method>`, e.g. `f32$exp`); the key is `(receiver GID, unmangled method name)`.
+    use crate::syntax::types::Mangle;
+    let mut ambiguous_methods = std::collections::HashSet::new();
+    for module in modules {
+        let module_hash = crate::hash::compute_module_hash(&module.module_path);
+        for imp in &module.impls {
+            let Some(recv) = method_receiver_gid(&imp.target_type) else {
+                continue; // generic/tensor/unresolved receiver -- deferred
+            };
+            for m in &imp.methods {
+                let mangled = format!("{}${}", imp.target_type.mangle(), m.name);
+                let gid = crate::gid::TypeId::new(
+                    module_hash,
+                    crate::hash::DefPath::Named(mangled.as_str()).compute_symbol_hash(),
+                    0,
+                    0,
+                );
+                let key = (recv, m.name.clone());
+                match registry.methods.get(&key) {
+                    // Same method minted in >1 module with distinct GIDs is ambiguous -- drop it,
+                    // mirroring the `fn_sigs` policy.
+                    Some(existing) if existing.gid != gid => {
+                        ambiguous_methods.insert(key);
+                    }
+                    _ => {
+                        registry.methods.insert(
+                            key,
+                            crate::registry::FnSig {
+                                gid,
+                                ret_ty: m.return_type.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for key in ambiguous_methods {
+        registry.methods.remove(&key);
+    }
+
     Ok(registry)
+}
+
+/// The receiver GID for an `impl` target type, for the registry method table: a scalar's content-hash
+/// GID or a resolved nominal's GID. Generic/tensor/unresolved receivers are `None` (deferred).
+fn method_receiver_gid(ty: &crate::syntax::Type) -> Option<crate::gid::TypeId> {
+    use crate::syntax::{ElementType, Type};
+    match ty {
+        Type::Scalar(ElementType::Generic(_)) => None,
+        Type::Scalar(e) => Some(crate::hir::flatten::scalar_gid(e)),
+        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
+        _ => None,
+    }
 }
 
 /// The GID of a type held *by value* (a nominal struct/enum, seen through location wrappers that
@@ -870,6 +927,61 @@ mod gid_stream_tests {
         );
         let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
         assert_eq!(reg.layouts.len(), 2);
+    }
+
+    /// The GID-keyed method table (#218) resolves `(receiver GID, method) -> FnSig` for every `impl`
+    /// method -- struct and scalar receivers -- the registry-backed replacement for walking borrowed
+    /// AST `ImplBlock`s in `GlobalAstEnv`.
+    #[test]
+    fn registry_method_table_captures_impl_methods() {
+        use crate::syntax::{ElementType, Type};
+        let m = parse_and_resolve(
+            "crate::m",
+            "struct Point { x: i32, y: i32 }\n\
+             impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
+             trait Sq { fn sq(self: Self) -> f32; }\n\
+             impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
+        );
+        let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let hash = crate::hash::compute_module_hash("crate::m");
+
+        // Struct receiver: Point::sum -> i32.
+        let point_gid = reg
+            .resolve_in_module(hash, &crate::symbol::Symbol::from("Point"))
+            .unwrap();
+        let sig = reg
+            .resolve_method(point_gid, &crate::symbol::Symbol::from("sum"))
+            .expect("Point::sum in the method table");
+        assert!(matches!(sig.ret_ty, Type::Scalar(ElementType::I32)));
+
+        // Scalar receiver: f32::sq -> f32.
+        let f32_gid = crate::hir::flatten::scalar_gid(&ElementType::F32);
+        let sig = reg
+            .resolve_method(f32_gid, &crate::symbol::Symbol::from("sq"))
+            .expect("f32::sq in the method table");
+        assert!(matches!(sig.ret_ty, Type::Scalar(ElementType::F32)));
+
+        // No false positives: an absent method resolves to None.
+        assert!(reg
+            .resolve_method(f32_gid, &crate::symbol::Symbol::from("cube"))
+            .is_none());
+
+        // Dual-run parity: every impl method in the module is in the table with a matching return
+        // type -- exactly the set an AST `impls` walk (what `GlobalAstEnv` stores) would find.
+        for imp in &m.impls {
+            let recv = method_receiver_gid(&imp.target_type).expect("a concrete impl receiver");
+            for meth in &imp.methods {
+                let sig = reg
+                    .resolve_method(recv, &meth.name)
+                    .expect("impl method present in the table");
+                assert_eq!(
+                    format!("{:?}", sig.ret_ty),
+                    format!("{:?}", meth.return_type),
+                    "return type parity for {}",
+                    meth.name
+                );
+            }
+        }
     }
 
     /// The freeze computes real layouts (#199), not the earlier 0/0 stub: field offsets honour

@@ -51,6 +51,11 @@ pub struct ImmutableGlobalRegistry {
     /// one module (distinct GIDs) is omitted -- the name-keyed map can't disambiguate, so such a
     /// call declines rather than resolving to the wrong callee (mirrors the struct-GID policy).
     pub fn_sigs: FxHashMap<crate::symbol::Symbol, FnSig>,
+    /// Method signatures keyed by `(receiver type GID, method name)`, minted from `impl` blocks. This
+    /// is the GID-keyed replacement for walking borrowed AST `ImplBlock`s in `GlobalAstEnv`: method
+    /// resolution (`x.exp()`) becomes a table lookup `(type-of-x GID, "exp") -> FnSig`. See
+    /// `docs/discussions/implementation_plans/stdlib_decoupling_protocol.md` (#218).
+    pub methods: FxHashMap<(TypeId, crate::symbol::Symbol), FnSig>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -131,7 +136,14 @@ impl ImmutableGlobalRegistry {
             layouts,
             module_indices,
             fn_sigs: FxHashMap::default(),
+            methods: FxHashMap::default(),
         })
+    }
+
+    /// Resolve a method `recv.method(..)` to its signature by `(receiver GID, method name)` -- the
+    /// registry-backed method lookup that replaces the `GlobalAstEnv` `impl`-block walk (#218).
+    pub fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig> {
+        self.methods.get(&(recv, method.clone()))
     }
 }
 
