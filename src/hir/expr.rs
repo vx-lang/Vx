@@ -3686,10 +3686,14 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Attach the struct's resolved GID so downstream consumers (the flat-HIR lowerer)
-                // reach its registry layout without re-resolving the name (#199). A generic
-                // instance's monomorph has a distinct identity, so its GID is left `None` here.
+                // reach its registry layout without re-resolving the name (#199). Resolved through the
+                // registry-backed `ModuleInterface` -- the AST-free import oracle -- rather than a
+                // borrowed-AST side map (#219). A generic instance's monomorph has a distinct identity,
+                // so its GID is left `None` here; so is the empty-registry path (the sequential driver /
+                // legacy AST harnesses), where only the AST codegen runs and never reads this field.
                 let resolved_gid = if generic_args.is_empty() {
-                    self.env.struct_gids.get(&base_name).copied()
+                    let mi: &dyn crate::registry::ModuleInterface = &*self.worker.global.registry;
+                    mi.resolve_unique_nominal(&base_name)
                 } else {
                     None
                 };

@@ -1020,6 +1020,38 @@ stashing borrowed AST for imported modules. Blocked in part on cross-boundary ge
 generic fns still monomorphize from AST) — that wants `body_of` over flat HIR (#220/#221). The gate now
 guards each increment.
 
+## Entry 35 — stdlib decoupling Step 2, first flip: `StructInit` GID via the registry (#219)
+
+**Commit:** _this session_. First piece of state actually *retired* from the borrowed-AST env and
+served by `ModuleInterface` instead: the `StructInit` GID.
+
+**What we did.**
+
+- **Deleted `GlobalAstEnv::struct_gids`** — the bare-name→GID side map (and its cross-module ambiguity
+  bookkeeping) that the env kept purely to annotate `StructInit` expressions. It re-minted the *exact*
+  GID formula the frozen registry already computes, so it was redundant state the registry subsumes.
+- **`resolve_unique_nominal(name)`** on the registry + `ModuleInterface`: resolve a bare nominal name
+  to its unique GID, `None` when two modules define it with distinct GIDs (same "decline rather than
+  guess" policy the old map used). Scans `module_indices`; not a hot path.
+- **Routed the one consumer** (`check_structinit`, `expr.rs`) through `&dyn ModuleInterface`. The GID is
+  read only by the flat-HIR lowerer (`flatten.rs`: `si.type_id?` → registry layout), which always has a
+  real registry; the AST codegen never reads it, so the empty-registry driver/legacy paths (now
+  annotating `None`) are unaffected.
+
+**Why this one first.** It is the only imported-symbol resolution that is *fully* serviceable by the
+registry today with **no** dependency on later steps: pure identity, single consumer, graceful `None`.
+Imported **fn/method** AST can't be dropped yet — the driver re-checks and re-emits imported non-generic
+bodies for codegen (`driver.rs`), which is exactly what flat-HIR body linking (#220/#221) unblocks. And
+`FnSig` still lacks parameter types, and `FieldTy::Opaque` loses tensor/pointer field types — both
+needed before imported fn/struct *uses* can be type-checked off the registry.
+
+**Tests.** `resolve_unique_nominal_declines_cross_module_ambiguity` (two modules define `Point` →
+`None`; a unique struct resolves); `module_interface_serves_registry_backed_resolution` extended;
+`structinit_is_annotated_with_struct_gid` rebuilt to freeze a real registry and take the registry lookup
+as its oracle. The flat struct differential corpus (`flat_matches_ast_struct_*`) exercises the whole
+path — registry-resolved GID → flat lowering → JIT parity with the AST oracle. Full suite green
+(361 lib + 91 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

@@ -35,10 +35,6 @@ pub enum Value {
 
 pub struct GlobalAstEnv<'a> {
     pub structs: HashMap<crate::symbol::Symbol, &'a StructDecl>,
-    /// Each struct's resolved GID (`module hash` + `symbol hash`), minted exactly as the resolver /
-    /// frozen registry do (`resolver::build_symbol_map`), so the type checker can attach it to a
-    /// `StructInit` expression and downstream consumers reach the registry layout by GID (#199).
-    pub struct_gids: HashMap<crate::symbol::Symbol, crate::gid::TypeId>,
     #[allow(clippy::type_complexity)]
     pub enums: HashMap<crate::symbol::Symbol, &'a EnumDecl>,
     pub traits: HashMap<crate::symbol::Symbol, &'a TraitDecl>,
@@ -66,7 +62,6 @@ impl<'a> GlobalAstEnv<'a> {
     pub fn build_from_refs(modules: &[&'a Program]) -> Self {
         let mut env = Self {
             structs: HashMap::new(),
-            struct_gids: HashMap::new(),
             enums: HashMap::new(),
             traits: HashMap::new(),
             impls: HashMap::new(),
@@ -77,27 +72,10 @@ impl<'a> GlobalAstEnv<'a> {
             topologies: HashMap::new(),
         };
 
-        // Struct names that appear in more than one module with distinct GIDs: the name-keyed env
-        // can't say which one a bare `StructInit` means, so we annotate no GID for them (safer than
-        // a wrong one — the flat lowerer then declines that construction). Correct cross-module
-        // disambiguation would need a module-aware symbol table like `resolver::build_symbol_map`.
-        let mut ambiguous_structs: std::collections::HashSet<crate::symbol::Symbol> =
-            std::collections::HashSet::new();
-
         for &module in modules {
             let module_hash = crate::hash::compute_module_hash(&module.module_path);
             for s in &module.structs {
                 env.structs.insert(s.name.clone(), s);
-                let sym_hash = crate::hash::DefPath::Named(s.name.as_ref()).compute_symbol_hash();
-                let gid = crate::gid::TypeId::new(module_hash, sym_hash, 0, 0);
-                match env.struct_gids.get(&s.name) {
-                    Some(existing) if *existing != gid => {
-                        ambiguous_structs.insert(s.name.clone());
-                    }
-                    _ => {
-                        env.struct_gids.insert(s.name.clone(), gid);
-                    }
-                }
             }
             for m in &module.memories {
                 env.memories.insert(m.name.clone(), m);
@@ -153,9 +131,6 @@ impl<'a> GlobalAstEnv<'a> {
                     env.syntax_functions.insert(func.name.clone(), func);
                 }
             }
-        }
-        for name in ambiguous_structs {
-            env.struct_gids.remove(&name);
         }
         env
     }

@@ -33,7 +33,9 @@ mod tests {
 
     /// The type checker attaches the initialized struct's resolved GID to the `StructInit`
     /// expression (#199), so the flat-HIR lowerer can reach its registry layout without
-    /// re-resolving the name. The GID matches `GlobalAstEnv::struct_gids` (the resolver's formula).
+    /// re-resolving the name. The GID is now resolved through the frozen registry's
+    /// `ModuleInterface` (`resolve_unique_nominal`), not a borrowed-AST side map (#219), so the test
+    /// freezes a real registry and takes the same registry lookup as its oracle.
     #[test]
     fn structinit_is_annotated_with_struct_gid() {
         let input = r#"
@@ -48,14 +50,20 @@ fn make() -> Point {
         let mut program = parser.parse().unwrap();
         program.module_path = "crate::t".into();
 
+        // Resolve names, then freeze the registry so `StructInit` GID resolution has an oracle.
+        let mut mods = vec![program];
+        let symbol_map = crate::resolver::build_symbol_map(&mods);
+        mods[0].resolve_names(&symbol_map);
+        let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
+        let expected = registry
+            .resolve_unique_nominal(&crate::symbol::Symbol::from("Point"))
+            .expect("Point resolves via the interface");
+
+        let mut program = mods.pop().unwrap();
         let program_arr = [program.clone()];
         let env = GlobalAstEnv::build(&program_arr);
-        let expected = *env
-            .struct_gids
-            .get(&crate::symbol::Symbol::from("Point"))
-            .expect("Point has a GID");
         let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
-            crate::session::GlobalSession::new(1),
+            crate::session::GlobalSession::with_registry(1, registry),
         ));
         let mut checker = TypeChecker::new(&env, &mut worker);
         for f in &mut program.functions {

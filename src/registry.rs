@@ -145,6 +145,25 @@ impl ImmutableGlobalRegistry {
     pub fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig> {
         self.methods.get(&(recv, method.clone()))
     }
+
+    /// Resolve a *bare* nominal type name (no module qualifier) to its GID, iff it is unambiguous --
+    /// defined in exactly one module, or in several that agree on the GID. A name two modules define
+    /// with *distinct* GIDs returns `None`: the caller can't tell which is meant, so it is safer to
+    /// decline than to attach the wrong identity. This is the registry-backed replacement for
+    /// `GlobalAstEnv::struct_gids` (the same bare-name -> GID index the borrowed-AST env kept for
+    /// `StructInit` annotation, with the same ambiguity policy) -- #219.
+    pub fn resolve_unique_nominal(&self, name: &crate::symbol::Symbol) -> Option<TypeId> {
+        let mut found: Option<TypeId> = None;
+        for by_name in self.module_indices.values() {
+            if let Some(&gid) = by_name.get(name) {
+                match found {
+                    Some(existing) if existing != gid => return None,
+                    _ => found = Some(gid),
+                }
+            }
+        }
+        found
+    }
 }
 
 /// The query surface the frontend consults for anything defined *outside the current module* --
@@ -168,6 +187,8 @@ pub trait ModuleInterface {
     fn resolve_fn(&self, name: &crate::symbol::Symbol) -> Option<&FnSig>;
     /// Resolve a method `recv.method(..)` by `(receiver GID, method name)` (`methods`, #218).
     fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig>;
+    /// Resolve a *bare* nominal name to its unique GID (`module_indices`), `None` if ambiguous (#219).
+    fn resolve_unique_nominal(&self, name: &crate::symbol::Symbol) -> Option<TypeId>;
 }
 
 impl ModuleInterface for ImmutableGlobalRegistry {
@@ -182,6 +203,9 @@ impl ModuleInterface for ImmutableGlobalRegistry {
     }
     fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig> {
         self.methods.get(&(recv, method.clone()))
+    }
+    fn resolve_unique_nominal(&self, name: &crate::symbol::Symbol) -> Option<TypeId> {
+        ImmutableGlobalRegistry::resolve_unique_nominal(self, name)
     }
 }
 

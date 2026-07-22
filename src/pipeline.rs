@@ -1029,6 +1029,41 @@ mod gid_stream_tests {
         assert!(mi
             .resolve_method(point_gid, &crate::symbol::Symbol::from("nope"))
             .is_none());
+
+        // resolve_unique_nominal: a name defined in exactly one module resolves to its GID.
+        assert_eq!(
+            mi.resolve_unique_nominal(&crate::symbol::Symbol::from("Point")),
+            Some(point_gid)
+        );
+        assert!(mi
+            .resolve_unique_nominal(&crate::symbol::Symbol::from("Absent"))
+            .is_none());
+    }
+
+    /// `resolve_unique_nominal` (the registry-backed replacement for `GlobalAstEnv::struct_gids`,
+    /// #219) declines a bare name two modules define with *distinct* GIDs -- the caller can't tell
+    /// which is meant, so a `StructInit` gets no GID rather than the wrong one, exactly as the old
+    /// side map did.
+    #[test]
+    fn resolve_unique_nominal_declines_cross_module_ambiguity() {
+        use crate::registry::ModuleInterface;
+        let a = parse_and_resolve("crate::a", "struct Point { x: i32 }");
+        let b = parse_and_resolve(
+            "crate::b",
+            "struct Point { y: i32, z: i32 }\nstruct Only { w: i32 }",
+        );
+        let reg = build_frozen_registry(&[a, b]).expect("acyclic");
+        let mi: &dyn ModuleInterface = &reg;
+
+        // `Point` is defined in both modules with distinct GIDs -> ambiguous -> None.
+        assert!(mi
+            .resolve_unique_nominal(&crate::symbol::Symbol::from("Point"))
+            .is_none());
+        // `Only` is defined in exactly one module -> resolves.
+        let only = mi
+            .resolve_unique_nominal(&crate::symbol::Symbol::from("Only"))
+            .expect("Only is unambiguous");
+        assert_eq!(mi.layout_of(only).unwrap().name, "Only");
     }
 
     /// End-to-end for the #219 dual-run gate: freeze the registry over a module with a concrete scalar
