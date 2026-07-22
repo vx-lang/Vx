@@ -147,6 +147,44 @@ impl ImmutableGlobalRegistry {
     }
 }
 
+/// The query surface the frontend consults for anything defined *outside the current module* --
+/// backed entirely by the frozen registry, never the AST. This is the "protocol" of the
+/// stdlib<->compiler decoupling (`docs/discussions/implementation_plans/stdlib_decoupling_protocol.md`
+/// §4): resolution is identical whether the target module was just compiled (in-memory registry) or
+/// loaded from a cached artifact (a deserialized registry). Pointing the type checker's
+/// imported-symbol resolution at this interface -- instead of `GlobalAstEnv`'s borrowed AST -- is what
+/// lets the stdlib grow without expanding the AST / type-checker surface (#219).
+///
+/// The full protocol also has `resolve_trait_impl` (trait selection) and `body_of` (an impl's flat HIR
+/// stream, for cross-module monomorphization). Those need a `trait_impls` table and a GID-indexed HIR
+/// store that later steps add (#220/#221), so they are intentionally omitted here until their backing
+/// exists rather than stubbed to always-`None`.
+pub trait ModuleInterface {
+    /// Resolve `name` *defined in* the module whose hash is `module_hash` to its GID (`module_indices`).
+    fn resolve_type(&self, module_hash: u64, name: &crate::symbol::Symbol) -> Option<TypeId>;
+    /// The structural layout of a nominal type by GID (`layouts`).
+    fn layout_of(&self, ty: TypeId) -> Option<&TypeDefinition>;
+    /// Resolve a free function by name to its signature (`fn_sigs`).
+    fn resolve_fn(&self, name: &crate::symbol::Symbol) -> Option<&FnSig>;
+    /// Resolve a method `recv.method(..)` by `(receiver GID, method name)` (`methods`, #218).
+    fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig>;
+}
+
+impl ModuleInterface for ImmutableGlobalRegistry {
+    fn resolve_type(&self, module_hash: u64, name: &crate::symbol::Symbol) -> Option<TypeId> {
+        self.resolve_in_module(module_hash, name)
+    }
+    fn layout_of(&self, ty: TypeId) -> Option<&TypeDefinition> {
+        self.layouts.get(&ty)
+    }
+    fn resolve_fn(&self, name: &crate::symbol::Symbol) -> Option<&FnSig> {
+        self.fn_sigs.get(name)
+    }
+    fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig> {
+        self.methods.get(&(recv, method.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

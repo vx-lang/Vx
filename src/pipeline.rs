@@ -984,6 +984,96 @@ mod gid_stream_tests {
         }
     }
 
+    /// The `ModuleInterface` query surface (#219) resolves types, layouts, free functions and methods
+    /// entirely from the frozen registry -- the AST-free import oracle the type checker will consult
+    /// in place of `GlobalAstEnv`'s borrowed AST. Exercised through `&dyn ModuleInterface` so the trait
+    /// dispatch itself is covered, not just the inherent accessors it delegates to.
+    #[test]
+    fn module_interface_serves_registry_backed_resolution() {
+        use crate::registry::ModuleInterface;
+        use crate::syntax::{ElementType, Type};
+        let m = parse_and_resolve(
+            "crate::m",
+            "struct Point { x: i32, y: i32 }\n\
+             fn origin() -> Point { return Point { x: 0i32, y: 0i32 }; }\n\
+             impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
+             trait Sq { fn sq(self: Self) -> f32; }\n\
+             impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
+        );
+        let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let mi: &dyn ModuleInterface = &reg;
+        let hash = crate::hash::compute_module_hash("crate::m");
+
+        // resolve_type + layout_of: a nominal by (module, name) -> GID -> its structural layout.
+        let point_gid = mi
+            .resolve_type(hash, &crate::symbol::Symbol::from("Point"))
+            .expect("Point resolves via the interface");
+        let layout = mi.layout_of(point_gid).expect("Point has a layout");
+        assert_eq!(layout.name, "Point");
+
+        // resolve_fn: a free function's return type.
+        let sig = mi
+            .resolve_fn(&crate::symbol::Symbol::from("origin"))
+            .expect("origin resolves via the interface");
+        assert!(matches!(sig.ret_ty, Type::Struct(_, _)));
+
+        // resolve_method: struct and scalar receivers, and a clean miss.
+        let sum = mi
+            .resolve_method(point_gid, &crate::symbol::Symbol::from("sum"))
+            .expect("Point::sum via the interface");
+        assert!(matches!(sum.ret_ty, Type::Scalar(ElementType::I32)));
+        let f32_gid = crate::hir::flatten::scalar_gid(&ElementType::F32);
+        assert!(mi
+            .resolve_method(f32_gid, &crate::symbol::Symbol::from("sq"))
+            .is_some());
+        assert!(mi
+            .resolve_method(point_gid, &crate::symbol::Symbol::from("nope"))
+            .is_none());
+    }
+
+    /// End-to-end for the #219 dual-run gate: freeze the registry over a module with a concrete scalar
+    /// `impl` method (the shape of `impl Math for f32 { fn exp(..) }` in the stdlib), then type-check a
+    /// caller *against that registry*. The in-situ parity gate in `check_methodcall_expr` fires at the
+    /// `x.exp()` site -- the registry-backed `ModuleInterface` must resolve `(f32, "exp")` that the AST
+    /// impl-walk resolves. Passing (no debug-assert panic) proves the interface is a sufficient method
+    /// oracle at a real resolution site, not just in isolation.
+    #[test]
+    fn type_checker_method_resolution_agrees_with_registry() {
+        let mut m = parse_and_resolve(
+            "crate::m",
+            "trait Math { fn exp(self: Self) -> Self; }\n\
+             impl Math for f32 { fn exp(self: f32) -> f32 { return self; } }\n\
+             fn use_it(x: f32) -> f32 { return x.exp(); }\n",
+        );
+        let reg = build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        assert!(
+            !reg.methods.is_empty(),
+            "the registry must capture the concrete impl method for the gate to run"
+        );
+        let session = Arc::new(GlobalSession::with_registry(1, reg));
+
+        // The env borrows a *clone*, leaving `m` free to be mutated by `check_function`.
+        let env_mods = vec![m.clone()];
+        let env = GlobalAstEnv::build(&env_mods);
+        let mut worker = LocalWorkerState::new(session);
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for f in &mut m.functions {
+            checker.check_function(f);
+        }
+        // Reaching here means the dual-run gate held: the registry resolved `f32.exp` exactly where
+        // the AST walk did. Guard against silent resolution failure too (warnings are fine).
+        let hard_errors: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|d| d.level == DiagnosticLevel::Error)
+            .collect();
+        assert!(
+            hard_errors.is_empty(),
+            "type check reported errors: {:?}",
+            hard_errors
+        );
+    }
+
     /// The freeze computes real layouts (#199), not the earlier 0/0 stub: field offsets honour
     /// natural alignment, nested nominals recurse by GID, and a C-like enum is an i32 discriminant.
     #[test]

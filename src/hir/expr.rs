@@ -3127,6 +3127,48 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // Dual-run parity gate for the stdlib<->compiler decoupling (#219): when the AST
+                // impl-walk above resolves a method on a *concrete* receiver via a non-generic impl,
+                // the registry-backed `ModuleInterface` must resolve the same `(receiver GID, method)`.
+                // This proves the frozen registry is a sufficient oracle at real resolution sites --
+                // the keep-green gate before imported-symbol resolution stops consulting the borrowed
+                // AST env. Generic impls and non-nominal / generic receivers are outside the registry
+                // method table's scope (#218), so they are skipped rather than asserted. The gate only
+                // runs when a frozen registry is actually in use: an *empty* method table means this
+                // compilation never built one (the sequential driver / legacy AST-only harnesses use
+                // `GlobalSession::new`), so there is nothing to dual-run against.
+                #[cfg(debug_assertions)]
+                if let Some((ref m, ref ib)) = found_method {
+                    if !self.worker.global.registry.methods.is_empty()
+                        && ib.generics.is_empty()
+                        && m.generics.is_empty()
+                    {
+                        let mut recv = base_ty.clone();
+                        while let Type::Borrow { inner, .. }
+                        | Type::Pointer(inner, _, _)
+                        | Type::Ref(inner, _) = &recv
+                        {
+                            recv = (**inner).clone();
+                        }
+                        let recv_gid = match &recv {
+                            Type::Scalar(ElementType::Generic(_)) => None,
+                            Type::Scalar(e) => Some(crate::hir::flatten::scalar_gid(e)),
+                            Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
+                            _ => None,
+                        };
+                        if let Some(gid) = recv_gid {
+                            let mi: &dyn crate::registry::ModuleInterface =
+                                &*self.worker.global.registry;
+                            debug_assert!(
+                                mi.resolve_method(gid, &m.name).is_some(),
+                                "ModuleInterface missing a method the AST resolved: {}.{}",
+                                recv.mangle(),
+                                m.name
+                            );
+                        }
+                    }
+                }
+
                 if let Some((generic_method, _ib)) = found_method {
                     // Infer method-level generics from argument types
                     for (i, arg) in args.iter_mut().enumerate() {

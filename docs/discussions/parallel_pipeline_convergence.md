@@ -981,6 +981,45 @@ codegen and match the AST oracle's printed output.
 `sparse_local`) use `exp` — a math intrinsic the flat HIR doesn't lower yet. That's the next corpus
 step.
 
+## Entry 34 — stdlib decoupling Step 2: `ModuleInterface` + in-situ dual-run gate (#219)
+
+**Commit:** _this session_. The registry-backed import oracle (`docs/discussions/implementation_plans/ stdlib_decoupling_protocol.md` §4) gets a named query surface, and the type checker's method resolution
+is now checked against it at every real resolution site — the keep-green gate before we retire the
+borrowed-AST env for imported symbols.
+
+**What we did.**
+
+- **`ModuleInterface` trait** (`registry.rs`), implemented for `ImmutableGlobalRegistry`:
+  `resolve_type` (`module_indices`), `layout_of` (`layouts`), `resolve_fn` (`fn_sigs`), `resolve_method`
+  (`methods`, from Step 1/#218). This is the one surface the frontend consults for anything defined
+  *outside the current module* — identical whether the target was just compiled (in-memory registry) or
+  loaded from a cached artifact. `resolve_trait_impl`/`body_of` are intentionally deferred (they need a
+  `trait_impls` table + GID-indexed HIR store — #220/#221) rather than stubbed to always-`None`.
+- **In-situ dual-run gate** in `check_methodcall_expr`: after the AST `impls`-walk resolves a method on
+  a *concrete* receiver via a *non-generic* impl, a `debug_assert!` requires the registry-backed
+  `&dyn ModuleInterface` to resolve the same `(receiver GID, method)`. This proves the registry is a
+  sufficient method oracle wherever a frozen registry is actually in use.
+
+**What the gate caught.** Running it across the backend corpus immediately surfaced that the legacy
+AST-only harness (`compile_test.rs::run_backend_test`, and the sequential driver) type-checks against
+an **empty** registry (`GlobalSession::new`, no `build_frozen_registry`, no name-resolution phase) —
+so every stdlib math method (`f32.exp`, `f64.sqrt`, `i32.expect_eq`, …) tripped the assert. That is the
+gate working, not a bug in the table: those methods *are* concrete `impl`s the registry captures when a
+registry is built. The fix is a precondition — the gate only runs when `registry.methods` is non-empty,
+i.e. when this compilation actually froze a registry. Retrofitting the legacy harness to freeze one is
+out of scope (invasive to 89 passing tests; needs a name-resolution pass first) and is exactly what
+later convergence steps do.
+
+**Tests.** `pipeline::gid_stream_tests`: `module_interface_serves_registry_backed_resolution` (drives
+all four queries through `&dyn ModuleInterface`) and `type_checker_method_resolution_agrees_with_registry`
+(freezes a registry over a concrete `impl Math for f32 { fn exp }` and type-checks a `x.exp()` caller
+against it — the in-situ gate fires and holds). Full suite green (361 lib + 91 integration).
+
+**Remaining for #219 (the flip).** Point imported-name/type resolution at `ModuleInterface` and stop
+stashing borrowed AST for imported modules. Blocked in part on cross-boundary generic bodies (imported
+generic fns still monomorphize from AST) — that wants `body_of` over flat HIR (#220/#221). The gate now
+guards each increment.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
