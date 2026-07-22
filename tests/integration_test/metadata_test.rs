@@ -51,11 +51,11 @@ fn test_zero_copy_metadata_serialization() -> Result<(), String> {
         return Err("Assertion failed: content does not match".into());
     }
 
-    // Verify AST bytes are empty since we didn't add any
-    if !loaded_metadata.ast_data.is_empty() {
+    // Verify the interface section is empty since we saved only the dictionary.
+    if !loaded_metadata.interface_data.is_empty() {
         return Err(format!(
             "Assertion failed: {} != {}",
-            loaded_metadata.ast_data.len(),
+            loaded_metadata.interface_data.len(),
             0
         ));
     }

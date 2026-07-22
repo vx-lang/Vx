@@ -1052,6 +1052,35 @@ as its oracle. The flat struct differential corpus (`flat_matches_ast_struct_*`)
 path — registry-resolved GID → flat lowering → JIT parity with the AST oracle. Full suite green
 (361 lib + 91 integration).
 
+## Entry 36 — stdlib decoupling Step 3 (stage 1): the `.vxlib` interface codec (#220)
+
+**Commit:** _this session_. The serialization substrate for a precompiled module interface — the
+foundation for loading the stdlib from an artifact instead of re-parsing it every compile.
+
+**What we did.**
+
+- **Hand-rolled binary codec** in `metadata.rs` (no serde in the tree — only `bytemuck` for the POD GID
+  arrays): a little-endian `Writer`/`Reader` with bounds-checked reads, `VXLB` magic + an FNV format
+  stamp (`hash.rs`) so a stale artifact is *detected*, not misread. `serialize_registry_interface` /
+  `deserialize_registry_interface` cover the **closed** part of the frozen registry — `module_indices`
+  (identity) and `layouts` (structural layout: `TypeDefinition` / `FieldLayout` / `FieldTy` /
+  `ElementType`), i.e. the `resolve_type` / `layout_of` surface. Keys are emitted sorted, so the same
+  registry yields byte-identical output.
+- **Filled the `interface_data` slot.** Renamed `VxMetadata::ast_data` → `interface_data` (the design's
+  reserved "write the interface here" slot) and added `save_with_interface` — the container now carries
+  dictionary + interface. A round-trip *through a file* rebuilds a queryable `ImmutableGlobalRegistry`.
+
+**Why only identity + layouts this stage.** `FnSig.ret_ty` is a `syntax::Type`, and `Type::Tensor`
+carries `Vec<Expr>` dimension trees (and `Type::Const` a `Box<Expr>`) — serializing it drags in the
+whole expression AST, exactly the explosion the decoupling avoids. That `Type` encoder (for
+`fn_sigs`/`methods`) and the per-function flat HIR **body** store (the deferred `body_of`) are the next
+stages of #220; each is independently round-trip-tested.
+
+**Tests.** `registry_interface_round_trips_through_a_file` (serialize → file → load → deserialize;
+`resolve_type`/`layout_of` and every field's offset/size/type match the original; serialization is
+stable) and `deserialize_rejects_corrupt_or_stale_buffers` (bad magic / bumped format stamp / truncated
+buffer all error, none panic). Full suite green (364 lib + 91 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
