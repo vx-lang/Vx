@@ -1081,6 +1081,36 @@ stages of #220; each is independently round-trip-tested.
 stable) and `deserialize_rejects_corrupt_or_stale_buffers` (bad magic / bumped format stamp / truncated
 buffer all error, none panic). Full suite green (364 lib + 91 integration).
 
+## Entry 37 — stdlib decoupling Step 3 (stage 2): signatures — the `Type` codec (#220)
+
+**Commit:** _this session_. The interface now carries `fn_sigs` + `methods`, so `resolve_fn` /
+`resolve_method` survive the artifact round trip — the signature half of the import oracle.
+
+**What we did.**
+
+- **Recursive `syntax::Type` codec** (`metadata.rs`): all the *closed* variants round-trip faithfully
+  (scalar, struct/enum/generic nominal + optional GID, ref/pointer/borrow with memory space,
+  pinned/verified, generic-instance, function/closure, simd, matrix, unknown), plus `MemorySpace` and
+  the data-free `Topology` variants.
+- **fn_sigs / methods sections**, keyed as in the registry (fn name; `(receiver GID, method name)`),
+  each carrying the callee GID + encoded `ret_ty`. Format bumped to `v2`.
+- **Fail-closed on the `Expr` surface.** A `ret_ty` reaching a symbolic tensor dimension, a `Const`
+  expression, or a topology carrying a count is *not* misencoded — `write_type` returns `Err` and that
+  one signature is **skipped** (so `resolve_*` declines it, the registry's existing policy for
+  ambiguous names). Motivated by the data: stdlib return types are overwhelmingly scalars, generics
+  (`Self`/`T`), nominals, and `Vec<T>` / `Tensor<T>` with **empty** dimension lists — the Expr-bearing
+  paths don't occur in return positions, so nothing real is dropped. Those paths (a bounded type-level
+  `Expr` encoder) are a later refinement.
+
+**Tests.** `registry_interface_round_trips_functions_and_methods` — freeze a registry with functions
+returning a scalar, a struct, and a (dimensionless) `Tensor<f32>`, plus struct- and scalar-receiver
+methods; after serialize → deserialize, every `resolve_fn` / `resolve_method` returns an identical GID
+and return type. Full suite green (365 lib + 91 integration).
+
+**Remaining for #220.** The per-function flat HIR **body** store (`body_of`) + stream serialization
+(stage 3), then precompiling `stdlib/std` → `std.vxlib` and teaching the loader to consume it with no
+parse/typecheck of the stdlib (stage 4 — the payoff, and where loader/build architecture decisions land).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

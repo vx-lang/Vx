@@ -14,8 +14,9 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
 use crate::layout::{FieldLayout, FieldTy};
-use crate::registry::{ImmutableGlobalRegistry, TypeDefinition};
-use crate::syntax::ElementType;
+use crate::registry::{FnSig, ImmutableGlobalRegistry, TypeDefinition};
+use crate::symbol::Symbol;
+use crate::syntax::{ElementType, MemorySpace, Topology, Type};
 use rustc_hash::FxHashMap;
 use std::fs;
 use std::io;
@@ -77,16 +78,19 @@ impl<'a> VxMetadata<'a> {
 // no serde in the tree (only `bytemuck` for the POD GID arrays), so the structured tables are encoded
 // field by field. Keys are emitted in a deterministic order (sorted) so the artifact is reproducible.
 //
-// This stage covers the fully *closed* part of the interface -- `module_indices` (identity) and
-// `layouts` (structural layout), i.e. the `resolve_type` / `layout_of` queries. `fn_sigs` / `methods`
-// carry a `ret_ty: syntax::Type` (which embeds `Expr` dimension trees) and the per-function flat HIR
-// bodies are added in later stages; both need their own encoders (#220).
+// Covers `module_indices` (identity), `layouts` (structural layout), and `fn_sigs` / `methods`
+// (signatures) -- the `resolve_type` / `layout_of` / `resolve_fn` / `resolve_method` queries. A
+// signature's `ret_ty` is a recursive `syntax::Type`; its closed variants round-trip faithfully, but
+// the `Expr`-bearing paths (symbolic tensor dimensions, `Const`, a topology carrying a count) are not
+// yet encodable -- a signature whose return type reaches one is *skipped* (fail closed: `resolve_*`
+// then declines, the same policy the registry uses for ambiguous names), never misencoded. Those Expr
+// paths and the per-function flat HIR bodies are the remaining stages of #220.
 
 /// Magic bytes identifying a serialized Vx module interface.
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v1";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v2";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -290,9 +294,311 @@ fn read_type_definition(r: &mut Reader) -> Result<TypeDefinition, String> {
     })
 }
 
+fn write_opt_typeid(w: &mut Writer, id: &Option<TypeId>) {
+    match id {
+        None => w.u8(0),
+        Some(t) => {
+            w.u8(1);
+            w.typeid(t);
+        }
+    }
+}
+
+fn read_opt_typeid(r: &mut Reader) -> Result<Option<TypeId>, String> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some(r.typeid()?),
+        t => return Err(format!("vxlib: bad Option<TypeId> tag {t}")),
+    })
+}
+
+fn write_memory_space(w: &mut Writer, m: &MemorySpace) {
+    use MemorySpace::*;
+    match m {
+        CPUDRAM => w.u8(0),
+        NPUHBM => w.u8(1),
+        GpuHbm => w.u8(2),
+        LocalSRAM => w.u8(3),
+        NicRam => w.u8(4),
+        RemoteHbm => w.u8(5),
+        Custom(s) => {
+            w.u8(6);
+            w.sym(s);
+        }
+    }
+}
+
+fn read_memory_space(r: &mut Reader) -> Result<MemorySpace, String> {
+    use MemorySpace::*;
+    Ok(match r.u8()? {
+        0 => CPUDRAM,
+        1 => NPUHBM,
+        2 => GpuHbm,
+        3 => LocalSRAM,
+        4 => NicRam,
+        5 => RemoteHbm,
+        6 => Custom(r.sym()?),
+        t => return Err(format!("vxlib: bad MemorySpace tag {t}")),
+    })
+}
+
+fn write_opt_memory_space(w: &mut Writer, o: &Option<MemorySpace>) {
+    match o {
+        None => w.u8(0),
+        Some(m) => {
+            w.u8(1);
+            write_memory_space(w, m);
+        }
+    }
+}
+
+fn read_opt_memory_space(r: &mut Reader) -> Result<Option<MemorySpace>, String> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some(read_memory_space(r)?),
+        t => return Err(format!("vxlib: bad Option<MemorySpace> tag {t}")),
+    })
+}
+
+/// Only the data-free topology variants (plus the named `Custom`) are encodable so far; the ones
+/// carrying a dimension `Expr` (`NPU`/`AccCore`/`Slice`) return `Err`, which fails the whole enclosing
+/// type closed rather than dropping the count.
+fn write_topology(w: &mut Writer, t: &Topology) -> Result<(), String> {
+    use Topology::*;
+    match t {
+        CPU => w.u8(0),
+        AMX => w.u8(1),
+        ANE => w.u8(2),
+        GPU => w.u8(3),
+        CpuAvx512 => w.u8(4),
+        CpuNeon => w.u8(5),
+        Current => w.u8(6),
+        Custom(s) => {
+            w.u8(7);
+            w.sym(s);
+        }
+        NPU(_) | AccCore(_) | Slice(..) => {
+            return Err(
+                "vxlib: topology carrying a dimension expression not yet serializable".into(),
+            )
+        }
+    }
+    Ok(())
+}
+
+fn read_topology(r: &mut Reader) -> Result<Topology, String> {
+    use Topology::*;
+    Ok(match r.u8()? {
+        0 => CPU,
+        1 => AMX,
+        2 => ANE,
+        3 => GPU,
+        4 => CpuAvx512,
+        5 => CpuNeon,
+        6 => Current,
+        7 => Custom(r.sym()?),
+        t => return Err(format!("vxlib: bad Topology tag {t}")),
+    })
+}
+
+fn write_opt_topology(w: &mut Writer, o: &Option<Topology>) -> Result<(), String> {
+    match o {
+        None => w.u8(0),
+        Some(t) => {
+            w.u8(1);
+            write_topology(w, t)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_opt_topology(r: &mut Reader) -> Result<Option<Topology>, String> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some(read_topology(r)?),
+        t => return Err(format!("vxlib: bad Option<Topology> tag {t}")),
+    })
+}
+
+/// Encode a `syntax::Type`. The closed variants round-trip faithfully; the `Expr`-bearing paths
+/// (a tensor with symbolic dimensions, `Const`, `Module`) return `Err` so the caller can skip the
+/// enclosing signature rather than write a lossy type. See the module header.
+fn write_type(w: &mut Writer, ty: &Type) -> Result<(), String> {
+    use Type::*;
+    match ty {
+        Scalar(e) => {
+            w.u8(0);
+            write_element_type(w, e);
+        }
+        Struct(name, id) => {
+            w.u8(1);
+            w.sym(name);
+            write_opt_typeid(w, id);
+        }
+        Enum(name, id) => {
+            w.u8(2);
+            w.sym(name);
+            write_opt_typeid(w, id);
+        }
+        Generic(name, id) => {
+            w.u8(3);
+            w.sym(name);
+            write_opt_typeid(w, id);
+        }
+        Ref(inner, mem) => {
+            w.u8(4);
+            write_type(w, inner)?;
+            write_memory_space(w, mem);
+        }
+        Pointer(inner, mem, is_mut) => {
+            w.u8(5);
+            write_type(w, inner)?;
+            write_opt_memory_space(w, mem);
+            w.u8(*is_mut as u8);
+        }
+        Borrow {
+            inner,
+            mem_space,
+            is_mut,
+            region_id,
+        } => {
+            w.u8(6);
+            write_type(w, inner)?;
+            write_opt_memory_space(w, mem_space);
+            w.u8(*is_mut as u8);
+            w.u64(*region_id as u64);
+        }
+        Pinned(inner, top) => {
+            w.u8(7);
+            write_type(w, inner)?;
+            write_topology(w, top)?;
+        }
+        Verified(inner) => {
+            w.u8(8);
+            write_type(w, inner)?;
+        }
+        GenericInstance(base, args) => {
+            w.u8(9);
+            write_type(w, base)?;
+            w.u64(args.len() as u64);
+            for a in args {
+                write_type(w, a)?;
+            }
+        }
+        Function(params, ret) => {
+            w.u8(10);
+            w.u64(params.len() as u64);
+            for p in params {
+                write_type(w, p)?;
+            }
+            write_type(w, ret)?;
+        }
+        Closure(params, ret) => {
+            w.u8(11);
+            w.u64(params.len() as u64);
+            for p in params {
+                write_type(w, p)?;
+            }
+            write_type(w, ret)?;
+        }
+        Simd(e, n) => {
+            w.u8(12);
+            write_element_type(w, e);
+            w.u64(*n as u64);
+        }
+        Matrix => w.u8(13),
+        Unknown => w.u8(14),
+        Tensor(e, dims, top) => {
+            if !dims.is_empty() {
+                return Err(
+                    "vxlib: tensor type with dimension expressions not yet serializable".into(),
+                );
+            }
+            w.u8(15);
+            write_element_type(w, e);
+            write_opt_topology(w, top)?;
+        }
+        Const(_) => return Err("vxlib: const-expression type not yet serializable".into()),
+        Module(_, _) => return Err("vxlib: module type not serializable".into()),
+    }
+    Ok(())
+}
+
+fn read_type(r: &mut Reader) -> Result<Type, String> {
+    use Type::*;
+    Ok(match r.u8()? {
+        0 => Scalar(read_element_type(r)?),
+        1 => Struct(r.sym()?, read_opt_typeid(r)?),
+        2 => Enum(r.sym()?, read_opt_typeid(r)?),
+        3 => Generic(r.sym()?, read_opt_typeid(r)?),
+        4 => {
+            let inner = Box::new(read_type(r)?);
+            Ref(inner, read_memory_space(r)?)
+        }
+        5 => {
+            let inner = Box::new(read_type(r)?);
+            let mem = read_opt_memory_space(r)?;
+            let is_mut = r.u8()? != 0;
+            Pointer(inner, mem, is_mut)
+        }
+        6 => {
+            let inner = Box::new(read_type(r)?);
+            let mem_space = read_opt_memory_space(r)?;
+            let is_mut = r.u8()? != 0;
+            let region_id = r.u64()? as usize;
+            Borrow {
+                inner,
+                mem_space,
+                is_mut,
+                region_id,
+            }
+        }
+        7 => {
+            let inner = Box::new(read_type(r)?);
+            Pinned(inner, read_topology(r)?)
+        }
+        8 => Verified(Box::new(read_type(r)?)),
+        9 => {
+            let base = Box::new(read_type(r)?);
+            let n = r.u64()? as usize;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(read_type(r)?);
+            }
+            GenericInstance(base, args)
+        }
+        10 => {
+            let n = r.u64()? as usize;
+            let mut params = Vec::with_capacity(n);
+            for _ in 0..n {
+                params.push(read_type(r)?);
+            }
+            let ret = Box::new(read_type(r)?);
+            Function(params, ret)
+        }
+        11 => {
+            let n = r.u64()? as usize;
+            let mut params = Vec::with_capacity(n);
+            for _ in 0..n {
+                params.push(read_type(r)?);
+            }
+            let ret = Box::new(read_type(r)?);
+            Closure(params, ret)
+        }
+        12 => Simd(read_element_type(r)?, r.u64()? as usize),
+        13 => Matrix,
+        14 => Unknown,
+        15 => {
+            let e = read_element_type(r)?;
+            Tensor(e, Vec::new(), read_opt_topology(r)?)
+        }
+        t => return Err(format!("vxlib: bad Type tag {t}")),
+    })
+}
+
 /// Serialize the frozen registry's import-oracle interface to a versioned byte buffer. Covers the
-/// identity (`module_indices`) and structural-layout (`layouts`) tables -- the `resolve_type` /
-/// `layout_of` surface. Keys are sorted so the output is byte-reproducible for the same registry.
+/// identity (`module_indices`), structural-layout (`layouts`), and signature (`fn_sigs` / `methods`)
+/// tables. Keys are sorted so the output is byte-reproducible for the same registry.
 pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     let mut w = Writer::new();
     w.buf.extend_from_slice(VXLIB_MAGIC);
@@ -321,6 +627,42 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     for def in defs {
         write_type_definition(&mut w, def);
     }
+
+    // fn_sigs: sorted by name. A signature whose return type isn't encodable yet is skipped, so the
+    // count is written after the entries are built (see the module header).
+    let mut fns: Vec<(&Symbol, &FnSig)> = reg.fn_sigs.iter().collect();
+    fns.sort_by(|a, b| a.0.cmp(b.0));
+    let mut sub = Writer::new();
+    let mut n = 0u64;
+    for (name, sig) in fns {
+        let mut ret = Writer::new();
+        if write_type(&mut ret, &sig.ret_ty).is_ok() {
+            sub.sym(name);
+            sub.typeid(&sig.gid);
+            sub.buf.extend_from_slice(&ret.buf);
+            n += 1;
+        }
+    }
+    w.u64(n);
+    w.buf.extend_from_slice(&sub.buf);
+
+    // methods: sorted by (receiver GID, method name). Same skip-on-unencodable-return policy.
+    let mut meths: Vec<(&(TypeId, Symbol), &FnSig)> = reg.methods.iter().collect();
+    meths.sort_by(|a, b| a.0 .0.words.cmp(&b.0 .0.words).then(a.0 .1.cmp(&b.0 .1)));
+    let mut sub = Writer::new();
+    let mut n = 0u64;
+    for ((recv, name), sig) in meths {
+        let mut ret = Writer::new();
+        if write_type(&mut ret, &sig.ret_ty).is_ok() {
+            sub.typeid(recv);
+            sub.sym(name);
+            sub.typeid(&sig.gid);
+            sub.buf.extend_from_slice(&ret.buf);
+            n += 1;
+        }
+    }
+    w.u64(n);
+    w.buf.extend_from_slice(&sub.buf);
 
     w.buf
 }
@@ -361,11 +703,30 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         layouts.insert(def.id, def);
     }
 
+    let mut fn_sigs: FxHashMap<Symbol, FnSig> = FxHashMap::default();
+    let n_fns = r.u64()?;
+    for _ in 0..n_fns {
+        let name = r.sym()?;
+        let gid = r.typeid()?;
+        let ret_ty = read_type(&mut r)?;
+        fn_sigs.insert(name, FnSig { gid, ret_ty });
+    }
+
+    let mut methods: FxHashMap<(TypeId, Symbol), FnSig> = FxHashMap::default();
+    let n_meths = r.u64()?;
+    for _ in 0..n_meths {
+        let recv = r.typeid()?;
+        let name = r.sym()?;
+        let gid = r.typeid()?;
+        let ret_ty = read_type(&mut r)?;
+        methods.insert((recv, name), FnSig { gid, ret_ty });
+    }
+
     Ok(ImmutableGlobalRegistry {
         layouts,
         module_indices,
-        fn_sigs: FxHashMap::default(),
-        methods: FxHashMap::default(),
+        fn_sigs,
+        methods,
     })
 }
 
@@ -373,7 +734,6 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
 mod tests {
     use super::*;
     use crate::registry::ModuleInterface;
-    use crate::symbol::Symbol;
 
     fn parse_and_resolve(path: &str, src: &str) -> crate::syntax::VxModule {
         let mut lexer = crate::lexer::Lexer::new(src);
@@ -441,6 +801,52 @@ mod tests {
         }
         // The whole table came back.
         assert_eq!(reg.layouts.len(), round.layouts.len());
+    }
+
+    /// The signature tables round-trip too: `resolve_fn` / `resolve_method` return the same GID and
+    /// return type after a serialize -> deserialize cycle, across the return-type shapes the stdlib
+    /// actually uses -- scalar, nominal struct, and a (dimensionless) tensor (#220 stage 2).
+    #[test]
+    fn registry_interface_round_trips_functions_and_methods() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "struct Point { x: i32, y: i32 }\n\
+             fn origin() -> Point { return Point { x: 0i32, y: 0i32 }; }\n\
+             fn scale() -> f32 { return 2.0f32; }\n\
+             fn zeros() -> Tensor<f32> { return zeros(); }\n\
+             impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
+             trait Sq { fn sq(self: Self) -> f32; }\n\
+             impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
+        );
+        let reg =
+            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let bytes = serialize_registry_interface(&reg);
+        let round = deserialize_registry_interface(&bytes).expect("deserialize");
+
+        // Every fn_sig the original holds comes back with an identical GID + return type.
+        assert!(!reg.fn_sigs.is_empty());
+        assert_eq!(reg.fn_sigs.len(), round.fn_sigs.len());
+        for (name, sig) in &reg.fn_sigs {
+            let got = round
+                .resolve_fn(name)
+                .expect("fn resolves after round-trip");
+            assert_eq!(got.gid, sig.gid, "fn GID parity for {name}");
+            assert_eq!(got.ret_ty, sig.ret_ty, "fn return type parity for {name}");
+        }
+
+        // Same for methods, keyed by (receiver GID, method name).
+        assert!(!reg.methods.is_empty());
+        assert_eq!(reg.methods.len(), round.methods.len());
+        for ((recv, name), sig) in &reg.methods {
+            let got = round
+                .resolve_method(*recv, name)
+                .expect("method resolves after round-trip");
+            assert_eq!(got.gid, sig.gid, "method GID parity for {name}");
+            assert_eq!(
+                got.ret_ty, sig.ret_ty,
+                "method return type parity for {name}"
+            );
+        }
     }
 
     /// A bad magic, a stale format stamp, and a truncated buffer are all *detected* -- never misread.
