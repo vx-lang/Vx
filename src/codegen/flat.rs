@@ -308,8 +308,9 @@ pub fn emit_module_mlir(
             .or_insert_with(|| (elem.clone(), shape.clone()));
     }
     let mut out = String::new();
+    let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
     for (func, hir, types) in funcs {
-        out += &emit_function_mlir(func, hir, types, &ctx)?;
+        out += &emit_function_mlir(func, hir, types, &ctx, &mut calls)?;
     }
     // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
     // their implementations; the AST path declares them the same way).
@@ -327,6 +328,26 @@ pub fn emit_module_mlir(
         if out.contains(&format!("@{name}(")) {
             decls += &format!("  func.func private @{name}{sig}\n");
         }
+    }
+    // Declare any *called-but-undefined* callee (an `extern`: no `func.func @name` body emitted in this
+    // module) as `func.func private`. The signature comes from the emitted `func.call`, so they match;
+    // the JIT links the symbol (libm via `-lm`, `libvx_std_core`, ...). Deduped, in first-seen order.
+    let defined: std::collections::HashSet<&str> =
+        funcs.iter().map(|(f, _, _)| f.name.as_ref()).collect();
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, arg_types, ret) in &calls {
+        if defined.contains(name.as_str()) || !declared.insert(name.clone()) {
+            continue;
+        }
+        let ret_sig = if ret.is_empty() {
+            String::new()
+        } else {
+            format!(" -> {ret}")
+        };
+        decls += &format!(
+            "  func.func private @{name}({}){ret_sig}\n",
+            arg_types.join(", ")
+        );
     }
     Some(decls + &out)
 }
@@ -432,6 +453,7 @@ pub fn emit_function_mlir(
     hir: &[HirInstruction],
     types: &[TypeId],
     ctx: &EmitCtx,
+    calls: &mut Vec<(String, Vec<String>, String)>,
 ) -> Option<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
     // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
@@ -706,6 +728,10 @@ pub fn emit_function_mlir(
                     arg_names.join(", "),
                     arg_types.join(", "),
                 );
+                // Record the callee's signature so the module emitter can declare it if it is a
+                // called-but-undefined symbol (an `extern`): the private decl's signature is taken from
+                // the emitted call, so they match by construction.
+                calls.push((callee.name.clone(), arg_types.clone(), rt.to_string()));
                 names[idx] = nm;
                 etypes[idx] = Some(ret);
             }
@@ -989,6 +1015,7 @@ mod tests {
             &w.local_hir_stream,
             &w.local_type_stream,
             &EmitCtx::default(),
+            &mut Vec::new(),
         )
         .expect("emits flat MLIR");
 
@@ -1251,7 +1278,8 @@ mod tests {
             &f,
             &w.local_hir_stream,
             &w.local_type_stream,
-            &EmitCtx::default()
+            &EmitCtx::default(),
+            &mut Vec::new()
         )
         .is_none());
     }

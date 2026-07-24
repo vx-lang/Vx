@@ -276,6 +276,17 @@ fn flat_matches_ast_call_inside_expression() {
 }
 
 #[test]
+fn flat_matches_ast_extern_call() {
+    // An `extern` (libm `sqrtf`, linked by the JIT via `-lm`) now resolves + emits through the flat
+    // path: registered in `fn_sigs`, called, and declared `func.func private` from the call's own
+    // signature. `sqrtf(16.0) = 4.0`; compare the printed output flat-vs-AST.
+    assert_output_parity(
+        "extern { safe fn sqrtf(x: f32) -> f32; }\n\
+         fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.

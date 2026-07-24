@@ -415,6 +415,32 @@ pub fn build_frozen_registry(
                 }
             }
         }
+        // `extern` declarations are callees too (e.g. libm `sqrtf`): register their signatures so the
+        // flat HIR resolves a call to one (`flatten::lower_call`) and the emitter can declare + call it.
+        // They have no Vx body -- the emitter emits a `func.func private` decl and the JIT links the
+        // symbol (libm via `-lm`, `libvx_std_core`, ...). Same GID formula + ambiguity policy as fns.
+        for ext in &module.externs {
+            let gid = crate::gid::TypeId::new(
+                module_hash,
+                crate::hash::DefPath::Named(ext.name.as_ref()).compute_symbol_hash(),
+                0,
+                0,
+            );
+            match registry.fn_sigs.get(&ext.name) {
+                Some(existing) if existing.gid != gid => {
+                    ambiguous_fns.insert(ext.name.clone());
+                }
+                _ => {
+                    registry.fn_sigs.insert(
+                        ext.name.clone(),
+                        crate::registry::FnSig {
+                            gid,
+                            ret_ty: ext.return_type.clone(),
+                        },
+                    );
+                }
+            }
+        }
     }
     for name in ambiguous_fns {
         registry.fn_sigs.remove(&name);

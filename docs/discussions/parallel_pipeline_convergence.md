@@ -1174,6 +1174,31 @@ and (b) flat-codegen coverage of externs / math intrinsics so real stdlib bodies
 they fail-closed and skip). The **mechanism** is done and proven; wiring it to the real stdlib rides on
 finishing convergence.
 
+## Entry 40 — convergence finish (E1): extern calls lower + link through the flat path
+
+**Commit:** _this session_. The first of the two blockers to compiling a real stdlib program through the
+flat path (plan: [`convergence_finish_externs_methods_c3.md`](./implementation_plans/convergence_finish_externs_methods_c3.md)).
+A stdlib math body is `impl Math for f32 { fn exp(self) { return expf(self); } }` — a method whose body
+calls a libm **extern**; externs were entirely invisible to the flat path.
+
+**What we did.**
+
+- **Register `module.externs` in `fn_sigs`** (`build_frozen_registry`): same GID formula + cross-module
+  ambiguity drop as functions. This alone unblocks the flat HIR — `lower_call` resolves the callee via
+  `fn_sigs` — and the emitter's callee map, for scalar-returning externs (libm is all `f32→f32`).
+- **The emitter declares called-but-undefined callees.** `emit_function_mlir` records each `func.call`'s
+  `(name, arg types, ret type)`; `emit_module_mlir` emits a `func.func private @name(...)->ret` for any
+  callee that has no `func.func` body in the module (i.e. an extern) — signature taken from the emitted
+  call, so they match by construction. The JIT links the symbol (libm via `-lm`). Generalizes the old
+  hardcoded print-helper declaration list.
+
+**Test.** `flat_matches_ast_extern_call` — `extern { safe fn sqrtf(x: f32) -> f32; } fn main() { print(sqrtf(16.0)); return 0; }` lowers + emits through the flat path and its stdout (`4`) matches the
+AST oracle. (`safe` so the call needs no `unsafe` block — flat unsafe-block lowering is separate.) Full
+suite green (367 lib + 93 integration).
+
+**Next (E2).** Method calls — the type checker already rewrites `x.exp()` → `f32$exp(x)`; the emitter's
+callee map must include the emitted monomorph bodies (#217). Then E3: the `--flat-codegen` driver path.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
