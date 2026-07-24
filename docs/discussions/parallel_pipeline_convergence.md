@@ -1111,6 +1111,35 @@ and return type. Full suite green (365 lib + 91 integration).
 (stage 3), then precompiling `stdlib/std` → `std.vxlib` and teaching the loader to consume it with no
 parse/typecheck of the stdlib (stage 4 — the payoff, and where loader/build architecture decisions land).
 
+## Entry 38 — stdlib decoupling Step 3 (stage 3a): flat-HIR bodies serialize (`body_of`) (#220)
+
+**Commit:** _this session_. The `.vxlib` payload now carries function **bodies**, and `body_of` — the
+`ModuleInterface` query #219 deferred — is live. Design pinned first in
+[`vxlib_bodies_and_loader.md`](./implementation_plans/vxlib_bodies_and_loader.md) (`0c8f94a`).
+
+**What we did.**
+
+- **`FnBody { name, params, ret_ty, hir, types }`** on `ImmutableGlobalRegistry.bodies` (keyed by fn
+  GID) + `body_of` on the registry and `ModuleInterface`. Self-contained (the flat codegen reads
+  `params`/`ret_ty` off it) so linking is one lookup, not a join. **Empty in a from-scratch compile**;
+  populated only on artifact deserialization — which sidesteps the freeze/lower ordering.
+- **`Opcode::from_u32`** (a checked match over the `0..=30` discriminants — no `transmute`) + a
+  fixed-record `HirInstruction` codec; the `bodies` section appends after `methods`, format → **v3**.
+- **Fail-closed portability gate.** A body is serialized only if every GID in its type stream is global
+  (`!is_local_deferred()`); a generic-instantiation body is *skipped* so `body_of` declines it rather
+  than the artifact linking a body it can't resolve. Non-generic bodies (the stdlib's concrete methods)
+  have already-global streams — the local→global patch only touches generic deferred GIDs.
+
+**Tests.** `registry_interface_round_trips_a_flat_hir_body` — lower a real `fn add(..)` through
+`hir::flatten`, stash the `(hir, types)` as a `FnBody`, serialize → deserialize, assert `body_of`
+returns byte-identical instruction + type streams and signature; `non_portable_generic_body_is_skipped`
+(a body with a deferred GID is dropped, `body_of` is `None`). Full suite green (367 lib + 91 integration).
+
+**Remaining for #220.** stage 3b — enrich `fn_sigs`/`methods` with `params` at freeze time (shared with
+the #219 imported-call flip); stage 4 — body harvester + `vxc --emit-interface`, precompile `std.vxlib`
+in the build, loader artifact path + registry merge, codegen links `body_of` (end-to-end
+`import std::math`, unblocking the softmax corpus #217).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

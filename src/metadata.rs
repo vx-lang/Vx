@@ -13,8 +13,9 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
+use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::layout::{FieldLayout, FieldTy};
-use crate::registry::{FnSig, ImmutableGlobalRegistry, TypeDefinition};
+use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, TypeDefinition};
 use crate::symbol::Symbol;
 use crate::syntax::{ElementType, MemorySpace, Topology, Type};
 use rustc_hash::FxHashMap;
@@ -78,19 +79,21 @@ impl<'a> VxMetadata<'a> {
 // no serde in the tree (only `bytemuck` for the POD GID arrays), so the structured tables are encoded
 // field by field. Keys are emitted in a deterministic order (sorted) so the artifact is reproducible.
 //
-// Covers `module_indices` (identity), `layouts` (structural layout), and `fn_sigs` / `methods`
-// (signatures) -- the `resolve_type` / `layout_of` / `resolve_fn` / `resolve_method` queries. A
-// signature's `ret_ty` is a recursive `syntax::Type`; its closed variants round-trip faithfully, but
-// the `Expr`-bearing paths (symbolic tensor dimensions, `Const`, a topology carrying a count) are not
-// yet encodable -- a signature whose return type reaches one is *skipped* (fail closed: `resolve_*`
-// then declines, the same policy the registry uses for ambiguous names), never misencoded. Those Expr
-// paths and the per-function flat HIR bodies are the remaining stages of #220.
+// Covers `module_indices` (identity), `layouts` (structural layout), `fn_sigs` / `methods`
+// (signatures), and `bodies` (flat-HIR function bodies) -- the `resolve_type` / `layout_of` /
+// `resolve_fn` / `resolve_method` / `body_of` queries. A signature's `ret_ty` is a recursive
+// `syntax::Type`; its closed variants round-trip faithfully, but the `Expr`-bearing paths (symbolic
+// tensor dimensions, `Const`, a topology carrying a count) are not yet encodable -- a signature whose
+// return type reaches one is *skipped* (fail closed: `resolve_*` then declines, the same policy the
+// registry uses for ambiguous names), never misencoded. A body whose type stream still holds a
+// per-compilation *deferred* GID (a generic instantiation) is likewise skipped -- only fully-global
+// (non-generic) bodies are portable across a compile boundary.
 
 /// Magic bytes identifying a serialized Vx module interface.
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v2";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v3";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -596,9 +599,98 @@ fn read_type(r: &mut Reader) -> Result<Type, String> {
     })
 }
 
+fn write_hir_instruction(w: &mut Writer, ins: &HirInstruction) {
+    w.u64(ins.opcode as u32 as u64);
+    w.u64(ins.operand1.0 as u64);
+    w.u64(ins.operand2.0 as u64);
+    w.u64(ins.type_idx.0 as u64);
+    w.u64(ins.imm);
+}
+
+fn read_hir_instruction(r: &mut Reader) -> Result<HirInstruction, String> {
+    let opcode_raw = r.u64()?;
+    let opcode = u32::try_from(opcode_raw)
+        .ok()
+        .and_then(Opcode::from_u32)
+        .ok_or_else(|| format!("vxlib: bad opcode discriminant {opcode_raw}"))?;
+    let operand1 = Register(r.u64()? as u32);
+    let operand2 = Register(r.u64()? as u32);
+    let type_idx = TypeIdx(r.u64()? as u32);
+    let imm = r.u64()?;
+    Ok(HirInstruction {
+        opcode,
+        operand1,
+        operand2,
+        type_idx,
+        imm,
+    })
+}
+
+/// Encode a function body. Returns `Err` if the signature or any type-stream GID isn't portable
+/// (an unencodable return/param type, or a per-compilation deferred generic GID) -- the caller then
+/// skips it, so `body_of` declines rather than linking a body it can't resolve.
+fn write_fn_body(w: &mut Writer, gid: &TypeId, body: &FnBody) -> Result<(), String> {
+    if body.types.iter().any(|t| t.is_local_deferred()) {
+        return Err("vxlib: body carries a deferred (generic-instantiation) GID".into());
+    }
+    let mut sig = Writer::new();
+    write_type(&mut sig, &body.ret_ty)?;
+    let mut params = Writer::new();
+    for p in &body.params {
+        write_type(&mut params, p)?;
+    }
+    // Signature encoded cleanly -- now commit the whole record.
+    w.typeid(gid);
+    w.sym(&body.name);
+    w.u64(body.params.len() as u64);
+    w.buf.extend_from_slice(&params.buf);
+    w.buf.extend_from_slice(&sig.buf);
+    w.u64(body.hir.len() as u64);
+    for ins in &body.hir {
+        write_hir_instruction(w, ins);
+    }
+    w.u64(body.types.len() as u64);
+    for t in &body.types {
+        w.typeid(t);
+    }
+    Ok(())
+}
+
+fn read_fn_body(r: &mut Reader) -> Result<(TypeId, FnBody), String> {
+    let gid = r.typeid()?;
+    let name = r.sym()?;
+    let n_params = r.u64()? as usize;
+    let mut params = Vec::with_capacity(n_params);
+    for _ in 0..n_params {
+        params.push(read_type(r)?);
+    }
+    let ret_ty = read_type(r)?;
+    let n_hir = r.u64()? as usize;
+    let mut hir = Vec::with_capacity(n_hir);
+    for _ in 0..n_hir {
+        hir.push(read_hir_instruction(r)?);
+    }
+    let n_types = r.u64()? as usize;
+    let mut types = Vec::with_capacity(n_types);
+    for _ in 0..n_types {
+        types.push(r.typeid()?);
+    }
+    Ok((
+        gid,
+        FnBody {
+            name,
+            params,
+            ret_ty,
+            hir,
+            types,
+        },
+    ))
+}
+
 /// Serialize the frozen registry's import-oracle interface to a versioned byte buffer. Covers the
-/// identity (`module_indices`), structural-layout (`layouts`), and signature (`fn_sigs` / `methods`)
-/// tables. Keys are sorted so the output is byte-reproducible for the same registry.
+/// identity (`module_indices`), structural-layout (`layouts`), signature (`fn_sigs` / `methods`), and
+/// flat-HIR-body (`bodies`) tables. Keys are sorted so the output is byte-reproducible for the same
+/// registry.
 pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     let mut w = Writer::new();
     w.buf.extend_from_slice(VXLIB_MAGIC);
@@ -664,6 +756,22 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     w.u64(n);
     w.buf.extend_from_slice(&sub.buf);
 
+    // bodies: sorted by GID words. A non-portable body (unencodable signature or a deferred generic
+    // GID) is skipped, so the count is written after the encodable entries are built.
+    let mut bodies: Vec<(&TypeId, &FnBody)> = reg.bodies.iter().collect();
+    bodies.sort_by_key(|(gid, _)| gid.words);
+    let mut sub = Writer::new();
+    let mut n = 0u64;
+    for (gid, body) in bodies {
+        let mut one = Writer::new();
+        if write_fn_body(&mut one, gid, body).is_ok() {
+            sub.buf.extend_from_slice(&one.buf);
+            n += 1;
+        }
+    }
+    w.u64(n);
+    w.buf.extend_from_slice(&sub.buf);
+
     w.buf
 }
 
@@ -722,11 +830,19 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         methods.insert((recv, name), FnSig { gid, ret_ty });
     }
 
+    let mut bodies: FxHashMap<TypeId, FnBody> = FxHashMap::default();
+    let n_bodies = r.u64()?;
+    for _ in 0..n_bodies {
+        let (gid, body) = read_fn_body(&mut r)?;
+        bodies.insert(gid, body);
+    }
+
     Ok(ImmutableGlobalRegistry {
         layouts,
         module_indices,
         fn_sigs,
         methods,
+        bodies,
     })
 }
 
@@ -847,6 +963,88 @@ mod tests {
                 "method return type parity for {name}"
             );
         }
+    }
+
+    /// A real function's flat-HIR body round-trips: lower `fn add(..)` to flat HIR, stash it as a
+    /// `FnBody` keyed by the fn GID, serialize -> deserialize, and assert `body_of` returns the
+    /// identical instruction stream, type stream, and signature (#220 stage 3).
+    #[test]
+    fn registry_interface_round_trips_a_flat_hir_body() {
+        use std::sync::Arc;
+        let m = parse_and_resolve(
+            "crate::m",
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }",
+        );
+        let mut reg =
+            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+
+        // Lower `add` to flat HIR (a scalar body needs no populated registry).
+        let func = m
+            .functions
+            .iter()
+            .find(|f| f.name.as_ref() == "add")
+            .unwrap();
+        let mut worker =
+            crate::session::LocalWorkerState::new(Arc::new(crate::session::GlobalSession::new(1)));
+        assert!(
+            crate::hir::flatten::lower_function_to_hir(func, &mut worker),
+            "add lowers to flat HIR"
+        );
+        assert!(!worker.local_hir_stream.is_empty());
+
+        let gid = reg.fn_sigs.get(&func.name).expect("add in fn_sigs").gid;
+        let body = FnBody {
+            name: func.name.clone(),
+            params: func.params.iter().map(|(_, t)| t.clone()).collect(),
+            ret_ty: func.return_type.clone(),
+            hir: worker.local_hir_stream.clone(),
+            types: worker.local_type_stream.clone(),
+        };
+        reg.bodies.insert(gid, body.clone());
+
+        let bytes = serialize_registry_interface(&reg);
+        let round = deserialize_registry_interface(&bytes).expect("deserialize");
+        let got = round.body_of(gid).expect("body_of after round-trip");
+        assert_eq!(got.name, body.name);
+        assert_eq!(got.params, body.params);
+        assert_eq!(got.ret_ty, body.ret_ty);
+        assert_eq!(got.hir, body.hir, "instruction stream parity");
+        assert_eq!(got.types, body.types, "type stream parity");
+    }
+
+    /// The portability gate: a body whose type stream still holds a per-compilation *deferred* GID (a
+    /// generic instantiation) is not portable, so it is *skipped* on serialize -- `body_of` then
+    /// declines it rather than the artifact linking a body it can't resolve (#220, fail-closed).
+    #[test]
+    fn non_portable_generic_body_is_skipped() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }",
+        );
+        let mut reg =
+            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let gid = reg.fn_sigs.get(&Symbol::from("add")).unwrap().gid;
+
+        // A body whose type stream carries a deferred (word-3 escape-hatch) GID is non-portable.
+        let deferred = TypeId::new(0xAAAA, 0xBBBB, 0, crate::gid::LOCAL_DEFERRED_BIT);
+        assert!(deferred.is_local_deferred());
+        reg.bodies.insert(
+            gid,
+            FnBody {
+                name: Symbol::from("add"),
+                params: vec![Type::Scalar(ElementType::I32)],
+                ret_ty: Type::Scalar(ElementType::I32),
+                hir: Vec::new(),
+                types: vec![deferred],
+            },
+        );
+
+        let round = deserialize_registry_interface(&serialize_registry_interface(&reg))
+            .expect("deserialize");
+        assert!(
+            round.body_of(gid).is_none(),
+            "a body with a deferred GID must not be serialized"
+        );
     }
 
     /// A bad magic, a stale format stamp, and a truncated buffer are all *detected* -- never misread.

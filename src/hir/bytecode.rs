@@ -105,6 +105,49 @@ pub enum Opcode {
     Print = 30,
 }
 
+impl Opcode {
+    /// Recover an opcode from its `#[repr(u32)]` discriminant, e.g. when decoding a serialized flat
+    /// HIR body (`crate::metadata`). Returns `None` for an out-of-range value -- a checked conversion,
+    /// never a `transmute`, so a corrupt/forward-version stream is rejected rather than UB.
+    pub fn from_u32(v: u32) -> Option<Self> {
+        use Opcode::*;
+        Some(match v {
+            0 => Nop,
+            1 => Const,
+            2 => Load,
+            3 => Store,
+            4 => Add,
+            5 => Sub,
+            6 => Mul,
+            7 => Div,
+            8 => Call,
+            9 => Ret,
+            10 => Matmul,
+            11 => Cmp,
+            12 => Cast,
+            13 => Neg,
+            14 => Not,
+            15 => Alloca,
+            16 => SlotLoad,
+            17 => Br,
+            18 => CondBr,
+            19 => BlockStart,
+            20 => Spawn,
+            21 => SpawnEnd,
+            22 => FieldLoad,
+            23 => FieldStore,
+            24 => TensorIndex,
+            25 => Reduce,
+            26 => TensorAlloc,
+            27 => TensorStore,
+            28 => Transfer,
+            29 => Arg,
+            30 => Print,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Register(pub u32);
 

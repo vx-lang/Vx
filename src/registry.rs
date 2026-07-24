@@ -42,6 +42,22 @@ pub struct FnSig {
     pub ret_ty: crate::syntax::Type,
 }
 
+/// A function's precompiled flat-HIR body, keyed in the registry by the function's GID. Self-contained
+/// so the flat codegen needs one lookup, not a join: it carries the signature (`emit_function_mlir`
+/// reads `params` + `ret_ty` to emit the MLIR header) alongside the instruction + type streams. Only
+/// non-generic bodies -- whose `types` are already global content-hash GIDs -- are portable across a
+/// compile boundary; see `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md` (#220).
+#[derive(Debug, Clone)]
+pub struct FnBody {
+    /// The MLIR symbol / mangled emit name of the function.
+    pub name: crate::symbol::Symbol,
+    pub params: Vec<crate::syntax::Type>,
+    pub ret_ty: crate::syntax::Type,
+    pub hir: Vec<crate::hir::bytecode::HirInstruction>,
+    /// The body's type stream (global GIDs), indexed by each instruction's `type_idx`.
+    pub types: Vec<TypeId>,
+}
+
 /// The globally frozen type registry for parallel compilation phases.
 #[derive(Debug)]
 pub struct ImmutableGlobalRegistry {
@@ -56,6 +72,12 @@ pub struct ImmutableGlobalRegistry {
     /// resolution (`x.exp()`) becomes a table lookup `(type-of-x GID, "exp") -> FnSig`. See
     /// `docs/discussions/implementation_plans/stdlib_decoupling_protocol.md` (#218).
     pub methods: FxHashMap<(TypeId, crate::symbol::Symbol), FnSig>,
+    /// Precompiled flat-HIR bodies keyed by function GID -- the `body_of` backing. **Empty in a
+    /// from-scratch compile** (the live pipeline keeps bodies in the per-worker streams); populated
+    /// only when a registry is *deserialized from a `.vxlib` artifact*, so a downstream compile can
+    /// link an imported module's bodies without its AST (#220). See
+    /// `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`.
+    pub bodies: FxHashMap<TypeId, FnBody>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -137,6 +159,7 @@ impl ImmutableGlobalRegistry {
             module_indices,
             fn_sigs: FxHashMap::default(),
             methods: FxHashMap::default(),
+            bodies: FxHashMap::default(),
         })
     }
 
@@ -164,6 +187,13 @@ impl ImmutableGlobalRegistry {
         }
         found
     }
+
+    /// The precompiled flat-HIR body of the function identified by `gid`, if the registry carries one
+    /// (i.e. it was deserialized from an artifact and the body was portable). `None` in a from-scratch
+    /// compile, where bodies live in the per-worker streams instead (#220).
+    pub fn body_of(&self, gid: TypeId) -> Option<&FnBody> {
+        self.bodies.get(&gid)
+    }
 }
 
 /// The query surface the frontend consults for anything defined *outside the current module* --
@@ -174,10 +204,10 @@ impl ImmutableGlobalRegistry {
 /// imported-symbol resolution at this interface -- instead of `GlobalAstEnv`'s borrowed AST -- is what
 /// lets the stdlib grow without expanding the AST / type-checker surface (#219).
 ///
-/// The full protocol also has `resolve_trait_impl` (trait selection) and `body_of` (an impl's flat HIR
-/// stream, for cross-module monomorphization). Those need a `trait_impls` table and a GID-indexed HIR
-/// store that later steps add (#220/#221), so they are intentionally omitted here until their backing
-/// exists rather than stubbed to always-`None`.
+/// The full protocol also has `resolve_trait_impl` (trait selection); that needs a `trait_impls` table
+/// a later step adds (#221), so it is intentionally omitted here until its backing exists rather than
+/// stubbed to always-`None`. `body_of` (a function's flat HIR body, for cross-module linking /
+/// monomorphization) is backed by the `bodies` table populated on artifact deserialization (#220).
 pub trait ModuleInterface {
     /// Resolve `name` *defined in* the module whose hash is `module_hash` to its GID (`module_indices`).
     fn resolve_type(&self, module_hash: u64, name: &crate::symbol::Symbol) -> Option<TypeId>;
@@ -189,6 +219,9 @@ pub trait ModuleInterface {
     fn resolve_method(&self, recv: TypeId, method: &crate::symbol::Symbol) -> Option<&FnSig>;
     /// Resolve a *bare* nominal name to its unique GID (`module_indices`), `None` if ambiguous (#219).
     fn resolve_unique_nominal(&self, name: &crate::symbol::Symbol) -> Option<TypeId>;
+    /// The precompiled flat-HIR body of the function identified by `gid` (`bodies`), `None` when this
+    /// registry carries no body for it (a from-scratch compile, or a non-portable body) -- #220.
+    fn body_of(&self, gid: TypeId) -> Option<&FnBody>;
 }
 
 impl ModuleInterface for ImmutableGlobalRegistry {
@@ -206,6 +239,9 @@ impl ModuleInterface for ImmutableGlobalRegistry {
     }
     fn resolve_unique_nominal(&self, name: &crate::symbol::Symbol) -> Option<TypeId> {
         ImmutableGlobalRegistry::resolve_unique_nominal(self, name)
+    }
+    fn body_of(&self, gid: TypeId) -> Option<&FnBody> {
+        self.bodies.get(&gid)
     }
 }
 
