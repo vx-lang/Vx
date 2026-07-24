@@ -438,6 +438,15 @@ impl<'r> Lowerer<'r> {
                     kind,
                 ))
             }
+            // `unsafe { .. }` in value position (e.g. a stdlib wrapper's `return unsafe { sqrtf(self) }`).
+            // Safety was checked upstream, so `unsafe` is transparent to lowering: run the block's
+            // statements, then yield its trailing value expression.
+            Expr::UnsafeBlock(u) => {
+                for s in &u.stmts {
+                    self.lower_stmt(s)?;
+                }
+                self.lower_expr(u.ret.as_deref()?)
+            }
             _ => None,
         }
     }
@@ -1976,5 +1985,21 @@ mod tests {
         let mut w = worker();
         assert!(!lower_function_to_hir(&f, &mut w));
         assert!(w.local_hir_stream.is_empty());
+    }
+
+    #[test]
+    fn unsafe_block_lowers_transparently() {
+        // `unsafe` is transparent to lowering (safety was checked upstream): `return unsafe { a * a }`
+        // lowers exactly as `return a * a`. This is what lets a stdlib wrapper body like
+        // `return unsafe { sqrtf(self) }` lower through the flat path (#217).
+        let f = parse_fn("fn sq(a: f32) -> f32 { return unsafe { a * a }; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "unsafe-block body lowers"
+        );
+        assert!(w.local_hir_stream.iter().any(|i| i.opcode == Opcode::Mul));
+        assert_eq!(w.local_hir_stream.last().unwrap().opcode, Opcode::Ret);
+        verify_hir_stream(&w);
     }
 }

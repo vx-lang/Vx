@@ -681,22 +681,50 @@ impl CompilerDriver {
         let registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
         let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
-        // Lower every non-generic function (deduped by name, main-module version wins) so each called
-        // Vx function has a body; only true externs stay undeclared (the emitter declares them
-        // `func.func private`). Decline the whole program if any function is outside the flat subset.
-        let mut seen = std::collections::HashSet::new();
-        let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
+        // Index every non-generic function by name (the main-module version wins any collision).
+        let mut fn_map: std::collections::HashMap<crate::symbol::Symbol, &crate::syntax::Function> =
+            std::collections::HashMap::new();
         for m in &mods {
             for f in &m.functions {
-                if !f.generics.is_empty() || !seen.insert(f.name.clone()) {
-                    continue;
+                if f.generics.is_empty() {
+                    fn_map.entry(f.name.clone()).or_insert(f);
                 }
-                let mut worker = LocalWorkerState::new(session.clone());
-                if !crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
-                    return None;
-                }
-                entries.push((f.clone(), worker));
             }
+        }
+
+        // Lower everything reachable from the main module (its own functions + the monomorphs
+        // type-checking appended are the roots; a BFS over each body's called names pulls in
+        // transitively-called *imported* functions on demand — not the whole imported module). An
+        // extern is not a function (not in `fn_map`), so it is skipped here and declared
+        // `func.func private` at emit; the JIT links it. Decline (→ AST fallback) if any reachable
+        // function is outside the flat subset — never a wrong result.
+        let mut worklist: Vec<crate::symbol::Symbol> = mods[0]
+            .functions
+            .iter()
+            .filter(|f| f.generics.is_empty())
+            .map(|f| f.name.clone())
+            .collect();
+        let mut lowered_names = std::collections::HashSet::new();
+        let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
+        while let Some(name) = worklist.pop() {
+            if !lowered_names.insert(name.clone()) {
+                continue;
+            }
+            let Some(f) = fn_map.get(&name).copied() else {
+                continue; // an extern or a non-function name use -> not lowered here
+            };
+            let mut worker = LocalWorkerState::new(session.clone());
+            if !crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
+                return None;
+            }
+            let mut uses = std::collections::HashSet::new();
+            for s in &f.body {
+                TypeChecker::extract_uses_stmt(s, &mut uses);
+            }
+            for u in uses {
+                worklist.push(crate::symbol::Symbol::from(u.as_str()));
+            }
+            entries.push((f.clone(), worker));
         }
         let funcs: Vec<(&crate::syntax::Function, &[_], &[_])> = entries
             .iter()

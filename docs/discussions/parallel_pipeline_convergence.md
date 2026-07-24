@@ -1227,6 +1227,37 @@ vs None (struct → fallback). Full suite green (368 lib + 93 integration).
 rewrites `x.exp()` → `f32$exp(x)` but the monomorph isn't in the frozen `fn_sigs`); then flip default,
 AST behind `--legacy-codegen`. With that, `import std::math` compiles from `std.vxlib` end to end.
 
+## Entry 42 — convergence finish (E2): a real stdlib method call runs through the flat path (#217)
+
+**Commit:** _this session_. `vxc --flat-codegen --run` now compiles + runs `import std::math; (16.0f32).sqrt()` **entirely through the flat codegen** → `4`; `(1.0f32).exp()` → `2.7182817`. The
+method-dispatch blocker is closed.
+
+**The chain, and the two fixes that closed it.**
+
+1. **Reachability in `build_flat_module`.** The driver's `monomorphized_ast` already carries the method
+   monomorph (`f32$sqrt`, the type checker's `x.sqrt()` → `f32$sqrt(x)` rewrite) in its `functions`. But
+   lowering *every* function of *every* imported module sank the program — std::math has ~40, some
+   outside the flat subset. Now `build_flat_module` lowers only what's **reachable from the main
+   module** (roots = main's functions incl. monomorphs; a BFS over each body's called names pulls in
+   transitively-called imported functions on demand). Externs aren't functions → skipped here, declared
+   `func.func private` at emit. For `sqrt`, the reachable set is just `main` + `f32$sqrt` + the `sqrtf`
+   extern.
+1. **`unsafe` blocks lower.** The stdlib wrapper body is `return unsafe { sqrtf(self) }`. Safety is
+   checked upstream, so `unsafe` is transparent to lowering: an `Expr::UnsafeBlock` arm runs the block's
+   statements and yields its trailing value. That was the actual decline point (`f32$sqrt` declined
+   before this).
+
+With E1 (externs) already in, the extern call inside the wrapper links via `-lm`.
+
+**Tests.** `unsafe_block_lowers_transparently` (flatten unit); differential `flat_matches_ast_unsafe_ extern_call` (the wrapper shape) and `flat_matches_ast_scalar_method_call` (method dispatch flat-vs-AST
+— the harness now collects the checker's monomorphizations, appends + re-registers them, mirroring the
+driver). Full suite green (369 lib + 95 integration).
+
+**Where the flip stands.** `--flat-codegen` now handles the scalar / control-flow / call / extern /
+tensor / **method-dispatch** subset (AST fallback for the rest). Remaining for the *default* flip:
+emitter breadth — `Cast`/`Neg`/`Not` (#214, note `Neg` HIR-lowers but the emitter still declines) and
+struct returns (#215) — then flip default, AST behind `--legacy-codegen`.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

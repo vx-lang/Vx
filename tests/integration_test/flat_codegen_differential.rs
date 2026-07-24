@@ -91,6 +91,11 @@ fn ast_llvm(src: &str) -> String {
         checker.check_function(f);
     }
     assert_eq!(checker.errors.error_count(), 0, "AST type-checks");
+    // Append the monomorphs the checker collected (method-call rewrites like `x.sq()` -> `f32$sq`,
+    // generic instances) so their bodies emit and the rewritten calls resolve — as the driver does.
+    for (f, _) in std::mem::take(&mut checker.monomorphized_functions) {
+        program.functions.push(f);
+    }
 
     let context = make_context();
     let mut codegen = MeliorGenerator::new(&context, "diff_ast".to_string());
@@ -120,17 +125,30 @@ fn flat_llvm(src: &str) -> Option<String> {
     let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
     let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
-    // Type-check so the type checker annotates each `StructInit` with its struct GID (a scratch
-    // worker; the annotation lands on the AST, which the per-function lowering below then reads).
+    // Type-check so the checker annotates each `StructInit` with its struct GID and collects
+    // monomorphizations (method-call rewrites like `x.sq()` -> `f32$sq`, generic instances). A scratch
+    // worker; the annotation lands on the AST, which the per-function lowering below then reads.
     let env_mods = mods.clone();
     let env = GlobalAstEnv::build(&env_mods);
-    {
+    let monos = {
         let mut scratch = LocalWorkerState::new(session.clone());
         let mut checker = TypeChecker::new(&env, &mut scratch);
         for f in &mut mods[0].functions {
             checker.check_function(f);
         }
+        checker.monomorphized_functions
+    };
+    if !monos.is_empty() {
+        // Append the monomorph bodies, then re-resolve + rebuild the registry so they land in
+        // `fn_sigs` (a rewritten `f32$sq(x)` resolves its callee) — mirroring the driver's flat path.
+        for (f, _) in monos {
+            mods[0].functions.push(f);
+        }
+        let symbol_map = vxc::resolver::build_symbol_map(&mods);
+        mods[0].resolve_names(&symbol_map);
     }
+    let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
     // Lower every function into its own worker; decline the whole program if any
     // function is outside the flat subset (module-level keep-green atomicity).
@@ -283,6 +301,29 @@ fn flat_matches_ast_extern_call() {
     assert_output_parity(
         "extern { safe fn sqrtf(x: f32) -> f32; }\n\
          fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_scalar_method_call() {
+    // Method dispatch through the flat path (#217): the type checker rewrites `(3.0).sq()` ->
+    // `f32$sq(3.0)` and monomorphizes the body; the harness appends + registers the monomorph, so the
+    // flat path lowers the caller + the `f32$sq` body together. `3*3 = 9`; output matches the AST path.
+    assert_output_parity(
+        "trait Sq { fn sq(self: Self) -> f32; }\n\
+         impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n\
+         fn main() -> i32 { print((3.0f32).sq()); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_unsafe_extern_call() {
+    // The stdlib math-wrapper shape: a (non-safe) extern called inside an `unsafe { .. }` value block
+    // (`impl Math for f32 { fn sqrt(self) { return unsafe { sqrtf(self) }; } }`). `unsafe` is
+    // transparent to lowering, so both lower through the flat path; stdout matches the AST oracle.
+    assert_output_parity(
+        "extern { fn sqrtf(x: f32) -> f32; }\n\
+         fn main() -> i32 { print(unsafe { sqrtf(16.0) }); return 0; }",
     );
 }
 
