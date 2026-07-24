@@ -1278,6 +1278,37 @@ cases. Full suite green (370 lib + 97 integration).
 **Remaining before the flip:** struct returns (#215), then a corpus-wide flat-vs-AST validation, then
 flip the default (AST behind `--legacy-codegen`).
 
+## Entry 44 — C3: the flat codegen is the production default (#201)
+
+**Commit:** _this session_. `vxc` now compiles through the **flat codegen by default**; the AST-walk
+`MeliorGenerator` moves behind `--legacy-codegen`. This is the C3 flip — the flat-array pipeline is the
+production path, the core claim of the convergence.
+
+**What we did.**
+
+- Inverted the driver flag: flat is the default (`build_flat_module` first), `--legacy-codegen` forces
+  the AST path. Per-program **AST fallback** is unchanged — a module outside the flat subset silently
+  compiles through AST, so output never changes. The `[flat-codegen] …` markers moved to stderr.
+- `test_optimizations` (FileCheck over `--emit-mlir`, pinned to the AST codegen's module structure) now
+  passes `--legacy-codegen`, so it keeps validating the AST path; the flat path's emission is validated
+  by the flat-vs-AST differential harness.
+
+**Validation — the whole reason this is safe.** Swept the **entire backend corpus** (~115 programs)
+through both paths, normalized (stderr excluded, pointers canonicalized): **every program the flat path
+accepts (~27) produces byte-identical stdout to the AST path.** The only 4 residual diffs are
+pre-existing *AST-path* non-determinism (timing benchmarks, `unwind`) in programs that don't even use
+flat; `llama2_v2`'s `malloc_N` link error is pre-existing in the AST path (flat declines it). **Zero
+flat accept-but-miscompile cases.** Full suite green (370 lib + 97 integration).
+
+**What flows through flat now:** scalar arith + control flow + calls + **externs** + **method dispatch**
+(a real `import std::math; x.sqrt()`) + tensors (reductions/elementwise/row store/transfer) + `print` +
+scalar unary/`as` casts. Outside the subset (struct returns #215, spawn, richer generics, …) →
+AST fallback.
+
+**Remaining (post-flip polish, not blockers):** widen the emitter so more of the corpus takes the flat
+path (struct returns #215, …); a soak; then eventually retire the AST back end. The convergence's
+production-path flip itself is **done**.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

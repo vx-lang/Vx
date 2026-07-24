@@ -775,6 +775,11 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
         }
 
         let bin_path = if exec_name == "vxc" {
+            // These FileCheck tests pin the *AST* codegen's MLIR structure (module attributes, op
+            // shapes). Flat codegen is now the default (#201), so force the legacy AST path here; the
+            // flat path's emission is validated separately by the flat-vs-AST differential harness.
+            // Harmless for `-x mlir` RUN lines (no Vx codegen runs).
+            args.push("--legacy-codegen".to_string());
             env!("CARGO_BIN_EXE_vxc")
         } else if exec_name == "vx-opt" {
             env!("CARGO_BIN_EXE_vx-opt")

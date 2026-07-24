@@ -87,11 +87,12 @@ pub struct DriverOptions {
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
 
-    /// Use the flat-array codegen path (`local_hir_stream` → `flat::emit_module_mlir`) instead of the
-    /// AST-walk `MeliorGenerator`. Falls back to the AST path for any program outside the flat subset,
-    /// so it never regresses. The convergence path toward making the flat pipeline the default (#201).
-    #[arg(long = "flat-codegen")]
-    pub flat_codegen: bool,
+    /// Use the legacy AST-walk `MeliorGenerator` codegen instead of the default flat-array path
+    /// (`local_hir_stream` → `flat::emit_module_mlir`). The flat path is the default (#201) and falls
+    /// back to this AST path per-program for anything outside the flat subset, so output never changes;
+    /// `--legacy-codegen` forces the AST path for the whole compile.
+    #[arg(long = "legacy-codegen")]
+    pub legacy_codegen: bool,
 
     /// Discharge per-seam boundary obligations at cross-device transfers (assert
     /// pre-scan + z3 checks). Off by default; requires z3 on PATH (fails open if absent).
@@ -499,23 +500,24 @@ impl CompilerDriver {
         context.load_all_available_dialects();
         codegen::register_vx_dialect(&context);
 
-        // The flat-array codegen path (opt-in): produce the module from `local_hir_stream` via
-        // `flat::emit_module_mlir` instead of the AST walk. Declines (falls back) for anything outside
-        // the flat subset, so `--flat-codegen` never regresses against the AST oracle (#201).
-        let flat_module = if self.options.flat_codegen {
-            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes)
-        } else {
+        // The flat-array codegen path is the default: produce the module from `local_hir_stream` via
+        // `flat::emit_module_mlir` instead of the AST walk. It declines (falls back) for anything
+        // outside the flat subset, so it never regresses against the AST oracle; `--legacy-codegen`
+        // forces the AST path (#201).
+        let flat_module = if self.options.legacy_codegen {
             None
+        } else {
+            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes)
         };
 
         let mut module = match flat_module {
             Some(m) => {
-                println!("[flat-codegen] emitted module via the flat path");
+                eprintln!("[flat-codegen] emitted module via the flat path");
                 m
             }
             None => {
-                if self.options.flat_codegen {
-                    println!("[flat-codegen] program outside the flat subset; using the AST path");
+                if !self.options.legacy_codegen {
+                    eprintln!("[flat-codegen] program outside the flat subset; using the AST path");
                 }
                 let mut codegen =
                     MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
