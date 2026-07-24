@@ -479,6 +479,62 @@ fn method_receiver_gid(ty: &crate::syntax::Type) -> Option<crate::gid::TypeId> {
     }
 }
 
+/// Build a serialized `.vxlib` module interface for `modules`: the frozen registry (types, layouts,
+/// signatures) plus the flat-HIR bodies of the non-generic free functions that lower completely and
+/// portably. This is the artifact producer -- a downstream compile deserializes it and resolves + links
+/// the module with no AST (#220, `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`).
+pub fn emit_module_interface(modules: &[VxModule]) -> Result<Vec<u8>, PipelineError> {
+    let mut registry = build_frozen_registry(modules)?;
+    harvest_bodies(&mut registry, modules)?;
+    Ok(crate::metadata::serialize_registry_interface(&registry))
+}
+
+/// Lower each non-generic free function to flat HIR and stash a portable `FnBody` in `registry.bodies`,
+/// keyed by the function's GID (from `fn_sigs`). A function that declines to lower, or whose type stream
+/// still holds a per-compilation deferred GID, is skipped -- fail-closed, so the artifact carries only
+/// linkable bodies. (Methods await flat method-call lowering, #217.)
+fn harvest_bodies(
+    registry: &mut crate::registry::ImmutableGlobalRegistry,
+    modules: &[VxModule],
+) -> Result<(), PipelineError> {
+    // A separate, deterministic registry build backs the lowering session (identical GIDs); the frozen
+    // registry we attach bodies to is not `Clone`.
+    let session_reg = build_frozen_registry(modules)?;
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, session_reg));
+    for module in modules {
+        for func in &module.functions {
+            if !func.generics.is_empty() {
+                continue;
+            }
+            let Some(gid) = registry.fn_sigs.get(&func.name).map(|s| s.gid) else {
+                continue; // ambiguous across modules -> dropped from fn_sigs
+            };
+            let mut worker = LocalWorkerState::new(session.clone());
+            if !crate::hir::flatten::lower_function_to_hir(func, &mut worker) {
+                continue;
+            }
+            if worker
+                .local_type_stream
+                .iter()
+                .any(|t| t.is_local_deferred())
+            {
+                continue;
+            }
+            registry.bodies.insert(
+                gid,
+                crate::registry::FnBody {
+                    name: func.name.clone(),
+                    params: func.params.iter().map(|(_, t)| t.clone()).collect(),
+                    ret_ty: func.return_type.clone(),
+                    hir: worker.local_hir_stream,
+                    types: worker.local_type_stream,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The GID of a type held *by value* (a nominal struct/enum, seen through location wrappers that
 /// add no indirection). A `Ref`/`Pointer`/`Borrow` breaks containment (and any cycle), so it is
 /// not a by-value dependency and returns `None`. (Generic instantiations are not yet followed for

@@ -37,6 +37,9 @@ pub enum Action {
     EmitObj,
     /// Parse, typecheck, emit MLIR, lower to LLVM dialect, and translate to LLVM IR
     EmitLlvm,
+    /// Serialize this module's import interface (frozen registry + flat-HIR bodies) to a `.vxlib`
+    /// artifact, so a downstream compile can import it without re-parsing the source (#220).
+    EmitInterface,
 }
 
 #[derive(Parser, Debug)]
@@ -44,7 +47,7 @@ pub enum Action {
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface"])]
     pub action: Action,
 
     /// Output file
@@ -74,6 +77,11 @@ pub struct DriverOptions {
     /// Run JIT (alias for --action run-jit)
     #[arg(long = "run", overrides_with = "action")]
     pub run_jit: bool,
+
+    /// Emit a serialized module interface (alias for --action emit-interface): the frozen registry +
+    /// flat-HIR bodies as a `.vxlib`, for a downstream compile to import without re-parsing (#220).
+    #[arg(long = "emit-interface", overrides_with = "action")]
+    pub emit_interface: bool,
 
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
@@ -146,6 +154,8 @@ impl CompilerDriver {
             options.action = Action::EmitLlvm;
         } else if options.run_jit {
             options.action = Action::RunJit;
+        } else if options.emit_interface {
+            options.action = Action::EmitInterface;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -234,6 +244,10 @@ impl CompilerDriver {
             return self.handle_parse_only(&program_arr, filename);
         }
 
+        if self.options.action == Action::EmitInterface {
+            return self.handle_emit_interface(&mut program_arr, filename);
+        }
+
         let (mut main_ast, mut other_asts) =
             self.prepare_semantic_analysis(&mut program_arr, filename)?;
         self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename)?;
@@ -280,6 +294,37 @@ impl CompilerDriver {
             })
             .unwrap();
         println!("{:#?}", ast);
+        Ok(())
+    }
+
+    /// `--emit-interface`: resolve the loaded modules and serialize their import interface (frozen
+    /// registry + portable flat-HIR bodies) to a `.vxlib` artifact -- the producer side of the
+    /// stdlib<->compiler decoupling (#220). No semantic analysis / codegen of the module is run.
+    fn handle_emit_interface(
+        &self,
+        program_arr: &mut [crate::syntax::Program],
+        filename: &str,
+    ) -> Result<(), String> {
+        let symbol_map = crate::resolver::build_symbol_map(program_arr);
+        for m in program_arr.iter_mut() {
+            m.resolve_names(&symbol_map);
+        }
+        let bytes = crate::pipeline::emit_module_interface(program_arr)
+            .map_err(|e| format!("Failed to build module interface: {}", e))?;
+
+        let out = self
+            .options
+            .output
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(filename).with_extension("vxlib"));
+        // The interface section carries everything; the type dictionary is left empty.
+        crate::metadata::VxMetadata::save_with_interface(&[], &bytes, &out)
+            .map_err(|e| format!("Failed to write {}: {}", out.display(), e))?;
+        println!(
+            "Wrote module interface ({} bytes) to {}",
+            bytes.len(),
+            out.display()
+        );
         Ok(())
     }
 

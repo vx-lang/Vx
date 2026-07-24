@@ -441,6 +441,119 @@ fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
     assert!(flat_exit_code(src).is_none());
 }
 
+/// Compile a "library" module to a serialized `.vxlib` interface (frozen registry + flat-HIR bodies).
+fn build_lib_interface(path: &str, src: &str) -> Vec<u8> {
+    let mut prog = parse(src);
+    prog.module_path = path.into();
+    let mut mods = vec![prog];
+    let symbol_map = vxc::resolver::build_symbol_map(&mods);
+    mods[0].resolve_names(&symbol_map);
+    vxc::pipeline::emit_module_interface(&mods).expect("emit module interface")
+}
+
+/// The stdlib-decoupling endgame in miniature (#220 stage 4): a program links an imported function's
+/// **body from a precompiled `.vxlib` artifact**, with the library's source *never parsed* in the
+/// consumer compile. Proves the whole mechanism end to end through the flat path — producer (harvest +
+/// serialize) → deserialize → registry merge → flat codegen links `body_of` → JIT.
+#[test]
+fn program_links_a_function_body_from_a_vxlib_artifact() {
+    use vxc::syntax::{ElementType, Function, Topology, Type};
+
+    // 1. Producer: a library module -> a `.vxlib` interface (bytes). This is the only place its
+    //    source is ever seen; the consumer below works purely from these bytes.
+    let lib_bytes = build_lib_interface(
+        "crate::mathlib",
+        "fn double(x: i32) -> i32 { return x * 2; }",
+    );
+
+    // 2. Consumer: a program that CALLS `double`, compiled with no access to the library's AST.
+    let mut app = parse("fn main() -> i32 { return double(21); }");
+    app.module_path = "crate::app".into();
+    let mut mods = vec![app];
+    let symbol_map = vxc::resolver::build_symbol_map(&mods);
+    mods[0].resolve_names(&symbol_map);
+
+    // Fold the precompiled library interface into the app's frozen registry (no parse of the lib).
+    let mut registry = vxc::pipeline::build_frozen_registry(&mods).expect("app registry");
+    let lib = vxc::metadata::deserialize_registry_interface(&lib_bytes).expect("deserialize lib");
+    registry.merge_from(lib);
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+
+    // Lower the app's own functions -- `double(21)` resolves via the merged `fn_sigs`.
+    let mut lowered = Vec::new();
+    for f in &mods[0].functions {
+        let mut worker = LocalWorkerState::new(session.clone());
+        assert!(
+            lower_function_to_hir(f, &mut worker),
+            "app fn lowers to flat HIR"
+        );
+        lowered.push(worker);
+    }
+
+    // Pull `double`'s body from the artifact and give it a signature-only `Function` to emit against.
+    let double_gid = session
+        .registry
+        .fn_sigs
+        .get(&vxc::symbol::Symbol::from("double"))
+        .expect("double resolves from the merged interface")
+        .gid;
+    let body = session
+        .registry
+        .body_of(double_gid)
+        .expect("double's body came from the .vxlib artifact")
+        .clone();
+    let synth = Function {
+        name: body.name.clone(),
+        generics: vec![],
+        params: body
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    vxc::symbol::Symbol::from(format!("a{i}").as_str()),
+                    t.clone(),
+                )
+            })
+            .collect(),
+        topology: Topology::CPU,
+        return_type: body.ret_ty.clone(),
+        requires: vec![],
+        ensures: vec![],
+        where_transfers: vec![],
+        body: vec![],
+        doc_comment: None,
+    };
+    assert_eq!(synth.return_type, Type::Scalar(ElementType::I32));
+
+    // Emit one module: the app's `main` + the imported `double` (body from the artifact).
+    let mut funcs: Vec<(&Function, &[_], &[_])> = mods[0]
+        .functions
+        .iter()
+        .zip(&lowered)
+        .map(|(f, w)| {
+            (
+                f,
+                w.local_hir_stream.as_slice(),
+                w.local_type_stream.as_slice(),
+            )
+        })
+        .collect();
+    funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
+
+    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[])
+        .expect("flat codegen emits the linked module");
+    let context = make_context();
+    let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
+        .expect("linked flat MLIR parses");
+    lower_to_llvm(&context, &mut module).expect("flat lower_to_llvm");
+    assert_eq!(
+        exit_code(&module.as_operation().to_string()),
+        42,
+        "double(21) linked from the .vxlib artifact returns 42"
+    );
+}
+
 /// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
 /// and license lines are `//` comments the parser ignores.
 fn corpus(name: &str) -> String {

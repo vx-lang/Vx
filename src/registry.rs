@@ -194,6 +194,33 @@ impl ImmutableGlobalRegistry {
     pub fn body_of(&self, gid: TypeId) -> Option<&FnBody> {
         self.bodies.get(&gid)
     }
+
+    /// Fold a precompiled module interface (deserialized from a `.vxlib`) into this registry, so a
+    /// downstream compile resolves the imported module's types / functions / bodies without its AST
+    /// (#220). `self`'s own entries win on any key collision -- the imported interface *fills in* the
+    /// symbols the current compilation didn't build. GIDs are content-addressed, so an identical type
+    /// re-listed is a harmless no-op; a genuine conflict would already have been caught by the freeze's
+    /// collision guard.
+    pub fn merge_from(&mut self, other: ImmutableGlobalRegistry) {
+        for (id, def) in other.layouts {
+            self.layouts.entry(id).or_insert(def);
+        }
+        for (module_hash, by_name) in other.module_indices {
+            let dst = self.module_indices.entry(module_hash).or_default();
+            for (name, gid) in by_name {
+                dst.entry(name).or_insert(gid);
+            }
+        }
+        for (name, sig) in other.fn_sigs {
+            self.fn_sigs.entry(name).or_insert(sig);
+        }
+        for (key, sig) in other.methods {
+            self.methods.entry(key).or_insert(sig);
+        }
+        for (gid, body) in other.bodies {
+            self.bodies.entry(gid).or_insert(body);
+        }
+    }
 }
 
 /// The query surface the frontend consults for anything defined *outside the current module* --

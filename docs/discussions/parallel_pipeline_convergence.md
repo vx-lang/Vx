@@ -1140,6 +1140,40 @@ the #219 imported-call flip); stage 4 — body harvester + `vxc --emit-interface
 in the build, loader artifact path + registry merge, codegen links `body_of` (end-to-end
 `import std::math`, unblocking the softmax corpus #217).
 
+## Entry 39 — stdlib decoupling Step 3 (stage 4): a program links a body from a `.vxlib` (#220)
+
+**Commit:** _this session_. The decoupling endgame in miniature: a program links an imported function's
+**body from a precompiled `.vxlib` artifact**, its source never parsed in the consumer compile — the
+whole producer → deserialize → merge → link → run chain, proven end to end through the flat path.
+
+**What we did.**
+
+- **Producer** (`pipeline::emit_module_interface`): build the frozen registry, then *harvest* each
+  non-generic free function — lower it to flat HIR, and if it lowers completely and portably (no
+  deferred GID), stash a `FnBody` in `registry.bodies` — then `serialize_registry_interface`.
+- **`registry.merge_from`**: fold a deserialized interface into a compile's registry (own entries win;
+  the import fills in what the compilation didn't build). This is how a downstream compile gains the
+  library's types/sigs/bodies with no AST.
+- **`vxc --emit-interface`** (`driver`): resolve the loaded modules and write the `.vxlib` (verified by
+  hand: `triple.vx` → a 470-byte artifact, `VXLB` magic + interface).
+- **The link:** the flat lowerer resolves a call via the registry `fn_sigs` (not the AST env), and
+  `emit_function_mlir` reads only `params`/`ret_ty` — so an imported body links by synthesizing a
+  *signature-only* `Function` from its `FnBody` (from `body_of`) and handing it to `emit_module_mlir`.
+  No AST `Function`, no #219 type-checker flip, no `vxc` driver flip required.
+
+**Test.** `program_links_a_function_body_from_a_vxlib_artifact` — a `mathlib` module is compiled to
+`.vxlib` bytes; a separate `app` (`fn main() { return double(21); }`) is compiled *without the lib's
+source*, merging the deserialized interface; the flat path links `double`'s body from the artifact and
+JIT-returns **42**. Full suite green (367 lib + 91 integration; one transient JIT flake on an unrelated
+generic-Vec backend test, green on re-run).
+
+**What's left of #220 (a genuine C-dependency, not a serialization gap).** Precompiling the *real*
+`std.vxlib` in the build and having the loader auto-use it for `import std::math` needs (a) the flat
+codegen to be `vxc`'s production path (C3) — the AST codegen can't consume AST-free artifact bodies —
+and (b) flat-codegen coverage of externs / math intrinsics so real stdlib bodies actually lower (today
+they fail-closed and skip). The **mechanism** is done and proven; wiring it to the real stdlib rides on
+finishing convergence.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
