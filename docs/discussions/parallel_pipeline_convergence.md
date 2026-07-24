@@ -1199,6 +1199,34 @@ suite green (367 lib + 93 integration).
 **Next (E2).** Method calls — the type checker already rewrites `x.exp()` → `f32$exp(x)`; the emitter's
 callee map must include the emitted monomorph bodies (#217). Then E3: the `--flat-codegen` driver path.
 
+## Entry 41 — convergence finish (E3): `--flat-codegen` is a production path (C3 mechanism)
+
+**Commit:** _this session_. The flat codegen leaves the test harness: `vxc --flat-codegen` now compiles
+and runs a program through `flat::emit_module_mlir` instead of the AST-walk `MeliorGenerator` — the C3
+mechanism (#201), the piece that lets a downstream compile consume AST-free `.vxlib` bodies (#220).
+
+**What we did.**
+
+- **`build_flat_module`** (`driver.rs`): resolve names → freeze the registry → lower every non-generic
+  function across all modules (deduped by name) to flat HIR → `emit_module_mlir` → parse into a melior
+  `Module`. Returns `None` if any function is outside the flat subset.
+- **`run_codegen` branch**: with `--flat-codegen`, produce the module via `build_flat_module`, else via
+  `MeliorGenerator`; **everything downstream is shared** (verify → the same pass pipeline → `RunJit` /
+  `EmitMlir` / `EmitObj`). A `None` from the flat build **falls back to the AST path**, so the flag
+  never regresses — the AST path stays the oracle for anything outside the subset.
+- The driver's optimization pipeline already runs `convert-math-to-libm`, so an emitted `func.call @sqrtf` lowers + links exactly as the AST path's does.
+
+**Verified.** By hand: `vxc --flat-codegen --run` on scalar arithmetic (exit **23**) and an extern-math
+program (`print(sqrtf(16.0))` → **4**) both take the flat path and are correct; a struct program prints
+`program outside the flat subset; using the AST path` and returns the right value (**22**) via fallback.
+Test `flat_module_built_for_in_subset_declined_otherwise` locks in Some (scalar / helper-call / extern)
+vs None (struct → fallback). Full suite green (368 lib + 93 integration).
+
+**Remaining to flip the default.** Widen the emitter so the corpus is *total* under `--flat-codegen`
+(casts / `neg` / `not` #214, struct returns #215, and method-call dispatch #217 — the type checker
+rewrites `x.exp()` → `f32$exp(x)` but the monomorph isn't in the frozen `fn_sigs`); then flip default,
+AST behind `--legacy-codegen`. With that, `import std::math` compiles from `std.vxlib` end to end.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

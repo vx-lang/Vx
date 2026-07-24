@@ -87,6 +87,12 @@ pub struct DriverOptions {
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
 
+    /// Use the flat-array codegen path (`local_hir_stream` → `flat::emit_module_mlir`) instead of the
+    /// AST-walk `MeliorGenerator`. Falls back to the AST path for any program outside the flat subset,
+    /// so it never regresses. The convergence path toward making the flat pipeline the default (#201).
+    #[arg(long = "flat-codegen")]
+    pub flat_codegen: bool,
+
     /// Discharge per-seam boundary obligations at cross-device transfers (assert
     /// pre-scan + z3 checks). Off by default; requires z3 on PATH (fails open if absent).
     #[arg(long = "verify-seams")]
@@ -493,12 +499,33 @@ impl CompilerDriver {
         context.load_all_available_dialects();
         codegen::register_vx_dialect(&context);
 
-        let mut codegen = MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
-        codegen.emit_seam_certs = self.options.emit_seam_certs;
-        codegen
-            .generate(&monomorphized_ast, &module_syntaxes)
-            .map_err(|e| format!("Codegen Error: {:?}", e))?;
-        let mut module = codegen.into_module();
+        // The flat-array codegen path (opt-in): produce the module from `local_hir_stream` via
+        // `flat::emit_module_mlir` instead of the AST walk. Declines (falls back) for anything outside
+        // the flat subset, so `--flat-codegen` never regresses against the AST oracle (#201).
+        let flat_module = if self.options.flat_codegen {
+            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes)
+        } else {
+            None
+        };
+
+        let mut module = match flat_module {
+            Some(m) => {
+                println!("[flat-codegen] emitted module via the flat path");
+                m
+            }
+            None => {
+                if self.options.flat_codegen {
+                    println!("[flat-codegen] program outside the flat subset; using the AST path");
+                }
+                let mut codegen =
+                    MeliorGenerator::new(&context, monomorphized_ast.module_path.to_string());
+                codegen.emit_seam_certs = self.options.emit_seam_certs;
+                codegen
+                    .generate(&monomorphized_ast, &module_syntaxes)
+                    .map_err(|e| format!("Codegen Error: {:?}", e))?;
+                codegen.into_module()
+            }
+        };
 
         if !module.as_operation().verify() {
             return Err(format!("MLIR verification failed for {}", filename));
@@ -630,6 +657,65 @@ impl CompilerDriver {
         }
 
         Ok(())
+    }
+
+    /// Build the MLIR module via the flat-array codegen path, or `None` if any function is outside the
+    /// flat subset (the caller then falls back to the AST path). Resolves names, freezes the registry,
+    /// lowers every non-generic function across all modules to flat HIR, and emits one module via
+    /// `flat::emit_module_mlir` — mirroring the differential harness (#201). Programs whose structs need
+    /// a registry-backed `StructInit` GID annotation (the driver type-checks against an empty registry)
+    /// simply decline here and fall back to the AST path — never a wrong result.
+    fn build_flat_module<'c>(
+        context: &'c melior::Context,
+        main_ast: &crate::syntax::Program,
+        module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
+    ) -> Option<melior::ir::Module<'c>> {
+        // The main module first (its monomorphs win any name collision), then the imports; resolve
+        // names so the registry freeze sees settled struct/enum GIDs.
+        let mut mods: Vec<crate::syntax::Program> = vec![main_ast.clone()];
+        mods.extend(module_syntaxes.values().cloned());
+        let symbol_map = crate::resolver::build_symbol_map(&mods);
+        for m in &mut mods {
+            m.resolve_names(&symbol_map);
+        }
+        let registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
+        let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+
+        // Lower every non-generic function (deduped by name, main-module version wins) so each called
+        // Vx function has a body; only true externs stay undeclared (the emitter declares them
+        // `func.func private`). Decline the whole program if any function is outside the flat subset.
+        let mut seen = std::collections::HashSet::new();
+        let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
+        for m in &mods {
+            for f in &m.functions {
+                if !f.generics.is_empty() || !seen.insert(f.name.clone()) {
+                    continue;
+                }
+                let mut worker = LocalWorkerState::new(session.clone());
+                if !crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
+                    return None;
+                }
+                entries.push((f.clone(), worker));
+            }
+        }
+        let funcs: Vec<(&crate::syntax::Function, &[_], &[_])> = entries
+            .iter()
+            .map(|(f, w)| {
+                (
+                    f,
+                    w.local_hir_stream.as_slice(),
+                    w.local_type_stream.as_slice(),
+                )
+            })
+            .collect();
+        let tensor_types: Vec<_> = entries
+            .iter()
+            .flat_map(|(_, w)| w.local_tensor_types.iter().cloned())
+            .collect();
+        let text =
+            crate::codegen::flat::emit_module_mlir(&funcs, &session.registry, &tensor_types)?;
+
+        melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"))
     }
 }
 
@@ -781,4 +867,60 @@ pub fn translate_to_llvm_ir(
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod flat_codegen_tests {
+    use super::*;
+
+    fn ctx() -> melior::Context {
+        let registry = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&registry);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&registry);
+        context.load_all_available_dialects();
+        melior::utility::register_all_llvm_translations(&context);
+        codegen::register_vx_dialect(&context);
+        context
+    }
+
+    fn parse(src: &str) -> crate::syntax::Program {
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut p = parser.parse().expect("parse");
+        p.module_path = "crate::t".into();
+        p
+    }
+
+    /// `--flat-codegen` produces a module for an in-subset program (scalar arithmetic, a scalar helper
+    /// call, an extern call) and declines for one outside it, so the driver falls back to the AST path
+    /// — never a wrong result (#201).
+    #[test]
+    fn flat_module_built_for_in_subset_declined_otherwise() {
+        let context = ctx();
+        let empty = std::collections::HashMap::new();
+
+        // In subset: scalar arithmetic + a scalar helper call (both functions emit; the call resolves).
+        let prog = parse(
+            "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
+             fn main() -> i32 { return add(3, 4) * 5; }",
+        );
+        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty).is_some());
+
+        // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
+        let ext = parse(
+            "extern { safe fn sqrtf(x: f32) -> f32; }\n\
+             fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
+        );
+        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty).is_some());
+
+        // Outside the subset: a `StructInit` needs a registry-backed GID annotation the flat build
+        // doesn't run here, so it declines -> AST fallback.
+        let strukt = parse(
+            "struct P { x: i32, y: i32 }\n\
+             fn main() -> i32 { let p = P { x: 1, y: 2 }; return p.x; }",
+        );
+        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty).is_none());
+    }
 }
