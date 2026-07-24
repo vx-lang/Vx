@@ -1258,6 +1258,26 @@ tensor / **method-dispatch** subset (AST fallback for the rest). Remaining for t
 emitter breadth — `Cast`/`Neg`/`Not` (#214, note `Neg` HIR-lowers but the emitter still declines) and
 struct returns (#215) — then flip default, AST behind `--legacy-codegen`.
 
+## Entry 43 — convergence finish (E4a/b): scalar unary + `as` casts in the emitter (#214)
+
+**Commit:** _this session_. Widening the flat emitter toward total corpus coverage (the prerequisite to
+flipping `--flat-codegen` to the default). Three opcode families that HIR-lowered but the emitter
+declined now emit + verify:
+
+- **`Neg`** — float `arith.negf`; integers `0 - x` via `arith.subi` (no `negi`).
+- **`Not`** — `x ^ all-ones` (`arith.xori` with `1` for a bool `i1`, `-1` for ints).
+- **`Cast`** (`as`) — a `cast_op` picks the right `arith` conversion by source/target kind + width:
+  `extsi`/`extui`/`trunci` (int↔int), `sitofp`/`uitofp` (int→float), `fptosi`/`fptoui` (float→int),
+  `extf`/`truncf` (float↔float); a same-type cast aliases (no op).
+
+**Tests.** Emitter units `emits_verifiable_unary_neg_and_not`, `emits_verifiable_scalar_casts`;
+differential `flat_matches_ast_integer_negation`, `flat_matches_ast_float_negation`,
+`flat_matches_ast_scalar_casts` (JIT parity). The two `flat_declines_scalar_cast…` tests became parity
+cases. Full suite green (370 lib + 97 integration).
+
+**Remaining before the flip:** struct returns (#215), then a corpus-wide flat-vs-AST validation, then
+flip the default (AST behind `--legacy-codegen`).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

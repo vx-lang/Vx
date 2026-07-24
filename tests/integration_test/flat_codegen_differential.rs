@@ -484,13 +484,29 @@ fn flat_matches_ast_tensor_print_output() {
 }
 
 #[test]
-fn flat_declines_scalar_cast_leaving_ast_the_oracle() {
-    // A scalar `as` cast is still outside the flat emitter's subset (the `Cast`
-    // opcode lowers to the flat HIR, but the emitter declines it; see #214) -> the
-    // flat path yields `None`, so the AST path stays the sole oracle (no false
-    // parity claim). Becomes a parity case once #214 lands.
-    let src = "fn main() -> i32 { let a = 7; return a as i64 as i32; }";
-    assert!(flat_exit_code(src).is_none());
+fn flat_matches_ast_integer_negation() {
+    // `-x` on an integer (#214): the emitter now lowers `Neg` (`0 - x`), so it JIT-matches the AST.
+    assert_parity(
+        "fn main() -> i32 { let a = 5; let b = -a; return b + 12; }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_float_negation() {
+    // `-x` on a float now lowers (`arith.negf`, #214); the negated value is printed for stdout parity.
+    assert_output_parity("fn main() -> i32 { let x = 3.0f32; print(-x); return 0; }");
+}
+
+#[test]
+fn flat_matches_ast_scalar_casts() {
+    // Scalar `as` casts now lower + emit through the flat path (#214): a chained widen/narrow, and an
+    // int->float->int round trip, both JIT-match the AST oracle.
+    assert_parity("fn main() -> i32 { let a = 7; return a as i64 as i32; }", 7);
+    assert_parity(
+        "fn main() -> i32 { let a = 100; let f = a as f32; return f as i32; }",
+        100,
+    );
 }
 
 /// Compile a "library" module to a serialized `.vxlib` interface (frozen registry + flat-HIR bodies).

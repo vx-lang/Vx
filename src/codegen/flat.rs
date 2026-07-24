@@ -65,6 +65,69 @@ fn is_signed(e: &ElementType) -> bool {
     matches!(e, I4 | I8 | I16 | I32 | I64 | I128)
 }
 
+fn int_bits(e: &ElementType) -> Option<u32> {
+    use ElementType::*;
+    Some(match e {
+        Bool => 1,
+        I4 | U4 => 4,
+        I8 | U8 => 8,
+        I16 | U16 => 16,
+        I32 | U32 => 32,
+        I64 | U64 => 64,
+        I128 | U128 => 128,
+        _ => return None,
+    })
+}
+
+fn float_bits(e: &ElementType) -> Option<u32> {
+    use ElementType::*;
+    Some(match e {
+        F16 | BF16 => 16,
+        F32 => 32,
+        F64 => 64,
+        _ => return None,
+    })
+}
+
+/// The `arith` conversion op for a scalar `as` cast (#214), or `Some("")` when the cast is a no-op
+/// (same MLIR type — e.g. `i32 as u32`, which only reinterprets signedness). `None` declines an
+/// unsupported pair. Signedness of the *integer* side selects the sign-aware op.
+fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
+    if mlir_scalar(src)? == mlir_scalar(tgt)? {
+        return Some(""); // same underlying type -> reinterpret, no op
+    }
+    match (is_float(src), is_float(tgt)) {
+        (false, false) => {
+            let (sb, tb) = (int_bits(src)?, int_bits(tgt)?);
+            Some(if tb < sb {
+                "arith.trunci"
+            } else if is_signed(src) {
+                "arith.extsi"
+            } else {
+                "arith.extui"
+            })
+        }
+        (false, true) => Some(if is_signed(src) {
+            "arith.sitofp"
+        } else {
+            "arith.uitofp"
+        }),
+        (true, false) => Some(if is_signed(tgt) {
+            "arith.fptosi"
+        } else {
+            "arith.fptoui"
+        }),
+        (true, true) => {
+            let (sb, tb) = (float_bits(src)?, float_bits(tgt)?);
+            Some(if tb > sb {
+                "arith.extf"
+            } else {
+                "arith.truncf"
+            })
+        }
+    }
+}
+
 /// Recover the element type a type-stream GID stands for. The stream stores content-hash GIDs
 /// (`scalar_gid`), so we invert by testing the finite set of scalar variants — the flat-driven
 /// counterpart of reading a scalar type off the AST.
@@ -623,6 +686,61 @@ pub fn emit_function_mlir(
                 body += &format!("  {n} = {op} {pred}, {a}, {b} : {mt}\n");
                 names[idx] = n;
                 etypes[idx] = Some(ElementType::Bool);
+            }
+            // Arithmetic negation `-x` (#214). `type_idx` is the result (= operand) scalar type. Float
+            // → `arith.negf`; integers have no `negi`, so `0 - x` via `arith.subi`.
+            Opcode::Neg => {
+                let e = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
+                let mt = mlir_scalar(&e)?;
+                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let n = format!("%v{idx}");
+                if is_float(&e) {
+                    body += &format!("  {n} = arith.negf {a} : {mt}\n");
+                } else {
+                    let z = format!("%z{idx}");
+                    body += &format!("  {z} = arith.constant 0 : {mt}\n");
+                    body += &format!("  {n} = arith.subi {z}, {a} : {mt}\n");
+                }
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Logical / bitwise not `!x` (#214): `x ^ all-ones` (`1` for a bool `i1`, `-1` for ints).
+            Opcode::Not => {
+                let e = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
+                let mt = mlir_scalar(&e)?;
+                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let ones_val = if matches!(e, ElementType::Bool) {
+                    "1"
+                } else {
+                    "-1"
+                };
+                let ones = format!("%ones{idx}");
+                let n = format!("%v{idx}");
+                body += &format!("  {ones} = arith.constant {ones_val} : {mt}\n");
+                body += &format!("  {n} = arith.xori {a}, {ones} : {mt}\n");
+                names[idx] = n;
+                etypes[idx] = Some(e);
+            }
+            // Scalar `as` cast (#214): `type_idx` is the *target* type, `operand1` the source value
+            // (whose type comes from its tracked `etypes`). The right `arith` conversion is chosen by
+            // the source/target kinds + widths; a same-type cast is a no-op that just aliases.
+            Opcode::Cast => {
+                let src = elem_at(&etypes, ins.operand1.0)?;
+                let tgt = elem_of_gid(*types.get(ins.type_idx.0 as usize)?)?;
+                let a = names.get(ins.operand1.0 as usize)?.clone();
+                let op = cast_op(&src, &tgt)?;
+                if op.is_empty() {
+                    names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
+                } else {
+                    let n = format!("%v{idx}");
+                    body += &format!(
+                        "  {n} = {op} {a} : {} to {}\n",
+                        mlir_scalar(&src)?,
+                        mlir_scalar(&tgt)?
+                    );
+                    names[idx] = n;
+                }
+                etypes[idx] = Some(tgt);
             }
             // A named local's stack slot. A scalar slot is a rank-0 memref (matching the AST codegen's
             // scalar locals); an aggregate (struct) slot is an `llvm.alloca` of the `!llvm.struct`
@@ -1235,6 +1353,18 @@ mod tests {
     }
 
     #[test]
+    fn emits_verifiable_unary_neg_and_not() {
+        // Scalar unary ops now emit + verify (#214): float `-x` -> `arith.negf`, integer `-x` -> a
+        // zeroed `arith.subi`, and `!b` -> `arith.xori` with all-ones.
+        let fneg = emit_and_verify("fn f(a: f32) -> f32 { return -a; }");
+        assert!(fneg.contains("arith.negf"), "{fneg}");
+        let ineg = emit_and_verify("fn f(a: i32) -> i32 { return -a; }");
+        assert!(ineg.contains("arith.subi"), "{ineg}");
+        let lnot = emit_and_verify("fn f(a: bool) -> bool { return !a; }");
+        assert!(lnot.contains("arith.xori"), "{lnot}");
+    }
+
+    #[test]
     fn emits_verifiable_constant_and_signed_div() {
         let mlir = emit_and_verify("fn g(a: i32) -> i32 { return a / 2; }");
         assert!(mlir.contains("arith.constant 2 : i32"), "{mlir}");
@@ -1268,19 +1398,18 @@ mod tests {
     }
 
     #[test]
-    fn declines_out_of_subset_scalar_op() {
-        // A scalar `as` cast (`Cast` opcode) lowers to the flat HIR but is outside the emitter's
-        // current subset -> `None`, so the AST path stays the oracle for it.
-        let f = parse_fn("fn c(a: i32) -> i64 { return a as i64; }");
-        let mut w = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
-        assert!(lower_function_to_hir(&f, &mut w));
-        assert!(emit_function_mlir(
-            &f,
-            &w.local_hir_stream,
-            &w.local_type_stream,
-            &EmitCtx::default(),
-            &mut Vec::new()
-        )
-        .is_none());
+    fn emits_verifiable_scalar_casts() {
+        // Scalar `as` casts now emit + verify (#214): the right `arith` conversion per source/target
+        // kind + width — widen/narrow ints, int<->float, float widen/narrow.
+        let widen = emit_and_verify("fn c(a: i32) -> i64 { return a as i64; }");
+        assert!(widen.contains("arith.extsi"), "{widen}");
+        let narrow = emit_and_verify("fn c(a: i64) -> i32 { return a as i32; }");
+        assert!(narrow.contains("arith.trunci"), "{narrow}");
+        let i2f = emit_and_verify("fn c(a: i32) -> f32 { return a as f32; }");
+        assert!(i2f.contains("arith.sitofp"), "{i2f}");
+        let f2i = emit_and_verify("fn c(a: f32) -> i32 { return a as i32; }");
+        assert!(f2i.contains("arith.fptosi"), "{f2i}");
+        let f2f = emit_and_verify("fn c(a: f32) -> f64 { return a as f64; }");
+        assert!(f2f.contains("arith.extf"), "{f2f}");
     }
 }
