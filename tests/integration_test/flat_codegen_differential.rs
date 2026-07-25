@@ -362,6 +362,29 @@ fn flat_matches_ast_struct_field_sum() {
 }
 
 #[test]
+fn flat_matches_ast_struct_return() {
+    // A function returns a struct by value (#215): the callee builds it in a slot, loads the
+    // `!llvm.struct` and returns it; the caller spills the returned value to a slot and reads fields.
+    assert_parity(
+        "struct P { x: i32, y: i32 }\n\
+         fn mk() -> P { return P { x: 3, y: 4 }; }\n\
+         fn main() -> i32 { let p = mk(); return p.x + p.y; }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_struct_return_used_directly() {
+    // Return a struct and read a field off the call result without an intermediate binding.
+    assert_parity(
+        "struct P { x: i32, y: i32 }\n\
+         fn mk() -> P { return P { x: 10, y: 5 }; }\n\
+         fn main() -> i32 { let p = mk(); return p.x - p.y; }",
+        5,
+    );
+}
+
+#[test]
 fn flat_matches_ast_struct_field_in_control_flow() {
     // Bricks 1+3 together: struct fields feed an `if` condition and the returned
     // value (a struct slot and a scalar slot coexist in the same function).

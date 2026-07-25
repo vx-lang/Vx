@@ -242,7 +242,10 @@ impl<'r> Lowerer<'r> {
     /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
     /// (+ initializing `Store`) in memory mode.
     fn bind_local(&mut self, name: Symbol, v: Val) {
-        if self.memory {
+        // An aggregate must live in an addressable slot so its fields can be `getelementptr`'d, even in
+        // a straight-line function (e.g. binding a struct-returning call result, #215) — so it always
+        // takes the memory path, not just when `self.memory` is set for control flow.
+        if self.memory || matches!(v.ty, LoweredTy::Aggregate(_)) {
             let slot = self.emit_alloca(v.ty.clone());
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
             self.scope.insert(
@@ -447,6 +450,10 @@ impl<'r> Lowerer<'r> {
                 }
                 self.lower_expr(u.ret.as_deref()?)
             }
+            // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
+            // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
+            // which a `Ret` loads + returns by value.
+            Expr::StructInit(si) => self.lower_struct_init(si),
             _ => None,
         }
     }

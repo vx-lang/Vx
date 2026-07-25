@@ -148,6 +148,15 @@ fn scalar_of(ty: &Type) -> Option<ElementType> {
     }
 }
 
+/// The GID of a nominal (struct/enum) type, once name resolution has attached it -- for aggregate
+/// return / value handling (#215). `None` for non-nominal or unresolved types.
+fn nominal_gid_of(ty: &Type) -> Option<TypeId> {
+    match ty {
+        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
+        _ => None,
+    }
+}
+
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     let f = is_float(e);
@@ -247,6 +256,9 @@ fn cmp_op(rel: u64, e: &ElementType) -> Option<(&'static str, &'static str)> {
 pub struct Callee {
     pub name: String,
     pub ret: Option<ElementType>,
+    /// The GID of the callee's return type when it is a nominal aggregate (struct/enum) -- the call
+    /// then returns an `!llvm.struct` by value, spilled to a slot at the call site (#215).
+    pub ret_agg: Option<TypeId>,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -265,6 +277,7 @@ pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
                 Callee {
                     name: name.to_string(),
                     ret: scalar_of(&sig.ret_ty),
+                    ret_agg: nominal_gid_of(&sig.ret_ty),
                 },
             )
         })
@@ -536,7 +549,16 @@ pub fn emit_function_mlir(
     let ret_elem = match &func.return_type {
         Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => Some(e.clone()),
         Type::Scalar(_) => return None,
-        _ => None, // treat non-scalar returns as void for this subset
+        _ => None, // non-scalar: a struct return is handled below; anything else is void
+    };
+    // The MLIR return type: a scalar, an `!llvm.struct` (a by-value struct return, #215), or `None`
+    // for void. A struct return type whose layout isn't modelled declines the whole function.
+    let ret_mlir: Option<String> = if let Some(e) = &ret_elem {
+        Some(mlir_scalar(e)?.to_string())
+    } else if let Some(gid) = nominal_gid_of(&func.return_type) {
+        Some(ctx.aggs.get(&gid)?.struct_ty.clone())
+    } else {
+        None
     };
 
     let ty_at = |ti: u32| -> Option<ElementType> { elem_of_gid(*types.get(ti as usize)?) };
@@ -766,13 +788,22 @@ pub fn emit_function_mlir(
                     agg_of[idx] = Some(gid);
                 }
             }
-            // Store a value into a slot (no result); the memref type is the slot's element type.
+            // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
+            // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
             Opcode::Store => {
-                let e = elem_at(&etypes, ins.operand1.0)?;
-                let mt = mlir_scalar(&e)?;
-                let slot = names.get(ins.operand1.0 as usize)?;
-                let val = names.get(ins.operand2.0 as usize)?;
-                body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
+                let slot = names.get(ins.operand1.0 as usize)?.clone();
+                let val = names.get(ins.operand2.0 as usize)?.clone();
+                if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
+                    let agg = ctx.aggs.get(&agg_gid)?;
+                    body += &format!(
+                        "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
+                        agg.struct_ty
+                    );
+                } else {
+                    let e = elem_at(&etypes, ins.operand1.0)?;
+                    let mt = mlir_scalar(&e)?;
+                    body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
+                }
             }
             // Load a value back from a slot; the result type is the slot's element (this
             // instruction's own `type_idx`).
@@ -806,10 +837,30 @@ pub fn emit_function_mlir(
                 terminated = true;
             }
             Opcode::Ret => {
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
-                let a = names.get(ins.operand1.0 as usize)?;
-                body += &format!("  func.return {a} : {mt}\n");
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let a = names.get(ins.operand1.0 as usize)?.clone();
+                if let Some(e) = elem_of_gid(gid) {
+                    body += &format!("  func.return {a} : {}\n", mlir_scalar(&e)?);
+                } else if let Some(agg) = ctx.aggs.get(&gid) {
+                    // A struct return (#215). The operand is either a slot pointer (a constructed
+                    // struct) -> load the value; or already a struct value (a returned call result) ->
+                    // return it directly.
+                    if agg_of
+                        .get(ins.operand1.0 as usize)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                    {
+                        let rv = format!("%rv{idx}");
+                        body +=
+                            &format!("  {rv} = llvm.load {a} : !llvm.ptr -> {}\n", agg.struct_ty);
+                        body += &format!("  func.return {rv} : {}\n", agg.struct_ty);
+                    } else {
+                        body += &format!("  func.return {a} : {}\n", agg.struct_ty);
+                    }
+                } else {
+                    return None;
+                }
                 terminated = true;
             }
             // One argument of the following `Call`: record its value register (no op emitted).
@@ -820,8 +871,15 @@ pub fn emit_function_mlir(
             Opcode::Call => {
                 let gid = *types.get(ins.type_idx.0 as usize)?;
                 let callee = ctx.callees.get(&gid)?;
-                let ret = callee.ret.clone()?; // scalar-returning calls only in this subset
-                let rt = mlir_scalar(&ret)?;
+                // Return type: a scalar, or an `!llvm.struct` by value for a struct-returning callee
+                // (#215). A void return isn't in this subset yet.
+                let rt = if let Some(e) = &callee.ret {
+                    mlir_scalar(e)?.to_string()
+                } else if let Some(agg_gid) = callee.ret_agg {
+                    ctx.aggs.get(&agg_gid)?.struct_ty.clone()
+                } else {
+                    return None;
+                };
                 let n = ins.imm as usize;
                 if pending_args.len() < n {
                     return None;
@@ -849,9 +907,13 @@ pub fn emit_function_mlir(
                 // Record the callee's signature so the module emitter can declare it if it is a
                 // called-but-undefined symbol (an `extern`): the private decl's signature is taken from
                 // the emitted call, so they match by construction.
-                calls.push((callee.name.clone(), arg_types.clone(), rt.to_string()));
+                calls.push((callee.name.clone(), arg_types.clone(), rt.clone()));
                 names[idx] = nm;
-                etypes[idx] = Some(ret);
+                if let Some(e) = &callee.ret {
+                    etypes[idx] = Some(e.clone());
+                }
+                // else: a struct value tracked by `names[idx]`; a following `Store` spills it to a slot
+                // and a `Ret` returns it directly (#215).
             }
             // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
             // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
@@ -1086,14 +1148,14 @@ pub fn emit_function_mlir(
     // scalar-returning function whose final block isn't terminated is either ill-typed or has an
     // unreachable trailing block (no value to return) — decline it, leaving the AST path the oracle.
     if !terminated {
-        match ret_elem {
+        match &ret_mlir {
             None => body += "  func.return\n",
             Some(_) => return None,
         }
     }
 
-    let ret_sig = match &ret_elem {
-        Some(e) => format!(" -> {}", mlir_scalar(e)?),
+    let ret_sig = match &ret_mlir {
+        Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
     let mut out = format!(

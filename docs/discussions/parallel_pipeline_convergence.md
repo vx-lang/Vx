@@ -1309,6 +1309,37 @@ AST fallback.
 path (struct returns #215, …); a soak; then eventually retire the AST back end. The convergence's
 production-path flip itself is **done**.
 
+## Entry 45 — convergence finish (E4c): struct returns through the flat path (#215)
+
+**Commit:** _this session_. A function can now **return a struct** through the flat codegen, and — as a
+bonus — *all* structs now take the flat production path via `vxc` (previously they fell back to AST).
+
+**What we did.**
+
+- **Emitter — struct by value (`!llvm.struct`).** The signature emits `-> !llvm.struct<(...)>`; the
+  `Ret` arm loads the struct value from its slot pointer and returns it (or returns a call result value
+  directly); a struct-returning `Call` spills the returned value into a slot (`llvm.store`) so field ops
+  address it; `Callee` gained `ret_agg` (the return struct's GID).
+- **HIR — struct value positions.** `lower_expr` gained an `Expr::StructInit` arm (a `return P { .. }`,
+  not just `let x = P { .. }`); `bind_local` always slot-allocates an aggregate (so a bound
+  struct-returning call result is addressable even in a straight-line function).
+- **Driver — annotate `StructInit` GIDs.** `build_flat_module` re-runs the type checker against the
+  *frozen registry* purely to settle each `StructInit`'s GID (the driver's own semantic analysis ran
+  against an empty registry, so those were `None` and the flat lowerer declined every struct). This is
+  what lets structs — not just returns — flow through the flat path via `vxc`; method dispatch is
+  unaffected.
+
+**Tests + validation.** Differential `flat_matches_ast_struct_return` / `_struct_return_used_directly`
+(JIT parity). By hand: `vxc --run` takes the flat path for a struct return (7), a struct field-sum (22),
+and still the stdlib method (`x.sqrt()` → 4). Re-swept the whole backend corpus: **zero new mismatches**
+(the 3 residual diffs remain the pre-existing non-deterministic benchmarks / `unwind`). Full suite green
+(370 lib + 99 integration).
+
+**Convergence status.** The production-path flip (C3) is done and the flat subset now spans scalars,
+control flow, calls, externs, method dispatch, tensors, print, unary/casts, and **structs incl.
+returns**. Remaining is ongoing emitter breadth (struct params, `spawn`, richer generics/tensors) +
+a soak before retiring the AST back end — all behind the safe AST fallback.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

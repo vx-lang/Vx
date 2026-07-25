@@ -683,6 +683,23 @@ impl CompilerDriver {
         let registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
         let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
+        // Re-run the type checker against the *frozen registry* purely to annotate each `StructInit`
+        // with its struct GID (the driver's own semantic analysis ran against an empty registry, so
+        // those GIDs are `None` and the flat lowerer would decline every struct). The bodies were
+        // already checked + monomorphized, so this pass only settles the annotation; its diagnostics
+        // and any re-collected monomorphs are discarded. (#215)
+        {
+            let env_mods = mods.clone();
+            let env = GlobalAstEnv::build(&env_mods);
+            for m in &mut mods {
+                let mut scratch = LocalWorkerState::new(session.clone());
+                let mut checker = TypeChecker::new(&env, &mut scratch);
+                for f in &mut m.functions {
+                    checker.check_function(f);
+                }
+            }
+        }
+
         // Index every non-generic function by name (the main-module version wins any collision).
         let mut fn_map: std::collections::HashMap<crate::symbol::Symbol, &crate::syntax::Function> =
             std::collections::HashMap::new();
@@ -945,12 +962,18 @@ mod flat_codegen_tests {
         );
         assert!(CompilerDriver::build_flat_module(&context, &ext, &empty).is_some());
 
-        // Outside the subset: a `StructInit` needs a registry-backed GID annotation the flat build
-        // doesn't run here, so it declines -> AST fallback.
+        // In subset: structs (including a struct return) now build through the flat path -- the flat
+        // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
         let strukt = parse(
             "struct P { x: i32, y: i32 }\n\
-             fn main() -> i32 { let p = P { x: 1, y: 2 }; return p.x; }",
+             fn mk() -> P { return P { x: 1, y: 2 }; }\n\
+             fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty).is_none());
+        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty).is_some());
+
+        // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
+        // whole program declines -> AST fallback (never a wrong result).
+        let unknown = parse("fn main() -> i32 { return mystery(1); }");
+        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty).is_none());
     }
 }
