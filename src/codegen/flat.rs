@@ -60,6 +60,28 @@ fn is_float(e: &ElementType) -> bool {
     )
 }
 
+/// The inverse of [`mlir_scalar`]: recover an [`ElementType`] from an MLIR scalar type string.
+/// Integers map to the signed variant (`mlir_scalar` is many-to-one on signedness); that is enough
+/// for choosing a conversion op, since sign-extension keys off the *source* type. Used to coerce a
+/// stored value to a tensor's element type at a `memref.store`.
+fn elem_from_mlir_scalar(s: &str) -> Option<ElementType> {
+    use ElementType::*;
+    Some(match s {
+        "f16" => F16,
+        "bf16" => BF16,
+        "f32" => F32,
+        "f64" => F64,
+        "i1" => Bool,
+        "i4" => I4,
+        "i8" => I8,
+        "i16" => I16,
+        "i32" => I32,
+        "i64" => I64,
+        "i128" => I128,
+        _ => return None,
+    })
+}
+
 fn is_signed(e: &ElementType) -> bool {
     use ElementType::*;
     matches!(e, I4 | I8 | I16 | I32 | I64 | I128)
@@ -1118,7 +1140,31 @@ pub fn emit_function_mlir(
             // memref in `mem_of`) takes an elementwise vector value → `vector.store`.
             Opcode::TensorStore => {
                 if let Some((base, ic, memty)) = place_of.get(ins.operand1.0 as usize)?.clone() {
-                    let val = names.get(ins.operand2.0 as usize)?;
+                    let vreg = ins.operand2.0;
+                    let mut val = names.get(vreg as usize)?.clone();
+                    // Coerce the stored scalar to the tensor's element type when they differ — a
+                    // default-`f32` float literal `1.0` stored into a `bf16` tensor becomes
+                    // `arith.truncf`, `f32 -> f64` becomes `arith.extf`, etc. The AST path does the
+                    // same via `coerce_type` before its `memref.store`; without it the store is
+                    // ill-typed (`f32` value into a `memref<..xbf16>`).
+                    if let (Some(src_e), Some(tgt_s)) =
+                        (elem_at(&etypes, vreg), memref_elem(&memty))
+                    {
+                        if let Some(tgt_e) = elem_from_mlir_scalar(tgt_s) {
+                            match cast_op(&src_e, &tgt_e) {
+                                Some("") => {} // same MLIR type: no conversion
+                                Some(op) => {
+                                    let c = format!("%tsc{idx}");
+                                    body += &format!(
+                                        "  {c} = {op} {val} : {} to {tgt_s}\n",
+                                        mlir_scalar(&src_e)?
+                                    );
+                                    val = c;
+                                }
+                                None => return None, // unmodelled conversion -> decline (AST oracle)
+                            }
+                        }
+                    }
                     body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
                 } else if let Some(rowty) = mem_of.get(ins.operand1.0 as usize)?.clone() {
                     let dst = names.get(ins.operand1.0 as usize)?.clone();

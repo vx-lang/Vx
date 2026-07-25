@@ -411,6 +411,18 @@ fn flat_matches_ast_with_memory_method() {
 }
 
 #[test]
+fn flat_matches_ast_tensor_store_element_coercion() {
+    // A default-`f32` float literal stored into a non-`f32` tensor is coerced to the element type at
+    // the store (`bf16` -> `arith.truncf`), matching the AST's `coerce_type` before its `memref.store`
+    // — without it the store is ill-typed. Read the stored values back via `as f32` and sum so the
+    // (correctly truncated) value is observable: 4 × 1.5 = 6.0.
+    assert_output_parity(
+        "fn main() -> i32 { let mut a = Tensor<bf16>([4]); for i in 0..4 { a[i] = 1.5; } \
+         let mut s = 0.0f32; for i in 0..4 { s = s + (a[i] as f32); } print(s); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.
