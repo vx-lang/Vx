@@ -103,6 +103,11 @@ pub enum Opcode {
     /// its type. A scalar routes to the `print_*` FFI helper; a tensor is cast to an unranked memref
     /// and routed to `printMemref*` — the same runtime helpers the AST path calls.
     Print = 30,
+    /// Print a string literal (no result): `imm` is the index into this function's string side table
+    /// (`LocalWorkerState::local_string_table`). The flat codegen emits an `llvm.mlir.global internal
+    /// constant` holding the (null-terminated) bytes and calls `@print_str(!llvm.ptr) -> i32` — the
+    /// same runtime helper the AST path uses for a string `print!` argument.
+    PrintStr = 31,
 }
 
 impl Opcode {
@@ -143,6 +148,7 @@ impl Opcode {
             28 => Transfer,
             29 => Arg,
             30 => Print,
+            31 => PrintStr,
             _ => return None,
         })
     }

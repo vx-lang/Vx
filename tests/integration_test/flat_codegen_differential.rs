@@ -37,7 +37,19 @@ fn parse(src: &str) -> Program {
     let mut lexer = Lexer::new(src);
     let tokens = lexer.tokenize();
     let mut parser = Parser::new(&tokens, src);
-    parser.parse().expect("parse failed")
+    let mut program = parser.parse().expect("parse failed");
+    // Expand macros (`print!`/`println!` -> `Expr::Print`/`Expr::Println`, plus any user macros)
+    // before name resolution, exactly as the real pipeline does — otherwise a `MacroCall` reaches
+    // resolution and panics.
+    let mut global_macros = std::collections::HashMap::new();
+    for mac in &program.macros {
+        global_macros.insert(mac.name.clone(), mac.rules.clone());
+    }
+    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
+    expander
+        .expand_module(&mut program)
+        .expect("macro expansion failed");
+    program
 }
 
 /// JIT the given LLVM-dialect MLIR and return the process exit code (`main`'s
@@ -176,7 +188,16 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .flat_map(|w| w.local_tensor_types.iter().cloned())
         .collect();
-    let body = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &tensor_types)?;
+    let string_tables: Vec<&[String]> = lowered
+        .iter()
+        .map(|w| w.local_string_table.as_slice())
+        .collect();
+    let body = vxc::codegen::flat::emit_module_mlir(
+        &funcs,
+        &session.registry,
+        &tensor_types,
+        &string_tables,
+    )?;
 
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{body}}}\n"))
@@ -352,6 +373,29 @@ fn flat_matches_ast_unsafe_extern_call() {
         "extern { fn sqrtf(x: f32) -> f32; }\n\
          fn main() -> i32 { print(unsafe { sqrtf(16.0) }); return 0; }",
     );
+}
+
+#[test]
+fn flat_matches_ast_print_string_literal() {
+    // A bare string `print!` (the `print!("Success: ")` shape from the ffi corpus, #225): the flat
+    // path records the bytes in a string side table, emits an `llvm.mlir.global` for them, and calls
+    // `@print_str`. Stdout must match the AST oracle, which does the same.
+    assert_output_parity("fn main() -> i32 { print!(\"Stdio Success: \"); return 0; }");
+}
+
+#[test]
+fn flat_matches_ast_print_string_and_scalar() {
+    // The common `print!("label", value)` shape: a string arg emits `PrintStr`, the scalar arg emits
+    // `Print`, in order and with no separators — byte-identical to the AST path.
+    assert_output_parity("fn main() -> i32 { let v = 42; print!(\"x=\", v); return 0; }");
+}
+
+#[test]
+fn flat_matches_ast_println_string() {
+    // `println!` prints its args then a trailing newline. The flat path reuses `PrintStr` for the
+    // newline (a `"\n"` string is byte-identical to the AST path's `println()` runtime call), so the
+    // full line — label, value, newline — matches the oracle.
+    assert_output_parity("fn main() -> i32 { let v = 7; println!(\"count: \", v); return 0; }");
 }
 
 #[test]
@@ -659,7 +703,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .collect();
     funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
 
-    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[])
+    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[])
         .expect("flat codegen emits the linked module");
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))

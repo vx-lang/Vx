@@ -92,6 +92,13 @@ pub struct LocalWorkerState {
     /// alone -- most acutely for `TensorAlloc`. The lowerer records it here as it emits tensor values;
     /// the flat codegen consumes it (the tensor analogue of the registry's struct `layouts`).
     pub local_tensor_types: Vec<(TypeId, crate::syntax::ElementType, Vec<String>)>,
+
+    /// String side table: the string-literal bytes for each `PrintStr` this function's stream emits,
+    /// indexed by the opcode's `imm`. A `PrintStr` can't carry the bytes inline (its `imm` is a 64-bit
+    /// scalar), so the lowerer records the string here and codegen emits an `llvm.mlir.global` for it.
+    /// Print-position strings only for now (`print!("x=", v)`); general string *values* are follow-up
+    /// work (#225).
+    pub local_string_table: Vec<String>,
 }
 
 use crate::gid::LifetimeSignature;
@@ -106,6 +113,7 @@ impl LocalWorkerState {
             local_type_stream: Vec::new(),
             local_hir_stream: Vec::new(),
             local_tensor_types: Vec::new(),
+            local_string_table: Vec::new(),
         }
     }
 

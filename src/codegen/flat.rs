@@ -376,6 +376,7 @@ pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
     registry: &ImmutableGlobalRegistry,
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
+    string_tables: &[&[String]],
 ) -> Option<String> {
     let mut ctx = EmitCtx::from_registry(registry);
     for (gid, elem, shape) in tensor_types {
@@ -384,9 +385,18 @@ pub fn emit_module_mlir(
             .or_insert_with(|| (elem.clone(), shape.clone()));
     }
     let mut out = String::new();
+    let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
-    for (func, hir, types) in funcs {
-        out += &emit_function_mlir(func, hir, types, &ctx, &mut calls)?;
+    // Each function's string literals are numbered from a running module-wide base, so a `PrintStr`'s
+    // `@".str.<n>"` reference (emitted with the same `str_base`) resolves the global emitted here.
+    let mut str_base = 0usize;
+    for (fi, (func, hir, types)) in funcs.iter().enumerate() {
+        out += &emit_function_mlir(func, hir, types, &ctx, &mut calls, str_base)?;
+        let strs = string_tables.get(fi).copied().unwrap_or(&[]);
+        for (li, s) in strs.iter().enumerate() {
+            globals += &emit_string_global(str_base + li, s);
+        }
+        str_base += strs.len();
     }
     // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
     // their implementations; the AST path declares them the same way).
@@ -400,6 +410,7 @@ pub fn emit_module_mlir(
         ("print_f64", "(f64) -> i32"),
         ("print_i32", "(i32) -> i32"),
         ("print_i64", "(i64) -> i32"),
+        ("print_str", "(!llvm.ptr) -> i32"),
     ] {
         if out.contains(&format!("@{name}(")) {
             decls += &format!("  func.func private @{name}{sig}\n");
@@ -425,7 +436,35 @@ pub fn emit_module_mlir(
             arg_types.join(", ")
         );
     }
-    Some(decls + &out)
+    Some(globals + &decls + &out)
+}
+
+/// Emit the module-level `llvm.mlir.global` for a string literal: an internal constant array holding
+/// the null-terminated bytes, named `@".str.<n>"` to match the `llvm.mlir.addressof` a `PrintStr`
+/// emits. The array length is the byte count *including* the terminator.
+fn emit_string_global(n: usize, s: &str) -> String {
+    let mut bytes = s.as_bytes().to_vec();
+    bytes.push(0); // C-string null terminator (matches the AST path's `format!("{}\0", value)`)
+    let escaped = mlir_escape_bytes(&bytes);
+    format!(
+        "  llvm.mlir.global internal constant @\".str.{n}\"(\"{escaped}\") : !llvm.array<{} x i8>\n",
+        bytes.len()
+    )
+}
+
+/// Escape raw bytes for an MLIR string literal: a printable ASCII byte other than `"` or `\` passes
+/// through; everything else (including the null terminator and any non-ASCII byte) becomes a `\XX`
+/// two-digit hex escape. Conservative but always valid MLIR.
+fn mlir_escape_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b == b'"' || b == b'\\' || !(0x20..=0x7e).contains(&b) {
+            out += &format!("\\{b:02X}");
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
 }
 
 /// The element type of a memref type string, e.g. `memref<2x4xf32> -> "f32"`,
@@ -530,6 +569,7 @@ pub fn emit_function_mlir(
     types: &[TypeId],
     ctx: &EmitCtx,
     calls: &mut Vec<(String, Vec<String>, String)>,
+    str_base: usize,
 ) -> Option<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
     // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
@@ -1139,6 +1179,16 @@ pub fn emit_function_mlir(
                     return None;
                 }
             }
+            // Print a string literal (no result): take the address of the module-level global emitted
+            // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
+            // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
+            Opcode::PrintStr => {
+                let n = str_base + ins.imm as usize;
+                let p = format!("%pstrp{idx}");
+                let r = format!("%pstr{idx}");
+                body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
+                body += &format!("  {r} = func.call @print_str({p}) : (!llvm.ptr) -> i32\n");
+            }
             // Anything else (spawn, matmul, …) is outside this subset.
             _ => return None,
         }
@@ -1196,6 +1246,7 @@ mod tests {
             &w.local_type_stream,
             &EmitCtx::default(),
             &mut Vec::new(),
+            0,
         )
         .expect("emits flat MLIR");
 
@@ -1263,8 +1314,12 @@ mod tests {
             .iter()
             .flat_map(|w| w.local_tensor_types.iter().cloned())
             .collect();
-        let mlir =
-            emit_module_mlir(&funcs, &session.registry, &tensor_types).expect("emits flat module");
+        let string_tables: Vec<&[String]> = lowered
+            .iter()
+            .map(|w| w.local_string_table.as_slice())
+            .collect();
+        let mlir = emit_module_mlir(&funcs, &session.registry, &tensor_types, &string_tables)
+            .expect("emits flat module");
 
         use melior::ir::operation::OperationLike;
         let dialects = melior::dialect::DialectRegistry::new();

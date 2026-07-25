@@ -762,10 +762,17 @@ impl CompilerDriver {
             .iter()
             .flat_map(|(_, w)| w.local_tensor_types.iter().cloned())
             .collect();
+        // Per-function string tables, index-aligned with `funcs` (each `PrintStr`'s `imm` indexes into
+        // its own function's table; the module emitter numbers them from a running base).
+        let string_tables: Vec<&[String]> = entries
+            .iter()
+            .map(|(_, w)| w.local_string_table.as_slice())
+            .collect();
         let text = match crate::codegen::flat::emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
+            &string_tables,
         ) {
             Some(t) => t,
             None => {

@@ -189,6 +189,9 @@ struct Lowerer<'r> {
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
     tensor_types: Vec<(TypeId, ElementType, Vec<String>)>,
+    /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
+    /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
+    strings: Vec<String>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -202,6 +205,7 @@ impl<'r> Lowerer<'r> {
             next_block: 1,
             loop_stack: Vec::new(),
             tensor_types: Vec::new(),
+            strings: Vec::new(),
         }
     }
 
@@ -297,6 +301,27 @@ impl<'r> Lowerer<'r> {
             type_idx,
             0,
         ));
+    }
+
+    /// Emit a `PrintStr` for a string literal (no result): record the bytes in the string side table
+    /// and carry that entry's index in `imm`. Codegen emits an `llvm.mlir.global` for the bytes and
+    /// calls `@print_str` — matching the AST path's string `print!` argument.
+    fn emit_print_str(&mut self, s: &str) {
+        let imm = self.strings.len() as u64;
+        self.strings.push(s.to_string());
+        self.emit_effect(Opcode::PrintStr, Register(0), Register(0), imm);
+    }
+
+    /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
+    /// is lowered as a value and `print`ed (routing to the scalar/tensor `print_*` helper by type).
+    fn lower_print_arg(&mut self, arg: &Expr) -> Option<()> {
+        if let Expr::StringLiteral(sl) = arg {
+            self.emit_print_str(sl.value.as_ref());
+        } else {
+            let v = self.lower_expr(arg)?;
+            self.emit_print(v);
+        }
+        Some(())
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
@@ -958,13 +983,22 @@ impl<'r> Lowerer<'r> {
                     Some(())
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
-                // `print_*` helpers, no separators — matching the AST codegen. A `StringLiteral` arg
-                // declines here (no string support yet), so those `print!`s fall back to AST.
+                // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
+                // `StringLiteral` arg emits a `PrintStr`; any other arg is lowered and `print`ed.
                 Expr::Print(p) => {
                     for arg in &p.args {
-                        let v = self.lower_expr(arg)?;
-                        self.emit_print(v);
+                        self.lower_print_arg(arg)?;
                     }
+                    Some(())
+                }
+                // The `println!` macro form (`Expr::Println`): print each argument (as `print!`), then a
+                // trailing newline. The AST path calls a `println()` runtime helper for the newline;
+                // printing a `"\n"` string is byte-identical, so reuse `PrintStr` and add no new helper.
+                Expr::Println(p) => {
+                    for arg in &p.args {
+                        self.lower_print_arg(arg)?;
+                    }
+                    self.emit_print_str("\n");
                     Some(())
                 }
                 other => {
@@ -1003,6 +1037,9 @@ impl<'r> Lowerer<'r> {
         // The tensor side table is keyed by (content-hash) GID, which `commit` does not rebase, so it
         // transfers as-is.
         worker.local_tensor_types.extend(self.tensor_types);
+        // The string side table is indexed by each `PrintStr`'s `imm`; a fresh worker lowers exactly
+        // one function, so the indices need no rebasing (they start at 0 per function).
+        worker.local_string_table.extend(self.strings);
         for mut ins in self.code {
             if ins.type_idx.0 != NO_TYPE {
                 ins.type_idx = TypeIdx(ins.type_idx.0 + base);
