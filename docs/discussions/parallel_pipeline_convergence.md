@@ -1393,6 +1393,32 @@ strings / `print!("…", x)` (#225, 11 programs — the biggest unlock, also sof
 method calls (#226, 5), enum construction (#227, 3), comptime blocks (#228, 2), value-`if` in
 expression/nested position (#229, 1), borrows / pointer values (#230, 1).
 
+## Entry 49 — emitter widening: print-position string literals (#225)
+
+**Commit:** `8fdc86b` _(this session, 2026-07-25)_. Entry 48 left a `StringLiteral` argument of
+`print!`/`println!` declining — the largest remaining decline bucket. Now it lowers through the flat
+path:
+
+- **`PrintStr` opcode** (`bytecode.rs`), `imm` = index into a new per-function **string side table**
+  (`LocalWorkerState.local_string_table`, the string analogue of `local_tensor_types`). A `PrintStr`
+  can't carry the bytes inline, so the lowerer records them and codegen emits a global.
+- **flatten** (`Expr::Print`/`Expr::Println`): a `StringLiteral` arg → record bytes + emit `PrintStr`;
+  any other arg keeps the existing `Print`. `println!` reuses `PrintStr` for the trailing newline (a
+  `"\n"` string is byte-identical to the AST path's `println()` runtime call — no new helper).
+- **flat emitter**: `PrintStr` → `llvm.mlir.addressof @".str.N"` + `func.call @print_str(!llvm.ptr) -> i32`; `emit_module_mlir` emits an `llvm.mlir.global internal constant` per string (MLIR-escaped,
+  null-terminated) numbered from a running module base, and declares `@print_str` `private`. String
+  tables thread parallel to `funcs` via a new `emit_module_mlir` / `emit_function_mlir` param.
+
+**Scope.** Print-position strings only (the common case). General string *values* (`let s = "…"`,
+passed to a fn — e.g. `ffi_stdio.vx`'s `vx_stdout_write(msg, 14)`) still decline: they need a
+`LoweredTy::Ptr` and stay follow-up work under #225.
+
+**Validation.** Three new differential tests (bare string, string+scalar, `println`) JIT-match the AST
+oracle; the harness `parse` now runs macro expansion so `print!`/`println!` desugar as in the real
+pipeline. Full backend-corpus flat-vs-legacy sweep: **flat-used 32 → 38, zero miscompiles** (the one
+output diff is `cpu_fusion_overhead`'s wall-clock timing, which varies legacy-vs-legacy too). Full
+suite green (371 lib + 104 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
