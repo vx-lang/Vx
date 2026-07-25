@@ -254,6 +254,23 @@ fn flat_matches_ast_if_else() {
 }
 
 #[test]
+fn flat_matches_ast_if_expression() {
+    // A value-position `if` (`let m: i32 = if a > b { a } else { b }`, #201): lowered to blocks + a
+    // result slot each branch stores into, then loaded. JIT-matches the AST oracle. This is the
+    // `let m_new = if tm > m { tm } else { m }` shape from the attention corpus.
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let b = 7; let m: i32 = if a > b { a } else { b }; return m; }",
+        7,
+    );
+    // With side-effecting leading statements in a branch before the trailing value.
+    assert_parity(
+        "fn main() -> i32 { let x = 5; \
+         let r: i32 = if x > 0 { let t = x * 2; t + 1 } else { 0 }; return r; }",
+        11,
+    );
+}
+
+#[test]
 fn flat_matches_ast_for_range_accumulator() {
     // A `for` range loop accumulating 0+1+2+3+4 through slot-backed locals.
     assert_parity(

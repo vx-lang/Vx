@@ -1340,6 +1340,29 @@ control flow, calls, externs, method dispatch, tensors, print, unary/casts, and 
 returns**. Remaining is ongoing emitter breadth (struct params, `spawn`, richer generics/tensors) +
 a soak before retiring the AST back end — all behind the safe AST fallback.
 
+## Entry 46 — emitter widening: value-position `if` + a decline-diagnostics feature
+
+**Commit:** _this session_. Growing the flat subset by the remaining tractable constructs, driven by a
+survey of *why* corpus programs fall back to AST.
+
+**Decline diagnostics (`VX_FLAT_DBG`).** A new env-gated feature: the flat lowerer/driver report *why* a
+program declines (which function fails to lower, the first unsupported `Expr`/`Statement` variant, or an
+emit decline). Ran it across the backend corpus to prioritise: the top tractable buckets are `Assert`
+(8), `MethodCall` (5, mostly NPU device methods), `StringLiteral` (4), value-`If` (4), `EnumVariant`
+(3), `ComptimeBlock` (2).
+
+**Value-position `if` (#201).** `let v: T = if c { .. } else { .. }` — the attention corpus's
+`let m_new = if tm > m { tm } else { m }` shape. The flat model is slot-based, so this maps cleanly to a
+**result slot**: each branch stores its trailing (semicolon-less) value into the slot; the merge block
+loads it — no block arguments. The slot type comes from the `let`'s annotation; the memory-mode trigger
+now fires on a value-`if` in a `let`/`return`/`assign`. Nested value-`if`s (a branch value that is itself
+an `if`) still decline (they need value-position `if` in `lower_expr`, not just the annotated-`let`
+path).
+
+**Tests.** Differential `flat_matches_ast_if_expression` (a plain `if a > b { a } else { b }` and one
+with a side-effecting leading statement in a branch) — JIT parity. Corpus value-`If` declines dropped
+4 → 1. Full suite green (370 lib + 100 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

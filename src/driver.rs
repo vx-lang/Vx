@@ -734,6 +734,9 @@ impl CompilerDriver {
             };
             let mut worker = LocalWorkerState::new(session.clone());
             if !crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg] HIR lowering declined: {}", f.name);
+                }
                 return None;
             }
             let mut uses = std::collections::HashSet::new();
@@ -759,8 +762,19 @@ impl CompilerDriver {
             .iter()
             .flat_map(|(_, w)| w.local_tensor_types.iter().cloned())
             .collect();
-        let text =
-            crate::codegen::flat::emit_module_mlir(&funcs, &session.registry, &tensor_types)?;
+        let text = match crate::codegen::flat::emit_module_mlir(
+            &funcs,
+            &session.registry,
+            &tensor_types,
+        ) {
+            Some(t) => t,
+            None => {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg] emit declined (a function outside the emitter subset)");
+                }
+                return None;
+            }
+        };
 
         melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"))
     }

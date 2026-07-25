@@ -80,6 +80,46 @@ fn tensor_dim_string(e: &Expr) -> Option<String> {
 /// no result value and therefore have no result type.
 const NO_TYPE: u32 = u32::MAX;
 
+/// The `Expr` variant name, for the `VX_FLAT_DBG` decline survey (which construct is unsupported).
+fn expr_kind(e: &Expr) -> &'static str {
+    match e {
+        Expr::MethodCall(_) => "MethodCall",
+        Expr::Array(_) => "Array",
+        Expr::Closure(_) => "Closure",
+        Expr::Range(_) => "Range",
+        Expr::SpawnOn(_) => "SpawnOn",
+        Expr::ComptimeBlock(_) => "ComptimeBlock",
+        Expr::TransferPredicate(_) => "TransferPredicate",
+        Expr::LogicalOp(_) => "LogicalOp",
+        Expr::Borrow(_) => "Borrow",
+        Expr::Dereference(_) => "Dereference",
+        Expr::Match(_) => "Match",
+        Expr::If(_) => "If",
+        Expr::IndirectCall(_) => "IndirectCall",
+        Expr::VecMacro(_) => "VecMacro",
+        Expr::MacroCall(_) => "MacroCall",
+        Expr::EnumVariant(_) => "EnumVariant",
+        Expr::Grad(_) => "Grad",
+        Expr::Vjp(_) => "Vjp",
+        Expr::Jvp(_) => "Jvp",
+        Expr::StringLiteral(_) => "StringLiteral",
+        Expr::MemorySpace(_) => "MemorySpace",
+        Expr::Topology(_) => "Topology",
+        _ => "other-expr",
+    }
+}
+
+/// The `Statement` variant name, for the `VX_FLAT_DBG` decline survey.
+fn stmt_kind(s: &Statement) -> &'static str {
+    match s {
+        Statement::Loop(_) => "Loop",
+        Statement::Assert(_) => "Assert",
+        Statement::MacroCall(_) => "MacroCall",
+        Statement::ExprStmt(_) => "ExprStmt",
+        _ => "other-stmt",
+    }
+}
+
 /// The type of a lowered value: a primitive scalar, or an aggregate nominal (struct/enum) named by
 /// its GID. Aggregates size their `Alloca` from the frozen-registry layout (#199); scalar ops
 /// (`Add`/`Cmp`/`Cast`) apply only to `Scalar`. This is what the flat *type stream* carries per
@@ -454,7 +494,12 @@ impl<'r> Lowerer<'r> {
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
             Expr::StructInit(si) => self.lower_struct_init(si),
-            _ => None,
+            other => {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
+                }
+                None
+            }
         }
     }
 
@@ -501,6 +546,58 @@ impl<'r> Lowerer<'r> {
         // merge block — subsequent statements continue here
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
         Some(())
+    }
+
+    /// Lower a value-position `if` into `slot`: each branch stores its trailing value into `slot`,
+    /// then the merge block continues (a following `SlotLoad` yields the result). A value `if` must be
+    /// total, so an `else` is required. (#201)
+    fn lower_if_into_slot(&mut self, e: &crate::syntax::IfExpr, slot: Register) -> Option<()> {
+        let else_stmts = e.else_block.as_ref()?;
+        let cond = self.lower_expr(&e.cond)?;
+        let then_b = self.new_block();
+        let else_b = self.new_block();
+        let merge_b = self.new_block();
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(then_b, else_b),
+        );
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), then_b as u64);
+        self.lower_block_into_slot(&e.then_block, slot)?;
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+        }
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), else_b as u64);
+        self.lower_block_into_slot(else_stmts, slot)?;
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+        }
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
+        Some(())
+    }
+
+    /// Lower a branch block whose trailing semicolon-less expression is the branch's value, stored into
+    /// `slot`. Leading statements lower normally; declines if the block has no trailing value.
+    fn lower_block_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Option<()> {
+        let n = stmts.len();
+        for (i, s) in stmts.iter().enumerate() {
+            if i + 1 == n {
+                if let Statement::ExprStmt(es) = s {
+                    if !es.has_semi {
+                        let v = self.lower_expr(&es.expr)?;
+                        self.emit_effect(Opcode::Store, slot, v.reg, 0);
+                        return Some(());
+                    }
+                }
+                return None; // last stmt isn't a trailing value expression
+            }
+            self.lower_stmt(s)?;
+        }
+        None // empty branch has no value
     }
 
     /// Lower an infinite `loop { body }`: a header block the body branches back to, plus an exit
@@ -756,6 +853,23 @@ impl<'r> Lowerer<'r> {
                     );
                     return Some(());
                 }
+                // A value-position `if` (`let v: T = if c { .. } else { .. }`): allocate a result slot,
+                // have each branch store its trailing value into it, and bind the local to the slot
+                // (the merge block loads it). The slot type comes from the `let`'s annotation (#201).
+                if let Expr::If(if_expr) = &l.expr {
+                    let ty_ann = l.ty_ann.as_ref()?;
+                    let result_ty = lowered_ty(ty_ann, self.registry)?;
+                    let slot = self.emit_alloca(result_ty.clone());
+                    self.lower_if_into_slot(if_expr, slot.reg)?;
+                    self.scope.insert(
+                        l.name.clone(),
+                        Binding::Slot {
+                            reg: slot.reg,
+                            ty: result_ty,
+                        },
+                    );
+                    return Some(());
+                }
                 let v = self.lower_expr(&l.expr)?;
                 // A tensor local is a reference (memref) — bind it as an SSA register, not a slot;
                 // stores write through the descriptor to the buffer.
@@ -851,7 +965,12 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
                 Some(())
             }
-            _ => None,
+            other => {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg]   unsupported stmt: {}", stmt_kind(other));
+                }
+                None
+            }
         }
     }
 
@@ -953,6 +1072,11 @@ fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
         Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_)),
+        // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
+        // slot, which needs the memory model too.
+        Statement::LetDecl(l) => matches!(l.expr, Expr::If(_)),
+        Statement::Return(r) => matches!(r.expr, Expr::If(_)),
+        Statement::Assign(a) => matches!(a.rhs, Expr::If(_)),
         _ => false,
     })
 }
