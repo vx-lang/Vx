@@ -1419,6 +1419,35 @@ pipeline. Full backend-corpus flat-vs-legacy sweep: **flat-used 32 → 38, zero 
 output diff is `cpu_fusion_overhead`'s wall-clock timing, which varies legacy-vs-legacy too). Full
 suite green (371 lib + 104 integration).
 
+## Entry 50 — device-placement methods + `vx.spawn` region emitter (#226), tensor-store coercion (#232)
+
+**Commits:** `ac70ffd` (device/spawn), `0a37119` (coercion) _(this session, 2026-07-25)_. Device programs
+(`spawn on(Topology::NPU[..]) { .. }`, `.with_memory(..)`) now lower through the flat path.
+
+- **`with_memory`** is transparent to lowering (it only annotates a tensor's home memory for the
+  seam/type analysis): `flatten` lowers the receiver tensor and drops the memory-space argument, like
+  the AST codegen. The transfer *methods* (`to_device`/`to_host`/…) are already rewritten to
+  `Expr::Transfer` by the type checker, so `with_memory` is the only device method reaching `flatten`.
+- **`vx.spawn` region emitter.** `lower_spawn` no longer declines memory-mode functions or
+  control-flow spawn bodies. The emitter's `Spawn`/`SpawnEnd` arms materialize the body as the
+  `vx.spawn` op's nested MLIR region (generic form, inline in the enclosing block which continues after
+  it): the region's entry block holds the body setup, nested `^bb` blocks carry a `for`/`if`, and the
+  last block is terminated with `vx.yield`. `topology` is the dispatch id (identical to the AST's
+  attribute). A value-producing spawn still declines.
+- **Tensor-store element coercion (#232).** A separate pre-existing bug surfaced: a default-`f32` float
+  literal stored into a `bf16` tensor (`a[i] = 1.0`) emitted an ill-typed `memref.store`. The
+  `TensorStore` arm now coerces the value to the element type (`truncf`/`extf`/`trunci`/…) via the
+  existing `cast_op` — mirroring the AST's `coerce_type`. This unblocked the bf16 test siblings that
+  gate the whole module.
+
+**Validation.** A flat.rs unit test checks a `spawn { for .. }` `vx.spawn` region parses + verifies;
+differential tests cover `with_memory` and the bf16 store (read back via `as f32`). End to end,
+`npu_float_scalar` computes an identical `c0=3` flat-vs-legacy; **all 5 named NPU programs
+(`npu_vector_add`/`npu_matmul`/`npu_matrix_transpose`/`npu_float_scalar`/`npu_large_matmul_tiled`) now
+flat-lower**. Full backend-corpus sweep: **flat-used 38 → 54, zero miscompiles** (every flagged program
+is byte-identical once the runtime dispatcher's non-deterministic logging + benchmark wall-clock timing
+are stripped). #226 closed; #232 fixed.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
