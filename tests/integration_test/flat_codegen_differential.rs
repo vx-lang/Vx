@@ -399,6 +399,18 @@ fn flat_matches_ast_println_string() {
 }
 
 #[test]
+fn flat_matches_ast_with_memory_method() {
+    // `Tensor<..>(..).with_memory(Memory::X)` annotates a tensor's home memory for the seam/type
+    // analysis but emits no op — the flat path lowers it as a transparent pass-through of the receiver
+    // tensor, matching the AST codegen (#226). The device-placement transfer *methods*
+    // (`to_device`/`to_host`) are already rewritten to `Expr::Transfer` by the type checker.
+    assert_output_parity(
+        "fn main() -> i32 { let mut c = Tensor<f32>([2]).with_memory(Memory::NPU_HBM); \
+         c[0] = 3.0; c[1] = 4.0; print(c[0]); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.

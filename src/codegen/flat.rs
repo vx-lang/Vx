@@ -645,6 +645,10 @@ pub fn emit_function_mlir(
     // `Call` consumes its `imm` trailing entries (a nested inner call sits between its own `Arg`s and
     // the outer ones, so each call's args are exactly the tail — see `flatten::lower_call`).
     let mut pending_args: Vec<u32> = Vec::new();
+    // The topology of the currently-open `vx.spawn` region (`Some` between `Spawn` and its matching
+    // `SpawnEnd`), remembered so `SpawnEnd` can emit the `topology` attribute. `None` outside a spawn;
+    // a nested spawn (already `Some`) is declined.
+    let mut spawn_topology: Option<i64> = None;
 
     for (idx, ins) in hir.iter().enumerate() {
         match ins.opcode {
@@ -1179,6 +1183,30 @@ pub fn emit_function_mlir(
                     return None;
                 }
             }
+            // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
+            // continues after it; the instructions up to the matching `SpawnEnd` form the region body.
+            // The ops immediately after `Spawn` (a control-flow body's setup, before its first explicit
+            // block) go in the region's entry block, so open a label for it. `imm` is the topology
+            // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
+            Opcode::Spawn => {
+                if spawn_topology.is_some() {
+                    return None; // nested spawn is not modelled
+                }
+                spawn_topology = Some(ins.imm as i64);
+                body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
+                terminated = false;
+            }
+            // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
+            // terminator already ended it), stamp the `topology` attribute, and resume emitting into
+            // the enclosing block (which the spawn op did not terminate).
+            Opcode::SpawnEnd => {
+                let topo = spawn_topology.take()?;
+                if !terminated {
+                    body += "  \"vx.yield\"() : () -> ()\n";
+                }
+                body += &format!("  }}) {{topology = {topo} : i32}} : () -> ()\n");
+                terminated = false;
+            }
             // Print a string literal (no result): take the address of the module-level global emitted
             // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.
@@ -1444,6 +1472,21 @@ mod tests {
         );
         assert!(mlir.contains("\"vx.transfer\""), "{mlir}");
         assert!(mlir.contains("target_topology ="), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_spawn_region() {
+        // `spawn on(<topology>) { <control-flow body> }` -> a `vx.spawn` op whose nested region holds
+        // the body (here a `for` loop writing a tensor) and is terminated by `vx.yield` (#226). The
+        // region's blocks are self-contained; the enclosing function continues after the op. This is
+        // the structural bug class (an ill-formed region) that a parse + verify catches.
+        let mlir = emit_module_and_verify(
+            "fn main() -> i32 { let mut c = Tensor<f32>([4]); \
+             spawn on(Topology::CPU) { for i in 0..4 { c[i] = 1.0; } } return 0; }",
+        );
+        assert!(mlir.contains("\"vx.spawn\""), "{mlir}");
+        assert!(mlir.contains("topology ="), "{mlir}");
+        assert!(mlir.contains("\"vx.yield\""), "{mlir}");
     }
 
     #[test]

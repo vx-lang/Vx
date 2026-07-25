@@ -537,6 +537,15 @@ impl<'r> Lowerer<'r> {
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
             Expr::StructInit(si) => self.lower_struct_init(si),
+            // `t.with_memory(Memory::X)` annotates a tensor's home memory space for the seam/type
+            // analysis but emits no op — the AST codegen treats it the same way (`with_memory` returns
+            // its receiver, `codegen/lower/expr.rs`). So it's transparent to lowering: yield the
+            // receiver tensor and drop the memory-space argument. Device-placement *transfers*
+            // (`to_device`/`to_host`/…) are already rewritten to `Expr::Transfer` by the type checker,
+            // so they never reach here as a method. Any other method declines (#226).
+            Expr::MethodCall(mc) if mc.method_name.as_ref() == "with_memory" => {
+                self.lower_expr(&mc.base)
+            }
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -738,11 +747,13 @@ impl<'r> Lowerer<'r> {
     }
 
     /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
-    /// topology dispatch id. First cut: statement-form spawn (no yielded value) with a straight-line
-    /// body, in a straight-line function — nested control flow and value-producing spawn are
-    /// deferred so the region stays a linear instruction range.
+    /// topology dispatch id. The body may use control flow (`for`/`loop`/`if`) and the enclosing
+    /// function may be in memory mode — the flat emitter materializes the body as the `vx.spawn` op's
+    /// nested MLIR region, so the region's blocks are self-contained (#226). A *value-producing* spawn
+    /// (a yielded result) still declines: it needs `vx.yield` with a result plus threading the spawn's
+    /// result value, which the statement-form device corpus doesn't use.
     fn lower_spawn(&mut self, s: &crate::syntax::SpawnOnExpr) -> Option<()> {
-        if s.ret.is_some() || self.memory || body_has_control_flow(&s.stmts) {
+        if s.ret.is_some() {
             return None;
         }
         let top_id = crate::arch::topology_dispatch_id(&s.top);

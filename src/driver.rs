@@ -783,7 +783,11 @@ impl CompilerDriver {
             }
         };
 
-        melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"))
+        let parsed = melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"));
+        if parsed.is_none() && std::env::var("VX_FLAT_DBG").is_ok() {
+            eprintln!("[flat-dbg] emitted flat MLIR failed to parse:\n{text}");
+        }
+        parsed
     }
 }
 
