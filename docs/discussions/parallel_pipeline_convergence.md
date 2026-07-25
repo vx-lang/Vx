@@ -1363,6 +1363,19 @@ path).
 with a side-effecting leading statement in a branch) — JIT parity. Corpus value-`If` declines dropped
 4 → 1. Full suite green (370 lib + 100 integration).
 
+## Entry 47 — emitter widening: `assert` is a runtime no-op (matches the AST)
+
+**Commit:** _this session_. The single biggest tractable decline bucket (8 corpus programs) closed by a
+one-line lowering — because the AST codegen already treats `assert(cond, msg)` as a **runtime no-op**
+(`generator.rs`, `Statement::Assert`: it records the fact for seam certificates but emits *no* runtime
+check). So the flat path lowers `Statement::Assert` to nothing too, and flat == AST at runtime by
+construction.
+
+**Validation.** Differential `flat_matches_ast_assert_is_a_noop`; re-swept the corpus — the 5 residual
+flat-vs-AST diffs are all pre-existing *AST-path* non-determinism (timing benchmarks, `unwind`, and
+`llama2_v2`'s non-deterministic `malloc_N` mangling — flat *declines* it and falls back), **zero flat
+miscompiles**. flat-used across the corpus rose 27 → **31**. Full suite green (370 lib + 101 integration).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

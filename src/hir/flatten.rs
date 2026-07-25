@@ -924,6 +924,10 @@ impl<'r> Lowerer<'r> {
                     self.assign_local(&name, combined)
                 }
             }
+            // `assert(cond, msg)` is a *compile-time* fact (used for seam certificates); the AST codegen
+            // emits no runtime check for it (`generator.rs`, `Statement::Assert`). Match that exactly:
+            // lower it to nothing, so flat and AST agree at runtime.
+            Statement::Assert(_) => Some(()),
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp),

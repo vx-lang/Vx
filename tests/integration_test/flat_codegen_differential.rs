@@ -271,6 +271,16 @@ fn flat_matches_ast_if_expression() {
 }
 
 #[test]
+fn flat_matches_ast_assert_is_a_noop() {
+    // `assert(cond, msg)` emits no runtime check in *either* path (the AST codegen treats it as a
+    // compile-time seam fact), so a program with asserts JIT-matches — both ignore them.
+    assert_parity(
+        "fn main() -> i32 { let x = 5; assert(x == 5, \"ok\"); assert(x > 0, \"pos\"); return x; }",
+        5,
+    );
+}
+
+#[test]
 fn flat_matches_ast_for_range_accumulator() {
     // A `for` range loop accumulating 0+1+2+3+4 through slot-backed locals.
     assert_parity(
