@@ -1386,9 +1386,12 @@ separators); a `StringLiteral` argument still declines (no string support yet), 
 falls back to AST. Refactored the shared emission into `emit_print`.
 
 **Validation.** Corpus parity re-swept (only the pre-existing non-deterministic diffs remain, zero flat
-miscompiles); flat-used 31 → 32. Full suite green. The dominant remaining decline is now `StringLiteral`
-(11 programs) — real string support (an `!llvm` global + `print_str`) is the next big unlock; then
-`MethodCall` (5, NPU device methods), `EnumVariant` (3), `ComptimeBlock` (2) — each a larger subsystem.
+miscompiles); flat-used 31 → 32. Full suite green.
+
+**Remaining emitter gaps — filed as issues** (each falls back to AST safely meanwhile; #200 tracks):
+strings / `print!("…", x)` (#225, 11 programs — the biggest unlock, also softmax #217), NPU/device
+method calls (#226, 5), enum construction (#227, 3), comptime blocks (#228, 2), value-`if` in
+expression/nested position (#229, 1), borrows / pointer values (#230, 1).
 
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
