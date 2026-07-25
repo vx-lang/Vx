@@ -1448,6 +1448,33 @@ flat-lower**. Full backend-corpus sweep: **flat-used 38 → 54, zero miscompiles
 is byte-identical once the runtime dispatcher's non-deterministic logging + benchmark wall-clock timing
 are stripped). #226 closed; #232 fixed.
 
+## Entry 51 — payload-free enum construction + `match` (#227)
+
+**Commit:** `f2b4ec6` _(this session, 2026-07-25)_. C-like (payload-free) enum programs
+(`enum Color { Red, Green, Blue }` + `match`) now lower through the flat path. A payload-free enum
+value is a bare `i32` discriminant (as in the AST codegen), so nothing new is needed at the opcode
+level — just the ordinal and the block chain:
+
+- **registry** `enum_variants`: a payload-free enum's name → variant names in declaration order
+  (populated by `build_frozen_registry`), so the lowerer resolves `Color::Green` → ordinal `1`. A
+  data-carrying enum is omitted (→ declines). Threaded through `merge_from`; `.vxlib` deserialize
+  defaults it.
+- **flatten**: `lowered_ty` maps a payload-free enum (spelled `Type::Enum` *or* `Type::Struct` — the
+  resolver uses both) to `Scalar(I32)`; `Expr::EnumVariant` → an `i32` `Const` of the ordinal;
+  `lower_match` lowers a statement-form `match` to an eq-compare + conditional-branch chain (a
+  `Wildcard` arm is the unconditional default); `body_has_control_flow` detects `match`.
+- **flat emitter**: an enum-typed param/return emits as `i32` (`enum_scalar`, backed by
+  `EmitCtx.enums`).
+
+**Scope.** Data-carrying (tagged-union) enums — payload variants, generic `Option<T>`,
+`Vec<Option<..>>` (`option_unwrap.vx`) — plus value-producing `match` and payload/literal/binding
+patterns still decline to the AST path. Split out to **#233**.
+
+**Validation.** Two differential tests (a 4-arm enum match returning 7; a wildcard default returning
+99\) JIT-match the AST oracle; `option_unwrap` still declines cleanly. Full backend-corpus sweep:
+**flat-used 54 → 56** (`match_simple`, `match_runtime`), zero miscompiles. #227 closed (payload-free
+deliverable).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
