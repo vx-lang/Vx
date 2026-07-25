@@ -423,6 +423,34 @@ fn flat_matches_ast_tensor_store_element_coercion() {
 }
 
 #[test]
+fn flat_matches_ast_enum_construct_and_match() {
+    // A payload-free (C-like) enum: `Dir::East` constructs the discriminant ordinal (a bare `i32`),
+    // an enum-typed param passes it, and `match d { Dir::.. => .. }` is an eq-compare chain over the
+    // ordinal (#227). `East`=2, `West`=3 -> `code` returns 3, 4 -> 3 + 4 = 7.
+    assert_parity(
+        "enum Dir { North, South, East, West }\n\
+         fn code(d: Dir) -> i32 { let mut r = 0; \
+           match d { Dir::North => { r = 1; } Dir::South => { r = 2; } \
+                     Dir::East => { r = 3; } Dir::West => { r = 4; } } return r; }\n\
+         fn main() -> i32 { return code(Dir::East) + code(Dir::West); }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_enum_match_wildcard() {
+    // The wildcard arm is the unconditional default: `Color::Green` matches neither listed arm, so
+    // it falls through to `_ => 99`.
+    assert_parity(
+        "enum Color { Red, Green, Blue }\n\
+         fn pick(c: Color) -> i32 { let mut r = 0; \
+           match c { Color::Red => { r = 10; } Color::Blue => { r = 30; } _ => { r = 99; } } return r; }\n\
+         fn main() -> i32 { return pick(Color::Green); }",
+        99,
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.

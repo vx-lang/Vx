@@ -375,6 +375,9 @@ pub struct EmitCtx {
     pub callees: CalleeMap,
     pub aggs: AggMap,
     pub tensors: TensorMap,
+    /// Names of payload-free (C-like) enums — an enum-typed value/param/return is a bare `i32`
+    /// discriminant, not an aggregate (#227). Mirrors `ImmutableGlobalRegistry::enum_variants`.
+    pub enums: std::collections::HashSet<String>,
 }
 
 impl EmitCtx {
@@ -385,7 +388,27 @@ impl EmitCtx {
             callees: build_callee_map(registry),
             aggs: build_agg_map(registry),
             tensors: TensorMap::new(),
+            enums: registry
+                .enum_variants
+                .keys()
+                .map(|s| s.as_ref().to_string())
+                .collect(),
         }
+    }
+}
+
+/// The MLIR scalar type of a payload-free enum (a bare `i32` discriminant), if `ty` names one in
+/// `ctx.enums`. The resolver may spell an enum as `Type::Enum` or `Type::Struct`, so match on the
+/// name. `None` for anything else.
+fn enum_scalar(ty: &Type, ctx: &EmitCtx) -> Option<&'static str> {
+    let name = match ty {
+        Type::Enum(name, _) | Type::Struct(name, _) => name.as_ref(),
+        _ => return None,
+    };
+    if ctx.enums.contains(name) {
+        Some("i32")
+    } else {
+        None
     }
 }
 
@@ -600,6 +623,8 @@ pub fn emit_function_mlir(
     for (i, (_, ty)) in func.params.iter().enumerate() {
         let pty = if let Some(e) = scalar_of(ty) {
             mlir_scalar(&e)?.to_string()
+        } else if let Some(et) = enum_scalar(ty, ctx) {
+            et.to_string() // a payload-free enum param -> its i32 discriminant (#227)
         } else if let Some(gid) = tensor_gid_of(ty) {
             let (elem, shape) = ctx.tensors.get(&gid)?;
             tensor_memref_ty(elem, shape)?
@@ -613,10 +638,13 @@ pub fn emit_function_mlir(
         Type::Scalar(_) => return None,
         _ => None, // non-scalar: a struct return is handled below; anything else is void
     };
-    // The MLIR return type: a scalar, an `!llvm.struct` (a by-value struct return, #215), or `None`
-    // for void. A struct return type whose layout isn't modelled declines the whole function.
+    // The MLIR return type: a scalar, a payload-free enum's `i32` (#227), an `!llvm.struct` (a
+    // by-value struct return, #215), or `None` for void. A struct return whose layout isn't modelled
+    // declines the whole function.
     let ret_mlir: Option<String> = if let Some(e) = &ret_elem {
         Some(mlir_scalar(e)?.to_string())
+    } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
+        Some(et.to_string())
     } else if let Some(gid) = nominal_gid_of(&func.return_type) {
         Some(ctx.aggs.get(&gid)?.struct_ty.clone())
     } else {

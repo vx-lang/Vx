@@ -546,6 +546,24 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "with_memory" => {
                 self.lower_expr(&mc.base)
             }
+            // Construct a payload-free (C-like) enum value (`Color::Green`, #227): the value *is* the
+            // variant's discriminant ordinal, a bare `i32` constant (matching the AST codegen). A
+            // data-carrying variant (a non-empty payload, or an enum absent from `enum_variants`)
+            // declines to the AST path.
+            Expr::EnumVariant(ev) => {
+                if ev.payload.as_ref().is_some_and(|p| !p.is_empty()) {
+                    return None; // tagged-union payload not modelled yet
+                }
+                let variants = self.registry.enum_variants.get(&ev.enum_name)?;
+                let ordinal = variants.iter().position(|v| v == &ev.variant_name)? as u64;
+                Some(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    ordinal,
+                ))
+            }
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -597,6 +615,79 @@ impl<'r> Lowerer<'r> {
 
         // merge block — subsequent statements continue here
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
+        Some(())
+    }
+
+    /// Lower a *statement-form* `match <subject> { <arms> }` over a payload-free enum (#227). The
+    /// subject is an `i32` discriminant; each `EnumVariant` arm becomes a `cmp subject == ordinal` +
+    /// conditional branch to the arm body (taken) or the next arm's test (else) — the same eq-compare
+    /// chain the AST codegen emits. A `Wildcard` arm is the unconditional default. Data-carrying
+    /// patterns (payload bindings), literal/identifier patterns, and value-producing `match` decline.
+    fn lower_match(&mut self, m: &crate::syntax::MatchExpr) -> Option<()> {
+        let subj = self.lower_expr(&m.expr)?;
+        if !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
+            return None; // only payload-free enums (a bare i32 discriminant)
+        }
+        let merge = self.new_block();
+        for arm in &m.arms {
+            match &arm.pattern {
+                crate::syntax::Pattern::EnumVariant(enum_name, variant, payload) => {
+                    if payload.as_ref().is_some_and(|p| !p.is_empty()) {
+                        return None; // tagged-union payload binding not modelled
+                    }
+                    // Absent from `enum_variants` => a data-carrying (or generic) enum: decline.
+                    let variants = self.registry.enum_variants.get(enum_name)?;
+                    let ordinal = variants.iter().position(|v| v == variant)? as u64;
+                    let tag = self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        ordinal,
+                    );
+                    let cond = self.emit_value(
+                        Opcode::Cmp,
+                        subj.reg,
+                        tag.reg,
+                        ElementType::Bool,
+                        rel_code(&RelationalOp::Eq),
+                    );
+                    let body_b = self.new_block();
+                    let next_b = self.new_block();
+                    self.emit_effect(
+                        Opcode::CondBr,
+                        cond.reg,
+                        Register(0),
+                        pack_targets(body_b, next_b),
+                    );
+                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
+                    for s in &arm.body {
+                        self.lower_stmt(s)?;
+                    }
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    // Subsequent arm tests continue in the else block.
+                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+                }
+                crate::syntax::Pattern::Wildcard => {
+                    for s in &arm.body {
+                        self.lower_stmt(s)?;
+                    }
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    // A wildcard is the default; any later arm is unreachable.
+                    break;
+                }
+                _ => return None, // literal / identifier patterns not supported
+            }
+        }
+        // No wildcard matched: the final else block falls through to the merge.
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge as u64);
         Some(())
     }
 
@@ -984,6 +1075,7 @@ impl<'r> Lowerer<'r> {
             Statement::Assert(_) => Some(()),
             Statement::ExprStmt(e) => match &e.expr {
                 Expr::If(iff) => self.lower_if(iff),
+                Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp),
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
@@ -1122,6 +1214,14 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         return Some(LoweredTy::Tensor { elem, shape });
     }
     match ty {
+        // A payload-free (C-like) enum is a bare `i32` discriminant, not an aggregate (#227). The
+        // resolver may spell an enum type as `Type::Enum` or `Type::Struct`, so match on the name; a
+        // data-carrying enum is absent from `enum_variants` and falls through to the aggregate case.
+        Type::Enum(name, _) | Type::Struct(name, _)
+            if registry.enum_variants.contains_key(name) =>
+        {
+            Some(LoweredTy::Scalar(ElementType::I32))
+        }
         Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
             let def = registry.layouts.get(id)?;
             if def.align_bytes == 0 {
@@ -1139,7 +1239,7 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
-        Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_)),
+        Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_) | Expr::Match(_)),
         // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
         // slot, which needs the memory model too.
         Statement::LetDecl(l) => matches!(l.expr, Expr::If(_)),

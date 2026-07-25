@@ -78,6 +78,12 @@ pub struct ImmutableGlobalRegistry {
     /// link an imported module's bodies without its AST (#220). See
     /// `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`.
     pub bodies: FxHashMap<TypeId, FnBody>,
+    /// Payload-free (C-like) enums, keyed by name, mapping to their variant names *in declaration
+    /// order* — so the flat lowerer resolves a variant to its discriminant ordinal (`Color::Green` ->
+    /// `1`) without walking the AST. Only enums whose every variant is payload-free are listed; a
+    /// data-carrying (tagged-union) enum is omitted, so constructing/matching one declines to the AST
+    /// path (#227). Populated by `build_frozen_registry`; empty when deserialized from a `.vxlib`.
+    pub enum_variants: FxHashMap<crate::symbol::Symbol, Vec<crate::symbol::Symbol>>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -160,6 +166,7 @@ impl ImmutableGlobalRegistry {
             fn_sigs: FxHashMap::default(),
             methods: FxHashMap::default(),
             bodies: FxHashMap::default(),
+            enum_variants: FxHashMap::default(),
         })
     }
 
@@ -219,6 +226,9 @@ impl ImmutableGlobalRegistry {
         }
         for (gid, body) in other.bodies {
             self.bodies.entry(gid).or_insert(body);
+        }
+        for (name, variants) in other.enum_variants {
+            self.enum_variants.entry(name).or_insert(variants);
         }
     }
 }

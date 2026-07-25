@@ -387,6 +387,25 @@ pub fn build_frozen_registry(
     let mut registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
         .map_err(PipelineError::Semantic)?;
 
+    // Variant ordinals for payload-free (C-like) enums, so the flat lowerer resolves `Color::Green`
+    // to its discriminant (`1`) and lowers a `match` over it (#227). A data-carrying (tagged-union)
+    // enum is skipped -- constructing/matching it stays on the AST path.
+    for module in modules {
+        for e in &module.enums {
+            let payload_free = e
+                .variants
+                .iter()
+                .all(|(_, payload)| payload.as_ref().is_none_or(|p| p.is_empty()));
+            if payload_free {
+                let variants = e.variants.iter().map(|(name, _)| name.clone()).collect();
+                registry
+                    .enum_variants
+                    .entry(e.name.clone())
+                    .or_insert(variants);
+            }
+        }
+    }
+
     // Function signatures for call resolution in the flat HIR (#198): name -> (GID, return
     // type), GID minted with the resolver's formula. A name defined in more than one module with
     // distinct GIDs is ambiguous for the name-keyed map, so it is dropped rather than resolved wrong.
