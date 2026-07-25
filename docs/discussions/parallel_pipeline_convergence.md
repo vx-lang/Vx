@@ -1376,6 +1376,20 @@ flat-vs-AST diffs are all pre-existing *AST-path* non-determinism (timing benchm
 `llama2_v2`'s non-deterministic `malloc_N` mangling — flat *declines* it and falls back), **zero flat
 miscompiles**. flat-used across the corpus rose 27 → **31**. Full suite green (370 lib + 101 integration).
 
+## Entry 48 — emitter widening: the `print!` macro form (`Expr::Print`)
+
+**Commit:** _this session_. The flat path handled `print(x)` (a function call) but not the `print!`
+**macro** form, which expands to a dedicated `Expr::Print { args }` — the biggest chunk of the survey's
+"other-expr" bucket (loop/scalar/math programs that `print!` their results). Now `Expr::Print` lowers by
+emitting a `Print` for each argument in sequence (matching the AST's per-arg `print_*` calls, no
+separators); a `StringLiteral` argument still declines (no string support yet), so `print!("label", x)`
+falls back to AST. Refactored the shared emission into `emit_print`.
+
+**Validation.** Corpus parity re-swept (only the pre-existing non-deterministic diffs remain, zero flat
+miscompiles); flat-used 31 → 32. Full suite green. The dominant remaining decline is now `StringLiteral`
+(11 programs) — real string support (an `!llvm` global + `print_str`) is the next big unlock; then
+`MethodCall` (5, NPU device methods), `EnumVariant` (3), `ComptimeBlock` (2) — each a larger subsystem.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

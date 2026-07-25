@@ -281,6 +281,24 @@ impl<'r> Lowerer<'r> {
 
     /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
     /// (+ initializing `Store`) in memory mode.
+    /// Emit a `Print` for a value: `type_idx` carries the value's type (scalar or tensor) so codegen
+    /// routes to the right `print_*` / `printMemref*` runtime helper.
+    fn emit_print(&mut self, v: Val) {
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(v.ty.gid());
+        if let LoweredTy::Tensor { elem, shape } = &v.ty {
+            self.tensor_types
+                .push((v.ty.gid(), elem.clone(), shape.clone()));
+        }
+        self.code.push(HirInstruction::new(
+            Opcode::Print,
+            v.reg,
+            Register(0),
+            type_idx,
+            0,
+        ));
+    }
+
     fn bind_local(&mut self, name: Symbol, v: Val) {
         // An aggregate must live in an addressable slot so its fields can be `getelementptr`'d, even in
         // a straight-line function (e.g. binding a struct-returning call result, #215) — so it always
@@ -936,19 +954,17 @@ impl<'r> Lowerer<'r> {
                 // routes to the right `print_*`/`printMemref*` runtime helper.
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
                     let v = self.lower_expr(&fc.args[0])?;
-                    let type_idx = TypeIdx(self.types.len() as u32);
-                    self.types.push(v.ty.gid());
-                    if let LoweredTy::Tensor { elem, shape } = &v.ty {
-                        self.tensor_types
-                            .push((v.ty.gid(), elem.clone(), shape.clone()));
+                    self.emit_print(v);
+                    Some(())
+                }
+                // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
+                // `print_*` helpers, no separators — matching the AST codegen. A `StringLiteral` arg
+                // declines here (no string support yet), so those `print!`s fall back to AST.
+                Expr::Print(p) => {
+                    for arg in &p.args {
+                        let v = self.lower_expr(arg)?;
+                        self.emit_print(v);
                     }
-                    self.code.push(HirInstruction::new(
-                        Opcode::Print,
-                        v.reg,
-                        Register(0),
-                        type_idx,
-                        0,
-                    ));
                     Some(())
                 }
                 other => {
