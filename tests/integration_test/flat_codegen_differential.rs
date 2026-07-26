@@ -451,6 +451,39 @@ fn flat_matches_ast_enum_match_wildcard() {
 }
 
 #[test]
+fn flat_matches_ast_sizeof_value() {
+    // `sizeof<T>()` folds to a compile-time `i64` constant of `T`'s byte size, matching the AST
+    // codegen (#228). `sizeof<f64>()` = 8, `sizeof<i8>()` = 1 -> 9.
+    assert_parity(
+        "fn main() -> i32 { let s: i64 = sizeof<f64>(); let t: i64 = sizeof<i8>(); \
+         return (s + t) as i32; }",
+        9,
+    );
+}
+
+#[test]
+fn flat_matches_ast_comptime_block() {
+    // A `comptime { .. }` block lowers transparently — its `sizeof` folds to a constant and its
+    // `assert` is a runtime no-op, so at runtime it has no observable effect and `main` returns 0
+    // (#228). Matches the AST codegen, which lowers the block the same way.
+    assert_parity(
+        "fn main() -> i32 { comptime { let s: i64 = sizeof<f64>(); assert(s == 8); } return 0; }",
+        0,
+    );
+}
+
+#[test]
+fn flat_matches_ast_return_widening_coercion() {
+    // `return 7` — a default-`i32` literal — from an `-> i64` function coerces to `i64` at the
+    // return (`arith.extsi`), matching the AST's `coerce_type`. Without it the `func.return` type
+    // contradicts the signature. `wide()` = 7.
+    assert_parity(
+        "fn wide() -> i64 { return 7; } fn main() -> i32 { return wide() as i32; }",
+        7,
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.

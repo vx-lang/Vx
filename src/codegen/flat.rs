@@ -934,7 +934,29 @@ pub fn emit_function_mlir(
                 let gid = *types.get(ins.type_idx.0 as usize)?;
                 let a = names.get(ins.operand1.0 as usize)?.clone();
                 if let Some(e) = elem_of_gid(gid) {
-                    body += &format!("  func.return {a} : {}\n", mlir_scalar(&e)?);
+                    // Coerce the returned scalar to the function's declared return type if they differ
+                    // (e.g. `return 10` — a default-`i32` literal — from an `-> i64` function ->
+                    // `arith.extsi`), mirroring the AST's `coerce_type` at return. Otherwise the
+                    // `func.return` type contradicts the signature.
+                    let target = ret_elem.clone().unwrap_or_else(|| e.clone());
+                    if mlir_scalar(&e)? != mlir_scalar(&target)? {
+                        match cast_op(&e, &target)? {
+                            "" => {
+                                body += &format!("  func.return {a} : {}\n", mlir_scalar(&target)?)
+                            }
+                            op => {
+                                let c = format!("%rc{idx}");
+                                body += &format!(
+                                    "  {c} = {op} {a} : {} to {}\n",
+                                    mlir_scalar(&e)?,
+                                    mlir_scalar(&target)?
+                                );
+                                body += &format!("  func.return {c} : {}\n", mlir_scalar(&target)?);
+                            }
+                        }
+                    } else {
+                        body += &format!("  func.return {a} : {}\n", mlir_scalar(&e)?);
+                    }
                 } else if let Some(agg) = ctx.aggs.get(&gid) {
                     // A struct return (#215). The operand is either a slot pointer (a constructed
                     // struct) -> load the value; or already a struct value (a returned call result) ->
