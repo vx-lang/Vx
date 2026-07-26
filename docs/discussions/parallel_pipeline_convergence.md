@@ -1593,6 +1593,40 @@ and falls back to the AST path.
 support (to provide an oracle), or the generic/`Vec`/stdlib-method surface `option_unwrap.vx` needs. It
 is not tractable as a differential-parity task this session and stays open with these findings.
 
+## Entry 57 — call-argument coercion in the type checker (#236)
+
+**Commit:** `2ec70d6` _(this session, 2026-07-25)_. Closes the gap #231/#235 surfaced: the flat path
+resolved a callee **by name**, pulled only its *return* type from `FnSig { gid, ret_ty }`, and lowered
+each argument to whatever type the checker annotated — so a default-`i32` literal passed to an `i64`
+parameter emitted an `i32` `func.call` operand that disagreed with the callee and failed MLIR
+verification. The frontend's `is_assignable` check accepted the implicit conversion but never recorded
+it.
+
+**Design (see `implementation_plans/flat_call_argument_coercion.md`).** Record the coercion where the
+decision is already made — the *elaboration inserts coercions* pattern. `TypeChecker::coerce_call_arg`,
+in `check_functioncall_expr`'s defined-function/extern and monomorphized arms, on the committing
+(`!silent`) pass, rewrites an assignable-but-differing scalar argument: a numeric literal is re-typed
+in place (born at the parameter type, no cast op), any other expression is wrapped in an `as` cast.
+Both backends already lower the result identically — the flat path to a `Cast` opcode, the AST codegen
+through the same `coerce_type` it ran at the call anyway — so the coercion lives in the typed AST every
+consumer reads.
+
+**Why not carry `params` in `FnSig`.** That was the naïve reading (a later phase re-derives the
+decision), and it fights the data-oriented parallel design: `FnSig` lives in the frozen, `Arc`-shared
+`ImmutableGlobalRegistry` — hot data every parallel worker reads and every `.vxlib` serializes. A
+coercion is a *per-call-site* fact, not a *per-signature* one; recording it at the site keeps the
+registry a lean identity index and confines the change to the already-parallel type-check phase (no
+wider freeze, no format bump, no per-signature `Vec<Type>`). The `FnSig.params` design is kept as the
+deferred *cross-module* fallback (a call across a `.vxlib` boundary can't see the imported callee's
+params today).
+
+**Validation.** `ffi_stdio.vx` now emits `func.call @vx_stdout_write(%msg, %c14_i64) : (!llvm.ptr, i64)`
+— the correct C ABI rather than a half-width `i32` that only printed right by luck. Three differential
+tests (literal / non-literal `AsCast` / float widen), all `assert_parity` vs the AST oracle. Full
+lib + integration suites green (the mutated tree feeds the AST codegen, borrow checker, and
+monomorphization); corpus sweep holds **flat-used 74, zero new miscompiles**. Not covered (rare, no
+driver): the fn-pointer / closure call arms, and cross-`.vxlib` coercion. #236 closed.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

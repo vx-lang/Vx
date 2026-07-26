@@ -1,8 +1,18 @@
 # Flat call-argument coercion to callee parameter types (#236)
 
-**Status:** design / not started. **Date:** 2026-07-25. **Umbrella:** flat-codegen
-convergence (#200/#201). **Related:** #231/#235 (which surfaced this), #234 (return
-coercion), #232 (tensor-store coercion), #220 (`.vxlib` bodies + loader).
+**Status:** implemented (Option C), `2ec70d6`. **Date:** 2026-07-25. **Umbrella:**
+flat-codegen convergence (#200/#201). **Related:** #231/#235 (which surfaced this),
+#234 (return coercion), #232 (tensor-store coercion), #220 (`.vxlib` bodies + loader).
+
+> **Implemented as Option C** (the recommended design). `TypeChecker::coerce_call_arg`
+> records the coercion on the argument node in `check_functioncall_expr`'s
+> defined-function/extern and monomorphized arms, on the committing (`!silent`) pass:
+> a numeric literal is re-typed in place, any other expression is wrapped in an `as`
+> cast. `FnSig` is untouched (no `.vxlib` bump); the `FnSig.params` design in §4.1/§5.1
+> remains the **deferred cross-module fallback**. `ffi_stdio.vx` now passes `%c14_i64`
+> to `vx_stdout_write(!llvm.ptr, i64)` (correct ABI, not luck); three differential tests
+> added; corpus sweep holds flat-used 74, zero new miscompiles. **Not covered** (rare,
+> no driver): the fn-pointer / closure call arms, and cross-`.vxlib` argument coercion.
 
 ______________________________________________________________________
 
