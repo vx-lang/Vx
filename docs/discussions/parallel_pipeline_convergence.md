@@ -1496,6 +1496,27 @@ deliverable).
 comptime programs + a third unblocked by the return coercion), zero miscompiles. #228 closed; #234
 fixed.
 
+## Entry 53 — value-position `if` in expression context (#229)
+
+**Commit:** `067bf38` _(this session, 2026-07-25)_. Follow-up to the annotated-`let` value-`if`
+(`ba564b1`): a value-`if` in a general *expression* position now lowers through the flat path — a
+nested if-expr as a branch value, a call argument, an implicit return, or a compound-assign RHS
+(`expr_assignment.vx`).
+
+`flatten::lower_expr` gains an `Expr::If` arm that infers the result type from the then-branch's
+trailing value (`infer_expr_ty` / `infer_block_ty` — reads the AST + scope *without emitting*,
+covering number / identifier / binop / unary / relational / cast / call / nested-if / unsafe /
+comptime forms), allocates a result slot, stores each branch's value into it (reusing
+`lower_if_into_slot`), and loads the result. The annotated `let v: T = if ..` path is unchanged (its
+annotation is a more precise type source). `else if` chains fall out for free (the `else` branch's
+trailing value is itself an `Expr::If`), and the `if`'s blocks are self-contained, so a value-`if`
+also lowers in a pure-SSA function with no other control flow (the pre-branch ops sit in the implicit
+entry block).
+
+**Validation.** Four differential tests (nested → 100; implicit-return → 12; call-argument → 42;
+else-if compound-assign → 51) JIT-match the AST oracle. Full backend-corpus sweep: **flat-used
+59 → 60** (`expr_assignment.vx`), zero miscompiles. #229 closed.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
