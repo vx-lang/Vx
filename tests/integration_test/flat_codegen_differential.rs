@@ -484,6 +484,54 @@ fn flat_matches_ast_return_widening_coercion() {
 }
 
 #[test]
+fn flat_matches_ast_nested_value_if() {
+    // A value-`if` whose then-branch is itself a value-`if` (`expr_assignment.vx` shape, #229): the
+    // inner if lowers through `lower_expr`'s `Expr::If` arm (its result type inferred from the branch
+    // value) into the outer slot. `x=25` -> `25>10` -> `25>20` -> 100.
+    assert_parity(
+        "fn nested(x: i32) -> i32 { let val: i32 = if x > 10 { if x > 20 { 100 } else { 50 } } \
+         else { 0 }; return val; }\n\
+         fn main() -> i32 { return nested(25); }",
+        100,
+    );
+}
+
+#[test]
+fn flat_matches_ast_value_if_implicit_return() {
+    // A value-`if` as a function's implicit return (no annotation): the parser rewrites the trailing
+    // `if` to `return if ..`, which lowers through the `Expr::If` arm. `implicit(3)` -> `3>10` false
+    // -> `3 + 9` = 12.
+    assert_parity(
+        "fn implicit(x: i32) -> i32 { if x > 10 { x + 5 } else { x + 9 } }\n\
+         fn main() -> i32 { return implicit(3); }",
+        12,
+    );
+}
+
+#[test]
+fn flat_matches_ast_value_if_call_argument() {
+    // A value-`if` nested as a call argument, in a function with no other control flow (so it lowers
+    // in pure-SSA mode — the `if`'s blocks are self-contained). `5 > 2` -> 42.
+    assert_parity(
+        "fn id(x: i32) -> i32 { x }\n\
+         fn main() -> i32 { return id(if 5 > 2 { 42 } else { 7 }); }",
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_value_if_else_if_compound_assign() {
+    // An `else if` chain as a compound-assign RHS: the `else` branch's trailing value is itself an
+    // `if`, lowered through the `Expr::If` arm into the outer slot. `x=15` -> not `>20`, is `>10` ->
+    // 50; `r = 1 + 50` = 51.
+    assert_parity(
+        "fn main() -> i32 { let x = 15; let mut r = 1; \
+         r += if x > 20 { 100 } else if x > 10 { 50 } else { 0 }; return r; }",
+        51,
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_calls() {
     // A call whose argument is itself a call — the flat stream nests `Arg`/`Call`
     // pairs, so each `Call` must consume exactly its own trailing args.

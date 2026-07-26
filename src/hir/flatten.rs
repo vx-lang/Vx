@@ -596,12 +596,70 @@ impl<'r> Lowerer<'r> {
                     ordinal,
                 ))
             }
+            // A value-position `if` in expression context: nested (`if c { if d { .. } else { .. } }
+            // else { .. }`), a call argument, an implicit return (the parser rewrites a trailing `if`
+            // to `return if ..`), or a compound-assign RHS (#229). Infer the result type from the
+            // then-branch's trailing value, allocate a slot, store each branch's value into it, and
+            // load the result. (The annotated `let v: T = if ..` form uses its annotation directly in
+            // `lower_stmt`, a more precise path that this does not replace.)
+            Expr::If(if_expr) => {
+                let result_ty = self.infer_block_ty(&if_expr.then_block)?;
+                let slot = self.emit_alloca(result_ty.clone());
+                self.lower_if_into_slot(if_expr, slot.reg)?;
+                Some(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
+            }
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
                 }
                 None
             }
+        }
+    }
+
+    /// Infer the [`LoweredTy`] of an expression from the AST + current scope, *without emitting* — so
+    /// the result slot of a value-position `if` can be sized before its branches are lowered (#229).
+    /// Covers the scalar-producing forms that appear as a branch's trailing value; anything else
+    /// returns `None`, declining the value-`if`.
+    fn infer_expr_ty(&self, e: &Expr) -> Option<LoweredTy> {
+        match e {
+            Expr::Number(n) => Some(LoweredTy::Scalar(number_elem(n)?)),
+            Expr::Identifier(id) => match self.scope.get(&id.name)? {
+                Binding::Reg(v) => Some(v.ty.clone()),
+                Binding::Slot { ty, .. } => Some(ty.clone()),
+            },
+            Expr::BinaryOp(b) => {
+                // Mirror `lower_expr`: the result is the tensor side if either operand is a tensor,
+                // else the left operand's type.
+                let l = self.infer_expr_ty(&b.lhs)?;
+                if matches!(l, LoweredTy::Tensor { .. }) {
+                    return Some(l);
+                }
+                let r = self.infer_expr_ty(&b.rhs)?;
+                if matches!(r, LoweredTy::Tensor { .. }) {
+                    return Some(r);
+                }
+                Some(l)
+            }
+            Expr::UnaryOp(u) => self.infer_expr_ty(&u.expr),
+            Expr::RelationalOp(_) => Some(LoweredTy::Scalar(ElementType::Bool)),
+            Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
+            Expr::FunctionCall(fc) => {
+                let sig = self.registry.fn_sigs.get(&fc.name)?;
+                lowered_ty(&sig.ret_ty, self.registry)
+            }
+            Expr::If(iff) => self.infer_block_ty(&iff.then_block),
+            Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),
+            Expr::ComptimeBlock(cb) => self.infer_expr_ty(cb.ret.as_deref()?),
+            _ => None,
+        }
+    }
+
+    /// The inferred type of a block's trailing semicolon-less value expression (a branch's value).
+    fn infer_block_ty(&self, stmts: &[Statement]) -> Option<LoweredTy> {
+        match stmts.last()? {
+            Statement::ExprStmt(es) if !es.has_semi => self.infer_expr_ty(&es.expr),
+            _ => None,
         }
     }
 
