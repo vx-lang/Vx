@@ -45,6 +45,15 @@ pub fn tensor_gid(elem: &ElementType, shape: &[String]) -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The stable GID of a raw pointer type (`!llvm.ptr`): module 0 (builtin) + a content hash of a fixed
+/// name. Every pointer — a string value, a `*mut i8`/`*const u8` FFI argument or result — is the same
+/// opaque `!llvm.ptr`, so one GID identifies them all (matching MLIR's opaque pointer model). Kept
+/// distinct from any scalar/tensor GID so `elem_of_gid` never mistakes a pointer for a scalar. (#231)
+pub fn ptr_gid() -> TypeId {
+    let sym = crate::hash::DefPath::Named("$prim::ptr").compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
@@ -135,6 +144,10 @@ enum LoweredTy {
         elem: ElementType,
         shape: Vec<String>,
     },
+    /// A raw pointer (`!llvm.ptr`): a string value, or a `*const`/`*mut` FFI argument or result. All
+    /// pointers share one opaque type (matching MLIR), so no element is carried. Stored in a slot via
+    /// `llvm.alloca` in memory mode; a value otherwise. (#231/#235)
+    Ptr,
 }
 
 impl LoweredTy {
@@ -144,6 +157,7 @@ impl LoweredTy {
             LoweredTy::Scalar(e) => scalar_gid(e),
             LoweredTy::Aggregate(id) => *id,
             LoweredTy::Tensor { elem, shape } => tensor_gid(elem, shape),
+            LoweredTy::Ptr => ptr_gid(),
         }
     }
 }
@@ -250,8 +264,9 @@ impl<'r> Lowerer<'r> {
     fn emit_alloca(&mut self, ty: LoweredTy) -> Val {
         let imm = match &ty {
             // A tensor is a reference (memref), not a stack value, so it is never `Alloca`'d — but
-            // keep the match total; if one ever reaches here its size is left unencoded.
-            LoweredTy::Scalar(_) | LoweredTy::Tensor { .. } => 0,
+            // keep the match total; if one ever reaches here its size is left unencoded. A pointer
+            // slot is a single `!llvm.ptr` cell, so its size is likewise implied by its type.
+            LoweredTy::Scalar(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => 0,
             LoweredTy::Aggregate(id) => self
                 .registry
                 .layouts
@@ -310,6 +325,22 @@ impl<'r> Lowerer<'r> {
         let imm = self.strings.len() as u64;
         self.strings.push(s.to_string());
         self.emit_effect(Opcode::PrintStr, Register(0), Register(0), imm);
+    }
+
+    /// Emit a `StringConst` for a string literal in *value* position: record the bytes in the string
+    /// side table and carry that entry's index in `imm`. The result is an `!llvm.ptr` value (codegen
+    /// emits the global + `addressof`), which a `let`/argument can carry — matching the AST path's
+    /// `StringLiteralExpr`. (#231)
+    fn emit_string_const(&mut self, s: &str) -> Val {
+        let imm = self.strings.len() as u64;
+        self.strings.push(s.to_string());
+        self.emit_typed(
+            Opcode::StringConst,
+            Register(0),
+            Register(0),
+            LoweredTy::Ptr,
+            imm,
+        )
     }
 
     /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
@@ -620,6 +651,12 @@ impl<'r> Lowerer<'r> {
                 self.lower_if_into_slot(if_expr, slot.reg)?;
                 Some(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
             }
+            // A string literal in value position (`let s = "…"`, a string function argument): emit the
+            // module-level global + `addressof`, yielding a first-class `!llvm.ptr` value — the same
+            // shape the AST path's `StringLiteralExpr` produces. Backs the string-passing FFI programs
+            // (`vx_stdout_write(msg, 14)`). A print-*position* string never reaches here; it takes the
+            // `PrintStr` effect path in `lower_print_arg`. (#231)
+            Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -877,7 +914,7 @@ impl<'r> Lowerer<'r> {
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
             // ranges are over scalars
-            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } => return None,
+            LoweredTy::Aggregate(_) | LoweredTy::Tensor { .. } | LoweredTy::Ptr => return None,
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
@@ -1012,7 +1049,17 @@ impl<'r> Lowerer<'r> {
     /// emit `Call` (callee GID in `type_idx`, arg count in `imm`). Declines an unknown callee (or one
     /// ambiguous across modules) and a void/unmodelled return -- for now only value-returning calls.
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
-        let sig = self.registry.fn_sigs.get(fc.name.as_ref())?.clone();
+        let sig = match self.registry.fn_sigs.get(fc.name.as_ref()) {
+            Some(s) => s.clone(),
+            None => {
+                // An unresolved callee (an ambiguous-across-modules name dropped from `fn_sigs`, or an
+                // unregistered symbol) — decline, so the AST path stays the oracle for the call.
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg]   call: no fn_sig for {}", fc.name.as_ref());
+                }
+                return None;
+            }
+        };
         let ret_ty = lowered_ty(&sig.ret_ty, self.registry)?;
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
@@ -1179,6 +1226,19 @@ impl<'r> Lowerer<'r> {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp),
+                // A statement-position `unsafe { … }` (an FFI program's `unsafe { … }` wrapper with no
+                // trailing value): safety was checked upstream, so `unsafe` is transparent — lower the
+                // inner statements, and its trailing value expression if any. (The value-position form,
+                // `return unsafe { … }`, is the `Expr::UnsafeBlock` arm in `lower_expr`.)
+                Expr::UnsafeBlock(ub) => {
+                    for s in &ub.stmts {
+                        self.lower_stmt(s)?;
+                    }
+                    if let Some(r) = &ub.ret {
+                        self.lower_expr(r)?;
+                    }
+                    Some(())
+                }
                 // `print(x)` is a statement-level effect (no result): lower its one argument and emit
                 // a `Print`, whose `type_idx` carries the argument's type (scalar or tensor) so codegen
                 // routes to the right `print_*`/`printMemref*` runtime helper.
@@ -1314,6 +1374,12 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     }
     if let Some((elem, shape)) = tensor_elem_shape(ty) {
         return Some(LoweredTy::Tensor { elem, shape });
+    }
+    // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
+    // and FFI-pointer programs (`vx_stdout_write(buffer: *const u8, …)`, an extern returning
+    // `*mut i8`). Matches the AST codegen's `lower_type` for `Type::Pointer`/`Type::Borrow`. (#231/#235)
+    if matches!(ty, Type::Pointer(..) | Type::Borrow { .. }) {
+        return Some(LoweredTy::Ptr);
     }
     match ty {
         // A payload-free (C-like) enum is a bare `i32` discriminant, not an aggregate (#227). The

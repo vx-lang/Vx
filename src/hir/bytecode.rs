@@ -108,6 +108,12 @@ pub enum Opcode {
     /// constant` holding the (null-terminated) bytes and calls `@print_str(!llvm.ptr) -> i32` — the
     /// same runtime helper the AST path uses for a string `print!` argument.
     PrintStr = 31,
+    /// A string literal in *value* position (`let s = "…"`, a string function argument): `imm` is the
+    /// index into this function's string side table. The flat codegen emits the same
+    /// `llvm.mlir.global internal constant` as `PrintStr`, then `llvm.mlir.addressof @".str.<n>"` to
+    /// yield a first-class `!llvm.ptr` value — matching the AST path's `StringLiteralExpr`. The
+    /// register's result type is a pointer (`LoweredTy::Ptr`). (#231)
+    StringConst = 32,
 }
 
 impl Opcode {
@@ -149,6 +155,7 @@ impl Opcode {
             29 => Arg,
             30 => Print,
             31 => PrintStr,
+            32 => StringConst,
             _ => return None,
         })
     }

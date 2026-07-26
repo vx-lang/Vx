@@ -860,6 +860,55 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     );
 }
 
+#[test]
+fn flat_matches_ast_string_value_pointer_arg() {
+    // A string literal in *value* position (#231): bound to a local, then passed as an `!llvm.ptr`
+    // argument to a pointer-typed parameter — the shape of `vx_stdout_write(msg, 14)`. The callee
+    // ignores the pointer and returns the length, so the exit code is observable without a deref or a
+    // runtime symbol (self-contained). Exercises `StringConst` + pointer param + pointer arg.
+    assert_parity(
+        "fn take(p: *const u8, n: i32) -> i32 { return n; }\n\
+         fn main() -> i32 { let msg = \"Hello!\\n\"; let r = take(msg, 14); return r; }",
+        14,
+    );
+}
+
+#[test]
+fn flat_matches_ast_pointer_return_and_memory_slot() {
+    // The FFI pointer ABI (#235): a pointer-*returning* function (like an FFI allocator), a pointer
+    // local that must survive across basic blocks (the `if` forces the memory model, so the pointer
+    // lives in an `llvm.alloca` slot), and a pointer argument read back from that slot. All Vx-defined,
+    // so no external symbol is linked — the exit code alone proves the pointer threaded through.
+    assert_parity(
+        "fn make(x: *const u8) -> *const u8 { return x; }\n\
+         fn take(p: *const u8) -> i32 { return 7; }\n\
+         fn main() -> i32 {\n\
+         let s = \"hi\";\n\
+         let p = make(s);\n\
+         let mut r = 0;\n\
+         if r == 0 { r = take(p); }\n\
+         return r;\n\
+         }",
+        7,
+    );
+}
+
+#[test]
+fn flat_matches_ast_corpus_ffi_stdio_strings() {
+    // The #231 corpus driver: string *values* bound to locals and passed to the `vx_stdout_write`/
+    // `vx_stderr_write` FFI externs (`!llvm.ptr` arguments), plus print-position strings (#225). Its
+    // JIT stdout must match the AST oracle byte for byte.
+    assert_output_parity(&corpus("ffi_stdio.vx"));
+}
+
+#[test]
+fn flat_matches_ast_corpus_ffi_option() {
+    // The #235 corpus driver: FFI externs returning/taking `*mut i8` (`!llvm.ptr`), a pointer local
+    // stored across an `if` (memory-mode pointer slot), and a `Bool`-returning extern as the `if`
+    // condition. Its JIT stdout must match the AST oracle.
+    assert_output_parity(&corpus("ffi_option.vx"));
+}
+
 /// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
 /// and license lines are `//` comments the parser ignores.
 fn corpus(name: &str) -> String {

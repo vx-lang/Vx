@@ -28,7 +28,7 @@
 //===----------------------------------------------------------------------===//
 use crate::gid::TypeId;
 use crate::hir::bytecode::{HirInstruction, Opcode};
-use crate::hir::flatten::{scalar_gid, tensor_gid_of};
+use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::{ElementType, Function, Type};
 use std::collections::HashMap;
@@ -179,6 +179,13 @@ fn nominal_gid_of(ty: &Type) -> Option<TypeId> {
     }
 }
 
+/// Whether a type lowers to an opaque `!llvm.ptr` — a `*const T`/`*mut T` or a `&T` borrow. The ABI
+/// of string values and FFI pointer arguments/results (matching the AST codegen's `lower_type`, which
+/// maps both to `!llvm.ptr`). (#231/#235)
+fn is_ptr_ty(ty: &Type) -> bool {
+    matches!(ty, Type::Pointer(..) | Type::Borrow { .. })
+}
+
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     let f = is_float(e);
@@ -281,6 +288,9 @@ pub struct Callee {
     /// The GID of the callee's return type when it is a nominal aggregate (struct/enum) -- the call
     /// then returns an `!llvm.struct` by value, spilled to a slot at the call site (#215).
     pub ret_agg: Option<TypeId>,
+    /// Whether the callee returns an opaque `!llvm.ptr` (a `*const`/`*mut`/`&` return, e.g. an FFI
+    /// allocator). The call's result is then a pointer value tracked in `ptr_of`. (#235)
+    pub ret_ptr: bool,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -300,6 +310,7 @@ pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
                     name: name.to_string(),
                     ret: scalar_of(&sig.ret_ty),
                     ret_agg: nominal_gid_of(&sig.ret_ty),
+                    ret_ptr: is_ptr_ty(&sig.ret_ty),
                 },
             )
         })
@@ -625,6 +636,8 @@ pub fn emit_function_mlir(
             mlir_scalar(&e)?.to_string()
         } else if let Some(et) = enum_scalar(ty, ctx) {
             et.to_string() // a payload-free enum param -> its i32 discriminant (#227)
+        } else if is_ptr_ty(ty) {
+            "!llvm.ptr".to_string() // a `*const`/`*mut`/`&` pointer param (#235)
         } else if let Some(gid) = tensor_gid_of(ty) {
             let (elem, shape) = ctx.tensors.get(&gid)?;
             tensor_memref_ty(elem, shape)?
@@ -645,6 +658,8 @@ pub fn emit_function_mlir(
         Some(mlir_scalar(e)?.to_string())
     } else if let Some(et) = enum_scalar(&func.return_type, ctx) {
         Some(et.to_string())
+    } else if is_ptr_ty(&func.return_type) {
+        Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
     } else if let Some(gid) = nominal_gid_of(&func.return_type) {
         Some(ctx.aggs.get(&gid)?.struct_ty.clone())
     } else {
@@ -688,6 +703,13 @@ pub fn emit_function_mlir(
     // The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
     // `TensorStore` `vector.store`s it and a further elementwise passes it through.
     let mut vec_of: Vec<Option<String>> = vec![None; hir.len()];
+    // Whether each register holds an opaque `!llvm.ptr` *value* (a string const, a pointer param, a
+    // pointer-returning call, or a load from a pointer slot) — so a `Call` arg / `func.return` types it
+    // as `!llvm.ptr`. The pointer analogue of `etypes`. (#231/#235)
+    let mut ptr_of: Vec<bool> = vec![false; hir.len()];
+    // Whether each register is a pointer *slot* (an `llvm.alloca` of `!llvm.ptr`, a memory-mode pointer
+    // local), so a `Store`/`SlotLoad` on it uses `llvm.store`/`llvm.load` rather than `memref`. (#235)
+    let mut pslot_of: Vec<bool> = vec![false; hir.len()];
     let mut body = String::new();
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
@@ -710,6 +732,8 @@ pub fn emit_function_mlir(
                 let gid = *types.get(ins.type_idx.0 as usize)?;
                 if let Some(e) = elem_of_gid(gid) {
                     etypes[idx] = Some(e);
+                } else if gid == ptr_gid() {
+                    ptr_of[idx] = true; // a `!llvm.ptr` parameter (#235)
                 } else if let Some((elem, shape)) = ctx.tensors.get(&gid) {
                     mem_of[idx] = tensor_memref_ty(elem, shape);
                 }
@@ -869,6 +893,16 @@ pub fn emit_function_mlir(
                     body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
                     names[idx] = n;
                     etypes[idx] = Some(e);
+                } else if gid == ptr_gid() {
+                    // A pointer local (memory mode): an `llvm.alloca` of one `!llvm.ptr` cell, tracked
+                    // in `pslot_of` so its `Store`/`SlotLoad` use `llvm.store`/`llvm.load`. (#235)
+                    let cnt = format!("%n{idx}");
+                    let n = format!("%v{idx}");
+                    body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+                    body +=
+                        &format!("  {n} = llvm.alloca {cnt} x !llvm.ptr : (i32) -> !llvm.ptr\n");
+                    names[idx] = n;
+                    pslot_of[idx] = true;
                 } else {
                     let agg = ctx.aggs.get(&gid)?;
                     let cnt = format!("%n{idx}");
@@ -893,6 +927,9 @@ pub fn emit_function_mlir(
                         "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
                         agg.struct_ty
                     );
+                } else if *pslot_of.get(ins.operand1.0 as usize)? {
+                    // A pointer local: store the `!llvm.ptr` value into its `llvm.alloca` cell. (#235)
+                    body += &format!("  llvm.store {val}, {slot} : !llvm.ptr, !llvm.ptr\n");
                 } else {
                     let e = elem_at(&etypes, ins.operand1.0)?;
                     let mt = mlir_scalar(&e)?;
@@ -902,13 +939,23 @@ pub fn emit_function_mlir(
             // Load a value back from a slot; the result type is the slot's element (this
             // instruction's own `type_idx`).
             Opcode::SlotLoad => {
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
-                let slot = names.get(ins.operand1.0 as usize)?;
-                let n = format!("%v{idx}");
-                body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
-                names[idx] = n;
-                etypes[idx] = Some(e);
+                // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); a scalar slot loads its
+                // element from the rank-0 memref (`memref.load`). (#235)
+                if *pslot_of.get(ins.operand1.0 as usize)? {
+                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
+                    names[idx] = n;
+                    ptr_of[idx] = true;
+                } else {
+                    let e = ty_at(ins.type_idx.0)?;
+                    let mt = mlir_scalar(&e)?;
+                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
+                }
             }
             // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
             // params), so it gets no label; every other id opens `^bbN:`.
@@ -957,6 +1004,8 @@ pub fn emit_function_mlir(
                     } else {
                         body += &format!("  func.return {a} : {}\n", mlir_scalar(&e)?);
                     }
+                } else if gid == ptr_gid() {
+                    body += &format!("  func.return {a} : !llvm.ptr\n"); // a pointer return (#235)
                 } else if let Some(agg) = ctx.aggs.get(&gid) {
                     // A struct return (#215). The operand is either a slot pointer (a constructed
                     // struct) -> load the value; or already a struct value (a returned call result) ->
@@ -993,6 +1042,8 @@ pub fn emit_function_mlir(
                     mlir_scalar(e)?.to_string()
                 } else if let Some(agg_gid) = callee.ret_agg {
                     ctx.aggs.get(&agg_gid)?.struct_ty.clone()
+                } else if callee.ret_ptr {
+                    "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
                 } else {
                     return None;
                 };
@@ -1005,9 +1056,12 @@ pub fn emit_function_mlir(
                 let mut arg_types: Vec<String> = Vec::with_capacity(n);
                 for a in &args {
                     arg_names.push(names.get(*a as usize)?.clone());
-                    // A scalar arg is its element type; a tensor arg is its memref type.
+                    // A scalar arg is its element type; a pointer arg (a string value / FFI pointer) is
+                    // `!llvm.ptr`; a tensor arg is its memref type.
                     let at = if let Some(e) = elem_at(&etypes, *a) {
                         mlir_scalar(&e)?.to_string()
+                    } else if *ptr_of.get(*a as usize)? {
+                        "!llvm.ptr".to_string()
                     } else {
                         mem_of.get(*a as usize)?.clone()?
                     };
@@ -1027,6 +1081,8 @@ pub fn emit_function_mlir(
                 names[idx] = nm;
                 if let Some(e) = &callee.ret {
                     etypes[idx] = Some(e.clone());
+                } else if callee.ret_ptr {
+                    ptr_of[idx] = true; // the call result is a pointer value (#235)
                 }
                 // else: a struct value tracked by `names[idx]`; a following `Store` spills it to a slot
                 // and a `Ret` returns it directly (#215).
@@ -1312,6 +1368,17 @@ pub fn emit_function_mlir(
                 let r = format!("%pstr{idx}");
                 body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
                 body += &format!("  {r} = func.call @print_str({p}) : (!llvm.ptr) -> i32\n");
+            }
+            // A string literal in value position (#231): take the address of the module-level global
+            // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
+            // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's
+            // bytes are emitted by `emit_module_mlir` from the string side table.
+            Opcode::StringConst => {
+                let n = str_base + ins.imm as usize;
+                let p = format!("%v{idx}");
+                body += &format!("  {p} = llvm.mlir.addressof @\".str.{n}\" : !llvm.ptr\n");
+                names[idx] = p;
+                ptr_of[idx] = true;
             }
             // Anything else (spawn, matmul, …) is outside this subset.
             _ => return None,
