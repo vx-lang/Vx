@@ -944,6 +944,48 @@ fn flat_coerces_float_argument_to_wider_param() {
     );
 }
 
+#[test]
+fn flat_coerces_binary_op_and_comparison_operands() {
+    // #238 (flat-lowerer coercion): a wider-typed local combined with default-`i32` literals in a
+    // binary op (`i + 10`), a comparison (`i < 3`), and a compound assign — all must coerce the
+    // literal to the operand's type. Previously the flat path emitted `arith.addi(i64, i32)` and
+    // failed verification. Loop vars are `i64` in the flat path, so this is safe here.
+    assert_parity(
+        "fn main() -> i32 {\n\
+         let mut i: i64 = 0;\n\
+         if i < 3 { i = i + 10; }\n\
+         i += 5;\n\
+         return i as i32;\n\
+         }",
+        15,
+    );
+}
+
+#[test]
+fn flat_coerces_let_annotation_slot_and_assignment() {
+    // #238: an annotated `let` sizes its slot from the annotation and coerces the initializer, so a
+    // later assignment of a matching-width value fits (`let mut r: i64 = 0; r = 5`). Before, the slot
+    // took the initializer's default `i32` and a wider store did not fit.
+    assert_parity(
+        "fn main() -> i32 { let mut r: i64 = 0; r = 5; return r as i32; }",
+        5,
+    );
+}
+
+#[test]
+fn flat_coerces_value_if_branch_to_result_type() {
+    // #238: a value-position `if` whose branches carry differently-typed literals must reconcile both
+    // to the result (slot) type (`let v: i64 = if c { 1 } else { 2 }`).
+    assert_parity(
+        "fn main() -> i32 {\n\
+         let c = 1;\n\
+         let v: i64 = if c > 0 { 7 } else { 9 };\n\
+         return v as i32;\n\
+         }",
+        7,
+    );
+}
+
 /// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
 /// and license lines are `//` comments the parser ignores.
 fn corpus(name: &str) -> String {

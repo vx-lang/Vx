@@ -258,6 +258,30 @@ impl<'r> Lowerer<'r> {
         self.emit_typed(opcode, o1, o2, LoweredTy::Scalar(ty), imm)
     }
 
+    /// Coerce a value to a target scalar type, emitting a `Cast` when they differ. This is the flat
+    /// path's counterpart of the AST codegen's `coerce_type` — an implicit numeric conversion the type
+    /// checker validated (`is_assignable`) but did not materialize. Doing it *here* is what makes it
+    /// safe where a checker-side coercion is not (#238): in the flat lowering every value is a real
+    /// `LoweredTy` and a loop induction variable is an `i64`, never MLIR `index`, so there is no
+    /// checker-type-vs-codegen-type divergence. Only a concrete scalar→scalar edge is coerced (a
+    /// `bool`, generic, or non-scalar pair passes through, matching `is_assignable`'s scalar rule); an
+    /// unmodelled conversion is left to the emitter, which declines it (keeping the AST path the
+    /// oracle).
+    fn coerce_val(&mut self, v: Val, target: &LoweredTy) -> Val {
+        let (LoweredTy::Scalar(from), LoweredTy::Scalar(to)) = (&v.ty, target) else {
+            return v;
+        };
+        if from == to
+            || matches!(from, ElementType::Generic(_))
+            || matches!(to, ElementType::Generic(_))
+            || *from == ElementType::Bool
+            || *to == ElementType::Bool
+        {
+            return v;
+        }
+        self.emit_value(Opcode::Cast, v.reg, Register(0), to.clone(), 0)
+    }
+
     /// Emit an `Alloca` slot for a value of type `ty`. `type_idx` is the slot's element/aggregate
     /// GID; for an aggregate `imm` carries its byte size from the registry layout (0 for a scalar,
     /// whose element type already implies its size). The result register is the slot handle.
@@ -409,14 +433,22 @@ impl<'r> Lowerer<'r> {
                 let l = self.lower_expr(&b.lhs)?;
                 let r = self.lower_expr(&b.rhs)?;
                 let op = binop_opcode(&b.op)?;
-                // Operands are type-checked to a common type; the result carries that type. When
-                // either operand is a tensor the op is *elementwise* and the result is the tensor
-                // type (a scalar operand broadcasts) -- an arith opcode with a tensor result type is
-                // the flat HIR's elementwise form, mirroring `arith.mulf` on a vector in codegen.
+                // Operands are type-checked *assignable* but not necessarily identical; the result
+                // carries the left operand's type. When either operand is a tensor the op is
+                // *elementwise* and the result is the tensor type (a scalar operand broadcasts) -- an
+                // arith opcode with a tensor result type is the flat HIR's elementwise form, mirroring
+                // `arith.mulf` on a vector in codegen.
                 let result_ty = match (&l.ty, &r.ty) {
                     (LoweredTy::Tensor { .. }, _) => l.ty.clone(),
                     (_, LoweredTy::Tensor { .. }) => r.ty.clone(),
                     _ => l.ty.clone(),
+                };
+                // Two scalar operands must share a type for a scalar `arith` op; coerce the right to
+                // the left's (= result) type, mirroring the AST codegen's "cast rhs to lhs" (#238).
+                let r = if matches!((&l.ty, &r.ty), (LoweredTy::Scalar(_), LoweredTy::Scalar(_))) {
+                    self.coerce_val(r, &l.ty)
+                } else {
+                    r
                 };
                 Some(self.emit_typed(op, l.reg, r.reg, result_ty, 0))
             }
@@ -424,6 +456,16 @@ impl<'r> Lowerer<'r> {
             Expr::RelationalOp(r) => {
                 let l = self.lower_expr(&r.lhs)?;
                 let rhs = self.lower_expr(&r.rhs)?;
+                // The `Cmp` lowers both operands at the left's type, so coerce the right to match when
+                // both are scalars (`i < 3` with `i: i64`, `3: i32`). (#238)
+                let rhs = if matches!(
+                    (&l.ty, &rhs.ty),
+                    (LoweredTy::Scalar(_), LoweredTy::Scalar(_))
+                ) {
+                    self.coerce_val(rhs, &l.ty)
+                } else {
+                    rhs
+                };
                 Some(self.emit_value(
                     Opcode::Cmp,
                     l.reg,
@@ -648,7 +690,7 @@ impl<'r> Lowerer<'r> {
             Expr::If(if_expr) => {
                 let result_ty = self.infer_block_ty(&if_expr.then_block)?;
                 let slot = self.emit_alloca(result_ty.clone());
-                self.lower_if_into_slot(if_expr, slot.reg)?;
+                self.lower_if_into_slot(if_expr, slot.reg, &result_ty)?;
                 Some(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
             }
             // A string literal in value position (`let s = "…"`, a string function argument): emit the
@@ -833,7 +875,12 @@ impl<'r> Lowerer<'r> {
     /// Lower a value-position `if` into `slot`: each branch stores its trailing value into `slot`,
     /// then the merge block continues (a following `SlotLoad` yields the result). A value `if` must be
     /// total, so an `else` is required. (#201)
-    fn lower_if_into_slot(&mut self, e: &crate::syntax::IfExpr, slot: Register) -> Option<()> {
+    fn lower_if_into_slot(
+        &mut self,
+        e: &crate::syntax::IfExpr,
+        slot: Register,
+        slot_ty: &LoweredTy,
+    ) -> Option<()> {
         let else_stmts = e.else_block.as_ref()?;
         let cond = self.lower_expr(&e.cond)?;
         let then_b = self.new_block();
@@ -847,13 +894,13 @@ impl<'r> Lowerer<'r> {
         );
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), then_b as u64);
-        self.lower_block_into_slot(&e.then_block, slot)?;
+        self.lower_block_into_slot(&e.then_block, slot, slot_ty)?;
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
         }
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), else_b as u64);
-        self.lower_block_into_slot(else_stmts, slot)?;
+        self.lower_block_into_slot(else_stmts, slot, slot_ty)?;
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
         }
@@ -863,14 +910,22 @@ impl<'r> Lowerer<'r> {
     }
 
     /// Lower a branch block whose trailing semicolon-less expression is the branch's value, stored into
-    /// `slot`. Leading statements lower normally; declines if the block has no trailing value.
-    fn lower_block_into_slot(&mut self, stmts: &[Statement], slot: Register) -> Option<()> {
+    /// `slot`. Leading statements lower normally; declines if the block has no trailing value. The
+    /// branch value is coerced to `slot_ty` so both branches of a value-`if` agree on the result type
+    /// (`if c { 1 } else { 2i64 }`). (#238)
+    fn lower_block_into_slot(
+        &mut self,
+        stmts: &[Statement],
+        slot: Register,
+        slot_ty: &LoweredTy,
+    ) -> Option<()> {
         let n = stmts.len();
         for (i, s) in stmts.iter().enumerate() {
             if i + 1 == n {
                 if let Statement::ExprStmt(es) = s {
                     if !es.has_semi {
                         let v = self.lower_expr(&es.expr)?;
+                        let v = self.coerce_val(v, slot_ty);
                         self.emit_effect(Opcode::Store, slot, v.reg, 0);
                         return Some(());
                     }
@@ -1015,14 +1070,18 @@ impl<'r> Lowerer<'r> {
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
         for (name, offset, fty) in field_layouts {
             // Only scalar fields for now (nested aggregates need addressed sub-views).
-            if !matches!(fty, FieldTy::Scalar(_)) {
+            let FieldTy::Scalar(field_elem) = &fty else {
                 return None;
-            }
+            };
             let (_, init_expr) = si
                 .fields
                 .iter()
                 .find(|(n, _)| n.as_ref() == name.as_ref())?;
             let v = self.lower_expr(init_expr)?;
+            // Coerce the initializer to the field's declared type (`P { x: 0 }` where `x: f64`), so the
+            // `FieldStore` writes a matching value — the field's counterpart of the call-arg / slot
+            // coercion. (#238)
+            let v = self.coerce_val(v, &LoweredTy::Scalar(field_elem.clone()));
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
         }
         Some(slot)
@@ -1154,7 +1213,7 @@ impl<'r> Lowerer<'r> {
                     let ty_ann = l.ty_ann.as_ref()?;
                     let result_ty = lowered_ty(ty_ann, self.registry)?;
                     let slot = self.emit_alloca(result_ty.clone());
-                    self.lower_if_into_slot(if_expr, slot.reg)?;
+                    self.lower_if_into_slot(if_expr, slot.reg, &result_ty)?;
                     self.scope.insert(
                         l.name.clone(),
                         Binding::Slot {
@@ -1170,6 +1229,14 @@ impl<'r> Lowerer<'r> {
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
                     self.scope.insert(l.name.clone(), Binding::Reg(v));
                 } else {
+                    // A scalar annotation coerces the initializer to it, so the local's slot is the
+                    // *annotated* type and later assignments store a matching value (`let r: i64 = 0`,
+                    // then `r = <i64>`). Without this the slot would take the initializer's default
+                    // type and a wider store would not fit. (#238)
+                    let v = match l.ty_ann.as_ref().and_then(|a| lowered_ty(a, self.registry)) {
+                        Some(ann_ty) => self.coerce_val(v, &ann_ty),
+                        None => v,
+                    };
                     self.bind_local(l.name.clone(), v);
                 }
                 Some(())
@@ -1187,12 +1254,24 @@ impl<'r> Lowerer<'r> {
                 if matches!(&a.lhs, Expr::IndexAccess(_)) {
                     let place = self.lower_place(&a.lhs)?;
                     let value = self.lower_expr(&a.rhs)?;
+                    // Coerce the stored scalar to the place's element type (`a[i] = 1` into a bf16
+                    // tensor) — the emitter does the same for `TensorStore` (#232); doing it here keeps
+                    // the HIR itself well-typed. (#238)
+                    let value = self.coerce_val(value, &place.ty);
                     self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
                     return Some(());
                 }
-                // `name = expr` (simple identifier target).
+                // `name = expr` (simple identifier target). Coerce the value to the target slot's type
+                // so a wider/narrower value stores correctly (`r = 5` into an `i64` local). (#238)
                 let name = simple_ident(&a.lhs)?;
                 let v = self.lower_expr(&a.rhs)?;
+                let v = match self.scope.get(&name) {
+                    Some(Binding::Slot { ty, .. }) => {
+                        let ty = ty.clone();
+                        self.coerce_val(v, &ty)
+                    }
+                    _ => v,
+                };
                 self.assign_local(&name, v)
             }
             // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
@@ -1207,6 +1286,16 @@ impl<'r> Lowerer<'r> {
                     (LoweredTy::Tensor { .. }, _) => cur.ty.clone(),
                     (_, LoweredTy::Tensor { .. }) => rhs.ty.clone(),
                     _ => cur.ty.clone(),
+                };
+                // Two scalar operands must share a type; coerce the right to the current value's type,
+                // matching `BinaryOp` (`x += 1` with `x: i64`, `1: i32`). (#238)
+                let rhs = if matches!(
+                    (&cur.ty, &rhs.ty),
+                    (LoweredTy::Scalar(_), LoweredTy::Scalar(_))
+                ) {
+                    self.coerce_val(rhs, &cur.ty)
+                } else {
+                    rhs
                 };
                 let combined = self.emit_typed(op, cur.reg, rhs.reg, result_ty, 0);
                 if matches!(&a.lhs, Expr::IndexAccess(_)) {
