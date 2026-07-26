@@ -1517,6 +1517,23 @@ entry block).
 else-if compound-assign → 51) JIT-match the AST oracle. Full backend-corpus sweep: **flat-used
 59 → 60** (`expr_assignment.vx`), zero miscompiles. #229 closed.
 
+## Entry 54 — transparent tensor borrow `&t` (#230)
+
+**Commit:** `99eace3` _(this session, 2026-07-25)_. `print(&t)` where `t` is a tensor
+(`npu_lowering_execution.vx`) now lowers through the flat path. A tensor is a memref — already a
+reference value — so borrowing it is transparent: `flatten`'s new `Expr::Borrow` arm yields the tensor
+itself, matching the AST codegen (`BorrowExpr` returns the memref for an allocated tensor identifier).
+
+**Scope.** The general pointer ABI — `&x`/`*p` for a scalar/aggregate (a real `!llvm.ptr`), pointer
+params/returns, and `void`/`ptr` extern returns — still declines. No corpus program drives it alone
+(the pointer-heavy FFI programs also need string values #231 + structs), so it is split out to **#235**
+rather than built speculatively.
+
+**Validation.** A `print(&t)` differential test's `printMemref` dump JIT-matches the AST oracle;
+`npu_lowering_execution.vx`'s output is byte-identical flat-vs-legacy (pointers + dispatcher logging
+normalized). Full backend-corpus sweep: **flat-used 60 → 61**, zero miscompiles. #230 closed
+(the corpus `Expr::Borrow` decline).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
