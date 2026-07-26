@@ -57,22 +57,42 @@ to the callee's MLIR parameter type, in two layers:
 conversion; the flat path already mirrors a subset of it via `cast_op` in the `Ret`
 (#234) and `TensorStore` (#232) arms.
 
-## 3. Why the flat path can't do it yet
+## 3. Why the flat path emits the mismatch
 
-`registry::FnSig` carries only `{ gid, ret_ty }` — **not the parameter types.** So
-neither `flatten::lower_call` (no param types to coerce against) nor the emitter's
-`Call` arm (its `Callee` is built from `FnSig`) can know what to coerce to. Fixing
-#236 therefore requires **adding parameter types to `FnSig`**, which is where the
-"wider consequences" live.
+By the time the flat lowerer runs, the frontend has already type-checked the call
+(arity + `is_assignable` per argument) — so `flatten::lower_call` trusts a well-typed
+AST and re-checks nothing; it resolves the callee **by name** (`fn_sigs`), pulls only
+the *return* type from `FnSig { gid, ret_ty }`, and lowers each argument to whatever
+type the checker annotated on it. The checker validated *whether* the argument fits the
+parameter but never recorded the implicit coercion its assignability check implied, so
+`14` stays `i32`, and the emitted `func.call` disagrees with the callee's `i64`
+parameter.
+
+The fix is therefore about *where the coercion the checker already computed gets
+recorded* — the design question of §4. The naïve reading ("carry the parameter types
+into `FnSig` so a later phase can re-derive it") is one answer (§4.1), but not the
+lightest: the checker is already holding the parameter types at the moment it decides
+assignability, so it can record the coercion in place (§4.2, Option C) without any
+later phase re-plumbing the signature. That is where the "wider consequences" analysis
+below applies — and, under Option C, where most of it turns out to be *avoidable*.
 
 ## 4. Design
 
-### 4.1 Data model — `FnSig.params`
+### 4.0 Recommended: the type checker records the coercion (Option C)
+
+The primary design is §4.2, Option C — the frontend inserts the coercion into the
+typed AST at the call it already validates, so both backends consume a
+coercion-explicit tree and nothing downstream needs the parameter types. §4.1 and
+§5.1 below (`FnSig.params` + the `.vxlib` bump) are **the deferred cross-module
+fallback**, not part of the near-term fix; they are kept here as the completed design
+for the day a cross-`.vxlib` call needs coercion.
+
+### 4.1 Data model — `FnSig.params` *(deferred; cross-module fallback only)*
 
 ```rust
 pub struct FnSig {
     pub gid: TypeId,
-    pub params: Vec<crate::syntax::Type>,   // NEW
+    pub params: Vec<crate::syntax::Type>,   // NEW — only if cross-module coercion is driven
     pub ret_ty: crate::syntax::Type,
 }
 ```
@@ -91,55 +111,60 @@ Population sites (`pipeline.rs::build_frozen_registry`):
 - the **method** loop (~480): the method's explicit parameters (the receiver is
   implicit — decide whether `self` is index 0; see §5.3).
 
-### 4.2 Where to coerce — the HIR, not the emitter
+### 4.2 Where to coerce — the frontend, at type-check time (recommended)
 
-The coercion belongs in the **flat HIR**, decided at lowering time from the callee's
-signature — not synthesized in the text emitter. Two mechanical options, but they are
-not equal in principle:
+There are three places this coercion could live; they are not equal.
 
-**Option A — in `flatten::lower_call` (insert `Cast`) — recommended.** After lowering
-each argument `Val`, compare its `LoweredTy` to `lowered_ty(param)` (the param is now
-in `FnSig.params`); if they differ along a modelled scalar edge, emit a `Cast` opcode
-(target = the param scalar) before the `Arg`, so the argument register already carries
-the parameter's type. The emitter then translates the stream faithfully — no per-call
-coercion logic there.
+**Option C — the type checker inserts the coercion (recommended).** The frontend
+*already* validates every call against the full signature: `check_functioncall_expr`
+(`src/hir/expr.rs`, and the fn-pointer/closure arms) has `args: &mut Vec<Expr>`,
+computes `param_types` from the callee, and runs `is_assignable(param_ty, arg_ty)` per
+argument. It already stands exactly where the coercion is decided — it checks *whether*
+each argument fits but doesn't record *how*. So when `param_ty != arg_ty` but the two
+are assignable, rewrite the argument in place: re-annotate a literal to the parameter
+type (a `NumberExpr` born as `i64` — the flat `number_elem` and the AST codegen both
+read `n.ty`, so no cast op is needed at all), or wrap a non-literal in an explicit
+coercion node (`Expr::AsCast { expr, target_ty: param_ty }`), which **both** backends
+already lower (flat → a `Cast` opcode; AST → its existing coerce path).
 
-**Option B — in the emitter's `Call` arm (`cast_op`).** Leave the HIR argument
-type-mismatched and fix it while emitting text, reusing `cast_op` (scalars) + a
-`memref.cast` (tensors), as the `Ret` (#234) and `TensorStore` (#232) arms do.
+**Option A — in `flatten::lower_call` (insert `Cast`).** Carry `params` in `FnSig` and
+have the flat lowerer re-derive the coercion the checker already computed, emitting a
+`Cast` before the `Arg`.
 
-**Recommendation: Option A.** The flat HIR is the compiler's IR of record — the
-durable artifact that a linter, a static analyzer, an optimizer pass, an alternative
-backend, and a serialized `.vxlib` body (`FnBody.hir`) all consume. Option B makes the
-*emitted text* correct but leaves the *HIR stream* semantically wrong: an argument
-register whose type disagrees with the parameter it feeds, with the fix living only in
-the one text pass that no other consumer runs. Every future HIR consumer would then
-have to re-discover — or, worse, silently trust — a coercion it can't see. Recording
-the `Cast` in the stream keeps the IR self-describing and correct at the layer where
-type information actually lives, and keeps the emitter a translator rather than a
-second home for language semantics.
+**Option B — in the emitter's `Call` arm (`cast_op`).** Leave the HIR mismatched and fix
+it while emitting text, as the `Ret` (#234) / `TensorStore` (#232) arms do.
 
-This does mean the earlier emitter-side coercions (#232 `TensorStore`, #234 `Ret`)
-are the *expedient* pattern, not the model to extend: they too leave a value whose
-type the HIR doesn't reflect. #236 is the point to set the better precedent, and those
-two are candidates to migrate to explicit `Cast`s later if a HIR consumer needs them.
+**Recommendation: Option C.** It is the *elaboration inserts coercions* pattern, and it
+wins on every axis this change is measured by:
 
-**Cost of A, honestly.** `Cast` is scalar-only today, so a *tensor/memref* argument
-whose memref type differs from the parameter's (e.g. a static `memref<4xf32>` passed
-to a symbolic-dim `memref<?xf32>` parameter) has no HIR opcode yet. That is the correct
-place to grow the IR — a dedicated tensor/shape `Cast`/`Convert` opcode when a driver
-needs it — not a reason to bury the scalar coercion in the emitter. Until then, a
-non-scalar arg mismatch **declines** to the AST path (keep-green), exactly as every
-other unmodelled construct does. The #236 drivers are all scalar-width mismatches, so
-scalar `Cast` (which already exists) closes them.
+- **Single source of truth.** The coercion is computed once, in the one phase that
+  already knows the parameter types and already runs `is_assignable`. Options A/B make
+  a *later* phase re-derive a decision the checker already made.
+- **Both backends benefit, neither gets callsite logic.** The mutated (coercion-explicit)
+  tree flows to the AST codegen *and* the flat lowerer; the flat `Cast` falls out of the
+  ordinary `AsCast` lowering, and the AST path's own call-site `coerce_type`
+  (`expr.rs:2061`) becomes redundant (it can stay as defense-in-depth or be removed after
+  verifying no divergence).
+- **Status quo elsewhere — lighter and faster.** `FnSig` stays `{ gid, ret_ty }`; **no
+  `.vxlib` format bump** (§5.1 becomes a *deferred fallback*, not a required step), no
+  per-signature `Vec<Type>` in the registry, no re-comparison at every callsite. This is
+  the "keep the status quo, faster rewrite, less memory" property.
+- **Still represented in the IR.** The coercion lands in the AST *and* the flat HIR (as
+  the re-typed literal or the `Cast` from the `AsCast`), so the earlier "put it in the
+  IR, not the emitter" principle holds — the difference from Option A is only *who*
+  decides it (the checker, once) versus *where it is re-derived* (the lowerer, again).
 
-**On "the signature is right there."** It is — the fix is precisely to stop discarding
-it. `FnSig` originally kept only `ret_ty` because the first flat-call design only needed
-to type the *result*; the parameter types were dropped on the floor. So `lower_call`
-today consults *half* a signature. Carrying `params` in `FnSig` (§4.1) is not new
-plumbing so much as no longer throwing the signature away — the lowerer then reads the
-whole signature from the registry (the signature store) the same way it already reads
-the return type, and the coercion is a local decision at the call, in the IR.
+**Cross-module is the one caveat that keeps A alive.** The checker can only insert the
+coercion where it can see the callee's parameter types. For an *in-module* call it has
+them (`GlobalAstEnv` / `lookup`) — that covers every current corpus driver. For a call
+*across a `.vxlib` boundary*, the imported interface today carries only `ret_ty` (see
+`program_links_a_function_body_from_a_vxlib_artifact`), so the checker can't see the
+imported callee's params to coerce against — and arguably can't fully arity/type-check
+that call either. So: **Option C fixes the in-module case now with zero registry/format
+change; the `FnSig.params` + `.vxlib` v4 work (Option A / §4.1 / §5.1) is deferred and
+becomes the documented fallback for cross-module coercion, if and when a driver needs
+it.** The two are complementary, not competing — C is the near-term fix, A the
+cross-module completion.
 
 ### 4.3 Coercion taxonomy (what to handle vs decline)
 
@@ -155,14 +180,21 @@ the return type, and the coercion is a local decision at the call, in the IR.
 | any unmodelled conversion | **decline** (AST stays the oracle) |
 
 Declining keeps the module-level keep-green atomicity: an unmodelled coercion drops
-the whole program to the AST path rather than emitting a wrong or invalid call. Note
-the memref row is a *decline*, not an emitter `memref.cast` — under Option A the IR
-must carry the conversion, so a memref coercion waits for its opcode rather than being
-special-cased in the text pass.
+the whole program to the AST path rather than emitting a wrong or invalid call. The
+memref row declines because the flat lowerer has no tensor/shape cast yet (an `AsCast`
+to a memref type isn't lowered); a memref coercion waits for that opcode rather than
+being special-cased. The #236 drivers are all scalar-width mismatches, which the
+existing scalar path already covers.
 
 ## 5. Wider consequences (the reason for this doc)
 
-### 5.1 `.vxlib` format version bump — v3 → v4 *(the biggest one)*
+> **Scope note.** §5.1 and the `FnSig.params` change it describes are the **deferred
+> cross-module fallback** (see §4.0/§4.2). The recommended near-term fix (Option C —
+> the checker records the coercion) needs *none* of this: `FnSig` and the `.vxlib`
+> format are untouched. §5.2–§5.6 remain relevant either way (they describe the coercion
+> *semantics* and non-consequences, which are the same wherever the coercion is recorded).
+
+### 5.1 `.vxlib` format version bump — v3 → v4 *(only if cross-module coercion is driven)*
 
 `FnSig` is serialized in the import-oracle interface (`metadata.rs`, the `fn_sigs`
 and `methods` sections). Adding `params` changes the on-disk layout, so:
@@ -208,14 +240,16 @@ method calls are implemented — matching how the AST threads the receiver.
 
 ### 5.4 The `expected_type` hint is *not* required
 
-The AST's `expected_type` makes a literal adopt the param type *during* lowering; the
-flat path instead lowers the argument to whatever type the checker annotated, then
-inserts a `Cast` to the param type. A post-hoc `Cast` is **sufficient** for the
+The AST's `expected_type` is a *threaded context* that influences how any expression
+lowers. Option C needs no such machinery: the checker makes a single, local rewrite at
+the one place it already knows the parameter type (the call's `is_assignable` loop) —
+re-annotate the literal, or wrap the argument in an `AsCast`. That targeted edit is
+**sufficient** for the
 width/kind mismatches at issue (it produces exactly what the AST's `coerce_type`
 fallback would). We do *not* need to replicate the `expected_type` machinery — one
-coercion point in `lower_call` suffices, which keeps the change small. (The one case a
-post-hoc `Cast` can't recover is a literal whose *checked* type is already wrong for a
-non-cast reason; those are declined when the conversion isn't modelled.)
+rewrite at the call check suffices, which keeps the change small. (The one case it
+can't recover is an argument whose *checked* type is already wrong for a non-assignable
+reason — but that is a type error the checker already rejects, not a coercion.)
 
 ### 5.5 Generic templates in `fn_sigs`
 
@@ -237,54 +271,76 @@ concrete signature is what actually gets called.
 - **Argument evaluation order / side effects.** Coercion appends ops *after* an
   argument is evaluated, so evaluation order is unchanged.
 
-## 6. Implementation plan (ordered, each step green)
+## 6. Implementation plan (ordered, each step green) — Option C
 
-1. **`FnSig.params` field** + populate the three `build_frozen_registry` loops
-   (fn/extern/method). Fix all `FnSig { .. }` literals (registry defaults, tests).
-   *No behavior change yet — the field is unused.* Build + full test suite green.
-1. **`.vxlib` v4** — bump `VXLIB_FORMAT_TAG`; encode/decode params in `fn_sigs` /
-   `methods`; extend the interface round-trip test with a param-carrying signature.
-   (Sequencing note: an in-module-only phase is possible — populate `params` from the
-   AST without serializing, so imported callees get empty params and a cross-module
-   call that *needs* coercion simply declines — which defers the format bump. The full
-   answer serializes; the phased one shrinks the first landing's blast radius.)
-1. **HIR coercion (Option A)** — in `flatten::lower_call`, for each argument compare
-   its `LoweredTy` to `lowered_ty(param)` and, on a modelled scalar edge, emit a `Cast`
-   (target = param scalar) before its `Arg`; decline a non-scalar mismatch. The emitter
-   is unchanged — it already lowers `Cast` and already types the `func.call` operands
-   from the (now-correct) argument registers.
+1. **Coercion insertion in the checker.** In `check_functioncall_expr` (and the
+   fn-pointer / closure arms) in `src/hir/expr.rs`, at the per-argument
+   `is_assignable(param_ty, arg_ty)` loop: when the two differ but are assignable,
+   rewrite `args[i]` — re-annotate a `NumberExpr`/literal to `param_ty` in place, else
+   wrap the argument in `Expr::AsCast { expr, target_ty: param_ty, .. }`. Only on the
+   *committing* pass (guard on `!silent`, so speculative type resolution doesn't mutate
+   the tree). Do it *after* generic monomorphization has fixed concrete param types.
+1. **Debug assertion.** Right after the rewrite, `debug_assert!` the (re-checked)
+   argument type equals `param_ty` — a cheap, in-place invariant that the frontend did
+   its job, active only in debug builds. (MLIR verification remains the runtime backstop:
+   a missed coercion → verify failure → the flat path declines to the AST oracle, i.e.
+   keep-green rather than a miscompile.)
+1. **Prune the now-redundant AST-path coercion (optional).** The AST codegen's call-site
+   `coerce_type` (`expr.rs:2061`) becomes a no-op once arguments arrive at the parameter
+   type. Leave it as defense-in-depth initially; remove it only after the differential
+   suite confirms no divergence.
 1. **Differential tests** — the `take(msg, 14)` case (now lowers, JIT parity); a
-   float-width call (`f32` arg → `f64` param); a cross-`.vxlib` width-mismatched call
-   (extend the artifact-linking test). Re-run the extern drivers to confirm robust
-   (not lucky) ABI.
-1. **Corpus sweep** — flat-vs-legacy parity; expect flat-used to hold or rise, zero
-   new miscompiles.
+   float-width call (`f32` arg → `f64` param); a non-literal coerced arg
+   (`let x: i32 = …; wants_i64(x)`); an aggregate/pointer arg (unchanged). Re-run the
+   extern drivers to confirm the ABI is now *correct*, not lucky.
+1. **Corpus sweep** — flat-vs-legacy parity; expect flat-used to hold or rise, zero new
+   miscompiles. Watch the whole AST-codegen suite too (the mutated tree feeds it).
 1. Commit (`Fixes: #236`), journal, close.
+
+**Deferred (cross-module fallback, only if driven):** `FnSig.params` (§4.1) + `.vxlib`
+v4 (§5.1), so the checker can coerce arguments to an *imported* callee's parameters.
+Not needed for the in-module fix above.
 
 ## 7. Testing
 
 - **Unit / differential:** the exact scalar-width failure (`take(msg, 14)`), a float
-  widen/narrow at a call, an aggregate arg (must still match exactly), a pointer arg
-  (`!llvm.ptr` no-op). Each `assert_parity` vs the AST oracle.
-- **`.vxlib` round-trip:** serialize→deserialize a registry whose `fn_sigs` includes a
-  param-carrying signature; assert params survive; assert a v3 stamp is rejected.
+  widen/narrow at a call, a non-literal coerced arg, an aggregate arg (must still match
+  exactly), a pointer arg (`!llvm.ptr` no-op). Each `assert_parity` vs the AST oracle.
+- **Whole AST-codegen suite:** the checker mutates a tree both backends consume, so the
+  existing backend tests must stay green (no divergence from the inserted `AsCast`s).
 - **Corpus:** full flat-vs-legacy sweep, zero new miscompiles.
+- **`.vxlib` round-trip** *(fallback only)*: if `FnSig.params` lands, serialize→
+  deserialize a param-carrying signature; assert params survive and a v3 stamp is
+  rejected.
 
 ## 8. Risks & mitigations
 
-- **Format bump invalidates existing `.vxlib` artifacts.** Mitigation: the stamp guard
-  already rejects stale artifacts cleanly; document the required rebuild.
+- **Blast radius of mutating the typed AST *(the main risk of Option C)*.** The checker
+  feeds one tree to the AST codegen, the borrow checker, monomorphization, *and* the
+  flat lowerer; an inserted `AsCast` must not confuse any of them (e.g. a borrow/linear
+  argument wrapped in a cast, or double-coercion with the AST path's own `coerce_type`).
+  Mitigation: insert only on assignable-but-differing edges; run the full backend +
+  differential + corpus suites; keep the AST-path `coerce_type` until parity is proven.
+- **Speculative (`silent`) passes.** The checker runs in `silent` mode for trial
+  resolutions; mutating the tree there would corrupt it. Mitigation: gate the rewrite on
+  `!silent` (the committing pass only).
+- **Generic ordering.** A generic call's concrete parameter types exist only after
+  monomorphization. Mitigation: insert the coercion after monomorphization has fixed the
+  instance's params (or per-instance), never against a generic parameter.
 - **Over-coercing (masking a real type error).** Mitigation: only coerce along
-  `coerce_type`-legal edges; decline everything else, so a genuine mismatch drops to
-  the AST path rather than being silently bridged.
-- **Method `self` indexing ambiguity.** Mitigation: fix the convention now (params
-  exclude `self`); document it on the field.
+  `is_assignable`/`coerce_type`-legal edges; a genuine mismatch is still an error.
+- **Method `self` indexing ambiguity** *(fallback only)*. If `FnSig.params` lands, fix
+  the convention (params exclude `self`) and document it on the field.
+- **Format bump invalidates `.vxlib` artifacts** *(fallback only)*. The stamp guard
+  rejects stale artifacts cleanly; document the required rebuild.
 
 ## 9. Non-goals
 
 - `&x`/`*p` scalar pointers and void externs — that is #235's remainder, independent
   of coercion.
-- Replicating the AST's `expected_type` literal-typing pass (post-hoc coercion is
-  enough — §5.4).
-- Method-call lowering itself (a separate convergence step); this only makes the
-  *data model* ready for it.
+- Replicating the AST's threaded `expected_type` machinery — a single rewrite at the
+  call check is enough (§5.4).
+- Cross-`.vxlib` argument coercion — deferred to the `FnSig.params` + format-bump
+  fallback (§4.1/§5.1), landed only when a driver needs it.
+- Removing the AST codegen's own call-site `coerce_type` — optional cleanup after
+  parity is proven, not part of the fix.
