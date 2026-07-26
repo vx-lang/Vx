@@ -922,6 +922,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
         {
             assert_eq!(
                 *top,
+                // A topology index is a compile-time dimension, stamped to its default type at
+                // parse time (#240) rather than left untyped like a value-position literal.
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                     value: "0".to_string().into(),
                     ty: Some(ElementType::I32),
@@ -999,7 +1001,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                     **start,
                     Expr::Number(NumberExpr {
                         value: "0".to_string().into(),
-                        ty: Some(ElementType::I32),
+                        ty: None,
                         span: Span::default()
                     })
                 );
@@ -1007,7 +1009,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                     **end,
                     Expr::Number(NumberExpr {
                         value: "10".to_string().into(),
-                        ty: Some(ElementType::I32),
+                        ty: None,
                         span: Span::default()
                     })
                 );
@@ -1023,7 +1025,7 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 }
                 if let Expr::Number(num) = rhs {
                     assert_eq!(num.value.as_ref(), "5");
-                    assert_eq!(num.ty, Some(ElementType::I32));
+                    assert_eq!(num.ty, None);
                 } else {
                     panic!("Expected Number");
                 }
@@ -1062,7 +1064,8 @@ fn distributed_matmul(a: Ref<Tensor, Memory::CPU_DRAM>, b: Ref<Tensor, Memory::C
                 }
                 if let Expr::Number(num) = &**idx {
                     assert_eq!(num.value.as_ref(), "0");
-                    assert_eq!(num.ty, Some(ElementType::I32));
+                    // Unsuffixed literals parse untyped and are inferred at type-check (#240).
+                    assert_eq!(num.ty, None);
                 } else {
                     panic!("Expected Number");
                 }

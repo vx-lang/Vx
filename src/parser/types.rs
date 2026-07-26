@@ -25,7 +25,8 @@ impl<'a> Parser<'a> {
             "Current" => Ok(Topology::Current),
             "NPU" => {
                 if self.match_token(&TokenType::LeftBracket) {
-                    let expr = self.parse_expr()?;
+                    let mut expr = self.parse_expr()?;
+                    super::expr::stamp_dim_literals(&mut expr);
                     self.consume(&TokenType::RightBracket, "Expected ']'")?;
                     // If the expression is a range like 0..4, convert to Slice
                     if let Expr::Range(RangeExpr { start, end, .. }) = expr {
@@ -43,7 +44,8 @@ impl<'a> Parser<'a> {
             }
             "AccCore" => {
                 if self.match_token(&TokenType::LeftBracket) {
-                    let expr = self.parse_expr()?;
+                    let mut expr = self.parse_expr()?;
+                    super::expr::stamp_dim_literals(&mut expr);
                     self.consume(&TokenType::RightBracket, "Expected ']'")?;
                     Ok(Topology::AccCore(Box::new(expr)))
                 } else {
@@ -297,7 +299,9 @@ impl<'a> Parser<'a> {
                             while !self.check(&TokenType::RightBracket)
                                 && !self.check(&TokenType::Eof)
                             {
-                                dims.push(self.parse_expr()?);
+                                let mut dim = self.parse_expr()?;
+                                super::expr::stamp_dim_literals(&mut dim);
+                                dims.push(dim);
                                 if !self.match_token(&TokenType::Comma) {
                                     break;
                                 }

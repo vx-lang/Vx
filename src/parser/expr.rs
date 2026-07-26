@@ -12,6 +12,13 @@
 
 use super::*;
 
+/// Split a numeric literal token into its numeric part and *explicit* element type.
+///
+/// Only a suffix (`80i32`, `1.5f64`) types the literal. An unsuffixed literal is *untyped*
+/// (`None`) — Rust's model (#240): it adopts the expected type of its context during
+/// type-checking, falling back to [`default_number_elem`] when no context supplies one. This
+/// keeps implicit numeric conversion out of the language: the literal is born at the right type
+/// rather than silently coerced.
 pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>), String> {
     let idx = s.find(|c: char| c.is_alphabetic() || c == '_');
     let (num_part, suffix_part) = match idx {
@@ -25,30 +32,61 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>
             Err(e) => return Err(e),
         }
     } else {
-        if num_part.contains('.') || num_part.contains('e') || num_part.contains('E') {
-            if let Ok(f32_val) = num_part.parse::<f32>() {
-                if f32_val.is_infinite() {
-                    if let Ok(f64_val) = num_part.parse::<f64>() {
-                        if f64_val.is_finite() {
-                            return Ok((num_part, Some(ElementType::F64)));
-                        }
+        None
+    };
+    Ok((num_part, el_ty))
+}
+
+/// The spelling-based default element type for an *untyped* numeric literal — used when no
+/// context supplies an expected type (a bare `42` or `3.14`). Reproduces the historical parser
+/// defaults so an un-annotated literal keeps the type it always had: a decimal is `f32` (`f64`
+/// only when it overflows `f32`); an integer is the narrowest of `i32`/`i64`/`i128` it fits.
+///
+/// This is the single source of the fallback default, shared by the type checker's untyped-literal
+/// arm and the flat lowerer's `infer_elem`, so both backends agree on an un-annotated literal's
+/// type (a differential-parity requirement). `num_part` is already suffix-stripped.
+pub(crate) fn default_number_elem(num_part: &str) -> ElementType {
+    if num_part.contains('.') {
+        if let Ok(f32_val) = num_part.parse::<f32>() {
+            if f32_val.is_infinite() {
+                if let Ok(f64_val) = num_part.parse::<f64>() {
+                    if f64_val.is_finite() {
+                        return ElementType::F64;
                     }
                 }
             }
-            Some(ElementType::F32)
-        } else {
-            if num_part.parse::<i32>().is_err() {
-                if num_part.parse::<i64>().is_ok() {
-                    Some(ElementType::I64)
-                } else {
-                    Some(ElementType::I128)
-                }
-            } else {
-                Some(ElementType::I32)
-            }
         }
-    };
-    Ok((num_part, el_ty))
+        ElementType::F32
+    } else if num_part.parse::<i32>().is_ok() {
+        ElementType::I32
+    } else if num_part.parse::<i64>().is_ok() {
+        ElementType::I64
+    } else {
+        ElementType::I128
+    }
+}
+
+/// Give untyped numeric literals in a *type-position* dimension (a tensor shape or topology index)
+/// their concrete default type. Unlike a value-position literal — which stays untyped and adopts
+/// its type from context during type-checking (#240) — a dimension is a compile-time integer whose
+/// type never varies. It also participates in structural type equality (a parsed `Tensor<f32, 10>`
+/// must equal a synthesized one, whose dimensions are built typed), so it must be typed at parse
+/// time rather than left for inference. Walks the compound dimension forms (ranges, arithmetic).
+pub(crate) fn stamp_dim_literals(expr: &mut Expr) {
+    match expr {
+        Expr::Number(n) if n.ty.is_none() => {
+            n.ty = Some(default_number_elem(&n.value));
+        }
+        Expr::Range(RangeExpr { start, end, .. }) => {
+            stamp_dim_literals(start);
+            stamp_dim_literals(end);
+        }
+        Expr::BinaryOp(b) => {
+            stamp_dim_literals(&mut b.lhs);
+            stamp_dim_literals(&mut b.rhs);
+        }
+        _ => {}
+    }
 }
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expr(&mut self) -> ParseResult<'a, Expr> {
@@ -1142,33 +1180,36 @@ mod tests {
     // ---- infer_number_literal tests ----
 
     #[test]
-    fn test_infer_integer_i32() {
+    fn test_unsuffixed_literal_is_untyped() {
+        // An unsuffixed literal carries no type — it is inferred from context (#240).
         let (num, ty) = infer_number_literal("42").unwrap();
         assert_eq!(num, "42");
-        assert_eq!(ty, Some(ElementType::I32));
+        assert_eq!(ty, None);
     }
 
     #[test]
-    fn test_infer_integer_large_promotes_to_i64() {
+    fn test_default_integer_i32() {
+        assert_eq!(default_number_elem("42"), ElementType::I32);
+    }
+
+    #[test]
+    fn test_default_integer_large_promotes_to_i64() {
         // 3_000_000_000 overflows i32 but fits i64
-        let (num, ty) = infer_number_literal("3000000000").unwrap();
-        assert_eq!(num, "3000000000");
-        assert_eq!(ty, Some(ElementType::I64));
+        assert_eq!(default_number_elem("3000000000"), ElementType::I64);
     }
 
     #[test]
-    fn test_infer_integer_huge_promotes_to_i128() {
+    fn test_default_integer_huge_promotes_to_i128() {
         // Overflows i64
-        let (num, ty) = infer_number_literal("99999999999999999999").unwrap();
-        assert_eq!(num, "99999999999999999999");
-        assert_eq!(ty, Some(ElementType::I128));
+        assert_eq!(
+            default_number_elem("99999999999999999999"),
+            ElementType::I128
+        );
     }
 
     #[test]
-    fn test_infer_float_defaults_to_f32() {
-        let (num, ty) = infer_number_literal("3.14").unwrap();
-        assert_eq!(num, "3.14");
-        assert_eq!(ty, Some(ElementType::F32));
+    fn test_default_float_defaults_to_f32() {
+        assert_eq!(default_number_elem("3.14"), ElementType::F32);
     }
 
     #[test]

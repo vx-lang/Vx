@@ -278,7 +278,15 @@ impl Type {
     }
 }
 
-impl ElementType {}
+impl ElementType {
+    /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`).
+    pub fn is_float(&self) -> bool {
+        matches!(
+            self,
+            ElementType::F16 | ElementType::F32 | ElementType::F64 | ElementType::BF16
+        )
+    }
+}
 
 impl std::fmt::Display for ElementType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -24,6 +24,21 @@ fn int_dim_expr(n: usize) -> Expr {
     })
 }
 
+/// The scalar element an untyped numeric literal adopts from its expected type, when compatible:
+/// an integer literal takes an integer expected type, a float literal a float expected type. A
+/// `bool`, generic, or non-scalar expected type — or a literal/expected-kind mismatch such as
+/// `let x: f64 = 5` — yields `None`, leaving the literal to its spelling default (#240).
+fn expected_numeric_elem(expected: &Type, value: &str) -> Option<ElementType> {
+    let Type::Scalar(el) = expected else {
+        return None;
+    };
+    if matches!(el, ElementType::Bool | ElementType::Generic(_)) {
+        return None;
+    }
+    let is_float_lit = value.contains('.');
+    (el.is_float() == is_float_lit).then(|| el.clone())
+}
+
 impl<'a> TypeChecker<'a> {
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
         self.check_expr_type_flag(expr, true, false)
@@ -114,16 +129,7 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Identifier(..) => self.check_identifier_expr(expr, consume, silent),
             Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume, silent),
-            Expr::Number(NumberExpr {
-                value: _,
-                ty: Some(el_ty),
-                span: _,
-            }) => Type::Scalar(el_ty.clone()),
-            Expr::Number(NumberExpr {
-                value: _,
-                ty: None,
-                span: _,
-            }) => Type::Scalar(ElementType::F32),
+            Expr::Number(n) => self.check_number_literal(n),
             Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
                 None,
@@ -2096,6 +2102,25 @@ impl<'a> TypeChecker<'a> {
         }
 
         Type::Tensor(ElementType::F32, vec![], None)
+    }
+
+    /// Type an untyped numeric literal (#240). An unsuffixed literal reaches the checker with
+    /// `ty: None`; it adopts the *expected* scalar type of its context when that is a compatible
+    /// numeric type (integer literal → integer type, float literal → float type), and otherwise
+    /// falls back to the spelling-based default. The inferred type is written back onto the node so
+    /// every downstream consumer — the flat lowerer and the AST codegen alike — sees the concrete
+    /// type. A suffixed literal already carries its type and is returned unchanged.
+    fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
+        if let Some(el) = &n.ty {
+            return Type::Scalar(el.clone());
+        }
+        let elem = self
+            .expected_type
+            .as_ref()
+            .and_then(|t| expected_numeric_elem(t, &n.value))
+            .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
+        n.ty = Some(elem.clone());
+        Type::Scalar(elem)
     }
 
     /// Record, on the argument node itself, the implicit scalar coercion a call demands — the

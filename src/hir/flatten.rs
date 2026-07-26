@@ -1595,19 +1595,16 @@ fn number_elem(n: &NumberExpr) -> Option<ElementType> {
     }
 }
 
+/// The default element type for an *untyped* literal reaching the flat lowerer — shares the type
+/// checker's fallback so both backends agree on an un-annotated literal (#240). In practice the
+/// checker types every value-position literal before lowering, so this is only exercised by the
+/// checker-less flat unit tests.
 fn infer_elem(s: &str) -> Option<ElementType> {
-    if s.contains('.') || s.contains('e') || s.contains('E') {
-        Some(ElementType::F64)
-    } else {
-        Some(ElementType::I64)
-    }
+    Some(crate::parser::expr::default_number_elem(s))
 }
 
 fn is_float(e: &ElementType) -> bool {
-    matches!(
-        e,
-        ElementType::F16 | ElementType::F32 | ElementType::F64 | ElementType::BF16
-    )
+    e.is_float()
 }
 
 /// Encode a literal's raw 64-bit `imm`: float bit-pattern for float types, else the integer value.

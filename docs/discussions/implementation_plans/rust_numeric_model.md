@@ -1,6 +1,7 @@
 # Adopt Rust's numeric model: no implicit conversions, literals infer to context (#240)
 
-**Status:** design / not started (a first implementation attempt was made and reverted — see §5).
+**Status:** Stage A **landed** (2026-07-26) — see §8 for what shipped vs. this plan; a first Stage-A
+attempt was made and reverted before it (§5). Stage B not started.
 **Date:** 2026-07-26. **Supersedes:** the coercion-materialization work (#236/#238) by removing its
 reason to exist. **Umbrella:** #200.
 
@@ -87,3 +88,43 @@ and corpus-swept like the rest of the convergence work.
 Non-numeric coercions Rust keeps (deref, autoref, unsize) — Vx doesn't have them. Full
 Hindley–Milner inference — bidirectional "checking position adopts expected type" suffices for the
 literal cases.
+
+## 8. Stage A as landed (2026-07-26)
+
+What shipped, and where it refined the plan above:
+
+- **Parser (`infer_number_literal`) emits `None` for every unsuffixed literal** — the untyped-literal
+  model. The spelling-based default moved to a shared `default_number_elem` (§5.2's unification),
+  now the single source used by *both* the checker's fallback and the flat lowerer's `infer_elem`,
+  so the two backends can't disagree on an un-annotated literal. `default_number_elem` reproduces the
+  historical parser defaults (int → narrowest of `i32`/`i64`/`i128`; decimal → `f32`, `f64` on
+  overflow), so an un-annotated literal keeps exactly the type it had — Stage A is non-breaking by
+  construction.
+- **Checker `Number` arm → `check_number_literal`**: an untyped literal adopts the expected scalar
+  type when kind-compatible (`expected_numeric_elem`: int→int, float→float; a `let x: f64 = 5`
+  mismatch is left to default and, under Stage B, an error), else the default. The inferred type is
+  **written back** onto the node, so the flat lowerer and AST codegen both see a concrete type.
+- **Expected-type wiring is unchanged from what already existed** — only `let` and `return` set it.
+  Call arguments keep flowing through the existing `coerce_call_arg` (#236), which re-types the
+  literal *after* callee resolution (the §5.1 eager-checking blocker is thus sidestepped, not solved
+  — option (a), deferred to Stage B). Binary / assignment / struct-field / tensor operands are **not**
+  newly wired: their literals default and are still materialized by the per-backend coercion
+  (`coerce_val` on the flat path, `coerce_type` on the AST path). That is sufficient while
+  `is_assignable` stays permissive; Stage B must wire these positions before it tightens, or those
+  literals will fail to infer and be rejected.
+- **Two refinements the plan didn't anticipate:**
+  1. **Type-position dimensions stay typed.** A literal in a tensor shape or topology index
+     (`Tensor<f32, 10>`, `Topology::NPU[0]`) is a compile-time integer that participates in
+     *structural* type equality, not a runtime value inferred from context. Leaving it `None` made a
+     parsed type unequal to a synthesized one (topology-match and return-type checks broke). Fixed by
+     stamping dimension literals with their default type at parse time (`stamp_dim_literals`), keeping
+     `None` only for value positions.
+  1. **Two latent AST-codegen coercion gaps surfaced and were fixed.** With a `let mut i: i64`
+     initializer now correctly typed `i64`, the mutable slot is genuinely `i64` (previously it
+     degenerated to the initializer's default `i32`, masking the bug). The compound-assign and
+     plain-assign store paths only special-cased `index`↔`i32`; they now use the general
+     `coerce_type`, so a default-`i32` literal combined with / stored into a wider slot widens
+     instead of emitting `arith.addi(i64, i32)` / a mismatched `memref.store`.
+- **Result:** full suite green; corpus flat-vs-legacy sweep unchanged at flat-used **87**, three
+  chronic pre-existing miscompiles, **zero new**. `is_assignable` still permissive — no program newly
+  rejected.

@@ -326,17 +326,12 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                             "Type::parse failed".to_string(),
                         )
                     })?;
-                    if rhs_ty != inner_ty
-                        && ((rhs_ty.to_string() == "i32" && inner_ty_str == "index")
-                            || (rhs_ty.to_string() == "index" && inner_ty_str == "i32"))
-                    {
-                        let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
-                            .add_operands(&[rhs_val])
-                            .add_results(&[inner_ty])
-                            .build()
-                            .unwrap();
-
-                        store_val = block.append_operation(cast_op).result(0)?.into();
+                    // Coerce the value to the slot's element type. An annotated `let` now sizes its
+                    // slot from the annotation and types its literal to match (#240), so a later
+                    // assignment of a default-`i32` literal to a wider slot (`let mut r: i64; r = 5`)
+                    // must widen; `coerce_type` also still handles the `index`↔`i32` loop case.
+                    if rhs_ty != inner_ty {
+                        store_val = gen.coerce_type(&block, rhs_val, rhs_ty, inner_ty)?;
                     }
 
                     let store_op = OperationBuilder::new("memref.store", gen.loc())
@@ -634,16 +629,13 @@ impl<'c> LowerToMelior<'c> for CompoundAssignStmt {
         let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
+        // Coerce the operand to the accumulator's type before the arithmetic. Now that an
+        // annotated `let` types its literal at the annotation (#240), a wider accumulator
+        // (`let mut i: i64`) legitimately combines with a default-`i32` literal (`i += 5`); the
+        // general `coerce_type` widens/narrows it (and still handles the `index`↔`i32` loop case).
         let mut actual_rhs = rhs_val;
-        if rhs_ty != ty
-            && ((rhs_ty.to_string() == "index" && ty.to_string() == "i32")
-                || (rhs_ty.to_string() == "i32" && ty.to_string() == "index"))
-        {
-            let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
-                .add_operands(&[actual_rhs])
-                .add_results(&[ty])
-                .build()?;
-            actual_rhs = block.append_operation(cast_op).result(0)?.into();
+        if rhs_ty != ty {
+            actual_rhs = gen.coerce_type(&block, rhs_val, rhs_ty, ty)?;
         }
 
         let is_float = ty.to_string().contains("f32")
