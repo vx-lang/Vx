@@ -546,6 +546,38 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "with_memory" => {
                 self.lower_expr(&mc.base)
             }
+            // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
+            // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
+            // block produces no observable effect. Mirror that — lower the inner statements, then the
+            // trailing value (or a discarded dummy for a statement-position block). #228
+            Expr::ComptimeBlock(cb) => {
+                for s in &cb.stmts {
+                    self.lower_stmt(s)?;
+                }
+                match &cb.ret {
+                    Some(r) => self.lower_expr(r),
+                    None => Some(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    )),
+                }
+            }
+            // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size (matching the AST
+            // codegen), used inside comptime blocks. Only the scalar / pointer sizes the AST agrees on
+            // are emitted; a struct/enum/tensor `sizeof` declines to the AST path (#228).
+            Expr::SizeOf(s) => {
+                let size = sizeof_bytes(&s.target_ty)?;
+                Some(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I64,
+                    size,
+                ))
+            }
             // Construct a payload-free (C-like) enum value (`Color::Green`, #227): the value *is* the
             // variant's discriminant ordinal, a bare `i32` constant (matching the AST codegen). A
             // data-carrying variant (a non-empty payload, or an enum absent from `enum_variants`)
@@ -1277,6 +1309,21 @@ fn scalar_of(ty: &Type) -> Option<ElementType> {
         Type::Scalar(e) => Some(e.clone()),
         _ => None,
     }
+}
+
+/// The byte size a `sizeof<T>()` folds to, matching the AST codegen (`SizeOfExpr`) for the scalar and
+/// pointer types they agree on. Returns `None` for anything else (struct/enum/tensor/`i128`), so the
+/// enclosing `comptime` block declines to the AST path rather than risk a divergent size. (#228)
+fn sizeof_bytes(ty: &Type) -> Option<u64> {
+    use ElementType::*;
+    Some(match ty {
+        Type::Scalar(F32 | I32 | U32) => 4,
+        Type::Scalar(F64 | I64 | U64) => 8,
+        Type::Scalar(I8 | U8 | Bool) => 1,
+        Type::Scalar(I16 | U16 | BF16 | F16) => 2,
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => 8,
+        _ => return None,
+    })
 }
 
 fn binop_opcode(op: &BinaryOp) -> Option<Opcode> {
