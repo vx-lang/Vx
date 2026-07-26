@@ -1475,6 +1475,27 @@ patterns still decline to the AST path. Split out to **#233**.
 **flat-used 54 → 56** (`match_simple`, `match_runtime`), zero miscompiles. #227 closed (payload-free
 deliverable).
 
+## Entry 52 — comptime blocks + `sizeof`, and return-value coercion (#228, #234)
+
+**Commits:** `9541ba2` (comptime), `517e1ec` (return coercion) _(this session, 2026-07-25)_.
+
+- **comptime blocks (#228).** The AST codegen lowers `comptime { .. }` *transparently* — `sizeof<T>()`
+  folds to a constant and `assert`s are runtime no-ops, so at runtime a compile-time block has no
+  observable effect. `flatten` mirrors that: `Expr::ComptimeBlock` lowers the inner statements then its
+  trailing value (or a discarded dummy); `Expr::SizeOf` → an `i64` `Const` of `T`'s byte size
+  (`sizeof_bytes`, scalar/pointer sizes only — a struct/enum `sizeof` declines). `sizeof_feature.vx`
+  now flat-lowers.
+- **return-value coercion (#234).** `assert_comptime_func.vx`'s comptime `assert`s reference
+  `foo`/`bar`/`baz` (`-> i64 { return <i32-literal> }`), pulled into the flat path for the first time —
+  exposing a latent bug: the `Ret` arm emitted `func.return %v : i32` for an `-> i64` signature. Now it
+  coerces the returned scalar to the declared return element type (`arith.extsi`/`extf`/… via
+  `cast_op`), mirroring the AST's `coerce_type` at return. `assert_comptime_func.vx` now flat-lowers.
+
+**Validation.** Three differential tests (sizeof value → 9; a comptime block → 0; `return 7` from an
+`-> i64` fn → 7) JIT-match the AST oracle. Full backend-corpus sweep: **flat-used 56 → 59** (both
+comptime programs + a third unblocked by the return coercion), zero miscompiles. #228 closed; #234
+fixed.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
