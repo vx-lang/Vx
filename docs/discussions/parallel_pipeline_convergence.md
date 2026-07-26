@@ -1627,6 +1627,40 @@ lib + integration suites green (the mutated tree feeds the AST codegen, borrow c
 monomorphization); corpus sweep holds **flat-used 74, zero new miscompiles**. Not covered (rare, no
 driver): the fn-pointer / closure call arms, and cross-`.vxlib` coercion. #236 closed.
 
+## Entry 58 — the coercion class, materialized in the flat lowerer (#237, #238)
+
+**Commit:** `adae4c5` _(this session, 2026-07-26)_. #236 turned out to be one instance of a class
+(#238): `is_assignable` validates an implicit numeric conversion but it is only *materialized* at
+scattered codegen sites, never on the typed AST — so the flat path emits a mismatched `arith` op
+(`addi(i64, i32)`) at every unmaterialized site and declines the whole program.
+
+**A false start, then the right layer.** The first attempt recorded the coercion in the *type checker*
+(generalizing #236's `coerce_to` to `let`/assignment/binary/relational). It **reverted** — two
+blockers no checker-side pass can cross: (1) the AST codegen has entrenched per-site behavior a
+FileCheck test pins (`let h: i64 = 80` must emit `constant 80 : i32`; the AST does *not* coerce a
+`let`-init literal to its annotation); (2) a loop induction variable is MLIR `index` in the AST
+codegen but a scalar to the checker, so coercing an operand on checker types yields `addi(i64, index)`.
+Even a literal-only checker pass tripped (2) in loops. Coercion is inherently *codegen-type-dependent*,
+and the checker's type view diverges from each backend's.
+
+**The fix: per-backend, where each knows its real types.** The AST path already coerces at codegen
+(with `index` etc.) — leave it. The flat path coerces in its **lowerer**: a `coerce_val(v, target)`
+helper emits a `Cast` when a value's scalar type differs from the slot/operand it flows into. In the
+flat lowering every value is a real `LoweredTy` and a loop variable is `i64`, never `index`, so the
+divergence that sank the checker approach does not exist. This is flat-only — the AST path and its
+FileCheck tests are untouched.
+
+**Sites covered:** binary-op + comparison operands (coerce rhs to lhs), compound assign, an annotated
+`let` (slot sized from the annotation, initializer coerced), plain assignment into a slot,
+`TensorStore` value, struct-field initializer, and value-`if` branch reconciliation. Remaining (niche,
+open on #238): the fn-pointer / closure / method call arms and value-`match` / array-literal
+reconciliation; and retiring the now-redundant emitter coercions (#232/#234).
+
+**Validation.** Three differential tests (binary/comparison/compound, `let`-slot + assignment,
+value-`if` branches). lib + flat differential + the AST-path FileCheck suites (`test_backend`,
+`test_middle_end`) all green. Full-corpus sweep: **flat-used 74 → 87** — thirteen programs that
+previously declined at a type-mismatch site now lower — **zero new miscompiles**. #237 closed.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
