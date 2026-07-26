@@ -2098,6 +2098,56 @@ impl<'a> TypeChecker<'a> {
         Type::Tensor(ElementType::F32, vec![], None)
     }
 
+    /// Record, on the argument node itself, the implicit scalar coercion a call demands — the
+    /// numeric conversion `is_assignable` accepts but does not materialize (e.g. a default-`i32`
+    /// literal passed to an `i64` parameter). After type-checking the argument then already carries
+    /// the *parameter's* type, so every consumer of the typed AST — the flat HIR lowerer and the AST
+    /// codegen alike — emits a correctly-typed operand without any call-site coercion pass of its own.
+    /// This is the "elaboration inserts coercions" design (#236): the checker is the one phase that
+    /// already knows the parameter types, so it records the decision here rather than re-deriving it
+    /// downstream (which would mean carrying parameter types in the frozen registry).
+    ///
+    /// A numeric literal is re-typed in place — born at the target type, no cast op at all; anything
+    /// else is wrapped in an `as` cast (which both backends already lower). Only concrete
+    /// scalar→scalar coercions are recorded, mirroring the scalar rule in [`Self::is_assignable`]; an
+    /// identical, generic, `bool`, or non-scalar pair is left untouched. Returns whether it coerced.
+    fn coerce_call_arg(arg: &mut Expr, param_ty: &Type, arg_ty: &Type) -> bool {
+        let (Type::Scalar(p), Type::Scalar(a)) = (param_ty, arg_ty) else {
+            return false; // only scalar coercions are represented in the IR today
+        };
+        if p == a
+            || matches!(p, ElementType::Generic(_))
+            || matches!(a, ElementType::Generic(_))
+            || *p == ElementType::Bool
+            || *a == ElementType::Bool
+        {
+            return false; // identical, generic, or a `bool` edge — not an implicit numeric coercion
+        }
+        match arg {
+            // A numeric literal simply adopts the parameter's element type — no cast op needed.
+            Expr::Number(n) => n.ty = Some(p.clone()),
+            // Anything else: an explicit `as` cast to the parameter type. The flat path lowers it to a
+            // `Cast` opcode; the AST codegen lowers it through the same `coerce_type` it would have run
+            // at the call anyway, so the two paths stay identical.
+            _ => {
+                let inner = arg.clone();
+                *arg = Expr::AsCast(AsCastExpr {
+                    expr: Box::new(inner),
+                    target_ty: Type::Scalar(p.clone()),
+                    source_ty: Some(Type::Scalar(a.clone())),
+                    span: Span::default(),
+                });
+            }
+        }
+        // Postcondition: the argument now declares the parameter's scalar type.
+        debug_assert!(
+            matches!(arg, Expr::Number(n) if n.ty.as_ref() == Some(p))
+                || matches!(arg, Expr::AsCast(c) if matches!(&c.target_ty, Type::Scalar(e) if e == p)),
+            "coerce_call_arg: argument did not adopt parameter type {p:?}"
+        );
+        true
+    }
+
     fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
@@ -2304,15 +2354,22 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) && !silent {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3003,
-                                    format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
+                            if !self.is_assignable(param_ty, arg_ty) {
+                                if !silent {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3003,
+                                        format!(
+                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                            i + 1, resolved_name, param_ty, arg_ty
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                }
+                            } else if !silent {
+                                // Record the implicit numeric coercion this call demands directly on the
+                                // argument node, so both the flat lowerer and the AST codegen emit a
+                                // correctly-typed operand without a call-site coercion pass (#236).
+                                Self::coerce_call_arg(&mut args[i], param_ty, arg_ty);
                             }
                         }
                     }
@@ -2350,15 +2407,22 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) && !silent {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E3003,
-                                    format!(
-                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                        i + 1, resolved_name, param_ty, arg_ty
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                );
+                            if !self.is_assignable(param_ty, arg_ty) {
+                                if !silent {
+                                    self.errors.error_with_code(
+                                        crate::diagnostic::DiagnosticCode::E3003,
+                                        format!(
+                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                            i + 1, resolved_name, param_ty, arg_ty
+                                        ),
+                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                    );
+                                }
+                            } else if !silent {
+                                // Record the implicit numeric coercion this call demands directly on the
+                                // argument node, so both the flat lowerer and the AST codegen emit a
+                                // correctly-typed operand without a call-site coercion pass (#236).
+                                Self::coerce_call_arg(&mut args[i], param_ty, arg_ty);
                             }
                         }
                     }
