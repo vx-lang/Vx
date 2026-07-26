@@ -91,44 +91,74 @@ Population sites (`pipeline.rs::build_frozen_registry`):
 - the **method** loop (~480): the method's explicit parameters (the receiver is
   implicit — decide whether `self` is index 0; see §5.3).
 
-### 4.2 Where to coerce — two options
+### 4.2 Where to coerce — the HIR, not the emitter
 
-**Option A — in `flatten::lower_call` (insert `Cast`).** After lowering each argument
-`Val`, compare its `LoweredTy` to `lowered_ty(param)`; if they differ and the pair is
-a modelled scalar conversion, emit a `Cast` opcode (target = param scalar) before the
-`Arg`. Pros: the coercion lives in the HIR, so a serialized body (`.vxlib`) carries it;
-the emitter stays simple. Cons: `Cast` today is scalar-only; a memref/tensor arg
-coercion (`memref.cast`) has no HIR opcode yet.
+The coercion belongs in the **flat HIR**, decided at lowering time from the callee's
+signature — not synthesized in the text emitter. Two mechanical options, but they are
+not equal in principle:
 
-**Option B — in the emitter's `Call` arm (`cast_op`).** Thread the callee's param
-types into `Callee`, and coerce each argument's SSA value to its param type with the
-existing `cast_op` (scalars) / a new `memref.cast` (tensors), exactly as the `Ret`
-and `TensorStore` arms do. Pros: reuses the emitter coercion already proven for #232
-/#234; handles memref→memref uniformly. Cons: the coercion is re-derived at emit time
-rather than recorded in the HIR (fine — codegen is deterministic from the stream +
-registry).
+**Option A — in `flatten::lower_call` (insert `Cast`) — recommended.** After lowering
+each argument `Val`, compare its `LoweredTy` to `lowered_ty(param)` (the param is now
+in `FnSig.params`); if they differ along a modelled scalar edge, emit a `Cast` opcode
+(target = the param scalar) before the `Arg`, so the argument register already carries
+the parameter's type. The emitter then translates the stream faithfully — no per-call
+coercion logic there.
 
-**Recommendation: Option B**, for consistency with the existing return/store coercion
-and because it handles the non-scalar (`memref.cast`) case without a new opcode. Add
-`params: Vec<Type>` (or a pre-lowered `Vec<ParamKind>`) to `Callee`; in the `Call`
-arm, for each `pending_args` entry coerce its value to the param type before building
-the operand list, declining (return `None`, keep-green) on an unmodelled conversion.
+**Option B — in the emitter's `Call` arm (`cast_op`).** Leave the HIR argument
+type-mismatched and fix it while emitting text, reusing `cast_op` (scalars) + a
+`memref.cast` (tensors), as the `Ret` (#234) and `TensorStore` (#232) arms do.
+
+**Recommendation: Option A.** The flat HIR is the compiler's IR of record — the
+durable artifact that a linter, a static analyzer, an optimizer pass, an alternative
+backend, and a serialized `.vxlib` body (`FnBody.hir`) all consume. Option B makes the
+*emitted text* correct but leaves the *HIR stream* semantically wrong: an argument
+register whose type disagrees with the parameter it feeds, with the fix living only in
+the one text pass that no other consumer runs. Every future HIR consumer would then
+have to re-discover — or, worse, silently trust — a coercion it can't see. Recording
+the `Cast` in the stream keeps the IR self-describing and correct at the layer where
+type information actually lives, and keeps the emitter a translator rather than a
+second home for language semantics.
+
+This does mean the earlier emitter-side coercions (#232 `TensorStore`, #234 `Ret`)
+are the *expedient* pattern, not the model to extend: they too leave a value whose
+type the HIR doesn't reflect. #236 is the point to set the better precedent, and those
+two are candidates to migrate to explicit `Cast`s later if a HIR consumer needs them.
+
+**Cost of A, honestly.** `Cast` is scalar-only today, so a *tensor/memref* argument
+whose memref type differs from the parameter's (e.g. a static `memref<4xf32>` passed
+to a symbolic-dim `memref<?xf32>` parameter) has no HIR opcode yet. That is the correct
+place to grow the IR — a dedicated tensor/shape `Cast`/`Convert` opcode when a driver
+needs it — not a reason to bury the scalar coercion in the emitter. Until then, a
+non-scalar arg mismatch **declines** to the AST path (keep-green), exactly as every
+other unmodelled construct does. The #236 drivers are all scalar-width mismatches, so
+scalar `Cast` (which already exists) closes them.
+
+**On "the signature is right there."** It is — the fix is precisely to stop discarding
+it. `FnSig` originally kept only `ret_ty` because the first flat-call design only needed
+to type the *result*; the parameter types were dropped on the floor. So `lower_call`
+today consults *half* a signature. Carrying `params` in `FnSig` (§4.1) is not new
+plumbing so much as no longer throwing the signature away — the lowerer then reads the
+whole signature from the registry (the signature store) the same way it already reads
+the return type, and the coercion is a local decision at the call, in the IR.
 
 ### 4.3 Coercion taxonomy (what to handle vs decline)
 
 | param vs arg | action |
 |---|---|
-| identical MLIR type | no-op (pass through) |
-| scalar↔scalar (width/int↔float/sign) | `cast_op` (already modelled) |
-| memref↔memref (shape/layout differ) | `memref.cast` (mirror the AST) |
+| identical `LoweredTy` | no-op (pass through — no `Cast`) |
+| scalar↔scalar (width/int↔float/sign) | emit `Cast` in the HIR (already modelled end to end) |
 | pointer↔pointer (`!llvm.ptr`) | no-op (opaque) |
 | aggregate↔aggregate | require exact GID match, else decline |
-| scalar→tensor (broadcast) | **decline** (the AST's `linalg.fill`; rare at a call — defer) |
+| memref↔memref (shape/layout differ) | **decline** until a tensor/shape cast opcode lands (then represent it in the HIR, not the emitter) |
+| scalar→tensor (broadcast) | **decline** (the AST's `linalg.fill`; rare at a call) |
 | scalar→pointer (`inttoptr`) | **decline** (rare; the AST does `inttoptr` only via `AsCast`) |
-| anything `cast_op` returns `None` for | **decline** (AST stays the oracle) |
+| any unmodelled conversion | **decline** (AST stays the oracle) |
 
 Declining keeps the module-level keep-green atomicity: an unmodelled coercion drops
-the whole program to the AST path rather than emitting a wrong or invalid call.
+the whole program to the AST path rather than emitting a wrong or invalid call. Note
+the memref row is a *decline*, not an emitter `memref.cast` — under Option A the IR
+must carry the conversion, so a memref coercion waits for its opcode rather than being
+special-cased in the text pass.
 
 ## 5. Wider consequences (the reason for this doc)
 
@@ -180,12 +210,12 @@ method calls are implemented — matching how the AST threads the receiver.
 
 The AST's `expected_type` makes a literal adopt the param type *during* lowering; the
 flat path instead lowers the argument to whatever type the checker annotated, then
-coerces post-hoc. Post-hoc `cast_op` coercion is **sufficient** for the width/kind
-mismatches at issue (it is exactly what the AST's `coerce_type` fallback does). We do
-*not* need to replicate the `expected_type` machinery — one coercion point suffices,
-which keeps the change small. (The one case post-hoc coercion can't recover is a
-literal whose *checked* type is already wrong for a non-cast reason; those are already
-declined by `cast_op` returning `None`.)
+inserts a `Cast` to the param type. A post-hoc `Cast` is **sufficient** for the
+width/kind mismatches at issue (it produces exactly what the AST's `coerce_type`
+fallback would). We do *not* need to replicate the `expected_type` machinery — one
+coercion point in `lower_call` suffices, which keeps the change small. (The one case a
+post-hoc `Cast` can't recover is a literal whose *checked* type is already wrong for a
+non-cast reason; those are declined when the conversion isn't modelled.)
 
 ### 5.5 Generic templates in `fn_sigs`
 
@@ -214,9 +244,15 @@ concrete signature is what actually gets called.
    *No behavior change yet — the field is unused.* Build + full test suite green.
 1. **`.vxlib` v4** — bump `VXLIB_FORMAT_TAG`; encode/decode params in `fn_sigs` /
    `methods`; extend the interface round-trip test with a param-carrying signature.
-1. **Emitter coercion (Option B)** — carry param types into `Callee`; coerce each
-   argument in the `Call` arm via `cast_op` (scalars) + `memref.cast` (memrefs),
-   declining unmodelled conversions.
+   (Sequencing note: an in-module-only phase is possible — populate `params` from the
+   AST without serializing, so imported callees get empty params and a cross-module
+   call that *needs* coercion simply declines — which defers the format bump. The full
+   answer serializes; the phased one shrinks the first landing's blast radius.)
+1. **HIR coercion (Option A)** — in `flatten::lower_call`, for each argument compare
+   its `LoweredTy` to `lowered_ty(param)` and, on a modelled scalar edge, emit a `Cast`
+   (target = param scalar) before its `Arg`; decline a non-scalar mismatch. The emitter
+   is unchanged — it already lowers `Cast` and already types the `func.call` operands
+   from the (now-correct) argument registers.
 1. **Differential tests** — the `take(msg, 14)` case (now lowers, JIT parity); a
    float-width call (`f32` arg → `f64` param); a cross-`.vxlib` width-mismatched call
    (extend the artifact-linking test). Re-run the extern drivers to confirm robust
