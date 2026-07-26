@@ -140,15 +140,43 @@ wins on every axis this change is measured by:
 - **Single source of truth.** The coercion is computed once, in the one phase that
   already knows the parameter types and already runs `is_assignable`. Options A/B make
   a *later* phase re-derive a decision the checker already made.
+
 - **Both backends benefit, neither gets callsite logic.** The mutated (coercion-explicit)
   tree flows to the AST codegen *and* the flat lowerer; the flat `Cast` falls out of the
   ordinary `AsCast` lowering, and the AST path's own call-site `coerce_type`
   (`expr.rs:2061`) becomes redundant (it can stay as defense-in-depth or be removed after
   verifying no divergence).
-- **Status quo elsewhere — lighter and faster.** `FnSig` stays `{ gid, ret_ty }`; **no
-  `.vxlib` format bump** (§5.1 becomes a *deferred fallback*, not a required step), no
-  per-signature `Vec<Type>` in the registry, no re-comparison at every callsite. This is
-  the "keep the status quo, faster rewrite, less memory" property.
+
+- **It keeps the data-oriented, parallel design paying off.** This is the deciding
+  advantage, not an afterthought. `FnSig` stays `{ gid, ret_ty }` — and `FnSig` is not
+  incidental storage: it lives in the frozen `ImmutableGlobalRegistry`, built once at the
+  sequential freeze point and then `Arc`-shared, read-only, across every parallel worker
+  (and serialized into every `.vxlib`). It is *hot, shared, immutable* data. The
+  data-oriented discipline is to keep that shared index dense and to store each fact at
+  the granularity it is used:
+
+  - A coercion is a **per-call-site** fact, not a **per-signature** one. Hoisting the
+    parameter types into `FnSig` would push a call-site decision into the global shared
+    table and then re-derive it downstream — duplicating data and work. Option C keeps
+    the params where they already are (the module's AST, materialized during
+    type-checking) and records the decision *once, at the site*.
+  - Every field added to `FnSig` is multiplied across the working set all cores contend
+    on — a `Vec<Type>` per signature is a heap allocation + indirection per entry in the
+    hottest shared structure, plus a wider sequential freeze-build (Amdahl) and a bigger
+    `.vxlib` payload to encode/decode/version. Option C adds **nothing** to the shared
+    immutable data.
+  - The change is confined to the **already-parallel** type-check phase, mutating only
+    the per-worker AST that worker owns — no new shared mutable state, no new lock, no
+    new cross-worker dependency, no wider freeze. It is embarrassingly parallel by
+    construction, exactly because it respects the shared-immutable / per-worker-mutable
+    split the architecture is built on.
+
+  In short: the registry stays a lean identity/interface *index*, the per-worker
+  instruction stream carries the *decision*, and the parallel freeze/fan-out model is
+  untouched. "Faster, less memory, keep the status quo" is the surface reading; the
+  architectural reading is that Option C is the one that doesn't fight the data-oriented
+  parallel design.
+
 - **Still represented in the IR.** The coercion lands in the AST *and* the flat HIR (as
   the re-typed literal or the `Cast` from the `AsCast`), so the earlier "put it in the
   IR, not the emitter" principle holds — the difference from Option A is only *who*
