@@ -596,6 +596,18 @@ impl<'r> Lowerer<'r> {
                     ordinal,
                 ))
             }
+            // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
+            // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
+            // the memref for an allocated tensor identifier). This backs `print(&t)`. A scalar or
+            // aggregate borrow (a real `!llvm.ptr` value) is not modelled yet and declines. (#230)
+            Expr::Borrow(b) => {
+                let v = self.lower_expr(&b.expr)?;
+                if matches!(v.ty, LoweredTy::Tensor { .. }) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
             // A value-position `if` in expression context: nested (`if c { if d { .. } else { .. } }
             // else { .. }`), a call argument, an implicit return (the parser rewrites a trailing `if`
             // to `return if ..`), or a compound-assign RHS (#229). Infer the result type from the

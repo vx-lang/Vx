@@ -484,6 +484,17 @@ fn flat_matches_ast_return_widening_coercion() {
 }
 
 #[test]
+fn flat_matches_ast_borrow_tensor_print() {
+    // `print(&t)` where `t` is a tensor (`npu_lowering_execution.vx` shape, #230): a tensor is a
+    // memref — already a reference — so the borrow `&t` is transparent (yields the tensor itself),
+    // matching the AST codegen. The `printMemref` dump (shape/strides/data) matches the oracle.
+    assert_output_parity(
+        "fn main() -> i32 { let mut a = Tensor<f32>([2]); a[0] = 1.0; a[1] = 2.0; \
+         print(&a); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_nested_value_if() {
     // A value-`if` whose then-branch is itself a value-`if` (`expr_assignment.vx` shape, #229): the
     // inner if lowers through `lower_expr`'s `Expr::If` arm (its result type inferred from the branch
