@@ -437,16 +437,23 @@ pub fn build_frozen_registry(
         // `extern` declarations are callees too (e.g. libm `sqrtf`): register their signatures so the
         // flat HIR resolves a call to one (`flatten::lower_call`) and the emitter can declare + call it.
         // They have no Vx body -- the emitter emits a `func.func private` decl and the JIT links the
-        // symbol (libm via `-lm`, `libvx_std_core`, ...). Same GID formula + ambiguity policy as fns.
+        // symbol (libm via `-lm`, `libvx_std_core`, ...).
+        //
+        // Unlike a Vx function (whose body is module-scoped), an `extern` names a *global* symbol that
+        // links by name, so its identity is the name alone — module 0 (the builtin/global namespace),
+        // not the declaring module's hash. That way the *same* `extern fn` declared in both a program
+        // and an imported stdlib module (e.g. `vx_stdout_write` in a user file and in `std::io`) shares
+        // one GID and is not a spurious "ambiguous" pair. A genuine conflict — the same name with a
+        // different signature — is still flagged ambiguous (its GID collides but the `FnSig` differs).
         for ext in &module.externs {
             let gid = crate::gid::TypeId::new(
-                module_hash,
+                0,
                 crate::hash::DefPath::Named(ext.name.as_ref()).compute_symbol_hash(),
                 0,
                 0,
             );
             match registry.fn_sigs.get(&ext.name) {
-                Some(existing) if existing.gid != gid => {
+                Some(existing) if existing.gid != gid || existing.ret_ty != ext.return_type => {
                     ambiguous_fns.insert(ext.name.clone());
                 }
                 _ => {
