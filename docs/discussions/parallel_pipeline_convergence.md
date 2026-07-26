@@ -1661,6 +1661,21 @@ value-`if` branches). lib + flat differential + the AST-path FileCheck suites (`
 `test_middle_end`) all green. Full-corpus sweep: **flat-used 74 → 87** — thirteen programs that
 previously declined at a type-mismatch site now lower — **zero new miscompiles**. #237 closed.
 
+## Entry 59 — return coercion in the lowerer; #238 reachable surface complete
+
+**Commit:** `5062c95` _(this session, 2026-07-26)_. The one reachable coercion site still handled only
+at the emitter (`Ret`, #234) is now materialized in the lowerer too: a `return <expr>` coerces its
+value to the function's declared return type via `coerce_val`, so the `Ret` carries a matching-type
+value and the HIR is well-typed for every consumer. Behaviour is unchanged (the emitter already
+coerced; it now no-ops), but a `return 7` from an `-> i64` function carries an explicit `Cast` in the
+stream (its flatten unit test updated).
+
+With that, **every construct the flat path lowers coerces at every `is_assignable` site.** The `is_ assignable` sites still open on paper — fn-pointer / closure / method / intrinsic call args and
+value-`match` / array-literal reconciliation — are constructs the flat path *declines entirely* today,
+so they carry no coercion gap; coercion is a one-line `coerce_val` at each when that lowering lands.
+The emitter coercions (#232/#234) are kept as defensive no-ops. **#238 closed.** Arc total for the
+coercion class: **flat-used 61 → 87, zero new miscompiles.**
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
