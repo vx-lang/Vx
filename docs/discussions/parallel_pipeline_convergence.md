@@ -1534,6 +1534,65 @@ rather than built speculatively.
 normalized). Full backend-corpus sweep: **flat-used 60 → 61**, zero miscompiles. #230 closed
 (the corpus `Expr::Borrow` decline).
 
+## Entry 55 — string values + the FFI pointer ABI (#231, #235), and module-independent externs
+
+**Commits:** `5898f30` (extern dedup), `95cfbdc` (string values + pointer ABI) _(this session,
+2026-07-25)_. The FFI corpus now lowers through the flat path. Three coupled pieces:
+
+- **Externs are global symbols.** An `extern fn` links by name, so its identity is the name alone —
+  module 0, not the declaring module's hash. Previously `vx_stdout_write`, declared in both a program
+  and the imported `std::io`, minted two distinct module-hash GIDs, looked *ambiguous*, and got dropped
+  from `fn_sigs`; every flat-path call to it then declined. Minting extern GIDs in module 0 makes
+  identical redeclarations one symbol (a real signature conflict is still flagged). This alone unblocked
+  most of the FFI corpus.
+- **String *values* (#231).** A `StringLiteral` in value position (`let s = "…"`, a string argument)
+  lowers to a new `StringConst` opcode — the same module-level `llvm.mlir.global` + `llvm.mlir.addressof`
+  the AST path's `StringLiteralExpr` emits — yielding a first-class `!llvm.ptr`. A print-*position*
+  string still takes the `PrintStr` effect path (#225). Driver: `ffi_stdio.vx`.
+- **The FFI pointer ABI (#235).** A new `LoweredTy::Ptr` (opaque `!llvm.ptr`): `*const T`/`*mut T`/`&T`
+  as a parameter, return, argument, or memory-mode local (an `llvm.alloca` slot with
+  `llvm.store`/`llvm.load` — the pointer analogue of the scalar memref slot). A pointer-returning
+  callee (an FFI allocator) is resolved via `Callee::ret_ptr`. Statement-position `unsafe { … }` blocks
+  (the FFI wrapper, no trailing value) lower transparently. Driver: `ffi_option.vx`.
+
+**Scope left open on #235.** The scalar/aggregate address-of (`&x`) + dereference (`*p`) + void externs
+have *no corpus driver on their own* and murky memref-vs-`!llvm.ptr` semantics, so they are not built
+speculatively — #235 stays open for that remainder.
+
+**A latent call-ABI gap noted (follow-up).** The flat path does not coerce a call argument to the
+callee's declared parameter type — `FnSig` carries only the return type, not params. A default-`i32`
+literal passed to an `i64` parameter is emitted as `i32` (the AST path coerces via `coerce_type`). The
+FFI drivers dodge this: an extern is *declared from* its call, and their scalar args already match. A
+defined-wrapper call with a width-mismatched scalar arg would diverge. Filed as a follow-up.
+
+**Validation.** `ffi_stdio.vx` and `ffi_option.vx` JIT-output byte-identical flat-vs-legacy. Four new
+differential tests (string value + pointer arg; pointer return + memory-slot; both corpus drivers).
+Full backend-corpus sweep: **flat-used 61 → 74** (the FFI family + `file_io` + `cross_module_generic`
+unlocked), zero *new* miscompiles — the 3 flagged programs (`cpu_fusion_overhead`, `npu_float_scalar`,
+`npu_fusion_overhead`) are byte-identical at HEAD too (dispatcher-arg-count / wall-clock noise, and one
+pre-existing `-1` on `cpu_fusion_overhead` confirmed present before this session). #231 closed.
+
+## Entry 56 — data-carrying (tagged-union) enums are blocked on the AST oracle (#233)
+
+**No change landed; a scoping finding.** #233 asked to lower data-carrying enums (`enum E { V(T) }`,
+`Option<i32>::Some(42)`) + payload-binding `match` through the flat path. The flat path mirrors the AST
+codegen and checks parity against it — but **the AST oracle itself does not handle general user-defined
+tagged-union enums.** A minimal `enum Shape { Circle(i32), Square(i32) }` with a `match s { Shape::Circle(r) => … }`
+binding **fails MLIR verification** through `--legacy-codegen` (the emit is aborted). There is no valid
+reference to differentially match, so a flat implementation can't be validated.
+
+The only data-carrying enums that work today are (a) the *special-cased* `Option<T>` (`generator.rs`
+branches on `name.starts_with("Option<")`) and (b) *opaque-pointer* options via FFI externs
+(`ffi_option.vx`) — and (b) already lowers through the flat path as of Entry 55 (it's just `!llvm.ptr`
+values, no tagged union). The one backend corpus program exercising real `Option<T>` construction +
+`unwrap`/`is_some` is `option_unwrap.vx`, which also needs generic `Option<T>` monomorphization +
+`Vec<Option<i32>>` + stdlib methods — far beyond enum layout. The flat path **correctly declines** it
+and falls back to the AST path.
+
+**Conclusion.** #233 is blocked on prerequisites — either fixing the AST codegen's general tagged-union
+support (to provide an oracle), or the generic/`Vec`/stdlib-method surface `option_unwrap.vx` needs. It
+is not tractable as a differential-parity task this session and stays open with these findings.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
