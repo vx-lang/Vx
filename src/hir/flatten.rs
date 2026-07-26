@@ -206,6 +206,10 @@ struct Lowerer<'r> {
     /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
     /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
     strings: Vec<String>,
+    /// The function's declared return type, so a `return <expr>` coerces its value to it (a `return 10`
+    /// from an `-> i64` function). The emitter also coerces at `Ret` (#234); doing it here keeps the
+    /// HIR itself well-typed. `None` for a void/unmodelled return. (#238)
+    ret_ty: Option<LoweredTy>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -220,6 +224,7 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tensor_types: Vec::new(),
             strings: Vec::new(),
+            ret_ty: None,
         }
     }
 
@@ -1243,6 +1248,12 @@ impl<'r> Lowerer<'r> {
             }
             Statement::Return(r) => {
                 let v = self.lower_expr(&r.expr)?;
+                // Coerce the returned value to the function's declared return type (`return 10` from an
+                // `-> i64` function), so the `Ret` carries a matching type. (#238)
+                let v = match self.ret_ty.clone() {
+                    Some(rt) => self.coerce_val(v, &rt),
+                    None => v,
+                };
                 self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
                 Some(())
             }
@@ -1422,6 +1433,8 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
 
 fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Option<Lowerer<'r>> {
     let mut lw = Lowerer::new(registry);
+    // The declared return type, so a `return <expr>` coerces its value to it (#238).
+    lw.ret_ty = lowered_ty(&func.return_type, registry);
     // Control flow forces the memory model so locals survive across basic blocks (like the AST
     // codegen); an aggregate parameter also forces it, since an aggregate must live in an
     // addressable slot. Straight-line scalar functions stay pure-SSA.
@@ -2475,10 +2488,12 @@ mod tests {
 
     #[test]
     fn lowers_integer_literal_immediate() {
+        // `7` parses as the default `i32`; the `-> i64` return coerces it, so the returned value is
+        // materialized as an explicit `Cast` in the HIR (#238) rather than left for the emitter.
         let f = parse_fn("fn seven() -> i64 { return 7; }");
         let mut w = worker();
         assert!(lower_function_to_hir(&f, &mut w));
-        assert_eq!(opcodes(&w), vec![Opcode::Const, Opcode::Ret]);
+        assert_eq!(opcodes(&w), vec![Opcode::Const, Opcode::Cast, Opcode::Ret]);
         assert_eq!(
             w.local_hir_stream[0].imm, 7,
             "Const carries the literal value"
