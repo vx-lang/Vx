@@ -1745,6 +1745,28 @@ changes. Full suite green; sweep unchanged at flat-used **87**, zero new determi
 Stage A baseline). This closes the coercion arc of #241; the flat path now lowers a language with a
 clean, machine-checkable numeric model.
 
+## Entry 62 — flat path lowers short-circuit logical ops; value-`match` is oracle-blocked (#239)
+
+**Commit:** `943876f` _(this session, 2026-07-27)_. First of #239's declined-construct list: `&&` / `||`
+now lower through the flat path. `lower_logical` emits the AST codegen's short-circuit skeleton — the
+left operand's truth selects whether the right is evaluated or the short-circuit constant is taken —
+with the `bool` result flowing through a slot (as the value-`if` does, so it needs the memory model).
+`body_has_control_flow` gained `expr_has_logical` so a function whose only control flow is a logical op
+(`fn in_range(x) -> bool { x > 0 && x < 100 }`) is forced into the memory model rather than declining.
+Any function containing a logical op declined entirely before, so this only widens the subset — corpus
+parity held with zero new miscompiles, and differential tests cover both operators across truth
+combinations plus a nested chain.
+
+**Value-producing `match` is blocked on the AST oracle** (the #233 pattern, found here). Vx `match`
+arms are block-bodied and idiomatically drive effects (`return` / assignment); a `match` used *as a
+value* (`let x = match e { … }`) lowers, in the AST codegen, to a **dummy `arith.constant 0`** —
+`MatchExpr::lower` never materializes the arm's value. A flat value-`match` (arms storing into a result
+slot, like the value-`if`) was written and returns the *correct* result, but that diverges from the
+broken oracle, so it fails the differential gate and was reverted. It unblocks only once the AST path
+lowers a value-`match` for real. Remaining #239 items (method calls, closures, array literals) are each
+larger and independent; array literals additionally face a representation gap (AST `tensor.from_elements`
+vs. the flat path's memref tensors).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
