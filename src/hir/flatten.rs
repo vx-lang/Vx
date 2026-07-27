@@ -665,6 +665,9 @@ impl<'r> Lowerer<'r> {
             Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
             // Short-circuit `&&` / `||` (#239): a branch skeleton producing a `bool`.
             Expr::LogicalOp(l) => self.lower_logical(l),
+            // A value array literal `[a, b, c]` (#239): a rank-1 tensor buffer with the elements
+            // stored into it. (A `Tensor<T>([…])` shape argument is consumed by `lower_tensor_alloc`.)
+            Expr::Array(arr) => self.lower_array(arr),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -1114,6 +1117,56 @@ impl<'r> Lowerer<'r> {
         let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
         let ty = LoweredTy::Tensor { elem, shape };
         Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+    }
+
+    /// Lower a *value* array literal `[a, b, c]` (#239): allocate a rank-1 tensor buffer and store
+    /// each element at its index, yielding the tensor. This is the flat path's memref analogue of the
+    /// AST codegen's `tensor.from_elements`; every element is a scalar of one type (the checker
+    /// reconciles them), so a following `arr[i]` reads through the same `TensorIndex` path as any
+    /// tensor. Declines an empty literal or a non-scalar element. (A `Tensor<T>([…])` shape argument
+    /// never reaches here — `lower_tensor_alloc` reads it as dimensions directly.)
+    fn lower_array(&mut self, arr: &crate::syntax::ArrayExpr) -> Option<Val> {
+        if arr.elements.is_empty() {
+            return None; // an empty array has no element type to size the buffer
+        }
+        let mut vals = Vec::with_capacity(arr.elements.len());
+        for el in &arr.elements {
+            vals.push(self.lower_expr(el)?);
+        }
+        let elem = match &vals[0].ty {
+            LoweredTy::Scalar(e) => e.clone(),
+            _ => return None, // only scalar-element arrays are modelled
+        };
+        let n = vals.len();
+        let bytes = (crate::hir::memory::element_bits(&elem)? * n as u64).div_ceil(8);
+        let buf = self.emit_typed(
+            Opcode::TensorAlloc,
+            Register(0),
+            Register(0),
+            LoweredTy::Tensor {
+                elem: elem.clone(),
+                shape: vec![n.to_string()],
+            },
+            bytes,
+        );
+        for (k, v) in vals.iter().enumerate() {
+            let idx = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::I32,
+                k as u64,
+            );
+            let place = self.emit_typed(
+                Opcode::TensorIndex,
+                buf.reg,
+                idx.reg,
+                LoweredTy::Scalar(elem.clone()),
+                1,
+            );
+            self.emit_effect(Opcode::TensorStore, place.reg, v.reg, 0);
+        }
+        Some(buf)
     }
 
     /// Lower an ordinary fixed-arity call `f(a, b, ...)`: resolve the callee via the frozen registry

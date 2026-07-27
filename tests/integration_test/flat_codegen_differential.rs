@@ -1037,6 +1037,46 @@ fn flat_lowers_nested_logical_ops() {
     );
 }
 
+/// Flat-only exit-code assertion, for a construct the AST oracle can't JIT (so there is no parity
+/// to assert). The AST codegen emits a value array literal as `tensor.from_elements` + `tensor.extract`
+/// that *fails MLIR verification* at lowering — so array programs never JIT through `--legacy-codegen`
+/// (they only pass the emit-mlir FileCheck tests). The flat path lowers them correctly (a memref
+/// buffer + element stores + `TensorIndex` loads), so it is the reference here: we assert the flat
+/// exit code directly rather than compare to a broken oracle (#239).
+fn assert_flat_exit(src: &str, expected: i32) {
+    assert_eq!(
+        flat_exit_code(src),
+        Some(expected),
+        "flat path exit code for `{src}`"
+    );
+}
+
+#[test]
+fn flat_lowers_value_array_literal() {
+    // A value array `[…]` bound to a local and indexed. The AST path fails MLIR verification on this
+    // (see `assert_flat_exit`), so the flat path is validated standalone.
+    // Sum in a loop: 10+20+30+40+50 = 150.
+    assert_flat_exit(
+        "fn main() -> i32 {\n\
+         let arr = [10, 20, 30, 40, 50];\n\
+         let mut total = 0;\n\
+         for i in 0..5 { total += arr[i]; }\n\
+         return total;\n\
+         }",
+        150,
+    );
+    // Direct constant index.
+    assert_flat_exit(
+        "fn main() -> i32 { let arr = [7, 8, 9]; return arr[1]; }",
+        8,
+    );
+    // A mutable array: store through an element place, then read it back.
+    assert_flat_exit(
+        "fn main() -> i32 { let mut arr = [1, 2, 3]; arr[0] = 40; return arr[0] + arr[2]; }",
+        43,
+    );
+}
+
 /// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
 /// and license lines are `//` comments the parser ignores.
 fn corpus(name: &str) -> String {
