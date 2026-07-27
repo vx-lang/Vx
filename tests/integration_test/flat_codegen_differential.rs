@@ -986,6 +986,57 @@ fn flat_coerces_value_if_branch_to_result_type() {
     );
 }
 
+#[test]
+fn flat_lowers_short_circuit_logical_ops() {
+    // #239: `&&` / `||` lower to the AST's short-circuit branch skeleton. Exercise both operators as
+    // an `if` condition, across truth combinations, so the flat path's result matches the oracle.
+    // 3>0 && 7<10 -> true (returns 1).
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let b = 7; if a > 0 && b < 10 { return 1; } return 0; }",
+        1,
+    );
+    // 3>0 && 7<5 -> false (falls through to 0).
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let b = 7; if a > 0 && b < 5 { return 1; } return 0; }",
+        0,
+    );
+    // false || true -> true (returns 1).
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let b = 7; if a < 0 || b > 0 { return 1; } return 0; }",
+        1,
+    );
+    // false || false -> false.
+    assert_parity(
+        "fn main() -> i32 { let a = 3; let b = 7; if a < 0 || b < 0 { return 1; } return 0; }",
+        0,
+    );
+}
+
+#[test]
+fn flat_lowers_logical_op_returning_bool() {
+    // #239: a straight-line function whose only "control flow" is the logical op — the memory model
+    // is forced by `body_has_control_flow` detecting the `&&` in the returned expression.
+    assert_parity(
+        "fn in_range(x: i32) -> bool { return x > 0 && x < 100; }\n\
+         fn main() -> i32 { if in_range(50) && !in_range(-1) { return 42; } return 0; }",
+        42,
+    );
+}
+
+#[test]
+fn flat_lowers_nested_logical_ops() {
+    // #239: nested `&&`/`||` chain, bound to a local then branched on — exercises multiple result
+    // slots and merge blocks in one function.
+    assert_parity(
+        "fn main() -> i32 {\n\
+         let a = 5; let b = 0; let c = 9;\n\
+         let ok = a > 0 && (b > 0 || c > 0);\n\
+         if ok { return 7; } return 0;\n\
+         }",
+        7,
+    );
+}
+
 /// Read a corpus program from `tests/backend/pass/`. The `RUN`/`CHECK`/`EXPECT`
 /// and license lines are `//` comments the parser ignores.
 fn corpus(name: &str) -> String {

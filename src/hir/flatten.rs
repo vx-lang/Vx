@@ -23,7 +23,8 @@ use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
 use crate::symbol::Symbol;
 use crate::syntax::{
-    BinaryOp, ElementType, Expr, Function, NumberExpr, RelationalOp, Statement, Type, UnaryOp,
+    BinaryOp, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement, Type,
+    UnaryOp,
 };
 use std::collections::HashMap;
 
@@ -662,6 +663,8 @@ impl<'r> Lowerer<'r> {
             // (`vx_stdout_write(msg, 14)`). A print-*position* string never reaches here; it takes the
             // `PrintStr` effect path in `lower_print_arg`. (#231)
             Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
+            // Short-circuit `&&` / `||` (#239): a branch skeleton producing a `bool`.
+            Expr::LogicalOp(l) => self.lower_logical(l),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg]   unsupported expr: {}", expr_kind(other));
@@ -888,6 +891,65 @@ impl<'r> Lowerer<'r> {
             self.lower_stmt(s)?;
         }
         None // empty branch has no value
+    }
+
+    /// Lower a short-circuit logical op (`a && b`, `a || b`) to the same branch skeleton the AST
+    /// codegen uses (#239): evaluate the left operand, and only evaluate the right when it can change
+    /// the result — otherwise take the short-circuit constant. The `bool` result flows through a slot
+    /// (as the value-`if` does), so this needs the memory model; `body_has_control_flow` forces a
+    /// function containing a logical op into it, so the `!self.memory` guard is a defensive decline.
+    fn lower_logical(&mut self, e: &crate::syntax::LogicalOpExpr) -> Option<Val> {
+        if !self.memory {
+            return None;
+        }
+        let slot = self.emit_alloca(LoweredTy::Scalar(ElementType::Bool));
+        let lhs = self.lower_expr(&e.lhs)?;
+        let rhs_b = self.new_block();
+        let short_b = self.new_block();
+        let merge_b = self.new_block();
+        // `&&`: left true -> evaluate right; left false -> short-circuit to `false`.
+        // `||`: left true -> short-circuit to `true`; left false -> evaluate right.
+        let (then_b, else_b) = match e.op {
+            LogicalOp::And => (rhs_b, short_b),
+            LogicalOp::Or => (short_b, rhs_b),
+        };
+        self.emit_effect(
+            Opcode::CondBr,
+            lhs.reg,
+            Register(0),
+            pack_targets(then_b, else_b),
+        );
+
+        // The right operand determines the result.
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), rhs_b as u64);
+        let rhs = self.lower_expr(&e.rhs)?;
+        self.emit_effect(Opcode::Store, slot.reg, rhs.reg, 0);
+        self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+
+        // The short-circuit constant: `false` for `&&`, `true` for `||`.
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), short_b as u64);
+        let imm = match e.op {
+            LogicalOp::And => 0,
+            LogicalOp::Or => 1,
+        };
+        let konst = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::Bool,
+            imm,
+        );
+        self.emit_effect(Opcode::Store, slot.reg, konst.reg, 0);
+        self.emit_effect(Opcode::Br, Register(0), Register(0), merge_b as u64);
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge_b as u64);
+        Some(self.emit_value(
+            Opcode::SlotLoad,
+            slot.reg,
+            Register(0),
+            ElementType::Bool,
+            0,
+        ))
     }
 
     /// Lower an infinite `loop { body }`: a header block the body branches back to, plus an exit
@@ -1427,14 +1489,31 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
 fn body_has_control_flow(stmts: &[Statement]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::Loop(_) | Statement::ForLoop(_) => true,
-        Statement::ExprStmt(e) => matches!(e.expr, Expr::If(_) | Expr::Match(_)),
+        Statement::ExprStmt(e) => {
+            matches!(e.expr, Expr::If(_) | Expr::Match(_)) || expr_has_logical(&e.expr)
+        }
         // A value-position `if` (`let v = if .. { .. } else { .. }`, #201) lowers to blocks + a result
-        // slot, which needs the memory model too.
-        Statement::LetDecl(l) => matches!(l.expr, Expr::If(_)),
-        Statement::Return(r) => matches!(r.expr, Expr::If(_)),
-        Statement::Assign(a) => matches!(a.rhs, Expr::If(_)),
+        // slot, which needs the memory model too — as does a short-circuit `&&`/`||` (#239).
+        Statement::LetDecl(l) => matches!(l.expr, Expr::If(_)) || expr_has_logical(&l.expr),
+        Statement::Return(r) => matches!(r.expr, Expr::If(_)) || expr_has_logical(&r.expr),
+        Statement::Assign(a) => matches!(a.rhs, Expr::If(_)) || expr_has_logical(&a.rhs),
         _ => false,
     })
+}
+
+/// Whether an expression contains a short-circuit logical op (`&&`/`||`) that forces the memory
+/// model — the operator lowers to a branch skeleton with a cross-block result slot (#239). Recurses
+/// the compound forms a logical op realistically nests in; a leaf (or an unhandled variant) is
+/// `false`, so at worst such a function declines rather than lowering incorrectly.
+fn expr_has_logical(e: &Expr) -> bool {
+    match e {
+        Expr::LogicalOp(_) => true,
+        Expr::BinaryOp(b) => expr_has_logical(&b.lhs) || expr_has_logical(&b.rhs),
+        Expr::RelationalOp(r) => expr_has_logical(&r.lhs) || expr_has_logical(&r.rhs),
+        Expr::UnaryOp(u) => expr_has_logical(&u.expr),
+        Expr::AsCast(c) => expr_has_logical(&c.expr),
+        _ => false,
+    }
 }
 
 /// Whether the (top-level) body constructs a struct into a local (`let x = S { .. }`) — the trigger
