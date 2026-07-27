@@ -406,6 +406,22 @@ pub fn build_frozen_registry(
         }
     }
 
+    // Base struct field types, keyed by name, so the flat path can substitute a monomorphized
+    // instance's type arguments into a generic field type and recover a pointer field's pointee
+    // (`Vec<i32>`'s `data : *mut T` -> `*mut i32`) — the field AST types the frozen `layouts` erase
+    // to `Opaque`. Mirrors the AST codegen's name-keyed `gen.structs` (#242).
+    for module in modules {
+        for s in &module.structs {
+            registry.structs.insert(
+                s.name.clone(),
+                crate::registry::StructFields {
+                    generics: s.generics.iter().map(|g| g.name().into()).collect(),
+                    fields: s.fields.clone(),
+                },
+            );
+        }
+    }
+
     // Function signatures for call resolution in the flat HIR (#198): name -> (GID, return
     // type), GID minted with the resolver's formula. A name defined in more than one module with
     // distinct GIDs is ambiguous for the name-keyed map, so it is dropped rather than resolved wrong.

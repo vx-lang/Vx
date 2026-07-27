@@ -1100,3 +1100,71 @@ fn flat_matches_ast_corpus_linear_attention() {
     // path.
     assert_output_parity(&corpus("linear_attention.vx"));
 }
+
+/// A minimal self-contained `Vec<T>` (the shape of `stdlib/std/vec.vx`, minus googletest): a struct
+/// with a raw-pointer field, a generic `impl` allocating through the Rust byte allocator, and
+/// `push`/`get`/`len`. Exercises the whole `#242` surface — a pointer-field aggregate, field access
+/// through a `self` pointer, raw-pointer indexing, construction, and a generic static call.
+const VEC_MINI: &str = r#"
+extern "C" {
+  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
+  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
+  fn vx_vec_bounds_check(index: i64, len: i64) -> i32;
+}
+struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
+impl<T> Vec<T> {
+  fn with_capacity(capacity: i32) -> Vec<T> {
+    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    return Vec<T> { data: ptr, len: 0, capacity: capacity };
+  }
+  fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
+  fn push(self: &mut Vec<T>, val: T) -> i32 {
+    if self.len == self.capacity {
+      let mut new_cap: i32 = 4;
+      if self.capacity > 0 { new_cap = self.capacity * 2; }
+      let ptr: *mut i8 = self.data;
+      self.data = unsafe { vx_vec_grow(ptr, self.capacity as i64, new_cap as i64, sizeof<T>()) };
+      self.capacity = new_cap;
+    }
+    unsafe { self.data[self.len] = val; }
+    self.len = self.len + 1;
+    return 0;
+  }
+  fn get(self: &Vec<T>, index: i32) -> T {
+    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    return unsafe { self.data[index] };
+  }
+  fn len(self: &Vec<T>) -> i32 { return self.len; }
+}
+"#;
+
+#[test]
+fn flat_matches_ast_vec_push_get_len() {
+    // The core `Vec<T>` surface (#242) end to end through the flat path: `Vec<i32>::new()` (a
+    // generic static call returning an aggregate by value), three `push`es (the third grows the
+    // buffer through `vx_vec_grow`), field access through the `&mut self`/`&self` pointer, raw-pointer
+    // element stores/loads (`self.data[i]`), and `&v` aggregate borrows at the rewritten method calls.
+    // `10 + 30 + 3 = 43`.
+    assert_parity(
+        &format!(
+            "{VEC_MINI}\nfn main() -> i32 {{ let mut v: Vec<i32> = Vec<i32>::new(); v.push(10); \
+             v.push(20); v.push(30); return v.get(0) + v.get(2) + v.len(); }}"
+        ),
+        43,
+    );
+}
+
+#[test]
+fn flat_matches_ast_vec_loop_push_sum() {
+    // A `for`-loop that pushes 0..10 (repeatedly growing the buffer past the initial capacity of 2)
+    // then a second loop summing every element back via `get` — stressing the grow path and the
+    // raw-pointer read/write across many indices. `0+1+...+9 = 45`.
+    assert_parity(
+        &format!(
+            "{VEC_MINI}\nfn main() -> i32 {{ let mut v: Vec<i32> = Vec<i32>::new(); \
+             for i in 0..10 {{ v.push(i); }} let mut s = 0; \
+             for i in 0..v.len() {{ s = s + v.get(i); }} return s; }}"
+        ),
+        45,
+    );
+}

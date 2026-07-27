@@ -42,6 +42,21 @@ pub struct FnSig {
     pub ret_ty: crate::syntax::Type,
 }
 
+/// The generic field-type information the flat path needs to resolve a member access *through a
+/// (monomorphized) generic aggregate* — e.g. `self.data` on a `Vec<i32>` yields `*mut i32` by
+/// substituting the instance's type arguments into the base struct's declared field types. The
+/// frozen `layouts` deliberately erase a pointer field's pointee (every pointer is `FieldTy::Opaque`,
+/// pointer-sized), so this carries the AST field `Type`s the substitution needs — the flat-path
+/// analogue of the AST codegen's `gen.structs`. Keyed by the *base* struct name (the display name a
+/// monomorphized instance renders to, e.g. `Vec`). (#242)
+#[derive(Debug, Clone)]
+pub struct StructFields {
+    /// Generic parameter names in declaration order (`[T]` for `Vec<T>`) — the substitution keys.
+    pub generics: Vec<crate::symbol::Symbol>,
+    /// Each field's name and *declared* (possibly generic) AST type, in declaration order.
+    pub fields: Vec<(crate::symbol::Symbol, crate::syntax::Type)>,
+}
+
 /// A function's precompiled flat-HIR body, keyed in the registry by the function's GID. Self-contained
 /// so the flat codegen needs one lookup, not a join: it carries the signature (`emit_function_mlir`
 /// reads `params` + `ret_ty` to emit the MLIR header) alongside the instruction + type streams. Only
@@ -84,6 +99,13 @@ pub struct ImmutableGlobalRegistry {
     /// data-carrying (tagged-union) enum is omitted, so constructing/matching one declines to the AST
     /// path (#227). Populated by `build_frozen_registry`; empty when deserialized from a `.vxlib`.
     pub enum_variants: FxHashMap<crate::symbol::Symbol, Vec<crate::symbol::Symbol>>,
+    /// Base struct declarations keyed by name, carrying each field's *declared* (possibly generic)
+    /// AST type — the field `Type`s the frozen `layouts` erase (a pointer field becomes `Opaque`).
+    /// The flat path substitutes a monomorphized instance's type arguments into these to recover a
+    /// pointer field's pointee (`self.data : *mut T` → `*mut i32`), mirroring the AST codegen's
+    /// `gen.structs`. Populated by `build_frozen_registry`; empty when deserialized from a `.vxlib`
+    /// (a pointer-field aggregate then declines to the AST path). (#242)
+    pub structs: FxHashMap<crate::symbol::Symbol, StructFields>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -167,6 +189,7 @@ impl ImmutableGlobalRegistry {
             methods: FxHashMap::default(),
             bodies: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
+            structs: FxHashMap::default(),
         })
     }
 

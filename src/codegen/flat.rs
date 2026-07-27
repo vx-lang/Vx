@@ -170,13 +170,18 @@ fn scalar_of(ty: &Type) -> Option<ElementType> {
     }
 }
 
-/// The GID of a nominal (struct/enum) type, once name resolution has attached it -- for aggregate
-/// return / value handling (#215). `None` for non-nominal or unresolved types.
-fn nominal_gid_of(ty: &Type) -> Option<TypeId> {
-    match ty {
-        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
-        _ => None,
-    }
+/// The layout GID of the aggregate a pointer/borrow points *to* (`self : &mut Vec<i32>` → the
+/// `Vec` layout GID), when that aggregate is modelled in `ctx.aggs`. This is what lets a
+/// `FieldLoad`/`FieldStore` through a `self` pointer GEP the field — the pointer register is tracked
+/// in `agg_of` exactly as an aggregate slot is. `None` for a non-pointer, or a pointee whose layout
+/// isn't modelled. (#242)
+fn pointee_agg_gid(ty: &Type, ctx: &EmitCtx) -> Option<TypeId> {
+    let inner = match ty {
+        Type::Borrow { inner, .. } => inner.as_ref(),
+        Type::Pointer(inner, ..) => inner.as_ref(),
+        _ => return None,
+    };
+    ctx.agg_gid(inner)
 }
 
 /// Whether a type lowers to an opaque `!llvm.ptr` — a `*const T`/`*mut T` or a `&T` borrow. The ABI
@@ -298,8 +303,62 @@ pub struct Callee {
 /// (for the call's result type) without a name→AST walk.
 pub type CalleeMap = HashMap<TypeId, Callee>;
 
-/// Build the GID→callee map from the frozen registry's function signatures.
-pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
+/// Resolve a nominal type to a *modelled* aggregate layout GID: the attached GID when name resolution
+/// set it (present in `aggs`), else the base name's GID (`agg_names`) — a monomorphized cross-module
+/// signature carries an unresolved base (`GenericInstance(Struct("Vec", None), ..)` / `Struct("Vec",
+/// None)`), so the layout must be recovered by name. Resolves a generic instance through its base.
+/// (#242)
+fn resolve_agg_gid(
+    ty: &Type,
+    aggs: &AggMap,
+    agg_names: &HashMap<String, TypeId>,
+) -> Option<TypeId> {
+    let nominal = match ty {
+        Type::GenericInstance(base, _) => base.as_ref(),
+        other => other,
+    };
+    match nominal {
+        Type::Struct(name, id) | Type::Enum(name, id) => id
+            .filter(|g| aggs.contains_key(g))
+            .or_else(|| agg_names.get(name.as_ref()).copied()),
+        _ => None,
+    }
+}
+
+/// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module aggregate
+/// whose signature carries an unresolved base GID (`Struct("Vec", None)`). Only names that are (a)
+/// modelled in `aggs` and (b) unambiguous (a single GID) are listed; an ambiguous name is dropped so
+/// a wrong layout is never chosen. (#242)
+fn build_agg_names(registry: &ImmutableGlobalRegistry, aggs: &AggMap) -> HashMap<String, TypeId> {
+    let mut map: HashMap<String, TypeId> = HashMap::new();
+    let mut ambiguous: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (gid, def) in &registry.layouts {
+        if !aggs.contains_key(gid) {
+            continue;
+        }
+        match map.get(&def.name) {
+            Some(g) if g != gid => {
+                ambiguous.insert(def.name.clone());
+            }
+            _ => {
+                map.insert(def.name.clone(), *gid);
+            }
+        }
+    }
+    for n in ambiguous {
+        map.remove(&n);
+    }
+    map
+}
+
+/// Build the GID→callee map from the frozen registry's function signatures. A callee returning a
+/// nominal aggregate resolves its layout GID via `aggs`/`agg_names` (name fallback for a cross-module
+/// mono).
+pub fn build_callee_map(
+    registry: &ImmutableGlobalRegistry,
+    aggs: &AggMap,
+    agg_names: &HashMap<String, TypeId>,
+) -> CalleeMap {
     registry
         .fn_sigs
         .iter()
@@ -309,7 +368,7 @@ pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
                 Callee {
                     name: name.to_string(),
                     ret: scalar_of(&sig.ret_ty),
-                    ret_agg: nominal_gid_of(&sig.ret_ty),
+                    ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                     ret_ptr: is_ptr_ty(&sig.ret_ty),
                 },
             )
@@ -317,22 +376,29 @@ pub fn build_callee_map(registry: &ImmutableGlobalRegistry) -> CalleeMap {
         .collect()
 }
 
-/// The MLIR shape of an aggregate (struct) whose fields are all scalar: the `!llvm.struct<(...)>`
-/// type (for the slot `llvm.alloca` and field `getelementptr`) and each field's byte offset in
-/// declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset, recovers the GEP
-/// field index by `offsets.position(|o| o == offset)`.
+/// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
+/// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
+/// byte offset in declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset,
+/// recovers the GEP field index by `offsets.position(|o| o == offset)` — and each field's MLIR type
+/// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
 pub struct AggLayout {
     pub struct_ty: String,
     pub offsets: Vec<u64>,
+    /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
+    /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
+    pub field_tys: Vec<String>,
 }
 
-/// GID → aggregate layout, for the structs a stream constructs/reads. Only all-scalar-field structs
-/// are modelled here (the flat HIR declines nested-aggregate/pointer fields anyway); an aggregate
-/// absent from the map declines, keeping the AST path the oracle.
+/// GID → aggregate layout, for the structs a stream constructs/reads. Structs whose fields are all
+/// scalar or pointer (`Opaque`) are modelled — a pointer field lowers to `!llvm.ptr`, which is what
+/// makes the `Vec<T> { data: *mut T, len, cap }` aggregate emittable (#242). A struct with a
+/// by-value nominal (nested-aggregate) field, or an unmodelled (0-align stub) layout, is skipped;
+/// an aggregate absent from the map declines, keeping the AST path the oracle.
 pub type AggMap = HashMap<TypeId, AggLayout>;
 
 /// Build the GID→aggregate-layout map from the frozen registry's nominal layouts. Skips a struct
-/// with any non-scalar field or an unmodelled (0-align stub) layout.
+/// with any by-value nominal field or an unmodelled (0-align stub) layout; a pointer (`Opaque`)
+/// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
     use crate::layout::FieldTy;
     let mut map = AggMap::new();
@@ -342,29 +408,34 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
         }
         let mut field_tys = Vec::with_capacity(def.fields.len());
         let mut offsets = Vec::with_capacity(def.fields.len());
-        let mut all_scalar = true;
+        let mut modelled = true;
         for f in &def.fields {
             match &f.ty {
                 FieldTy::Scalar(e) => match mlir_scalar(e) {
                     Some(mt) => field_tys.push(mt.to_string()),
                     None => {
-                        all_scalar = false;
+                        modelled = false;
                         break;
                     }
                 },
-                FieldTy::Nominal(_) | FieldTy::Opaque => {
-                    all_scalar = false;
+                // A pointer field (`*mut T`/`&T`, layout-erased to `Opaque`) is an opaque `!llvm.ptr`
+                // — the shape of `Vec`'s `data` field (#242).
+                FieldTy::Opaque => field_tys.push("!llvm.ptr".to_string()),
+                // A by-value nested-aggregate field needs addressed sub-views — not modelled yet.
+                FieldTy::Nominal(_) => {
+                    modelled = false;
                     break;
                 }
             }
             offsets.push(f.offset as u64);
         }
-        if all_scalar {
+        if modelled {
             map.insert(
                 *gid,
                 AggLayout {
                     struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
                     offsets,
+                    field_tys,
                 },
             );
         }
@@ -385,6 +456,9 @@ pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 pub struct EmitCtx {
     pub callees: CalleeMap,
     pub aggs: AggMap,
+    /// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module
+    /// aggregate whose signature carries an unresolved base GID (`Struct("Vec", None)`). (#242)
+    pub agg_names: HashMap<String, TypeId>,
     pub tensors: TensorMap,
     /// Names of payload-free (C-like) enums — an enum-typed value/param/return is a bare `i32`
     /// discriminant, not an aggregate (#227). Mirrors `ImmutableGlobalRegistry::enum_variants`.
@@ -395,9 +469,13 @@ impl EmitCtx {
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(registry: &ImmutableGlobalRegistry) -> Self {
+        let aggs = build_agg_map(registry);
+        let agg_names = build_agg_names(registry, &aggs);
+        let callees = build_callee_map(registry, &aggs, &agg_names);
         Self {
-            callees: build_callee_map(registry),
-            aggs: build_agg_map(registry),
+            callees,
+            aggs,
+            agg_names,
             tensors: TensorMap::new(),
             enums: registry
                 .enum_variants
@@ -405,6 +483,13 @@ impl EmitCtx {
                 .map(|s| s.as_ref().to_string())
                 .collect(),
         }
+    }
+
+    /// The modelled layout GID of a nominal type — the attached GID (in `aggs`) or, when a
+    /// monomorphized cross-module signature left it unresolved, the base name's GID (`agg_names`).
+    /// (#242)
+    fn agg_gid(&self, ty: &Type) -> Option<TypeId> {
+        resolve_agg_gid(ty, &self.aggs, &self.agg_names)
     }
 }
 
@@ -488,7 +573,8 @@ pub fn emit_module_mlir(
             format!(" -> {ret}")
         };
         decls += &format!(
-            "  func.func private @{name}({}){ret_sig}\n",
+            "  func.func private {}({}){ret_sig}\n",
+            sym_ref(name),
             arg_types.join(", ")
         );
     }
@@ -506,6 +592,25 @@ fn emit_string_global(n: usize, s: &str) -> String {
         "  llvm.mlir.global internal constant @\".str.{n}\"(\"{escaped}\") : !llvm.array<{} x i8>\n",
         bytes.len()
     )
+}
+
+/// A function symbol reference for emitted textual MLIR. A name that is a valid bare MLIR symbol
+/// (`[A-Za-z_$.][A-Za-z0-9_$.]*` — covers `main`, `add`, `printMemrefF32`, and monomorph names like
+/// `f32$sq`) is emitted bare (`@name`), matching the AST path's spelling so FileCheck stays stable.
+/// A mangled method name carries `::` (`Vec::with_capacity$i32`), which is MLIR's
+/// nested-symbol-reference separator — a bare `@Vec::with_capacity` fails to parse — so such a name
+/// is quoted into a single flat symbol (`@"..."`, which links to the same underlying symbol). (#242)
+fn sym_ref(name: &str) -> String {
+    let bare = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'));
+    if bare {
+        format!("@{name}")
+    } else {
+        format!("@\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 /// Escape raw bytes for an MLIR string literal: a printable ASCII byte other than `"` or `\` passes
@@ -660,7 +765,7 @@ pub fn emit_function_mlir(
         Some(et.to_string())
     } else if is_ptr_ty(&func.return_type) {
         Some("!llvm.ptr".to_string()) // a pointer-returning function (#235)
-    } else if let Some(gid) = nominal_gid_of(&func.return_type) {
+    } else if let Some(gid) = ctx.agg_gid(&func.return_type) {
         Some(ctx.aggs.get(&gid)?.struct_ty.clone())
     } else {
         None
@@ -700,6 +805,10 @@ pub fn emit_function_mlir(
     // `index`-typed index SSA name, and the base memref type — everything the following `TensorStore`
     // needs to emit `memref.store %v, %base[%idx]`.
     let mut place_of: Vec<Option<(String, String, String)>> = vec![None; hir.len()];
+    // For a raw-pointer element *place* register (a `PtrIndex` with `imm = 1`): the pointee element's
+    // MLIR type, so the following `PtrStore` prints `llvm.store %v, %place : {elem}, !llvm.ptr`. The
+    // place register itself already holds the GEP'd element pointer (in `names`). (#242)
+    let mut pptr_elem: Vec<Option<String>> = vec![None; hir.len()];
     // The `vector<Nxf32>` type of each register holding an elementwise (slice) result, so a row
     // `TensorStore` `vector.store`s it and a further elementwise passes it through.
     let mut vec_of: Vec<Option<String>> = vec![None; hir.len()];
@@ -734,6 +843,16 @@ pub fn emit_function_mlir(
                     etypes[idx] = Some(e);
                 } else if gid == ptr_gid() {
                     ptr_of[idx] = true; // a `!llvm.ptr` parameter (#235)
+                                        // A pointer *to a modelled aggregate* (`self : &mut Vec<i32>`): also track its
+                                        // pointee layout GID, so a `FieldLoad`/`FieldStore` through `self` GEPs the field
+                                        // exactly as through an aggregate slot (#242).
+                    if let Some(agg_gid) = func
+                        .params
+                        .get(ins.imm as usize)
+                        .and_then(|(_, ty)| pointee_agg_gid(ty, ctx))
+                    {
+                        agg_of[idx] = Some(agg_gid);
+                    }
                 } else if let Some((elem, shape)) = ctx.tensors.get(&gid) {
                     mem_of[idx] = tensor_memref_ty(elem, shape);
                 }
@@ -1056,11 +1175,14 @@ pub fn emit_function_mlir(
                 let mut arg_types: Vec<String> = Vec::with_capacity(n);
                 for a in &args {
                     arg_names.push(names.get(*a as usize)?.clone());
-                    // A scalar arg is its element type; a pointer arg (a string value / FFI pointer) is
+                    // A scalar arg is its element type; a pointer arg (a string value / FFI pointer, or
+                    // an aggregate *slot* passed by reference — `&v` / a `self` pointer, #242) is
                     // `!llvm.ptr`; a tensor arg is its memref type.
                     let at = if let Some(e) = elem_at(&etypes, *a) {
                         mlir_scalar(&e)?.to_string()
-                    } else if *ptr_of.get(*a as usize)? {
+                    } else if *ptr_of.get(*a as usize)?
+                        || agg_of.get(*a as usize).copied().flatten().is_some()
+                    {
                         "!llvm.ptr".to_string()
                     } else {
                         mem_of.get(*a as usize)?.clone()?
@@ -1069,8 +1191,8 @@ pub fn emit_function_mlir(
                 }
                 let nm = format!("%v{idx}");
                 body += &format!(
-                    "  {nm} = func.call @{}({}) : ({}) -> {rt}\n",
-                    callee.name,
+                    "  {nm} = func.call {}({}) : ({}) -> {rt}\n",
+                    sym_ref(&callee.name),
                     arg_names.join(", "),
                     arg_types.join(", "),
                 );
@@ -1095,7 +1217,9 @@ pub fn emit_function_mlir(
                 let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
                 let agg = ctx.aggs.get(&gid)?;
                 let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
-                let fty = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
+                // The field's declared MLIR type (a scalar element or `!llvm.ptr`), so a pointer field
+                // (`Vec`'s `data`) stores an `!llvm.ptr` value and a scalar field its element (#242).
+                let fty = agg.field_tys.get(field_idx)?.clone();
                 let slot = names.get(ins.operand1.0 as usize)?;
                 let val = names.get(ins.operand2.0 as usize)?;
                 let p = format!("%p{idx}");
@@ -1112,8 +1236,11 @@ pub fn emit_function_mlir(
                 let gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
                 let agg = ctx.aggs.get(&gid)?;
                 let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
-                let e = ty_at(ins.type_idx.0)?;
-                let mt = mlir_scalar(&e)?;
+                // The field's declared MLIR type drives the load: a scalar field yields its element
+                // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
+                // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
+                // `type_idx`, so a pointer field (whose `type_idx` is `ptr_gid`) resolves too (#242).
+                let fty = agg.field_tys.get(field_idx)?.clone();
                 let slot = names.get(ins.operand1.0 as usize)?;
                 let p = format!("%p{idx}");
                 let n = format!("%v{idx}");
@@ -1121,9 +1248,13 @@ pub fn emit_function_mlir(
                     "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
                     agg.struct_ty
                 );
-                body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {mt}\n");
+                body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {fty}\n");
                 names[idx] = n;
-                etypes[idx] = Some(e);
+                if fty == "!llvm.ptr" {
+                    ptr_of[idx] = true;
+                } else {
+                    etypes[idx] = elem_from_mlir_scalar(&fty);
+                }
             }
             // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
             // from the side table by GID. Its register is tracked in `mem_of` for later index/store.
@@ -1380,6 +1511,41 @@ pub fn emit_function_mlir(
                 names[idx] = p;
                 ptr_of[idx] = true;
             }
+            // Index a raw pointer `p[i]` (`p : *mut T`): GEP the element, then either load it (a value
+            // read) or hand back the element pointer as a store place. `operand1` is the base pointer,
+            // `operand2` the (scalar) index, `type_idx` the pointee element type. The GEP's base
+            // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
+            Opcode::PtrIndex => {
+                let base = names.get(ins.operand1.0 as usize)?.clone();
+                let e = ty_at(ins.type_idx.0)?;
+                let et = mlir_scalar(&e)?;
+                let imt = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
+                let iname = names.get(ins.operand2.0 as usize)?.clone();
+                let p = format!("%pg{idx}");
+                body += &format!(
+                    "  {p} = llvm.getelementptr {base}[{iname}] : (!llvm.ptr, {imt}) -> !llvm.ptr, {et}\n"
+                );
+                if ins.imm == 1 {
+                    // An element place: the following `PtrStore` writes through it.
+                    names[idx] = p;
+                    ptr_of[idx] = true;
+                    pptr_elem[idx] = Some(et.to_string());
+                } else {
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {et}\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
+                }
+            }
+            // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
+            // element pointer), `operand2` the value, and the pointee element type comes from the
+            // place. (#242)
+            Opcode::PtrStore => {
+                let place = names.get(ins.operand1.0 as usize)?.clone();
+                let et = pptr_elem.get(ins.operand1.0 as usize)?.clone()?;
+                let val = names.get(ins.operand2.0 as usize)?.clone();
+                body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
+            }
             // Anything else (spawn, matmul, …) is outside this subset.
             _ => return None,
         }
@@ -1400,8 +1566,8 @@ pub fn emit_function_mlir(
         None => String::new(),
     };
     let mut out = format!(
-        "func.func @{}({}){} {{\n",
-        func.name,
+        "func.func {}({}){} {{\n",
+        sym_ref(&func.name),
         params.join(", "),
         ret_sig
     );
@@ -1558,6 +1724,57 @@ mod tests {
         assert!(mlir.contains("llvm.getelementptr"), "{mlir}");
         assert!(mlir.contains("llvm.store"), "{mlir}");
         assert!(mlir.contains("llvm.load"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_pointer_field_struct() {
+        // A struct with a raw-pointer field (`Buf { data: *mut i32, len: i32 }`, the shape of `Vec`):
+        // constructed with a pointer initializer (`llvm.store … : !llvm.ptr`), its pointer field read
+        // back (`llvm.load … -> !llvm.ptr`) and its scalar field read — all through the `!llvm.struct`
+        // whose first element is `!llvm.ptr`. (#242)
+        let mlir = emit_module_and_verify(
+            "struct Buf { data: *mut i32, len: i32 }\n\
+             fn make(p: *mut i32) -> Buf { return Buf { data: p, len: 0 }; }\n\
+             fn getlen(b: &Buf) -> i32 { return b.len; }\n\
+             fn getdata(b: &Buf) -> *mut i32 { return b.data; }",
+        );
+        assert!(mlir.contains("!llvm.struct<(!llvm.ptr, i32)>"), "{mlir}");
+        assert!(mlir.contains("llvm.store %arg0"), "{mlir}"); // the pointer field initializer
+        assert!(
+            mlir.contains("llvm.load") && mlir.contains("-> !llvm.ptr"),
+            "{mlir}"
+        );
+    }
+
+    #[test]
+    fn emits_verifiable_raw_pointer_index() {
+        // Raw-pointer indexing (`Vec`'s `self.data[i]`, #242): a read `p[i]` GEPs the element and
+        // `llvm.load`s it; a write `p[i] = v` GEPs and `llvm.store`s. The GEP's base element type
+        // (`i32`) sets the stride.
+        let read = emit_module_and_verify(
+            "fn idx(p: *mut i32, i: i32) -> i32 { return unsafe { p[i] }; }",
+        );
+        assert!(read.contains("llvm.getelementptr"), "{read}");
+        assert!(read.contains("-> !llvm.ptr, i32"), "{read}");
+        assert!(read.contains("llvm.load"), "{read}");
+        let write = emit_module_and_verify(
+            "fn set(p: *mut i32, i: i32, v: i32) -> i32 { unsafe { p[i] = v; } return 0; }",
+        );
+        assert!(write.contains("llvm.getelementptr"), "{write}");
+        assert!(write.contains("llvm.store %arg2"), "{write}");
+    }
+
+    #[test]
+    fn emits_verifiable_field_access_through_self_pointer() {
+        // Field access through a `&mut self` pointer (`Vec::push`'s `self.len`): the pointer param is
+        // GEP'd + loaded/stored directly (no aggregate slot), and a raw-pointer element store writes
+        // `self.data[0]`. Exercises the emitter's `agg_of` tracking for a pointer-to-aggregate param.
+        let mlir = emit_module_and_verify(
+            "struct Buf { data: *mut i32, len: i32 }\n\
+             fn bump(b: &mut Buf, v: i32) -> i32 { unsafe { b.data[0] = v; } b.len = b.len + 1; return 0; }",
+        );
+        assert!(mlir.contains("llvm.getelementptr %arg0"), "{mlir}"); // field GEP off the self pointer
+        assert!(mlir.contains("llvm.store"), "{mlir}");
     }
 
     #[test]

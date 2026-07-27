@@ -1799,6 +1799,56 @@ convergence-relevant lesson: past the scalar/tensor/control-flow core, the remai
 increasingly coincide with AST-oracle gaps, so widening the flat subset there means becoming the
 reference, not matching one — and the higher-value frontier is the generic-aggregate/pointer surface.
 
+## Entry 64 — the `Vec<T>` surface: pointer-field aggregates, self-pointer fields, raw-pointer indexing (#242)
+
+The generic-aggregate frontier Entries 61/63 pointed at. A minimal `Vec<T>` (`{ data: *mut T, len, capacity }`, `new`/`with_capacity`/`push`/`get`/`len`, allocating through the Rust byte allocator) now
+lowers **end to end** through the flat path and JITs to the same result as the AST oracle — the first
+malloc-backed heap container on the flat path. This is real leverage: unlike value arrays / value-
+`match`, the oracle *does* JIT a Vec, so differential `assert_parity` validates it (`43` from
+`new/push×3/get/len`, `45` from a `for`-loop push-then-sum). The build spanned the lowerer and the
+emitter in interdependent layers:
+
+- **Element-type recovery, mirroring the oracle.** The frozen `layouts` erase a pointer field's
+  pointee (every `*mut T`/`&T` is `FieldTy::Opaque`, pointer-sized), so `self.data`'s `*mut i32` is
+  not in the registry. The truth lives in the base `StructDecl.fields` (`data: *mut T`) plus the
+  instance's type arguments. So the registry now carries `structs` (base-name → generic field types),
+  and the lowerer got a small `infer_ast_type` (identifier/member/`unsafe`/`as`) that substitutes the
+  instance args into the field type — the exact composition the AST codegen's `infer_ast_type` +
+  `Type::substitute` do. The emitter never needs this: the lowerer bakes the recovered element type
+  into the instruction stream (`PtrIndex`'s `type_idx`), so codegen stays a pure array walk.
+
+- **Pointer-field aggregates (emitter).** `build_agg_map` now models a struct whose fields are scalar
+  *or* pointer (`Opaque → !llvm.ptr`), storing each field's MLIR type; `FieldLoad`/`FieldStore` drive
+  off that, so a pointer field loads/stores an `!llvm.ptr`. A by-value nested-aggregate field still
+  declines.
+
+- **Field access through a `self` pointer.** A `self: &mut Vec<i32>` is an `!llvm.ptr` to the struct —
+  identical at the MLIR level to an aggregate *slot* — so `self.len`/`self.data` GEP the field exactly
+  as a slot does. The pointer-to-aggregate param binds as an SSA register (like a tensor: a block
+  argument that dominates all blocks; mutation flows through the pointer to the pointee), and the
+  emitter tracks its pointee layout GID in `agg_of` from the param's AST type. `&v` on an aggregate
+  local yields the slot pointer, so a rewritten `v.len()` → `Vec$len(&v)` passes the struct by
+  reference.
+
+- **Raw-pointer indexing.** New `PtrIndex`/`PtrStore` opcodes: `self.data[i]` GEPs the element
+  (`llvm.getelementptr %base[%i] : (!llvm.ptr, i32) -> !llvm.ptr, T`) then loads it, or hands back the
+  element pointer for a following store — the raw-pointer analogue of `TensorIndex`/`TensorStore`.
+
+- **Construction + cross-module resolution.** `StructInit` now takes a pointer field. Two GID gaps
+  surfaced only once real stdlib code (not an inline test) ran: a monomorphized `Vec<i32> { .. }`
+  carries *no* `type_id`, and a monomorphized cross-module signature carries an *unresolved* base GID
+  (`GenericInstance(Struct("Vec", None), [i32])`). Both are resolved by **base name** against the
+  frozen layouts (the layout is instance-independent), declining on an ambiguous name — the same
+  name-keyed resolution the AST codegen uses. And mangled symbols (`Vec::with_capacity$i32`) are quoted
+  in the emitted text (`@"..."`), since `::` is MLIR's nested-symbol-reference separator; simple names
+  stay bare so FileCheck is unaffected.
+
+**Result.** Corpus sweep `flat_used` 87 → **89** with **zero** new miscompiles (the 5 are the
+unchanged pre-existing set: 3 chronic fusion/scalar + 2 non-deterministic NPU crashes); `vec_push_len.vx`
+(a real `import std::vec` + googletest program) is one of the two newly-flat programs. What still
+declines is out of this surface: `Vec<Vec<T>>` (a by-value nested aggregate field), the
+closure/iterator machinery (`VecIter`/`map`/`collect`), and `Topology`/spawn expressions.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

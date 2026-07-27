@@ -846,6 +846,10 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // Enum-variant ordinals are not serialized into a `.vxlib` yet; a downstream compile that
         // constructs/matches an imported enum falls back to the AST path (#227).
         enum_variants: FxHashMap::default(),
+        // Struct field AST types are not serialized into a `.vxlib` yet; a downstream compile that
+        // accesses a pointer field through a monomorphized imported aggregate falls back to the AST
+        // path (#242).
+        structs: FxHashMap::default(),
     })
 }
 

@@ -207,6 +207,12 @@ struct Lowerer<'r> {
     /// String side table: the bytes for each `PrintStr` emitted, in emission order. A `PrintStr`'s
     /// `imm` indexes here; codegen emits an `llvm.mlir.global` per entry. Committed onto the worker.
     strings: Vec<String>,
+    /// The concrete AST type of each in-scope name (params + `let` locals) — the flat-path analogue of
+    /// the AST codegen's identifier→type env. It is the only source of a *pointer's pointee element
+    /// type*, which the frozen `layouts` erase (a pointer field is `Opaque`): recovering `self.data`'s
+    /// `*mut i32` for a `self.data[i]` index needs `self : &mut Vec<i32>`'s type substituted into the
+    /// base struct's `data : *mut T` field. See `infer_ast_type` (#242).
+    ast_types: HashMap<Symbol, Type>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -221,6 +227,7 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tensor_types: Vec::new(),
             strings: Vec::new(),
+            ast_types: HashMap::new(),
         }
     }
 
@@ -452,18 +459,14 @@ impl<'r> Lowerer<'r> {
                 let target = scalar_of(&c.target_ty)?;
                 Some(self.emit_value(Opcode::Cast, v.reg, Register(0), target, 0))
             }
-            // A struct field read `base.member`: `base` must be a name bound to an aggregate slot;
-            // the field's offset + type come from the registry layout. First cut: scalar fields
-            // only (a nested-aggregate or pointer field is declined).
+            // A struct field read `base.member`. `base` is either a local aggregate slot (`p.x`,
+            // #215) or a pointer to an aggregate (`self.len`/`self.data` where `self : &mut Vec`,
+            // #242) — `lower_agg_base` resolves both to the `!llvm.ptr` addressing the struct plus its
+            // layout GID. The field's offset + type come from the registry layout: a scalar field
+            // yields its element, a pointer field (`Vec`'s `data`) an opaque `!llvm.ptr`. A
+            // by-value nested-aggregate field needs an addressed sub-view — declined.
             Expr::MemberAccess(m) => {
-                let base = simple_ident(&m.base)?;
-                let (slot, gid) = match self.scope.get(&base)?.clone() {
-                    Binding::Slot {
-                        reg,
-                        ty: LoweredTy::Aggregate(gid),
-                    } => (reg, gid),
-                    _ => return None,
-                };
+                let (base_reg, gid) = self.lower_agg_base(&m.base)?;
                 let field = self
                     .registry
                     .layouts
@@ -471,40 +474,64 @@ impl<'r> Lowerer<'r> {
                     .fields
                     .iter()
                     .find(|f| f.name.as_ref() == m.member.as_ref())?;
-                let elem = match &field.ty {
-                    FieldTy::Scalar(e) => e.clone(),
-                    // Nested-aggregate / pointer fields need addressed sub-views — not yet.
-                    FieldTy::Nominal(_) | FieldTy::Opaque => return None,
-                };
                 let offset = field.offset as u64;
-                Some(self.emit_value(Opcode::FieldLoad, slot, Register(0), elem, offset))
+                let result_ty = match &field.ty {
+                    FieldTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
+                    FieldTy::Opaque => LoweredTy::Ptr,
+                    FieldTy::Nominal(_) => return None,
+                };
+                Some(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
             }
-            // Tensor indexing `base[index]`: rank-reduces the base along its outermost dimension.
-            // A remaining shape yields a row/sub-view tensor; an empty one yields the scalar element.
-            // Chained access (`q[i][j]`) recurses through the nested `IndexAccess`.
+            // Indexing `base[index]`. A *tensor* base rank-reduces along its outermost dimension (a
+            // remaining shape yields a row/sub-view tensor, an empty one the scalar element; chained
+            // `q[i][j]` recurses). A *raw-pointer* base (`self.data[i]` where `self.data : *mut T`)
+            // GEP-loads the pointee element — the element type recovered from the base's AST type,
+            // since the layout erases a pointer's pointee (#242).
             Expr::IndexAccess(ix) => {
                 let base = self.lower_expr(&ix.base)?;
-                let (elem, shape) = match &base.ty {
-                    LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
-                    _ => return None, // only tensor indexing for now
-                };
-                if shape.is_empty() {
-                    return None; // cannot index a rank-0 value
-                }
-                let index = self.lower_expr(&ix.index)?;
-                if !matches!(index.ty, LoweredTy::Scalar(_)) {
-                    return None; // index must be a scalar
-                }
-                let reduced: Vec<String> = shape[1..].to_vec();
-                let result_ty = if reduced.is_empty() {
-                    LoweredTy::Scalar(elem)
-                } else {
-                    LoweredTy::Tensor {
-                        elem,
-                        shape: reduced,
+                match &base.ty {
+                    LoweredTy::Tensor { elem, shape } => {
+                        let (elem, shape) = (elem.clone(), shape.clone());
+                        if shape.is_empty() {
+                            return None; // cannot index a rank-0 value
+                        }
+                        let index = self.lower_expr(&ix.index)?;
+                        if !matches!(index.ty, LoweredTy::Scalar(_)) {
+                            return None; // index must be a scalar
+                        }
+                        let reduced: Vec<String> = shape[1..].to_vec();
+                        let result_ty = if reduced.is_empty() {
+                            LoweredTy::Scalar(elem)
+                        } else {
+                            LoweredTy::Tensor {
+                                elem,
+                                shape: reduced,
+                            }
+                        };
+                        Some(self.emit_typed(
+                            Opcode::TensorIndex,
+                            base.reg,
+                            index.reg,
+                            result_ty,
+                            0,
+                        ))
                     }
-                };
-                Some(self.emit_typed(Opcode::TensorIndex, base.reg, index.reg, result_ty, 0))
+                    LoweredTy::Ptr => {
+                        let elem = pointer_scalar_elem(&self.infer_ast_type(&ix.base)?)?;
+                        let index = self.lower_expr(&ix.index)?;
+                        if !matches!(index.ty, LoweredTy::Scalar(_)) {
+                            return None; // index must be a scalar
+                        }
+                        Some(self.emit_typed(
+                            Opcode::PtrIndex,
+                            base.reg,
+                            index.reg,
+                            LoweredTy::Scalar(elem),
+                            0,
+                        ))
+                    }
+                    _ => None,
+                }
             }
             // `transfer(src, Memory::X)`: re-home a tensor into another memory space. The result has
             // the same element + shape, so the destination is sized to hold the source ("enough
@@ -635,9 +662,23 @@ impl<'r> Lowerer<'r> {
             }
             // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
             // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
-            // the memref for an allocated tensor identifier). This backs `print(&t)`. A scalar or
-            // aggregate borrow (a real `!llvm.ptr` value) is not modelled yet and declines. (#230)
+            // the memref for an allocated tensor identifier). This backs `print(&t)`. Borrowing an
+            // aggregate *local* (`&v` where `v` is a struct slot) yields the slot's `!llvm.ptr` — the
+            // pointer a `&Vec<T>` method receives, so `v.len()` (rewritten to `Vec$len(&v)`) lowers
+            // (#242). A scalar borrow (a real address-of) is still not modelled and declines. (#230)
             Expr::Borrow(b) => {
+                if let Expr::Identifier(id) = &*b.expr {
+                    if let Some(Binding::Slot {
+                        reg,
+                        ty: LoweredTy::Aggregate(_),
+                    }) = self.scope.get(&id.name).cloned()
+                    {
+                        return Some(Val {
+                            reg,
+                            ty: LoweredTy::Ptr,
+                        });
+                    }
+                }
                 let v = self.lower_expr(&b.expr)?;
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
                     Some(v)
@@ -721,6 +762,54 @@ impl<'r> Lowerer<'r> {
             Statement::ExprStmt(es) if !es.has_semi => self.infer_expr_ty(&es.expr),
             _ => None,
         }
+    }
+
+    /// Recover the concrete AST `Type` of an expression from the scope's `ast_types` + the registry's
+    /// base struct fields — the flat-path port of the AST codegen's `infer_ast_type`, restricted to
+    /// the forms a *pointer element type* flows through (`self.data`, an identifier, an `unsafe`/`as`
+    /// wrapper). The load-bearing case is a member access through a monomorphized generic aggregate:
+    /// substitute the instance's type arguments into the base struct's declared field type, so
+    /// `self.data` on `self : &mut Vec<i32>` resolves to `*mut i32`. `None` for an unhandled form —
+    /// the caller then declines the construct, keeping the AST path the oracle. (#242)
+    fn infer_ast_type(&self, e: &Expr) -> Option<Type> {
+        match e {
+            Expr::Identifier(id) => self.ast_types.get(&id.name).cloned(),
+            Expr::MemberAccess(m) => {
+                let base_ty = self.infer_ast_type(&m.base)?;
+                let (base_name, args) = nominal_name_and_args(deref_to_pointee(&base_ty))?;
+                let decl = self.registry.structs.get(&base_name)?;
+                let (_, fty) = decl
+                    .fields
+                    .iter()
+                    .find(|(n, _)| n.as_ref() == m.member.as_ref())?;
+                Some(substitute_generics(fty, &decl.generics, &args))
+            }
+            Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            Expr::AsCast(c) => Some(c.target_ty.clone()),
+            _ => None,
+        }
+    }
+
+    /// Resolve a member-access base to the `!llvm.ptr` register addressing the aggregate plus its
+    /// layout GID: either a local bound to an aggregate *slot* (`let p = Point { .. }`, #215) or a
+    /// *pointer to* an aggregate (`self : &mut Vec<i32>`, #242). Both are an `!llvm.ptr` to the
+    /// struct, so a `FieldLoad`/`FieldStore` addresses them identically. `None` for any other base.
+    fn lower_agg_base(&mut self, base: &Expr) -> Option<(Register, TypeId)> {
+        if let Expr::Identifier(id) = base {
+            if let Some(Binding::Slot {
+                reg,
+                ty: LoweredTy::Aggregate(gid),
+            }) = self.scope.get(&id.name).cloned()
+            {
+                return Some((reg, gid));
+            }
+        }
+        // A pointer to an aggregate: the base lowers to a pointer value; its pointee layout GID comes
+        // from the base's AST type (the layout the frozen registry keyed under the base nominal).
+        let base_ty = self.infer_ast_type(base)?;
+        let gid = agg_gid_of_ty(&base_ty, self.registry)?;
+        let v = self.lower_expr(base)?;
+        matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid))
     }
 
     /// Lower an `if`/`else` statement to basic blocks + branches (memory mode only, so mutated or
@@ -1073,7 +1162,15 @@ impl<'r> Lowerer<'r> {
     /// `Val`. First cut: scalar fields only, and the struct's GID must be annotated (by the type
     /// checker) and its layout computed — otherwise the construction is declined.
     fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Option<Val> {
-        let gid = si.type_id?;
+        // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
+        // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
+        // instance identity isn't a plain module symbol), so fall back to the base nominal's layout
+        // by name — its layout is instance-independent (every generic parameter is behind a pointer),
+        // exactly the `lowered_ty(GenericInstance)` rule (#242).
+        let gid = match si.type_id {
+            Some(g) => g,
+            None => self.struct_gid_by_name(&si.name)?,
+        };
         let def = self.registry.layouts.get(&gid)?;
         if def.align_bytes == 0 {
             return None; // layout not modelled yet
@@ -1087,10 +1184,11 @@ impl<'r> Lowerer<'r> {
 
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
         for (name, offset, fty) in field_layouts {
-            // Only scalar fields for now (nested aggregates need addressed sub-views).
-            let FieldTy::Scalar(_) = &fty else {
+            // Scalar or pointer fields (`Vec { data: ptr, len, capacity }`, #242); a by-value
+            // nested-aggregate field needs an addressed sub-view — declined.
+            if matches!(&fty, FieldTy::Nominal(_)) {
                 return None;
-            };
+            }
             let (_, init_expr) = si
                 .fields
                 .iter()
@@ -1101,6 +1199,14 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
         }
         Some(slot)
+    }
+
+    /// The layout GID of a struct by name — the fallback for a monomorphized generic construction
+    /// (`Vec<i32> { .. }`) whose `StructInit` carries no checker-attached `type_id`. Resolves to the
+    /// *base* nominal's modelled layout (the display name a monomorphized instance renders under);
+    /// declines if the name is ambiguous (two distinct GIDs) so a wrong layout is never chosen. (#242)
+    fn struct_gid_by_name(&self, name: &Symbol) -> Option<TypeId> {
+        struct_layout_gid_by_name(self.registry, name.as_ref())
     }
 
     /// Lower a tensor allocation `Tensor<T>([d0, d1, ...])` (or `Tensor<T>(d0, d1)`): a `TensorAlloc`
@@ -1217,6 +1323,22 @@ impl<'r> Lowerer<'r> {
             return None;
         };
         let base = self.lower_expr(&ix.base)?;
+        // A raw-pointer place (`self.data[i] = val`): a `PtrIndex` with `imm = 1` (an element
+        // pointer), consumed by a `PtrStore`. The element type comes from the base's AST type (#242).
+        if matches!(base.ty, LoweredTy::Ptr) {
+            let elem = pointer_scalar_elem(&self.infer_ast_type(&ix.base)?)?;
+            let index = self.lower_expr(&ix.index)?;
+            if !matches!(index.ty, LoweredTy::Scalar(_)) {
+                return None;
+            }
+            return Some(self.emit_typed(
+                Opcode::PtrIndex,
+                base.reg,
+                index.reg,
+                LoweredTy::Scalar(elem),
+                1,
+            ));
+        }
         let (elem, shape) = match &base.ty {
             LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
             _ => return None,
@@ -1259,6 +1381,12 @@ impl<'r> Lowerer<'r> {
     fn lower_stmt(&mut self, s: &Statement) -> Option<()> {
         match s {
             Statement::LetDecl(l) => {
+                // Record the local's concrete AST type for `infer_ast_type` (a pointer local like
+                // `let ptr : *mut T = ...` -> its pointee element for a later index, #242). The
+                // annotation is authoritative; else fall back to inferring the initializer's type.
+                if let Some(t) = l.ty_ann.clone().or_else(|| self.infer_ast_type(&l.expr)) {
+                    self.ast_types.insert(l.name.clone(), t);
+                }
                 // A struct literal is constructed *in place* into its own slot; the local is that
                 // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
                 if let Expr::StructInit(si) = &l.expr {
@@ -1310,16 +1438,47 @@ impl<'r> Lowerer<'r> {
                 Some(())
             }
             Statement::Assign(a) => {
-                // A tensor place store `place[i] = value`. The left side lowers to a `TensorIndex`
-                // place: a row/sub-view (`o[i] = <slice>`) or a scalar element (`q[i][j] = <scalar>`,
-                // the final index marked `imm = 1`). The store kind is recovered from the place type
-                // in codegen; the right side is the value stored through it.
-                if matches!(&a.lhs, Expr::IndexAccess(_)) {
+                // An indexed place store `place[i] = value`. A *tensor* place is a `TensorIndex` (a
+                // row/sub-view `o[i] = <slice>` or a scalar element `q[i][j] = <scalar>`, the final
+                // index marked `imm = 1`) written by a `TensorStore`; a *raw-pointer* place
+                // (`self.data[i] = val`) is a `PtrIndex` place written by a `PtrStore` (#242). The
+                // base's AST type selects the store — a tensor local isn't in `ast_types`, so it reads
+                // as non-pointer.
+                if let Expr::IndexAccess(ix) = &a.lhs {
+                    let is_ptr = self
+                        .infer_ast_type(&ix.base)
+                        .and_then(|t| pointer_scalar_elem(&t))
+                        .is_some();
                     let place = self.lower_place(&a.lhs)?;
-                    // The stored scalar already matches the place's element type (`a[i] = 1.0` into a
-                    // bf16 tensor types the literal to the element; a genuine mismatch is rejected, #240).
+                    // The stored scalar already matches the place's element type (the checker types a
+                    // literal RHS to the element and rejects a genuine mismatch, #240).
                     let value = self.lower_expr(&a.rhs)?;
-                    self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
+                    let store = if is_ptr {
+                        Opcode::PtrStore
+                    } else {
+                        Opcode::TensorStore
+                    };
+                    self.emit_effect(store, place.reg, value.reg, 0);
+                    return Some(());
+                }
+                // A field store `base.member = value` through an aggregate slot or a `self` pointer
+                // (`self.len = self.len + 1`, `self.data = grow(..)`, #242). A by-value nested-aggregate
+                // field store isn't modelled.
+                if let Expr::MemberAccess(m) = &a.lhs {
+                    let (base_reg, gid) = self.lower_agg_base(&m.base)?;
+                    let field = self
+                        .registry
+                        .layouts
+                        .get(&gid)?
+                        .fields
+                        .iter()
+                        .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                    let offset = field.offset as u64;
+                    if matches!(field.ty, FieldTy::Nominal(_)) {
+                        return None;
+                    }
+                    let v = self.lower_expr(&a.rhs)?;
+                    self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
                     return Some(());
                 }
                 // `name = expr` (simple identifier target). The value already matches the slot's type
@@ -1486,15 +1645,30 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
     // as an SSA register — never `Alloca`'d into a slot.
     for (i, (name, ty)) in func.params.iter().enumerate() {
         let lty = lowered_ty(ty, registry)?;
+        // Record the param's concrete AST type so `infer_ast_type` can recover a pointer field's
+        // pointee element (`self : &mut Vec<i32>` -> `self.data : *mut i32`, #242).
+        lw.ast_types.insert(name.clone(), ty.clone());
         let incoming = lw.emit_typed(Opcode::Load, Register(0), Register(0), lty, i as u64);
-        if matches!(incoming.ty, LoweredTy::Tensor { .. }) {
+        // A tensor (memref) or a pointer to a modelled aggregate (`self : &mut Vec`) is a reference
+        // value that binds as an SSA register even in memory mode: it is a block argument that
+        // dominates every block, and mutation flows through the pointer to the pointee, not to the
+        // register (so it never needs a slot). (#242)
+        if matches!(incoming.ty, LoweredTy::Tensor { .. }) || is_ptr_to_agg(ty, registry) {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
             lw.bind_local(name.clone(), incoming);
         }
     }
-    for stmt in &func.body {
-        lw.lower_stmt(stmt)?;
+    for (si, stmt) in func.body.iter().enumerate() {
+        if lw.lower_stmt(stmt).is_none() {
+            if std::env::var("VX_FLAT_DBG").is_ok() {
+                eprintln!(
+                    "[flat-dbg] fn {} declined at stmt #{si}",
+                    func.name.as_ref()
+                );
+            }
+            return None;
+        }
     }
     Some(lw)
 }
@@ -1525,18 +1699,21 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
         {
             Some(LoweredTy::Scalar(ElementType::I32))
         }
-        Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
-            let def = registry.layouts.get(id)?;
-            if def.align_bytes == 0 {
-                return None; // layout not modelled yet (the 0/0 stub)
-            }
-            Some(LoweredTy::Aggregate(*id))
+        Type::Struct(name, id) | Type::Enum(name, id) => {
+            // The attached GID when name resolution modelled it (non-stub), else by name — a
+            // monomorphized cross-module signature may carry an unresolved base (`Struct("Vec", None)`).
+            let gid = id
+                .filter(|g| registry.layouts.get(g).is_some_and(|d| d.align_bytes != 0))
+                .or_else(|| struct_layout_gid_by_name(registry, name.as_ref()))?;
+            Some(LoweredTy::Aggregate(gid))
         }
         // A monomorphized generic struct instance (`Vec<i32>`): its layout is the base nominal's when
         // that layout is *instance-independent* — every generic parameter appears only behind a
         // pointer (a pointer field is 8 bytes for any `T`), as in `Vec<T> { data: *mut T, len, cap }`.
         // A by-value generic field (`Box<T> { value: T }`) leaves the base layout the 0/0 stub, so
-        // this resolves exactly the pointer-backed containers and declines the rest.
+        // this resolves exactly the pointer-backed containers and declines the rest. The base may be
+        // an unresolved `Struct(_, None)` (a cross-module mono), handled by the nominal arm's
+        // name fallback.
         Type::GenericInstance(base, _) => lowered_ty(base, registry),
         _ => None,
     }
@@ -1588,6 +1765,100 @@ fn simple_ident(e: &Expr) -> Option<Symbol> {
         Expr::Identifier(id) => Some(id.name.clone()),
         _ => None,
     }
+}
+
+/// Strip one borrow/pointer/ref wrapper, yielding the pointee (or the type itself if not a
+/// reference) — used to look through `self : &mut Vec<i32>` to the `Vec<i32>` it points at. (#242)
+fn deref_to_pointee(ty: &Type) -> &Type {
+    match ty {
+        Type::Borrow { inner, .. } | Type::Pointer(inner, ..) | Type::Ref(inner, ..) => inner,
+        other => other,
+    }
+}
+
+/// The base struct name + type-argument list of a nominal type, looking through a `GenericInstance`
+/// (`Vec<i32>` -> `("Vec", [i32])`) or a plain nominal (`Point` -> `("Point", [])`). `None` for a
+/// non-nominal. The name keys the registry's base struct fields (#242).
+fn nominal_name_and_args(ty: &Type) -> Option<(Symbol, Vec<Type>)> {
+    match ty {
+        Type::GenericInstance(base, args) => {
+            let (name, _) = nominal_name_and_args(base)?;
+            Some((name, args.clone()))
+        }
+        Type::Struct(name, _) | Type::Enum(name, _) => Some((name.clone(), Vec::new())),
+        _ => None,
+    }
+}
+
+/// Substitute an instance's type arguments into a base struct's generic field type: build
+/// `{param -> arg}` from the generic parameter names (declaration order) and apply it. With no
+/// arguments (a non-generic struct) the field type passes through unchanged. This is how
+/// `Vec<T>`'s `data : *mut T` becomes `*mut i32` for a `Vec<i32>` access (#242).
+fn substitute_generics(fty: &Type, generics: &[Symbol], args: &[Type]) -> Type {
+    if args.is_empty() {
+        return fty.clone();
+    }
+    let mut mapping = HashMap::new();
+    for (g, a) in generics.iter().zip(args) {
+        mapping.insert(g.clone(), a.clone());
+    }
+    fty.substitute(&mapping)
+}
+
+/// The scalar element of a raw pointer type (`*mut i32` -> `i32`), for lowering a raw-pointer index
+/// `p[i]` (`Vec`'s `self.data[i]`). `None` if not a pointer to a scalar. (#242)
+fn pointer_scalar_elem(ty: &Type) -> Option<ElementType> {
+    match ty {
+        Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
+            scalar_of(inner)
+        }
+        _ => None,
+    }
+}
+
+/// The modelled layout GID of a struct/enum by its base name — the fallback for when name resolution
+/// left a *monomorphized cross-module* instance's base GID unattached (`Struct("Vec", None)`, as a
+/// mono's substituted signature carries). Searches the frozen layouts for a non-stub definition of
+/// that base name (`Vec<i32>` -> `Vec`); declines on an ambiguous name (two distinct GIDs) so a wrong
+/// layout is never chosen. (#242)
+fn struct_layout_gid_by_name(registry: &ImmutableGlobalRegistry, name: &str) -> Option<TypeId> {
+    let base = name.split('<').next().unwrap_or(name);
+    let mut found: Option<TypeId> = None;
+    for def in registry.layouts.values() {
+        if def.name == base && def.align_bytes != 0 {
+            if found.is_some_and(|g| g != def.id) {
+                return None; // ambiguous name across modules — decline, keep the AST oracle
+            }
+            found = Some(def.id);
+        }
+    }
+    found
+}
+
+/// The layout GID of the aggregate a (borrow/pointer-to-)nominal type names, resolving a
+/// monomorphized generic instance to its base nominal (`&mut Vec<i32>` / `Vec<i32>` -> the `Vec`
+/// layout GID). Uses the attached GID when name resolution modelled it, else resolves by name (a
+/// monomorphized cross-module instance's base may carry no GID). Requires a modelled (non-stub)
+/// layout. (#242)
+fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId> {
+    let nominal = match deref_to_pointee(ty) {
+        Type::GenericInstance(base, _) => base.as_ref(),
+        other => other,
+    };
+    let (name, gid_opt) = match nominal {
+        Type::Struct(n, id) | Type::Enum(n, id) => (n.as_ref(), *id),
+        _ => return None,
+    };
+    gid_opt
+        .filter(|id| registry.layouts.get(id).is_some_and(|d| d.align_bytes != 0))
+        .or_else(|| struct_layout_gid_by_name(registry, name))
+}
+
+/// Whether a parameter type is a pointer/borrow to a modelled aggregate (`self : &mut Vec<i32>`) —
+/// such a param binds as an SSA register even in memory mode (a block argument that dominates all
+/// blocks; mutation flows through the pointer to the pointee, not to the register). (#242)
+fn is_ptr_to_agg(ty: &Type, registry: &ImmutableGlobalRegistry) -> bool {
+    matches!(ty, Type::Borrow { .. } | Type::Pointer(..)) && agg_gid_of_ty(ty, registry).is_some()
 }
 
 /// Pack an `if`'s two branch targets into `CondBr`'s `imm`: `then | (else << 32)`.
@@ -1718,6 +1989,9 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::FieldStore
             | Opcode::TensorIndex
             | Opcode::TensorStore
+            // `PtrIndex` reads base+index; `PtrStore` reads place+value (#242).
+            | Opcode::PtrIndex
+            | Opcode::PtrStore
             // `Reduce`'s operand2 is a real slice for `dot`, else the dominated `Register(0)`.
             | Opcode::Reduce => {
                 assert!(
@@ -1872,6 +2146,44 @@ mod tests {
             w.local_type_stream.iter().any(|t| t.module_id() != 0),
             "the Wrap<i32> aggregate GID is in the type stream"
         );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn pointer_field_and_raw_index_lower_through_self_pointer() {
+        // The `Vec` surface in miniature (#242): a `&mut Buf` self pointer whose fields are read/
+        // written through the pointer (`FieldLoad`/`FieldStore`) and whose raw-pointer field is
+        // indexed (`PtrIndex` place + `PtrStore`). `b.data[0] = v` is a raw-pointer element store;
+        // `b.len = b.len + 1` reads then writes the scalar field.
+        let (did, w) = lower_with_registry(
+            "struct Buf { data: *mut i32, len: i32 }\n\
+             fn bump(b: &mut Buf, v: i32) -> i32 { unsafe { b.data[0] = v; } \
+             b.len = b.len + 1; return 0; }",
+            "bump",
+        );
+        assert!(
+            did,
+            "field access + raw-pointer index through a self pointer should lower"
+        );
+        // `b.data` (a pointer field) -> a `FieldLoad`; `b.data[0] = v` -> a `PtrIndex` place + a
+        // `PtrStore`; `b.len` read -> a `FieldLoad`; `b.len = ...` -> a `FieldStore`.
+        assert_eq!(
+            count(&w, Opcode::PtrIndex),
+            1,
+            "one raw-pointer element place"
+        );
+        assert_eq!(
+            count(&w, Opcode::PtrStore),
+            1,
+            "one raw-pointer element store"
+        );
+        assert!(
+            count(&w, Opcode::FieldLoad) >= 2,
+            "b.data and b.len are read"
+        );
+        assert_eq!(count(&w, Opcode::FieldStore), 1, "b.len is written");
+        // The self pointer binds as an SSA register (no aggregate `Alloca` for it), so the only
+        // slots are the memory-mode scalar locals — never the `&mut Buf` itself.
         verify_hir_stream(&w);
     }
 

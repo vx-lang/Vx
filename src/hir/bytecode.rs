@@ -114,6 +114,17 @@ pub enum Opcode {
     /// yield a first-class `!llvm.ptr` value — matching the AST path's `StringLiteralExpr`. The
     /// register's result type is a pointer (`LoweredTy::Ptr`). (#231)
     StringConst = 32,
+    /// Index a raw pointer (`p[i]` where `p : *mut T`/`*const T`): `operand1` is the base pointer,
+    /// `operand2` the (scalar) index, `type_idx` the pointee element's scalar type (so codegen knows
+    /// the GEP stride + load type). `imm` selects value vs. place: `0` = a value read (GEP then
+    /// `llvm.load`); `1` = an element **place** on the left of an assignment (GEP only), consumed by
+    /// the following `PtrStore`. This is `Vec`'s `self.data[i]` — the raw-pointer analogue of
+    /// `TensorIndex`, GEP-addressed instead of memref-addressed. (#242)
+    PtrIndex = 33,
+    /// Store a value into a raw-pointer place (no result): `operand1` is the destination `PtrIndex`
+    /// place (an `imm = 1` `PtrIndex`), `operand2` the value. The pointee element type comes from the
+    /// place. The raw-pointer analogue of `TensorStore` — `Vec`'s `self.data[i] = val`. (#242)
+    PtrStore = 34,
 }
 
 impl Opcode {
@@ -156,6 +167,8 @@ impl Opcode {
             30 => Print,
             31 => PrintStr,
             32 => StringConst,
+            33 => PtrIndex,
+            34 => PtrStore,
             _ => return None,
         })
     }
