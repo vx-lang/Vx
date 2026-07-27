@@ -447,13 +447,11 @@ impl<'a> TypeChecker<'a> {
 
         if let Type::Scalar(t_target) = target {
             if let Type::Scalar(t_source) = &source {
-                if *t_target == *t_source {
-                    return true;
-                }
-                // Allow numeric coercions
-                if *t_target != ElementType::Bool && t_source != &ElementType::Bool {
-                    return true;
-                }
+                // Scalars are assignable only when identical (#240): Vx has no implicit numeric
+                // conversion. An untyped literal has already adopted its context's type in the
+                // checking positions (`let`/`return`/assignment/operands/call args), so what reaches
+                // here mismatched is a genuine typed-value conversion — the programmer writes `as`.
+                return *t_target == *t_source;
             }
         }
 
@@ -2123,54 +2121,72 @@ impl<'a> TypeChecker<'a> {
         Type::Scalar(elem)
     }
 
-    /// Record, on the argument node itself, the implicit scalar coercion a call demands — the
-    /// numeric conversion `is_assignable` accepts but does not materialize (e.g. a default-`i32`
-    /// literal passed to an `i64` parameter). After type-checking the argument then already carries
-    /// the *parameter's* type, so every consumer of the typed AST — the flat HIR lowerer and the AST
-    /// codegen alike — emits a correctly-typed operand without any call-site coercion pass of its own.
-    /// This is the "elaboration inserts coercions" design (#236): the checker is the one phase that
-    /// already knows the parameter types, so it records the decision here rather than re-deriving it
-    /// downstream (which would mean carrying parameter types in the frozen registry).
-    ///
-    /// A numeric literal is re-typed in place — born at the target type, no cast op at all; anything
-    /// else is wrapped in an `as` cast (which both backends already lower). Only concrete
-    /// scalar→scalar coercions are recorded, mirroring the scalar rule in [`Self::is_assignable`]; an
-    /// identical, generic, `bool`, or non-scalar pair is left untouched. Returns whether it coerced.
-    fn coerce_call_arg(arg: &mut Expr, param_ty: &Type, arg_ty: &Type) -> bool {
-        let (Type::Scalar(p), Type::Scalar(a)) = (param_ty, arg_ty) else {
-            return false; // only scalar coercions are represented in the IR today
-        };
-        if p == a
-            || matches!(p, ElementType::Generic(_))
-            || matches!(a, ElementType::Generic(_))
-            || *p == ElementType::Bool
-            || *a == ElementType::Bool
-        {
-            return false; // identical, generic, or a `bool` edge — not an implicit numeric coercion
+    /// Type-check `e` under an explicit expected type, restoring the previous one after. The
+    /// mechanism by which an untyped numeric literal in a *checking position* adopts that
+    /// position's type (#240): only [`Self::check_number_literal`] consults `expected_type`, so
+    /// this affects a bare literal (and literals inside a nested checking position) and nothing
+    /// else. The expected type does not leak past `e`.
+    pub(crate) fn check_expr_expecting(
+        &mut self,
+        e: &mut Expr,
+        expected: Option<Type>,
+        consume: bool,
+        silent: bool,
+    ) -> Type {
+        let prev = self.expected_type.take();
+        self.expected_type = expected;
+        let ty = self.check_expr_type_flag(e, consume, silent);
+        self.expected_type = prev;
+        ty
+    }
+
+    /// Type-check the two operands of a binary / relational / logical op, letting an untyped
+    /// numeric literal on one side adopt the other side's concrete type — the reconciliation an
+    /// implicit conversion used to paper over (`i + 1` with `i: i64`, `x < 1.0` with `x: f64`),
+    /// now that a literal is untyped until typed by context (#240). If both operands are untyped
+    /// literals, or neither is, they are checked in order under the ambient expected type (so
+    /// `let x: i64 = 1 + 2` still infers both to `i64`). Returns `(lhs_ty, rhs_ty)`.
+    fn check_operand_pair(
+        &mut self,
+        lhs: &mut Expr,
+        rhs: &mut Expr,
+        consume: bool,
+        silent: bool,
+    ) -> (Type, Type) {
+        let lhs_untyped_lit = matches!(&*lhs, Expr::Number(n) if n.ty.is_none());
+        let rhs_untyped_lit = matches!(&*rhs, Expr::Number(n) if n.ty.is_none());
+        if rhs_untyped_lit && !lhs_untyped_lit {
+            let lt = self.check_expr_type_flag(lhs, consume, silent);
+            let rt = self.check_expr_expecting(rhs, Some(lt.clone()), consume, silent);
+            (lt, rt)
+        } else if lhs_untyped_lit && !rhs_untyped_lit {
+            let rt = self.check_expr_type_flag(rhs, consume, silent);
+            let lt = self.check_expr_expecting(lhs, Some(rt.clone()), consume, silent);
+            (lt, rt)
+        } else {
+            let lt = self.check_expr_type_flag(lhs, consume, silent);
+            let rt = self.check_expr_type_flag(rhs, consume, silent);
+            (lt, rt)
         }
-        match arg {
-            // A numeric literal simply adopts the parameter's element type — no cast op needed.
-            Expr::Number(n) => n.ty = Some(p.clone()),
-            // Anything else: an explicit `as` cast to the parameter type. The flat path lowers it to a
-            // `Cast` opcode; the AST codegen lowers it through the same `coerce_type` it would have run
-            // at the call anyway, so the two paths stay identical.
-            _ => {
-                let inner = arg.clone();
-                *arg = Expr::AsCast(AsCastExpr {
-                    expr: Box::new(inner),
-                    target_ty: Type::Scalar(p.clone()),
-                    source_ty: Some(Type::Scalar(a.clone())),
-                    span: Span::default(),
-                });
+    }
+
+    /// Refine a call argument's type against its parameter, letting an untyped numeric literal
+    /// adopt the parameter's scalar type — the call-argument checking position (#240). Arguments
+    /// are type-checked eagerly (before the callee is resolved), so a literal has already taken its
+    /// spelling default by the time the parameter type is known; this re-types it in place to the
+    /// parameter (when kind-compatible: an integer literal to an integer parameter, a float literal
+    /// to a float parameter). A non-literal argument is returned unchanged, so a genuine typed-value
+    /// mismatch (`f(some_i64)` into an `i32` parameter) is left for the caller's `is_assignable`
+    /// check to reject — the programmer writes an explicit `as`. Returns the argument's type after
+    /// refinement.
+    fn refine_literal_arg(&self, arg: &mut Expr, param_ty: &Type, arg_ty: &Type) -> Type {
+        if let Expr::Number(n) = arg {
+            if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
+                n.ty = Some(elem.clone());
+                return Type::Scalar(elem);
             }
         }
-        // Postcondition: the argument now declares the parameter's scalar type.
-        debug_assert!(
-            matches!(arg, Expr::Number(n) if n.ty.as_ref() == Some(p))
-                || matches!(arg, Expr::AsCast(c) if matches!(&c.target_ty, Type::Scalar(e) if e == p)),
-            "coerce_call_arg: argument did not adopt parameter type {p:?}"
-        );
-        true
+        arg_ty.clone()
     }
 
     fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
@@ -2378,23 +2394,17 @@ impl<'a> TypeChecker<'a> {
                         );
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) {
-                                if !silent {
-                                    self.errors.error_with_code(
-                                        crate::diagnostic::DiagnosticCode::E3003,
-                                        format!(
-                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                            i + 1, resolved_name, param_ty, arg_ty
-                                        ),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                    );
-                                }
-                            } else if !silent {
-                                // Record the implicit numeric coercion this call demands directly on the
-                                // argument node, so both the flat lowerer and the AST codegen emit a
-                                // correctly-typed operand without a call-site coercion pass (#236).
-                                Self::coerce_call_arg(&mut args[i], param_ty, arg_ty);
+                            let arg_ty =
+                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
+                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3003,
+                                    format!(
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         }
                     }
@@ -2431,23 +2441,17 @@ impl<'a> TypeChecker<'a> {
                         }
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
-                            let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) {
-                                if !silent {
-                                    self.errors.error_with_code(
-                                        crate::diagnostic::DiagnosticCode::E3003,
-                                        format!(
-                                            "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
-                                            i + 1, resolved_name, param_ty, arg_ty
-                                        ),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                    );
-                                }
-                            } else if !silent {
-                                // Record the implicit numeric coercion this call demands directly on the
-                                // argument node, so both the flat lowerer and the AST codegen emit a
-                                // correctly-typed operand without a call-site coercion pass (#236).
-                                Self::coerce_call_arg(&mut args[i], param_ty, arg_ty);
+                            let arg_ty =
+                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
+                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3003,
+                                    format!(
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
                             }
                         }
                     }
@@ -2939,10 +2943,26 @@ impl<'a> TypeChecker<'a> {
     fn check_array_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
         match expr {
             Expr::Array(ArrayExpr { elements, span: _ }) => {
-                for el in elements {
-                    self.check_expr_type(el);
+                // The array's element type is its first element's — an integer array literal
+                // (`[10, 20, 30]`) is `Tensor<i32>`, not `Tensor<f32>` (#240). Later elements are
+                // checked expecting that type, so untyped literals adopt it. An empty literal keeps
+                // the historical `f32` default.
+                let mut elem_ty = ElementType::F32;
+                for (i, el) in elements.iter_mut().enumerate() {
+                    if i == 0 {
+                        if let Type::Scalar(e) = self.check_expr_type(el) {
+                            elem_ty = e;
+                        }
+                    } else {
+                        self.check_expr_expecting(
+                            el,
+                            Some(Type::Scalar(elem_ty.clone())),
+                            true,
+                            _silent,
+                        );
+                    }
                 }
-                Type::Tensor(ElementType::F32, vec![], None)
+                Type::Tensor(elem_ty, vec![], None)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
@@ -3071,6 +3091,49 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The element type produced by indexing a user container such as `Vec<T>`: resolved from the
+    /// container struct's backing `data : *mut T` field, with the struct's generic parameters
+    /// substituted by the instance's type arguments. So `v[i]` on a `Vec<i32>` is `i32` — not the
+    /// `f32` an unresolved index used to fall back to, a default that permissive coercion hid
+    /// (#240). Returns `None` for anything that isn't such a container.
+    fn container_element_type(&self, base_ty: &Type) -> Option<Type> {
+        let (struct_name, args): (&str, &[Type]) = match base_ty {
+            Type::Struct(n, _) => (n.as_ref(), &[]),
+            Type::GenericInstance(inner, args) => match &**inner {
+                Type::Struct(n, _) => (n.as_ref(), args.as_slice()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let decl = self
+            .env
+            .structs
+            .get(struct_name)
+            .map(|s| (*s).clone())
+            .or_else(|| {
+                self.generated_structs
+                    .iter()
+                    .find(|s| s.name.as_ref() == struct_name)
+                    .cloned()
+            })?;
+        let mut mapping = HashMap::new();
+        for (i, param) in decl.generics.iter().enumerate() {
+            if let Some(a) = args.get(i) {
+                mapping.insert(param.name().into(), a.clone());
+            }
+        }
+        for (f_name, f_type) in &decl.fields {
+            if f_name.as_ref() == "data" {
+                if let Type::Pointer(inner, _, _) | Type::Borrow { inner, .. } =
+                    f_type.substitute(&mapping)
+                {
+                    return Some(*inner);
+                }
+            }
+        }
+        None
+    }
+
     fn check_indexaccess_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
         match expr {
             Expr::IndexAccess(IndexAccessExpr {
@@ -3114,6 +3177,11 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Scalar(el_ty)
                     }
+                } else if let Some(elem) = self.container_element_type(&base) {
+                    // A user container (`Vec<T>`): its element type, resolved from the backing
+                    // `data` pointer. `v[i]` on a `Vec<i32>` is `i32`, not the `f32` this used to
+                    // default to (a bug coercion hid, #240).
+                    elem
                 } else {
                     Type::Scalar(ElementType::F32)
                 }
@@ -3442,8 +3510,7 @@ impl<'a> TypeChecker<'a> {
     fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
         match expr {
             Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, consume, silent);
-                let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume, silent);
 
                 // Tensor operator overloading (A * B) -> Matmul
                 if let (
@@ -3534,8 +3601,7 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span,
             }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
-                let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false, silent);
                 // A relational compares element *values*, so wrapper differences
                 // (Pinned/Ref/Tensor vs a bare Scalar) are fine as long as the element
                 // types agree -- e.g. comparing a device-resident scalar to a constant.
@@ -3568,8 +3634,7 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span,
             }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
-                let rhs_ty = self.check_expr_type_flag(rhs, false, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false, silent);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3006,
@@ -3995,15 +4060,16 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_range_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    fn check_range_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
         match expr {
             Expr::Range(RangeExpr {
                 start,
                 end,
                 span: _,
             }) => {
-                let start_ty = self.check_expr_type(start);
-                let end_ty = self.check_expr_type(end);
+                // Reconcile the bounds so an untyped literal adopts the other bound's type
+                // (`0..n` with `n: i64` → `0` becomes i64), mirroring binary-operand inference (#240).
+                let (start_ty, end_ty) = self.check_operand_pair(start, end, true, silent);
                 if start_ty != end_ty {
                     self.errors.push(format!(
                         "Range start and end types must match, got {:?} and {:?}",

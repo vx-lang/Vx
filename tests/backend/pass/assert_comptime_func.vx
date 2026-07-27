@@ -8,7 +8,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
 fn foo() -> i64 {
-  let a = 10;
+  let a : i64 = 10;
   return a;
 }
 

@@ -205,6 +205,11 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
+                        // A scalar iterable is an integer range (`a..b`); the induction variable takes
+                        // the range's element type, so `for i in 0..10` binds `i: i32` and code like
+                        // `sum + i` / `return i` type-checks without a coercion (#240). The flat
+                        // lowerer already types the loop var from the same range bound.
+                        Type::Scalar(e) => Type::Scalar(e),
                         _ => Type::Scalar(ElementType::I64),
                     };
                 }
@@ -284,7 +289,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                let rhs_ty = self.check_expr_type_flag(rhs, consume, silent);
+                // Check the RHS expecting the target's type, so an untyped literal is born at that
+                // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
+                // defaulting and mismatching (#240).
+                let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume, silent);
                 self.current_assignment_target = None;
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());

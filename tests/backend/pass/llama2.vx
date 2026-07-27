@@ -426,13 +426,13 @@ fn main() -> i32 {
     let config_ptr : *mut i32 =
     vx_load_config("tests/backend/pass/stories15M.bin");
 
-    let dim_f : f32 = config_ptr[0];
-    let hidden_dim_f : f32 = config_ptr[1];
-    let n_layers_f : f32 = config_ptr[2];
-    let n_heads_f : f32 = config_ptr[3];
-    let n_kv_heads_f : f32 = config_ptr[4];
-    let vocab_size_f : f32 = config_ptr[5];
-    let seq_len_f : f32 = config_ptr[6];
+    let dim_f : f32 = config_ptr[0] as f32;
+    let hidden_dim_f : f32 = config_ptr[1] as f32;
+    let n_layers_f : f32 = config_ptr[2] as f32;
+    let n_heads_f : f32 = config_ptr[3] as f32;
+    let n_kv_heads_f : f32 = config_ptr[4] as f32;
+    let vocab_size_f : f32 = config_ptr[5] as f32;
+    let seq_len_f : f32 = config_ptr[6] as f32;
 
     let llama_config : *mut i32 = vx_get_llama_config();
     let max_tokens : i32 = llama_config[0];

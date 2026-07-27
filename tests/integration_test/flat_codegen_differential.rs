@@ -910,10 +910,10 @@ fn flat_matches_ast_corpus_ffi_option() {
 }
 
 #[test]
-fn flat_coerces_int_literal_argument_to_wider_param() {
-    // #236: a default-`i32` literal passed to an `i64` parameter. The type checker records the
-    // coercion on the literal (born as `i64`), so the flat `func.call` operand is `i64` and matches
-    // the callee — before this, the flat path emitted an `i32` arg and failed MLIR verification.
+fn flat_infers_int_literal_argument_to_param_type() {
+    // #240: an unsuffixed literal argument adopts its parameter's type — `42` is born `i64` at the
+    // call to `wants_i64`, so the flat `func.call` operand is `i64` and matches the callee. No
+    // implicit coercion is involved; the literal simply infers to the checking position's type.
     assert_parity(
         "fn wants_i64(n: i64) -> i64 { return n; }\n\
          fn main() -> i32 { return wants_i64(42) as i32; }",
@@ -922,24 +922,24 @@ fn flat_coerces_int_literal_argument_to_wider_param() {
 }
 
 #[test]
-fn flat_coerces_nonliteral_int_argument_to_wider_param() {
-    // #236: a non-literal argument (an `i32` local) passed to an `i64` parameter. The checker can't
-    // re-type the identifier, so it wraps it in an `as` cast — exercising the `AsCast` path (which
-    // both backends lower identically). Parity with the AST oracle confirms no divergence.
+fn flat_explicit_as_cast_widens_int_argument() {
+    // #240: Vx has no implicit numeric conversion, so a non-literal `i32` value passed to an `i64`
+    // parameter is a type error unless the programmer writes an explicit `as`. The `AsCast` lowers
+    // identically on both backends; parity with the AST oracle confirms no divergence.
     assert_parity(
         "fn wants_i64(n: i64) -> i64 { return n; }\n\
-         fn main() -> i32 { let x = 7; let r = wants_i64(x); return r as i32; }",
+         fn main() -> i32 { let x = 7; let r = wants_i64(x as i64); return r as i32; }",
         7,
     );
 }
 
 #[test]
-fn flat_coerces_float_argument_to_wider_param() {
-    // #236: an `f32` local widened to an `f64` parameter (`arith.extf`), the float analogue of the
-    // integer cases. The coerced value flows through and truncates back to the `i32` exit code.
+fn flat_explicit_as_cast_widens_float_argument() {
+    // #240: an `f32` local widened to an `f64` parameter with an explicit `as` (`arith.extf`), the
+    // float analogue of the integer case. The cast value flows through and truncates to the exit code.
     assert_parity(
         "fn wants_f64(x: f64) -> f64 { return x; }\n\
-         fn main() -> i32 { let a: f32 = 2.0; return wants_f64(a) as i32; }",
+         fn main() -> i32 { let a: f32 = 2.0; return wants_f64(a as f64) as i32; }",
         2,
     );
 }

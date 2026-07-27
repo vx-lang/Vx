@@ -81,7 +81,7 @@ fn rmsnorm(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, l: i32, size : i32
     let val : f32 = x[j];
     ss = ss + (val * val);
   }
-  let div : f32 = ss / size;
+  let div : f32 = ss / (size as f32);
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
   for j in 0..size {
@@ -98,7 +98,7 @@ fn rmsnorm_1d(o : &mut f32, x : &mut f32, weight : &Tensor<f32>, size : i32) -> 
     let val : f32 = x[j];
     ss = ss + (val * val);
   }
-  let div : f32 = ss / size;
+  let div : f32 = ss / (size as f32);
   let add : f32 = div + 0.00001;
   ss = 1.0 / add.sqrt();
   for j in 0..size {
