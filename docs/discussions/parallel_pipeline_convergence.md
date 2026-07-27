@@ -1868,18 +1868,70 @@ was new is the **struct-by-value ABI** the element pulls in:
   A new `agg_val_of` side table tracks struct *values* (an aggregate `SlotLoad`, an aggregate `PtrIndex`
   read, a struct-returning `Call`) — distinct from `agg_of` (struct *slots*/pointers) — so a by-value
   aggregate call argument prints `!llvm.struct` while `&v` still prints `!llvm.ptr`.
-- **Aggregate `sizeof`.** `sizeof<Vec<i32>>()` (in the outer grow path) now emits a constant instead of
-  declining — matching the oracle **bit-for-bit**: `SizeOfExpr::lower` returns `8` for every
-  non-scalar/non-pointer type (a known imprecision — an aggregate's true size can exceed 8, so the
-  element buffer under-allocates and rides on heap slack), and convergence means reproducing the oracle,
-  not being "more correct". `sizeof_bytes(ty).unwrap_or(8)` is exactly the oracle's table.
+- **Aggregate `sizeof`.** `sizeof<Vec<i32>>()` (in the outer grow path) emits the aggregate's **real
+  layout size** from the registry (16), *not* the oracle's `SizeOfExpr::lower` `_ => 8` fallback. That
+  fallback is a genuine bug, not a tolerable imprecision: an element buffer sized `8` while the element
+  is a 16-byte struct writes out of bounds — UB that only passes by heap slack (it flakes under memory
+  pressure). So for `Vec<struct>` the flat path is deliberately *more correct* than the oracle, and
+  `Vec<Vec<T>>` is validated **standalone** (`assert_flat_exit`) rather than by differential parity —
+  the oracle mis-sizes it, so it can't be the reference (the value-array precedent, Entry 63). Scalar
+  `sizeof` (Vec<i32>'s `sizeof<i32> = 4`) is precise in both paths, so the plain `Vec<T>` surface stays
+  a normal `assert_parity` target.
 
-**Result.** Corpus sweep `flat_used` 89 → **91**, still **zero** new miscompiles;
-`vec_nested_generic.vx` is one of the two newly-flat programs. Remaining Vec decline is the
+**Result.** Corpus sweep `flat_used` 89 → **91**; `vec_nested_generic.vx` is one of the two
+newly-flat programs (its flat path is deterministic; the oracle path relies on the heap-slack UB
+above). Remaining Vec decline is the
 closure/iterator machinery (`VecIter`/`map`/`collect`), which needs `Dereference`, data-carrying
 enums (`Option<T>`), fn pointers/indirect calls, and closures — the last of which is *emit-verified
 only* (no end-to-end JIT test exists), so its oracle-validatability must be established before it can
 be a differential target.
+
+## Entry 66 — the `VecIter`/`map`/`collect` machinery is oracle-blocked at every layer (#242/#239)
+
+Attempting the stdlib iterator machinery next surfaced the hardest instance yet of the Entry 63
+pattern (*"remaining flat declines coincide with AST-oracle gaps"*): the whole chain
+`v.iter().map(closure).collect()` cannot be a differential target because **the AST oracle itself
+cannot run it**. Established empirically (`vxc --run --legacy-codegen`), layer by layer:
+
+- **Closures (`Closure1` fat pointers) — the oracle codegen PANICS.** `v.iter().map(|x| x*2).collect()`
+  aborts the compiler (a Rust `catch_unwind` in the closure/indirect-call lowering). Every closure
+  test in the repo (`closure_fat_ptr.vx`, `indirect_call.vx`, `closures.vx`, …) is `--action emit-mlir`
+  - FileCheck **only** — not one JIT-executes, and the in-file `assert(result == 11)` never runs. So
+    closures are emit-verified but never proven to compute a correct value.
+- **Generic `Option<T>` in `VecIter` — the oracle CHECKER errors.** `for x in v.iter()` on the stdlib
+  `Vec` fails type-checking (`E3008: payload argument … expected Struct("T"), got Generic("T")` +
+  `E3004: I32 vs I64`) — the generic `Option<T>` payload in `VecIter::next` isn't substituted
+  correctly. The existing `test_generic_vec.vx`/`test_*_iterator.vx` are emit-mlir FileCheck only, so
+  this never blocked a run test.
+- **Bare `*p` dereference — the oracle MIS-TYPES it.** `DereferenceExpr::lower` defaults the load/store
+  to `f32` when the checker didn't set the pointee type, so `let p: *mut i32 = …; *p = 42; return p[0]`
+  returns **0** through the oracle (the `f32` store corrupts the i32), while a correct flat lowering
+  returns 42. Since the oracle is *confidently wrong* here (it compiles, just wrongly), a correct flat
+  `*p` would be scored a *miscompile* against it — so `*p` is declined, not lowered (a deref attempt was
+  built and reverted). `Box`'s `*p = val` only "passes" because `box_heap.vx` returns 0 without ever
+  observing the stored value. The checker-typed `*self` deref inside `Option`'s methods *does* work
+  (that path is exercised by `option_unwrap.vx` → 42/7), so deref is context-dependent, not uniformly
+  broken.
+
+**What IS oracle-validatable** (verified: correct deterministic JIT results) and would be genuine
+convergence wins, but which do **not** reach the stdlib iterator (it needs the blocked generic-`Option`
+
+- closure layers):
+
+* **Concrete data-carrying `Option<i32>`** — construct `Some`/`None`, statement-`match` payload
+  extraction, `is_some`/`is_none`/`unwrap`: oracle returns 30 / 42 / 7 / 10 across probes. Unblocks
+  standalone `Option` programs, `Vec<Option<i32>>` (`option_unwrap.vx`), and hand-written concrete
+  iterators (a `Counter`/`next` returning `Option<i32>` sums to 10). Needs un-stubbing
+  `layout.rs::enum_layout` (currently `None` for payload enums) to the oracle's `{ i32 tag, payload }`
+  shape, plus payload construction/extraction in the flat lowerer.
+* **Plain function pointers + indirect calls** (`fn(i32)->i32`) — oracle returns 49. Unblocks the
+  plain-fn-pointer iterator flavor (`map_collect.vx`'s `Map { f: fn(i32)->i32 }`).
+
+**Conclusion.** The literal `VecIter`/`map`/`collect` target is unreachable as a differential milestone
+until the *oracle* is fixed (closure codegen, generic-`Option` checking, deref typing) — a compiler
+fix, not a flat-path one. `Vec<Vec<T>>` (Entry 65) was the reachable part of the request; the
+data-carrying-`Option<scalar>` and fn-pointer surfaces are the next reachable convergence wins, distinct
+from (and short of) the stdlib iterators.
 
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 

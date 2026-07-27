@@ -623,15 +623,23 @@ impl<'r> Lowerer<'r> {
                     )),
                 }
             }
-            // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size, matching the AST codegen
-            // **exactly** — scalars/pointers get their precise size, and every other type (struct,
-            // enum, tensor, `i128`) falls back to `8`, mirroring `SizeOfExpr::lower`'s `_ => 8`. That
-            // fallback is a known oracle imprecision (an aggregate's true size may exceed 8, so an
-            // element buffer sized by `sizeof<T>()` can under-allocate and rely on heap slack), but
-            // convergence means reproducing the oracle bit-for-bit; the flat path must not diverge by
-            // being "more correct". Backs `sizeof<Vec<i32>>()` in a `Vec<Vec<T>>`'s grow path (#242).
+            // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size. Scalars/pointers get
+            // their precise size (as the AST codegen does), and an *aggregate* gets its **real layout
+            // size** from the registry — NOT the oracle's `SizeOfExpr::lower` `_ => 8` fallback, which
+            // is a genuine bug: an element buffer sized by `sizeof<Vec<i32>>()` would under-allocate
+            // (`8` vs the real `16`) and write structs out of bounds (UB that only "works" by heap
+            // slack). So for `Vec<struct>` the flat path is deliberately *more correct* than the
+            // oracle and is validated **standalone** (the oracle can't be a reference for a construct
+            // it mis-sizes). Any other unmodelled non-scalar (a tensor, `i128`) still falls back to
+            // `8`, matching the oracle where it isn't demonstrably broken. (#242)
             Expr::SizeOf(s) => {
-                let size = sizeof_bytes(&s.target_ty).unwrap_or(8);
+                let size = sizeof_bytes(&s.target_ty)
+                    .or_else(|| {
+                        agg_gid_of_ty(&s.target_ty, self.registry)
+                            .and_then(|g| self.registry.layouts.get(&g))
+                            .map(|d| d.size_bytes as u64)
+                    })
+                    .unwrap_or(8);
                 Some(self.emit_value(
                     Opcode::Const,
                     Register(0),

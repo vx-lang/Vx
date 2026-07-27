@@ -1155,12 +1155,18 @@ fn flat_matches_ast_vec_push_get_len() {
 }
 
 #[test]
-fn flat_matches_ast_vec_of_vec() {
+fn flat_lowers_vec_of_vec() {
     // A nested container `Vec<Vec<i32>>` (#242): the element type is itself an aggregate, so `push`
     // passes a `Vec<i32>` by value (a `!llvm.struct` param), `self.data[i] = val` stores the whole
     // struct through the raw pointer, `get` loads it back by value, and `sizeof<Vec<i32>>()` sizes the
     // outer buffer. `22 + 55 + 3 = 80`.
-    assert_parity(
+    //
+    // Validated **standalone** (`assert_flat_exit`, flat is the reference), not against the AST
+    // oracle: the oracle's `sizeof<struct>` returns a fixed `8` (`SizeOfExpr::lower`'s `_ => 8`), so
+    // its outer buffer under-allocates and the 16-byte element stores run out of bounds — UB that only
+    // passes by heap slack (it flakes under memory pressure). The flat path sizes the buffer correctly
+    // (16), so it is deterministic and *more correct* than the oracle here. See journal Entry 66.
+    assert_flat_exit(
         &format!(
             "{VEC_MINI}\nfn main() -> i32 {{ let mut outer = Vec<Vec<i32>>::new(); \
              let mut a = Vec<i32>::new(); a.push(11); a.push(22); outer.push(a); \
