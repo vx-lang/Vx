@@ -1849,6 +1849,38 @@ unchanged pre-existing set: 3 chronic fusion/scalar + 2 non-deterministic NPU cr
 declines is out of this surface: `Vec<Vec<T>>` (a by-value nested aggregate field), the
 closure/iterator machinery (`VecIter`/`map`/`collect`), and `Topology`/spawn expressions.
 
+## Entry 65 — `Vec<Vec<T>>`: struct-by-value ABI + aggregate-element raw-pointer indexing (#242)
+
+`Vec<Vec<i32>>` — a `Vec` whose *element* is itself an aggregate — now lowers on the flat path and
+JITs to the oracle's result (`vec_nested_generic.vx` prints 22/55/3 through flat; the differential
+parity test returns 80). The outer `Vec<Vec<T>>` is still pointer-backed (`data : *mut Vec<i32>`, an
+`Opaque` field), so Entry 64's machinery lowers its `new`/`with_capacity`/field access unchanged; what
+was new is the **struct-by-value ABI** the element pulls in:
+
+- **Aggregate-element raw-pointer index/store.** `self.data[i]` where `self.data : *mut Vec<i32>`:
+  `pointer_elem_ty` now yields `Aggregate(gid)` (not just a scalar), and `PtrIndex`/`PtrStore` GEP with
+  the *struct* as the stride type and `llvm.load`/`store` the whole `!llvm.struct` value — the exact
+  shape the oracle emits (`llvm.getelementptr %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<…>`
+  then `llvm.store %val, %gep : !llvm.struct<…>`).
+- **By-value aggregate params.** `push(self, val : Vec<i32>)` takes `val` as an `!llvm.struct` value
+  (the emitter's param loop resolves it via `ctx.agg_gid`); the body spills it to a slot
+  (`bind_local`) and reads it back with an **aggregate `SlotLoad`** (`llvm.load %slot -> !llvm.struct`).
+  A new `agg_val_of` side table tracks struct *values* (an aggregate `SlotLoad`, an aggregate `PtrIndex`
+  read, a struct-returning `Call`) — distinct from `agg_of` (struct *slots*/pointers) — so a by-value
+  aggregate call argument prints `!llvm.struct` while `&v` still prints `!llvm.ptr`.
+- **Aggregate `sizeof`.** `sizeof<Vec<i32>>()` (in the outer grow path) now emits a constant instead of
+  declining — matching the oracle **bit-for-bit**: `SizeOfExpr::lower` returns `8` for every
+  non-scalar/non-pointer type (a known imprecision — an aggregate's true size can exceed 8, so the
+  element buffer under-allocates and rides on heap slack), and convergence means reproducing the oracle,
+  not being "more correct". `sizeof_bytes(ty).unwrap_or(8)` is exactly the oracle's table.
+
+**Result.** Corpus sweep `flat_used` 89 → **91**, still **zero** new miscompiles;
+`vec_nested_generic.vx` is one of the two newly-flat programs. Remaining Vec decline is the
+closure/iterator machinery (`VecIter`/`map`/`collect`), which needs `Dereference`, data-carrying
+enums (`Option<T>`), fn pointers/indirect calls, and closures — the last of which is *emit-verified
+only* (no end-to-end JIT test exists), so its oracle-validatability must be established before it can
+be a differential target.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

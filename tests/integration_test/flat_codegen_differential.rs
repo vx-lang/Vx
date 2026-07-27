@@ -1155,6 +1155,24 @@ fn flat_matches_ast_vec_push_get_len() {
 }
 
 #[test]
+fn flat_matches_ast_vec_of_vec() {
+    // A nested container `Vec<Vec<i32>>` (#242): the element type is itself an aggregate, so `push`
+    // passes a `Vec<i32>` by value (a `!llvm.struct` param), `self.data[i] = val` stores the whole
+    // struct through the raw pointer, `get` loads it back by value, and `sizeof<Vec<i32>>()` sizes the
+    // outer buffer. `22 + 55 + 3 = 80`.
+    assert_parity(
+        &format!(
+            "{VEC_MINI}\nfn main() -> i32 {{ let mut outer = Vec<Vec<i32>>::new(); \
+             let mut a = Vec<i32>::new(); a.push(11); a.push(22); outer.push(a); \
+             let mut b = Vec<i32>::new(); b.push(33); b.push(44); b.push(55); outer.push(b); \
+             let r0 = outer.get(0); let r1 = outer.get(1); \
+             return r0.get(1) + r1.get(2) + r1.len(); }}"
+        ),
+        80,
+    );
+}
+
+#[test]
 fn flat_matches_ast_vec_loop_push_sum() {
     // A `for`-loop that pushes 0..10 (repeatedly growing the buffer past the initial capacity of 2)
     // then a second loop summing every element back via `get` — stressing the grow path and the

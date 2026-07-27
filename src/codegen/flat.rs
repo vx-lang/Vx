@@ -746,6 +746,10 @@ pub fn emit_function_mlir(
         } else if let Some(gid) = tensor_gid_of(ty) {
             let (elem, shape) = ctx.tensors.get(&gid)?;
             tensor_memref_ty(elem, shape)?
+        } else if let Some(gid) = ctx.agg_gid(ty) {
+            // A by-value aggregate param (`val : Vec<i32>` for a `Vec<Vec<T>>::push`) — an
+            // `!llvm.struct` value the body spills to a slot (`bind_local`) before use (#242).
+            ctx.aggs.get(&gid)?.struct_ty.clone()
         } else {
             return None;
         };
@@ -798,6 +802,11 @@ pub fn emit_function_mlir(
     // offsets. The aggregate analogue of `etypes` (kept separate: struct slots are pointers, not
     // scalar values).
     let mut agg_of: Vec<Option<TypeId>> = vec![None; hir.len()];
+    // The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
+    // aggregate `SlotLoad`, an aggregate-element `PtrIndex` read, or a struct-returning `Call`. Lets a
+    // consumer (a by-value call argument, a `PtrStore` of the value) print the `!llvm.struct` type.
+    // The value analogue of `agg_of` (which tracks struct *slots*). (#242 Vec<Vec<T>>)
+    let mut agg_val_of: Vec<Option<TypeId>> = vec![None; hir.len()];
     // The memref type string for each register that holds a tensor (from `TensorAlloc`), so a
     // `TensorIndex`/`TensorStore` on it prints the right `memref<...>`.
     let mut mem_of: Vec<Option<String>> = vec![None; hir.len()];
@@ -1058,9 +1067,20 @@ pub fn emit_function_mlir(
             // Load a value back from a slot; the result type is the slot's element (this
             // instruction's own `type_idx`).
             Opcode::SlotLoad => {
-                // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); a scalar slot loads its
-                // element from the rank-0 memref (`memref.load`). (#235)
-                if *pslot_of.get(ins.operand1.0 as usize)? {
+                // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); an aggregate slot loads
+                // the whole `!llvm.struct` value (`llvm.load`, #242 Vec<Vec<T>>); a scalar slot loads
+                // its element from the rank-0 memref (`memref.load`). (#235)
+                if let Some(&Some(agg_gid)) = agg_of.get(ins.operand1.0 as usize) {
+                    let agg = ctx.aggs.get(&agg_gid)?;
+                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let n = format!("%v{idx}");
+                    body += &format!(
+                        "  {n} = llvm.load {slot} : !llvm.ptr -> {}\n",
+                        agg.struct_ty
+                    );
+                    names[idx] = n;
+                    agg_val_of[idx] = Some(agg_gid);
+                } else if *pslot_of.get(ins.operand1.0 as usize)? {
                     let slot = names.get(ins.operand1.0 as usize)?;
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
@@ -1180,6 +1200,10 @@ pub fn emit_function_mlir(
                     // `!llvm.ptr`; a tensor arg is its memref type.
                     let at = if let Some(e) = elem_at(&etypes, *a) {
                         mlir_scalar(&e)?.to_string()
+                    } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
+                        // A by-value aggregate argument (`push(&outer, a)` passing `a : Vec<i32>` by
+                        // value into a `Vec<Vec<T>>::push`) — an `!llvm.struct` value (#242).
+                        ctx.aggs.get(&agg_gid)?.struct_ty.clone()
                     } else if *ptr_of.get(*a as usize)?
                         || agg_of.get(*a as usize).copied().flatten().is_some()
                     {
@@ -1205,9 +1229,11 @@ pub fn emit_function_mlir(
                     etypes[idx] = Some(e.clone());
                 } else if callee.ret_ptr {
                     ptr_of[idx] = true; // the call result is a pointer value (#235)
+                } else if let Some(agg_gid) = callee.ret_agg {
+                    // A struct-returning call result is a struct *value*; tracked so it can be spilled
+                    // to a slot (`Store`), returned (`Ret`), or passed by value to another call (#242).
+                    agg_val_of[idx] = Some(agg_gid);
                 }
-                // else: a struct value tracked by `names[idx]`; a following `Store` spills it to a slot
-                // and a `Ret` returns it directly (#215).
             }
             // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
             // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
@@ -1517,8 +1543,17 @@ pub fn emit_function_mlir(
             // element type sets the stride, so `p[i]` addresses `base + i * sizeof(T)`. (#242)
             Opcode::PtrIndex => {
                 let base = names.get(ins.operand1.0 as usize)?.clone();
-                let e = ty_at(ins.type_idx.0)?;
-                let et = mlir_scalar(&e)?;
+                // The pointee element is a scalar (`*mut i32`) or a by-value aggregate
+                // (`*mut Vec<i32>`, #242 Vec<Vec<T>>). The GEP's base element type (`et`) sets the
+                // stride either way; a struct element loads/stores the whole `!llvm.struct`.
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let (et, scalar_e, agg_gid) = if let Some(e) = elem_of_gid(gid) {
+                    (mlir_scalar(&e)?.to_string(), Some(e), None)
+                } else if let Some(agg) = ctx.aggs.get(&gid) {
+                    (agg.struct_ty.clone(), None, Some(gid))
+                } else {
+                    return None;
+                };
                 let imt = mlir_scalar(&elem_at(&etypes, ins.operand2.0)?)?;
                 let iname = names.get(ins.operand2.0 as usize)?.clone();
                 let p = format!("%pg{idx}");
@@ -1529,12 +1564,13 @@ pub fn emit_function_mlir(
                     // An element place: the following `PtrStore` writes through it.
                     names[idx] = p;
                     ptr_of[idx] = true;
-                    pptr_elem[idx] = Some(et.to_string());
+                    pptr_elem[idx] = Some(et);
                 } else {
                     let n = format!("%v{idx}");
                     body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {et}\n");
                     names[idx] = n;
-                    etypes[idx] = Some(e);
+                    etypes[idx] = scalar_e;
+                    agg_val_of[idx] = agg_gid;
                 }
             }
             // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
@@ -1775,6 +1811,40 @@ mod tests {
         );
         assert!(mlir.contains("llvm.getelementptr %arg0"), "{mlir}"); // field GEP off the self pointer
         assert!(mlir.contains("llvm.store"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_aggregate_element_pointer_index() {
+        // A raw pointer to an *aggregate* (`Vec<Vec<T>>`'s `*mut Vec`, #242): a by-value struct param
+        // (`v: Inner` -> an `!llvm.struct` arg spilled to a slot), a whole-struct store through the
+        // pointer (`dst[i] = v` -> GEP with the struct as the stride type + `llvm.store` of the struct
+        // value), and a whole-struct load back (`src[i]` -> `llvm.load … -> !llvm.struct`, returned by
+        // value).
+        let store = emit_module_and_verify(
+            "struct Inner { a: i32, b: i32 }\n\
+             fn store_it(dst: *mut Inner, i: i32, v: Inner) -> i32 { unsafe { dst[i] = v; } return 0; }",
+        );
+        assert!(
+            store.contains("(%arg0: !llvm.ptr, %arg1: i32, %arg2: !llvm.struct<(i32, i32)>)"),
+            "{store}"
+        );
+        assert!(
+            store.contains("-> !llvm.ptr, !llvm.struct<(i32, i32)>"),
+            "{store}"
+        ); // GEP stride = struct
+        assert!(
+            store.contains("llvm.store") && store.contains(": !llvm.struct<(i32, i32)>, !llvm.ptr"),
+            "{store}"
+        );
+        let load = emit_module_and_verify(
+            "struct Inner { a: i32, b: i32 }\n\
+             fn load_it(src: *mut Inner, i: i32) -> Inner { return unsafe { src[i] }; }",
+        );
+        assert!(load.contains("-> !llvm.struct<(i32, i32)>"), "{load}"); // load of the struct
+        assert!(
+            load.contains("func.return") && load.contains(": !llvm.struct<(i32, i32)>"),
+            "{load}"
+        );
     }
 
     #[test]

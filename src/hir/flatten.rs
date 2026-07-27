@@ -517,18 +517,12 @@ impl<'r> Lowerer<'r> {
                         ))
                     }
                     LoweredTy::Ptr => {
-                        let elem = pointer_scalar_elem(&self.infer_ast_type(&ix.base)?)?;
+                        let elem = pointer_elem_ty(&self.infer_ast_type(&ix.base)?, self.registry)?;
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return None; // index must be a scalar
                         }
-                        Some(self.emit_typed(
-                            Opcode::PtrIndex,
-                            base.reg,
-                            index.reg,
-                            LoweredTy::Scalar(elem),
-                            0,
-                        ))
+                        Some(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
                     }
                     _ => None,
                 }
@@ -629,11 +623,15 @@ impl<'r> Lowerer<'r> {
                     )),
                 }
             }
-            // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size (matching the AST
-            // codegen), used inside comptime blocks. Only the scalar / pointer sizes the AST agrees on
-            // are emitted; a struct/enum/tensor `sizeof` declines to the AST path (#228).
+            // `sizeof<T>()`: a compile-time constant `i64` of `T`'s byte size, matching the AST codegen
+            // **exactly** — scalars/pointers get their precise size, and every other type (struct,
+            // enum, tensor, `i128`) falls back to `8`, mirroring `SizeOfExpr::lower`'s `_ => 8`. That
+            // fallback is a known oracle imprecision (an aggregate's true size may exceed 8, so an
+            // element buffer sized by `sizeof<T>()` can under-allocate and rely on heap slack), but
+            // convergence means reproducing the oracle bit-for-bit; the flat path must not diverge by
+            // being "more correct". Backs `sizeof<Vec<i32>>()` in a `Vec<Vec<T>>`'s grow path (#242).
             Expr::SizeOf(s) => {
-                let size = sizeof_bytes(&s.target_ty)?;
+                let size = sizeof_bytes(&s.target_ty).unwrap_or(8);
                 Some(self.emit_value(
                     Opcode::Const,
                     Register(0),
@@ -1326,18 +1324,12 @@ impl<'r> Lowerer<'r> {
         // A raw-pointer place (`self.data[i] = val`): a `PtrIndex` with `imm = 1` (an element
         // pointer), consumed by a `PtrStore`. The element type comes from the base's AST type (#242).
         if matches!(base.ty, LoweredTy::Ptr) {
-            let elem = pointer_scalar_elem(&self.infer_ast_type(&ix.base)?)?;
+            let elem = pointer_elem_ty(&self.infer_ast_type(&ix.base)?, self.registry)?;
             let index = self.lower_expr(&ix.index)?;
             if !matches!(index.ty, LoweredTy::Scalar(_)) {
                 return None;
             }
-            return Some(self.emit_typed(
-                Opcode::PtrIndex,
-                base.reg,
-                index.reg,
-                LoweredTy::Scalar(elem),
-                1,
-            ));
+            return Some(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 1));
         }
         let (elem, shape) = match &base.ty {
             LoweredTy::Tensor { elem, shape } => (elem.clone(), shape.clone()),
@@ -1447,7 +1439,7 @@ impl<'r> Lowerer<'r> {
                 if let Expr::IndexAccess(ix) = &a.lhs {
                     let is_ptr = self
                         .infer_ast_type(&ix.base)
-                        .and_then(|t| pointer_scalar_elem(&t))
+                        .and_then(|t| pointer_elem_ty(&t, self.registry))
                         .is_some();
                     let place = self.lower_place(&a.lhs)?;
                     // The stored scalar already matches the place's element type (the checker types a
@@ -1805,13 +1797,19 @@ fn substitute_generics(fty: &Type, generics: &[Symbol], args: &[Type]) -> Type {
     fty.substitute(&mapping)
 }
 
-/// The scalar element of a raw pointer type (`*mut i32` -> `i32`), for lowering a raw-pointer index
-/// `p[i]` (`Vec`'s `self.data[i]`). `None` if not a pointer to a scalar. (#242)
-fn pointer_scalar_elem(ty: &Type) -> Option<ElementType> {
-    match ty {
+/// The lowered element type of a raw pointer, for lowering a raw-pointer index `p[i]`:
+/// `*mut i32` -> `Scalar(i32)` (`Vec<i32>`'s `self.data[i]`), `*mut Vec<i32>` -> `Aggregate(gid)`
+/// (`Vec<Vec<i32>>`'s element, stored/loaded as a whole `!llvm.struct` by value). Only scalar and
+/// aggregate elements are modelled — a pointer-to-pointer or pointer-to-tensor element declines. (#242)
+fn pointer_elem_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
+    let inner = match ty {
         Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
-            scalar_of(inner)
+            inner.as_ref()
         }
+        _ => return None,
+    };
+    match lowered_ty(inner, registry)? {
+        e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_)) => Some(e),
         _ => None,
     }
 }
