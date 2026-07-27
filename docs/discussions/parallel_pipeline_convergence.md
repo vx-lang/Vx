@@ -1676,6 +1676,40 @@ so they carry no coercion gap; coercion is a one-line `coerce_val` at each when 
 The emitter coercions (#232/#234) are kept as defensive no-ops. **#238 closed.** Arc total for the
 coercion class: **flat-used 61 → 87, zero new miscompiles.**
 
+## Entry 60 — Rust's numeric model, Stage A: untyped literals infer to context (#240)
+
+**Commit:** `b71fdf0` _(this session, 2026-07-26)_. The pivot the coercion arc was building toward:
+instead of validating-then-materializing implicit conversions, stop doing implicit conversions. Stage A
+lands the untyped-literal half. An unsuffixed numeric literal now parses `ty: None` and adopts the
+**expected scalar type** of its context during type-checking (int literal → int type, float → float),
+written back onto the node so the flat lowerer and AST codegen see one concrete type. The spelling
+default became a single shared `default_number_elem` used by both the checker's fallback and the flat
+lowerer's `infer_elem` (§5.2's two-defaults unification), reproducing the historical defaults so an
+un-annotated literal is unchanged. `is_assignable` stays permissive — nothing is newly rejected.
+
+Two things the design doc didn't foresee, both instructive:
+
+- **Type-position dimensions are not value-position literals.** A tensor-shape or topology-index
+  literal is a compile-time integer that takes part in *structural* type equality; leaving it `None`
+  made a parsed `Tensor<f32, 10>` unequal to a synthesized one, breaking topology-match and
+  return-type checks. Fixed by stamping dimension literals at parse time (`stamp_dim_literals`), so
+  `None` means "value-position literal awaiting inference" exclusively.
+- **Correct literal typing exposed two latent AST-codegen gaps** — the sharper edge of the #238
+  "coercion is codegen-type-dependent" lesson, now cutting the *other* way. Previously a
+  `let mut i: i64 = 0` slot degenerated to the initializer's default `i32` (the whole local silently
+  became i32); once `0` correctly infers `i64`, the slot is genuinely `i64` and the compound-assign /
+  plain-assign store paths — which only special-cased `index`↔`i32` — emitted `arith.addi(i64, i32)` /
+  a mismatched `memref.store`. Both now defer to the general `coerce_type`. The AST oracle was
+  "correct by accident" for these programs; Stage A made it correct on purpose.
+
+What Stage A deliberately did **not** do: it did not wire expected-type propagation at every checking
+position (only `let`/`return`, as before) and did not solve eager argument checking — call args still
+ride the existing `coerce_call_arg` (#236), binary/assign/struct/tensor operands still default and get
+materialized per-backend. That is sufficient while `is_assignable` is permissive; Stage B must wire
+those positions *before* it tightens `is_assignable` to identical-only, then delete `coerce_val` (#238)
+and `coerce_to` (#236) — the machinery this whole arc built, now scheduled for removal. Full suite
+green; corpus sweep unchanged at flat-used **87**, three chronic pre-existing miscompiles, **zero new**.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
