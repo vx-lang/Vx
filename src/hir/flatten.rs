@@ -1532,6 +1532,12 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
             }
             Some(LoweredTy::Aggregate(*id))
         }
+        // A monomorphized generic struct instance (`Vec<i32>`): its layout is the base nominal's when
+        // that layout is *instance-independent* — every generic parameter appears only behind a
+        // pointer (a pointer field is 8 bytes for any `T`), as in `Vec<T> { data: *mut T, len, cap }`.
+        // A by-value generic field (`Box<T> { value: T }`) leaves the base layout the 0/0 stub, so
+        // this resolves exactly the pointer-backed containers and declines the rest.
+        Type::GenericInstance(base, _) => lowered_ty(base, registry),
         _ => None,
     }
 }
@@ -1840,6 +1846,32 @@ mod tests {
         assert_eq!(count(&w, Opcode::Store), 1, "the incoming struct is stored");
         assert!(count(&w, Opcode::SlotLoad) >= 1, "return reads the slot");
         assert_eq!(count(&w, Opcode::Ret), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn generic_aggregate_param_resolves_via_base_layout() {
+        // A monomorphized generic struct instance (`Wrap<i32>`) resolves to its base nominal's layout
+        // when that layout is instance-independent — a pointer field is 8 bytes for any `T`, so
+        // `Wrap<T> { data: *mut T, n: i32 }` has a concrete layout regardless of `T`. So a function
+        // taking and returning `Wrap<i32>` HIR-lowers as an aggregate: the type-level foundation the
+        // `Vec<T>` surface builds on. (The flat *emitter* still declines an aggregate with a pointer
+        // field — a later layer — so this asserts the HIR lowering only.)
+        let (did, w) = lower_with_registry(
+            "struct Wrap<T> { data: *mut T, n: i32 }\n\
+             fn id(w: Wrap<i32>) -> Wrap<i32> { return w; }",
+            "id",
+        );
+        assert!(
+            did,
+            "generic-aggregate identity fn should HIR-lower via the base layout"
+        );
+        // The aggregate GID (nonzero module hash) reached the type stream — the generic instance
+        // resolved to a concrete layout rather than declining.
+        assert!(
+            w.local_type_stream.iter().any(|t| t.module_id() != 0),
+            "the Wrap<i32> aggregate GID is in the type stream"
+        );
         verify_hir_stream(&w);
     }
 
