@@ -1767,6 +1767,38 @@ lowers a value-`match` for real. Remaining #239 items (method calls, closures, a
 larger and independent; array literals additionally face a representation gap (AST `tensor.from_elements`
 vs. the flat path's memref tensors).
 
+## Entry 63 — method calls already handled; value arrays lowered; the oracle-blocked pattern (#239)
+
+**Commit:** `12d60f0` _(this session, 2026-07-27)_. Working through #239's declined constructs surfaced
+a pattern: the ones the flat path declines are often the ones the *AST oracle itself* can't JIT, so
+differential parity — the convergence's whole gate — can't validate them.
+
+- **Method calls are already handled.** The type checker rewrites every user/stdlib method call
+  (`v.push(10)`, `add.sqrt()`, `x.sq()`) to a `FunctionCall` in place (`check_methodcall_expr`,
+  `*expr = func_call`) and monomorphizes the body, so the flat lowerer never sees them as
+  `MethodCall`. Across all three corpora the *only* method reaching the flat `MethodCall` decline is
+  `.reshape` (2 uses, niche). The `vec_*` / `llama2*` programs decline not on the call but on the
+  rewritten body's surface — generic aggregate types (`Vec<T>`, which `lowered_ty` returns `None` for)
+  and raw-pointer ops — a different, higher-value gap (#215/#235 territory), not a #239 construct.
+
+- **Value array literals now lower** (`lower_array`): a rank-1 tensor buffer + element stores, the
+  memref analogue of the AST's `tensor.from_elements`, with `arr[i]` reading/writing through the
+  ordinary `TensorIndex` path. But the AST codegen's `tensor.from_elements` + `tensor.extract`
+  **fails MLIR verification** at lowering, so an array program never JITs through `--legacy-codegen`
+  (it only passes the emit-mlir FileCheck tests). The flat path is *more* capable here, so it's
+  validated standalone (`assert_flat_exit`) rather than against a broken oracle — and array programs
+  that previously failed to compile now run.
+
+- **Value-producing `match` stays reverted** (Entry 62): the same oracle limitation — `MatchExpr::lower`
+  returns a dummy `0` — but unlike arrays it isn't an idiomatic Vx feature (arms drive effects via
+  `return`/assignment), so there's nothing to complete.
+
+Net for #239: logical ops (Entry 62) and value arrays land and are validated; method calls are
+already covered by the checker rewrite; value-`match` is a non-feature; closures remain (large). The
+convergence-relevant lesson: past the scalar/tensor/control-flow core, the remaining flat-path declines
+increasingly coincide with AST-oracle gaps, so widening the flat subset there means becoming the
+reference, not matching one — and the higher-value frontier is the generic-aggregate/pointer surface.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
