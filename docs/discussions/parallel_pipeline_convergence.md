@@ -1710,6 +1710,41 @@ those positions *before* it tightens `is_assignable` to identical-only, then del
 and `coerce_to` (#236) — the machinery this whole arc built, now scheduled for removal. Full suite
 green; corpus sweep unchanged at flat-used **87**, three chronic pre-existing miscompiles, **zero new**.
 
+## Entry 61 — Rust's numeric model, Stage B: no implicit scalar conversion (#240)
+
+**Commit:** `14719b4` _(this session, 2026-07-26)_. The switch flips: `is_assignable`'s scalar rule is
+now identical-only, so Vx performs no implicit numeric conversion — a genuine typed-value mismatch is a
+type error the programmer resolves with `as`. Done by the empirical loop the design doc prescribed:
+tighten, sweep the corpus, wire what should infer, migrate what's a real conversion.
+
+The inference wiring extends Stage A to every checking position it had left to per-backend coercion —
+binary/relational/logical operands and range bounds reconcile (an untyped literal adopts the other
+side's type); assignment/compound-assign RHS, array-literal elements, and call arguments infer to
+their target. With literals born at their type and mismatches rejected, the whole coercion class
+evaporates: the flat lowerer's `coerce_val` (#238) emitted **zero** casts across every corpus (probe-
+confirmed) and is deleted, together with #236's `coerce_call_arg`, the `ret_ty` field, and the
+value-`if` `slot_ty` plumbing. The arc that ran from #232 through #238 building coercion machinery ends
+by removing it — the model made it unnecessary.
+
+The instructive part was the §5.5 "unmeasured blast radius." Tightening turned out to expose not a
+migration slog but **two latent type bugs coercion had been hiding**, both of the same shape (a type
+silently defaulting, then coerced into place):
+
+- **Loop induction variables were hardcoded `i64`** in the checker while the flat lowerer typed them
+  from the range bound (`i32` for `0..10`). `sum + i` only compiled because `i64`↔`i32` coerced. Making
+  the checker take the range's element type both fixes the ergonomics *and* aligns the two backends —
+  the divergence #238 warned about, resolved by agreement rather than papered over.
+- **Array literals and `Vec<i32>` indexing defaulted to `f32`** (`check_array_expr` → `Tensor<f32>`,
+  `check_indexaccess_expr` → `Scalar(f32)`), so `[10,20,30]` and `v[i]` were secretly float, hidden by
+  `f32`↔`i32`. Now array literals take their first element's type and a container's element is resolved
+  from its `data : *mut T` field.
+
+Migration was nine programs (an explicit `as` where a real conversion was relied on) and no stdlib
+changes. Full suite green; sweep unchanged at flat-used **87**, zero new deterministic miscompiles
+(the two `npu_*` entries are pre-existing nondeterministic NPU-dispatch crashes, confirmed at the
+Stage A baseline). This closes the coercion arc of #241; the flat path now lowers a language with a
+clean, machine-checkable numeric model.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

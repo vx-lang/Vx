@@ -1,7 +1,8 @@
 # Adopt Rust's numeric model: no implicit conversions, literals infer to context (#240)
 
-**Status:** Stage A **landed** (2026-07-26) — see §8 for what shipped vs. this plan; a first Stage-A
-attempt was made and reverted before it (§5). Stage B not started.
+**Status:** Stage A **landed** (§8) and Stage B **landed** (§9) — 2026-07-26. Rust's numeric model is
+now in effect: no implicit scalar conversion, literals infer to context, the coercion machinery is
+deleted. A first Stage-A attempt was made and reverted before Stage A (§5).
 **Date:** 2026-07-26. **Supersedes:** the coercion-materialization work (#236/#238) by removing its
 reason to exist. **Umbrella:** #200.
 
@@ -128,3 +129,42 @@ What shipped, and where it refined the plan above:
 - **Result:** full suite green; corpus flat-vs-legacy sweep unchanged at flat-used **87**, three
   chronic pre-existing miscompiles, **zero new**. `is_assignable` still permissive — no program newly
   rejected.
+
+## 9. Stage B as landed (2026-07-26)
+
+`is_assignable`'s scalar rule is now **identical-only** (`return *t_target == *t_source`) — no
+implicit numeric conversion. Delivered by the empirical loop the plan (§5.5, §6) called for: tighten,
+measure the corpus, wire what should infer, migrate what's a genuine conversion.
+
+- **Inference wired at the remaining checking positions** so an untyped literal is born at its type
+  before `is_assignable` runs: `check_operand_pair` reconciles binary / relational / logical operands
+  and range bounds (an untyped literal adopts the other side's type; both-or-neither fall back to the
+  ambient expectation); assignment / compound-assign RHS is checked expecting the target type;
+  array-literal elements adopt the array's element type; call arguments infer via `refine_literal_arg`
+  (which replaces #236's `coerce_call_arg` — a literal adopts the parameter, a non-literal mismatch is
+  left to `is_assignable` to reject). The eager-argument-checking blocker (§5.1) is handled by
+  re-typing the literal argument after resolution — option (a), not the resolve-then-check restructure.
+- **The tightening exposed the real §5.5 blast radius, and it was two latent type-resolution bugs
+  masked by coercion, not a migration slog:**
+  1. **For-loop induction variable typing.** The checker hardcoded a range's loop var to `i64`
+     (`for i in 0..10` ⇒ `i: i64`), so `sum + i` / `return i` / `let q: i32 = h*2` only compiled
+     because `i64`↔`i32` coerced. The loop var now takes the range's element type (`i32` for default
+     literals) — which is what the flat lowerer already used, so the two backends finally agree.
+  1. **Element types defaulting to `f32`.** `check_array_expr` always returned `Tensor<f32>` and
+     `check_indexaccess_expr` fell back to `Scalar(f32)` for anything it couldn't resolve — so an
+     integer array literal and `Vec<i32>` indexing silently produced `f32`, hidden by `f32`↔`i32`
+     coercion. Array literals now take their first element's type; `container_element_type` resolves a
+     user container's element from its backing `data : *mut T` field.
+- **Migration was small** (a genuine typed-value conversion is now an explicit `as`): llama2's
+  `config_ptr[i] : i32` → `f32`, a `0` into an `f64` tensor → `0.0`, an `i64`-accumulator loop's
+  bounds suffixed `i64`, and one `let a : i64 = 10`. Nine programs across the backend + frontend
+  corpora; stdlib needed none.
+- **Coercion machinery deleted.** With every value born at its type and mismatches rejected, the flat
+  lowerer's `coerce_val` (#238) emitted **zero** casts across all corpora (verified by a probe), so it
+  and the checker's `coerce_call_arg` (#236) are removed, along with the `Lowerer::ret_ty` field and
+  the value-`if` `slot_ty` plumbing that only fed the coercion. The emitter's defensive #232/#234
+  coercions remain as harmless no-ops.
+- **Result:** full suite green; corpus flat-vs-legacy sweep unchanged at flat-used **87**, three
+  chronic + two nondeterministic-NPU-crash miscompiles (all pre-existing, confirmed at the Stage A
+  baseline), **zero new deterministic**. Vx now rejects an implicit scalar conversion with a type
+  error; the numeric model is Rust's.
