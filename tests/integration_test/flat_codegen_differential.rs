@@ -1155,6 +1155,19 @@ fn flat_matches_ast_vec_push_get_len() {
 }
 
 #[test]
+fn flat_matches_ast_pointer_dereference() {
+    // A raw-pointer dereference store `*p = 42` then read `let v = *p` (`Box`'s heap cell, #242),
+    // each lowered as `p[0]` through `PtrIndex`/`PtrStore`. Now a differential target: the oracle's
+    // deref was fixed (the store was silently dropped in `AssignStmt`; the read defaulted to `f32`).
+    assert_parity(
+        "extern \"C\" { fn malloc(size: i64) -> *mut i8; }\n\
+         fn main() -> i32 { let p: *mut i32 = unsafe { malloc(4) }; unsafe { *p = 42; } \
+         let v: i32 = unsafe { *p }; return v; }",
+        42,
+    );
+}
+
+#[test]
 fn flat_matches_ast_vec_of_vec() {
     // A nested container `Vec<Vec<i32>>` (#242): the element type is itself an aggregate, so `push`
     // passes a `Vec<i32>` by value (a `!llvm.struct` param), `self.data[i] = val` stores the whole

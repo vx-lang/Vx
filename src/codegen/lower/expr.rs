@@ -287,6 +287,17 @@ impl<'c> LowerToMelior<'c> for ComptimeBlockExpr {
     }
 }
 
+/// The pointee AST type of a pointer/borrow/ref (`*mut i32` -> `i32`), for recovering a dereference's
+/// loaded type. `None` for a non-pointer. (#242)
+fn deref_pointee_type(ty: &syntax::Type) -> Option<syntax::Type> {
+    match ty {
+        syntax::Type::Pointer(inner, ..)
+        | syntax::Type::Borrow { inner, .. }
+        | syntax::Type::Ref(inner, ..) => Some((**inner).clone()),
+        _ => None,
+    }
+}
+
 impl<'c> LowerToMelior<'c> for DereferenceExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -297,8 +308,18 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         let (ptr_val, ptr_ty, block) = gen.generate_expr(&self.expr, block)?;
         let ptr_ty_str = ptr_ty.to_string();
 
+        // The pointee (loaded) type: the checker-set `self.ty` when present; else the pointee recovered
+        // from the pointer expression's AST type (`p : *mut i32` -> `i32`) — MLIR opaque pointers carry
+        // no pointee, so the old `!llvm.ptr<…>` string-parse never fired and fell through to a wrong
+        // `f32` default (a bare `*p` on an i32 pointer returned garbage). Only if inference fails too do
+        // we fall back to the string-parse/`f32` path. (#242)
         let inner_ty = if let Some(t) = &self.ty {
             gen.lower_type(t)?
+        } else if let Some(inner) = gen
+            .infer_ast_type(&self.expr)
+            .and_then(|t| deref_pointee_type(&t))
+        {
+            gen.lower_type(&inner)?
         } else {
             let inner_ty_str = if ptr_ty_str.starts_with("!llvm.ptr<") {
                 ptr_ty_str[10..ptr_ty_str.len() - 1].to_string()

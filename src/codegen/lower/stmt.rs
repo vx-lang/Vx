@@ -432,6 +432,17 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
                 }
                 return Ok(Some(new_b));
             }
+        } else if let Expr::Dereference(d) = lhs {
+            // `*p = val`: store the RHS *through* the pointer. Without this case a dereference
+            // assignment fell through to the no-op tail below and was **silently dropped** (`Box`'s
+            // `*p = val` never wrote, so a read-back saw uninitialized memory). The store type comes
+            // from the RHS value, so there's no pointee-type guesswork. (#242)
+            let (ptr_val, _ptr_ty, new_b) = gen.generate_expr(d.expr.as_ref(), block)?;
+            let store_op = OperationBuilder::new("llvm.store", gen.loc())
+                .add_operands(&[rhs_val, ptr_val])
+                .build()?;
+            new_b.append_operation(store_op);
+            return Ok(Some(new_b));
         } else if let Expr::MemberAccess(MemberAccessExpr {
             base,
             member,

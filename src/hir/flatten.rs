@@ -710,6 +710,9 @@ impl<'r> Lowerer<'r> {
             // (`vx_stdout_write(msg, 14)`). A print-*position* string never reaches here; it takes the
             // `PrintStr` effect path in `lower_print_arg`. (#231)
             Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
+            // `*p`: a raw-pointer dereference read, lowered as `p[0]` (`let v = *p`, a `Box`'s heap
+            // cell). The store form (`*p = val`) is in `lower_stmt`'s assignment. (#242)
+            Expr::Dereference(d) => self.lower_ptr_deref(&d.expr, false),
             // Short-circuit `&&` / `||` (#239): a branch skeleton producing a `bool`.
             Expr::LogicalOp(l) => self.lower_logical(l),
             // A value array literal `[a, b, c]` (#239): a rank-1 tensor buffer with the elements
@@ -792,6 +795,8 @@ impl<'r> Lowerer<'r> {
             }
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
+            // `*p` has the pointee type (`p : *mut i32` -> `i32`).
+            Expr::Dereference(d) => Some(deref_to_pointee(&self.infer_ast_type(&d.expr)?).clone()),
             _ => None,
         }
     }
@@ -1324,7 +1329,31 @@ impl<'r> Lowerer<'r> {
     /// and stores into it instead of loading its value. A still-nonempty shape yields a row/sub-view
     /// place (`imm = 0`, identical to the read form; a slice store writes through it). `None` for any
     /// non-tensor-index place.
+    /// Lower `*p` as `p[0]`: a `PtrIndex` at a constant zero index — a value read (`is_place=false`)
+    /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
+    /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). A non-pointer, or a
+    /// pointer whose element isn't a scalar/aggregate, declines. (#242)
+    fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Option<Val> {
+        let base = self.lower_expr(ptr_expr)?;
+        if !matches!(base.ty, LoweredTy::Ptr) {
+            return None;
+        }
+        let elem = pointer_elem_ty(&self.infer_ast_type(ptr_expr)?, self.registry)?;
+        let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
+        Some(self.emit_typed(
+            Opcode::PtrIndex,
+            base.reg,
+            zero.reg,
+            elem,
+            if is_place { 1 } else { 0 },
+        ))
+    }
+
     fn lower_place(&mut self, e: &Expr) -> Option<Val> {
+        // A raw-pointer dereference place `*p = val`: `p[0]`.
+        if let Expr::Dereference(d) = e {
+            return self.lower_ptr_deref(&d.expr, true);
+        }
         let Expr::IndexAccess(ix) = e else {
             return None;
         };
@@ -1459,6 +1488,14 @@ impl<'r> Lowerer<'r> {
                         Opcode::TensorStore
                     };
                     self.emit_effect(store, place.reg, value.reg, 0);
+                    return Some(());
+                }
+                // A raw-pointer dereference store `*p = val` (`Box`'s `*p = val`): the place is `p[0]`
+                // (always a pointer, so always a `PtrStore`). (#242)
+                if let Expr::Dereference(_) = &a.lhs {
+                    let place = self.lower_place(&a.lhs)?;
+                    let value = self.lower_expr(&a.rhs)?;
+                    self.emit_effect(Opcode::PtrStore, place.reg, value.reg, 0);
                     return Some(());
                 }
                 // A field store `base.member = value` through an aggregate slot or a `self` pointer
