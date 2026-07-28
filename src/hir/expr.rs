@@ -1323,6 +1323,37 @@ impl<'a> TypeChecker<'a> {
                 return;
             };
             let Some(raw) = crate::hir::memory::static_tensor_bytes(elem, dims) else {
+                // A dynamic (non-literal) shape placed in a capacity-bounded space cannot be
+                // capacity-checked (E6009/E6010) — warn rather than skip silently, so the user knows
+                // the placement is unverified. We are past the `capacity` guard above, so there
+                // genuinely was a bound to check against; and only monomorphized bodies reach here
+                // (`check_function` skips generic templates), so a non-literal dim is a true runtime
+                // value, not an un-substituted const generic. P0-4 / W1029.
+                let dyn_note = dims
+                    .iter()
+                    .enumerate()
+                    .find(|(_, d)| !matches!(d, Expr::Number(_)))
+                    .map(|(i, d)| match d {
+                        Expr::Identifier(id) => {
+                            format!("dimension {i} is the runtime value '{}'", id.name)
+                        }
+                        _ => format!("dimension {i} is not a compile-time constant"),
+                    })
+                    .unwrap_or_else(|| "the shape is not statically known".to_string());
+                self.errors
+                    .warn(
+                        crate::diagnostic::DiagnosticCode::W1029,
+                        format!(
+                            "capacity of '{}' not verified — {context} has a dynamic shape",
+                            space.name()
+                        ),
+                        None,
+                    )
+                    .notes
+                    .push(crate::diagnostic::Note {
+                        message: dyn_note.into(),
+                        span: None,
+                    });
                 return;
             };
             let rounded = match decl.granule {

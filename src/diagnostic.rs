@@ -97,6 +97,12 @@ pub enum DiagnosticCode {
     /// The working set of a memory space exceeds `capacity`, but the space is declared
     /// `overcommit`, so the cumulative-budget error (E6010) is downgraded to this warning.
     W1028,
+    /// A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non-
+    /// literal) shape, so the capacity check (E6009/E6010) could not run — the placement is
+    /// unverified. Silence by making the shape static, or bounding it (see P1-1). Emitted only
+    /// when the destination space actually declares a capacity. See P0-4 in
+    /// docs/discussions/heterogeneous_target_gap_analysis.md.
+    W1029,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

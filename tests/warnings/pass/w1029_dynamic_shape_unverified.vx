@@ -1,0 +1,39 @@
+//===- w1029_dynamic_shape_unverified.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor with a *dynamic* (non-literal) shape placed into a memory space that declares a
+// `capacity` cannot be capacity-checked (E6009/E6010 need static byte sizes). Previously this
+// was skipped silently, so a user believed the placement was verified when it was not. Now it
+// warns (W1029), naming the runtime dimension, and still compiles. Make the shape static, or
+// bound it (P1-1), to get the check back. This is P0-4 from the heterogeneous gap analysis.
+//
+// WARN: W1029
+// WARN: not verified
+// WARN: runtime value 'n'
+
+Memory HBM {
+  capacity: 32 GB, bandwidth: 1200 GB/s
+}
+Memory VMEM {
+  within: Memory::HBM, capacity: 64 MB, granule: 4 KB, managed: explicit, scope: sm
+}
+Topology TensorCore {
+  memory: Memory::VMEM,
+  visible: [Memory::VMEM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::VMEM : 50
+}
+
+fn kernel(n : i32) -> i32 {
+  let a = Tensor<f32>([n, n]);          // dynamic: n is a runtime value
+  let va = transfer(a, Memory::VMEM);   // 64 MB space; the placement is unverifiable
+  return 0;
+}
+
+fn main() -> i32 {
+  return kernel(64);
+}
