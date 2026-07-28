@@ -1110,6 +1110,80 @@ fn flat_matches_ast_corpus_linear_attention() {
 /// with a raw-pointer field, a generic `impl` allocating through the Rust byte allocator, and
 /// `push`/`get`/`len`. Exercises the whole `#242` surface — a pointer-field aggregate, field access
 /// through a `self` pointer, raw-pointer indexing, construction, and a generic static call.
+/// A self-contained `Vec` + `VecIter` + `Option` (the shape of `stdlib/std/vec.vx`) exercising the
+/// whole `for x in v.iter()` surface: iterator construction, `next()` returning a data-carrying
+/// `Option`, deref-through-a-pointer-field (`(*self.vec).len`), raw-pointer indexing, and the
+/// for-over-iterator loop. Validated *standalone* on the flat path: the AST oracle can't monomorphize
+/// this inline generic enum/iterator (it errors `generic type reached codegen`), so it can't be a
+/// differential reference here — the stdlib form is validated flat-vs-oracle by the corpus sweep. (#242)
+const ITER_MINI: &str = r#"
+extern "C" {
+  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
+  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
+}
+struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
+enum Option<T> { Some(T), None }
+struct VecIter<T> { vec: *const Vec<T>, current: i32 }
+impl<T> Vec<T> {
+  fn with_capacity(capacity: i32) -> Vec<T> {
+    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    return Vec<T> { data: ptr, len: 0, capacity: capacity };
+  }
+  fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
+  fn push(self: &mut Vec<T>, val: T) -> i32 {
+    if self.len == self.capacity {
+      let mut nc: i32 = 4;
+      if self.capacity > 0 { nc = self.capacity * 2; }
+      let p: *mut i8 = self.data;
+      self.data = unsafe { vx_vec_grow(p, self.capacity as i64, nc as i64, sizeof<T>()) };
+      self.capacity = nc;
+    }
+    unsafe { self.data[self.len] = val; }
+    self.len = self.len + 1;
+    return 0;
+  }
+  fn iter(self: &Vec<T>) -> VecIter<T> { return VecIter<T> { vec: self, current: 0 }; }
+}
+impl<T> VecIter<T> {
+  fn next(self: &mut VecIter<T>) -> Option<T> {
+    let vlen: i32 = unsafe { (*self.vec).len };
+    let mut ret = Option<T>::None;
+    if self.current < vlen {
+      let val: T = unsafe { (*self.vec).data[self.current] };
+      self.current = self.current + 1;
+      ret = Option<T>::Some(val);
+    }
+    return ret;
+  }
+}
+"#;
+
+#[test]
+fn flat_lowers_for_over_iterator_sum() {
+    // `for x in v.iter() { s = s + x; }` on the flat path: the for-over-iterator sugar over
+    // `next()` + `match Some/None`. `10 + 20 + 30 = 60`. Standalone (see `ITER_MINI`). (#242)
+    assert_flat_exit(
+        &format!(
+            "{ITER_MINI}\nfn main() -> i32 {{ let mut v = Vec<i32>::new(); v.push(10); v.push(20); \
+             v.push(30); let mut s: i32 = 0; for x in v.iter() {{ s = s + x; }} return s; }}"
+        ),
+        60,
+    );
+}
+
+#[test]
+fn flat_lowers_for_over_iterator_count() {
+    // A `for x in v.iter()` whose body ignores the element (`count = count + 1`) — exercises the loop
+    // dispatch + `None`-terminated exit without a payload use. `3`. (#242)
+    assert_flat_exit(
+        &format!(
+            "{ITER_MINI}\nfn main() -> i32 {{ let mut v = Vec<i32>::new(); v.push(10); v.push(20); \
+             v.push(30); let mut c: i32 = 0; for x in v.iter() {{ c = c + 1; }} return c; }}"
+        ),
+        3,
+    );
+}
+
 const VEC_MINI: &str = r#"
 extern "C" {
   fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;

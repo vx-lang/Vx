@@ -2002,6 +2002,49 @@ Two things: a landed flat-path win, and an honest correction.
   (`(*self.vec).len`), and the for-over-iterator loop — is differentially validatable. The
   data-carrying `Option` piece (above) is the part that *was* reachable and is now banked.
 
+## Entry 69 — `for x in v.iter()` reaches the flat path (both oracle bugs fixed + the flat build) (#242)
+
+The Entry-68 iterator target is done end to end. First the two oracle bugs it named are fixed:
+
+- **`Function next not found`** — the for-over-iterator codegen searched `gen.functions` for the
+  monomorphized `next` with the patterns `_next_`/`_next`, but the mangler spells it `$next`
+  (`VecIter$i32$next$i32`), so the search fell through to a bare `next` and panicked. Match the `$next`
+  mangling, and prefer a `next` sharing the iterator's struct-name prefix (right iterator when several
+  are in scope).
+- **E3004 loop-variable typing** — the checker took the loop variable's type from `next`'s
+  `Option<Element>` return only when the `Option` base was spelled `Enum`; after resolution it can be
+  `Struct`, so the element type was lost and the variable fell back to `i64` (a mismatch against an i32
+  body). Accept both spellings. (Both fixes are production-codegen/checker bug fixes.)
+
+Then the flat build — `for x in v.iter()` over a `Vec<i32>` now lowers and JITs to the correct result
+(a sum returns 60, a count returns 3). The pieces that came together:
+
+- **Data-carrying enum in a call return** — `lower_ty_synth` synthesizes an instance's enum layout for
+  a type that surfaces as a call's return (`VecIter::next -> Option<i32>`), and the emitter's
+  `resolve_agg_gid` resolves that per-instance GID (the callee map is rebuilt once the side-table
+  layouts are folded in).
+- **Deref through a pointer field** — `(*self.vec).len` where `self.vec : *const Vec<T>` is a *loaded*
+  pointer. `Vec`'s layout is instance-independent, so each pointer field's pointee GID is precomputable
+  from the base struct's declared field type (`field_pointee` in the aggregate layout); a `FieldLoad`
+  tags its loaded pointer with that GID, so the chained field access GEPs the pointee. `lower_agg_base`
+  gained a `Dereference` case (the deref is transparent in field-access position).
+- **Aggregate-value copy** — `ret = Some(val)` was storing the construction *slot pointer* as a struct;
+  an aggregate-construction assignment now loads the struct value first.
+- **The for-over-iterator loop** — `lower_for_iterator` is the flat-model sugar over
+  `loop { match it.next() { Some(x) => body; None => break } }`: spill the iterator to a slot, call the
+  monomorphized `next` each round (found via `find_iterator_next`), spill the `Option`, dispatch on the
+  tag, bind the payload, and loop.
+- **`main` installs the crash handler** — the flat `main` now emits `func.call @vx_init_signals` (as
+  the AST codegen does), so a deliberately-crashing program (`vec_oob`/`box_oob`, which now lower on the
+  flat path) catches its SIGSEGV/SIGBUS and backtraces, matching the oracle instead of exiting raw.
+
+**Result.** `for x in v.iter()` lowers on the flat path; the whole `Vec`/`VecIter`/`Option` iterator
+surface (construct, `next`, deref-field, raw-pointer index, match, for-loop) is validated — standalone
+on the flat path for an inline form (the oracle can't monomorphize an inline generic enum/iterator,
+`generic type reached codegen` — a separate oracle gap), and flat-vs-oracle by the corpus sweep for the
+stdlib form. `flat_used` continues to climb with zero new miscompiles. What remains toward the *full*
+stdlib iterator is `map`/`collect` (the `unify_types` closure gap, Entry 67).
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**

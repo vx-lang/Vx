@@ -817,6 +817,13 @@ impl<'r> Lowerer<'r> {
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `*p` has the pointee type (`p : *mut i32` -> `i32`).
             Expr::Dereference(d) => Some(deref_to_pointee(&self.infer_ast_type(&d.expr)?).clone()),
+            // A call's type is its callee's return type (`v.iter()` -> `Vec$iter`'s `VecIter<i32>`),
+            // for typing a `for x in v.iter()` iterable.
+            Expr::FunctionCall(fc) => self
+                .registry
+                .fn_sigs
+                .get(fc.name.as_ref())
+                .map(|s| s.ret_ty.clone()),
             _ => None,
         }
     }
@@ -834,6 +841,16 @@ impl<'r> Lowerer<'r> {
             {
                 return Some((reg, gid));
             }
+        }
+        // `(*p).field`: a field access through a *dereferenced* pointer (`(*self.vec).len` in
+        // `VecIter::next`). The deref is transparent in field-access position — yield the pointer `p`
+        // itself (loading `p`, e.g. `self.vec`, a `*const Vec<T>` field, to an `!llvm.ptr`) plus the
+        // pointee aggregate's layout GID, so the following field op GEPs through it. (#242)
+        if let Expr::Dereference(d) = base {
+            let base_ty = self.infer_ast_type(base)?; // the pointee (Vec<T>)
+            let gid = agg_gid_of_ty(&base_ty, self.registry)?;
+            let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
+            return matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid));
         }
         // A pointer to an aggregate: the base lowers to a pointer value; its pointee layout GID comes
         // from the base's AST type (the layout the frozen registry keyed under the base nominal).
@@ -1211,7 +1228,9 @@ impl<'r> Lowerer<'r> {
     /// latch (so it doesn't skip the step), `break` the exit.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
         let Expr::Range(range) = &*f.iterable else {
-            return None; // only integer ranges for now
+            // A non-range iterable is an iterator (`for x in v.iter()`): the sugar over
+            // `loop { match it.next() { Some(x) => body, None => break } }`. (#242)
+            return self.lower_for_iterator(f);
         };
         let start = self.lower_expr(&range.start)?;
         let end = self.lower_expr(&range.end)?;
@@ -1280,6 +1299,117 @@ impl<'r> Lowerer<'r> {
         Some(())
     }
 
+    /// Lower `for x in <iterator> { body }` — the sugar over
+    /// `loop { match it.next() { Some(x) => body; None => break } }`. The iterator is spilled to a
+    /// slot (so `next(&mut it)` can mutate it across iterations); each round calls the monomorphized
+    /// `next`, spills its `Option<Element>` result, loads the tag, and dispatches: on `Some` it binds
+    /// `x` to the payload and runs the body (branching back to the header), on `None` it exits. This is
+    /// the flat-model counterpart of the AST codegen's generic-iterator loop (#242).
+    fn lower_for_iterator(&mut self, f: &crate::syntax::ForLoopStmt) -> Option<()> {
+        // The iterator value (`v.iter()` -> `VecIter<i32>`) and its monomorphized `next`.
+        let iter_ast_ty = self.infer_ast_type(&f.iterable)?;
+        let (next_gid, opt_ty) = self.find_iterator_next(&iter_ast_ty)?;
+        let (enum_gid, offsets, payload_types) = self.enum_instance_layout(&opt_ty.to_string())?;
+        // `Some`'s discriminant ordinal (the payload-carrying variant).
+        let (base, _) = parse_enum_instance(&opt_ty.to_string());
+        let data = self.registry.enum_data.get(base.as_str())?.clone();
+        let some_ord = data.variants.iter().position(|(_, p)| !p.is_empty())? as u64;
+
+        let iter_val = self.lower_expr(&f.iterable)?;
+        if !matches!(iter_val.ty, LoweredTy::Aggregate(_)) {
+            return None;
+        }
+        let it_slot = self.emit_alloca(iter_val.ty.clone());
+        self.emit_effect(Opcode::Store, it_slot.reg, iter_val.reg, 0);
+
+        let header = self.new_block();
+        let body_b = self.new_block();
+        let exit = self.new_block();
+        self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), header as u64);
+
+        // `opt = next(&mut it)`: the iterator slot pointer is the `&mut self` argument.
+        self.emit_effect(Opcode::Arg, it_slot.reg, Register(0), 0);
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(next_gid);
+        let call_reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::Call,
+            Register(0),
+            Register(0),
+            type_idx,
+            1,
+        ));
+        // Spill the returned `Option` to a slot so its tag/payload fields are addressable.
+        let opt_slot = self.emit_alloca(LoweredTy::Aggregate(enum_gid));
+        self.emit_effect(Opcode::Store, opt_slot.reg, call_reg, 0);
+
+        // Dispatch on the tag: `Some` -> body, else -> exit.
+        let tag = self.emit_value(
+            Opcode::FieldLoad,
+            opt_slot.reg,
+            Register(0),
+            ElementType::I32,
+            *offsets.first()?,
+        );
+        let some_c = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            some_ord,
+        );
+        let cond = self.emit_value(
+            Opcode::Cmp,
+            tag.reg,
+            some_c.reg,
+            ElementType::Bool,
+            rel_code(&RelationalOp::Eq),
+        );
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(body_b, exit),
+        );
+
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
+        // Bind the loop variable to the payload.
+        let lty = lowered_ty(payload_types.first()?, self.registry)?;
+        let x = self.emit_typed(
+            Opcode::FieldLoad,
+            opt_slot.reg,
+            Register(0),
+            lty,
+            *offsets.get(1)?,
+        );
+        self.bind_local(f.iter.as_str().into(), x);
+        self.loop_stack.push((header, exit)); // continue -> header, break -> exit
+        for s in &f.body {
+            self.lower_stmt(s)?;
+        }
+        self.loop_stack.pop();
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Some(())
+    }
+
+    /// Find the monomorphized `next` for an iterator type (`VecIter<i32>` -> `VecIter$i32$next$i32`):
+    /// its callee GID and `Option<Element>` return type. Matches a `fn_sig` whose name shares the
+    /// iterator's base and carries a `next` method (the mangler uses `$`). (#242)
+    fn find_iterator_next(&self, iter_ty: &Type) -> Option<(TypeId, Type)> {
+        let (base, _) = nominal_name_and_args(deref_to_pointee(iter_ty))?;
+        for (name, sig) in &self.registry.fn_sigs {
+            let n = name.as_ref();
+            if n.starts_with(base.as_ref()) && (n.contains("$next$") || n.ends_with("$next")) {
+                return Some((sig.gid, sig.ret_ty.clone()));
+            }
+        }
+        None
+    }
+
     /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
     /// topology dispatch id. The body may use control flow (`for`/`loop`/`if`) and the enclosing
     /// function may be in memory mode — the flat emitter materializes the body as the `vx.spawn` op's
@@ -1332,6 +1462,28 @@ impl<'r> Lowerer<'r> {
             }
         }
         Some(slot)
+    }
+
+    /// Like the free `lowered_ty`, but for a *data-carrying enum instance* (`Option<i32>`) it
+    /// synthesizes and records the instance's `{ tag, payload }` layout (which the free function can't,
+    /// lacking `&mut self`) and returns `Aggregate(gid)`. Used where a type may be such an enum — a
+    /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
+    /// for everything else. (#242)
+    fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if let Type::GenericInstance(base, _) = ty {
+            if let Type::Enum(n, _) | Type::Struct(n, _) = base.as_ref() {
+                let is_data = self
+                    .registry
+                    .enum_data
+                    .get(n.as_ref())
+                    .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
+                if is_data {
+                    let (gid, _, _) = self.enum_instance_layout(&ty.to_string())?;
+                    return Some(LoweredTy::Aggregate(gid));
+                }
+            }
+        }
+        lowered_ty(ty, self.registry)
     }
 
     /// Synthesize (once) and record the aggregate layout of a monomorphized data-carrying enum
@@ -1502,7 +1654,7 @@ impl<'r> Lowerer<'r> {
                 return None;
             }
         };
-        let ret_ty = lowered_ty(&sig.ret_ty, self.registry)?;
+        let ret_ty = self.lower_ty_synth(&sig.ret_ty)?;
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
@@ -1744,7 +1896,15 @@ impl<'r> Lowerer<'r> {
                 // `name = expr` (simple identifier target). The value already matches the slot's type
                 // (the checker types a literal RHS to the target and rejects a mismatch, #240).
                 let name = simple_ident(&a.lhs)?;
-                let v = self.lower_expr(&a.rhs)?;
+                let mut v = self.lower_expr(&a.rhs)?;
+                // An aggregate *construction* RHS (`ret = Some(val)`, `p = Point { .. }`) yields the
+                // construction *slot* (a pointer), but the assignment must copy the struct *value* into
+                // the target slot — load it first, else the slot pointer is stored as a struct (#242).
+                if matches!(&a.rhs, Expr::EnumVariant(_) | Expr::StructInit(_))
+                    && matches!(v.ty, LoweredTy::Aggregate(_))
+                {
+                    v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+                }
                 self.assign_local(&name, v)
             }
             // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current

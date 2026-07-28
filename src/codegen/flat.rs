@@ -313,6 +313,18 @@ fn resolve_agg_gid(
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
 ) -> Option<TypeId> {
+    // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
+    // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
+    // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
+    // here and falls through to the nominal resolution below. (#242)
+    if let Type::GenericInstance(base, args) = ty {
+        if let Type::Enum(name, _) | Type::Struct(name, _) = base.as_ref() {
+            let gid = crate::hir::flatten::enum_instance_gid(name.as_ref(), args);
+            if aggs.contains_key(&gid) {
+                return Some(gid);
+            }
+        }
+    }
     let nominal = match ty {
         Type::GenericInstance(base, _) => base.as_ref(),
         other => other,
@@ -387,6 +399,12 @@ pub struct AggLayout {
     /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
     /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
     pub field_tys: Vec<String>,
+    /// For each pointer field, the layout GID of the aggregate it points *to*, when that pointee's
+    /// layout is instance-independent (`VecIter`'s `vec : *const Vec<T>` -> the `Vec` layout GID, the
+    /// same for any `T`). `None` for a scalar field or a pointer to a scalar/unmodelled type. A
+    /// `FieldLoad` of such a field tags its result register with this GID, so a *chained* field access
+    /// through it (`(*self.vec).len`) can GEP the pointee. (#242)
+    pub field_pointee: Vec<Option<TypeId>>,
 }
 
 /// GID → aggregate layout, for the structs a stream constructs/reads. Structs whose fields are all
@@ -401,26 +419,50 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
     use crate::layout::FieldTy;
+    // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
+    // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
+    // — `VecIter`'s `vec : *const Vec<T>` resolves to the `Vec` layout GID for any `T`).
+    let name_to_gid: HashMap<&str, TypeId> = registry
+        .layouts
+        .iter()
+        .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
+        .map(|(g, d)| (d.name.as_str(), *g))
+        .collect();
     let mut map = AggMap::new();
     for (gid, def) in &registry.layouts {
         if def.align_bytes == 0 || def.fields.is_empty() {
             continue; // unmodelled stub, or an enum/field-less type (no struct body to emit)
         }
+        // The declared field types (with generic pointees intact) for pointee resolution; the frozen
+        // `layouts` erase them to `Opaque`.
+        let decl_fields = registry.structs.get(def.name.as_str());
         let mut field_tys = Vec::with_capacity(def.fields.len());
         let mut offsets = Vec::with_capacity(def.fields.len());
+        let mut field_pointee = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
-        for f in &def.fields {
+        for (fi, f) in def.fields.iter().enumerate() {
             match &f.ty {
                 FieldTy::Scalar(e) => match mlir_scalar(e) {
-                    Some(mt) => field_tys.push(mt.to_string()),
+                    Some(mt) => {
+                        field_tys.push(mt.to_string());
+                        field_pointee.push(None);
+                    }
                     None => {
                         modelled = false;
                         break;
                     }
                 },
                 // A pointer field (`*mut T`/`&T`, layout-erased to `Opaque`) is an opaque `!llvm.ptr`
-                // — the shape of `Vec`'s `data` field (#242).
-                FieldTy::Opaque => field_tys.push("!llvm.ptr".to_string()),
+                // — the shape of `Vec`'s `data` field (#242). Recover its pointee aggregate (if any)
+                // from the declared field type so a chained field access through it resolves.
+                FieldTy::Opaque => {
+                    field_tys.push("!llvm.ptr".to_string());
+                    let pointee = decl_fields
+                        .and_then(|sf| sf.fields.get(fi))
+                        .and_then(|(_, ft)| pointer_pointee_name(ft))
+                        .and_then(|n| name_to_gid.get(n.as_str()).copied());
+                    field_pointee.push(pointee);
+                }
                 // A by-value nested-aggregate field needs addressed sub-views — not modelled yet.
                 FieldTy::Nominal(_) => {
                     modelled = false;
@@ -436,11 +478,31 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
                     struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
                     offsets,
                     field_tys,
+                    field_pointee,
                 },
             );
         }
     }
     map
+}
+
+/// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
+/// pointer field's pointee aggregate. `None` for a pointer to a non-nominal (a scalar, `*mut T`). (#242)
+fn pointer_pointee_name(ty: &Type) -> Option<String> {
+    let inner = match ty {
+        Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
+            inner.as_ref()
+        }
+        _ => return None,
+    };
+    match inner {
+        Type::GenericInstance(base, _) => match base.as_ref() {
+            Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
+            _ => None,
+        },
+        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
+        _ => None,
+    }
 }
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
@@ -534,7 +596,16 @@ pub fn emit_module_mlir(
             struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
             offsets: offsets.clone(),
             field_tys: field_tys.clone(),
+            // A synthesized enum instance carries no pointer-to-aggregate fields (its payload is a
+            // scalar/pointer-to-scalar), so no chained field access resolves through it.
+            field_pointee: vec![None; field_tys.len()],
         });
+    }
+    // Rebuild the callee map now that the synthesized enum-instance layouts are in `aggs`: a callee
+    // returning `Option<i32>` (a data enum) resolves its `ret_agg` only once its layout is present,
+    // which happens above — `EmitCtx::from_registry` built the callees before it (#242).
+    if !agg_layouts.is_empty() {
+        ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names);
     }
     let mut out = String::new();
     let mut globals = String::new();
@@ -543,7 +614,15 @@ pub fn emit_module_mlir(
     // `@".str.<n>"` reference (emitted with the same `str_base`) resolves the global emitted here.
     let mut str_base = 0usize;
     for (fi, (func, hir, types)) in funcs.iter().enumerate() {
-        out += &emit_function_mlir(func, hir, types, &ctx, &mut calls, str_base)?;
+        match emit_function_mlir(func, hir, types, &ctx, &mut calls, str_base) {
+            Some(t) => out += &t,
+            None => {
+                if std::env::var("VX_FLAT_DBG").is_ok() {
+                    eprintln!("[flat-dbg] emit declined for fn {}", func.name.as_ref());
+                }
+                return None;
+            }
+        }
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
         for (li, s) in strs.iter().enumerate() {
             globals += &emit_string_global(str_base + li, s);
@@ -563,6 +642,7 @@ pub fn emit_module_mlir(
         ("print_i32", "(i32) -> i32"),
         ("print_i64", "(i64) -> i32"),
         ("print_str", "(!llvm.ptr) -> i32"),
+        ("vx_init_signals", "()"),
     ] {
         if out.contains(&format!("@{name}(")) {
             decls += &format!("  func.func private @{name}{sig}\n");
@@ -840,6 +920,13 @@ pub fn emit_function_mlir(
     // local), so a `Store`/`SlotLoad` on it uses `llvm.store`/`llvm.load` rather than `memref`. (#235)
     let mut pslot_of: Vec<bool> = vec![false; hir.len()];
     let mut body = String::new();
+    // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
+    // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
+    // raw — otherwise a deliberately-crashing program (`tests/backend/fail/*_oob.vx`) diverges from the
+    // oracle. Emitted into the entry block (block 0 has no label), before any local. (#242)
+    if func.name.as_ref() == "main" {
+        body += "  func.call @vx_init_signals() : () -> ()\n";
+    }
     // Whether the block currently being emitted has a terminator yet (a block must end in one).
     let mut terminated = false;
     // Argument value registers accumulated by the `Arg`s that immediately precede a `Call`; the
@@ -1278,6 +1365,10 @@ pub fn emit_function_mlir(
                 // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
                 // `type_idx`, so a pointer field (whose `type_idx` is `ptr_gid`) resolves too (#242).
                 let fty = agg.field_tys.get(field_idx)?.clone();
+                // A pointer field pointing to a modelled aggregate (`VecIter`'s `vec : *const Vec<T>`)
+                // tags its loaded value with the pointee GID, so a chained field access through it
+                // (`(*self.vec).len`) GEPs the pointee. (#242)
+                let pointee = agg.field_pointee.get(field_idx).copied().flatten();
                 let slot = names.get(ins.operand1.0 as usize)?;
                 let p = format!("%p{idx}");
                 let n = format!("%v{idx}");
@@ -1289,6 +1380,7 @@ pub fn emit_function_mlir(
                 names[idx] = n;
                 if fty == "!llvm.ptr" {
                     ptr_of[idx] = true;
+                    agg_of[idx] = pointee;
                 } else {
                     etypes[idx] = elem_from_mlir_scalar(&fty);
                 }
