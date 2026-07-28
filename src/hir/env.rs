@@ -220,6 +220,13 @@ pub struct TypeChecker<'a> {
     /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
     /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
     pub(crate) expected_type: Option<Type>,
+    /// Signature of each closure literal, keyed by its generated `Closure_N` struct name:
+    /// `(param types, return type)`. A closure expression checks to `Struct("Closure_N")`, which
+    /// erases the call signature, so unifying it against a `ClosureK<Args.., Ret>` parameter needs
+    /// this side table to recover the args/ret and bind the method's generics (e.g. `NewItem` in
+    /// `.map(|x| ...)`). See `check_closure_expr` and `unify_types_internal`.
+    pub(crate) closure_signatures:
+        std::collections::HashMap<crate::symbol::Symbol, (Vec<Type>, Type)>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -278,6 +285,7 @@ impl<'a> TypeChecker<'a> {
             pending_topo_vars: std::collections::HashSet::new(),
             pending_topo_bindings: std::collections::HashMap::new(),
             expected_type: None,
+            closure_signatures: std::collections::HashMap::new(),
         }
     }
 
@@ -570,6 +578,29 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 true
+            }
+            // A closure literal checks to `Struct("Closure_N")`, erasing its call signature.
+            // Matching it against a `ClosureK<Args.., Ret>` parameter (e.g. `.map`'s
+            // `Closure1<T, NewItem>`) recovers the args/ret from `closure_signatures` and unifies
+            // them into the mapping so return-type generics like `NewItem` get bound. The generic
+            // instance carries `[Args.., Ret]`; the recorded signature carries `(Args.., Ret)`.
+            (Type::GenericInstance(inner, gi_args), Type::Struct(cn, _))
+                if cn.starts_with("Closure_")
+                    && matches!(&**inner, Type::Struct(n, _) if n.starts_with("Closure")) =>
+            {
+                if let Some((params, ret)) = self.closure_signatures.get(cn).cloned() {
+                    if gi_args.len() != params.len() + 1 {
+                        return false;
+                    }
+                    for (a, p) in gi_args.iter().zip(params.iter()) {
+                        if !self.unify_types_internal(a, p, mapping) {
+                            return false;
+                        }
+                    }
+                    self.unify_types_internal(&gi_args[gi_args.len() - 1], &ret, mapping)
+                } else {
+                    false
+                }
             }
             (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
             (Type::Pinned(t1, top1), Type::Pinned(t2, top2)) => {

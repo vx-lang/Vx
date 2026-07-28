@@ -590,19 +590,6 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if name.as_ref() == "new_item" {
-                    println!(
-                        "lookup('new_item') = {:?}, is_moved = {}, consume = {}",
-                        lookup_res,
-                        self.is_moved(name.as_ref()),
-                        consume
-                    );
-                    println!("scopes = {:?}", self.scopes.last());
-                    println!("Backtrace:");
-                    let bt = std::backtrace::Backtrace::force_capture();
-                    println!("{}", bt);
-                }
-
                 if lookup_res.is_none() && self.is_moved(name.as_ref()) {
                     if !silent {
                         self.errors.error_with_code(
@@ -3241,8 +3228,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // Check each argument once, keeping its type. A linear arg (e.g. a closure
+                // struct passed to `.map`) is consumed by this pass, so re-checking it later for
+                // generic deduction would see it moved and yield `Unknown` — reuse these instead.
+                let mut checked_arg_types: Vec<Type> = Vec::with_capacity(args.len());
                 for arg in args.iter_mut() {
-                    self.check_expr_type(arg);
+                    checked_arg_types.push(self.check_expr_type(arg));
                 }
 
                 if _method.as_ref() == "drop" && args.is_empty() {
@@ -3355,12 +3346,13 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some((generic_method, _ib)) = found_method {
-                    // Infer method-level generics from argument types
-                    for (i, arg) in args.iter_mut().enumerate() {
-                        let arg_ty = self.check_expr_type_flag(arg, false, true); // silent = true
+                    // Infer method-level generics from argument types. Reuse the types from the
+                    // single check above: re-checking here would re-consume linear args (a closure
+                    // struct passed to `.map`) and yield `Unknown`, defeating the deduction.
+                    for (i, arg_ty) in checked_arg_types.iter().enumerate() {
                         if i + 1 < generic_method.params.len() {
                             let expected_param = &generic_method.params[i + 1].1;
-                            self.unify_types(expected_param, &arg_ty, &mut mapping);
+                            self.unify_types(expected_param, arg_ty, &mut mapping);
                         }
                     }
 
@@ -4399,6 +4391,14 @@ impl<'a> TypeChecker<'a> {
                     type_id: None,
                     span: e.span,
                 });
+
+                // Record the closure's call signature so a later `unify_types` can recover it:
+                // `Struct("Closure_N")` erases the args/ret, but matching it against a
+                // `ClosureK<Args.., Ret>` parameter (e.g. `.map`'s `Closure1<T, NewItem>`) needs
+                // them to bind the method's generics. Keyed by the generated struct name.
+                let param_tys: Vec<Type> = cloned_params.iter().map(|(_, ty)| ty.clone()).collect();
+                self.closure_signatures
+                    .insert(struct_name.clone().into(), (param_tys, ret_ty));
 
                 Type::Struct(struct_name.into(), None)
             }

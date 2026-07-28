@@ -13,6 +13,16 @@ use super::*;
 
 use crate::codegen::lower::{LowerError, LowerToMelior};
 use crate::syntax;
+
+/// Extract the quoted identifier from an LLVM named-struct MLIR type string, e.g.
+/// `!llvm.struct<"Closure_1", ()>` -> `Closure_1`. Returns `None` for anonymous structs or
+/// non-struct types. Used to recognize closure-env vs nominal-closure structs during coercion.
+fn parse_llvm_struct_name(ty_str: &str) -> Option<String> {
+    let rest = ty_str.strip_prefix("!llvm.struct<\"")?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 pub struct MeliorGenerator<'c> {
     pub(crate) context: &'c Context,
     pub(crate) module: Module<'c>,
@@ -87,6 +97,115 @@ impl<'c> MeliorGenerator<'c> {
     pub fn is_llvm_ptr(&self, ty: &Type<'c>) -> bool {
         let ty_str = ty.to_string();
         ty_str.starts_with("!llvm.ptr") || ty_str.starts_with("!llvm.array")
+    }
+
+    /// Adapt a closure-literal environment struct (`Closure_N`, the by-value capture record) to a
+    /// nominal stdlib closure struct (`Closure0/1/2/3<Args.., Ret>`, laid out `{env: *mut i8, func}`).
+    /// A closure passed where an API takes a `ClosureK` (e.g. `VecIter::map`'s `f: Closure1<T,NewItem>`)
+    /// reaches codegen as a `Closure_N` value; the two share the `{ptr, ptr}` shape but not the
+    /// fields, so we materialize `{env: &spilled_env, func: &Closure_N_call}` here. Returns `None`
+    /// when the pair isn't a `Closure_N` -> `ClosureK` adaptation, so the caller falls back to its
+    /// normal coercion. See `check_closure_expr` (produces `Closure_N`) and closure.vx (`ClosureK`).
+    pub(crate) fn adapt_closure_to_nominal(
+        &mut self,
+        block: &melior::ir::Block<'c>,
+        env_val: Value<'c, 'c>,
+        env_ty: Type<'c>,
+        target_ty: Type<'c>,
+    ) -> Result<Option<Value<'c, 'c>>, crate::codegen::lower::LowerError> {
+        let env_str = env_ty.to_string();
+        let target_str = target_ty.to_string();
+        // Source must be a generated closure-env struct; target a nominal ClosureK (digit after
+        // "Closure"). Both are `!llvm.struct<"NAME", (...)>`.
+        let env_name = match parse_llvm_struct_name(&env_str) {
+            Some(n) if n.starts_with("Closure_") => n,
+            _ => return Ok(None),
+        };
+        let is_nominal_closure = parse_llvm_struct_name(&target_str)
+            .map(|n| {
+                n.starts_with("Closure")
+                    && n[7..].chars().next().is_some_and(|c| c.is_ascii_digit())
+            })
+            .unwrap_or(false);
+        if !is_nominal_closure {
+            return Ok(None);
+        }
+
+        // The closure's call function: `Closure_N_call(_env, args..) -> ret`.
+        let call_fn_name = format!("{}_call", env_name);
+        let (ret_ty, arg_types) = self
+            .functions
+            .get(call_fn_name.as_str())
+            .cloned()
+            .ok_or_else(|| format!("closure call fn {} not found", call_fn_name))?;
+        let fn_ty = melior::ir::r#type::FunctionType::new(self.context, &arg_types, &[ret_ty]);
+        let const_op = melior::ir::operation::OperationBuilder::new("func.constant", self.loc())
+            .add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "value"),
+                melior::ir::attribute::FlatSymbolRefAttribute::new(self.context, &call_fn_name)
+                    .into(),
+            )])
+            .add_results(&[fn_ty.into()])
+            .build()?;
+        let fn_val: Value = block.append_operation(const_op).result(0)?.into();
+        // Function value -> opaque ptr for storage in the struct's `func` field.
+        let ptr_ty = self.ptr_ty;
+        let fn_ptr_op = melior::ir::operation::OperationBuilder::new(
+            "builtin.unrealized_conversion_cast",
+            self.loc(),
+        )
+        .add_operands(&[fn_val])
+        .add_results(&[ptr_ty])
+        .build()?;
+        let fn_ptr: Value = block.append_operation(fn_ptr_op).result(0)?.into();
+
+        // Spill the env struct to a stack slot and take its address (the captures live there).
+        let i32_ty = self.i32_ty;
+        let one_op = melior::ir::operation::OperationBuilder::new("llvm.mlir.constant", self.loc())
+            .add_results(&[i32_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "value"),
+                melior::ir::attribute::IntegerAttribute::new(i32_ty, 1).into(),
+            )])
+            .build()?;
+        let one: Value = block.append_operation(one_op).result(0)?.into();
+        let alloca_op = melior::ir::operation::OperationBuilder::new("llvm.alloca", self.loc())
+            .add_operands(&[one])
+            .add_results(&[ptr_ty])
+            .add_attributes(&[(
+                melior::ir::Identifier::new(self.context, "elem_type"),
+                melior::ir::attribute::TypeAttribute::new(env_ty).into(),
+            )])
+            .build()?;
+        let env_ptr: Value = block.append_operation(alloca_op).result(0)?.into();
+        block.append_operation(
+            melior::ir::operation::OperationBuilder::new("llvm.store", self.loc())
+                .add_operands(&[env_val, env_ptr])
+                .build()?,
+        );
+
+        // Build the nominal `{env, func}` struct: field 0 = env ptr, field 1 = func ptr.
+        let undef_op = melior::ir::operation::OperationBuilder::new("llvm.mlir.undef", self.loc())
+            .add_results(&[target_ty])
+            .build()?;
+        let mut agg: Value = block.append_operation(undef_op).result(0)?.into();
+        for (pos, field_val) in [env_ptr, fn_ptr].into_iter().enumerate() {
+            let ins_op =
+                melior::ir::operation::OperationBuilder::new("llvm.insertvalue", self.loc())
+                    .add_operands(&[agg, field_val])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(
+                            self.context,
+                            &[pos as i64],
+                        )
+                        .into(),
+                    )])
+                    .add_results(&[target_ty])
+                    .build()?;
+            agg = block.append_operation(ins_op).result(0)?.into();
+        }
+        Ok(Some(agg))
     }
 
     pub fn coerce_type(

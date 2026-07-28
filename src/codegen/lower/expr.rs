@@ -2078,6 +2078,12 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                             .build()
                             .unwrap();
                         arg_val = current_b.append_operation(cast_op).result(0)?.into();
+                    } else if let Some(adapted) =
+                        gen.adapt_closure_to_nominal(&current_b, arg_val, expr_ty, field_ty)?
+                    {
+                        // A closure literal (`Closure_N` env) passed where a nominal `ClosureK`
+                        // struct is expected (e.g. `.map(|x| ..)`): build the `{env, func}` value.
+                        arg_val = adapted;
                     } else {
                         arg_val = gen.coerce_type(&current_b, arg_val, expr_ty, field_ty)?;
                     }
@@ -2118,7 +2124,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let is_closure = func_ty.to_string() == "!llvm.struct<(ptr, ptr)>";
             if func_ty.to_string() == "!llvm.ptr" {
                 if let Some(syntax::Type::Function(func_args, ret)) = gen.ast_env.get(name) {
-                    println!("Lowering function pointer ret type for name={}", name);
                     let r = gen.lower_type(ret.as_ref())?;
                     let mut a: Vec<_> = Vec::new();
                     for t in func_args.iter() {

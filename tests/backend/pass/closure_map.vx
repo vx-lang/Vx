@@ -1,0 +1,29 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+//
+// A closure literal (`|x| ...`) passed to the generic stdlib iterator adapter
+// `VecIter::map`, then driven by `next()` / `collect()`. The closure checks to a
+// generated `Closure_N` env struct; `.map`'s parameter is the nominal
+// `Closure1<T, NewItem>`. Deducing `NewItem` needs the closure's recovered call
+// signature (unify), and passing it needs the `Closure_N` -> `Closure1` fat-struct
+// adapter in codegen. Exercises both a non-capturing and a capturing closure.
+import std::vec;
+import std::closure;
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  v.push(2);
+  v.push(3);
+
+  // Capturing closure: `bump` is moved into the generated env struct.
+  let bump = 10;
+  let adder = |x: i32| x + bump;
+  let mut m = v.iter().map(adder);
+
+  // collect() the mapped iterator back into a Vec<i32> = [11, 12, 13].
+  let out = m.collect();
+  let sum = out.get(0) + out.get(1) + out.get(2); // 11 + 12 + 13 = 36
+  assert(sum == 36);
+  return 0;
+}
