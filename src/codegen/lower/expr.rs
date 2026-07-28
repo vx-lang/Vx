@@ -3029,6 +3029,14 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
             | syntax::Type::Scalar(syntax::ElementType::BF16)
             | syntax::Type::Scalar(syntax::ElementType::F16) => 2,
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => 8,
+            // A nominal struct (or a monomorphized generic instance of one) gets its *real* layout
+            // size, not the old hardcoded `8` — otherwise a `Vec<struct>`'s element buffer sized by
+            // `sizeof<T>()` under-allocates and its element stores run out of bounds (a `Vec<Vec<T>>`
+            // UB). Falls back to `8` for a type the layout pass doesn't model (tensor, closure). (#242)
+            ty @ (syntax::Type::Struct(..) | syntax::Type::GenericInstance(..)) => gen
+                .type_size_align(ty, 0)
+                .map(|(s, _)| s as i64)
+                .unwrap_or(8),
             _ => 8,
         };
 

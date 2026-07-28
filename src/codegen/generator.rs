@@ -926,6 +926,43 @@ impl<'c> MeliorGenerator<'c> {
         }
     }
 
+    /// Byte size + alignment of a type for `sizeof<T>()`, computed the way the layout pass does
+    /// (`crate::layout::LayoutComputer::struct_layout`): a scalar by its element, any pointer/borrow
+    /// 8, and a nominal struct (or a monomorphized generic instance of one) as the aligned sum of its
+    /// recursively-sized fields. Name-keyed, because the generator holds struct decls by name, not
+    /// GID. `None` for an unmodelled type (tensor, closure, generic scalar, data-carrying enum) — the
+    /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
+    /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
+    pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
+        use crate::layout::{align_up, scalar_size_align};
+        if depth > 32 {
+            return None; // guard against a pathological/cyclic nesting
+        }
+        match ty {
+            syntax::Type::Scalar(e) => scalar_size_align(e),
+            syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
+                Some((8, 8))
+            }
+            syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
+                self.type_size_align(inner, depth)
+            }
+            syntax::Type::GenericInstance(base, _) => self.type_size_align(base, depth),
+            syntax::Type::Struct(name, _) => {
+                let base = name.as_ref().split('<').next().unwrap_or(name.as_ref());
+                let decl = self.structs.get(base)?;
+                let mut offset = 0usize;
+                let mut align = 1usize;
+                for (_, fty) in &decl.fields {
+                    let (fsize, falign) = self.type_size_align(fty, depth + 1)?;
+                    offset = align_up(offset, falign) + fsize;
+                    align = align.max(falign);
+                }
+                Some((align_up(offset, align), align))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn lower_type(
         &self,
         ty: &syntax::Type,
