@@ -202,6 +202,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &tensor_types,
         &string_tables,
         &agg_layouts,
+        &[],
     )?;
 
     let context = make_context();
@@ -214,6 +215,94 @@ fn flat_llvm(src: &str) -> Option<String> {
 /// Exit code of the program compiled through the *flat* path (`None` if declined).
 fn flat_exit_code(src: &str) -> Option<i32> {
     Some(exit_code(&flat_llvm(src)?))
+}
+
+/// The raw flat-path MLIR (`vx.transfer` and friends, *before* the lowering to LLVM), with sub-space
+/// scheduling metadata attached — the P0-1 companion to `flat_llvm`. Mirrors the driver's flat build:
+/// builds the `SubspaceInfo` descriptors from the per-compilation env (the frozen registry has no
+/// memory decls) so a `vx.transfer` carries `space`/`within`/`granule`/`capacity`/`scope` +
+/// bump-allocated `offset`/`slots`, exactly as the AST path does. `None` if outside the flat subset.
+/// (No monomorphization handling — the callers place plain tensor transfers, no generics/methods.)
+fn flat_module_mlir(src: &str) -> Option<String> {
+    let mut program = parse(src);
+    program.module_path = "crate::diff".into();
+    let mut mods = vec![program];
+    let symbol_map = vxc::resolver::build_symbol_map(&mods);
+    mods[0].resolve_names(&symbol_map);
+    let registry = vxc::pipeline::build_frozen_registry(&mods).ok()?;
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+    let env_mods = mods.clone();
+    let env = GlobalAstEnv::build(&env_mods);
+    {
+        let mut scratch = LocalWorkerState::new(session.clone());
+        let mut checker = TypeChecker::new(&env, &mut scratch);
+        for f in &mut mods[0].functions {
+            checker.check_function(f);
+        }
+    }
+    let subspaces: Vec<vxc::codegen::flat::SubspaceInfo> = env
+        .memories
+        .values()
+        .map(|decl| {
+            let space = vxc::syntax::MemorySpace::from_name(decl.name.as_ref());
+            vxc::codegen::flat::SubspaceInfo {
+                dispatch_id: vxc::arch::memory_space_dispatch_id(&space) as u64,
+                name: space.name(),
+                within: decl.parent.as_ref().map(|p| p.name()),
+                granule: decl.granule.as_ref().map(|g| g.0),
+                capacity: decl.capacity.as_ref().map(|c| c.0),
+                scope: decl.scope.as_ref().map(|s| {
+                    match s {
+                        vxc::syntax::Scope::Device => "device",
+                        vxc::syntax::Scope::Sm => "sm",
+                        vxc::syntax::Scope::Cta => "cta",
+                        vxc::syntax::Scope::Thread => "thread",
+                    }
+                    .to_string()
+                }),
+            }
+        })
+        .collect();
+    let mut lowered: Vec<LocalWorkerState> = Vec::new();
+    for f in &mods[0].functions {
+        let mut worker = LocalWorkerState::new(session.clone());
+        if !lower_function_to_hir(f, &mut worker) {
+            return None;
+        }
+        lowered.push(worker);
+    }
+    let funcs: Vec<(&_, &[_], &[_])> = mods[0]
+        .functions
+        .iter()
+        .zip(&lowered)
+        .map(|(f, w)| {
+            (
+                f,
+                w.local_hir_stream.as_slice(),
+                w.local_type_stream.as_slice(),
+            )
+        })
+        .collect();
+    let tensor_types: Vec<_> = lowered
+        .iter()
+        .flat_map(|w| w.local_tensor_types.iter().cloned())
+        .collect();
+    let string_tables: Vec<&[String]> = lowered
+        .iter()
+        .map(|w| w.local_string_table.as_slice())
+        .collect();
+    let agg_layouts: Vec<_> = lowered
+        .iter()
+        .flat_map(|w| w.local_agg_layouts.iter().cloned())
+        .collect();
+    vxc::codegen::flat::emit_module_mlir(
+        &funcs,
+        &session.registry,
+        &tensor_types,
+        &string_tables,
+        &agg_layouts,
+        &subspaces,
+    )
 }
 
 /// The parity assertion for a *printing* program: the flat path lowers it, and its
@@ -852,7 +941,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .collect();
     funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
 
-    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[])
+    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[], &[])
         .expect("flat codegen emits the linked module");
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
@@ -1351,5 +1440,52 @@ fn flat_matches_ast_function_pointer_struct_field() {
          fn call_it(h: Holder, v: i32) -> i32 { let fp = h.f; return fp(v); } \
          fn main() -> i32 { let h = Holder { f: sq, x: 5 }; return call_it(h, 6); }",
         36,
+    );
+}
+
+#[test]
+fn flat_carries_subspace_scheduling_metadata() {
+    // P0-1: the sub-space scheduler's output (`space`/`within`/`granule`/`capacity`/`scope` + the
+    // bump-allocated `offset`/`slots`) must survive on the *flat* path, not just under
+    // `--legacy-codegen`. SMEM's granule is 16 KB; a 128x128 f32 tile is exactly 4 granules (65536 B),
+    // so the two tiles land at offset 0 and offset 65536, 4 slots each — the same values the AST path
+    // assigns (verified byte-identical against `--legacy-codegen`). Mirrors `subspace_schedule.vx`.
+    let src = "\
+        Memory GPU_HBM { capacity: 40 GB, bandwidth: 3 TB/s } \
+        Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm } \
+        fn main() -> i32 { \
+            let a = Tensor<f32>([128, 128]); \
+            let b = Tensor<f32>([128, 128]); \
+            let sa = transfer(a, Memory::SMEM); \
+            let sb = transfer(b, Memory::SMEM); \
+            return 0; \
+        }";
+    let mlir = flat_module_mlir(src).expect("subspace program lowers on the flat path");
+    // Descriptor attributes are present on the flat path.
+    for needle in [
+        "space = \"SMEM\"",
+        "within = \"GPU_HBM\"",
+        "granule = 16384 : i64",
+        "capacity = 233472 : i64",
+        "scope = \"sm\"",
+    ] {
+        assert!(
+            mlir.contains(needle),
+            "flat vx.transfer missing `{needle}`\n{mlir}"
+        );
+    }
+    // The bump allocator assigned distinct, granule-rounded offsets (0 then 65536), 4 slots each.
+    assert!(
+        mlir.contains("offset = 0 : i64"),
+        "missing offset 0\n{mlir}"
+    );
+    assert!(
+        mlir.contains("offset = 65536 : i64"),
+        "missing bumped offset 65536\n{mlir}"
+    );
+    assert_eq!(
+        mlir.matches("slots = 4 : i64").count(),
+        2,
+        "expected 4 slots on each of the two transfers\n{mlir}"
     );
 }

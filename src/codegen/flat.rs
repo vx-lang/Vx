@@ -585,6 +585,26 @@ pub struct EmitCtx {
     /// signature. Populated from the module's own function list (`emit_module_mlir`), since the frozen
     /// `fn_sigs` carries only the return type. (#242)
     pub func_sigs: HashMap<TypeId, (Vec<String>, String)>,
+    /// Memory-space dispatch id → its declared sub-space descriptor, so an `Opcode::Transfer` (whose
+    /// `imm` is that dispatch id) can re-attach the scheduling attributes (`space`/`within`/`granule`/
+    /// `capacity`/`scope` + the bump-allocated `offset`/`slots`) the AST path emits. The frozen registry
+    /// carries no memory decls, so this is threaded in from the per-compilation env. Empty for a program
+    /// with no declared sub-spaces (P0-1).
+    pub subspaces: HashMap<u64, SubspaceInfo>,
+}
+
+/// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
+/// keyed in `EmitCtx.subspaces` by the space's dispatch id. Mirrors the fields the AST path reads off
+/// `MemoryDecl` ([`src/codegen/lower/tensors.rs`]). The frozen registry has no memory decls, so this is
+/// built in `build_flat_module` from the per-compilation env and passed into `emit_module_mlir`. (P0-1)
+#[derive(Clone, Debug, Default)]
+pub struct SubspaceInfo {
+    pub dispatch_id: u64,
+    pub name: String,
+    pub within: Option<String>,
+    pub granule: Option<u64>,
+    pub capacity: Option<u64>,
+    pub scope: Option<String>,
 }
 
 impl EmitCtx {
@@ -605,6 +625,7 @@ impl EmitCtx {
                 .map(|s| s.as_ref().to_string())
                 .collect(),
             func_sigs: HashMap::new(),
+            subspaces: HashMap::new(),
         }
     }
 
@@ -629,6 +650,25 @@ fn enum_scalar(ty: &Type, ctx: &EmitCtx) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Byte size of a statically-shaped flat tensor (its shape strings are all integer literals):
+/// `ceil(element_bits × Π(dims) / 8)`. `None` when the shape is empty or any dim is symbolic — the
+/// flat-emitter analogue of the AST codegen's `static_tensor_bytes`, over the lowerer's `Vec<String>`
+/// shape, so both paths size a tile identically for the sub-space bump allocator. (P0-1)
+fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
+    if shape.is_empty() {
+        return None;
+    }
+    let mut count: u64 = 1;
+    for d in shape {
+        count = count.checked_mul(d.parse::<u64>().ok()?)?;
+    }
+    Some(
+        crate::hir::memory::element_bits(elem)?
+            .checked_mul(count)?
+            .div_ceil(8),
+    )
 }
 
 /// The MLIR type string for an AST type in a function signature position (a parameter or return): a
@@ -664,8 +704,12 @@ pub fn emit_module_mlir(
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
+    subspaces: &[SubspaceInfo],
 ) -> Option<String> {
     let mut ctx = EmitCtx::from_registry(registry);
+    for s in subspaces {
+        ctx.subspaces.insert(s.dispatch_id, s.clone());
+    }
     for (gid, elem, shape) in tensor_types {
         ctx.tensors
             .entry(*gid)
@@ -1025,6 +1069,11 @@ pub fn emit_function_mlir(
     // `SpawnEnd`), remembered so `SpawnEnd` can emit the `topology` attribute. `None` outside a spawn;
     // a nested spawn (already `Some`) is declined.
     let mut spawn_topology: Option<i64> = None;
+    // Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the AST
+    // path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space claims the
+    // next granule-rounded `offset` and advances the cursor, so both paths assign identical offsets
+    // (P0-1). Reset per function, as in the AST codegen.
+    let mut subspace_offsets: HashMap<u64, u64> = HashMap::new();
 
     for (idx, ins) in hir.iter().enumerate() {
         match ins.opcode {
@@ -1725,8 +1774,10 @@ pub fn emit_function_mlir(
             // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
             // (generic form) with `target_topology`; the vx→standard lowering turns it into an
             // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
-            // `memref<NxT>`). The extra scheduling attrs the AST adds (`space`, `granule`, …) are
-            // discardable metadata and don't affect lowering.
+            // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
+            // scheduling attrs (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated
+            // `offset`/`slots`) the AST path emits — a device backend needs them to place the tile
+            // into VMEM/TMEM, and they are dropped otherwise (B1/P0-1).
             Opcode::Transfer => {
                 let result_gid = *types.get(ins.type_idx.0 as usize)?;
                 let (elem, shape) = ctx.tensors.get(&result_gid)?;
@@ -1734,10 +1785,38 @@ pub fn emit_function_mlir(
                 let src = names.get(ins.operand1.0 as usize)?.clone();
                 let srcty = mem_of.get(ins.operand1.0 as usize)?.clone()?;
                 let n = format!("%v{idx}");
-                body += &format!(
-                    "  {n} = \"vx.transfer\"({src}) {{target_topology = {} : i32}} : ({srcty}) -> {dstty}\n",
-                    ins.imm
-                );
+                let mut attrs = format!("target_topology = {} : i32", ins.imm);
+                if let Some(desc) = ctx.subspaces.get(&ins.imm) {
+                    // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the
+                    // final parsed form is byte-identical regardless of the order emitted here).
+                    attrs += &format!(", space = \"{}\"", desc.name);
+                    if let Some(w) = &desc.within {
+                        attrs += &format!(", within = \"{w}\"");
+                    }
+                    if let Some(g) = desc.granule {
+                        attrs += &format!(", granule = {g} : i64");
+                    }
+                    if let Some(c) = desc.capacity {
+                        attrs += &format!(", capacity = {c} : i64");
+                    }
+                    if let Some(s) = &desc.scope {
+                        attrs += &format!(", scope = \"{s}\"");
+                    }
+                    // SS2 bump allocation: a statically-shaped tile into a granule'd space claims the
+                    // next granule-rounded `offset`; `slots` is the granule count it occupies.
+                    let tile_bytes = static_tile_bytes(elem, shape);
+                    if let (Some(granule), Some(bytes)) = (desc.granule, tile_bytes) {
+                        if granule > 0 {
+                            let rounded = bytes.div_ceil(granule) * granule;
+                            let offset = *subspace_offsets.entry(ins.imm).or_insert(0);
+                            subspace_offsets.insert(ins.imm, offset + rounded);
+                            attrs += &format!(", offset = {offset} : i64");
+                            attrs += &format!(", slots = {} : i64", rounded / granule);
+                        }
+                    }
+                }
+                body +=
+                    &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
                 names[idx] = n;
                 mem_of[idx] = Some(dstty);
             }
@@ -2002,6 +2081,7 @@ mod tests {
             &tensor_types,
             &string_tables,
             &agg_layouts,
+            &[],
         )
         .expect("emits flat module");
 

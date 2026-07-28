@@ -58,9 +58,32 @@ _(updated as each item lands; newest first)_
   `unverified` opt-out on `MemoryDecl` (doc §9.4) is left as a follow-up; the warning is the fix.
   Files: `src/diagnostic.rs` (W1029), `src/hir/expr.rs::check_capacity`.
 
-- **P0-1** — _next_. Port the subspace attribute block from the AST path
-  ([`src/codegen/lower/tensors.rs`](../../src/codegen/lower/tensors.rs)) into the flat `Opcode::Transfer`
-  arm ([`src/codegen/flat.rs:1730`](../../src/codegen/flat.rs#L1730)) so `granule/offset/slots/scope/ space/within/capacity` survive on the default path. Approach under evaluation: compute the metadata in
-  the flat *lowerer* and carry it as a side table (like `tensor_types`/`agg_layouts`), matching the
-  flat path's "lowerer computes, emitter emits" split; the offset assignment must match the AST bump
-  allocator so both paths emit byte-identical attrs.
+- **P0-1 — DONE.** The flat `Opcode::Transfer` arm now re-attaches the full scheduling attribute set
+  (`space`/`within`/`granule`/`capacity`/`scope` + a bump-allocated `offset`/`slots`), **byte-identical
+  to the AST path** (verified against `--legacy-codegen` on `subspace_schedule.vx`: two 128×128 f32
+  tiles into SMEM land at `offset 0` then `offset 65536`, 4 slots each).
+
+  Final approach (settled on emitter-side, the doc's §9.1 suggestion, rather than the lowerer-side
+  side-table I'd first sketched): the frozen registry carries no memory decls, so `build_flat_module`
+  builds a `SubspaceInfo` per declared space from the per-compilation env, keyed by dispatch id (the
+  identity a `Transfer` carries in its `imm`), and threads them into `emit_module_mlir` →
+  `EmitCtx.subspaces`. The emitter resolves `ins.imm` → descriptor, sizes the tile from `ctx.tensors`
+  via a new `static_tile_bytes` (the flat analogue of `static_tensor_bytes`), and bump-allocates with a
+  per-function `subspace_offsets` map mirroring `MeliorGenerator::subspace_offsets`. MLIR sorts
+  attributes on print, so matching the *set* yields identical output regardless of emission order.
+
+  Files: `src/codegen/flat.rs` (`SubspaceInfo`, `EmitCtx.subspaces`, `static_tile_bytes`, the Transfer
+  arm, `emit_module_mlir` signature), `src/driver.rs` (build + thread the descriptors),
+  `tests/integration_test/flat_codegen_differential.rs` (`flat_module_mlir` helper +
+  `flat_carries_subspace_scheduling_metadata` test). Corpus sweep unchanged (flat_used 96, 0 new
+  miscompiles — the attrs are runtime-inert metadata); full suite green.
+
+  Note: the middle_end `subspace_*.vx` tests run through `MeliorGenerator` (the AST path) in the
+  harness, so they never exercised the flat path — hence the dedicated flat-path test above rather than
+  relying on those. A pre-existing, unrelated diff remains: the flat path emits a *static* memref
+  (`memref<128x128xf32>`) where legacy emits dynamic (`memref<?x?xf32>`); the scheduling attrs — the
+  subject of P0-1 — are identical.
+
+- **P0-3** — _next_. Route a declared `relaxed` transfer edge through the same `pending_transfer_relaxed`
+  seam path the `to_sram_relaxed` intrinsic uses, so a declared-space relaxed transfer gets the
+  use-site `E6004` + z3 counterexample instead of only the blunt declaration-time `W1027`.
