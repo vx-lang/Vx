@@ -837,10 +837,25 @@ impl<'a> TypeChecker<'a> {
                                                     "f64" => Type::Scalar(ElementType::F64),
                                                     "i64" => Type::Scalar(ElementType::I64),
                                                     "Bool" => Type::Scalar(ElementType::Bool),
-                                                    _ => Type::Struct(
-                                                        ty_arg.to_string().into(),
-                                                        None,
-                                                    ),
+                                                    // A non-scalar type arg is a known struct/enum
+                                                    // *or* a generic parameter still in scope (a
+                                                    // generic body checked before monomorphization).
+                                                    // Parsing `T` as `Struct("T")` made
+                                                    // `Option<T>::Some(v: T)` mismatch its own
+                                                    // `Generic("T")` payload (E3008 in `VecIter`); a
+                                                    // name that isn't a declared nominal is generic.
+                                                    // (#242)
+                                                    other => {
+                                                        let name: crate::symbol::Symbol =
+                                                            other.to_string().into();
+                                                        if self.env.structs.contains_key(&name)
+                                                            || self.env.enums.contains_key(&name)
+                                                        {
+                                                            Type::Struct(name, None)
+                                                        } else {
+                                                            Type::Generic(name, None)
+                                                        }
+                                                    }
                                                 };
                                                 mapping.insert(param.name().into(), parsed_ty);
                                             }
@@ -911,7 +926,20 @@ impl<'a> TypeChecker<'a> {
                             "f64" => Type::Scalar(ElementType::F64),
                             "i64" => Type::Scalar(ElementType::I64),
                             "Bool" => Type::Scalar(ElementType::Bool),
-                            _ => Type::Struct(ty_arg.to_string().into(), None),
+                            // A non-scalar type arg that isn't a declared nominal is a generic
+                            // parameter in scope, not a struct named `T` — so `Option<T>::None`'s
+                            // result type is `Option<Generic("T")>`, matching a `-> Option<T>` return
+                            // (was `Option<Struct("T")>`, E3002 in `VecIter::next`). (#242)
+                            other => {
+                                let name: crate::symbol::Symbol = other.to_string().into();
+                                if self.env.structs.contains_key(&name)
+                                    || self.env.enums.contains_key(&name)
+                                {
+                                    Type::Struct(name, None)
+                                } else {
+                                    Type::Generic(name, None)
+                                }
+                            }
                         };
                         return Type::GenericInstance(
                             Box::new(Type::Struct(base.to_string().into(), None)),
