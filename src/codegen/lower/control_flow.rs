@@ -553,11 +553,42 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
 
         // Generic Iterator loop via cf
         let ptr_ty = gen.ptr_ty;
+        // Resolve the monomorphized `next` for *this* iterator. The mangler spells it with `$`
+        // (`VecIter$i32$next$i32`), which the old `_next_`/`_next` patterns never matched (hence the
+        // `Function next not found` panic). Prefer a `next` whose name shares the iterator's struct-name
+        // prefix (from its MLIR type `!llvm.struct<"VecIter_i32", …>` -> `VecIter`), so the right
+        // iterator's `next` is chosen when several are in scope. (#242)
+        let iter_base: String = iter_ty_str
+            .find('"')
+            .and_then(|q| {
+                iter_ty_str[q + 1..]
+                    .find('"')
+                    .map(|e| &iter_ty_str[q + 1..q + 1 + e])
+            })
+            .unwrap_or("")
+            .chars()
+            .take_while(|c| c.is_alphabetic())
+            .collect();
+        let is_next = |name: &str| {
+            name.contains("_next_")
+                || name.ends_with("_next")
+                || name.contains("$next$")
+                || name.ends_with("$next")
+        };
         let mut actual_next_name = "next".to_string();
         for (name, (_, _args)) in &gen.functions {
-            if name.contains("_next_") || name.ends_with("_next") {
+            if is_next(name) && (iter_base.is_empty() || name.starts_with(&iter_base)) {
                 actual_next_name = name.to_string();
                 break;
+            }
+        }
+        // Fallback: any `next` (a single-iterator program, or an unnamed iterator type).
+        if actual_next_name == "next" {
+            for (name, (_, _args)) in &gen.functions {
+                if is_next(name) {
+                    actual_next_name = name.to_string();
+                    break;
+                }
             }
         }
 

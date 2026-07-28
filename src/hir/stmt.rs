@@ -182,10 +182,14 @@ impl<'a> TypeChecker<'a> {
                         args: vec![],
                         span: Span::default(),
                     });
-                    // This will resolve and monomorphize `next`!
+                    // This will resolve and monomorphize `next`! Its result is `Option<Element>`, so
+                    // the loop variable takes the payload type. The `Option` base may be spelled
+                    // `Enum` *or* `Struct` after resolution — accept both, else the element type is
+                    // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
+                    // body, the for-over-iterator typing bug, #242).
                     let opt_ty = self.check_expr_type_flag(&mut next_call, consume, silent);
                     if let Type::GenericInstance(base, args) = opt_ty {
-                        if let Type::Enum(name, _) = &*base {
+                        if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
                             if name.as_ref() == "Option" && args.len() == 1 {
                                 iter_ty = args[0].clone();
                             }
@@ -194,7 +198,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     iter_ty = match iterable_ty {
                         Type::GenericInstance(base, args) => {
-                            if let Type::Enum(name, _) = &*base {
+                            if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
                                 if name.as_ref() == "Option" && args.len() == 1 {
                                     args[0].clone()
                                 } else {
