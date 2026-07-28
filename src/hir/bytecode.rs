@@ -125,6 +125,18 @@ pub enum Opcode {
     /// place (an `imm = 1` `PtrIndex`), `operand2` the value. The pointee element type comes from the
     /// place. The raw-pointer analogue of `TensorStore` — `Vec`'s `self.data[i] = val`. (#242)
     PtrStore = 34,
+    /// Materialize a function pointer (`!llvm.ptr`) for a named function: `type_idx` is the target
+    /// function's GID (resolved to symbol + signature via the callee/func-sig maps). Codegen emits
+    /// `func.constant @name : (params)->ret` then a cast to `!llvm.ptr`. This is a bare function name
+    /// used as a value (`apply_func(square, 5)`) or a closure's call function inside the
+    /// `Closure_N -> ClosureK` adapter. (#242)
+    FuncConst = 35,
+    /// An indirect call through a function-pointer value (`f(x)` where `f : fn(..)->R`): `operand1` is
+    /// the callee `!llvm.ptr`, `imm` the argument count (taken from the preceding `Arg`s, exactly like
+    /// `Call`), and this instruction's own `type_idx` the scalar return type. Codegen reconstructs the
+    /// function type `(arg types)->ret` from the actual argument registers, casts the pointer to it, and
+    /// emits `call_indirect`. Backs `Closure1`'s `f_ptr(env, item)` and bare-fn-pointer calls. (#242)
+    CallIndirect = 36,
 }
 
 impl Opcode {
@@ -169,6 +181,8 @@ impl Opcode {
             32 => StringConst,
             33 => PtrIndex,
             34 => PtrStore,
+            35 => FuncConst,
+            36 => CallIndirect,
             _ => return None,
         })
     }

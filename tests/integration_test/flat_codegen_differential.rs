@@ -1308,3 +1308,18 @@ fn flat_matches_ast_vec_loop_push_sum() {
         45,
     );
 }
+
+#[test]
+fn flat_matches_ast_function_pointer() {
+    // A bare function name used as a value (`FuncConst`) and called through the pointer parameter
+    // (`CallIndirect`): `apply(square, 6) + apply(add3, 10) = 36 + 13 = 49`. Two distinct functions are
+    // dispatched through the same `f : fn(i32)->i32` parameter, so the indirect call really selects at
+    // runtime rather than being a devirtualized direct call. (#242)
+    assert_parity(
+        "fn square(x: i32) -> i32 { return x * x; } \
+         fn add3(x: i32) -> i32 { return x + 3; } \
+         fn apply(f: fn(i32)->i32, v: i32) -> i32 { return f(v); } \
+         fn main() -> i32 { return apply(square, 6) + apply(add3, 10); }",
+        49,
+    );
+}

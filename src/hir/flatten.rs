@@ -426,12 +426,15 @@ impl<'r> Lowerer<'r> {
                 let imm = encode_imm(n.value.as_ref(), &elem)?;
                 Some(self.emit_value(Opcode::Const, Register(0), Register(0), elem, imm))
             }
-            // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot.
-            Expr::Identifier(id) => match self.scope.get(&id.name)?.clone() {
-                Binding::Reg(v) => Some(v),
-                Binding::Slot { reg, ty } => {
+            // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
+            // that isn't a local but names a registered function is a *function pointer* value (a bare
+            // `square` passed to `apply_func`), lowered to a `FuncConst`. (#242)
+            Expr::Identifier(id) => match self.scope.get(&id.name).cloned() {
+                Some(Binding::Reg(v)) => Some(v),
+                Some(Binding::Slot { reg, ty }) => {
                     Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
                 }
+                None => self.lower_func_const(&id.name),
             },
             Expr::BinaryOp(b) => {
                 let l = self.lower_expr(&b.lhs)?;
@@ -1642,7 +1645,79 @@ impl<'r> Lowerer<'r> {
     /// (its GID + return type), lower each argument, mark them with `Arg` instructions in order, then
     /// emit `Call` (callee GID in `type_idx`, arg count in `imm`). Declines an unknown callee (or one
     /// ambiguous across modules) and a void/unmodelled return -- for now only value-returning calls.
+    /// Materialize a function pointer for a registered function name (`FuncConst`): the result is an
+    /// opaque `!llvm.ptr`, and `type_idx` carries the target's GID so codegen can emit
+    /// `func.constant @name : sig`. Declines for a name that isn't a registered function. (#242)
+    fn lower_func_const(&mut self, name: &Symbol) -> Option<Val> {
+        let gid = self.registry.fn_sigs.get(name.as_ref())?.gid;
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(gid);
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::FuncConst,
+            Register(0),
+            Register(0),
+            type_idx,
+            0,
+        ));
+        Some(Val {
+            reg,
+            ty: LoweredTy::Ptr,
+        })
+    }
+
+    /// Lower an indirect call `f(args)` where `f` is a local (a fn-pointer parameter or a `Closure1`'s
+    /// loaded `func` field), not a registered function. The callee's function type — hence the scalar
+    /// return — comes from `f`'s AST type; args are emitted as `Arg`s exactly like a direct call, and a
+    /// `CallIndirect` carries the callee pointer register + arg count + return type. Declines for a
+    /// non-scalar return or an unknown callee type. (#242)
+    fn lower_indirect_call(
+        &mut self,
+        fc: &crate::syntax::FunctionCallExpr,
+        callee: Binding,
+    ) -> Option<Val> {
+        // Load the callee function pointer (an SSA alias, or a `SlotLoad` from its slot).
+        let fnptr = match callee {
+            Binding::Reg(v) => v,
+            Binding::Slot { reg, ty } => self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0),
+        };
+        if !matches!(fnptr.ty, LoweredTy::Ptr) {
+            return None;
+        }
+        // The callee's return type comes from `f`'s AST function type.
+        let ret_elem = match self.ast_types.get(fc.name.as_ref())? {
+            Type::Function(_, ret) | Type::Closure(_, ret) => scalar_of(ret)?,
+            _ => return None,
+        };
+        let mut arg_regs = Vec::with_capacity(fc.args.len());
+        for arg in &fc.args {
+            arg_regs.push(self.lower_expr(arg)?.reg);
+        }
+        for reg in arg_regs {
+            self.emit_effect(Opcode::Arg, reg, Register(0), 0);
+        }
+        let ty = LoweredTy::Scalar(ret_elem);
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(ty.gid());
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::CallIndirect,
+            fnptr.reg,
+            Register(0),
+            type_idx,
+            fc.args.len() as u64,
+        ));
+        Some(Val { reg, ty })
+    }
+
     fn lower_call(&mut self, fc: &crate::syntax::FunctionCallExpr) -> Option<Val> {
+        // An indirect call: the callee name is a local holding a function pointer (a fn-pointer
+        // parameter, or a `Closure1`'s loaded `func` field), not a registered function. (#242)
+        if !self.registry.fn_sigs.contains_key(fc.name.as_ref()) {
+            if let Some(binding) = self.scope.get(&fc.name).cloned() {
+                return self.lower_indirect_call(fc, binding);
+            }
+        }
         let sig = match self.registry.fn_sigs.get(fc.name.as_ref()) {
             Some(s) => s.clone(),
             None => {
@@ -2109,7 +2184,12 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
     // and FFI-pointer programs (`vx_stdout_write(buffer: *const u8, …)`, an extern returning
     // `*mut i8`). Matches the AST codegen's `lower_type` for `Type::Pointer`/`Type::Borrow`. (#231/#235)
-    if matches!(ty, Type::Pointer(..) | Type::Borrow { .. }) {
+    // A function/closure type (`fn(i32)->i32`, a `Closure1`'s `func` field) is also an opaque
+    // `!llvm.ptr` — a materialized function pointer, called via `CallIndirect`. (#242)
+    if matches!(
+        ty,
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+    ) {
         return Some(LoweredTy::Ptr);
     }
     match ty {

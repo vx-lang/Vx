@@ -184,11 +184,14 @@ fn pointee_agg_gid(ty: &Type, ctx: &EmitCtx) -> Option<TypeId> {
     ctx.agg_gid(inner)
 }
 
-/// Whether a type lowers to an opaque `!llvm.ptr` — a `*const T`/`*mut T` or a `&T` borrow. The ABI
-/// of string values and FFI pointer arguments/results (matching the AST codegen's `lower_type`, which
-/// maps both to `!llvm.ptr`). (#231/#235)
+/// Whether a type lowers to an opaque `!llvm.ptr` — a `*const T`/`*mut T`, a `&T` borrow, or a
+/// function/closure type (a materialized function pointer). The ABI of string values, FFI pointer
+/// arguments/results, and function pointers (matching the AST codegen's `lower_type`). (#231/#235/#242)
 fn is_ptr_ty(ty: &Type) -> bool {
-    matches!(ty, Type::Pointer(..) | Type::Borrow { .. })
+    matches!(
+        ty,
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+    )
 }
 
 /// The arith op mnemonic for a binary opcode at a given element type.
@@ -525,6 +528,11 @@ pub struct EmitCtx {
     /// Names of payload-free (C-like) enums — an enum-typed value/param/return is a bare `i32`
     /// discriminant, not an aggregate (#227). Mirrors `ImmutableGlobalRegistry::enum_variants`.
     pub enums: std::collections::HashSet<String>,
+    /// Function GID → (parameter MLIR types, return MLIR type), for a `FuncConst` that materializes a
+    /// pointer to a named function: `func.constant @name : (params)->ret` needs the target's exact
+    /// signature. Populated from the module's own function list (`emit_module_mlir`), since the frozen
+    /// `fn_sigs` carries only the return type. (#242)
+    pub func_sigs: HashMap<TypeId, (Vec<String>, String)>,
 }
 
 impl EmitCtx {
@@ -544,6 +552,7 @@ impl EmitCtx {
                 .keys()
                 .map(|s| s.as_ref().to_string())
                 .collect(),
+            func_sigs: HashMap::new(),
         }
     }
 
@@ -565,6 +574,28 @@ fn enum_scalar(ty: &Type, ctx: &EmitCtx) -> Option<&'static str> {
     };
     if ctx.enums.contains(name) {
         Some("i32")
+    } else {
+        None
+    }
+}
+
+/// The MLIR type string for an AST type in a function signature position (a parameter or return): a
+/// scalar's element, a payload-free enum's `i32`, an opaque `!llvm.ptr` (pointer / fn-pointer), a
+/// tensor's memref, or a by-value aggregate's `!llvm.struct`. `None` for a void / unmodelled type.
+/// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
+/// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
+fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Option<String> {
+    if let Some(e) = scalar_of(ty) {
+        Some(mlir_scalar(&e)?.to_string())
+    } else if let Some(et) = enum_scalar(ty, ctx) {
+        Some(et.to_string())
+    } else if is_ptr_ty(ty) {
+        Some("!llvm.ptr".to_string())
+    } else if let Some(gid) = tensor_gid_of(ty) {
+        let (elem, shape) = ctx.tensors.get(&gid)?;
+        tensor_memref_ty(elem, shape)
+    } else if let Some(gid) = ctx.agg_gid(ty) {
+        Some(ctx.aggs.get(&gid)?.struct_ty.clone())
     } else {
         None
     }
@@ -606,6 +637,23 @@ pub fn emit_module_mlir(
     // which happens above — `EmitCtx::from_registry` built the callees before it (#242).
     if !agg_layouts.is_empty() {
         ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names);
+    }
+    // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
+    // Built from the module's own functions (each `Function` carries its params); the target must be a
+    // function whose whole signature is modelled (else the FuncConst declines at emit). (#242)
+    for (func, _, _) in funcs {
+        let Some(sig) = registry.fn_sigs.get(func.name.as_ref()) else {
+            continue;
+        };
+        let params: Option<Vec<String>> =
+            func.params.iter().map(|(_, t)| ty_mlir(t, &ctx)).collect();
+        let ret = match &func.return_type {
+            Type::Scalar(ElementType::Generic(_)) => None,
+            t => ty_mlir(t, &ctx).or(Some("()".to_string())),
+        };
+        if let (Some(params), Some(ret)) = (params, ret) {
+            ctx.func_sigs.insert(sig.gid, (params, ret));
+        }
     }
     let mut out = String::new();
     let mut globals = String::new();
@@ -828,22 +876,9 @@ pub fn emit_function_mlir(
     // holds it — the param's `Load` recorded it). Anything else declines.
     let mut params = Vec::new();
     for (i, (_, ty)) in func.params.iter().enumerate() {
-        let pty = if let Some(e) = scalar_of(ty) {
-            mlir_scalar(&e)?.to_string()
-        } else if let Some(et) = enum_scalar(ty, ctx) {
-            et.to_string() // a payload-free enum param -> its i32 discriminant (#227)
-        } else if is_ptr_ty(ty) {
-            "!llvm.ptr".to_string() // a `*const`/`*mut`/`&` pointer param (#235)
-        } else if let Some(gid) = tensor_gid_of(ty) {
-            let (elem, shape) = ctx.tensors.get(&gid)?;
-            tensor_memref_ty(elem, shape)?
-        } else if let Some(gid) = ctx.agg_gid(ty) {
-            // A by-value aggregate param (`val : Vec<i32>` for a `Vec<Vec<T>>::push`) — an
-            // `!llvm.struct` value the body spills to a slot (`bind_local`) before use (#242).
-            ctx.aggs.get(&gid)?.struct_ty.clone()
-        } else {
-            return None;
-        };
+        // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
+        // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
+        let pty = ty_mlir(ty, ctx)?;
         params.push(format!("%arg{i}: {pty}"));
     }
     let ret_elem = match &func.return_type {
@@ -1332,6 +1367,70 @@ pub fn emit_function_mlir(
                     // to a slot (`Store`), returned (`Ret`), or passed by value to another call (#242).
                     agg_val_of[idx] = Some(agg_gid);
                 }
+            }
+            // Materialize a function pointer for a named function: `type_idx` is the target's GID
+            // (name via `ctx.callees`, signature via `ctx.func_sigs`). Emit `func.constant @name : sig`
+            // then cast the `FunctionType` value to an opaque `!llvm.ptr` (the ABI of a fn pointer),
+            // tracked in `ptr_of`. (#242)
+            Opcode::FuncConst => {
+                let gid = *types.get(ins.type_idx.0 as usize)?;
+                let callee = ctx.callees.get(&gid)?;
+                let (params, ret) = ctx.func_sigs.get(&gid)?;
+                let fnty = format!("({}) -> {}", params.join(", "), ret);
+                let fc = format!("%fc{idx}");
+                let nm = format!("%v{idx}");
+                body += &format!(
+                    "  {fc} = func.constant {} : {fnty}\n",
+                    sym_ref(&callee.name)
+                );
+                body += &format!(
+                    "  {nm} = builtin.unrealized_conversion_cast {fc} : {fnty} to !llvm.ptr\n"
+                );
+                names[idx] = nm;
+                ptr_of[idx] = true;
+            }
+            // An indirect call through a function pointer. `operand1` is the callee `!llvm.ptr`, `imm`
+            // the arg count (the tail of `pending_args`, like `Call`), and this instruction's `type_idx`
+            // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
+            // args, cast the pointer to it, and `func.call_indirect`. (#242)
+            Opcode::CallIndirect => {
+                let ret_elem = ty_at(ins.type_idx.0)?;
+                let rt = mlir_scalar(&ret_elem)?.to_string();
+                let n = ins.imm as usize;
+                if pending_args.len() < n {
+                    return None;
+                }
+                let args = pending_args.split_off(pending_args.len() - n);
+                let mut arg_names = Vec::with_capacity(n);
+                let mut arg_types: Vec<String> = Vec::with_capacity(n);
+                for a in &args {
+                    arg_names.push(names.get(*a as usize)?.clone());
+                    let at = if let Some(e) = elem_at(&etypes, *a) {
+                        mlir_scalar(&e)?.to_string()
+                    } else if let Some(agg_gid) = agg_val_of.get(*a as usize).copied().flatten() {
+                        ctx.aggs.get(&agg_gid)?.struct_ty.clone()
+                    } else if *ptr_of.get(*a as usize)?
+                        || agg_of.get(*a as usize).copied().flatten().is_some()
+                    {
+                        "!llvm.ptr".to_string()
+                    } else {
+                        mem_of.get(*a as usize)?.clone()?
+                    };
+                    arg_types.push(at);
+                }
+                let fnty = format!("({}) -> {rt}", arg_types.join(", "));
+                let fnptr = names.get(ins.operand1.0 as usize)?.clone();
+                let fc = format!("%fc{idx}");
+                let nm = format!("%v{idx}");
+                body += &format!(
+                    "  {fc} = builtin.unrealized_conversion_cast {fnptr} : !llvm.ptr to {fnty}\n"
+                );
+                body += &format!(
+                    "  {nm} = func.call_indirect {fc}({}) : {fnty}\n",
+                    arg_names.join(", ")
+                );
+                names[idx] = nm;
+                etypes[idx] = Some(ret_elem);
             }
             // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
             // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
