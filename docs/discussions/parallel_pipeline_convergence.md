@@ -1955,9 +1955,13 @@ is a deeper inference gap left standing with a precise diagnosis.
   argument string `T` in `Option<T>::Some(v)` / `::None` as `Type::Struct("T")` (a nominal named `T`)
   instead of `Type::Generic("T")`, so inside `VecIter::next` the payload/return `Option<Generic("T")>`
   clashed with the constructed `Option<Struct("T")>` (E3008 + E3002). A non-scalar type argument that
-  isn't a declared struct/enum is now a generic parameter. **`for x in v.iter()` over a `Vec<i32>` now
-  type-checks and JITs correctly through the oracle** — a real iterator milestone, and the closure
-  codegen no longer *panics* (it type-checked past the point that crashed it).
+  isn't a declared struct/enum is now a generic parameter — a real step, and the closure codegen no
+  longer *panics* (it type-checks past the point that crashed it).
+
+  _(Correction, Entry 68: an earlier draft of this bullet claimed `for x in v.iter()` "JITs correctly
+  through the oracle". That was a misread of a `vxc` exit-1 that was in fact the still-present E3004
+  below. The generic-`Option` fix removed E3008 + E3002, but `for x in v.iter()` is **not** yet a clean
+  oracle target — see Entry 68's remaining bugs.)_
 
 - **Still open — closures / `map`/`collect`.** The remaining blocker is precise: a closure `|x| x*2` is
   rewritten to a generated `Closure_N` struct, but `unify_types` cannot unify `Struct("Closure_N")`
@@ -1966,12 +1970,37 @@ is a deeper inference gap left standing with a precise diagnosis.
   recognize a closure struct as its `Closure1<arg, ret>` interface (reading the `Closure_N_call`
   signature) and bind the generics — a genuine closure/generic-inference addition, plus whatever the
   closure *codegen* (fat pointer + `call_indirect`) needs after it. `for x in v.iter()` (no closures)
-  is unblocked; `map(closure).collect()` is not yet.
+  is not yet unblocked (Entry 68); `map(closure).collect()` is not either.
 
-**Net.** Three oracle correctness bugs fixed (each also fixes production codegen), `Vec<Vec<T>>`
-restored to differential parity, and `for x in v.iter()` reaches the oracle correctly — leaving the
-flat-path iterator build (data-carrying `Option`, then the for-over-iterator desugar) newly
-*validatable*, and the closure layer scoped to one well-identified inference gap.
+**Net.** Three oracle correctness bugs fixed (each also fixes production codegen), and `Vec<Vec<T>>`
+restored to differential parity. The iterator remains gated on further oracle bugs (Entry 68).
+
+## Entry 68 — data-carrying `Option` on the flat path; two more iterator oracle bugs surface (#242)
+
+Two things: a landed flat-path win, and an honest correction.
+
+- **Data-carrying enum construction + match lands on the flat path** (`1417841`). `Option<i32>` now
+  constructs (`Some(30)`/`None`) and statement-`match`es through the flat pipeline, validated by
+  differential parity (`Some(30)` → 30, the `None` arm → 7). The wrinkle a by-value-payload enum adds:
+  its layout is *instance-dependent* (`Option<i32>` = `{i32,i32}`, `Option<i64>` = `{i32,i64}`), so it
+  isn't in the frozen registry (which keys the generic base). The registry now carries `enum_data`
+  (variant payload types + generics); the lowerer synthesizes an instance's `{ tag, payload… }` layout
+  on demand under a mangled per-instance GID, records it in a worker side table (`local_agg_layouts`,
+  threaded to the emitter like tensor types), and construct/match reuse the aggregate
+  `Alloca`/`FieldStore`/`FieldLoad` machinery — construct writes the tag + payload, match loads the tag
+  to dispatch and binds each payload pattern. This is the reachable foundation the iterator sits on.
+
+- **Correction + two newly-found iterator oracle bugs.** Entry 67 claimed `for x in v.iter()` "JITs
+  correctly through the oracle"; that was a misread of a `vxc` exit-1 that was actually a semantic
+  error. Re-checked carefully, `for x in v.iter()` over a `Vec<i32>` still fails the oracle *two* more
+  ways, both distinct from the generic-`Option` fix: (a) **E3004** — the loop variable `x` is typed
+  `i64`, so `s = s + x` against an `i32` accumulator is a type mismatch (the for-over-iterator binding
+  doesn't take the element type); (b) a **codegen panic** `Function next not found`
+  (`codegen/lower/expr.rs:2244`) — the iterator's `next` isn't resolved/monomorphized at the for-loop
+  call site. So the stdlib `for x in v.iter()` is **not** yet a clean oracle target; it needs these two
+  fixes before its (large) flat build — VecIter construction, deref-through-a-pointer-field access
+  (`(*self.vec).len`), and the for-over-iterator loop — is differentially validatable. The
+  data-carrying `Option` piece (above) is the part that *was* reachable and is now banked.
 
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
