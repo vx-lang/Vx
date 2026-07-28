@@ -1717,10 +1717,18 @@ impl<'a> TypeChecker<'a> {
                         .as_ref()
                         .and_then(|tgt| self.seam_contracts.get(tgt).copied());
                     let known_val = asserted_val.or_else(|| self.const_value_of(&buffer));
+                    // A hop over a *declared* `relaxed` edge is relaxed too, not just the caller's
+                    // `*_relaxed` intrinsic escape hatch: route it through the same seam obligation so a
+                    // declared relaxed transfer gets the per-buffer E6004 at the use site, not only the
+                    // blunt declaration-time W1027 (P0-3). A relaxed hop anywhere in a staged multi-hop
+                    // route taints that hop, since each single hop re-enters this check.
+                    let hop_relaxed = self
+                        .transfer_cost_graph
+                        .is_relaxed_edge(&source_mem, &target_mem);
                     self.run_seam_hop(
                         &source_mem,
                         &target_mem,
-                        relaxed,
+                        relaxed || hop_relaxed,
                         &buffer,
                         known_val,
                         span,

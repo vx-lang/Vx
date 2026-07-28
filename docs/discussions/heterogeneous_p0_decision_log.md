@@ -84,6 +84,27 @@ _(updated as each item lands; newest first)_
   (`memref<128x128xf32>`) where legacy emits dynamic (`memref<?x?xf32>`); the scheduling attrs — the
   subject of P0-1 — are identical.
 
-- **P0-3** — _next_. Route a declared `relaxed` transfer edge through the same `pending_transfer_relaxed`
-  seam path the `to_sram_relaxed` intrinsic uses, so a declared-space relaxed transfer gets the
-  use-site `E6004` + z3 counterexample instead of only the blunt declaration-time `W1027`.
+- **P0-3 — DONE.** A transfer over a *declared* `relaxed` edge now gets the same per-buffer use-site
+  proof as the `*_relaxed` intrinsics: `E6004` + a z3 counterexample under `--verify-seams`, while
+  `W1027` stays as the always-on declaration-time smell. Added `TransferCostGraph::is_relaxed_edge(from, to)` (scans the topology descriptors' `TransferEdge`s for a `!sync` edge — the cost graph's
+  `transfer_edges` drop the sync flag); `check_transfer_expr` ORs it into the `relaxed` flag passed to
+  `run_seam_hop`, so a relaxed hop anywhere in a staged multi-hop route taints that hop (each single hop
+  re-enters the check). No new syntax. New test `tests/frontend/fail/topology_declared_relaxed_seam.vx`
+  (`// VERIFY-SEAMS`, expects E6004). Files: `src/arch.rs`, `src/hir/expr.rs::check_transfer_expr`. Full
+  suite green.
+
+## Status: P0 ship-blocker cluster complete
+
+All four P0s from §10 landed and committed, each green through the full pre-commit suite: P0-4
+(`5e10637a`), P0-1 (`fa056b4e`), P0-3 (this commit). B2/P0-3 and B1/P0-1 and B3/P0-4 from the gap
+analysis are closed. **P0-2 (async transfer tokens) is the remaining P0 and is deliberately left for a
+focused session** — it is the pivotal mid-size item (a linear `Token<T, Mem>` from `transfer_async`,
+`wait` consuming it, the seam engine proving the wait wasn't skipped), unlocks the perf story, and
+shares the solver with P1-1 bounded shapes; it warrants its own runway rather than being rushed at the
+tail of this one.
+
+Reasonable next steps, in rough priority: **P0-2** (async tokens — the last P0), then **P1-5** (the
+`mlir!` escape hatch — cheapest item by unblocked surface area, design already written), or **P1-4a**
+(collapse `ElementType` to a descriptor table — a pure refactor that could ship in P0 and makes every
+later numeric format one row instead of ten edits). The audit confirmed all three are real and
+well-scoped.

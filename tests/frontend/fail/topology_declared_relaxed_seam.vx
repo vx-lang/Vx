@@ -1,0 +1,45 @@
+//===- topology_declared_relaxed_seam.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// P0-3: a transfer over a *declared* `relaxed` edge (`Memory::SMEM -> Memory::TMEM : 5 relaxed`)
+// must get the same per-buffer seam proof as the built-in `to_sram_relaxed` intrinsic — an E6004
+// at the *use site* with a z3 counterexample, not only the blunt declaration-time W1027. The
+// SMEM->TMEM hop of the staged CPU->HBM3e->SMEM->TMEM route carries no synchronizing release, so a
+// consumer may read the buffer stale. Requires seam verification.
+//
+// VERIFY-SEAMS
+// RUN: not vxc %s --verify-seams 2>&1 | FileCheck %s
+
+Memory HBM3e {
+  capacity: 192 GB, bandwidth: 8 TB/s
+}
+Memory SMEM {
+  within: Memory::HBM3e, capacity: 228 KB, granule: 1 KB, managed: explicit, scope: sm
+}
+Memory TMEM {
+  within: Memory::HBM3e, capacity: 256 KB, granule: 16 KB, managed: explicit, scope: sm
+}
+Topology TensorCore5 {
+  memory: Memory::TMEM,
+  visible: [Memory::TMEM, Memory::SMEM, Memory::HBM3e],
+  transfer Memory::CPU_DRAM -> Memory::HBM3e : 300,
+  transfer Memory::HBM3e -> Memory::SMEM : 40,
+  transfer Memory::SMEM -> Memory::TMEM : 5 relaxed
+}
+
+fn f() -> i32 {
+  let b : Tensor<f32> = 0.0;
+  let acc = transfer(b, Memory::TMEM);   // the SMEM->TMEM hop is relaxed
+  return 0;
+}
+
+fn main() -> i32 {
+  return f();
+}
+
+// CHECK: E6004
+// CHECK-SAME: relaxed transfer

@@ -448,6 +448,19 @@ impl TransferCostGraph {
     }
 
     /// Determines the minimum data movement cost and path between two memory spaces using Dijkstra's algorithm.
+    /// Whether any declared topology contributes a *relaxed* (`!sync`) transfer edge for the hop
+    /// `from -> to`: a declared escape hatch whose visibility the seam engine cannot guarantee. A
+    /// transfer's use site consults this so a hop over a declared relaxed edge is routed through the
+    /// same seam obligation the `*_relaxed` intrinsics take — yielding a per-buffer E6004 at the use
+    /// site, not only the coarse declaration-time W1027 (P0-3).
+    pub fn is_relaxed_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
+        self.descriptors.values().any(|d| {
+            d.transfers
+                .iter()
+                .any(|e| &e.from == from && &e.to == to && !e.sync)
+        })
+    }
+
     pub fn transfer_path(
         &self,
         source: &MemorySpace,
