@@ -2083,6 +2083,62 @@ stdlib iterator is `map`/`collect` (the `unify_types` closure gap, Entry 67).
 
 ## Next: C2 (the flat codegen)
 
+## Entry 70 — closures + `map`/`collect` land on the flat path (function pointers, nested aggregates, the adapter) (#242)
+
+The remaining stdlib-iterator surface — `v.iter().map(|x| ...)` driven by `next`/`collect` — now
+lowers and JITs through the flat path. Three commits, oracle first (the part that makes closures
+*work at all*), then the flat build in two layers.
+
+**Oracle (`c70a4a1d`).** A closure literal passed to a generic stdlib API taking a nominal `ClosureK`
+(the canonical case: `VecIter::map`'s `f : Closure1<T, NewItem>`) failed from type-check to codegen.
+Three real bugs: (1) a closure checks to `Struct("Closure_N")`, erasing its call signature, so
+unifying it against `Closure1<T, NewItem>` hit the `t1 == t2` fallback and never bound `NewItem`
+(→ `VecMap<i32, NewItem>::next` monomorphized with `NewItem` still generic → E3004/panic) — fixed by
+a `closure_signatures` side table + a `unify_types_internal` case recovering it; (2) method-call
+generic inference re-checked each argument, but a closure struct is linear and the first check already
+consumed it, so the re-check saw a moved var (`Unknown`) — fixed by reusing the first check's types;
+(3) no `Closure_N -> ClosureK` adapter in codegen (they share `{ptr,ptr}` but not the fields) — added
+`adapt_closure_to_nominal` (spill env, `func.constant` for `Closure_N_call`, build `{env, func}`).
+Also removed two committed debug `println!`s.
+
+**Flat, layer 1 — function pointers (`28bd39a2`).** The flat path had *zero* fn-pointer support (even
+`func_ptr.vx` fell back). Two opcodes: `FuncConst` (a bare function name as a value →
+`func.constant @name : sig` cast to `!llvm.ptr`, signature recovered from a new `EmitCtx.func_sigs`
+map since the frozen `fn_sigs` keeps only the return type) and `CallIndirect` (a call through a
+fn-pointer local → `call_indirect`, the function type reconstructed from the actual argument
+registers). `Type::Function`/`Type::Closure` now map to `!llvm.ptr` in `lowered_ty`/`is_ptr_ty`.
+
+**Flat, layer 2 — nested aggregates + the closure adapter (`33f3bb59`).** The stdlib containers embed
+structs by value (`VecMap { iter: VecIter, f: Closure1 }`), which the flat aggregate model skipped.
+The pieces:
+
+- **By-value nested-aggregate struct fields** — `build_agg_map` models a `FieldTy::Nominal` field as
+  its nested `!llvm.struct` (recursively resolved), `FieldStore`/`FieldLoad` move the whole struct
+  value, and a new `FieldAddr` opcode GEPs to a nested field so a chained access (`o.inner.a`) or a
+  method receiver (`self.iter.next()` → `&self.iter`) addresses through it.
+- **Generic-instance by-value fields in the layout pass** — a `VecIter<T>`/`Closure1<T,..>` field sizes
+  to its instance-independent base layout (generics behind pointers), resolving the base GID by name
+  when a cross-module instance left it unattached (`Struct("Closure1", None)`).
+- **The `Closure_N -> ClosureK` adapter on flat** (`try_adapt_closure_arg`) — a closure local passed to
+  a `Closure1` parameter materializes the `{ env, func }` fat struct; every `ClosureK` is structurally
+  `{ptr, ptr}` (the flat aggregates are anonymous structs), so arity only matters at the eventual
+  `CallIndirect`. Detection keys on the arg's inferred type — `infer_ast_type` gained a `StructInit`
+  case so `let adder = |x| ...` records its `Closure_N` type.
+- **Function-pointer struct fields** — the layout pass treats `fn(..)->R` as a pointer-sized `Opaque`.
+- **Data-carrying `Option` methods** — `match *self` / `match self` resolve the subject via a new
+  `lower_data_match_slot` (a deref pointer, a slot, or a by-value spill); the concrete instance name
+  comes from the *subject's* type (`Option<i32>`), since monomorphization leaves the body's patterns
+  generic (`Option<T>`); a by-value data-enum parameter binds through `lower_ty_synth`; and
+  `return <match>` (`Option::unwrap`) emits a default-return merge block, mirroring the oracle.
+- **Boolean literals** — `true`/`false` (which parse as identifiers) lower to `i1` constants, a
+  pre-existing flat gap surfaced by `Option::is_none`.
+
+**Result.** `func_ptr.vx`, `map_collect.vx` (fn-pointer `Map`), and `closure_map.vx` (a capturing
+closure through `map` + `collect`) all lower and JIT-match the oracle. Corpus sweep flat_used 92 → 96,
+the 3 miscompiles unchanged (the chronic fusion/npu set), 0 new. New differential tests: fn-pointer
+dispatch (49), a nested-aggregate method receiver (14), a fn-pointer struct field (36). The stdlib
+iterator/closure surface is now flat end to end.
+
 The flat emitter grows opcode-family by opcode-family, each verified by extending the differential
 harness, in this order (details + MLIR mappings in `implementation_plans/c2_flat_codegen.md`):
 
