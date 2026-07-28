@@ -1933,6 +1933,46 @@ fix, not a flat-path one. `Vec<Vec<T>>` (Entry 65) was the reachable part of the
 data-carrying-`Option<scalar>` and fn-pointer surfaces are the next reachable convergence wins, distinct
 from (and short of) the stdlib iterators.
 
+## Entry 67 — fixing the oracle: three of the four iterator blockers closed (#242)
+
+Rather than route around the Entry-66 oracle bugs, this entry fixes them in the AST codegen/checker
+(they are real production correctness bugs). Three of the four are now closed; the fourth (closures)
+is a deeper inference gap left standing with a precise diagnosis.
+
+- **`sizeof<struct>` = the real layout size** (`5a7c374`). `SizeOfExpr::lower` returned a hardcoded `8`
+  for every non-scalar (`_ => 8`), so a `Vec<struct>`'s element buffer under-allocated and its stores
+  ran out of bounds (the Entry-65 `Vec<Vec<T>>` UB). A name-keyed `type_size_align` on the generator
+  (mirroring the layout pass) now yields the true size. Both paths agree, so `Vec<Vec<T>>` is back to a
+  normal `assert_parity` target.
+
+- **Dereference read + store** (`8ac1f18`). Two bugs: `*p = val` (a `Dereference` assignment) matched
+  no case in `AssignStmt` and was **silently dropped**; and `DereferenceExpr::lower` defaulted the read
+  type to `f32`. Fixed by storing the RHS through the pointer, and recovering the read's pointee type
+  via `infer_ast_type`. `Box`'s `*p = val` now writes; `box_heap.vx` lowers on the flat path (deref is
+  `p[0]` via `PtrIndex`/`PtrStore`).
+
+- **Generic type argument parses as `Generic`, not `Struct`** (`1f7de5b`). The checker parsed the type
+  argument string `T` in `Option<T>::Some(v)` / `::None` as `Type::Struct("T")` (a nominal named `T`)
+  instead of `Type::Generic("T")`, so inside `VecIter::next` the payload/return `Option<Generic("T")>`
+  clashed with the constructed `Option<Struct("T")>` (E3008 + E3002). A non-scalar type argument that
+  isn't a declared struct/enum is now a generic parameter. **`for x in v.iter()` over a `Vec<i32>` now
+  type-checks and JITs correctly through the oracle** — a real iterator milestone, and the closure
+  codegen no longer *panics* (it type-checked past the point that crashed it).
+
+- **Still open — closures / `map`/`collect`.** The remaining blocker is precise: a closure `|x| x*2` is
+  rewritten to a generated `Closure_N` struct, but `unify_types` cannot unify `Struct("Closure_N")`
+  against a parameter of type `Closure1<T, NewItem>`, so the method generic `NewItem` is never deduced
+  (`VecIter::map`'s arg → E3003, then E3002 on the `NewItem` return). Closing it needs `unify_types` to
+  recognize a closure struct as its `Closure1<arg, ret>` interface (reading the `Closure_N_call`
+  signature) and bind the generics — a genuine closure/generic-inference addition, plus whatever the
+  closure *codegen* (fat pointer + `call_indirect`) needs after it. `for x in v.iter()` (no closures)
+  is unblocked; `map(closure).collect()` is not yet.
+
+**Net.** Three oracle correctness bugs fixed (each also fixes production codegen), `Vec<Vec<T>>`
+restored to differential parity, and `for x in v.iter()` reaches the oracle correctly — leaving the
+flat-path iterator build (data-carrying `Option`, then the for-over-iterator desugar) newly
+*validatable*, and the closure layer scoped to one well-identified inference gap.
+
 ## Status (2026-07-18) — C0 + C1 done, C2 in progress
 
 **Done.**
