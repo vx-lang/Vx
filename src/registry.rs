@@ -57,6 +57,17 @@ pub struct StructFields {
     pub fields: Vec<(crate::symbol::Symbol, crate::syntax::Type)>,
 }
 
+/// A data-carrying enum's declaration for the flat path: its generic parameter names and each
+/// variant's name + declared payload types (empty for a payload-free variant). The flat path
+/// substitutes a monomorphized instance's type arguments into the payload types to compute the
+/// concrete `{ i32 tag, payload… }` layout (`Option<i32>` -> `{ i32, i32 }`). Variant order is the
+/// declaration order, so a variant's index is its discriminant ordinal. (#242)
+#[derive(Debug, Clone)]
+pub struct EnumData {
+    pub generics: Vec<crate::symbol::Symbol>,
+    pub variants: Vec<(crate::symbol::Symbol, Vec<crate::syntax::Type>)>,
+}
+
 /// A function's precompiled flat-HIR body, keyed in the registry by the function's GID. Self-contained
 /// so the flat codegen needs one lookup, not a join: it carries the signature (`emit_function_mlir`
 /// reads `params` + `ret_ty` to emit the MLIR header) alongside the instruction + type streams. Only
@@ -106,6 +117,13 @@ pub struct ImmutableGlobalRegistry {
     /// `gen.structs`. Populated by `build_frozen_registry`; empty when deserialized from a `.vxlib`
     /// (a pointer-field aggregate then declines to the AST path). (#242)
     pub structs: FxHashMap<crate::symbol::Symbol, StructFields>,
+    /// Data-carrying (tagged-union) enum declarations keyed by name, carrying each variant's *declared*
+    /// (possibly generic) payload types + the enum's generic parameters. A monomorphized instance
+    /// (`Option<i32>`) has an instance-dependent layout (`{ i32 tag, i32 payload }`) that the frozen
+    /// `layouts` can't hold (the base is generic), so the flat path substitutes the instance's type
+    /// arguments into these to synthesize the concrete `{ tag, payload }` aggregate — the tagged-union
+    /// analogue of `structs`. Populated by `build_frozen_registry`; empty when deserialized. (#242)
+    pub enum_data: FxHashMap<crate::symbol::Symbol, EnumData>,
 }
 
 impl ImmutableGlobalRegistry {
@@ -190,6 +208,7 @@ impl ImmutableGlobalRegistry {
             bodies: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
             structs: FxHashMap::default(),
+            enum_data: FxHashMap::default(),
         })
     }
 

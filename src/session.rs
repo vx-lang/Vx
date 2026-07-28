@@ -99,6 +99,14 @@ pub struct LocalWorkerState {
     /// Print-position strings only for now (`print!("x=", v)`); general string *values* are follow-up
     /// work (#225).
     pub local_string_table: Vec<String>,
+
+    /// Synthetic aggregate layouts for *monomorphized data-carrying enum instances* (`Option<i32>` ->
+    /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID, as `(gid, field byte offsets, field
+    /// MLIR types)`. Such an instance's layout is instance-dependent (the by-value payload varies with
+    /// `T`) and so isn't in the frozen registry `layouts` (which only holds the generic base); the
+    /// lowerer synthesizes it here as it constructs/matches an enum, and the flat codegen folds these
+    /// into its aggregate map — the tagged-union analogue of `local_tensor_types`. (#242)
+    pub local_agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
 }
 
 use crate::gid::LifetimeSignature;
@@ -114,6 +122,7 @@ impl LocalWorkerState {
             local_hir_stream: Vec::new(),
             local_tensor_types: Vec::new(),
             local_string_table: Vec::new(),
+            local_agg_layouts: Vec::new(),
         }
     }
 

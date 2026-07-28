@@ -55,6 +55,19 @@ pub fn ptr_gid() -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// The stable per-instance GID of a monomorphized data-carrying enum (`Option<i32>`): module 0 +
+/// a content hash of the base name and mangled type arguments, so `Option<i32>` and `Option<i64>` are
+/// distinct aggregates and the same instance hashes identically in a signature and a body. Distinct
+/// from any struct GID (those carry a real module hash), so it never collides with a registry layout.
+/// (#242)
+pub fn enum_instance_gid(base: &str, args: &[Type]) -> TypeId {
+    use crate::syntax::types::Mangle;
+    let mangled: Vec<String> = args.iter().map(|a| a.mangle()).collect();
+    let sym = crate::hash::DefPath::Named(&format!("$enum::{base}<{}>", mangled.join(",")))
+        .compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
@@ -213,6 +226,12 @@ struct Lowerer<'r> {
     /// `*mut i32` for a `self.data[i]` index needs `self : &mut Vec<i32>`'s type substituted into the
     /// base struct's `data : *mut T` field. See `infer_ast_type` (#242).
     ast_types: HashMap<Symbol, Type>,
+    /// Synthetic aggregate layouts for monomorphized data-carrying enum instances (`Option<i32>` ->
+    /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID: `(gid, field offsets, field MLIR
+    /// types)`. Such a layout is instance-dependent (the by-value payload varies with `T`), so it
+    /// isn't in the frozen registry; synthesized here as an enum is constructed/matched and committed
+    /// so codegen can address it (the tagged-union analogue of `tensor_types`). (#242)
+    agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -228,6 +247,7 @@ impl<'r> Lowerer<'r> {
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
+            agg_layouts: Vec::new(),
         }
     }
 
@@ -648,23 +668,23 @@ impl<'r> Lowerer<'r> {
                     size,
                 ))
             }
-            // Construct a payload-free (C-like) enum value (`Color::Green`, #227): the value *is* the
-            // variant's discriminant ordinal, a bare `i32` constant (matching the AST codegen). A
-            // data-carrying variant (a non-empty payload, or an enum absent from `enum_variants`)
-            // declines to the AST path.
+            // Construct an enum value. A payload-free (C-like) variant (`Color::Green`, #227) is a bare
+            // `i32` discriminant. A data-carrying variant (`Option<i32>::Some(30)` / `::None`, #242) is
+            // a `{ i32 tag, payload }` aggregate — see `lower_enum_construct`.
             Expr::EnumVariant(ev) => {
-                if ev.payload.as_ref().is_some_and(|p| !p.is_empty()) {
-                    return None; // tagged-union payload not modelled yet
+                if let Some(variants) = self.registry.enum_variants.get(&ev.enum_name) {
+                    if ev.payload.as_ref().is_none_or(|p| p.is_empty()) {
+                        let ordinal = variants.iter().position(|v| v == &ev.variant_name)? as u64;
+                        return Some(self.emit_value(
+                            Opcode::Const,
+                            Register(0),
+                            Register(0),
+                            ElementType::I32,
+                            ordinal,
+                        ));
+                    }
                 }
-                let variants = self.registry.enum_variants.get(&ev.enum_name)?;
-                let ordinal = variants.iter().position(|v| v == &ev.variant_name)? as u64;
-                Some(self.emit_value(
-                    Opcode::Const,
-                    Register(0),
-                    Register(0),
-                    ElementType::I32,
-                    ordinal,
-                ))
+                self.lower_enum_construct(ev)
             }
             // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
             // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
@@ -874,6 +894,23 @@ impl<'r> Lowerer<'r> {
     /// chain the AST codegen emits. A `Wildcard` arm is the unconditional default. Data-carrying
     /// patterns (payload bindings), literal/identifier patterns, and value-producing `match` decline.
     fn lower_match(&mut self, m: &crate::syntax::MatchExpr) -> Option<()> {
+        // A data-carrying enum match (`match o { Option<i32>::Some(v) => .. None => .. }`, #242): the
+        // subject is a `{ tag, payload }` aggregate, dispatched on its tag field. Detected from the
+        // first `EnumVariant` pattern naming an enum with a payload-carrying variant.
+        if let Some(enum_name) = m.arms.iter().find_map(|a| match &a.pattern {
+            crate::syntax::Pattern::EnumVariant(en, _, _) => {
+                let (base, _) = parse_enum_instance(en);
+                let has_payload = self
+                    .registry
+                    .enum_data
+                    .get(base.as_str())
+                    .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
+                has_payload.then(|| en.to_string())
+            }
+            _ => None,
+        }) {
+            return self.lower_data_match(m, &enum_name);
+        }
         let subj = self.lower_expr(&m.expr)?;
         if !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
             return None; // only payload-free enums (a bare i32 discriminant)
@@ -934,6 +971,100 @@ impl<'r> Lowerer<'r> {
             }
         }
         // No wildcard matched: the final else block falls through to the merge.
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), merge as u64);
+        Some(())
+    }
+
+    /// Lower a statement-form `match` over a *data-carrying* enum aggregate (`Option<i32>`): resolve
+    /// the subject to its `{ tag, payload }` slot, then for each `EnumVariant` arm compare the loaded
+    /// tag against the variant's ordinal and, in the taken block, bind each payload pattern to the
+    /// loaded payload field before running the arm body — the same tag-dispatch + `extractvalue` the
+    /// AST codegen emits, but through the flat aggregate machinery. (#242)
+    fn lower_data_match(&mut self, m: &crate::syntax::MatchExpr, enum_name: &str) -> Option<()> {
+        let (slot, _gid) = self.lower_agg_base(&m.expr)?;
+        let (_, offsets, payload_types) = self.enum_instance_layout(enum_name)?;
+        let tag_off = *offsets.first()?;
+        let (base, _) = parse_enum_instance(enum_name);
+        let data = self.registry.enum_data.get(base.as_str())?.clone();
+        let merge = self.new_block();
+        for arm in &m.arms {
+            match &arm.pattern {
+                crate::syntax::Pattern::EnumVariant(_, variant, payload_pats) => {
+                    let ordinal = data
+                        .variants
+                        .iter()
+                        .position(|(n, _)| n.as_ref() == variant.as_ref())?
+                        as u64;
+                    let tag = self.emit_value(
+                        Opcode::FieldLoad,
+                        slot,
+                        Register(0),
+                        ElementType::I32,
+                        tag_off,
+                    );
+                    let tagc = self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        ordinal,
+                    );
+                    let cond = self.emit_value(
+                        Opcode::Cmp,
+                        tag.reg,
+                        tagc.reg,
+                        ElementType::Bool,
+                        rel_code(&RelationalOp::Eq),
+                    );
+                    let body_b = self.new_block();
+                    let next_b = self.new_block();
+                    self.emit_effect(
+                        Opcode::CondBr,
+                        cond.reg,
+                        Register(0),
+                        pack_targets(body_b, next_b),
+                    );
+                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
+                    // Bind each payload pattern to its field (`Some(v)` -> `v = <payload>`).
+                    if let Some(pats) = payload_pats {
+                        for (i, pat) in pats.iter().enumerate() {
+                            if let crate::syntax::Pattern::Identifier(pname) = pat {
+                                let poff = *offsets.get(i + 1)?;
+                                let lty = lowered_ty(payload_types.get(i)?, self.registry)?;
+                                let pval = self.emit_typed(
+                                    Opcode::FieldLoad,
+                                    slot,
+                                    Register(0),
+                                    lty,
+                                    poff,
+                                );
+                                self.bind_local(pname.clone(), pval);
+                            }
+                        }
+                    }
+                    for s in &arm.body {
+                        self.lower_stmt(s)?;
+                    }
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+                }
+                crate::syntax::Pattern::Wildcard => {
+                    for s in &arm.body {
+                        self.lower_stmt(s)?;
+                    }
+                    if !self.block_terminated() {
+                        self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
+                    }
+                    break;
+                }
+                _ => return None,
+            }
+        }
         if !self.block_terminated() {
             self.emit_effect(Opcode::Br, Register(0), Register(0), merge as u64);
         }
@@ -1172,6 +1303,75 @@ impl<'r> Lowerer<'r> {
     /// layout) then `FieldStore` each field at its layout offset. Returns the slot as an aggregate
     /// `Val`. First cut: scalar fields only, and the struct's GID must be annotated (by the type
     /// checker) and its layout computed — otherwise the construction is declined.
+    /// Construct a data-carrying enum value (`Option<i32>::Some(30)` / `::None`) as a `{ i32 tag,
+    /// payload }` aggregate: `Alloca` the instance's synthesized layout, `FieldStore` the variant's
+    /// discriminant ordinal into the tag, then `FieldStore` each payload value into its field (a
+    /// payload-free variant like `None` stores only the tag, leaving the payload undefined — as the AST
+    /// codegen does). Returns the slot as an aggregate `Val`. (#242)
+    fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Option<Val> {
+        let (base, _) = parse_enum_instance(&ev.enum_name);
+        let data = self.registry.enum_data.get(base.as_str())?;
+        let ordinal =
+            data.variants
+                .iter()
+                .position(|(n, _)| n.as_ref() == ev.variant_name.as_ref())? as u64;
+        let (gid, offsets, _) = self.enum_instance_layout(&ev.enum_name)?;
+        let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        let tag = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            ordinal,
+        );
+        self.emit_effect(Opcode::FieldStore, slot.reg, tag.reg, *offsets.first()?);
+        if let Some(payload) = &ev.payload {
+            for (i, pexpr) in payload.iter().enumerate() {
+                let v = self.lower_expr(pexpr)?;
+                self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, *offsets.get(i + 1)?);
+            }
+        }
+        Some(slot)
+    }
+
+    /// Synthesize (once) and record the aggregate layout of a monomorphized data-carrying enum
+    /// instance (`"Option<i32>"` -> `{ i32 tag @0, i32 payload @4 }`), returning its per-instance GID
+    /// and the field byte offsets. The payload is the first non-empty variant's payload types
+    /// (`Option`'s `Some(T)`) substituted with the instance args, laid after the `i32` tag with
+    /// natural alignment — matching the AST codegen's `{ i32, <payload> }`. `None` for a payload-free
+    /// enum (a bare `i32` discriminant, not an aggregate) or an unmodelled payload type. (#242)
+    fn enum_instance_layout(&mut self, enum_name: &str) -> Option<(TypeId, Vec<u64>, Vec<Type>)> {
+        let (base, args) = parse_enum_instance(enum_name);
+        let data = self.registry.enum_data.get(base.as_str())?;
+        let mut mapping = HashMap::new();
+        for (g, a) in data.generics.iter().zip(&args) {
+            mapping.insert(g.clone(), a.clone());
+        }
+        let payload: Vec<Type> = data
+            .variants
+            .iter()
+            .find(|(_, p)| !p.is_empty())?
+            .1
+            .iter()
+            .map(|t| t.substitute(&mapping))
+            .collect();
+        let mut offsets = vec![0u64];
+        let mut field_tys = vec!["i32".to_string()]; // the discriminant tag
+        let mut off = 4u64;
+        for pt in &payload {
+            let (sz, al, mlir) = enum_payload_field(pt)?;
+            off = crate::layout::align_up(off as usize, al as usize) as u64;
+            offsets.push(off);
+            field_tys.push(mlir);
+            off += sz;
+        }
+        let gid = enum_instance_gid(&base, &args);
+        if !self.agg_layouts.iter().any(|(g, _, _)| *g == gid) {
+            self.agg_layouts.push((gid, offsets.clone(), field_tys));
+        }
+        Some((gid, offsets, payload))
+    }
+
     fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Option<Val> {
         // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
         // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
@@ -1429,6 +1629,29 @@ impl<'r> Lowerer<'r> {
                     );
                     return Some(());
                 }
+                // A data-carrying enum construction (`let o = Option<i32>::Some(30)`) also builds its
+                // aggregate in place; bind the local to that slot directly (else `bind_local` would
+                // re-`Alloca` and store the slot *pointer*, not the value). A payload-free variant is a
+                // scalar and falls through to the general path. (#242)
+                if let Expr::EnumVariant(ev) = &l.expr {
+                    let (base, _) = parse_enum_instance(&ev.enum_name);
+                    let is_data = self
+                        .registry
+                        .enum_data
+                        .get(base.as_str())
+                        .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
+                    if is_data {
+                        let slot = self.lower_enum_construct(ev)?;
+                        self.scope.insert(
+                            l.name.clone(),
+                            Binding::Slot {
+                                reg: slot.reg,
+                                ty: slot.ty,
+                            },
+                        );
+                        return Some(());
+                    }
+                }
                 // A value-position `if` (`let v: T = if c { .. } else { .. }`): allocate a result slot,
                 // have each branch store its trailing value into it, and bind the local to the slot
                 // (the merge block loads it). The slot type comes from the `let`'s annotation (#201).
@@ -1633,6 +1856,8 @@ impl<'r> Lowerer<'r> {
         // The tensor side table is keyed by (content-hash) GID, which `commit` does not rebase, so it
         // transfers as-is.
         worker.local_tensor_types.extend(self.tensor_types);
+        // Synthetic enum-instance layouts (keyed by content-hash GID, not rebased) transfer as-is.
+        worker.local_agg_layouts.extend(self.agg_layouts);
         // The string side table is indexed by each `PrintStr`'s `imm`; a fresh worker lowers exactly
         // one function, so the indices need no rebasing (they start at 0 per function).
         worker.local_string_table.extend(self.strings);
@@ -1802,6 +2027,82 @@ fn simple_ident(e: &Expr) -> Option<Symbol> {
         Expr::Identifier(id) => Some(id.name.clone()),
         _ => None,
     }
+}
+
+/// Parse a monomorphized enum instance name into its base name + type arguments: `"Option<i32>"` ->
+/// `("Option", [i32])`, `"Color"` -> `("Color", [])`. Type args are parsed as scalars (else a nominal
+/// `Struct`), matching the AST codegen's string-keyed approach. (#242)
+fn parse_enum_instance(name: &str) -> (String, Vec<Type>) {
+    let Some(lt) = name.find('<') else {
+        return (name.to_string(), Vec::new());
+    };
+    let base = name[..lt].to_string();
+    let inner = &name[lt + 1..name.rfind('>').unwrap_or(name.len())];
+    let args = inner
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| parse_scalar_type_arg(s.trim()))
+        .collect();
+    (base, args)
+}
+
+/// Parse a type-argument string to a `Type`: a scalar spelling to its `ElementType`, anything else to
+/// a nominal `Struct` (name resolution is unavailable here; substitution only needs the leaf identity).
+fn parse_scalar_type_arg(s: &str) -> Type {
+    use ElementType::*;
+    let e = match s {
+        "i8" => I8,
+        "u8" => U8,
+        "i16" => I16,
+        "u16" => U16,
+        "i32" => I32,
+        "u32" => U32,
+        "i64" => I64,
+        "u64" => U64,
+        "f16" => F16,
+        "bf16" => BF16,
+        "f32" => F32,
+        "f64" => F64,
+        "bool" | "Bool" => Bool,
+        other => return Type::Struct(other.to_string().into(), None),
+    };
+    Type::Scalar(e)
+}
+
+/// The byte size, alignment, and MLIR type string of an enum payload field — a scalar or a pointer.
+/// `None` for a by-value aggregate/tensor/generic payload (not modelled). (#242)
+fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
+    match ty {
+        Type::Scalar(ElementType::Generic(_)) => None,
+        Type::Scalar(e) => {
+            let (s, a) = crate::layout::scalar_size_align(e)?;
+            Some((s as u64, a as u64, element_mlir(e)?.to_string()))
+        }
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
+            Some((8, 8, "!llvm.ptr".to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The MLIR scalar type string for an element type (`i32`, `f32`, `i1` for bool, …) — the flat-lowerer
+/// counterpart of codegen's `mlir_scalar`, used to spell a synthesized enum-instance field. (#242)
+fn element_mlir(e: &ElementType) -> Option<&'static str> {
+    use ElementType::*;
+    Some(match e {
+        F16 => "f16",
+        F32 => "f32",
+        F64 => "f64",
+        BF16 => "bf16",
+        I8 | U8 => "i8",
+        I16 | U16 => "i16",
+        I32 | U32 => "i32",
+        I64 | U64 => "i64",
+        I128 | U128 => "i128",
+        I4 | U4 => "i4",
+        Bool => "i1",
+        Generic(_) => return None,
+    })
 }
 
 /// Strip one borrow/pointer/ref wrapper, yielding the pointee (or the type itself if not a

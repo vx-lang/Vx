@@ -768,11 +768,16 @@ impl CompilerDriver {
             .iter()
             .map(|(_, w)| w.local_string_table.as_slice())
             .collect();
+        let agg_layouts: Vec<_> = entries
+            .iter()
+            .flat_map(|(_, w)| w.local_agg_layouts.iter().cloned())
+            .collect();
         let text = match crate::codegen::flat::emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
             &string_tables,
+            &agg_layouts,
         ) {
             Some(t) => t,
             None => {

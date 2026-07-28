@@ -192,11 +192,16 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_string_table.as_slice())
         .collect();
+    let agg_layouts: Vec<_> = lowered
+        .iter()
+        .flat_map(|w| w.local_agg_layouts.iter().cloned())
+        .collect();
     let body = vxc::codegen::flat::emit_module_mlir(
         &funcs,
         &session.registry,
         &tensor_types,
         &string_tables,
+        &agg_layouts,
     )?;
 
     let context = make_context();
@@ -847,7 +852,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .collect();
     funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
 
-    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[])
+    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[])
         .expect("flat codegen emits the linked module");
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
@@ -1151,6 +1156,32 @@ fn flat_matches_ast_vec_push_get_len() {
              v.push(20); v.push(30); return v.get(0) + v.get(2) + v.len(); }}"
         ),
         43,
+    );
+}
+
+#[test]
+fn flat_matches_ast_data_enum_construct_and_match() {
+    // A data-carrying enum (`Option<i32>`, #242): construct `Some(30)` as a `{ i32 tag, i32 payload }`
+    // aggregate, then a statement-`match` loads the tag to dispatch and binds the payload in the
+    // `Some` arm. `30`. (The enum is named `Option` so the AST oracle's `Option<`-prefixed payload
+    // handling matches the flat path's synthesized layout.)
+    assert_parity(
+        "enum Option<T> { Some(T), None }\n\
+         fn main() -> i32 { let o = Option<i32>::Some(30); let mut r = 0; \
+         match o { Option<i32>::Some(v) => { r = v; } Option<i32>::None => { r = -1; } } return r; }",
+        30,
+    );
+}
+
+#[test]
+fn flat_matches_ast_data_enum_none_arm() {
+    // The `None` arm of the same surface: `None` stores only the tag, and the match dispatches to the
+    // `None` arm (tag 1). `7`.
+    assert_parity(
+        "enum Option<T> { Some(T), None }\n\
+         fn main() -> i32 { let o = Option<i32>::None; let mut r = 0; \
+         match o { Option<i32>::Some(v) => { r = v; } Option<i32>::None => { r = 7; } } return r; }",
+        7,
     );
 }
 

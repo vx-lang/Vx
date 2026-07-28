@@ -518,12 +518,23 @@ pub fn emit_module_mlir(
     registry: &ImmutableGlobalRegistry,
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
+    agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
 ) -> Option<String> {
     let mut ctx = EmitCtx::from_registry(registry);
     for (gid, elem, shape) in tensor_types {
         ctx.tensors
             .entry(*gid)
             .or_insert_with(|| (elem.clone(), shape.clone()));
+    }
+    // Synthesized data-carrying enum-instance layouts (`Option<i32>` -> `{ i32, i32 }`): fold each into
+    // the aggregate map so a `FieldStore`/`FieldLoad`/`Alloca` on its GID resolves like any struct.
+    // Instance-dependent, so they aren't in the frozen registry (the lowerer synthesized them). (#242)
+    for (gid, offsets, field_tys) in agg_layouts {
+        ctx.aggs.entry(*gid).or_insert_with(|| AggLayout {
+            struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
+            offsets: offsets.clone(),
+            field_tys: field_tys.clone(),
+        });
     }
     let mut out = String::new();
     let mut globals = String::new();
@@ -1711,8 +1722,18 @@ mod tests {
             .iter()
             .map(|w| w.local_string_table.as_slice())
             .collect();
-        let mlir = emit_module_mlir(&funcs, &session.registry, &tensor_types, &string_tables)
-            .expect("emits flat module");
+        let agg_layouts: Vec<_> = lowered
+            .iter()
+            .flat_map(|w| w.local_agg_layouts.iter().cloned())
+            .collect();
+        let mlir = emit_module_mlir(
+            &funcs,
+            &session.registry,
+            &tensor_types,
+            &string_tables,
+            &agg_layouts,
+        )
+        .expect("emits flat module");
 
         use melior::ir::operation::OperationLike;
         let dialects = melior::dialect::DialectRegistry::new();

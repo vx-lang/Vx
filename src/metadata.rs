@@ -850,6 +850,9 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // accesses a pointer field through a monomorphized imported aggregate falls back to the AST
         // path (#242).
         structs: FxHashMap::default(),
+        // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
+        // monomorphized imported enum then falls back to the AST path (#242).
+        enum_data: FxHashMap::default(),
     })
 }
 

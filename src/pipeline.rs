@@ -420,6 +420,22 @@ pub fn build_frozen_registry(
                 },
             );
         }
+        // Data-carrying enum decls, so the flat path can synthesize a monomorphized instance's
+        // `{ tag, payload }` layout by substituting its type args into the variant payload types
+        // (`Option<i32>` -> `{ i32, i32 }`). (#242)
+        for e in &module.enums {
+            registry.enum_data.insert(
+                e.name.clone(),
+                crate::registry::EnumData {
+                    generics: e.generics.iter().map(|g| g.name().into()).collect(),
+                    variants: e
+                        .variants
+                        .iter()
+                        .map(|(n, p)| (n.clone(), p.clone().unwrap_or_default()))
+                        .collect(),
+                },
+            );
+        }
     }
 
     // Function signatures for call resolution in the flat HIR (#198): name -> (GID, return
