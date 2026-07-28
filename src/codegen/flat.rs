@@ -408,6 +408,11 @@ pub struct AggLayout {
     /// `FieldLoad` of such a field tags its result register with this GID, so a *chained* field access
     /// through it (`(*self.vec).len`) can GEP the pointee. (#242)
     pub field_pointee: Vec<Option<TypeId>>,
+    /// For each field that is a *by-value nested aggregate* (`VecMap { iter: VecIter, f: Closure1 }`),
+    /// the nested aggregate's own layout GID. `None` for a scalar/pointer field. A `FieldLoad` of such
+    /// a field loads the whole `!llvm.struct` value (tracked in `agg_val_of`), a `FieldStore` stores it,
+    /// and taking its address (`&self.iter` for a method receiver) GEPs to it as an aggregate slot. (#242)
+    pub field_agg: Vec<Option<TypeId>>,
 }
 
 /// GID → aggregate layout, for the structs a stream constructs/reads. Structs whose fields are all
@@ -442,6 +447,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
         let mut field_tys = Vec::with_capacity(def.fields.len());
         let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());
+        let mut field_agg: Vec<Option<TypeId>> = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
         for (fi, f) in def.fields.iter().enumerate() {
             match &f.ty {
@@ -449,6 +455,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
                     Some(mt) => {
                         field_tys.push(mt.to_string());
                         field_pointee.push(None);
+                        field_agg.push(None);
                     }
                     None => {
                         modelled = false;
@@ -465,11 +472,24 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
                         .and_then(|(_, ft)| pointer_pointee_name(ft))
                         .and_then(|n| name_to_gid.get(n.as_str()).copied());
                     field_pointee.push(pointee);
+                    field_agg.push(None);
                 }
-                // A by-value nested-aggregate field needs addressed sub-views — not modelled yet.
-                FieldTy::Nominal(_) => {
-                    modelled = false;
-                    break;
+                // A by-value nested-aggregate field (`VecMap { iter: VecIter, .. }`): its MLIR type is
+                // the nested aggregate's `!llvm.struct` (recursively resolved), stored/loaded whole. The
+                // nested layout must itself be fully modelled (all scalar/pointer/nested fields), else the
+                // whole enclosing struct declines. (#242)
+                FieldTy::Nominal(nested_gid) => {
+                    match agg_struct_ty_of(*nested_gid, registry, &mut Vec::new()) {
+                        Some(nested_ty) => {
+                            field_tys.push(nested_ty);
+                            field_pointee.push(None);
+                            field_agg.push(Some(*nested_gid));
+                        }
+                        None => {
+                            modelled = false;
+                            break;
+                        }
+                    }
                 }
             }
             offsets.push(f.offset as u64);
@@ -482,11 +502,43 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
                     offsets,
                     field_tys,
                     field_pointee,
+                    field_agg,
                 },
             );
         }
     }
     map
+}
+
+/// The `!llvm.struct<(...)>` MLIR type of a modelled aggregate layout, resolved recursively so a
+/// by-value nested-aggregate field expands to its nested struct type. `None` if the layout is a stub,
+/// field-less, or has any unmodelled field (a non-lowerable scalar, or a nested aggregate that itself
+/// fails). `visiting` guards against a cyclic layout (which would be infinite-size anyway). (#242)
+fn agg_struct_ty_of(
+    gid: TypeId,
+    registry: &ImmutableGlobalRegistry,
+    visiting: &mut Vec<TypeId>,
+) -> Option<String> {
+    use crate::layout::FieldTy;
+    if visiting.contains(&gid) {
+        return None;
+    }
+    let def = registry.layouts.get(&gid)?;
+    if def.align_bytes == 0 || def.fields.is_empty() {
+        return None;
+    }
+    visiting.push(gid);
+    let mut field_tys = Vec::with_capacity(def.fields.len());
+    for f in &def.fields {
+        let ft = match &f.ty {
+            FieldTy::Scalar(e) => mlir_scalar(e)?.to_string(),
+            FieldTy::Opaque => "!llvm.ptr".to_string(),
+            FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
+        };
+        field_tys.push(ft);
+    }
+    visiting.pop();
+    Some(format!("!llvm.struct<({})>", field_tys.join(", ")))
 }
 
 /// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
@@ -630,6 +682,7 @@ pub fn emit_module_mlir(
             // A synthesized enum instance carries no pointer-to-aggregate fields (its payload is a
             // scalar/pointer-to-scalar), so no chained field access resolves through it.
             field_pointee: vec![None; field_tys.len()],
+            field_agg: vec![None; field_tys.len()],
         });
     }
     // Rebuild the callee map now that the synthesized enum-instance layouts are in `aggs`: a callee
@@ -997,6 +1050,11 @@ pub fn emit_function_mlir(
                     }
                 } else if let Some((elem, shape)) = ctx.tensors.get(&gid) {
                     mem_of[idx] = tensor_memref_ty(elem, shape);
+                } else if ctx.aggs.contains_key(&gid) {
+                    // A by-value aggregate parameter (`self : Option<i32>` in `Option::unwrap`, a
+                    // by-value struct arg): an `!llvm.struct` value, tracked so it can be spilled to a
+                    // slot / passed on by value. (#242)
+                    agg_val_of[idx] = Some(gid);
                 }
             }
             Opcode::Const => {
@@ -1480,9 +1538,30 @@ pub fn emit_function_mlir(
                 if fty == "!llvm.ptr" {
                     ptr_of[idx] = true;
                     agg_of[idx] = pointee;
+                } else if let Some(nested_gid) = agg.field_agg.get(field_idx).copied().flatten() {
+                    // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
+                    // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
+                    agg_val_of[idx] = Some(nested_gid);
                 } else {
                     etypes[idx] = elem_from_mlir_scalar(&fty);
                 }
+            }
+            // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
+            // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
+            // chained field access or a method receiver addresses through it. (#242)
+            Opcode::FieldAddr => {
+                let parent_gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
+                let agg = ctx.aggs.get(&parent_gid)?;
+                let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
+                let nested_gid = *types.get(ins.type_idx.0 as usize)?;
+                let slot = names.get(ins.operand1.0 as usize)?;
+                let n = format!("%v{idx}");
+                body += &format!(
+                    "  {n} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
+                    agg.struct_ty
+                );
+                names[idx] = n;
+                agg_of[idx] = Some(nested_gid);
             }
             // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
             // from the side table by GID. Its register is tracked in `mem_of` for later index/store.

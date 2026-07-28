@@ -185,13 +185,37 @@ impl<'a> LayoutComputer<'a> {
                 let (size, align) = scalar_size_align(et)?;
                 Some((size, align, FieldTy::Scalar(et.clone())))
             }
-            Type::Pointer(..) | Type::Ref(..) | Type::Borrow { .. } => {
-                Some((8, 8, FieldTy::Opaque))
-            }
+            // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
+            // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
+            Type::Pointer(..)
+            | Type::Ref(..)
+            | Type::Borrow { .. }
+            | Type::Function(..)
+            | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
             Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
                 Some((layout.size, layout.align, FieldTy::Nominal(*id)))
+            }
+            // A by-value generic-instance aggregate field (`VecMap { iter: VecIter<T>, f: Closure1<..> }`):
+            // its layout is the base nominal's when that layout is instance-independent — every generic
+            // parameter appears only behind a pointer, so the size is the same for any instantiation
+            // (`VecIter<T>` = `{ *const Vec<T>, i32 }`). Resolve the base GID (the attached one, else by
+            // name — a cross-module generic instance may leave the base's GID unattached, `Struct(
+            // "Closure1", None)`). An instance-dependent base (`Box<T> { value: T }`) leaves the base
+            // layout a stub, so `layout_of` returns `None` and the field declines. (#242)
+            Type::GenericInstance(base, _) => {
+                let id = match base.as_ref() {
+                    Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => *id,
+                    Type::Struct(name, None) | Type::Enum(name, None) => *self
+                        .structs
+                        .iter()
+                        .find(|(_, d)| d.name == *name)
+                        .map(|(g, _)| g)?,
+                    _ => return None,
+                };
+                let layout = self.layout_of(id)?;
+                Some((layout.size, layout.align, FieldTy::Nominal(id)))
             }
             _ => None,
         }

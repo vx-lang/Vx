@@ -232,6 +232,10 @@ struct Lowerer<'r> {
     /// isn't in the frozen registry; synthesized here as an enum is constructed/matched and committed
     /// so codegen can address it (the tagged-union analogue of `tensor_types`). (#242)
     agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+    /// The function's lowered return type, for a `return <match>` whose arms `return` themselves:
+    /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
+    /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
+    ret_ty: Option<LoweredTy>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -248,6 +252,7 @@ impl<'r> Lowerer<'r> {
             strings: Vec::new(),
             ast_types: HashMap::new(),
             agg_layouts: Vec::new(),
+            ret_ty: None,
         }
     }
 
@@ -429,13 +434,27 @@ impl<'r> Lowerer<'r> {
             // A name read: an SSA alias (no instruction) or a `SlotLoad` from its memory slot. A name
             // that isn't a local but names a registered function is a *function pointer* value (a bare
             // `square` passed to `apply_func`), lowered to a `FuncConst`. (#242)
-            Expr::Identifier(id) => match self.scope.get(&id.name).cloned() {
-                Some(Binding::Reg(v)) => Some(v),
-                Some(Binding::Slot { reg, ty }) => {
-                    Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
+            Expr::Identifier(id) => {
+                // Boolean literals parse as the identifiers `true`/`false` (matching the AST codegen);
+                // lower to a `bool` (i1) constant, `1` or `0`.
+                if id.name.as_ref() == "true" || id.name.as_ref() == "false" {
+                    let v = (id.name.as_ref() == "true") as u64;
+                    return Some(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::Bool,
+                        v,
+                    ));
                 }
-                None => self.lower_func_const(&id.name),
-            },
+                match self.scope.get(&id.name).cloned() {
+                    Some(Binding::Reg(v)) => Some(v),
+                    Some(Binding::Slot { reg, ty }) => {
+                        Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
+                    }
+                    None => self.lower_func_const(&id.name),
+                }
+            }
             Expr::BinaryOp(b) => {
                 let l = self.lower_expr(&b.lhs)?;
                 let r = self.lower_expr(&b.rhs)?;
@@ -486,8 +505,8 @@ impl<'r> Lowerer<'r> {
             // #215) or a pointer to an aggregate (`self.len`/`self.data` where `self : &mut Vec`,
             // #242) — `lower_agg_base` resolves both to the `!llvm.ptr` addressing the struct plus its
             // layout GID. The field's offset + type come from the registry layout: a scalar field
-            // yields its element, a pointer field (`Vec`'s `data`) an opaque `!llvm.ptr`. A
-            // by-value nested-aggregate field needs an addressed sub-view — declined.
+            // yields its element, a pointer field (`Vec`'s `data`) an opaque `!llvm.ptr`, and a by-value
+            // nested-aggregate field (`VecMap`'s `f : Closure1`) the whole `!llvm.struct` value (#242).
             Expr::MemberAccess(m) => {
                 let (base_reg, gid) = self.lower_agg_base(&m.base)?;
                 let field = self
@@ -501,7 +520,7 @@ impl<'r> Lowerer<'r> {
                 let result_ty = match &field.ty {
                     FieldTy::Scalar(e) => LoweredTy::Scalar(e.clone()),
                     FieldTy::Opaque => LoweredTy::Ptr,
-                    FieldTy::Nominal(_) => return None,
+                    FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(*nested_gid),
                 };
                 Some(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
             }
@@ -708,6 +727,17 @@ impl<'r> Lowerer<'r> {
                         });
                     }
                 }
+                // `&outer.inner`: the address of a by-value nested-aggregate field — a method receiver
+                // (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`. `lower_agg_base` GEPs to
+                // the field (a `FieldAddr`); the resulting pointer is the borrow value. (#242)
+                if matches!(&*b.expr, Expr::MemberAccess(_)) {
+                    if let Some((reg, _)) = self.lower_agg_base(&b.expr) {
+                        return Some(Val {
+                            reg,
+                            ty: LoweredTy::Ptr,
+                        });
+                    }
+                }
                 let v = self.lower_expr(&b.expr)?;
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
                     Some(v)
@@ -816,6 +846,9 @@ impl<'r> Lowerer<'r> {
                     .find(|(n, _)| n.as_ref() == m.member.as_ref())?;
                 Some(substitute_generics(fty, &decl.generics, &args))
             }
+            // A struct literal has its named type (`let adder = |x| ..` -> the generated
+            // `Closure_N` struct), so a closure local passed to `.map` is recognized as a closure. (#242)
+            Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
             // `*p` has the pointee type (`p : *mut i32` -> `i32`).
@@ -854,6 +887,34 @@ impl<'r> Lowerer<'r> {
             let gid = agg_gid_of_ty(&base_ty, self.registry)?;
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
             return matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid));
+        }
+        // A by-value nested-aggregate field as a base (`outer.inner.a`, or `&self.iter` as a method
+        // receiver): recurse to the enclosing aggregate's pointer, then GEP to the nested field via a
+        // `FieldAddr`. The nested field must itself be a modelled aggregate. (#242)
+        if let Expr::MemberAccess(m) = base {
+            if let Some((parent_reg, parent_gid)) = self.lower_agg_base(&m.base) {
+                let field = self
+                    .registry
+                    .layouts
+                    .get(&parent_gid)?
+                    .fields
+                    .iter()
+                    .find(|f| f.name.as_ref() == m.member.as_ref())?;
+                if let FieldTy::Nominal(nested_gid) = field.ty {
+                    let offset = field.offset as u64;
+                    let type_idx = TypeIdx(self.types.len() as u32);
+                    self.types.push(nested_gid);
+                    let reg = Register(self.code.len() as u32);
+                    self.code.push(HirInstruction::new(
+                        Opcode::FieldAddr,
+                        parent_reg,
+                        Register(0),
+                        type_idx,
+                        offset,
+                    ));
+                    return Some((reg, nested_gid));
+                }
+            }
         }
         // A pointer to an aggregate: the base lowers to a pointer value; its pointee layout GID comes
         // from the base's AST type (the layout the frozen registry keyed under the base nominal).
@@ -917,7 +978,7 @@ impl<'r> Lowerer<'r> {
         // A data-carrying enum match (`match o { Option<i32>::Some(v) => .. None => .. }`, #242): the
         // subject is a `{ tag, payload }` aggregate, dispatched on its tag field. Detected from the
         // first `EnumVariant` pattern naming an enum with a payload-carrying variant.
-        if let Some(enum_name) = m.arms.iter().find_map(|a| match &a.pattern {
+        if let Some(pattern_en) = m.arms.iter().find_map(|a| match &a.pattern {
             crate::syntax::Pattern::EnumVariant(en, _, _) => {
                 let (base, _) = parse_enum_instance(en);
                 let has_payload = self
@@ -929,6 +990,15 @@ impl<'r> Lowerer<'r> {
             }
             _ => None,
         }) {
+            // The concrete instance name comes from the *subject's* type (`match *self` on
+            // `&Option<i32>` -> `Option<i32>`): monomorphization substitutes the receiver's type args
+            // in the signature but not in the body's match patterns, which keep the generic spelling
+            // (`Option<T>`). Fall back to the pattern's spelling when the subject type is unavailable.
+            let enum_name = self
+                .infer_ast_type(&m.expr)
+                .map(|t| deref_to_pointee(&t).to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(pattern_en);
             return self.lower_data_match(m, &enum_name);
         }
         let subj = self.lower_expr(&m.expr)?;
@@ -998,14 +1068,40 @@ impl<'r> Lowerer<'r> {
         Some(())
     }
 
+    /// Resolve the subject of a data-carrying-enum `match` to a pointer addressing its `{ tag, payload }`
+    /// aggregate. Three shapes: `match o` (a local aggregate slot, via `lower_agg_base`); `match *self`
+    /// (an `&Option<T>` receiver in an `Option` method — the pointer value *is* the slot, and the emitter
+    /// tags the pointer param's pointee with the synthetic enum GID); and `match <value>` (a by-value
+    /// enum — a call result or a by-value `self` — spilled to a fresh slot so its fields are addressable).
+    /// The `*self`/by-value forms are what let `Option::is_none`/`is_some`/`unwrap` lower on flat. (#242)
+    fn lower_data_match_slot(&mut self, subj: &Expr, gid: TypeId) -> Option<Register> {
+        // `match *self`: the dereferenced pointer *is* the aggregate slot.
+        if let Expr::Dereference(d) = subj {
+            let v = self.lower_expr(&d.expr)?;
+            return matches!(v.ty, LoweredTy::Ptr).then_some(v.reg);
+        }
+        // `match o`: a local aggregate slot (or a self-pointer to one).
+        if let Some((slot, _)) = self.lower_agg_base(subj) {
+            return Some(slot);
+        }
+        // `match <value>`: a by-value enum aggregate — spill it to a slot to address its fields.
+        let v = self.lower_expr(subj)?;
+        if matches!(v.ty, LoweredTy::Aggregate(_)) {
+            let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+            self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+            return Some(slot.reg);
+        }
+        None
+    }
+
     /// Lower a statement-form `match` over a *data-carrying* enum aggregate (`Option<i32>`): resolve
     /// the subject to its `{ tag, payload }` slot, then for each `EnumVariant` arm compare the loaded
     /// tag against the variant's ordinal and, in the taken block, bind each payload pattern to the
     /// loaded payload field before running the arm body — the same tag-dispatch + `extractvalue` the
     /// AST codegen emits, but through the flat aggregate machinery. (#242)
     fn lower_data_match(&mut self, m: &crate::syntax::MatchExpr, enum_name: &str) -> Option<()> {
-        let (slot, _gid) = self.lower_agg_base(&m.expr)?;
-        let (_, offsets, payload_types) = self.enum_instance_layout(enum_name)?;
+        let (gid, offsets, payload_types) = self.enum_instance_layout(enum_name)?;
+        let slot = self.lower_data_match_slot(&m.expr, gid)?;
         let tag_off = *offsets.first()?;
         let (base, _) = parse_enum_instance(enum_name);
         let data = self.registry.enum_data.get(base.as_str())?.clone();
@@ -1549,12 +1645,10 @@ impl<'r> Lowerer<'r> {
             .collect();
 
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
-        for (name, offset, fty) in field_layouts {
-            // Scalar or pointer fields (`Vec { data: ptr, len, capacity }`, #242); a by-value
-            // nested-aggregate field needs an addressed sub-view — declined.
-            if matches!(&fty, FieldTy::Nominal(_)) {
-                return None;
-            }
+        for (name, offset, _fty) in field_layouts {
+            // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
+            // whole `!llvm.struct` value (`VecMap { iter: VecIter, f: Closure1 }`), the store type coming
+            // from the layout's `field_tys` at emit (#242).
             let (_, init_expr) = si
                 .fields
                 .iter()
@@ -1645,6 +1739,44 @@ impl<'r> Lowerer<'r> {
     /// (its GID + return type), lower each argument, mark them with `Arg` instructions in order, then
     /// emit `Call` (callee GID in `type_idx`, arg count in `imm`). Declines an unknown callee (or one
     /// ambiguous across modules) and a void/unmodelled return -- for now only value-returning calls.
+    /// If `arg` is a closure literal environment (`Closure_N`), materialize the nominal `ClosureK`
+    /// fat struct `{ env, func }` the stdlib API expects (`.map`'s `f : Closure1<T, NewItem>`): `env`
+    /// is the address of the closure's environment aggregate (its captures), `func` a `FuncConst`
+    /// pointer to the generated `Closure_N_call`. Every `ClosureK` layout is structurally `{ ptr, ptr }`
+    /// (the flat aggregates are anonymous structs), so any is a valid target — the arity only matters at
+    /// the eventual `CallIndirect`, which rebuilds the function type from the actual arguments. Returns
+    /// the adapted value (passed by value), or `None` if `arg` isn't a closure. (#242)
+    fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Option<Val> {
+        let cn_name = match self.infer_ast_type(arg)? {
+            Type::Struct(name, _) if name.as_ref().starts_with("Closure_") => {
+                name.as_ref().to_string()
+            }
+            _ => return None,
+        };
+        // env = the address of the closure's environment aggregate (its captured variables).
+        let (env_ptr, _cn_gid) = self.lower_agg_base(arg)?;
+        // func = a pointer to the closure's generated call function `Closure_N_call`.
+        let call_name: Symbol = format!("{cn_name}_call").into();
+        let fnptr = self.lower_func_const(&call_name)?;
+        // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
+        let ck_gid = struct_layout_gid_by_name(self.registry, "Closure1")?;
+        let (env_off, func_off) = {
+            let fields = &self.registry.layouts.get(&ck_gid)?.fields;
+            (fields.first()?.offset as u64, fields.get(1)?.offset as u64)
+        };
+        let slot = self.emit_alloca(LoweredTy::Aggregate(ck_gid));
+        self.emit_effect(Opcode::FieldStore, slot.reg, env_ptr, env_off);
+        self.emit_effect(Opcode::FieldStore, slot.reg, fnptr.reg, func_off);
+        // Passed by value: load the completed fat struct.
+        Some(self.emit_typed(
+            Opcode::SlotLoad,
+            slot.reg,
+            Register(0),
+            LoweredTy::Aggregate(ck_gid),
+            0,
+        ))
+    }
+
     /// Materialize a function pointer for a registered function name (`FuncConst`): the result is an
     /// opaque `!llvm.ptr`, and `type_idx` carries the target's GID so codegen can emit
     /// `func.constant @name : sig`. Declines for a name that isn't a registered function. (#242)
@@ -1732,7 +1864,13 @@ impl<'r> Lowerer<'r> {
         let ret_ty = self.lower_ty_synth(&sig.ret_ty)?;
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
-            arg_regs.push(self.lower_expr(arg)?.reg);
+            // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
+            // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
+            let v = match self.try_adapt_closure_arg(arg) {
+                Some(v) => v,
+                None => self.lower_expr(arg)?,
+            };
+            arg_regs.push(v.reg);
         }
         for reg in arg_regs {
             self.emit_effect(Opcode::Arg, reg, Register(0), 0);
@@ -1910,6 +2048,28 @@ impl<'r> Lowerer<'r> {
                 Some(())
             }
             Statement::Return(r) => {
+                // `return <match>` (a value-position match whose arms `return` themselves, e.g.
+                // `Option::unwrap`): lower the match as a statement — each arm emits its own `Ret` — then
+                // give the fall-through merge block a terminator, a default (zero) return of the
+                // function's type, exactly as the AST codegen's merge block does. (#242)
+                if let Expr::Match(m) = &r.expr {
+                    self.lower_match(m)?;
+                    if !self.block_terminated() {
+                        let rty = self.ret_ty.clone()?;
+                        let zero = match &rty {
+                            LoweredTy::Scalar(e) => self.emit_value(
+                                Opcode::Const,
+                                Register(0),
+                                Register(0),
+                                e.clone(),
+                                0,
+                            ),
+                            _ => return None, // a non-scalar default return isn't modelled
+                        };
+                        self.emit_typed(Opcode::Ret, zero.reg, Register(0), rty, 0);
+                    }
+                    return Some(());
+                }
                 // The returned value already carries the function's declared return type — the checker
                 // types a literal to it and rejects a genuine mismatch (#240).
                 let v = self.lower_expr(&r.expr)?;
@@ -2134,6 +2294,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
     lw.memory = body_has_control_flow(&func.body)
         || has_aggregate_param
         || body_constructs_struct(&func.body);
+    lw.ret_ty = lw.lower_ty_synth(&func.return_type);
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
     }
@@ -2141,7 +2302,10 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
     // mode, an SSA register otherwise). A tensor is a reference value (memref), so it always binds
     // as an SSA register — never `Alloca`'d into a slot.
     for (i, (name, ty)) in func.params.iter().enumerate() {
-        let lty = lowered_ty(ty, registry)?;
+        // `lower_ty_synth` (not the free `lowered_ty`) so a by-value data-carrying enum parameter
+        // (`self : Option<T>` in `Option::unwrap`) synthesizes its `{ tag, payload }` instance layout
+        // and binds as an aggregate rather than declining. (#242)
+        let lty = lw.lower_ty_synth(ty)?;
         // Record the param's concrete AST type so `infer_ast_type` can recover a pointer field's
         // pointee element (`self : &mut Vec<i32>` -> `self.data : *mut i32`, #242).
         lw.ast_types.insert(name.clone(), ty.clone());
@@ -2425,7 +2589,22 @@ fn struct_layout_gid_by_name(registry: &ImmutableGlobalRegistry, name: &str) -> 
 /// monomorphized cross-module instance's base may carry no GID). Requires a modelled (non-stub)
 /// layout. (#242)
 fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId> {
-    let nominal = match deref_to_pointee(ty) {
+    let pointee = deref_to_pointee(ty);
+    // A data-carrying enum instance (`Option<i32>`, as `self : &Option<T>` in an `Option` method) has a
+    // *synthesized* per-instance `{ tag, payload }` layout keyed by `enum_instance_gid`, not a registry
+    // layout — resolve it directly so the pointer binds as an aggregate reference (`match *self`). (#242)
+    if let Type::GenericInstance(base, args) = pointee {
+        if let Type::Enum(n, _) | Type::Struct(n, _) = base.as_ref() {
+            if registry
+                .enum_data
+                .get(n.as_ref())
+                .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()))
+            {
+                return Some(enum_instance_gid(n.as_ref(), args));
+            }
+        }
+    }
+    let nominal = match pointee {
         Type::GenericInstance(base, _) => base.as_ref(),
         other => other,
     };

@@ -137,6 +137,12 @@ pub enum Opcode {
     /// function type `(arg types)->ret` from the actual argument registers, casts the pointer to it, and
     /// emits `call_indirect`. Backs `Closure1`'s `f_ptr(env, item)` and bare-fn-pointer calls. (#242)
     CallIndirect = 36,
+    /// The address of a *by-value nested-aggregate field* (`&outer.inner`): `operand1` is the enclosing
+    /// aggregate's slot/pointer, `imm` the field's byte offset, and this instruction's own `type_idx`
+    /// the nested aggregate's layout GID. Codegen GEPs to the field and yields the pointer, tracked as an
+    /// aggregate slot so a chained access (`outer.inner.a`) or a method receiver (`self.iter.next()`)
+    /// addresses through it. The nested-aggregate analogue of `FieldLoad` that stops at the pointer. (#242)
+    FieldAddr = 37,
 }
 
 impl Opcode {
@@ -183,6 +189,7 @@ impl Opcode {
             34 => PtrStore,
             35 => FuncConst,
             36 => CallIndirect,
+            37 => FieldAddr,
             _ => return None,
         })
     }

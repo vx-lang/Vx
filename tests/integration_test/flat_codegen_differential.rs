@@ -1323,3 +1323,33 @@ fn flat_matches_ast_function_pointer() {
         49,
     );
 }
+
+#[test]
+fn flat_matches_ast_nested_aggregate_field_method() {
+    // A by-value nested-aggregate struct field (`Outer { inner: Inner, .. }`): constructing it stores
+    // the whole `Inner` value, `self.inner.sum()` takes the field's address (`FieldAddr`) as the method
+    // receiver, and `self.inner.a` GEPs through it. `(3 + 4) + 7 = 14`. (#242)
+    assert_parity(
+        "struct Inner { a: i32, b: i32 } \
+         struct Outer { inner: Inner, x: i32 } \
+         impl Inner { fn sum(self: &Inner) -> i32 { return self.a + self.b; } } \
+         impl Outer { fn total(self: &Outer) -> i32 { return self.inner.sum() + self.x; } } \
+         fn main() -> i32 { let i = Inner { a: 3, b: 4 }; \
+             let o = Outer { inner: i, x: 7 }; return o.total(); }",
+        14,
+    );
+}
+
+#[test]
+fn flat_matches_ast_function_pointer_struct_field() {
+    // A function-pointer struct field (`Holder { f: fn(i32)->i32, .. }`): a bare function stored into
+    // the field (a `FuncConst` pointer), loaded back, and called through (`CallIndirect`). `sq(6) = 36`.
+    // This is the shape of an iterator adapter carrying its mapping function. (#242)
+    assert_parity(
+        "struct Holder { f: fn(i32)->i32, x: i32 } \
+         fn sq(n: i32) -> i32 { return n * n; } \
+         fn call_it(h: Holder, v: i32) -> i32 { let fp = h.f; return fp(v); } \
+         fn main() -> i32 { let h = Holder { f: sq, x: 5 }; return call_it(h, 6); }",
+        36,
+    );
+}
