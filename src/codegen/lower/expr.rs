@@ -3041,19 +3041,12 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let size: i64 = match &self.target_ty {
-            syntax::Type::Scalar(syntax::ElementType::F32)
-            | syntax::Type::Scalar(syntax::ElementType::I32)
-            | syntax::Type::Scalar(syntax::ElementType::U32) => 4,
-            syntax::Type::Scalar(syntax::ElementType::F64)
-            | syntax::Type::Scalar(syntax::ElementType::I64)
-            | syntax::Type::Scalar(syntax::ElementType::U64) => 8,
-            syntax::Type::Scalar(syntax::ElementType::I8)
-            | syntax::Type::Scalar(syntax::ElementType::U8)
-            | syntax::Type::Scalar(syntax::ElementType::Bool) => 1,
-            syntax::Type::Scalar(syntax::ElementType::I16)
-            | syntax::Type::Scalar(syntax::ElementType::U16)
-            | syntax::Type::Scalar(syntax::ElementType::BF16)
-            | syntax::Type::Scalar(syntax::ElementType::F16) => 2,
+            // Scalar byte size from the single width source (`scalar_size_align` -> `ElementType::bits`),
+            // rather than a fourth hand-maintained per-type table; also sizes sub-byte scalars (`i4` = 1)
+            // that the old match dropped to the `_ => 8` fallback. (P1-4a)
+            syntax::Type::Scalar(e) => crate::layout::scalar_size_align(e)
+                .map(|(s, _)| s as i64)
+                .unwrap_or(8),
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => 8,
             // A nominal struct (or a monomorphized generic instance of one) gets its *real* layout
             // size, not the old hardcoded `8` — otherwise a `Vec<struct>`'s element buffer sized by

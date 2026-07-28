@@ -286,6 +286,25 @@ impl ElementType {
             ElementType::F16 | ElementType::F32 | ElementType::F64 | ElementType::BF16
         )
     }
+
+    /// Storage width in bits — the single source of truth for element widths, from which
+    /// `hir::memory::element_bits` (dense bits) and `layout::scalar_size_align` (padded bytes =
+    /// `ceil(bits/8)`) both derive, so the two can no longer drift (they disagreed on `I4` before:
+    /// 4 dense bits vs 1 padded byte, both from independent tables). `None` for an un-instantiated
+    /// generic. Adding a numeric format sets its width here, in one place. (P1-4a; see the
+    /// heterogeneous gap analysis §9.8.1.)
+    pub fn bits(&self) -> Option<u32> {
+        Some(match self {
+            ElementType::Bool => 1,
+            ElementType::I4 | ElementType::U4 => 4,
+            ElementType::I8 | ElementType::U8 => 8,
+            ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
+            ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
+            ElementType::F64 | ElementType::I64 | ElementType::U64 => 64,
+            ElementType::I128 | ElementType::U128 => 128,
+            ElementType::Generic(_) => return None,
+        })
+    }
 }
 
 impl std::fmt::Display for ElementType {

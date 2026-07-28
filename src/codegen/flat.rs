@@ -54,10 +54,7 @@ fn mlir_scalar(elem: &ElementType) -> Option<&'static str> {
 }
 
 fn is_float(e: &ElementType) -> bool {
-    matches!(
-        e,
-        ElementType::F16 | ElementType::F32 | ElementType::F64 | ElementType::BF16
-    )
+    e.is_float() // the single float-class predicate (`ElementType::is_float`); P1-4a
 }
 
 /// The inverse of [`mlir_scalar`]: recover an [`ElementType`] from an MLIR scalar type string.

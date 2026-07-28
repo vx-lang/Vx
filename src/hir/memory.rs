@@ -27,18 +27,10 @@ pub struct DerivedCost {
     pub per: RatePer,
 }
 
-/// Bit width of a tensor element; `None` for an un-instantiated generic element.
+/// Bit width of a tensor element (dense packing, e.g. `I4` = 4 bits) — a thin wrapper over the single
+/// width source `ElementType::bits`. `None` for an un-instantiated generic element. (P1-4a)
 pub fn element_bits(elem: &ElementType) -> Option<u64> {
-    Some(match elem {
-        ElementType::Bool => 1,
-        ElementType::I4 | ElementType::U4 => 4,
-        ElementType::I8 | ElementType::U8 => 8,
-        ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
-        ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
-        ElementType::F64 | ElementType::I64 | ElementType::U64 => 64,
-        ElementType::I128 | ElementType::U128 => 128,
-        ElementType::Generic(_) => return None,
-    })
+    elem.bits().map(|b| b as u64)
 }
 
 /// Byte size of a statically-shaped tensor: `ceil(element_bits × Π(dims) / 8)`. `None` when the

@@ -65,19 +65,12 @@ pub fn align_up(n: usize, align: usize) -> usize {
 /// (`align == size`). Returns `None` for a `Generic` type variable — it has no
 /// concrete layout until the enclosing type is monomorphized.
 pub fn scalar_size_align(et: &ElementType) -> Option<(usize, usize)> {
-    let size = match et {
-        ElementType::Bool
-        | ElementType::I4
-        | ElementType::U4
-        | ElementType::I8
-        | ElementType::U8 => 1,
-        ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 2,
-        ElementType::F32 | ElementType::I32 | ElementType::U32 => 4,
-        ElementType::F64 | ElementType::I64 | ElementType::U64 => 8,
-        ElementType::I128 | ElementType::U128 => 16,
-        ElementType::Generic(_) => return None,
-    };
-    Some((size, size))
+    // Byte size = the dense bit width rounded up to a whole byte (padded storage: a sub-byte `I4`
+    // field occupies 1 byte). Derived from the single width source `ElementType::bits`, so this can no
+    // longer drift from `hir::memory::element_bits` (they disagreed on `I4` before — see `bits`). A
+    // scalar's alignment equals its size here (natural alignment for the modelled widths). (P1-4a)
+    let bytes = (et.bits()? as usize).div_ceil(8);
+    Some((bytes, bytes))
 }
 
 /// Computes nominal-type layouts over a fixed set of struct/enum declarations,
@@ -268,6 +261,39 @@ mod tests {
         assert_eq!(scalar_size_align(&ElementType::I128), Some((16, 16)));
         // A generic type variable has no concrete layout.
         assert_eq!(scalar_size_align(&ElementType::Generic(sym("T"))), None);
+    }
+
+    #[test]
+    fn width_tables_derive_from_one_source() {
+        // P1-4a invariant: `element_bits` (dense) and `scalar_size_align` (padded bytes) both derive
+        // from `ElementType::bits`, so they can never drift again. In particular the sub-byte case that
+        // used to be maintained independently: I4 is 4 dense bits but occupies a padded byte.
+        for et in [
+            ElementType::Bool,
+            ElementType::I4,
+            ElementType::U4,
+            ElementType::I8,
+            ElementType::F16,
+            ElementType::BF16,
+            ElementType::F32,
+            ElementType::I64,
+            ElementType::I128,
+        ] {
+            let bits = et.bits().unwrap() as usize;
+            assert_eq!(
+                crate::hir::memory::element_bits(&et),
+                Some(bits as u64),
+                "element_bits must equal bits() for {et:?}"
+            );
+            assert_eq!(
+                scalar_size_align(&et),
+                Some((bits.div_ceil(8), bits.div_ceil(8))),
+                "scalar_size_align must be ceil(bits/8) for {et:?}"
+            );
+        }
+        assert_eq!(ElementType::I4.bits(), Some(4));
+        assert_eq!(scalar_size_align(&ElementType::I4), Some((1, 1)));
+        assert_eq!(crate::hir::memory::element_bits(&ElementType::I4), Some(4));
     }
 
     #[test]

@@ -93,6 +93,22 @@ _(updated as each item lands; newest first)_
   (`// VERIFY-SEAMS`, expects E6004). Files: `src/arch.rs`, `src/hir/expr.rs::check_transfer_expr`. Full
   suite green.
 
+- **P1-4a (core) — DONE.** After finishing the P0 cluster I took the safe, self-contained core of
+  P1-4a as a bonus (the audit confirmed the `I4` width-table drift is real). Rather than the doc's full
+  `ElementDescriptor` struct (which also folds in the name/parse/melior maps), I collapsed the
+  **width** facts — the highest-value, lowest-risk part — onto a single source: a new
+  `ElementType::bits()` method (next to `is_float`, in `syntax/types.rs`, so no module cycle).
+  `hir::memory::element_bits` (dense bits), `layout::scalar_size_align` (padded bytes = `ceil(bits/8)`),
+  and `SizeOfExpr::lower`'s scalar cases now all derive from it — three hand-maintained width tables
+  down to one, so they can't drift again. Also fixed a latent bug the dedup surfaced: `sizeof<i4>()`
+  was `8` (the old match dropped `I4`/`U4` to `_ => 8`); it is now `1`. And `flat.rs`'s duplicate
+  `is_float` now delegates to the canonical `ElementType::is_float`. Pure refactor: the full suite
+  passes unchanged, plus a new `width_tables_derive_from_one_source` invariant test. Left as a
+  follow-up (P1-4a remainder): the surface/mlir **name** maps (Display/parse/`generator` melior handle)
+  and the `class`/`pack` descriptor fields — needed for P1-4b (FP8/FP6/FP4), lower value on their own.
+  Files: `src/syntax/types.rs`, `src/hir/memory.rs`, `src/layout.rs`, `src/codegen/lower/expr.rs`,
+  `src/codegen/flat.rs`.
+
 ## Status: P0 ship-blocker cluster complete
 
 All four P0s from §10 landed and committed, each green through the full pre-commit suite: P0-4
