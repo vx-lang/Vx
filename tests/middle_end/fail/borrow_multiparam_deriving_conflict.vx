@@ -1,0 +1,28 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4003]
+// Soundness (#243, E1): the counterpart to borrow_multiparam_nonderiving_ok — `r` aliases `y`
+// (bound to the deriving parameter `b`), so mutating `y` while `r` is live must be REJECTED.
+// Per-parameter provenance narrows the borrow set but must still catch the deriving parameter.
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn pick(a : &Map, b : &Map) -> &i32 {
+  return &b.slot;
+}
+fn bad() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  let mut y = Map {
+    slot : 2, present : 1
+  };
+  let r = pick(&x, &y);
+  insert(&mut y, 9);   // r aliases y — must reject
+  return *r;
+}
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,31 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4003]
+// Soundness (#243, E2): a function whose body contains an `unsafe` block could stash a
+// parameter-derived pointer where a structural provenance walk cannot follow it, so its summary
+// falls back to the conservative `AnyParam`. The result is then treated as aliasing *every*
+// reference argument — mutating `x` while `r` is live must be rejected even though the visible
+// `return &b.slot` only names `b`. Conservative-on-unknown is the load-bearing soundness property.
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn pick_unsafe(a : &Map, b : &Map) -> &i32 {
+  unsafe { let _p = 0; }
+  return &b.slot;
+}
+fn bad() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  let mut y = Map {
+    slot : 2, present : 1
+  };
+  let r = pick_unsafe(&x, &y);
+  insert(&mut x, 9);   // conservative: r may alias x — must reject
+  return *r;
+}
+fn main() -> i32 {
+  return 0;
+}

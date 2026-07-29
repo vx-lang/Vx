@@ -2284,42 +2284,106 @@ impl<'a> TypeChecker<'a> {
                     || resolved_name == "Verified".into()
                     || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
+
+                // Reborrow tracking (#243). Passing a reference to a reference parameter reborrows
+                // the underlying storage; whether that reborrow *persists past the call* is decided
+                // per argument by the callee's return-provenance summary — only an argument the
+                // returned reference actually derives from stays borrowed once the call returns
+                // (`pick(&x, &y)` returning from `b` must keep `y` borrowed but release `x`). We
+                // snapshot each reference-argument base *before* the arguments are checked, let the
+                // arguments record their borrows (so intra-call conflicts like `f(&mut x, &x)` still
+                // fire), then revert the non-deriving bases to their pre-call state.
+                let callee_sig = if silent {
+                    None
+                } else {
+                    self.resolve_callee_ref_signature(&resolved_name)
+                };
+                let return_prov = self.env.return_provenance_of(resolved_name.as_ref());
+                // A reference argument's borrow can only outlive the call if the callee actually
+                // returns a reference. Gating on the return *type* (not just the summary) keeps
+                // void/value-returning callees correct even when their summary is absent — e.g. an
+                // impl method, which `build` does not summarize (it defaults to the conservative
+                // `AnyParam`). Without this, `foo(&mut x)` on a void method would wrongly persist a
+                // mutable borrow of `x` and fire a spurious `E4004` at the next use.
+                let ret_is_ref = callee_sig
+                    .as_ref()
+                    .map(|(_, ret)| Self::is_ref_type(ret))
+                    .unwrap_or(false);
+                // (index, base, path, param-is-mut, arg-is-a-`&x`-literal) for each reference arg,
+                // plus a snapshot of each distinct base's pre-call borrow list.
+                let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
+                let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+                if let Some((param_types, _)) = &callee_sig {
+                    for (i, arg) in args.iter().enumerate() {
+                        match param_types.get(i) {
+                            Some(pty) if Self::is_ref_type(pty) => {
+                                if let Some((base, path)) = Self::arg_reborrow_base(arg) {
+                                    base_snapshots.entry(base.clone()).or_insert_with(|| {
+                                        self.active_borrows.get(base.as_str()).cloned()
+                                    });
+                                    ref_args.push((
+                                        i,
+                                        base,
+                                        path,
+                                        Self::is_mut_ref(pty),
+                                        matches!(arg, Expr::Borrow(_)),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
-                // Reborrow tracking (#243, bc9): passing an existing reference *by name* to a
-                // reference parameter reborrows the underlying storage. `check_borrow_expr` only
-                // fires for `&x` literals, so a bare `foo(m)` left the aliasing invisible. Record
-                // it against the base variable so a later conflicting use (`insert(m, ..)` while a
-                // reborrow is live) is caught. The record persists past the call only when the
-                // callee returns a reference (the reborrow escapes into the result).
-                if !silent {
-                    if let Some((param_types, ret_ty)) =
-                        self.resolve_callee_ref_signature(&resolved_name)
-                    {
-                        let ret_is_ref = Self::is_ref_type(&ret_ty);
-                        for (i, arg) in args.iter().enumerate() {
-                            let Some(param_ty) = param_types.get(i) else {
-                                break;
-                            };
-                            // Only reborrows: a reference argument to a reference parameter, passed
-                            // by name rather than as a fresh `&x` (already tracked elsewhere).
-                            if !Self::is_ref_type(param_ty)
-                                || matches!(arg, Expr::Borrow(_))
-                                || !Self::is_ref_type(&arg_types[i])
-                            {
-                                continue;
-                            }
-                            if let Some((base, path)) = Self::extract_base_and_path(arg) {
-                                self.track_reference_arg_borrow(
-                                    &base,
-                                    path,
-                                    Self::is_mut_ref(param_ty),
-                                    ret_is_ref,
-                                    span,
-                                    silent,
-                                );
+                if !silent && callee_sig.is_some() {
+                    // An argument's reborrow outlives the call iff the callee returns a reference
+                    // and its result derives from that argument's parameter slot.
+                    let persists = |i: usize| ret_is_ref && return_prov.includes(i);
+                    // (a) Record reborrows for bare-reference arguments (`foo(m)`); `&x` literals
+                    //     were already recorded by `check_borrow_expr` during the arg loop. A
+                    //     non-deriving argument still runs the conflict check but records nothing —
+                    //     so passing the same reference to two parameters of a non-reference-
+                    //     returning call (`rmsnorm(x, x, ..)`, an in-place reborrow) does not
+                    //     self-conflict, matching the pre-#243 behaviour.
+                    for (i, base, path, is_mut_param, is_borrow_lit) in &ref_args {
+                        if *is_borrow_lit || !Self::is_ref_type(&arg_types[*i]) {
+                            continue;
+                        }
+                        self.track_reference_arg_borrow(
+                            base,
+                            path.clone(),
+                            *is_mut_param,
+                            persists(*i),
+                            span,
+                            silent,
+                        );
+                    }
+                    // (b) Selective revert: a base keeps its borrow past the call iff at least one
+                    //     of its argument positions is one the return derives from. Non-deriving
+                    //     bases are restored to their pre-call state (call-duration borrow only).
+                    //     This is what releases the `&x` literals `check_borrow_expr` over-recorded.
+                    let deriving: std::collections::HashSet<&str> = ref_args
+                        .iter()
+                        .filter(|(i, _, _, _, _)| persists(*i))
+                        .map(|(_, base, _, _, _)| base.as_str())
+                        .collect();
+                    for (base, snap) in &base_snapshots {
+                        if deriving.contains(base.as_str()) {
+                            continue;
+                        }
+                        // Drop only the borrows *this call* added; keep exactly the records that
+                        // were present pre-call and still are. Restoring the raw snapshot instead
+                        // would resurrect borrows the arg loop legitimately NLL-released, firing
+                        // spurious conflicts later.
+                        let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
+                        if let Some(list) = self.active_borrows.get_mut(base.as_str()) {
+                            list.retain(|r| prev.contains(r));
+                            if list.is_empty() {
+                                self.active_borrows.remove(base.as_str());
                             }
                         }
                     }
@@ -3861,6 +3925,17 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndexAccess(idx) => Self::extract_base_and_path(&idx.base),
             _ => None,
+        }
+    }
+
+    /// Base variable and field path a reference *argument* reborrows, seeing through a leading `&`.
+    /// `foo(m)` and `foo(&m.slot)` both reborrow storage rooted at `m`; the summary-driven persist
+    /// decision (#243) keys on that base. Returns `None` for arguments with no nameable base
+    /// (`foo(&5)`, `foo(g())`).
+    fn arg_reborrow_base(arg: &Expr) -> Option<(String, Vec<String>)> {
+        match arg {
+            Expr::Borrow(b) => Self::extract_base_and_path(&b.expr),
+            other => Self::extract_base_and_path(other),
         }
     }
 

@@ -1,0 +1,32 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4003]
+// Soundness (#243, E2): a genuine multi-source return — `choose` returns from `a` on one path and
+// `b` on the other, so its summary is FromParams({a, b}). The result may alias EITHER source;
+// mutating `x` (bound to `a`) while `r` is live must be rejected. Narrowing must union over paths,
+// never pick one.
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn choose(c : i32, a : &Map, b : &Map) -> &i32 {
+  if c == 0 {
+    return &a.slot;
+  }
+  return &b.slot;
+}
+fn bad() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  let mut y = Map {
+    slot : 2, present : 1
+  };
+  let r = choose(0, &x, &y);
+  insert(&mut x, 9);   // r may alias x — must reject
+  return *r;
+}
+fn main() -> i32 {
+  return 0;
+}

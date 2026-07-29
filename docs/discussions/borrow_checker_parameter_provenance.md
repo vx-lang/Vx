@@ -1,6 +1,6 @@
 # Design: Per-Parameter Provenance in the Packed Region Encoding
 
-**Status:** design — not implemented
+**Status:** v1 landed — the precision fix (steps 1–5) is implemented; see [§8.1](#81-implementation-status--v1-landed-steps-15-precision-fix). Encoding (steps 6–7) deferred.
 **Tracked in:** [#243](https://github.com/hiraditya/Vx/issues/243)
 **Companions:** [`borrow_checker_architecture.md`](borrow_checker_architecture.md) (design of record) · [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md) (the measurement that motivated this)
 
@@ -8,11 +8,37 @@ ______________________________________________________________________
 
 ## 1. The claim this enables
 
-> **Lifetime-annotation-free function signatures with per-parameter provenance, checked in a single masked word comparison** — the precision of explicitly-annotated Rust, without the annotations, at O(1) per call site.
+The motivating fact is concrete and checkable. This signature —
 
-Rust cannot express the motivating signature without an annotation. Vx can, but currently answers it conservatively. Closing that gap turns "annotation-free and sound" into "annotation-free, sound, and as precise as annotated Rust," which is a claim no other language makes.
+```rust
+fn pick(a : &Map, b : &Map) -> &i32 { return &b.slot; }
+```
 
-This document specifies the change, argues its soundness, and sets out an evaluation strategy detailed enough to seed a paper.
+— is one **rustc cannot compile without a lifetime annotation**: elision fails (`expected named lifetime parameter`), and the programmer must write `fn pick<'a>(a: &Map, b: &'a Map) -> &'a i32` to
+say "the result borrows from `b`, not `a`." Vx already accepts `pick` annotation-free; it just
+answers the *use* of the result conservatively, treating `let r = pick(&x, &y)` as borrowing both
+`x` and `y`. Closing that gap makes Vx accept the same programs annotated Rust accepts here —
+**without the annotation** — at O(1) per call site.
+
+Stated precisely, and only as far as it is true:
+
+> **For the single-source-per-return class** — a reference-returning function whose result derives
+> from exactly one parameter — per-parameter provenance gives Vx the precision of
+> explicitly-annotated Rust with no annotation, checked in a single masked word comparison.
+
+The scope qualifier is load-bearing, not a hedge. Rust lifetimes also express *relationships* this
+summary deliberately does not model: outlives bounds (`'a: 'b`), or a return whose lifetime is a
+fresh variable constrained by several inputs. Genuine multi-source returns (`if c { &a.f } else { &b.f }`) fall back to "borrows from all of them," which is exactly today's behaviour. The claim is a
+precise statement about a common, well-defined class — the class rustc's elision rules were designed
+for and then refuse — not a general superiority claim. Lead with `pick`, which is verifiable, over
+any "as precise as annotated Rust" superlative, which is not true in the general case.
+
+**Priority.** This is a design document first. The evaluation in §6 exists to *validate* the design,
+not to drive it; where the two pull apart, the design principle wins. That principle is the one the
+whole borrow checker is built on: the **common path is a single masked-word comparison**, and
+less-frequent cases (multi-source returns, more than four reference parameters, deep nesting,
+recursion through a cycle) take a conservative slow path or a fixed-width fallback — never a heavier
+common path. No feature is worth slowing the case that runs on every call site.
 
 ______________________________________________________________________
 
@@ -191,10 +217,10 @@ Today's rule over-approximates the alias set to all reference arguments. The pro
 `ret_prov` is computed from the callee's body by the same structural walk that already decides `E4005`. The cases:
 
 1. **Return of `&p.path` where `p` is parameter *i*.** ⇒ `FromParam(i)`. Direct.
-2. **Return of an identifier** bound to a reference. ⇒ its recorded provenance, transitively.
-3. **Return of a call `g(...)`.** ⇒ map `g`'s summary through the argument positions; union if `g`'s summary is `FromAnyOf`.
-4. **Return on multiple paths.** ⇒ union over paths ⇒ `FromAnyOf`.
-5. **Return of a `Local`.** ⇒ already `E4005`; the caller never sees it.
+1. **Return of an identifier** bound to a reference. ⇒ its recorded provenance, transitively.
+1. **Return of a call `g(...)`.** ⇒ map `g`'s summary through the argument positions; union if `g`'s summary is `FromAnyOf`.
+1. **Return on multiple paths.** ⇒ union over paths ⇒ `FromAnyOf`.
+1. **Return of a `Local`.** ⇒ already `E4005`; the caller never sees it.
 
 The risk cases that must be covered by tests (§6, E2) rather than assumed:
 
@@ -209,7 +235,7 @@ ______________________________________________________________________
 
 ## 6. Evaluation strategy
 
-The purpose of this section is to make the claim in §1 falsifiable, and to pre-empt the reviewer questions that a compiler-conference submission on borrow checking will attract.
+This section *validates* the design; it does not shape it (see the priority note in §1). Its purpose is to make the claim in §1 falsifiable and to pre-empt the reviewer questions a compiler-conference submission on borrow checking would attract — but none of it is a reason to alter the common path, which stays a single masked-word comparison regardless of what the evaluation would prefer.
 
 ### 6.1 Research questions
 
@@ -226,8 +252,8 @@ RQ4 is the one that decides whether the inline encoding is a contribution or a c
 This is the weakest link in any evaluation of a young language's analysis, and reviewers will go straight at it. `tests/` is not a corpus — self-evaluation on one's own regression suite is the standard reject reason. Three viable options, in descending order of credibility:
 
 1. **Port a Rust corpus.** Take *N* crates that are heavy on reference-returning APIs (collections, parsers, arena allocators) and mechanically translate the subset Vx supports. Expensive, and the translation is itself a threat to validity, but it gives a defensible Rust baseline for RQ1/RQ2 *on the same programs*.
-2. **Generate.** A grammar-directed generator over reference-returning signatures, parameter counts, and aliasing patterns. Cheap, scales to millions of call sites for RQ3/RQ4, weak for RQ2 (generated code is not representative code).
-3. **Use the real Vx workloads.** `benchmarks/llama2_*.vx`, the attention corpus, `tests/backend/pass/flash_attention_v4.vx`, `stdlib/std/*`. Small, but *real*, and it is the only place where "what does Vx code actually look like" is answerable.
+1. **Generate.** A grammar-directed generator over reference-returning signatures, parameter counts, and aliasing patterns. Cheap, scales to millions of call sites for RQ3/RQ4, weak for RQ2 (generated code is not representative code).
+1. **Use the real Vx workloads.** `benchmarks/llama2_*.vx`, the attention corpus, `tests/backend/pass/flash_attention_v4.vx`, `stdlib/std/*`. Small, but *real*, and it is the only place where "what does Vx code actually look like" is answerable.
 
 **Recommendation: all three, for different RQs.** (3) for RQ2's headline number with an honest sample-size caveat; (1) for RQ1's comparison; (2) for RQ3/RQ4's scaling curves. State plainly which number came from which.
 
@@ -282,7 +308,8 @@ Worth a short subsection in the paper itself.
 
 - **Not location sensitivity.** bc8 stays rejected. This design does not implement Polonius; it reaches one of Polonius's motivating cases (bc2 / NLL Problem Case #3) by a different decomposition, and the paper must be precise about that or it invites a correctness objection in review.
 - **Not faster than rustc overall.** Only the borrow-check phase, per unit of work.
-- **Not a full region inference.** No inference of region *relationships* beyond parameter provenance.
+- **Not "as precise as annotated Rust" in general — only for the single-source-per-return class (§1).** Multi-source returns, outlives bounds (`'a: 'b`), and lifetime relationships between parameters are out of scope and take the conservative `FromAnyOf` default. The verifiable claim is the `pick` case; the superlative is not, and stating it invites a correctness objection.
+- **Not a full region inference.** No inference of region *relationships* beyond which parameter a return derives from.
 
 ______________________________________________________________________
 
@@ -311,6 +338,39 @@ ______________________________________________________________________
 | 8 | Test suites E1 + E2 | `tests/middle_end/pass/`, `tests/middle_end/fail/` |
 
 Steps 1–5 are a self-contained precision fix that can land independently of the encoding; steps 6–7 are what make it O(1) across modules. **Land 1–5 first, measure, then do 6–7** — that way the precision result and the encoding result are separately attributable, which the paper needs anyway.
+
+### 8.1 Implementation status — v1 landed (steps 1–5, precision fix)
+
+Steps 1–5 are implemented. The realised design differs from the literal table above where the
+**parallel architecture** required it — the checker builds a fresh `TypeChecker` per function via
+`par_iter_mut`, and the shared env is signature-only, so an on-demand/side-table summary would have
+meant a lock or a missing body. What actually landed:
+
+- **`ReturnProvenance`** (`FromParams(bitset) | AnyParam | Local | NotAReference`) is a *separate*,
+  precomputed summary in `src/hir/provenance.rs`, **not** a payload on `RefProvenance` (the escape
+  analysis kept its two-point lattice). `compute_return_provenance` is a pure structural walk of the
+  body — no `TypeChecker`, no shared state.
+- **Frozen into the immutable env** (`GlobalAstEnv.return_provenances`), filled from present bodies in
+  `build` and refilled from the full pre-strip modules at the production entry points
+  (`annotate_return_provenances`). The per-function parallel checkers only *read* it — the lock-free
+  `type_check_phase` is untouched.
+- **Call site is a per-argument persist decision applied by selective revert** (in the
+  `Expr::FunctionCall` arm), covering *both* the `&x`-literal (`check_borrow_expr`) and bare-reference
+  (`track_reference_arg_borrow`) paths — so the `pick(&x, &y)` repro (§3.1) is actually fixed, which
+  patching only the reborrow loop (step 4 as written) would not have done. A borrow persists past the
+  call iff the callee returns a reference **and** its summary includes that argument's slot; the
+  revert keeps only pre-call records (never resurrecting NLL-released borrows), and a non-deriving
+  argument records nothing so `f(x, x)` in-place reborrows do not self-conflict.
+- **No SCC fixpoint (yet).** `return callee(...)` → `AnyParam` (conservative). Recursion and
+  cross-function derivation are the deferred fixpoint (would live in the precompute, off the hot
+  path). `unsafe` bodies, >32 params, and every unknown → `AnyParam`.
+- **`verify_subtyping_bounds` untouched**; the inline 3-bit `TypeId` encoding (steps 6–7) is deferred
+  — the env map gives full intra-compilation precision, and the encoding is `.vxlib`-gated (#220/#224)
+  and must be minted deterministically in the GID-mint pre-pass (the 1-thread==8-thread invariant).
+
+Tests: `src/hir/provenance.rs` unit tests (the summary lattice) + E1/E2 fixtures under
+`tests/middle_end/{pass,fail}/borrow_multiparam_*`, `borrow_multisource_*`, `borrow_unsafe_*`. Full
+suite green.
 
 ______________________________________________________________________
 

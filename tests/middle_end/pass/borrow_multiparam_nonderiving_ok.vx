@@ -1,0 +1,29 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Precision (#243, E1): `pick` returns a reference derived from `b` only — a signature rustc
+// cannot elide (it demands `'a` on `b`). The result `r` aliases `y` (bound to `b`), not `x`
+// (bound to `a`), so mutating `x` while `r` is live must be ACCEPTED. Per-parameter provenance
+// makes this precise; the earlier all-arguments rule rejected it conservatively.
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn pick(a : &Map, b : &Map) -> &i32 {
+  return &b.slot;
+}
+fn use_it() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  let mut y = Map {
+    slot : 2, present : 1
+  };
+  let r = pick(&x, &y);
+  insert(&mut x, 9);   // sound: r does not alias x
+  return *r + y.slot;
+}
+fn main() -> i32 {
+  return 0;
+}
