@@ -1,7 +1,9 @@
 # Heterogeneous Target Gap Analysis: TPU, B200, Rubin
 
-**Status:** analysis, pre-release
+**Status:** analysis, pre-release — **P0 ship-blocker cluster mostly landed** (see the status columns in §5 and §10).
 **Scope:** what Vx can and cannot do against three real accelerator families, and what must land before the release that claims heterogeneous programming as the value proposition.
+
+> **Progress (update):** the claims in this document were re-audited against the checked-in compiler and held (most verbatim). Since then **P0-1** (B1), **P0-3** (B2), **P0-4** (B3), and the **core of P1-4a** have landed and are committed; **P0-2** (async transfer tokens) is the remaining P0, deferred to its own focused session. Per-item status is in the §5 and §10 tables; the full rationale and implementation notes are in the companion [decision log](heterogeneous_p0_decision_log.md).
 
 ## 1. Why this document exists
 
@@ -108,12 +110,12 @@ Nothing else in the field does §4.2–§4.6. Pallas has no static capacity chec
 
 Fix these regardless of anything else in this document.
 
-| # | Issue | Severity |
-|---|---|---|
-| B1 | **Subspace metadata is dropped on the flat path.** `offset`/`slots`/`granule`/`scope`/`space`/`within` appear on `vx.transfer` only under `--legacy-codegen`. On the default flat path they vanish silently. [`subspace_schedule.vx`](../../tests/middle_end/pass/subspace_schedule.vx) passes only on the AST path. | **Ship-blocker.** The flagship feature of §4.3 is invisible on the default code path. → **P0-1** |
-| B2 | **Use-site seam proof does not reach declared spaces.** A `relaxed` edge in a user `Topology` yields `W1027` at the *declaration*. The built-in `to_device_relaxed`/`to_gpu_relaxed`/`to_sram_relaxed` intrinsics yield `E6004` at the *use site* with a per-buffer value contract and a counterexample. Declared spaces get the blunt version. | High — backwards. Declared spaces are the entire point of first-class memory. → **P0-3** |
-| B3 | **Dynamic shapes silently skip verification.** `check_capacity` returns early when any dim is non-literal, with no diagnostic. A 40 GB tensor into a 64 MB VMEM compiles clean, and the emitted `vx.transfer` still carries `capacity`/`granule` while carrying no `offset`/`slots`. | **Ship-blocker.** Users believe they are covered when they are not. → **P0-4** |
-| B4 | `Topology::Slice(..)` collapses to dispatch id 900 and does not round-trip as a runtime value, per [`docs/topology_representation.md`](../topology_representation.md). | Medium — blocks rack-scale. → **P2-3** |
+| # | Issue | Severity | Status |
+|---|---|---|---|
+| B1 | **Subspace metadata is dropped on the flat path.** `offset`/`slots`/`granule`/`scope`/`space`/`within` appear on `vx.transfer` only under `--legacy-codegen`. On the default flat path they vanish silently. [`subspace_schedule.vx`](../../tests/middle_end/pass/subspace_schedule.vx) passes only on the AST path. | **Ship-blocker.** The flagship feature of §4.3 is invisible on the default code path. → **P0-1** | ✅ **DONE** (`fa056b4e`) — flat path now byte-identical to legacy |
+| B2 | **Use-site seam proof does not reach declared spaces.** A `relaxed` edge in a user `Topology` yields `W1027` at the *declaration*. The built-in `to_device_relaxed`/`to_gpu_relaxed`/`to_sram_relaxed` intrinsics yield `E6004` at the *use site* with a per-buffer value contract and a counterexample. Declared spaces get the blunt version. | High — backwards. Declared spaces are the entire point of first-class memory. → **P0-3** | ✅ **DONE** (`33ce0b64`) — declared edges get use-site E6004 |
+| B3 | **Dynamic shapes silently skip verification.** `check_capacity` returns early when any dim is non-literal, with no diagnostic. A 40 GB tensor into a 64 MB VMEM compiles clean, and the emitted `vx.transfer` still carries `capacity`/`granule` while carrying no `offset`/`slots`. | **Ship-blocker.** Users believe they are covered when they are not. → **P0-4** | ✅ **DONE** (`5e10637a`) — warns W1029 |
+| B4 | `Topology::Slice(..)` collapses to dispatch id 900 and does not round-trip as a runtime value, per [`docs/topology_representation.md`](../topology_representation.md). | Medium — blocks rack-scale. → **P2-3** | open |
 
 ## 6. Shapes: the axis that actually matters
 
@@ -248,6 +250,11 @@ One subsection per work item. Each gives **Today** (real, current behaviour), **
 
 ### 9.1 P0-1 — Carry subspace metadata on the flat path
 
+> ✅ **DONE** (`fa056b4e`). The flat `Opcode::Transfer` arm now re-attaches the full attribute set,
+> byte-identical to the AST path (`SubspaceInfo` built in `build_flat_module` from the per-compilation
+> env, threaded through `emit_module_mlir`, with a per-function bump allocator). Verified against
+> `--legacy-codegen` on `subspace_schedule.vx`; new flat-path test. Details in the decision log.
+
 **Today.** The AST path attaches the scheduler's output; the flat path drops it.
 
 ```console
@@ -323,6 +330,11 @@ ______________________________________________________________________
 
 ### 9.3 P0-3 — Use-site seam proof for declared spaces
 
+> ✅ **DONE** (`33ce0b64`). Implemented exactly as proposed below: `TransferCostGraph::is_relaxed_edge`
+> is OR'd into the `relaxed` flag `check_transfer_expr` passes to `run_seam_hop`, so a declared
+> relaxed edge now yields the use-site `E6004` + z3 counterexample under `--verify-seams`, with `W1027`
+> kept as the declaration-time smell. New test `topology_declared_relaxed_seam.vx`.
+
 **Today.** A declared `relaxed` edge produces a blunt warning at the declaration; only the three built-in intrinsics get the per-buffer proof.
 
 ```rust
@@ -363,6 +375,11 @@ Keep W1027 as the declaration-time smell; add E6004 at the use site. Multi-hop a
 ______________________________________________________________________
 
 ### 9.4 P0-4 — Do not silently skip unverified shapes
+
+> ✅ **DONE** (`5e10637a`). `check_capacity` now emits **W1029** (naming the runtime dimension) instead
+> of returning silently, when the destination space declares a `capacity` but the shape is non-literal.
+> No false positives on const generics (only monomorphized bodies reach the check). New test
+> `w1029_dynamic_shape_unverified.vx`. The `unverified` opt-out below is left as a follow-up.
 
 **Today.** Silence.
 
@@ -547,6 +564,13 @@ ______________________________________________________________________
 Classical languages settled on 1/8/16/32/64-bit primitives and stopped. Accelerators have reopened the question — FP8, FP6, FP4, MX block formats — and will keep reopening it. So this item is two pieces: **P1-4a** makes adding a type cheap, **P1-4b** adds the types hardware ships today. Doing them in the other order triples the work.
 
 #### 9.8.1 P1-4a — Collapse `ElementType` to a descriptor table
+
+> ◑ **CORE DONE** (`34b31902`). The *width* facts are collapsed onto a single source — a new
+> `ElementType::bits()` — from which `element_bits`, `scalar_size_align`, and `SizeOfExpr`'s scalar
+> cases all derive (three width tables → one, so the `I4` drift below can't recur; also fixed the latent
+> `sizeof<i4>() == 8` → `1`). `flat.rs`'s duplicate `is_float` now delegates to `ElementType::is_float`.
+> Pure refactor + invariant test. **Still open:** the surface/MLIR **name** maps (Display/parse/melior
+> handle) and the `class`/`pack` descriptor fields — needed for P1-4b, lower value on their own.
 
 **Today.** Adding one element type touches **10 sites across 6 files**. Measured with `BF16` as the proxy (the most recent float added):
 
@@ -837,23 +861,23 @@ The organizing principle: **ship the layer that works, with an honest seam to th
 
 ### P0 — ship-blockers
 
-| ID | Item | Why now | §9 |
-|---|---|---|---|
-| **P0-1** | Restore subspace metadata on the flat path (B1) | The flat path is the default; the §4.3 allocator is invisible there. Anyone evaluating Vx sees none of the flagship behaviour. | [9.1](#91-p0-1--carry-subspace-metadata-on-the-flat-path) |
-| **P0-2** | Async transfer tokens | The common denominator across all three machines and the precondition for any credible performance claim. | [9.2](#92-p0-2--async-transfer-tokens) |
-| **P0-3** | Use-site seam proof for declared spaces (B2) | Once P0-2 exists, this is the best demo in the project: *forgetting the wait is a compile error with a counterexample.* | [9.3](#93-p0-3--use-site-seam-proof-for-declared-spaces) |
-| **P0-4** | Warn on unverified dynamic shapes (B3) | Integrity. Small fix; turns a silent hole into a documented boundary. | [9.4](#94-p0-4--do-not-silently-skip-unverified-shapes) |
+| ID | Item | Why now | §9 | Status |
+|---|---|---|---|---|
+| **P0-1** | Restore subspace metadata on the flat path (B1) | The flat path is the default; the §4.3 allocator is invisible there. Anyone evaluating Vx sees none of the flagship behaviour. | [9.1](#91-p0-1--carry-subspace-metadata-on-the-flat-path) | ✅ **DONE** (`fa056b4e`) |
+| **P0-2** | Async transfer tokens | The common denominator across all three machines and the precondition for any credible performance claim. | [9.2](#92-p0-2--async-transfer-tokens) | open — deferred to a focused session (biggest P0) |
+| **P0-3** | Use-site seam proof for declared spaces (B2) | Once P0-2 exists, this is the best demo in the project: *forgetting the wait is a compile error with a counterexample.* | [9.3](#93-p0-3--use-site-seam-proof-for-declared-spaces) | ✅ **DONE** (`33ce0b64`) |
+| **P0-4** | Warn on unverified dynamic shapes (B3) | Integrity. Small fix; turns a silent hole into a documented boundary. | [9.4](#94-p0-4--do-not-silently-skip-unverified-shapes) | ✅ **DONE** (`5e10637a`) |
 
 ### P1 — makes the story defensible rather than merely true
 
-| ID | Item | §9 |
-|---|---|---|
-| **P1-1** | Bounded dynamic shapes | [9.5](#95-p1-1--bounded-dynamic-shapes) |
-| **P1-2** | Layout parameter on `Tensor` | [9.6](#96-p1-2--layout-in-the-type-system) |
-| **P1-3** | Longer `Scope` ladder + lateral spaces | [9.7](#97-p1-3--longer-scope-ladder-and-lateral-spaces) |
-| **P1-4a** | Collapse `ElementType` to a descriptor table (refactor) | [9.8.1](#981-p1-4a--collapse-elementtype-to-a-descriptor-table) |
-| **P1-4b** | FP8/FP6/FP4 + block scaling, as table rows | [9.8.2](#982-p1-4b--the-formats-and-the-storagecompute-split) |
-| **P1-5** | Escape hatch (`mlir!`) | [9.9](#99-p1-5--escape-hatch-mlir) |
+| ID | Item | §9 | Status |
+|---|---|---|---|
+| **P1-1** | Bounded dynamic shapes | [9.5](#95-p1-1--bounded-dynamic-shapes) | open |
+| **P1-2** | Layout parameter on `Tensor` | [9.6](#96-p1-2--layout-in-the-type-system) | open |
+| **P1-3** | Longer `Scope` ladder + lateral spaces | [9.7](#97-p1-3--longer-scope-ladder-and-lateral-spaces) | open |
+| **P1-4a** | Collapse `ElementType` to a descriptor table (refactor) | [9.8.1](#981-p1-4a--collapse-elementtype-to-a-descriptor-table) | ◑ **core DONE** (`34b31902`) — width tables collapsed to one source (fixes the I4 drift + `sizeof<i4>`); name/parse/melior maps + `class`/`pack` fields still open |
+| **P1-4b** | FP8/FP6/FP4 + block scaling, as table rows | [9.8.2](#982-p1-4b--the-formats-and-the-storagecompute-split) | open |
+| **P1-5** | Escape hatch (`mlir!`) | [9.9](#99-p1-5--escape-hatch-mlir) | open |
 
 P1-1 is ahead of P1-2 in this ordering — it is what lets the placement story survive contact with real serving workloads, and it shares infrastructure with P0-2. P1-5 is the cheapest item by unblocked surface area and could reasonably be pulled forward.
 
