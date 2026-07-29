@@ -125,7 +125,8 @@ impl Analysis {
         }
 
         let global_env_modules: Vec<_> = modules.iter().map(|m| m.clone_signature()).collect();
-        let global_env = GlobalAstEnv::build(&global_env_modules);
+        let mut global_env = GlobalAstEnv::build(&global_env_modules);
+        global_env.annotate_return_provenances(&modules);
         let session = std::sync::Arc::new(GlobalSession::new(0));
 
         for p in &mut modules {
@@ -203,7 +204,8 @@ impl Analysis {
 
         let modules: Vec<_> = loader.loaded_modules.values().cloned().collect();
         let global_env_modules: Vec<_> = modules.iter().map(|m| m.clone_signature()).collect();
-        let global_env = GlobalAstEnv::build(&global_env_modules);
+        let mut global_env = GlobalAstEnv::build(&global_env_modules);
+        global_env.annotate_return_provenances(&modules);
 
         // 3. Look up the word in the environment
         let mut hover_text = String::new();

@@ -51,6 +51,14 @@ pub struct GlobalAstEnv<'a> {
     /// `Program.topologies`; the per-compilation home for topology descriptors, seeded into each
     /// `TransferCostGraph` — no global registry (see docs/parallel_compiler_architecture.md).
     pub topologies: HashMap<crate::symbol::Symbol, &'a crate::arch::TopologyDecl>,
+    /// Per-function return-provenance summary (#243): which parameter slot(s) a reference-returning
+    /// function's result roots in. A read-only, precomputed artifact of the immutable env, consulted
+    /// at call sites to make the reborrow-persistence decision per argument. Filled from *present*
+    /// bodies here (covers full-AST callers); production entry points that strip bodies before
+    /// building refill it from the full modules via [`Self::annotate_return_provenances`]. A missing
+    /// entry means `AnyParam` — today's conservative behaviour. See `crate::hir::provenance`.
+    pub return_provenances:
+        HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -70,6 +78,7 @@ impl<'a> GlobalAstEnv<'a> {
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
             topologies: HashMap::new(),
+            return_provenances: HashMap::new(),
         };
 
         for &module in modules {
@@ -129,14 +138,49 @@ impl<'a> GlobalAstEnv<'a> {
                         ),
                     );
                     env.syntax_functions.insert(func.name.clone(), func);
+                    // Summarize the return provenance while the body is present. Signature-stripped
+                    // callers (production) leave this empty and refill via
+                    // `annotate_return_provenances` from the full modules.
+                    if !func.body.is_empty() {
+                        env.return_provenances.insert(
+                            func.name.clone(),
+                            crate::hir::provenance::compute_return_provenance(func),
+                        );
+                    }
                 }
             }
         }
         env
     }
+
+    /// Refill `return_provenances` from modules that still carry function bodies (#243). Production
+    /// pipelines build the env from *signature-stripped* modules, so `build` cannot summarize their
+    /// free functions; the entry points call this with the full pre-strip modules to restore
+    /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
+    /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
+    pub fn annotate_return_provenances(&mut self, modules: &[Program]) {
+        for module in modules {
+            for func in &module.functions {
+                if func.generics.is_empty() && !func.body.is_empty() {
+                    self.return_provenances.insert(
+                        func.name.clone(),
+                        crate::hir::provenance::compute_return_provenance(func),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The return-provenance summary for a callee, or the conservative default when unknown.
+    pub fn return_provenance_of(&self, name: &str) -> crate::hir::provenance::ReturnProvenance {
+        self.return_provenances
+            .get(name)
+            .copied()
+            .unwrap_or(crate::hir::provenance::ReturnProvenance::AnyParam)
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowRecord {
     pub is_mut: bool,
     pub scope_depth: usize,

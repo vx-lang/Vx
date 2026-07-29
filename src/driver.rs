@@ -380,7 +380,11 @@ impl CompilerDriver {
         // monomorphized instance names.
         let mut env_progs: Vec<crate::syntax::Program> = other_asts.values().cloned().collect();
         env_progs.push(ast.clone_signature());
-        let env = GlobalAstEnv::build(&env_progs);
+        let mut env = GlobalAstEnv::build(&env_progs);
+        // The entry module was pushed signature-stripped; refill its return-provenance summaries
+        // from the full module so intra-module calls get per-parameter precision (#243). The
+        // imported `other_asts` were pushed with bodies, so `build` already summarized them.
+        env.annotate_return_provenances(std::slice::from_ref(ast));
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);

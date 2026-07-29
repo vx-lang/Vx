@@ -63,7 +63,12 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
 
     let global_env_modules: Vec<VxModule> =
         parsed_modules.iter().map(|m| m.clone_signature()).collect();
-    let global_env = GlobalAstEnv::build(&global_env_modules);
+    let mut global_env = GlobalAstEnv::build(&global_env_modules);
+    // `clone_signature` above strips non-generic function bodies, so `build` could not summarize
+    // their return provenance (#243). Refill from the full modules (bodies intact) before the
+    // parallel check reads it. The map is frozen after this point — the per-function checkers only
+    // read it, preserving the lock-free `type_check_phase`.
+    global_env.annotate_return_provenances(&parsed_modules);
 
     let mut check_results = type_check_phase(&mut parsed_modules, &global_session, &global_env)?;
 
@@ -127,7 +132,12 @@ pub fn compile_pipeline_type_stream(
     let global_session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     let global_env_modules: Vec<VxModule> =
         parsed_modules.iter().map(|m| m.clone_signature()).collect();
-    let global_env = GlobalAstEnv::build(&global_env_modules);
+    let mut global_env = GlobalAstEnv::build(&global_env_modules);
+    // `clone_signature` above strips non-generic function bodies, so `build` could not summarize
+    // their return provenance (#243). Refill from the full modules (bodies intact) before the
+    // parallel check reads it. The map is frozen after this point — the per-function checkers only
+    // read it, preserving the lock-free `type_check_phase`.
+    global_env.annotate_return_provenances(&parsed_modules);
 
     let mut check_results = type_check_phase(&mut parsed_modules, &global_session, &global_env)?;
     let (_slow, _gen, _off, slow_mappings, gen_mappings) =

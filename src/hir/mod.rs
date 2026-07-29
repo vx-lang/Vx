@@ -19,6 +19,7 @@ pub mod expr;
 pub mod flatten;
 pub mod lower_ast;
 pub mod memory;
+pub mod provenance;
 pub mod prover;
 pub mod seam;
 pub mod stmt;
