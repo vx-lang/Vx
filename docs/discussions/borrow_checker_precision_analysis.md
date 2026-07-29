@@ -2,6 +2,7 @@
 
 **Status:** analysis
 **Question:** Does Vx's borrow checker accept the `get`-or-`insert` map pattern that Rust's NLL rejects and Polonius is designed to accept?
+**Design of record:** [`borrow_checker_architecture.md`](borrow_checker_architecture.md) — this document measures that design, it does not replace it. Tracked in [#243](https://github.com/hiraditya/Vx/issues/243).
 
 ## 1. The question
 

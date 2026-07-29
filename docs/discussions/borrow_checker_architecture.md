@@ -1,5 +1,30 @@
 # The Vx Borrow Checker Architecture
 
+> [!IMPORTANT]
+> **Companion document:** [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md)
+> measures this design against Rust's NLL and Polonius on nine reduced cases
+> (tracked in [#243](https://github.com/hiraditya/Vx/issues/243)). Read it alongside
+> this one — it does not supersede this document, but it corrects and extends it in
+> three places:
+>
+> 1. **The lexical model described below understates the implementation.** §1 says a
+>    borrow is released when its lexical block ends; in practice the loan is released at
+>    the *last use* of the borrowing binding, which is NLL-grade behaviour rather than
+>    pre-NLL lexical behaviour. See §5.1 of the companion doc for the discriminating case.
+> 1. **Two soundness holes are not covered by either half.** Reborrows through a
+>    reference parameter create no borrow record (`active_borrows` is keyed by local
+>    variable name), and there is no escape analysis on returned references — so
+>    `fn dangle() -> &i32 { let x = 5; return &x; }` currently compiles. See §5.2–5.3.
+> 1. **The Region-ID encoding in §2 forecloses Polonius by construction.** A 12-bit
+>    Region ID equal to lexical scope depth is a scalar; location sensitivity requires
+>    regions to be *sets of program points*. That is a legitimate trade — constant-time
+>    subtyping checks in exchange for an NLL-grade precision ceiling — but it should be
+>    made knowingly. See §6.
+>
+> The design intent recorded in this document (avoid whole-program constraint graphs;
+> split local aliasing from global subtyping) still stands and is why the encoding looks
+> the way it does.
+
 This document provides a comprehensive overview of how the Borrow Checker is implemented in the Vx compiler.
 
 To achieve massive compilation speedups over traditional compilers (like Rust's `rustc`), the Vx Borrow Checker explicitly avoids building heavy, whole-program constraint graphs (like NLL or Polonius). Instead, the algorithm is deliberately **split into two distinct halves**, relying on AST lexical tracking for local rules, and 256-bit hardware-level math for global rules.
