@@ -311,6 +311,41 @@ pub fn generate_match_chain<'c>(
             );
             cmp_op.result(0)?.into()
         }
+        // A scalar literal arm (`0 => …`, `1 => …`) over an integer scrutinee: compare the
+        // scrutinee against the literal with the same `arith.cmpi eq` shape as the enum-tag path,
+        // but against `match_val` directly (no tag extraction). Without this, an integer `match`
+        // ICE'd here — `Unsupported pattern in codegen` (#263).
+        Pattern::Literal(lit) => {
+            let lit_val = match lit {
+                Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
+                other => panic!("Unsupported literal pattern in codegen: {:?}", other),
+            };
+            let const_op = block.append_operation(
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[_match_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(_match_ty, lit_val).into(),
+                    )])
+                    .build()?,
+            );
+            let const_val = const_op.result(0)?.into();
+            let cmp_op = block.append_operation(
+                OperationBuilder::new("arith.cmpi", gen.loc())
+                    .add_operands(&[match_val, const_val])
+                    .add_results(&[melior::ir::r#type::IntegerType::new(gen.context, 1).into()])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "predicate"),
+                        IntegerAttribute::new(
+                            melior::ir::r#type::IntegerType::new(gen.context, 64).into(),
+                            0, // eq
+                        )
+                        .into(),
+                    )])
+                    .build()?,
+            );
+            cmp_op.result(0)?.into()
+        }
         _ => panic!("Unsupported pattern in codegen"),
     };
 

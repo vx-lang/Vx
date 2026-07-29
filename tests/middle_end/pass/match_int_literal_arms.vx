@@ -1,0 +1,22 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// CHECK: arith.cmpi
+// Regression for #263: an integer-literal `match` arm (`0 =>`, `1 =>`) used to ICE in codegen
+// (`Unsupported pattern in codegen`) because generate_match_chain handled only Wildcard and
+// EnumVariant. Each literal arm now lowers to an `arith.cmpi eq` against the scrutinee.
+fn classify(n : i32) -> i32 {
+  match n {
+    0 => {
+      return 100;
+    }
+    1 => {
+      return 111;
+    }
+    _ => {
+      return 200;
+    }
+  }
+}
+fn main() -> i32 {
+  return classify(1);
+}

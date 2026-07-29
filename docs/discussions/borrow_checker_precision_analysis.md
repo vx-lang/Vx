@@ -43,7 +43,7 @@ Full sources in Appendix A.
 | bc7 | mutate inside a branch, read after | ❌ | reject | reject | **reject** `E4003` | ✓ |
 | **bc8** | **mutate in a branch that returns; read only on the other path** | ✅ | reject | **accept** | **reject** `E4003` | ✗ |
 | bc2 | `get_or_insert`, across functions | ✅ | reject | accept | accept | ✓ (sound) |
-| bc6 | same, in `match` form | ✅ | reject | accept | accept, then ICE | (ICE, see §7) |
+| bc6 | same, in `match` form | ✅ | reject | accept | accept (ICE fixed #263) | ✓ (sound) |
 | bc9 | reborrow through `&mut` param, read after mutation | ❌ | reject | reject | ~~accept~~ → **reject** `E4003` | ✓ (fixed #243) |
 | bc4 | return a reference to a local | ❌ | reject | reject | ~~accept~~ → **reject** `E4005` | ✓ (fixed #243) |
 
@@ -51,7 +51,7 @@ Full sources in Appendix A.
 > now rejected; see [§9 Resolution](#9-resolution-243). bc8 remains `✗` by design: it is the
 > Polonius location-sensitivity gap (§5.4/§6), a conscious precision limit, not a soundness bug.
 > bc2 stays accepted, which is *sound* (the NLL dead-borrow cleanup releases the loan on the path
-> that mutates). bc6 still ICEs in codegen (an unrelated defect, §7).
+> that mutates). bc6's codegen ICE (an unrelated defect, §7) is also fixed — #263.
 
 ## 5. Analysis
 
@@ -128,9 +128,9 @@ So the choice is:
 
 Both are defensible. What is not defensible is claiming the first and expecting the second.
 
-## 7. Unrelated defect found
+## 7. Unrelated defect found — fixed (#263)
 
-bc6 panics the compiler after passing semantic analysis:
+bc6 panicked the compiler after passing semantic analysis:
 
 ```console
 $ vxc bc6.vx --action emit-mlir
@@ -139,9 +139,13 @@ Vx Compiler Internal Error: panicked at src/codegen/lower/mod.rs:314:14:
 Unsupported pattern in codegen
 ```
 
-The trigger is a `_ =>` wildcard arm in a `match` over an integer where every arm returns ([`src/codegen/lower/mod.rs:314`](../../src/codegen/lower/mod.rs#L314)). Not borrow-related; ordinary code, and an ICE rather than a diagnostic. Worth its own issue.
+The trigger was an integer-**literal** `match` arm (`1 =>`): `generate_match_chain` handled only
+`Wildcard` and `EnumVariant`, so `Pattern::Literal` fell through to `panic!("Unsupported pattern in codegen")` ([`src/codegen/lower/mod.rs`](../../src/codegen/lower/mod.rs)). Not borrow-related;
+ordinary code, and an ICE rather than a diagnostic. **Fixed in #263**: a literal arm now lowers to
+an `arith.cmpi eq` against the scrutinee (regression test `tests/middle_end/pass/match_int_literal_arms.vx`).
 
-Incidentally, it also proves bc6 cleared the borrow checker — the panic is downstream of semantic analysis.
+Incidentally, it also proved bc6 cleared the borrow checker — the panic was downstream of semantic
+analysis.
 
 ## 8. Recommendation
 
