@@ -1,0 +1,25 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4005]
+// Coverage (#266): bc9 through a closure callee. The unsound reborrow-then-mutate is rejected — via
+// the return-escape rule (E4005) rather than the aliasing rule, but rejected. Pinned here so the
+// coverage is intentional. (A sound closure-return that derives from a reference parameter is
+// currently over-rejected by the same rule — a separate escape-precision follow-up, not a soundness
+// gap.)
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn bad(m : &mut Map) -> &i32 {
+  let f = |q : &Map| &q.slot;
+  let found = f(m);
+  insert(m, 42);
+  return found;
+}
+fn main() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  return *bad(&mut x);
+}

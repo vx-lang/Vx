@@ -372,6 +372,32 @@ Tests: `src/hir/provenance.rs` unit tests (the summary lattice) + E1/E2 fixtures
 `tests/middle_end/{pass,fail}/borrow_multiparam_*`, `borrow_multisource_*`, `borrow_unsafe_*`. Full
 suite green.
 
+### 8.2 Unresolvable-callee coverage (#268, #266)
+
+§5's residual risk — "unresolvable callee ⇒ no borrow record" — was a real unsound accept for
+**generic** callees (bc9 through a generic, #268): `resolve_callee_ref_signature` returned `None`, so
+`track_reference_arg_borrow` recorded nothing and the reborrow leaked. Closed by resolving a
+generic's **declared** signature (no instantiation) — the reference *shape* is all the reborrow
+decision needs, and the summary stays `AnyParam` (every reference argument treated as deriving). Two
+supporting fixes fell out:
+
+- **Access vs record mutability.** The conflict check uses the *parameter*'s mutability (what the
+  call does to the argument — `insert(&mut Map)` mutates), while the persisted record uses the
+  *result* reference's (what the alias is — `pass(m) -> &i32` is a shared alias). Conflating them
+  either missed `insert`'s mutation or marked the argument mutably borrowed and collided with the
+  callee body's own reads during instantiation.
+- **Isolated instantiation.** `instantiate_generic_function_call` checks the callee body sharing
+  `active_borrows`; a same-named parameter made the callee's `&m.field` run the NLL dead-borrow
+  cleanup against the caller's records with the *callee's* liveness, releasing a live reborrow early.
+  The body-check now runs in a taken/restored borrow context.
+
+Other unresolvable kinds (#266): **closures** are covered (the unsound reborrow is rejected via the
+escape rule, `E4005`); **trait objects / `dyn`** are not expressible in Vx, so N/A; reference-returning
+**intrinsics** derived from a reference argument do not exist in the builtin set. Known follow-up: a
+*sound* closure-return that derives from a reference parameter is over-rejected by the escape rule — a
+precision gap, not a soundness one. Fixtures: `borrow_reborrow_generic_{alias,ok}.vx`,
+`borrow_reborrow_closure_alias.vx`.
+
 ______________________________________________________________________
 
 ## 9. References

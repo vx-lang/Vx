@@ -2309,6 +2309,16 @@ impl<'a> TypeChecker<'a> {
                     .as_ref()
                     .map(|(_, ret)| Self::is_ref_type(ret))
                     .unwrap_or(false);
+                // A reborrow's mutability is the *result* reference's, not the parameter's: `found =
+                // probe_mut(m)` where `probe_mut(m: &mut Map) -> &i32` yields a *shared* alias of
+                // `*m`, so the reborrow is shared. Keying on the return type (rather than the param)
+                // is both more correct and what keeps a shared-returning generic from marking its
+                // argument mutably borrowed — which would collide with the callee body's own reads
+                // of a same-named parameter during instantiation (#268).
+                let result_is_mut = callee_sig
+                    .as_ref()
+                    .map(|(_, ret)| Self::is_mut_ref(ret))
+                    .unwrap_or(false);
                 // (index, base, path, param-is-mut, arg-is-a-`&x`-literal) for each reference arg,
                 // plus a snapshot of each distinct base's pre-call borrow list.
                 let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
@@ -2357,6 +2367,7 @@ impl<'a> TypeChecker<'a> {
                             base,
                             path.clone(),
                             *is_mut_param,
+                            result_is_mut,
                             persists(*i),
                             span,
                             silent,
@@ -2928,7 +2939,14 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .any(|(f, _)| f.name == inst_name)
             {
+                // Check the instantiated body in an *isolated* borrow context. It shares
+                // `active_borrows` with the caller otherwise, and a same-named parameter (`m` here,
+                // `m` in the caller) makes the callee's own `&m.field` run the NLL dead-borrow
+                // cleanup against the caller's records with the callee's liveness — wrongly
+                // releasing the caller's live reborrow before the next statement is checked (#268).
+                let saved_borrows = std::mem::take(&mut self.active_borrows);
                 self.check_function(&mut inst_func);
+                self.active_borrows = saved_borrows;
                 self.monomorphized_functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -4016,10 +4034,17 @@ impl<'a> TypeChecker<'a> {
         Some(RefProvenance::External)
     }
 
-    /// Resolve a callee's `(param types, return type)` for the reborrow analysis (#243). Covers
-    /// the monomorphic user-function surface the reduced cases exercise; returns `None` for
-    /// intrinsics/generics/closures, where the reborrow tracker simply does nothing (no regression
-    /// over today's behaviour).
+    /// Resolve a callee's `(param types, return type)` for the reborrow analysis (#243, #268). The
+    /// return type's *reference shape* (is it a reference? which parameters are references?) is all
+    /// the reborrow decision needs; the summary (`return_provenance_of`) supplies which parameter
+    /// the return derives from, defaulting to `AnyParam` where unknown.
+    ///
+    /// **Generics resolve to their declared signature** without instantiation: params/return may
+    /// carry type variables, but `&T`/`&mut T` are still references, so a reborrow through a generic
+    /// callee (bc9 through a generic, #268) is tracked conservatively instead of leaking untracked.
+    /// A generic returning a non-reference has a non-reference declared return, so nothing persists —
+    /// no false positive. Only genuinely unresolvable callees (closures resolved via other rules,
+    /// `dyn`, intrinsics) still return `None`.
     fn resolve_callee_ref_signature(&self, resolved_name: &str) -> Option<(Vec<Type>, Type)> {
         if let Some(f) = self
             .monomorphized_functions
@@ -4039,19 +4064,35 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
         }
+        // Generic callee: its declared signature (the name may carry explicit type args, e.g.
+        // `pass<i32>`, so strip them to the base name the generic table is keyed by).
+        let base = resolved_name.split('<').next().unwrap_or(resolved_name);
+        if let Some((gf, _)) = self.env.generic_functions.get(base) {
+            return Some((
+                gf.params.iter().map(|(_, t)| t.clone()).collect(),
+                gf.return_type.clone(),
+            ));
+        }
         None
     }
 
     /// Track a reborrow created by passing an existing reference *by name* to a reference
     /// parameter (#243, bc9). Mirrors `check_borrow_expr`'s NLL dead-borrow cleanup and
-    /// shared-XOR-mutable conflict check, keyed on the underlying variable. Persist the record
-    /// only when the reborrow outlives the call (the callee returns a reference bound to a
-    /// local); a value/void-returning call borrows only for its own duration.
+    /// shared-XOR-mutable conflict check, keyed on the underlying variable.
+    ///
+    /// Two distinct mutabilities (#268): `access_is_mut` is what the *call* does to the argument
+    /// (the parameter's mutability — `insert(&mut Map)` mutates through it) and drives the conflict
+    /// check; `record_is_mut` is what the persisted alias is (the *result* reference's mutability —
+    /// `probe(m: &mut Map) -> &i32` yields a shared alias) and is the mutability of the record left
+    /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
+    /// a value/void call borrows only for its own duration.
+    #[allow(clippy::too_many_arguments)]
     fn track_reference_arg_borrow(
         &mut self,
         base: &str,
         path: Vec<String>,
-        is_mut: bool,
+        access_is_mut: bool,
+        record_is_mut: bool,
         persist: bool,
         span: &crate::syntax::Span,
         silent: bool,
@@ -4096,7 +4137,7 @@ impl<'a> TypeChecker<'a> {
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
-                } else if is_mut {
+                } else if access_is_mut {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E4003,
                         format!(
@@ -4113,7 +4154,7 @@ impl<'a> TypeChecker<'a> {
                 .entry(base.to_string().into())
                 .or_default()
                 .push(BorrowRecord {
-                    is_mut,
+                    is_mut: record_is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: self.current_assignment_target.clone(),
                     path,

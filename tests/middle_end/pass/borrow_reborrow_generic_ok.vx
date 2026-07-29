@@ -1,0 +1,21 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Non-regression for #268: reborrowing through a generic callee whose result is *not* subsequently
+// aliased must still compile — the conservative default (a generic is AnyParam) must not over-reject
+// the common case. `pass<i32>(m)` reborrows `m`, but nothing mutates `m` while `found` is live.
+struct Map {
+  slot : i32, present : i32
+}
+fn pass<T>(m : &mut Map) -> &i32 {
+  return &m.slot;
+}
+fn good(m : &mut Map) -> i32 {
+  let found = pass<i32>(m);
+  return *found;
+}
+fn main() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  return good(&mut x);
+}

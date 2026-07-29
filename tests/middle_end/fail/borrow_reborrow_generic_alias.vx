@@ -1,0 +1,26 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4003]
+// Soundness (#268): bc9 routed through a *generic* callee. `pass<T>` reborrows `*m` and the result
+// aliases it; mutating through `m` via `insert(m, 42)` while that reborrow is live (returned) is a
+// shared-XOR-mutable violation. `resolve_callee_ref_signature` now resolves the generic's declared
+// signature, so the reborrow is tracked instead of leaking untracked (it did on 17698c4e).
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn pass<T>(m : &mut Map) -> &i32 {
+  return &m.slot;
+}
+fn bad(m : &mut Map) -> &i32 {
+  let found = pass<i32>(m);
+  insert(m, 42);
+  return found;
+}
+fn main() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  return *bad(&mut x);
+}
