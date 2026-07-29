@@ -1,6 +1,6 @@
 # Borrow Checker Precision Analysis: NLL Problem Case #3
 
-**Status:** analysis
+**Status:** analysis — **the two soundness holes are now fixed (#243); see [§9 Resolution](#9-resolution-243).**
 **Question:** Does Vx's borrow checker accept the `get`-or-`insert` map pattern that Rust's NLL rejects and Polonius is designed to accept?
 **Design of record:** [`borrow_checker_architecture.md`](borrow_checker_architecture.md) — this document measures that design, it does not replace it. Tracked in [#243](https://github.com/hiraditya/Vx/issues/243).
 
@@ -42,10 +42,16 @@ Full sources in Appendix A.
 | bc3 | borrow, mutate, then read | ❌ | reject | reject | **reject** `E4003` | ✓ |
 | bc7 | mutate inside a branch, read after | ❌ | reject | reject | **reject** `E4003` | ✓ |
 | **bc8** | **mutate in a branch that returns; read only on the other path** | ✅ | reject | **accept** | **reject** `E4003` | ✗ |
-| bc2 | `get_or_insert`, across functions | ✅ | reject | accept | accept | (see §5.2) |
-| bc6 | same, in `match` form | ✅ | reject | accept | accept, then ICE | (see §7) |
-| bc9 | reborrow through `&mut` param, read after mutation | ❌ | reject | reject | **accept** | ✗ |
-| bc4 | return a reference to a local | ❌ | reject | reject | **accept** | ✗ |
+| bc2 | `get_or_insert`, across functions | ✅ | reject | accept | accept | ✓ (sound) |
+| bc6 | same, in `match` form | ✅ | reject | accept | accept, then ICE | (ICE, see §7) |
+| bc9 | reborrow through `&mut` param, read after mutation | ❌ | reject | reject | ~~accept~~ → **reject** `E4003` | ✓ (fixed #243) |
+| bc4 | return a reference to a local | ❌ | reject | reject | ~~accept~~ → **reject** `E4005` | ✓ (fixed #243) |
+
+> **Update (#243):** the two ✗ rows above — bc9 (unsound reborrow) and bc4 (dangling return) — are
+> now rejected; see [§9 Resolution](#9-resolution-243). bc8 remains `✗` by design: it is the
+> Polonius location-sensitivity gap (§5.4/§6), a conscious precision limit, not a soundness bug.
+> bc2 stays accepted, which is *sound* (the NLL dead-borrow cleanup releases the loan on the path
+> that mutates). bc6 still ICEs in codegen (an unrelated defect, §7).
 
 ## 5. Analysis
 
@@ -151,6 +157,42 @@ Suggested ordering:
 If (1) and (2) do not fit before release, state them as known limitations. That costs far less than a user discovering bc4 on their own.
 
 **Test fixtures.** The nine cases in Appendix A are a natural regression suite. Four of them (bc2, bc4, bc6, bc9) are currently accepted but should eventually be rejected, so they belong in `tests/middle_end/fail/` only once the holes are closed — until then they document the gap.
+
+## 9. Resolution (#243)
+
+The two soundness holes (§5.2, §5.3) are closed. Precision (§6) is deliberately left where it was —
+the fast-path region encoding is kept, so NLL-grade is the ceiling and bc8 stays conservatively
+rejected.
+
+**Escape analysis on returned references (§5.3, bc4).** A returned reference must root in
+caller-owned memory. Each reference-typed binding now carries a *provenance* — `External` (it
+reborrows a reference parameter, safe to return) or `Local` (it roots in a `let`, a by-value
+parameter, or a temporary). A `return` of a `Local`-provenance reference is `E4005`. Provenance is
+computed structurally (`ref_provenance_of`): `&x` is `External` iff `x` is a reference *parameter*;
+a bare binding inherits the provenance recorded at its `let`; a reference-returning call joins the
+provenance of its reference arguments (so `identity(&local)` is `Local`). Caught cases include the
+direct `return &x`, the transitive `let r = &x; return r`, the by-value-parameter `&x`, a borrowed
+temporary `&5`, and the escape-through-a-call `identity(&x)`; the legitimate `&param.field`
+reborrow (bc1) and `return ref_param` are untouched.
+
+**Reborrow tracking through reference parameters (§5.2, bc9).** Passing an existing reference *by
+name* to a reference parameter (`probe(m)`, not `&m`) now creates a borrow record against the
+underlying variable, so a later conflicting use is seen. The record persists past the call only
+when the callee returns a reference (the reborrow escapes into the result); a value/void-returning
+call borrows only for its own duration. The conflict check reuses `check_borrow_expr`'s NLL
+dead-borrow cleanup and shared-XOR-mutable rule verbatim, so bc9 is `E4003` while the NLL
+non-regression (bc5: loan dead before the mutation) still compiles.
+
+**Deliberately not done.** (1) Location sensitivity / Polonius (§6) — bc8 stays rejected; changing
+the region representation is a separate, conscious decision. (2) Reborrow tracking through *method*
+receivers (`m.insert()`) — the reduced cases are free functions; the free-function surface is
+covered, and the method-call path is a mechanical follow-up. (3) An untracked reference identifier
+(one whose provenance we cannot resolve) is not flagged, to avoid false escapes — a soundness
+*narrowing* rather than a guarantee, noted so it is chosen, not discovered.
+
+**Regression suite.** bc4 → [`tests/middle_end/fail/borrow_return_local_ref.vx`](../../tests/middle_end/fail/borrow_return_local_ref.vx),
+bc9 → [`tests/middle_end/fail/borrow_reborrow_param_alias.vx`](../../tests/middle_end/fail/borrow_reborrow_param_alias.vx);
+non-regressions bc1/bc5/reborrow-through-param in `tests/middle_end/pass/borrow_*.vx`.
 
 ## Appendix A — the nine cases
 

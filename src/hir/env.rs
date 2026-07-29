@@ -144,6 +144,18 @@ pub struct BorrowRecord {
     pub path: Vec<String>,
 }
 
+/// Where a reference value ultimately points, for return-escape analysis (#243).
+/// A reference may be returned iff its provenance is `External`; returning a `Local`
+/// reference would leave it dangling once the function's stack frame is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefProvenance {
+    /// Roots in caller-owned memory: a reference *parameter* (or `'static`). Safe to return.
+    External,
+    /// Roots in a function-local slot: a `let` binding, a by-value parameter, or a
+    /// temporary. Returning it dangles.
+    Local,
+}
+
 pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
@@ -227,6 +239,15 @@ pub struct TypeChecker<'a> {
     /// `.map(|x| ...)`). See `check_closure_expr` and `unify_types_internal`.
     pub(crate) closure_signatures:
         std::collections::HashMap<crate::symbol::Symbol, (Vec<Type>, Type)>,
+    /// Parameters (name -> declared type) of the function currently being checked. Lets the
+    /// return-escape analysis tell a caller-owned *reference parameter* (safe to reborrow and
+    /// return) apart from a local binding of the same reference type (#243). Reset per function.
+    pub(crate) current_params: HashMap<crate::symbol::Symbol, Type>,
+    /// Provenance of each reference-typed *local* binding, recorded at its `let`: does the
+    /// reference root in caller memory (`External`) or a function-local slot (`Local`)? A
+    /// `return` of a `Local`-provenance reference is a dangling escape (E4005, #243). Reset
+    /// per function.
+    pub(crate) ref_provenance: HashMap<crate::symbol::Symbol, RefProvenance>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -286,6 +307,8 @@ impl<'a> TypeChecker<'a> {
             pending_topo_bindings: std::collections::HashMap::new(),
             expected_type: None,
             closure_signatures: std::collections::HashMap::new(),
+            current_params: HashMap::new(),
+            ref_provenance: HashMap::new(),
         }
     }
 
@@ -878,8 +901,14 @@ impl<'a> TypeChecker<'a> {
             .transfer_cost_graph
             .default_memory_for(&self.active_topology);
 
+        // Record the parameter set and clear per-function provenance state for the
+        // return-escape analysis (#243). Saved/restored so nested checks (closures) don't
+        // clobber the enclosing function's view.
+        let prev_params = std::mem::take(&mut self.current_params);
+        let prev_provenance = std::mem::take(&mut self.ref_provenance);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
+            self.current_params.insert(name.clone(), ty.clone());
         }
 
         // Add preconditions (requires) to our constraints
@@ -969,6 +998,8 @@ impl<'a> TypeChecker<'a> {
         self.constraints = prev_constraints;
         self.active_topology = prev_top;
         self.active_memory = prev_mem;
+        self.current_params = prev_params;
+        self.ref_provenance = prev_provenance;
         self.used_vars.clear();
     }
 

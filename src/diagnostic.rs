@@ -193,6 +193,8 @@ pub enum DiagnosticCode {
     E4003,
     /// Cannot borrow (already mutably borrowed)
     E4004,
+    /// A returned reference escapes the function borrowing a function-local (dangling return)
+    E4005,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

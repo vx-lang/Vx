@@ -1,0 +1,26 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Non-regression for #243 (case bc5): the shared loan `found` is dead at its last use
+// (`let copied = *found`) before the mutation, so `insert(&mut m, 42)` is allowed. This is the
+// NLL-vs-lexical discriminator — the reborrow tracking added for bc9 must not over-tighten it.
+struct Map {
+  slot : i32, present : i32
+}
+fn probe(m : &Map) -> &i32 {
+  return &m.slot;
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn ok() -> i32 {
+  let mut m = Map {
+    slot : 0, present : 0
+  };
+  let found = probe(&m);
+  let copied = *found;
+  insert(&mut m, 42);
+  return copied + m.slot;
+}
+fn main() -> i32 {
+  return 0;
+}

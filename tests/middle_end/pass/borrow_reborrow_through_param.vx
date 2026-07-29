@@ -1,0 +1,19 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Non-regression for #243: reborrowing through a reference *parameter* and returning the
+// result is sound (the referent is caller-owned and outlives the call). The escape analysis
+// must NOT flag this, and the reborrow tracker must NOT report a false conflict — there is no
+// mutation aliasing the shared reborrow.
+struct Map {
+  slot : i32, present : i32
+}
+fn probe(m : &Map) -> &i32 {
+  return &m.slot;
+}
+fn pass_through(m : &Map) -> &i32 {
+  let r = probe(m);
+  return r;
+}
+fn main() -> i32 {
+  return 0;
+}

@@ -2288,6 +2288,43 @@ impl<'a> TypeChecker<'a> {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
                 }
 
+                // Reborrow tracking (#243, bc9): passing an existing reference *by name* to a
+                // reference parameter reborrows the underlying storage. `check_borrow_expr` only
+                // fires for `&x` literals, so a bare `foo(m)` left the aliasing invisible. Record
+                // it against the base variable so a later conflicting use (`insert(m, ..)` while a
+                // reborrow is live) is caught. The record persists past the call only when the
+                // callee returns a reference (the reborrow escapes into the result).
+                if !silent {
+                    if let Some((param_types, ret_ty)) =
+                        self.resolve_callee_ref_signature(&resolved_name)
+                    {
+                        let ret_is_ref = Self::is_ref_type(&ret_ty);
+                        for (i, arg) in args.iter().enumerate() {
+                            let Some(param_ty) = param_types.get(i) else {
+                                break;
+                            };
+                            // Only reborrows: a reference argument to a reference parameter, passed
+                            // by name rather than as a fresh `&x` (already tracked elsewhere).
+                            if !Self::is_ref_type(param_ty)
+                                || matches!(arg, Expr::Borrow(_))
+                                || !Self::is_ref_type(&arg_types[i])
+                            {
+                                continue;
+                            }
+                            if let Some((base, path)) = Self::extract_base_and_path(arg) {
+                                self.track_reference_arg_borrow(
+                                    &base,
+                                    path,
+                                    Self::is_mut_ref(param_ty),
+                                    ret_is_ref,
+                                    span,
+                                    silent,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
                     args,
@@ -3824,6 +3861,188 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndexAccess(idx) => Self::extract_base_and_path(&idx.base),
             _ => None,
+        }
+    }
+
+    /// True for the reference-shaped types (`&T`, `&mut T`, raw pointers, `Ref<T>`). These are
+    /// the types the return-escape and reborrow analyses (#243) reason about.
+    pub(crate) fn is_ref_type(ty: &Type) -> bool {
+        matches!(ty, Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+    }
+
+    /// True for a *mutable* reference type (`&mut T` / `*mut T`).
+    fn is_mut_ref(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Borrow { is_mut: true, .. } | Type::Pointer(_, _, true)
+        )
+    }
+
+    /// Return-escape provenance (#243): where does the reference produced by `expr` root?
+    /// `None` when `expr` is not a reference (nothing to check). `External` when it roots in a
+    /// caller-owned reference parameter (safe to return); `Local` when it roots in a
+    /// function-local slot, a by-value binding, or a temporary (returning it would dangle).
+    pub(crate) fn ref_provenance_of(&self, expr: &Expr) -> Option<crate::hir::env::RefProvenance> {
+        use crate::hir::env::RefProvenance;
+        match expr {
+            // `&base` / `&base.field`: a fresh borrow. It is safe to return only when it reborrows
+            // *through* a caller-owned reference parameter (e.g. `&m.slot` for `m: &Map`).
+            // Borrowing a by-value parameter, a local, or a temporary all yield stack-local refs.
+            Expr::Borrow(b) => {
+                if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
+                    match self.current_params.get(base.as_str()) {
+                        Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
+                        _ => Some(RefProvenance::Local),
+                    }
+                } else {
+                    // `&5`, `&(a + b)`, `&f()` — borrows an unnamed temporary.
+                    Some(RefProvenance::Local)
+                }
+            }
+            // A bare reference variable: a reference parameter is external; a local binding carries
+            // whatever provenance we recorded at its `let`. An untracked reference identifier is
+            // left unresolved (`None`) rather than guessed, to avoid false escapes.
+            Expr::Identifier(id) => {
+                if let Some(pty) = self.current_params.get(id.name.as_ref()) {
+                    if Self::is_ref_type(pty) {
+                        return Some(RefProvenance::External);
+                    }
+                    return None;
+                }
+                self.ref_provenance.get(id.name.as_ref()).copied()
+            }
+            // A call yielding a reference reborrows from its reference arguments: local iff any
+            // reference argument is local (e.g. `identity(&x)` for a local `x`).
+            Expr::FunctionCall(fc) => self.join_arg_provenance(&fc.args),
+            Expr::MethodCall(mc) => {
+                let mut provs: Vec<&Expr> = vec![mc.base.as_ref()];
+                provs.extend(mc.args.iter());
+                self.join_arg_provenance_exprs(&provs)
+            }
+            _ => None,
+        }
+    }
+
+    fn join_arg_provenance(&self, args: &[Expr]) -> Option<crate::hir::env::RefProvenance> {
+        let refs: Vec<&Expr> = args.iter().collect();
+        self.join_arg_provenance_exprs(&refs)
+    }
+
+    /// Join provenance across a call's reference operands: `Local` if any is `Local`, otherwise
+    /// `External` (a correct callee returns a reference derived from its reference inputs; a
+    /// callee that fabricates one from a local is caught when *it* is checked).
+    fn join_arg_provenance_exprs(&self, args: &[&Expr]) -> Option<crate::hir::env::RefProvenance> {
+        use crate::hir::env::RefProvenance;
+        for a in args {
+            if self.ref_provenance_of(a) == Some(RefProvenance::Local) {
+                return Some(RefProvenance::Local);
+            }
+        }
+        Some(RefProvenance::External)
+    }
+
+    /// Resolve a callee's `(param types, return type)` for the reborrow analysis (#243). Covers
+    /// the monomorphic user-function surface the reduced cases exercise; returns `None` for
+    /// intrinsics/generics/closures, where the reborrow tracker simply does nothing (no regression
+    /// over today's behaviour).
+    fn resolve_callee_ref_signature(&self, resolved_name: &str) -> Option<(Vec<Type>, Type)> {
+        if let Some(f) = self
+            .monomorphized_functions
+            .iter()
+            .find(|f| f.0.name.as_ref() == resolved_name)
+        {
+            return Some((
+                f.0.params.iter().map(|(_, t)| t.clone()).collect(),
+                f.0.return_type.clone(),
+            ));
+        }
+        if let Some(f) = self.env.syntax_functions.get(resolved_name) {
+            if f.generics.is_empty() {
+                return Some((
+                    f.params.iter().map(|(_, t)| t.clone()).collect(),
+                    f.return_type.clone(),
+                ));
+            }
+        }
+        None
+    }
+
+    /// Track a reborrow created by passing an existing reference *by name* to a reference
+    /// parameter (#243, bc9). Mirrors `check_borrow_expr`'s NLL dead-borrow cleanup and
+    /// shared-XOR-mutable conflict check, keyed on the underlying variable. Persist the record
+    /// only when the reborrow outlives the call (the callee returns a reference bound to a
+    /// local); a value/void-returning call borrows only for its own duration.
+    fn track_reference_arg_borrow(
+        &mut self,
+        base: &str,
+        path: Vec<String>,
+        is_mut: bool,
+        persist: bool,
+        span: &crate::syntax::Span,
+        silent: bool,
+    ) {
+        if silent {
+            return;
+        }
+        // NLL: drop records whose borrower is no longer used past this point.
+        let mut dead_borrowers = std::collections::HashSet::new();
+        if let Some(borrows) = self.active_borrows.get(base) {
+            for b in borrows.iter() {
+                if let Some(borrower) = &b.borrower_name {
+                    if !self.is_variable_used_after(borrower) {
+                        dead_borrowers.insert(borrower.clone());
+                    }
+                }
+            }
+        }
+        if let Some(borrows) = self.active_borrows.get_mut(base) {
+            borrows.retain(|b| match &b.borrower_name {
+                Some(borrower) => !dead_borrowers.contains(borrower),
+                None => true,
+            });
+            for b in borrows.iter() {
+                // Overlapping-path conflict, identical to `check_borrow_expr`.
+                let mut overlap = true;
+                for (i, p) in path.iter().enumerate() {
+                    if i < b.path.len() && b.path[i] != *p {
+                        overlap = false;
+                        break;
+                    }
+                }
+                if !overlap {
+                    continue;
+                }
+                if b.is_mut {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4004,
+                        format!(
+                            "Cannot borrow '{}' because it is already borrowed as mutable.",
+                            base
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                } else if is_mut {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4003,
+                        format!(
+                            "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
+                            base
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        }
+        if persist {
+            self.active_borrows
+                .entry(base.to_string().into())
+                .or_default()
+                .push(BorrowRecord {
+                    is_mut,
+                    scope_depth: self.scopes.len(),
+                    borrower_name: self.current_assignment_target.clone(),
+                    path,
+                });
         }
     }
 

@@ -1,0 +1,11 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4005]
+// Return-escape analysis (#243, case bc4): returning `&x` for a function-local `x`
+// leaves a dangling reference once the frame unwinds. Must be rejected.
+fn dangle() -> &i32 {
+  let x = 5;
+  return &x;
+}
+fn main() -> i32 {
+  return 0;
+}

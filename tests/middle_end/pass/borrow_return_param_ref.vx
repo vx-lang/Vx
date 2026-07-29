@@ -1,0 +1,16 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Non-regression for #243: a reference derived from a reference parameter may be returned —
+// both directly (`return r`) and as a field reborrow (`return &m.slot`). External provenance.
+struct Map {
+  slot : i32, present : i32
+}
+fn probe(m : &Map) -> &i32 {
+  return &m.slot;
+}
+fn id(r : &i32) -> &i32 {
+  return r;
+}
+fn main() -> i32 {
+  return 0;
+}

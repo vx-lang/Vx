@@ -129,7 +129,7 @@ impl<'a> TypeChecker<'a> {
                         .insert(name.to_string().into(), val);
                 }
 
-                if let Some(ann) = ty_ann {
+                let binding_ty = if let Some(ann) = ty_ann {
                     if !self.is_assignable(ann, &ty) {
                         self.errors
                             .push(format!("Type mismatch in variable declaration '{}'", name));
@@ -137,8 +137,19 @@ impl<'a> TypeChecker<'a> {
                     // Capacity: a `Ref`/`Pinned` tensor annotation must fit its memory space.
                     self.check_type_placement(ann, &format!("variable '{}'", name));
                     self.insert(name.to_string(), ann.clone());
+                    ann.clone()
                 } else {
-                    self.insert(name.to_string(), ty);
+                    self.insert(name.to_string(), ty.clone());
+                    ty
+                };
+
+                // Record where a reference binding roots, so a later `return` of it can be
+                // checked for escape (#243). A binding whose provenance we can't determine is
+                // left unrecorded rather than assumed safe-or-unsafe.
+                if Self::is_ref_type(&binding_ty) {
+                    if let Some(prov) = self.ref_provenance_of(expr) {
+                        self.ref_provenance.insert(name.clone(), prov);
+                    }
                 }
 
                 if !*_is_mut {
@@ -339,6 +350,24 @@ impl<'a> TypeChecker<'a> {
                             "Type mismatch on return. Expected {:?}, got {:?}",
                             expected_ty, ty
                         ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+
+                // Return-escape analysis (#243, bc4): a returned reference must root in
+                // caller-owned memory. Returning a reference to a function-local — `return &x`
+                // for a local `x`, or a binding that reborrows one — leaves a dangling pointer
+                // once this frame unwinds.
+                if !silent
+                    && Self::is_ref_type(&ty)
+                    && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4005,
+                        "Cannot return a reference to a local value: it would dangle after the \
+                         function returns. A returned reference must borrow from a reference \
+                         parameter, not a local."
+                            .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }

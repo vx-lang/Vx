@@ -11,10 +11,11 @@
 >    borrow is released when its lexical block ends; in practice the loan is released at
 >    the *last use* of the borrowing binding, which is NLL-grade behaviour rather than
 >    pre-NLL lexical behaviour. See §5.1 of the companion doc for the discriminating case.
-> 1. **Two soundness holes are not covered by either half.** Reborrows through a
->    reference parameter create no borrow record (`active_borrows` is keyed by local
->    variable name), and there is no escape analysis on returned references — so
->    `fn dangle() -> &i32 { let x = 5; return &x; }` currently compiles. See §5.2–5.3.
+> 1. **Two soundness holes were not covered by either half — now closed (#243).** Reborrows
+>    through a reference parameter created no borrow record (`active_borrows` is keyed by local
+>    variable name), and there was no escape analysis on returned references — so
+>    `fn dangle() -> &i32 { let x = 5; return &x; }` used to compile. Both are fixed; see
+>    *Reborrows and escapes (#243)* below and §5.2–5.3/§9 of the companion doc.
 > 1. **The Region-ID encoding in §2 forecloses Polonius by construction.** A 12-bit
 >    Region ID equal to lexical scope depth is a scalar; location sensitivity requires
 >    regions to be *sets of program points*. That is a legitimate trade — constant-time
@@ -46,7 +47,31 @@ The Lexical Borrow Checker is responsible for enforcing **Strict Aliasing** (Sha
   - The record stores the `scope_depth` at which the borrow was created.
 - **Scope Popping:** When an AST block scope ends, `TypeChecker` automatically iterates through `active_borrows` and pops any records where the `scope_depth` matches the exiting block. This releases the borrow.
 
-This approach perfectly handles local variable lifetimes without the overhead of tracking complex control-flow graphs.
+This approach handles local variable lifetimes without the overhead of tracking complex control-flow graphs.
+
+> **Release is at last *use*, not lexical scope end (NLL-grade).** The description above understated
+> the checker. Before a new borrow conflicts, `check_borrow_expr` drops any existing record whose
+> borrower is not *used after* this point (`is_variable_used_after`, backed by a per-block liveness
+> pre-scan). So `let r = &x; let v = *r; mutate(&mut x);` compiles — the loan `r` is dead at the
+> mutation. The lexical `scope_depth`/`pop_scope` machinery is the *outer* bound on a loan's life;
+> use-based liveness is the *tighter* one that actually decides conflicts. This is NLL-grade for
+> named locals; the fast-path region encoding (§2) means NLL-grade is also the ceiling (no Polonius
+> location sensitivity). See [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md).
+
+### Reborrows and escapes (#243)
+
+Two rules extend the lexical checker beyond `&x`-on-a-named-local:
+
+- **Reborrow through a reference parameter.** Passing an existing reference *by name* to a reference
+  parameter (`probe(m)`, not `&m`) reborrows the underlying storage and creates a borrow record
+  against it, so a later conflicting use (`insert(m, …)` while the reborrow is live) is caught
+  (`E4003`/`E4004`). The record persists past the call only when the callee returns a reference
+  (the reborrow escapes into the result); otherwise it lasts only for the call.
+- **Return-escape analysis.** Every reference-typed binding carries a *provenance*: `External` (it
+  reborrows a reference parameter — safe to return) or `Local` (it roots in a `let`, a by-value
+  parameter, or a temporary). Returning a `Local`-provenance reference is a dangling escape
+  (`E4005`). Provenance is computed structurally and threads through `let` bindings and
+  reference-returning calls.
 
 ______________________________________________________________________
 
