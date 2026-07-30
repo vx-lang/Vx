@@ -94,6 +94,33 @@ pub const REGION_UNSET: u64 = REGION_MASK;
 /// valid region) rather than overflowing into the sentinel.
 pub const REGION_MAX: u64 = REGION_MASK - 1;
 
+/// Slot 0 (the return slot) reserves its top 3 region bits for the return-provenance code (#265), so
+/// its region field is only **9 bits** — slots 1-3 keep the full 12. Any rule that reads slot 0's
+/// region must mask with this, not [`REGION_MASK`]: reading the wide field would fold the provenance
+/// bits into the lifetime and corrupt the comparison (exactly the truncation #267 warned of).
+pub const REGION_MASK_0: u64 = 0x01FF;
+
+/// The slot-0 counterpart of [`REGION_UNSET`]: the maximum of the narrowed 9-bit return-slot region
+/// is its reserved "unset" sentinel (#265/#267). Recognised as a wildcard exactly like [`REGION_UNSET`].
+pub const REGION_UNSET_0: u64 = REGION_MASK_0;
+
+/// The largest assignable real region in slot 0 — one below [`REGION_UNSET_0`]. A return lifetime is
+/// by construction a parameter's or `'static`, so it never needs deep nesting; anything deeper clamps
+/// here rather than colliding with the sentinel or the provenance bits.
+pub const REGION_MAX_0: u64 = REGION_MASK_0 - 1;
+
+/// The slot-0 analogue of [`region_for_depth`] (#265): map a lexical scope depth to the region stored
+/// in the **return slot**, whose field is 9 bits. The [`REGION_UNSET`] sentinel maps to the slot-0
+/// sentinel [`REGION_UNSET_0`]; any real depth is clamped to [`REGION_MAX_0`] so it can neither reach
+/// the sentinel nor spill into the provenance bits above the region.
+pub fn region_for_depth_slot0(depth: u64) -> u64 {
+    if depth == REGION_UNSET {
+        REGION_UNSET_0
+    } else {
+        depth.min(REGION_MAX_0)
+    }
+}
+
 /// Map a lexical scope depth to the region value stored in a `TypeId` (#267). The [`REGION_UNSET`]
 /// sentinel is preserved as-is (a parsed reference carries it until a depth is bound); any *real*
 /// depth is clamped to [`REGION_MAX`] so it can never equal the sentinel — nesting deeper than
@@ -147,14 +174,23 @@ pub fn verify_subtyping_bounds(
                     return false;
                 }
 
-                let region_a = slot_a & REGION_MASK;
-                let region_b = slot_b & REGION_MASK;
+                // Slot 0 is the return slot: its top 3 region bits carry the provenance code (#265),
+                // so its region is 9 bits with its own unset sentinel; slots 1-3 keep the 12-bit
+                // field. The mask must be slot-dependent — reading slot 0 with the wide `REGION_MASK`
+                // would fold the provenance bits into the lifetime and corrupt the comparison.
+                let (region_mask, region_unset) = if i == 0 {
+                    (REGION_MASK_0, REGION_UNSET_0)
+                } else {
+                    (REGION_MASK, REGION_UNSET)
+                };
+                let region_a = slot_a & region_mask;
+                let region_b = slot_b & region_mask;
 
                 // An unset region (a parse-time placeholder not yet bound to a scope depth) does not
                 // constrain subtyping: treat it as a wildcard rather than a concrete very-short-lived
                 // region. Recognising it explicitly — instead of relying on its numeric position —
                 // is what keeps the check correct if the region field is ever narrowed (#267/#265).
-                if region_a == REGION_UNSET || region_b == REGION_UNSET {
+                if region_a == region_unset || region_b == region_unset {
                     continue;
                 }
 
@@ -212,6 +248,15 @@ mod tests {
     fn lifetime_gid(region: u16, variance: u8) -> TypeId {
         let mut id = TypeId::new(0, 0, 0, 0);
         id.try_set_fast_param(0, region, variance).unwrap();
+        id
+    }
+
+    /// A fast-path lifetime GID with `(region, variance)` packed into an arbitrary slot — used to
+    /// exercise the 12-bit parameter slots (1-3), which keep the full region width that slot 0 (the
+    /// narrowed 9-bit return slot, #265) does not.
+    fn lifetime_gid_at(slot: usize, region: u16, variance: u8) -> TypeId {
+        let mut id = TypeId::new(0, 0, 0, 0);
+        id.try_set_fast_param(slot, region, variance).unwrap();
         id
     }
 
@@ -296,41 +341,111 @@ mod tests {
         ));
     }
 
-    /// A just-below-sentinel region (`REGION_MAX` = 4094) and the issue's 510 are *ordinary* regions
-    /// compared by depth, distinct from the sentinel — the property #265's narrowed field must keep.
+    /// Real regions just below each slot's sentinel are *ordinary* depths compared numerically, never
+    /// confused with the sentinel — the property #265's narrowed field must keep. Slot 0 (the return
+    /// slot) has a 9-bit region (max real 510, sentinel 511); the parameter slots keep 12 bits (max
+    /// real 4094, sentinel 4095).
     #[test]
     fn max_real_region_is_distinct_from_the_sentinel() {
         let w = worker();
-        let max_real = REGION_MAX as u16; // 4094
         assert_ne!(REGION_MAX, REGION_UNSET);
-        // Two real regions compare by depth: invariant requires exact equality.
+        assert_ne!(REGION_MAX_0, REGION_UNSET_0);
+
+        // --- Slot 0: 9-bit region, max real = 510. ---
+        let max0 = REGION_MAX_0 as u16; // 510
+                                        // Two real regions compare by depth: invariant requires exact equality.
         assert!(verify_subtyping_bounds(
-            &lifetime_gid(max_real, 0x0),
-            &lifetime_gid(max_real, 0x0),
+            &lifetime_gid(max0, 0x0),
+            &lifetime_gid(max0, 0x0),
             &w
         ));
         assert!(!verify_subtyping_bounds(
-            &lifetime_gid(510, 0x0),
-            &lifetime_gid(max_real, 0x0),
+            &lifetime_gid(509, 0x0),
+            &lifetime_gid(max0, 0x0),
             &w
         ));
         // Covariant: a shorter-lived (larger) real region does not outlive a longer-lived one.
         assert!(!verify_subtyping_bounds(
-            &lifetime_gid(max_real, 0x1),
-            &lifetime_gid(510, 0x1),
+            &lifetime_gid(max0, 0x1),
+            &lifetime_gid(509, 0x1),
             &w
         ));
         assert!(verify_subtyping_bounds(
-            &lifetime_gid(510, 0x1),
-            &lifetime_gid(max_real, 0x1),
+            &lifetime_gid(509, 0x1),
+            &lifetime_gid(max0, 0x1),
             &w
         ));
-        // 510 vs the sentinel passes (wildcard) — distinct from 510 vs a real 4094 (fails invariant).
+        // Max real vs the slot-0 sentinel passes (wildcard) — distinct from vs a real 510 (invariant).
         assert!(verify_subtyping_bounds(
-            &lifetime_gid(510, 0x0),
-            &lifetime_gid(REGION_UNSET as u16, 0x0),
+            &lifetime_gid(max0, 0x0),
+            &lifetime_gid(REGION_UNSET_0 as u16, 0x0),
             &w
         ));
+
+        // --- Parameter slot 1: 12-bit region, max real = 4094, unchanged by the narrowing. ---
+        let max_real = REGION_MAX as u16; // 4094
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid_at(1, max_real, 0x0),
+            &lifetime_gid_at(1, max_real, 0x0),
+            &w
+        ));
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid_at(1, 510, 0x0),
+            &lifetime_gid_at(1, max_real, 0x0),
+            &w
+        ));
+        // A real 4094 in a param slot is a wildcard only against the 4095 sentinel.
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid_at(1, max_real, 0x0),
+            &lifetime_gid_at(1, REGION_UNSET as u16, 0x0),
+            &w
+        ));
+    }
+
+    /// The provenance bits packed into slot 0 must not leak into the lifetime comparison (#265): two
+    /// return types with the same region but different provenance codes still satisfy subtyping, and
+    /// the region still governs once codes are set. This is the invariant the slot-dependent mask in
+    /// `verify_subtyping_bounds` exists to guarantee — the corruption #267 warned a narrowed field
+    /// would cause if read with the wide mask.
+    #[test]
+    fn slot0_provenance_bits_do_not_corrupt_region_compare() {
+        let w = worker();
+        // Same region (covariant, equal) but different provenance codes -> still compatible.
+        let mut a = lifetime_gid(4, 0x1);
+        a.set_return_provenance(1); // derives from param 0
+        let mut b = lifetime_gid(4, 0x1);
+        b.set_return_provenance(7); // conservative top
+        assert_ne!(a, b, "the codes make the raw bits differ");
+        assert!(verify_subtyping_bounds(&a, &b, &w));
+        assert!(verify_subtyping_bounds(&b, &a, &w));
+
+        // The region still decides once codes are present: a longer-lived source (smaller region) is
+        // covariantly assignable; a shorter-lived one is not.
+        let mut src_ok = lifetime_gid(2, 0x1);
+        src_ok.set_return_provenance(3);
+        let mut tgt = lifetime_gid(6, 0x1);
+        tgt.set_return_provenance(3);
+        assert!(verify_subtyping_bounds(&src_ok, &tgt, &w));
+        let mut src_bad = lifetime_gid(9, 0x1);
+        src_bad.set_return_provenance(3);
+        assert!(!verify_subtyping_bounds(&src_bad, &tgt, &w));
+    }
+
+    /// The slot-0 lowering rule maps the unset sentinel to the slot-0 sentinel and clamps real depths
+    /// below it, so a return region can never be read back as "unset" nor spill into the provenance
+    /// bits above the 9-bit field (#265).
+    #[test]
+    fn region_for_depth_slot0_maps_sentinel_and_clamps() {
+        assert_eq!(region_for_depth_slot0(REGION_UNSET), REGION_UNSET_0); // sentinel -> slot-0 sentinel
+        assert_eq!(region_for_depth_slot0(0), 0); // 'static unchanged
+        assert_eq!(region_for_depth_slot0(5), 5); // ordinary depth unchanged
+        assert_eq!(region_for_depth_slot0(REGION_MAX_0), REGION_MAX_0); // slot-0 max real unchanged
+                                                                        // Deeper than the 9-bit field clamps to max real — never to, or past, the sentinel.
+        assert_eq!(region_for_depth_slot0(512), REGION_MAX_0);
+        assert_eq!(region_for_depth_slot0(999_999), REGION_MAX_0);
+        assert_ne!(region_for_depth_slot0(999_999), REGION_UNSET_0);
+        // The clamped value fits the 9-bit field, so it cannot touch the provenance bits.
+        assert!(region_for_depth_slot0(999_999) <= REGION_MASK_0);
     }
 
     /// The lowering rule (`region_for_depth`, used by `lower_to_type_id`) preserves the sentinel and

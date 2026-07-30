@@ -28,6 +28,19 @@ const VISIBILITY_MASK: u64 = 0xF000_0000_0000_0000;
 pub const FAST_PARAM_REGION_MAX: u16 = 0x0FFF;
 pub const FAST_PARAM_VARIANCE_MASK: u16 = 0x0007;
 
+// Slot 0 is the *return* slot, and it reserves the top 3 bits of its region field for the return
+// provenance code (#265): `[region:9][prov:3][variance:3][reserved:1]`. Slots 1-3 keep the full
+// 12-bit region. The code names which parameter a returned reference derives from — inline in the
+// type's identity, so the cross-module borrow check reads it from the `TypeId` with no side table:
+//   0       = no provenance (not a reference, or a purely-local return)
+//   1..=4   = derives from parameter slot 0..=3
+//   7       = conservative top (may derive from any parameter) — today's all-arguments behaviour
+//   5, 6    = reserved
+// A signature that does not fit the inline budget (>4 reference params, return nesting >511) encodes
+// `7` and degrades to the conservative rule — graceful and local, never unsound.
+pub const FAST_RETURN_PROV_SHIFT: u16 = 9;
+pub const FAST_RETURN_PROV_MASK: u16 = 0x0E00;
+
 // Specific High-Frequency Attribute Flags
 pub const ATTR_INLINE: u64 = 1 << 52;
 pub const ATTR_INLINE_ALWAYS: u64 = 1 << 53;
@@ -218,6 +231,27 @@ impl TypeId {
         let mask = !(0xFFFF_u64 << shift);
         self.words[2] = (self.words[2] & mask) | ((payload as u64) << shift);
         Ok(())
+    }
+
+    /// Read slot 0's 3-bit return-provenance code (#265). See [`FAST_RETURN_PROV_MASK`] for the
+    /// encoding. A `TypeId` that never had a code set reads `0` (no provenance), so this is safe to
+    /// call on any type — a plain reference lowered into slot 0 carries region+variance only.
+    #[inline(always)]
+    pub fn extract_return_provenance(&self) -> u8 {
+        ((self.extract_fast_param(0) & FAST_RETURN_PROV_MASK) >> FAST_RETURN_PROV_SHIFT) as u8
+    }
+
+    /// Pack a 3-bit return-provenance code into slot 0 (#265), leaving its region and variance bits
+    /// untouched. Slot 0's region is only 9 bits wide (the top 3 are these provenance bits), so a
+    /// return region must already be clamped to that width (`borrow::region_for_depth_slot0`) before a
+    /// code is set — otherwise the region would overlap and corrupt the code. Only the low 3 bits of
+    /// `prov` are used.
+    #[inline(always)]
+    pub fn set_return_provenance(&mut self, prov: u8) {
+        let slot = self.extract_fast_param(0);
+        let packed = (slot & !FAST_RETURN_PROV_MASK)
+            | (((prov as u16) << FAST_RETURN_PROV_SHIFT) & FAST_RETURN_PROV_MASK);
+        self.words[2] = (self.words[2] & !0xFFFF) | (packed as u64);
     }
 }
 
@@ -523,5 +557,46 @@ mod tests {
 
         assert_eq!(deserialized[1], t2);
         assert_eq!(deserialized[1].visibility(), Visibility::FullyPublic);
+    }
+
+    /// The slot-0 return-provenance code round-trips through set/extract for every legal value (#265).
+    #[test]
+    fn return_provenance_round_trips_in_slot0() {
+        for code in 0u8..=7 {
+            let mut tid = TypeId::new(0, 0, 0, 0);
+            tid.set_return_provenance(code);
+            assert_eq!(
+                tid.extract_return_provenance(),
+                code,
+                "provenance code {code} must survive a set/extract round-trip"
+            );
+        }
+    }
+
+    /// A `TypeId` that never had a code set reads `0` — a plain reference in slot 0 carries no
+    /// provenance, so `extract_return_provenance` is safe on any type (#265).
+    #[test]
+    fn return_provenance_defaults_to_zero() {
+        let mut tid = TypeId::new(0, 0, 0, 0);
+        tid.try_set_fast_param(0, 5, 0x1).unwrap(); // an ordinary borrow lifetime, region 5
+        assert_eq!(tid.extract_return_provenance(), 0);
+    }
+
+    /// Setting the code leaves slot 0's 9-bit region and its variance untouched, and the code never
+    /// bleeds into the region readout — the separation the narrowed field depends on (#265).
+    #[test]
+    fn return_provenance_does_not_disturb_region_or_variance() {
+        let mut tid = TypeId::new(0, 0, 0, 0);
+        // Region 300 fits the 9-bit slot-0 field (max 511); variance covariant (0x1).
+        tid.try_set_fast_param(0, 300, 0x1).unwrap();
+        tid.set_return_provenance(4);
+        let slot = tid.extract_fast_param(0);
+        assert_eq!(tid.extract_return_provenance(), 4, "code preserved");
+        assert_eq!(slot & 0x01FF, 300, "9-bit region preserved, code excluded");
+        assert_eq!((slot & 0xF000) >> 12, 0x1, "variance preserved");
+        // Overwriting the code does not touch the region.
+        tid.set_return_provenance(7);
+        assert_eq!(tid.extract_fast_param(0) & 0x01FF, 300);
+        assert_eq!(tid.extract_return_provenance(), 7);
     }
 }

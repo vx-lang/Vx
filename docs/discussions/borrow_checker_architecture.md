@@ -86,34 +86,67 @@ While the Lexical checker handles local variables, it cannot verify lifetimes ac
 Instead of building a cross-module constraint graph, Vx mathematically compresses lifetime bounds into the 256-bit `TypeId` registry.
 
 - **Lowering:** In `sema.rs`, when a reference is assigned or passed to a function, `lower_to_type_id` dynamically creates a `TypeId`. The Lexical `scope_depth` is assigned as the **Region ID**.
-- **Bitpacking:** The Region ID (12 bits) and the Reference Variance (4 bits) are packed into a 16-bit slot inside Word 2 of the 256-bit `TypeId`.
-- **Hardware Math:** When assigning a reference to a function parameter, `verify_subtyping_bounds` (in `borrow.rs`) executes a hardware-level check. It applies a bitwise mask to extract the Region IDs and performs a direct mathematical comparison (`region_a <= region_b`).
+- **Bitpacking:** The Region ID and the Reference Variance are packed into a 16-bit slot inside Word 2 of the 256-bit `TypeId`. Slots 1-3 (the parameters) hold `[ region: 12 | variance: 3 | reserved: 1 ]`; slot 0 (the return) reserves three of those region bits for a provenance code (see below), so it holds `[ region: 9 | prov: 3 | variance: 3 | reserved: 1 ]`.
+- **Hardware Math:** When assigning a reference to a function parameter, `verify_subtyping_bounds` (in `borrow.rs`) executes a hardware-level check. It applies a bitwise mask to extract the Region IDs and performs a direct mathematical comparison (`region_a <= region_b`). The mask is *slot-dependent*: slot 0 uses the 9-bit `REGION_MASK_0`, slots 1-3 the 12-bit `REGION_MASK`.
 
 Because Region 0 represents `'static`, a *smaller* Region ID mathematically proves a *longer* lifetime.
 
+### The inline return-provenance field (#265)
+
+The return's slot (slot 0) carries a **3-bit return-provenance code** in the top of its region field
+(`FAST_RETURN_PROV_MASK = 0x0E00`, defined in [`src/gid.rs`](../../src/gid.rs); accessed via
+`TypeId::set_return_provenance` / `extract_return_provenance`). It names which parameter a returned
+reference derives from, inline in the type's identity so the cross-module borrow check can read it
+from the `TypeId` with no side table:
+
+- `0` — no provenance (not a reference, or a `NotAReference` return).
+- `1..=4` — derives from parameter slot `0..=3`.
+- `7` — conservative top: may derive from any parameter (today's all-arguments behaviour). Every
+  over-budget case (a multi-parameter union, more than four reference parameters, a `Local`/`unsafe`
+  return, an unknown callee) encodes here, so the field **degrades gracefully and locally, never
+  unsoundly**. `5`/`6` are reserved and also read as top.
+
+`encode_return_provenance` (in [`src/hir/provenance.rs`](../../src/hir/provenance.rs)) maps the
+per-function `ReturnProvenance` summary to this code, and it is a **conservative refinement**: for
+every parameter the summary flags as an alias source, the code flags it too (proven by
+`inline_code_conservatively_refines_the_summary`). Intra-compilation the summary side table
+(`return_provenances`) still drives the per-argument reborrow decision; the inline code is populated
+and checked against the summary on every call (a debug-only round-trip assertion in the
+`Expr::FunctionCall` arm), and the **cross-module consumer that reads it from a serialised `.vxlib`
+is step 7** — deferred, tracked with [#220](https://github.com/hiraditya/Vx/issues/220) /
+[#224](https://github.com/hiraditya/Vx/issues/224).
+
 ### The reserved "unset" region sentinel (#267)
 
-The **maximum** value of the region field is reserved as an **unset / not-yet-assigned** sentinel,
-`REGION_UNSET` (`= REGION_MASK`, `0x0FFF = 4095` in the current 12-bit field, defined in
-[`src/borrow.rs`](../../src/borrow.rs)). A parsed reference type carries it until the borrow checker
-binds a real scope depth ([`src/parser/types.rs`](../../src/parser/types.rs)); it surfaces in
-generic-deduction diagnostics as `region_id: 4095`.
+The **maximum** value of each region field is reserved as an **unset / not-yet-assigned** sentinel. A
+parsed reference type carries it until the borrow checker binds a real scope depth
+([`src/parser/types.rs`](../../src/parser/types.rs)); it surfaces in generic-deduction diagnostics as
+`region_id: 4095`. Because slot 0's region is narrower than the parameter slots (#265), there are two
+sentinels, both defined in [`src/borrow.rs`](../../src/borrow.rs):
 
-Two rules keep it from being confused with a real depth:
+- `REGION_UNSET` (`= REGION_MASK`, `0x0FFF = 4095`) for the 12-bit parameter slots.
+- `REGION_UNSET_0` (`= REGION_MASK_0`, `0x01FF = 511`) for slot 0's 9-bit region.
 
-- **It is a wildcard, not a number.** `verify_subtyping_bounds` checks `region == REGION_UNSET`
-  *before* the numeric `<=`/`==` comparison and skips the region dimension when either side is unset.
-  The sentinel's numeric position is never trusted.
-- **Real depths never reach it.** `lower_to_type_id` clamps a real scope depth to `REGION_MAX`
-  (`REGION_MASK - 1`, `4094`), so no genuine region can equal the sentinel; only the deliberate
-  placeholder does.
+Two rules keep either from being confused with a real depth:
 
-**If you narrow this field** — e.g. [#265](https://github.com/hiraditya/Vx/issues/265) shrinking
-slot 0's region to 9 bits to make room for a provenance field — you **must** move the sentinel to the
-new field's maximum and clamp real depths below it, keeping the explicit `== sentinel` recognition.
-Do **not** rely on `4095` being out of range: a narrowed field would truncate it to a legal value and
-silently corrupt subtyping (`4095 & 0x1FF = 511`, an ordinary region). The `borrow.rs` unit tests
-(`unset_region_is_a_wildcard`, `max_real_region_is_distinct_from_the_sentinel`) pin this invariant.
+- **It is a wildcard, not a number.** `verify_subtyping_bounds` checks `region == <sentinel>` *before*
+  the numeric `<=`/`==` comparison and skips the region dimension when either side is unset. The
+  sentinel's numeric position is never trusted. The comparison masks each slot with its own width
+  (`REGION_MASK_0` for slot 0, `REGION_MASK` otherwise), so the provenance code in slot 0's top bits
+  can never fold into the lifetime.
+- **Real depths never reach it.** `lower_to_type_id` clamps a real scope depth with
+  `region_for_depth` (parameters, → `REGION_MAX = 4094`) or `region_for_depth_slot0` (return, →
+  `REGION_MAX_0 = 510`), so no genuine region can equal a sentinel; only the deliberate placeholder
+  does.
+
+**If you narrow a region field further**, you **must** move that slot's sentinel to the new field's
+maximum and clamp its real depths below it, keeping the explicit `== sentinel` recognition and a
+slot-width-matched mask in `verify_subtyping_bounds`. Do **not** rely on `4095` being out of range: a
+narrowed field truncates it to a legal value and silently corrupts subtyping (`4095 & 0x1FF = 511`,
+an ordinary region) — the exact hazard slot 0's 9-bit narrowing had to handle. The `borrow.rs` unit
+tests (`unset_region_is_a_wildcard`, `max_real_region_is_distinct_from_the_sentinel`,
+`slot0_provenance_bits_do_not_corrupt_region_compare`, `region_for_depth_slot0_maps_sentinel_and_clamps`)
+pin this invariant.
 
 ______________________________________________________________________
 

@@ -237,10 +237,12 @@ impl<'a> TypeChecker<'a> {
                 // only hashing the outer lifetime here).
                 let variance: u8 = 0x1;
 
-                // Pack the region and variance directly into Param 0 of the FastPath hash!
-                // `region_for_depth` preserves the reserved "unset" sentinel and clamps a real scope
-                // depth to `REGION_MAX`, so it can never collide with the sentinel (#267).
-                let region = crate::borrow::region_for_depth(*region as u64) as u16;
+                // Pack the region and variance directly into Param 0 (the return slot) of the
+                // FastPath hash! Slot 0 reserves its top 3 region bits for the return-provenance code
+                // (#265), so its region is 9 bits: `region_for_depth_slot0` preserves the "unset"
+                // sentinel, clamps a real depth below it, and keeps the value inside the 9-bit field
+                // so it can neither collide with the sentinel (#267) nor spill into the code bits.
+                let region = crate::borrow::region_for_depth_slot0(*region as u64) as u16;
                 let _ = id.try_set_fast_param(0, region, variance);
             }
             Type::Pointer(_inner, _mem, is_mut) => {
@@ -2296,6 +2298,35 @@ impl<'a> TypeChecker<'a> {
                     self.resolve_callee_ref_signature(&resolved_name)
                 };
                 let return_prov = self.env.return_provenance_of(resolved_name.as_ref());
+                // (#265) The same summary lowers into the return type's inline slot-0 provenance code,
+                // which the cross-module path (step 7, `.vxlib`) will read straight from the `TypeId`
+                // with no side table. Intra-compilation the side table above still drives the persist
+                // decision; here we populate and *check* the inline form on every real call — proving
+                // it round-trips through the `TypeId` API and stays a conservative refinement of the
+                // summary it will replace, so wiring the consumer later can never silently read a
+                // narrower (unsound) alias set. Debug-only: the release hot path is untouched.
+                #[cfg(debug_assertions)]
+                {
+                    let code = crate::hir::provenance::encode_return_provenance(&return_prov);
+                    let mut sig = crate::gid::TypeId::new(0, 0, 0, 0);
+                    sig.set_return_provenance(code);
+                    debug_assert_eq!(
+                        sig.extract_return_provenance(),
+                        code,
+                        "slot-0 provenance code must round-trip through the TypeId encoding"
+                    );
+                    debug_assert!(
+                        (0..32).all(|slot| {
+                            !return_prov.includes(slot)
+                                || crate::hir::provenance::inline_prov_includes(
+                                    sig.extract_return_provenance(),
+                                    slot,
+                                )
+                        }),
+                        "inline provenance must conservatively refine the summary for '{}'",
+                        resolved_name.as_ref()
+                    );
+                }
                 // A reference argument's borrow can only outlive the call if the callee actually
                 // returns a reference. Gating on the return *type* (not just the summary) keeps
                 // void/value-returning callees correct even when their summary is absent — e.g. an

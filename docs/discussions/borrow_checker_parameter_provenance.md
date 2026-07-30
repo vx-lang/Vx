@@ -1,6 +1,6 @@
 # Design: Per-Parameter Provenance in the Packed Region Encoding
 
-**Status:** v1 landed — the precision fix (steps 1–5) is implemented; see [§8.1](#81-implementation-status--v1-landed-steps-15-precision-fix). Encoding (steps 6–7) deferred.
+**Status:** v2 landed — the precision fix (steps 1–5) and the inline encoding (steps 6, 6b) are implemented; see [§8.1](#81-implementation-status--v1-landed-steps-15-precision-fix). Only step 7 (serialising the code into a `.vxlib` module interface) is deferred, blocked on [#220](https://github.com/hiraditya/Vx/issues/220) / [#224](https://github.com/hiraditya/Vx/issues/224).
 **Tracked in:** [#243](https://github.com/hiraditya/Vx/issues/243)
 **Companions:** [`borrow_checker_architecture.md`](borrow_checker_architecture.md) (design of record) · [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md) (the measurement that motivated this)
 
@@ -364,9 +364,18 @@ meant a lock or a missing body. What actually landed:
 - **No SCC fixpoint (yet).** `return callee(...)` → `AnyParam` (conservative). Recursion and
   cross-function derivation are the deferred fixpoint (would live in the precompute, off the hot
   path). `unsafe` bodies, >32 params, and every unknown → `AnyParam`.
-- **`verify_subtyping_bounds` untouched**; the inline 3-bit `TypeId` encoding (steps 6–7) is deferred
-  — the env map gives full intra-compilation precision, and the encoding is `.vxlib`-gated (#220/#224)
-  and must be minted deterministically in the GID-mint pre-pass (the 1-thread==8-thread invariant).
+- **The inline 3-bit `TypeId` encoding (steps 6, 6b) landed (#265).** Slot 0 (the return slot) now
+  reserves the top 3 bits of its region field for a provenance code (`FAST_RETURN_PROV_MASK`,
+  `src/gid.rs`); its region narrows to 9 bits with its own sentinel `REGION_UNSET_0`, and
+  `verify_subtyping_bounds` masks each slot with its own width so the code never folds into the
+  lifetime comparison. `encode_return_provenance` (`src/hir/provenance.rs`) maps the summary to the
+  code and is a **conservative refinement** — a multi-source union, an out-of-budget slot, or a
+  `Local`/unknown return degrades to the top code `7`, never to a narrower alias set. Intra-compilation
+  the env-map summary still *drives* the decision; the inline code is populated and round-trip-checked
+  against the summary on every call (a debug-only assertion in the `Expr::FunctionCall` arm), so the
+  cross-module consumer — **step 7**, which reads it from a serialised `.vxlib` — can be wired later
+  without risk. Step 7 stays deferred (`.vxlib`-gated, #220/#224) and must mint the code
+  deterministically in the GID-mint pre-pass (the 1-thread==8-thread invariant).
 
 Tests: `src/hir/provenance.rs` unit tests (the summary lattice) + E1/E2 fixtures under
 `tests/middle_end/{pass,fail}/borrow_multiparam_*`, `borrow_multisource_*`, `borrow_unsafe_*`. Full

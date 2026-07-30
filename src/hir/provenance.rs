@@ -49,6 +49,45 @@ impl ReturnProvenance {
     }
 }
 
+/// Pack a return-provenance summary into the 3-bit slot-0 code used by the inline `TypeId` encoding
+/// (#265; see [`crate::gid::TypeId::set_return_provenance`]). The inline field can name a single
+/// parameter (`1..=4`) or fall back to the conservative top (`7`); a *multi-parameter* union or a
+/// slot `>= 4` does not fit the fixed width and encodes as top. It therefore always yields a
+/// **conservative refinement** of the summary — for every parameter the summary flags as an alias
+/// source, the packed code flags it too — so an over-budget signature degrades gracefully to today's
+/// all-arguments behaviour rather than becoming unsound. `NotAReference` (no reference returned)
+/// encodes as `0`; `Local` matches the summary's conservative-top reading (it is an `E4005` in the
+/// callee, so a caller never actually sees the reference, but the encoding must not read narrower
+/// than [`ReturnProvenance::includes`]).
+pub fn encode_return_provenance(prov: &ReturnProvenance) -> u8 {
+    match prov {
+        ReturnProvenance::NotAReference => 0,
+        ReturnProvenance::AnyParam | ReturnProvenance::Local => 7,
+        ReturnProvenance::FromParams(bits) => {
+            // Exactly one parameter in slots 0..=3 fits the inline field; anything else (multiple
+            // sources, or a slot beyond the fourth) degrades to the conservative top.
+            if bits.count_ones() == 1 {
+                let slot = bits.trailing_zeros();
+                if slot < 4 {
+                    return (slot + 1) as u8;
+                }
+            }
+            7
+        }
+    }
+}
+
+/// Does the packed slot-0 code `prov` (see [`encode_return_provenance`]) treat parameter `slot` as a
+/// possible alias source? The packed-form mirror of [`ReturnProvenance::includes`]: `0` excludes all,
+/// `7` (and the reserved `5`/`6`) includes all, `1..=4` includes exactly parameter slot `0..=3`.
+pub fn inline_prov_includes(prov: u8, slot: usize) -> bool {
+    match prov {
+        0 => false,
+        1..=4 => slot == (prov as usize - 1),
+        _ => true, // 7 = conservative top; 5/6 are reserved and treated conservatively.
+    }
+}
+
 fn type_is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
 }
@@ -351,5 +390,69 @@ mod tests {
     fn call_in_return_position_is_conservative_in_v1() {
         let src = "fn probe(m : &i32) -> &i32 { return m; } fn wrap(a : &i32, b : &i32) -> &i32 { return probe(b); }";
         assert_eq!(summarize(src, "wrap"), ReturnProvenance::AnyParam);
+    }
+
+    /// The inline slot-0 code (#265) names a single in-budget parameter as `slot + 1` and degrades
+    /// every wider or unknown case to the conservative top; a non-reference return encodes as none.
+    #[test]
+    fn encode_maps_single_param_and_degrades_the_rest() {
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(0b0001)),
+            1
+        );
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(0b0010)),
+            2
+        );
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(0b0100)),
+            3
+        );
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(0b1000)),
+            4
+        );
+        // Over budget -> conservative top.
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(0b0110)),
+            7
+        ); // two sources
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::FromParams(1 << 4)),
+            7
+        ); // slot >= 4
+        assert_eq!(encode_return_provenance(&ReturnProvenance::AnyParam), 7);
+        assert_eq!(encode_return_provenance(&ReturnProvenance::Local), 7);
+        // No reference returned -> no alias source.
+        assert_eq!(
+            encode_return_provenance(&ReturnProvenance::NotAReference),
+            0
+        );
+    }
+
+    /// The packed code is always a *conservative refinement* of the summary it replaces: for every
+    /// parameter the summary flags as an alias source, the packed code flags it too. This is the
+    /// soundness property that makes the fixed-width inline encoding safe — it may lose precision (a
+    /// multi-source union widens to "any"), never soundness (#265).
+    #[test]
+    fn inline_code_conservatively_refines_the_summary() {
+        let cases = [
+            ReturnProvenance::NotAReference,
+            ReturnProvenance::Local,
+            ReturnProvenance::AnyParam,
+            ReturnProvenance::FromParams(0b0001),
+            ReturnProvenance::FromParams(0b1000),
+            ReturnProvenance::FromParams(0b0110), // multi-source -> widens to top
+            ReturnProvenance::FromParams(1 << 5), // out-of-budget slot -> top
+        ];
+        for prov in cases {
+            let code = encode_return_provenance(&prov);
+            for slot in 0..32 {
+                assert!(
+                    !prov.includes(slot) || inline_prov_includes(code, slot),
+                    "summary {prov:?} flags slot {slot} but the packed code {code} does not"
+                );
+            }
+        }
     }
 }
