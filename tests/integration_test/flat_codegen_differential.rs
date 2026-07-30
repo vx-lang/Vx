@@ -349,6 +349,49 @@ fn flat_matches_ast_with_a_scalar_param_chain() {
     assert_parity("fn main() -> i32 { return (2 + 3) * (10 - 3); }", 35);
 }
 
+/// #230 mutable slice: mutation through a `&mut` reference — the `increment` showcase. The AST path
+/// cannot compile a borrowed mutable scalar local (an unresolved `memref -> !llvm.ptr` cast), so there
+/// is no *direct* AST oracle for the reference form. Ground the result on the **value-semantics
+/// equivalent** (the inlined mutation), which both paths compile — per `scalar_references_flat.md`
+/// §6.2. `inc(&mut x)` twice on 41 must equal `x = x + 1` twice: 43.
+#[test]
+fn flat_runs_mutation_through_a_reference() {
+    let ref_src = "fn inc(p : &mut i32) -> void { *p = *p + 1; }\n\
+                   fn main() -> i32 { let mut x = 41; inc(&mut x); inc(&mut x); return x; }";
+    let val_src = "fn main() -> i32 { let mut x = 41; x = x + 1; x = x + 1; return x; }";
+    // The value-semantics version grounds the expected result on both paths.
+    assert_eq!(ast_exit_code(val_src), 43, "value-semantics AST oracle");
+    assert_eq!(
+        flat_exit_code(val_src),
+        Some(43),
+        "value version lowers on flat"
+    );
+    // The reference version lowers on the flat path and matches that result.
+    assert_eq!(
+        flat_exit_code(ref_src),
+        Some(43),
+        "mutation through `&mut` on the flat path equals the value-semantics result",
+    );
+}
+
+/// #230 mutable slice: two-`&mut`-parameter mutation — the `swap` showcase (a signature rustc needs
+/// two lifetimes to express). `x * 2 + y` after swapping (10, 20) reads the swapped values (20, 10) ->
+/// 50 — which distinguishes a full swap from a no-op (40) or a half swap (`*a = *b` only -> 60). Kept
+/// under 256 so it survives the process exit-code truncation.
+#[test]
+fn flat_runs_swap_through_mutable_references() {
+    let ref_src =
+        "fn swap(a : &mut i32, b : &mut i32) -> void { let t = *a; *a = *b; *b = t; }\n\
+         fn main() -> i32 { let mut x = 10; let mut y = 20; swap(&mut x, &mut y); return x * 2 + y; }";
+    let val_src = "fn main() -> i32 { let x = 20; let y = 10; return x * 2 + y; }";
+    assert_eq!(ast_exit_code(val_src), 50, "value-semantics AST oracle");
+    assert_eq!(
+        flat_exit_code(ref_src),
+        Some(50),
+        "swap through two `&mut` params reads the swapped values on the flat path",
+    );
+}
+
 #[test]
 fn flat_matches_ast_if_without_else() {
     // `if` with a fall-through merge: the branch runs, then both edges reconverge

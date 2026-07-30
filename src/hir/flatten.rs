@@ -1890,7 +1890,15 @@ impl<'r> Lowerer<'r> {
                 return None;
             }
         };
-        let ret_ty = self.lower_ty_synth(&sig.ret_ty)?;
+        // A void callee (`bump(&mut x) -> void`, a `&mut` mutator) has no result value; it appears only
+        // in statement position, where the returned `Val` is discarded. Give it a placeholder scalar
+        // type — never read — rather than declining the call. (#230)
+        let void_ret = crate::codegen::flat::is_void_ty(&sig.ret_ty);
+        let ret_ty = if void_ret {
+            LoweredTy::Scalar(ElementType::I32)
+        } else {
+            self.lower_ty_synth(&sig.ret_ty)?
+        };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
             // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
@@ -3709,6 +3717,27 @@ mod tests {
             "`*a` is a PtrIndex read off the param"
         );
         verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn void_call_lowers_and_mutates_through_a_reference() {
+        // A `&mut` mutator returns `void`; calling it in statement position (`bump(&mut x);`) lowers
+        // rather than declining — the call is a pure effect whose result is discarded. `x` is
+        // address-taken, so it is an `llvm.alloca` slot (imm = 1) the pointer mutates; `return x`
+        // reads the mutated value back through the same slot. (#230)
+        let (did, w) = lower_with_registry(
+            "fn bump(p : &mut i32) -> void { *p = *p + 1; }\n\
+             fn main() -> i32 { let mut x = 41; bump(&mut x); return x; }",
+            "main",
+        );
+        assert!(did, "the void call + read-back lowers on the flat path");
+        assert_eq!(count(&w, Opcode::Call), 1, "one call to the void mutator");
+        let alloca = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Alloca)
+            .expect("the address-taken `x` gets a slot");
+        assert_eq!(alloca.imm, 1, "x is an address-taken llvm.alloca slot");
     }
 
     #[test]

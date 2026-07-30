@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice implemented** (§9) — `&x` / `*r` / `&i32` params + returns lower on the flat path, verified differentially against the AST oracle, and run *across a module boundary*. The mutable (`let mut` + `&mut`) slice remains blocked on the AST-oracle bug (§6/§9).
+**Status:** **immutable slice (§9) and mutable slice (§10) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2). Deferred: the step-2 memory-flag optimization and §5 places/projections.
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -237,5 +237,42 @@ lifetime — plus flat unit tests (`address_taken_scalar_demotes_to_a_flagged_sl
 `non_address_taken_scalar_stays_a_register`, `reference_param_derefs_without_a_slot`) and JIT
 differentials against the value-semantics equivalent.
 
-**Deferred:** the mutable slice (needs the §6 AST-oracle fix, or a flat-only acceptance with stronger
-JIT verification); the step-2 memory-flag replacement (a pure optimization); and §5 places/projections.
+**Deferred (from the immutable slice):** the step-2 memory-flag replacement (a pure optimization) and
+§5 places/projections. The mutable slice below is no longer deferred.
+
+## 10. Status: the mutable slice, as implemented
+
+The mutable forms turned out to be **almost entirely already covered** by the immutable slice plus one
+orthogonal gap. `&mut x` is an `Expr::Borrow` with `is_mut: true`, which the address-taken pre-pass and
+the `Expr::Borrow` arm already handle mutability-agnostically; and store-through-a-pointer (`*p = v`)
+was the existing `PtrStore` path (#242). So `bump(p : &mut i32) -> i32 { *p = *p + 1; return *p; }`
+called as `return bump(&mut x)` already ran on the flat path after §9.
+
+The one missing piece was **void-returning calls** — a general flat-codegen gap, *not* a reference
+feature: the canonical mutators (`increment`/`swap`) return `void` and are called in statement
+position (`bump(&mut x);`), then the local is read back. `lower_call` declined because
+`lower_ty_synth(void)` is `None`; codegen's `Callee`/`Call` had no void case. The fix:
+
+- `is_void_ty` (`void` is `Type::Struct("void", _)`); `Callee.ret_void`; `lower_call` gives a void
+  callee a discarded placeholder result instead of declining.
+- codegen emits `func.call @f(..) : (..) -> ()` with **no** result binding (MLIR forbids
+  `%v = … -> ()`), and declares a void `extern` as `(args)` (empty return).
+
+Read-back-after-mutation is correct because an address-taken scalar is now an `llvm.alloca` slot
+(§9): `&mut x` passes that `!llvm.ptr`, the callee `llvm.store`s through it, and `return x` `llvm.load`s
+the same slot — the aliasing holds by construction.
+
+**Oracle.** The AST path cannot compile a borrowed mutable scalar local (the `memref -> !llvm.ptr`
+cast, §1), so there is no *direct* AST oracle for the reference form. Per §6.2 the result is grounded
+on the **value-semantics equivalent** (the inlined mutation), which both paths compile: `inc(&mut x)`
+twice equals `x = x + 1` twice (43), and a full `swap` reads the swapped values apart from a no-op.
+
+**Verified:** `flat_runs_mutation_through_a_reference` and `flat_runs_swap_through_mutable_references`
+(value-semantics differentials); `void_call_lowers_and_mutates_through_a_reference` (unit); the
+`borrow_semantics.vx` showcase (`increment` + `swap`) runs to 31 on the flat path; and a corpus
+differential over `tests/backend/pass` confirmed the broad void-call change regresses nothing (the JIT
+corpus has no `-> void` functions, so no program changed path).
+
+**Still deferred:** taking the address of a mutable local *and reading it while borrowed* is an
+E4002 borrow error (correctly rejected, not a codegen gap); and reference-typed struct fields / returns
+of borrowed locals remain out of scope (§5).

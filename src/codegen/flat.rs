@@ -191,6 +191,12 @@ fn is_ptr_ty(ty: &Type) -> bool {
     )
 }
 
+/// Whether a return type is `void` — spelled `Type::Struct("void", _)` (the AST codegen matches the
+/// same). A void-returning call produces no result value; the flat emitter prints `-> ()`. (#230)
+pub fn is_void_ty(ty: &Type) -> bool {
+    matches!(ty, Type::Struct(n, _) if n.as_ref() == "void" || n.as_ref() == "none")
+}
+
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     let f = is_float(e);
@@ -296,6 +302,9 @@ pub struct Callee {
     /// Whether the callee returns an opaque `!llvm.ptr` (a `*const`/`*mut`/`&` return, e.g. an FFI
     /// allocator). The call's result is then a pointer value tracked in `ptr_of`. (#235)
     pub ret_ptr: bool,
+    /// Whether the callee returns `void`. The call emits `func.call @name(..) : (..) -> ()` and binds
+    /// no result register — the statement-position form (`bump(&mut x);`) used by `&mut` mutators. (#230)
+    pub ret_void: bool,
 }
 
 /// GID → callee: the reverse of the registry's name-keyed `fn_sigs`. A `Call`'s `type_idx` resolves
@@ -382,6 +391,7 @@ pub fn build_callee_map(
                     ret: scalar_of(&sig.ret_ty),
                     ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
                     ret_ptr: is_ptr_ty(&sig.ret_ty),
+                    ret_void: is_void_ty(&sig.ret_ty),
                 },
             )
         })
@@ -1444,14 +1454,17 @@ pub fn emit_function_mlir(
             Opcode::Call => {
                 let gid = *types.get(ins.type_idx.0 as usize)?;
                 let callee = ctx.callees.get(&gid)?;
-                // Return type: a scalar, or an `!llvm.struct` by value for a struct-returning callee
-                // (#215). A void return isn't in this subset yet.
+                // Return type: a scalar, an `!llvm.struct` by value for a struct-returning callee
+                // (#215), a pointer, or `()` for a void callee (a `&mut` mutator called in statement
+                // position, #230).
                 let rt = if let Some(e) = &callee.ret {
                     mlir_scalar(e)?.to_string()
                 } else if let Some(agg_gid) = callee.ret_agg {
                     ctx.aggs.get(&agg_gid)?.struct_ty.clone()
                 } else if callee.ret_ptr {
                     "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
+                } else if callee.ret_void {
+                    "()".to_string()
                 } else {
                     return None;
                 };
@@ -1482,26 +1495,40 @@ pub fn emit_function_mlir(
                     };
                     arg_types.push(at);
                 }
-                let nm = format!("%v{idx}");
-                body += &format!(
-                    "  {nm} = func.call {}({}) : ({}) -> {rt}\n",
-                    sym_ref(&callee.name),
-                    arg_names.join(", "),
-                    arg_types.join(", "),
-                );
-                // Record the callee's signature so the module emitter can declare it if it is a
-                // called-but-undefined symbol (an `extern`): the private decl's signature is taken from
-                // the emitted call, so they match by construction.
-                calls.push((callee.name.clone(), arg_types.clone(), rt.clone()));
-                names[idx] = nm;
-                if let Some(e) = &callee.ret {
-                    etypes[idx] = Some(e.clone());
-                } else if callee.ret_ptr {
-                    ptr_of[idx] = true; // the call result is a pointer value (#235)
-                } else if let Some(agg_gid) = callee.ret_agg {
-                    // A struct-returning call result is a struct *value*; tracked so it can be spilled
-                    // to a slot (`Store`), returned (`Ret`), or passed by value to another call (#242).
-                    agg_val_of[idx] = Some(agg_gid);
+                if callee.ret_void {
+                    // A void call binds no result register (MLIR forbids `%v = func.call ... -> ()`);
+                    // the call is a pure effect (mutation through a `&mut` arg). The private extern decl
+                    // records an empty return (no `->`) so a void `extern` declares as `(args)`. (#230)
+                    body += &format!(
+                        "  func.call {}({}) : ({}) -> ()\n",
+                        sym_ref(&callee.name),
+                        arg_names.join(", "),
+                        arg_types.join(", "),
+                    );
+                    calls.push((callee.name.clone(), arg_types.clone(), String::new()));
+                } else {
+                    let nm = format!("%v{idx}");
+                    body += &format!(
+                        "  {nm} = func.call {}({}) : ({}) -> {rt}\n",
+                        sym_ref(&callee.name),
+                        arg_names.join(", "),
+                        arg_types.join(", "),
+                    );
+                    // Record the callee's signature so the module emitter can declare it if it is a
+                    // called-but-undefined symbol (an `extern`): the private decl's signature is taken
+                    // from the emitted call, so they match by construction.
+                    calls.push((callee.name.clone(), arg_types.clone(), rt.clone()));
+                    names[idx] = nm;
+                    if let Some(e) = &callee.ret {
+                        etypes[idx] = Some(e.clone());
+                    } else if callee.ret_ptr {
+                        ptr_of[idx] = true; // the call result is a pointer value (#235)
+                    } else if let Some(agg_gid) = callee.ret_agg {
+                        // A struct-returning call result is a struct *value*; tracked so it can be
+                        // spilled to a slot (`Store`), returned (`Ret`), or passed by value to another
+                        // call (#242).
+                        agg_val_of[idx] = Some(agg_gid);
+                    }
                 }
             }
             // Materialize a function pointer for a named function: `type_idx` is the target's GID
