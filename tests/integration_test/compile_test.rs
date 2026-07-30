@@ -230,6 +230,11 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         return Err(format!("Sema failed on {:?}: {:#?}", path, checker.errors));
     }
 
+    // Structs generated during checking (e.g. a closure's `Closure_N` environment) must reach
+    // codegen, exactly as the driver does (`ast.structs.extend(checker.generated_structs)`).
+    // Without this the harness cannot lower any closure, unlike the real compiler.
+    let generated_structs = std::mem::take(&mut checker.generated_structs);
+
     let mut monomorphized_program = program;
     let mut orig_functions = monomorphized_program.functions;
     orig_functions.retain(|f| f.generics.is_empty());
@@ -241,6 +246,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         .collect();
     new_functions.extend(orig_functions);
     monomorphized_program.functions = new_functions;
+    monomorphized_program.structs.extend(generated_structs);
 
     let context = melior::Context::new();
     let registry = melior::dialect::DialectRegistry::new();

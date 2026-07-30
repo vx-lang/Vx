@@ -1,0 +1,19 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Codegen (#271): a closure returning a reference lowers correctly. `Closure_1_call` returns a
+// pointer into its parameter and `good` threads it out; `*good(&x)` loads through it. Verified via
+// JIT to return 7. (The harness previously could not lower this because `run_middle_end_test` did
+// not carry `generated_structs` — the `Closure_1` env struct — into codegen; the driver always did.)
+struct Map {
+  slot : i32, present : i32
+}
+fn good(m : &Map) -> &i32 {
+  let f = |q : &Map| &q.slot;
+  return f(m);
+}
+fn main() -> i32 {
+  let x = Map {
+    slot : 7, present : 1
+  };
+  return *good(&x);
+}

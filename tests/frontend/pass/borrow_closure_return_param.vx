@@ -3,7 +3,7 @@
 // caller-owned `m`, so nothing escapes. The return-escape rule used to reject this because the
 // synthetic closure-env argument (a local) poisoned the provenance join; it now consults the
 // closure's own return summary and sees the result derives from a real parameter, not the env.
-// (Semantic-only: codegen for closures returning references is a separate gap, tracked in #271.)
+// (Codegen for this shape works and is covered by tests/middle_end/pass/closure_return_ref.vx.)
 struct Map {
   slot : i32, present : i32
 }
