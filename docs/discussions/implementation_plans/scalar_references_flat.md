@@ -1,7 +1,7 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Deferred: §5 places/projections.
-**Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic)
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Deferred: §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)).
+**Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
 ______________________________________________________________________
@@ -146,6 +146,8 @@ to "is this a reference or pointer type," with the aggregate clause **deleted** 
 
 ## 5. Places and projections — the direction, not now
 
+**Tracked by [#275](https://github.com/hiraditya/Vx/issues/275).**
+
 The principled long-term representation is MIR-style `Place = local + projection path`, which would
 subsume `&outer.inner`, reborrows, and nested references under one model. It also lines up with what
 the borrow checker already tracks — `BorrowRecord` stores `path: Vec<String>`, which is a projection
@@ -237,7 +239,7 @@ lifetime — plus flat unit tests (`address_taken_scalar_demotes_to_a_flagged_sl
 `non_address_taken_scalar_stays_a_register`, `reference_param_derefs_without_a_slot`) and JIT
 differentials against the value-semantics equivalent.
 
-**Deferred (from the immutable slice):** §5 places/projections. The mutable slice (§10) and the step-2
+**Deferred (from the immutable slice):** §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)). The mutable slice (§10) and the step-2
 memory-flag replacement (§11) are no longer deferred.
 
 ## 10. Status: the mutable slice, as implemented
@@ -315,4 +317,4 @@ loops, value-`if`, match) still matches the AST oracle; and a corpus differentia
 `tests/backend/pass` (12 programs on the flat path) shows no regression.
 
 **Deferred:** applying the same per-local rule to *pointer* locals (still on the coarse model — a
-missed optimization, not a correctness gap) and §5 places/projections.
+missed optimization, not a correctness gap) and §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)).
