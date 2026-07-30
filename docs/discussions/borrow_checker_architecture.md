@@ -91,6 +91,30 @@ Instead of building a cross-module constraint graph, Vx mathematically compresse
 
 Because Region 0 represents `'static`, a *smaller* Region ID mathematically proves a *longer* lifetime.
 
+### The reserved "unset" region sentinel (#267)
+
+The **maximum** value of the region field is reserved as an **unset / not-yet-assigned** sentinel,
+`REGION_UNSET` (`= REGION_MASK`, `0x0FFF = 4095` in the current 12-bit field, defined in
+[`src/borrow.rs`](../../src/borrow.rs)). A parsed reference type carries it until the borrow checker
+binds a real scope depth ([`src/parser/types.rs`](../../src/parser/types.rs)); it surfaces in
+generic-deduction diagnostics as `region_id: 4095`.
+
+Two rules keep it from being confused with a real depth:
+
+- **It is a wildcard, not a number.** `verify_subtyping_bounds` checks `region == REGION_UNSET`
+  *before* the numeric `<=`/`==` comparison and skips the region dimension when either side is unset.
+  The sentinel's numeric position is never trusted.
+- **Real depths never reach it.** `lower_to_type_id` clamps a real scope depth to `REGION_MAX`
+  (`REGION_MASK - 1`, `4094`), so no genuine region can equal the sentinel; only the deliberate
+  placeholder does.
+
+**If you narrow this field** — e.g. [#265](https://github.com/hiraditya/Vx/issues/265) shrinking
+slot 0's region to 9 bits to make room for a provenance field — you **must** move the sentinel to the
+new field's maximum and clamp real depths below it, keeping the explicit `== sentinel` recognition.
+Do **not** rely on `4095` being out of range: a narrowed field would truncate it to a legal value and
+silently corrupt subtyping (`4095 & 0x1FF = 511`, an ordinary region). The `borrow.rs` unit tests
+(`unset_region_is_a_wildcard`, `max_real_region_is_distinct_from_the_sentinel`) pin this invariant.
+
 ______________________________________________________________________
 
 ## Summary

@@ -238,13 +238,10 @@ impl<'a> TypeChecker<'a> {
                 let variance: u8 = 0x1;
 
                 // Pack the region and variance directly into Param 0 of the FastPath hash!
-                // We use standard try_set_fast_param to pack the 16 bits.
-                if let Err(e) = id.try_set_fast_param(0, *region as u16, variance) {
-                    // If we exceed 4095 lexical scopes, we log but continue safely with max
-                    // In a production compiler, this would trigger the SlowPath allocation.
-                    println!("Warning: Region overflow during lowering: {}", e);
-                    let _ = id.try_set_fast_param(0, 4095, variance);
-                }
+                // `region_for_depth` preserves the reserved "unset" sentinel and clamps a real scope
+                // depth to `REGION_MAX`, so it can never collide with the sentinel (#267).
+                let region = crate::borrow::region_for_depth(*region as u64) as u16;
+                let _ = id.try_set_fast_param(0, region, variance);
             }
             Type::Pointer(_inner, _mem, is_mut) => {
                 let variance: u8 = if *is_mut { 0x0 } else { 0x1 };

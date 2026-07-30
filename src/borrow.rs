@@ -77,6 +77,35 @@ const VARIANCE_MASK: u64 = 0xF000;
 const REGION_MASK: u64 = 0x0FFF;
 const PARAM_MASK: u64 = 0xFFFF;
 
+/// The reserved "region not yet assigned" sentinel: the maximum value the 12-bit region field can
+/// hold. A parsed reference type carries it until a scope depth is assigned (see
+/// `src/parser/types.rs`), and it surfaces in generic-deduction diagnostics as `region_id: 4095`.
+///
+/// It is **not** a scope depth — `verify_subtyping_bounds` treats it as a wildcard, never comparing
+/// it numerically, so an unset region neither satisfies nor fails subtyping by accident (#267). It
+/// is reserved: real depths are clamped to [`REGION_MAX`] so none ever equals the sentinel. Anyone
+/// narrowing this field (e.g. #265 shrinking slot 0 to 9 bits) must keep a reserved sentinel at the
+/// new field's maximum and clamp real depths below it — the numeric value must never be trusted as a
+/// region. See `docs/discussions/borrow_checker_architecture.md` §2.
+pub const REGION_UNSET: u64 = REGION_MASK;
+
+/// The largest assignable real region (scope depth): one below the [`REGION_UNSET`] sentinel, so a
+/// genuine depth can never be mistaken for "unset". Deeper nesting is clamped to this (shortest-lived
+/// valid region) rather than overflowing into the sentinel.
+pub const REGION_MAX: u64 = REGION_MASK - 1;
+
+/// Map a lexical scope depth to the region value stored in a `TypeId` (#267). The [`REGION_UNSET`]
+/// sentinel is preserved as-is (a parsed reference carries it until a depth is bound); any *real*
+/// depth is clamped to [`REGION_MAX`] so it can never equal the sentinel — nesting deeper than
+/// `REGION_MAX` degrades to the shortest-lived valid region rather than overflowing into "unset".
+pub fn region_for_depth(depth: u64) -> u64 {
+    if depth == REGION_UNSET {
+        REGION_UNSET
+    } else {
+        depth.min(REGION_MAX)
+    }
+}
+
 /// High-performance verification check for variance and lifetime compatibility.
 /// Encodes borrow checker math directly into the 256-bit registers.
 ///
@@ -120,6 +149,14 @@ pub fn verify_subtyping_bounds(
 
                 let region_a = slot_a & REGION_MASK;
                 let region_b = slot_b & REGION_MASK;
+
+                // An unset region (a parse-time placeholder not yet bound to a scope depth) does not
+                // constrain subtyping: treat it as a wildcard rather than a concrete very-short-lived
+                // region. Recognising it explicitly — instead of relying on its numeric position —
+                // is what keeps the check correct if the region field is ever narrowed (#267/#265).
+                if region_a == REGION_UNSET || region_b == REGION_UNSET {
+                    continue;
+                }
 
                 let valid = match variance_a {
                     // 0x0 represents Invariance (typically used for the inner type of &mut T)
@@ -225,5 +262,89 @@ mod tests {
             &lifetime_gid(1, 0x2),
             &w
         ));
+    }
+
+    /// The reserved `REGION_UNSET` sentinel is a wildcard: it does not constrain the region
+    /// dimension, so it neither satisfies nor fails subtyping by its numeric value (#267).
+    #[test]
+    fn unset_region_is_a_wildcard() {
+        let w = worker();
+        let unset = REGION_UNSET as u16;
+        // Covariant: unset on either side passes regardless of the other operand's depth. (A
+        // numeric read would fail `4095 <= 5`.)
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(unset, 0x1),
+            &lifetime_gid(5, 0x1),
+            &w
+        ));
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(5, 0x1),
+            &lifetime_gid(unset, 0x1),
+            &w
+        ));
+        // Invariant: a real region would require exact equality, but the wildcard passes.
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(unset, 0x0),
+            &lifetime_gid(5, 0x0),
+            &w
+        ));
+        // Variance mismatch still fails even with unset regions.
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(unset, 0x1),
+            &lifetime_gid(unset, 0x2),
+            &w
+        ));
+    }
+
+    /// A just-below-sentinel region (`REGION_MAX` = 4094) and the issue's 510 are *ordinary* regions
+    /// compared by depth, distinct from the sentinel — the property #265's narrowed field must keep.
+    #[test]
+    fn max_real_region_is_distinct_from_the_sentinel() {
+        let w = worker();
+        let max_real = REGION_MAX as u16; // 4094
+        assert_ne!(REGION_MAX, REGION_UNSET);
+        // Two real regions compare by depth: invariant requires exact equality.
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(max_real, 0x0),
+            &lifetime_gid(max_real, 0x0),
+            &w
+        ));
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(510, 0x0),
+            &lifetime_gid(max_real, 0x0),
+            &w
+        ));
+        // Covariant: a shorter-lived (larger) real region does not outlive a longer-lived one.
+        assert!(!verify_subtyping_bounds(
+            &lifetime_gid(max_real, 0x1),
+            &lifetime_gid(510, 0x1),
+            &w
+        ));
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(510, 0x1),
+            &lifetime_gid(max_real, 0x1),
+            &w
+        ));
+        // 510 vs the sentinel passes (wildcard) — distinct from 510 vs a real 4094 (fails invariant).
+        assert!(verify_subtyping_bounds(
+            &lifetime_gid(510, 0x0),
+            &lifetime_gid(REGION_UNSET as u16, 0x0),
+            &w
+        ));
+    }
+
+    /// The lowering rule (`region_for_depth`, used by `lower_to_type_id`) preserves the sentinel and
+    /// keeps every real depth strictly below it, so no genuine region can ever be read back as
+    /// "unset" — the invariant `verify_subtyping_bounds`'s wildcard relies on (#267).
+    #[test]
+    fn region_for_depth_preserves_sentinel_and_clamps_real_depths() {
+        assert_eq!(region_for_depth(REGION_UNSET), REGION_UNSET); // sentinel preserved
+        assert_eq!(region_for_depth(0), 0); // 'static unchanged
+        assert_eq!(region_for_depth(5), 5); // ordinary depth unchanged
+        assert_eq!(region_for_depth(REGION_MAX), REGION_MAX); // max real unchanged
+                                                              // A depth at or beyond the sentinel is clamped *below* it — never becomes the sentinel.
+        assert_eq!(region_for_depth(REGION_UNSET + 1), REGION_MAX);
+        assert_eq!(region_for_depth(999_999), REGION_MAX);
+        assert_ne!(region_for_depth(999_999), REGION_UNSET);
     }
 }
