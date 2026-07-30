@@ -1191,6 +1191,60 @@ fn driver_import_uses_a_struct_from_a_vxlib() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #219 imported struct construction: a consumer *builds* a struct defined only in a `.vxlib`
+/// (`Point { x: 5, y: 9 }`) and reads a field — with the library source absent. The struct literal's
+/// field checking resolves from the registry's `structs` table (off the AST env), and it JITs.
+#[test]
+fn driver_import_constructs_a_struct_from_a_vxlib() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_import_ctor_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("shapes.vx"),
+        dir.join("ctorapp.vx"),
+        dir.join("shapes.vxlib"),
+    );
+    std::fs::write(&lib, "struct Point { x : i32, y : i32 }\n").unwrap();
+    std::fs::write(
+        &app,
+        "import shapes;\nfn main() -> i32 { let p = Point { x : 5, y : 9 }; return p.x; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+    // Delete the source: the struct type + its fields must resolve purely from the artifact.
+    std::fs::remove_file(&lib).unwrap();
+
+    let run = Command::new(vxc)
+        .args([app.to_str().unwrap(), "--run"])
+        .env("VX_STD_PATH", dir.to_str().unwrap())
+        .env("RUST_BACKTRACE", "1")
+        .output()
+        .expect("run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.contains("code: 5"),
+        "expected 5 (constructed imported Point.x), got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn flat_matches_ast_string_value_pointer_arg() {
     // A string literal in *value* position (#231): bound to a local, then passed as an `!llvm.ptr`

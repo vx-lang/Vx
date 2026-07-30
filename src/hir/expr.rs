@@ -4473,27 +4473,59 @@ impl<'a> TypeChecker<'a> {
                 };
                 *type_id = resolved_gid;
 
-                if let Some(struct_decl) = self
+                // The struct's generic parameter names + declared field types: a local AST struct (or
+                // a generated one) first, else an *imported* struct from the frozen registry's
+                // `structs` table (#219) — so constructing an imported struct type-checks with no AST.
+                // A local definition shadows a same-named import.
+                #[allow(clippy::type_complexity)]
+                let struct_info: Option<(
+                    Vec<String>,
+                    Vec<(crate::symbol::Symbol, Type)>,
+                )> = self
                     .env
                     .structs
                     .get(base_name.as_ref())
-                    .map(|s| (*s).clone())
+                    .map(|s| {
+                        (
+                            s.generics.iter().map(|g| g.name().to_string()).collect(),
+                            s.fields.clone(),
+                        )
+                    })
                     .or_else(|| {
                         self.generated_structs
                             .iter()
                             .find(|s| s.name == base_name)
-                            .cloned()
+                            .map(|s| {
+                                (
+                                    s.generics.iter().map(|g| g.name().to_string()).collect(),
+                                    s.fields.clone(),
+                                )
+                            })
                     })
-                {
+                    .or_else(|| {
+                        self.worker
+                            .global
+                            .registry
+                            .structs
+                            .get(&base_name)
+                            .map(|sf| {
+                                (
+                                    sf.generics.iter().map(|g| g.to_string()).collect(),
+                                    sf.fields.clone(),
+                                )
+                            })
+                    });
+
+                if let Some((generic_names, struct_fields)) = struct_info {
                     let mut mapping = std::collections::HashMap::new();
-                    for (i, param) in struct_decl.generics.iter().enumerate() {
+                    for (i, param) in generic_names.iter().enumerate() {
                         if i < generic_args.len() {
-                            mapping.insert(param.name().into(), generic_args[i].clone());
+                            mapping.insert(param.as_str().into(), generic_args[i].clone());
                         }
                     }
 
                     // Check missing fields and type mismatch
-                    for (expected_name, raw_expected_type) in &struct_decl.fields {
+                    for (expected_name, raw_expected_type) in &struct_fields {
                         let expected_type = &raw_expected_type.substitute(&mapping);
                         let mut found = false;
                         for (f_name, f_expr) in fields.iter_mut() {
@@ -4518,7 +4550,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     // Check extra fields
                     for (f_name, f_expr) in fields.iter_mut() {
-                        if !struct_decl.fields.iter().any(|(n, _)| n == f_name) {
+                        if !struct_fields.iter().any(|(n, _)| n == f_name) {
                             if !silent {
                                 self.errors.push(format!(
                                     "Struct '{}' has no field '{}'",

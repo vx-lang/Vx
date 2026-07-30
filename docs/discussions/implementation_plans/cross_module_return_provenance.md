@@ -195,20 +195,22 @@ Phase 2 was taken as far as the flat-codegen coverage allows, in keep-green mile
   deleted, JITs to 42). A `.vxlib` is preferred over `.vx` when both exist; staleness (rebuild on a
   newer source) is a follow-up.
 
-- **Imported struct field access off the AST env** (landed, #219). `registry.structs` (`StructFields` —
-  the un-erased declared field types) is now serialized into the `.vxlib` (format tag `v5`) and
-  carried by `merge_from`; `check_memberaccess_expr` falls back to it when `env.structs` misses, so
-  `p.x` on an imported struct types the same way a local one does. Proven runnable by
-  `driver_import_uses_a_struct_from_a_vxlib` (`origin() -> Point` in a `.vxlib`, source deleted, `p.x`
-  JITs to 7).
+- **Imported struct field access + construction off the AST env** (landed, #219). `registry.structs`
+  (`StructFields` — the un-erased declared field types) is now serialized into the `.vxlib` (format
+  tag `v5`) and carried by `merge_from`; both `check_memberaccess_expr` (reading `p.x`) and
+  `check_structinit_expr` (building `Point { .. }`, incl. missing/extra/mismatched-field checking) fall
+  back to it when `env.structs` misses, so an imported struct types the same way a local one does — a
+  consumer can construct one and read its fields with no source. Proven runnable by
+  `driver_import_uses_a_struct_from_a_vxlib` (`origin() -> Point`, `p.x` → 7) and
+  `driver_import_constructs_a_struct_from_a_vxlib` (`let p = Point { x: 5, .. }`, `p.x` → 5). A `let p: Point = ..` annotation also works (the type flows from the literal).
 
 ### Still deferred
 
-- **Constructing / annotating an imported struct in the consumer.** `check_structinit_expr` (a
-  `Point { .. }` literal) and `resolve_parsed_type` (a `let p: Point` annotation) still read
-  `env.structs`; an imported struct there is not yet registry-resolved (a bare imported nominal is
-  demoted to `Generic`). Member access — the flagged blocker — is done; these are the same-theme
-  follow-ups.
+- **Bare imported-nominal type classification.** `resolve_parsed_type` (`src/hir/env.rs`, on the
+  registry-less `GlobalAstEnv`) still demotes a bare imported nominal in a *type position* to
+  `Generic` — harmless where the type flows from a value (construction, annotation-with-initializer),
+  but a `let p: Point;` with no initializer, or an imported struct as a bare parameter/return
+  annotation in *consumer* code, would need a registry check here.
 - **`.vxlib` staleness** — a `.vxlib` is preferred over `.vx` unconditionally; rebuild-on-newer-source
   is unimplemented.
 - **Imported-body codegen for the full language** — convergence-gated (C2/C3); the flat path links what
