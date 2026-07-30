@@ -394,12 +394,21 @@ holds is irrelevant to the aliasing. A callee returning a non-reference persists
   cleanup against the caller's records with the *callee's* liveness, releasing a live reborrow early.
   The body-check now runs in a taken/restored borrow context.
 
-Other unresolvable kinds (#266): **closures** are covered (the unsound reborrow is rejected via the
-escape rule, `E4005`); **trait objects / `dyn`** are not expressible in Vx, so N/A; reference-returning
-**intrinsics** derived from a reference argument do not exist in the builtin set. Known follow-up: a
-*sound* closure-return that derives from a reference parameter is over-rejected by the escape rule — a
-precision gap, not a soundness one (tracked as #269). Fixtures: `borrow_reborrow_generic_{alias,ok}.vx`,
-`borrow_reborrow_fnptr_{alias,value_ok}.vx`, `borrow_reborrow_closure_alias.vx`.
+Other unresolvable kinds (#266): **closures** are covered by resolving their `Closure_N_call`
+signature (minus the synthetic env parameter), so the unsound reborrow is rejected by the *aliasing*
+rule (`E4003`); **trait objects / `dyn`** are not expressible in Vx, so N/A; reference-returning
+**intrinsics** derived from a reference argument do not exist in the builtin set.
+
+The escape rule and closures needed one more turn (#269). A closure call is
+`Closure_N_call(<env>, real_args..)`; the env (a local) carries the captures. Joining provenance
+over *all* arguments over-rejected a sound `|q| &q.slot` (env poisoned the join to `Local`) yet only
+incidentally caught the unsound reborrow. The join now consults the closure's own return summary
+(`compute_return_provenance` on `Closure_N_call`): if the return derives from a real *parameter*
+(slot ≥ 1) the env is skipped (safe — `return f(m)` compiles); if it derives from the env (slot 0, a
+captured local, `|| &x`) or a body local, the env is kept and the escape is caught (`E4005`). So the
+sound return compiles, the captured-local escape still rejects, and the reborrow-then-mutate rejects
+by aliasing. Fixtures: `borrow_reborrow_generic_{alias,ok}.vx`, `borrow_reborrow_fnptr_{alias,value_ok}.vx`,
+`borrow_reborrow_closure_alias.vx`, `borrow_closure_return_param_ok.vx`.
 
 ______________________________________________________________________
 

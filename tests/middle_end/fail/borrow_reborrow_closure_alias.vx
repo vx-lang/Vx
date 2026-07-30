@@ -1,10 +1,11 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E4005]
-// Coverage (#266): bc9 through a closure callee. The unsound reborrow-then-mutate is rejected — via
-// the return-escape rule (E4005) rather than the aliasing rule, but rejected. Pinned here so the
-// coverage is intentional. (A sound closure-return that derives from a reference parameter is
-// currently over-rejected by the same rule — a separate escape-precision follow-up, not a soundness
-// gap.)
+// CHECK: Error[E4003]
+// Soundness (#266, #269): bc9 through a closure callee. `f(m)` reborrows `*m`; mutating through `m`
+// via `insert(m, 42)` while that reborrow is live is a shared-XOR-mutable violation. Now caught by
+// the *aliasing* rule (E4003) — `resolve_callee_ref_signature` resolves the closure's `Closure_N_call`
+// signature (minus its env parameter). Previously it was caught only incidentally by the escape rule
+// (E4005), which also over-rejected the sound closure-return in
+// tests/frontend/pass/borrow_closure_return_param.vx.
 struct Map {
   slot : i32, present : i32
 }

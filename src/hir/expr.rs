@@ -4006,7 +4006,39 @@ impl<'a> TypeChecker<'a> {
             }
             // A call yielding a reference reborrows from its reference arguments: local iff any
             // reference argument is local (e.g. `identity(&x)` for a local `x`).
-            Expr::FunctionCall(fc) => self.join_arg_provenance(&fc.args),
+            Expr::FunctionCall(fc) => {
+                // A closure invocation is rewritten to `Closure_N_call(<env>, real_args..)`, where
+                // the env (slot 0) carries the captures and is a local. Whether to count it toward
+                // the result's provenance depends on what the closure body actually returns (#269):
+                // a reference derived from a real *parameter* (`|q| &q.slot`) is safe — skip the env
+                // and join the real arguments; a reference derived from the *env* (a captured local,
+                // `|| &x`) or a body local is an escape — keep the env so its `Local` provenance is
+                // seen. The closure's own return summary tells them apart.
+                let name = fc.name.as_ref();
+                let is_closure_call =
+                    name.starts_with("Closure_") && name.ends_with("_call") && !fc.args.is_empty();
+                let skip_env = is_closure_call
+                    && self
+                        .monomorphized_functions
+                        .iter()
+                        .find(|f| f.0.name.as_ref() == name)
+                        .map(|f| crate::hir::provenance::compute_return_provenance(&f.0))
+                        .is_some_and(|rp| {
+                            // Skip the env only when the return derives from real parameters
+                            // (slots >= 1), never the env (slot 0). Local / AnyParam / unknown keep
+                            // the env, conservatively.
+                            matches!(
+                                rp,
+                                crate::hir::provenance::ReturnProvenance::FromParams(bits)
+                                    if bits & 1 == 0
+                            )
+                        });
+                if skip_env {
+                    self.join_arg_provenance(&fc.args[1..])
+                } else {
+                    self.join_arg_provenance(&fc.args)
+                }
+            }
             Expr::MethodCall(mc) => {
                 let mut provs: Vec<&Expr> = vec![mc.base.as_ref()];
                 provs.extend(mc.args.iter());
@@ -4055,6 +4087,35 @@ impl<'a> TypeChecker<'a> {
             self.lookup(resolved_name)
         {
             return Some((params.clone(), (**ret).clone()));
+        }
+        // A closure *value* (`f` typed `Closure_N`): resolve its generated `Closure_N_call` and drop
+        // the synthetic environment parameter (the leading `skip(1)`), so its reference arguments
+        // line up with the call's arguments. Without this, a reborrow through a closure (`let r =
+        // f(m); insert(m, ..)`) was tracked by nothing — the escape rule caught the unsound case only
+        // incidentally, and over-rejected the sound one (#269).
+        let closure_call: Option<String> = match self.lookup(resolved_name) {
+            Some((Type::Struct(sname, _), _)) if sname.starts_with("Closure_") => {
+                Some(format!("{}_call", sname))
+            }
+            _ => None,
+        };
+        if let Some(call_name) = closure_call {
+            if let Some(f) = self
+                .monomorphized_functions
+                .iter()
+                .find(|f| f.0.name.as_ref() == call_name)
+            {
+                return Some((
+                    f.0.params.iter().skip(1).map(|(_, t)| t.clone()).collect(),
+                    f.0.return_type.clone(),
+                ));
+            }
+            if let Some(f) = self.env.syntax_functions.get(call_name.as_str()) {
+                return Some((
+                    f.params.iter().skip(1).map(|(_, t)| t.clone()).collect(),
+                    f.return_type.clone(),
+                ));
+            }
         }
         if let Some(f) = self
             .monomorphized_functions
