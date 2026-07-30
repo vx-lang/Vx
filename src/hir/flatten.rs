@@ -26,7 +26,7 @@ use crate::syntax::{
     BinaryOp, ElementType, Expr, Function, LogicalOp, NumberExpr, RelationalOp, Statement, Type,
     UnaryOp,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The stable GID of a primitive scalar type: module 0 (builtin) + a content hash of the element
 /// name. Single source of truth so a scalar has the *same* GID whether it appears in a signature
@@ -236,6 +236,12 @@ struct Lowerer<'r> {
     /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
     /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
     ret_ty: Option<LoweredTy>,
+    /// Locals (params + `let`s) whose address is taken somewhere in the body (`&x`). Such a local must
+    /// live in an addressable `Slot` so `&x` has a pointer to yield — the *demotion* that inverts
+    /// clang's alloca-everything-then-`mem2reg`: the flat path registers by default and demotes only
+    /// the address-taken few. Computed once as a syntactic pre-pass (Vx has no auto-borrow, so `&x` is
+    /// the sole way a scalar local's address escapes — see `scalar_references_flat.md` §3). (#230)
+    address_taken: HashSet<Symbol>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -253,6 +259,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             agg_layouts: Vec::new(),
             ret_ty: None,
+            address_taken: HashSet::new(),
         }
     }
 
@@ -392,8 +399,24 @@ impl<'r> Lowerer<'r> {
         // An aggregate must live in an addressable slot so its fields can be `getelementptr`'d, even in
         // a straight-line function (e.g. binding a struct-returning call result, #215) — so it always
         // takes the memory path, not just when `self.memory` is set for control flow.
-        if self.memory || matches!(v.ty, LoweredTy::Aggregate(_)) {
-            let slot = self.emit_alloca(v.ty.clone());
+        //
+        // A *scalar* whose address is taken (`&x`) is demoted to a slot for the same reason: `&x` needs
+        // a pointer to yield. This is the per-local demotion — additive over the function-global memory
+        // flag, so a straight-line function with no `&scalar` is unchanged. Tensors (memrefs) and
+        // pointer values are never slotted this way: a tensor is already a reference and borrowing it is
+        // transparent, and a ref-to-ref (`&r`) is out of scope (projections, §5). (#230)
+        let address_taken_scalar =
+            matches!(v.ty, LoweredTy::Scalar(_)) && self.address_taken.contains(&name);
+        if self.memory || matches!(v.ty, LoweredTy::Aggregate(_)) || address_taken_scalar {
+            // An address-taken scalar needs an `llvm.alloca` (a real `!llvm.ptr`) so `&x` yields a
+            // pointer, not a rank-0 `memref` (which cannot be `getelementptr`'d). Signalled to codegen
+            // by `imm = 1` on the `Alloca`; a memory-mode-but-never-borrowed scalar keeps the memref
+            // (`imm = 0`). This matches the AST codegen, which allocas every mutable scalar as `!llvm.ptr`.
+            let slot = if address_taken_scalar {
+                self.emit_typed(Opcode::Alloca, Register(0), Register(0), v.ty.clone(), 1)
+            } else {
+                self.emit_alloca(v.ty.clone())
+            };
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
             self.scope.insert(
                 name,
@@ -710,17 +733,15 @@ impl<'r> Lowerer<'r> {
             }
             // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
             // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
-            // the memref for an allocated tensor identifier). This backs `print(&t)`. Borrowing an
-            // aggregate *local* (`&v` where `v` is a struct slot) yields the slot's `!llvm.ptr` — the
-            // pointer a `&Vec<T>` method receives, so `v.len()` (rewritten to `Vec$len(&v)`) lowers
-            // (#242). A scalar borrow (a real address-of) is still not modelled and declines. (#230)
+            // the memref for an allocated tensor identifier). This backs `print(&t)`. Borrowing a
+            // *local* that lives in a slot (`&v` where `v` is a struct slot, or `&x` where `x` is an
+            // address-taken scalar demoted to a slot by the pre-pass, #230) yields the slot's
+            // `!llvm.ptr` — the pointer a `&Vec<T>` method receives so `v.len()` lowers (#242), or the
+            // `&i32` a `pick(a : &i32, ..)` argument passes. Only scalars/aggregates are ever slotted,
+            // so the slot register is the pointee's address in both cases.
             Expr::Borrow(b) => {
                 if let Expr::Identifier(id) = &*b.expr {
-                    if let Some(Binding::Slot {
-                        reg,
-                        ty: LoweredTy::Aggregate(_),
-                    }) = self.scope.get(&id.name).cloned()
-                    {
+                    if let Some(Binding::Slot { reg, .. }) = self.scope.get(&id.name).cloned() {
                         return Some(Val {
                             reg,
                             ty: LoweredTy::Ptr,
@@ -851,6 +872,14 @@ impl<'r> Lowerer<'r> {
             Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), si.type_id)),
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
             Expr::AsCast(c) => Some(c.target_ty.clone()),
+            // `&e` has a borrow type over `e`'s type (`&x` where `x : i32` -> `&i32`), so an
+            // unannotated `let r = &x` types `r` as `&i32` and a later `*r` recovers `i32`. (#230)
+            Expr::Borrow(b) => Some(Type::Borrow {
+                inner: Box::new(self.infer_ast_type(&b.expr)?),
+                mem_space: None,
+                is_mut: false,
+                region_id: 0,
+            }),
             // `*p` has the pointee type (`p : *mut i32` -> `i32`).
             Expr::Dereference(d) => Some(deref_to_pointee(&self.infer_ast_type(&d.expr)?).clone()),
             // A call's type is its callee's return type (`v.iter()` -> `Vec$iter`'s `VecIter<i32>`),
@@ -2284,6 +2313,10 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
 
 fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Option<Lowerer<'r>> {
     let mut lw = Lowerer::new(registry);
+    // Address-taken pre-pass (#230): a syntactic walk over the body collecting every local whose
+    // address is taken (`&x`), so `bind_local` can demote those (and only those) scalars to slots.
+    // Must run before params bind, since a param can be address-taken too.
+    lw.address_taken = body_address_taken(&func.body);
     // Control flow forces the memory model so locals survive across basic blocks (like the AST
     // codegen); an aggregate parameter also forces it, since an aggregate must live in an
     // addressable slot. Straight-line scalar functions stay pure-SSA.
@@ -2424,6 +2457,119 @@ fn body_constructs_struct(stmts: &[Statement]) -> bool {
     stmts
         .iter()
         .any(|s| matches!(s, Statement::LetDecl(l) if matches!(l.expr, Expr::StructInit(_))))
+}
+
+/// Collect the locals whose address is taken (`&x`) anywhere in a body — the address-taken pre-pass
+/// that drives per-local slot demotion (#230). A purely *syntactic* walk suffices because Vx has no
+/// auto-borrow: a scalar local's address escapes only through an explicit `&x`, never implicitly at a
+/// call site (passing a scalar where `&i32` is expected is a type error, not an address-of). Missing a
+/// form is safe — the borrow then declines to the AST oracle rather than miscompiling — but the walk
+/// covers every expression the flat subset lowers. Body-local, monotone, no fixpoint: it reads one
+/// function body and writes a `HashSet`, so it runs inside Phase 3 with no new barrier (see
+/// `scalar_references_flat.md` §3.4).
+fn body_address_taken(stmts: &[Statement]) -> HashSet<Symbol> {
+    let mut set = HashSet::new();
+    collect_addr_taken_block(stmts, &mut set);
+    set
+}
+
+fn collect_addr_taken_block(stmts: &[Statement], set: &mut HashSet<Symbol>) {
+    for s in stmts {
+        match s {
+            Statement::LetDecl(l) => collect_addr_taken_expr(&l.expr, set),
+            Statement::Return(r) => collect_addr_taken_expr(&r.expr, set),
+            Statement::ExprStmt(e) => collect_addr_taken_expr(&e.expr, set),
+            Statement::Assign(a) => {
+                collect_addr_taken_expr(&a.lhs, set);
+                collect_addr_taken_expr(&a.rhs, set);
+            }
+            Statement::CompoundAssign(a) => {
+                collect_addr_taken_expr(&a.lhs, set);
+                collect_addr_taken_expr(&a.rhs, set);
+            }
+            Statement::ForLoop(f) => {
+                collect_addr_taken_expr(&f.iterable, set);
+                collect_addr_taken_block(&f.body, set);
+            }
+            Statement::Loop(l) => collect_addr_taken_block(&l.body, set),
+            Statement::Assert(a) => collect_addr_taken_expr(&a.expr, set),
+            _ => {}
+        }
+    }
+}
+
+fn collect_addr_taken_expr(e: &Expr, set: &mut HashSet<Symbol>) {
+    match e {
+        // The one collection site: `&x` names `x`. Also recurse into the borrowed expression (`&*p`).
+        Expr::Borrow(b) => {
+            if let Expr::Identifier(id) = &*b.expr {
+                set.insert(id.name.clone());
+            }
+            collect_addr_taken_expr(&b.expr, set);
+        }
+        Expr::Dereference(d) => collect_addr_taken_expr(&d.expr, set),
+        Expr::BinaryOp(b) => {
+            collect_addr_taken_expr(&b.lhs, set);
+            collect_addr_taken_expr(&b.rhs, set);
+        }
+        Expr::RelationalOp(r) => {
+            collect_addr_taken_expr(&r.lhs, set);
+            collect_addr_taken_expr(&r.rhs, set);
+        }
+        Expr::LogicalOp(l) => {
+            collect_addr_taken_expr(&l.lhs, set);
+            collect_addr_taken_expr(&l.rhs, set);
+        }
+        Expr::UnaryOp(u) => collect_addr_taken_expr(&u.expr, set),
+        Expr::AsCast(c) => collect_addr_taken_expr(&c.expr, set),
+        Expr::FunctionCall(fc) => {
+            for a in &fc.args {
+                collect_addr_taken_expr(a, set);
+            }
+        }
+        Expr::MethodCall(mc) => {
+            collect_addr_taken_expr(&mc.base, set);
+            for a in &mc.args {
+                collect_addr_taken_expr(a, set);
+            }
+        }
+        Expr::MemberAccess(m) => collect_addr_taken_expr(&m.base, set),
+        Expr::IndexAccess(ix) => {
+            collect_addr_taken_expr(&ix.base, set);
+            collect_addr_taken_expr(&ix.index, set);
+        }
+        Expr::Array(arr) => {
+            for el in &arr.elements {
+                collect_addr_taken_expr(el, set);
+            }
+        }
+        Expr::If(i) => {
+            collect_addr_taken_expr(&i.cond, set);
+            collect_addr_taken_block(&i.then_block, set);
+            if let Some(eb) = &i.else_block {
+                collect_addr_taken_block(eb, set);
+            }
+        }
+        Expr::Match(m) => {
+            collect_addr_taken_expr(&m.expr, set);
+            for arm in &m.arms {
+                collect_addr_taken_block(&arm.body, set);
+            }
+        }
+        Expr::UnsafeBlock(u) => {
+            collect_addr_taken_block(&u.stmts, set);
+            if let Some(r) = &u.ret {
+                collect_addr_taken_expr(r, set);
+            }
+        }
+        Expr::ComptimeBlock(c) => {
+            collect_addr_taken_block(&c.stmts, set);
+            if let Some(r) = &c.ret {
+                collect_addr_taken_expr(r, set);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn simple_ident(e: &Expr) -> Option<Symbol> {
@@ -3490,6 +3636,77 @@ mod tests {
             opcodes(&w),
             vec![Opcode::Load, Opcode::Add, Opcode::Ret],
             "a materialized once, x rebinds to a+a"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn address_taken_scalar_demotes_to_a_flagged_slot() {
+        // `&x` on a scalar local demotes it to an `llvm.alloca` slot (flagged `imm = 1`) even in a
+        // straight-line function — the per-local demotion, additive over the function-global memory
+        // flag: no control flow, so no blocks, but the address-taken scalar still gets a slot so `&x`
+        // has a pointer to yield, and `*r` lowers to a `PtrIndex`. (#230)
+        let f = parse_fn("fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return *r; }");
+        let mut w = worker();
+        assert!(
+            lower_function_to_hir(&f, &mut w),
+            "scalar borrow+deref lowers"
+        );
+        assert_eq!(
+            count(&w, Opcode::BlockStart),
+            0,
+            "no control flow -> no blocks"
+        );
+        let alloca = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::Alloca)
+            .expect("the address-taken scalar gets a slot");
+        assert_eq!(
+            alloca.imm, 1,
+            "the address-taken flag distinguishes it from a memref scalar slot"
+        );
+        assert_eq!(count(&w, Opcode::Alloca), 1);
+        assert_eq!(
+            count(&w, Opcode::Store),
+            1,
+            "the initial value is stored into the slot"
+        );
+        assert_eq!(count(&w, Opcode::PtrIndex), 1, "`*r` is a PtrIndex read");
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn non_address_taken_scalar_stays_a_register() {
+        // The demotion is *scoped*: a scalar local whose address is never taken stays pure-SSA (no
+        // slot), so the pre-pass does not regress straight-line functions into memory traffic. (#230)
+        let f = parse_fn("fn g() -> i32 { let x : i32 = 5; return x; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w));
+        assert_eq!(
+            count(&w, Opcode::Alloca),
+            0,
+            "no `&x`, so `x` stays a register"
+        );
+    }
+
+    #[test]
+    fn reference_param_derefs_without_a_slot() {
+        // A `&i32` parameter arrives already materialized (it crossed a call boundary), so it is a
+        // pointer register on entry — never demoted. `*a` is a `PtrIndex` straight off the param, with
+        // no `Alloca`. (design doc §3.2 NOTE: only *locals* are demoted.) (#230)
+        let f = parse_fn("fn load(a : &i32) -> i32 { return *a; }");
+        let mut w = worker();
+        assert!(lower_function_to_hir(&f, &mut w), "reference param derefs");
+        assert_eq!(
+            count(&w, Opcode::Alloca),
+            0,
+            "the param is a pointer register, not a slot"
+        );
+        assert_eq!(
+            count(&w, Opcode::PtrIndex),
+            1,
+            "`*a` is a PtrIndex read off the param"
         );
         verify_hir_stream(&w);
     }

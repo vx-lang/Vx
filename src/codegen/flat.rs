@@ -1048,6 +1048,12 @@ pub fn emit_function_mlir(
     // Whether each register is a pointer *slot* (an `llvm.alloca` of `!llvm.ptr`, a memory-mode pointer
     // local), so a `Store`/`SlotLoad` on it uses `llvm.store`/`llvm.load` rather than `memref`. (#235)
     let mut pslot_of: Vec<bool> = vec![false; hir.len()];
+    // The element type of each register that is an *address-taken scalar slot* (an `llvm.alloca` of a
+    // scalar, `imm = 1` on the `Alloca`) — so `&x` yields a real `!llvm.ptr` (the slot register is also
+    // marked in `ptr_of`) and a `Store`/`SlotLoad` uses `llvm.store`/`llvm.load` of the element type
+    // rather than the rank-0 `memref` a never-borrowed scalar local uses. The scalar analogue of
+    // `pslot_of`, carrying the element so the load/store types match. (#230)
+    let mut sslot_of: Vec<Option<ElementType>> = vec![None; hir.len()];
     let mut body = String::new();
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -1255,9 +1261,23 @@ pub fn emit_function_mlir(
                 if let Some(e) = elem_of_gid(gid) {
                     let mt = mlir_scalar(&e)?;
                     let n = format!("%v{idx}");
-                    body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
-                    names[idx] = n;
-                    etypes[idx] = Some(e);
+                    if ins.imm == 1 {
+                        // An address-taken scalar (`&x`): an `llvm.alloca` of the element type, yielding
+                        // a real `!llvm.ptr` the borrow can hand out. Its `Store`/`SlotLoad` go through
+                        // `sslot_of` (llvm.store/load); `ptr_of` marks it so `&x` types as a pointer arg
+                        // / return. Do *not* set `etypes` — the slot register is a pointer, not a scalar
+                        // value (that would mistype `&x` as its element at a call site). (#230)
+                        let cnt = format!("%n{idx}");
+                        body += &format!("  {cnt} = llvm.mlir.constant(1 : i32) : i32\n");
+                        body += &format!("  {n} = llvm.alloca {cnt} x {mt} : (i32) -> !llvm.ptr\n");
+                        names[idx] = n;
+                        sslot_of[idx] = Some(e);
+                        ptr_of[idx] = true;
+                    } else {
+                        body += &format!("  {n} = memref.alloca() : memref<{mt}>\n");
+                        names[idx] = n;
+                        etypes[idx] = Some(e);
+                    }
                 } else if gid == ptr_gid() {
                     // A pointer local (memory mode): an `llvm.alloca` of one `!llvm.ptr` cell, tracked
                     // in `pslot_of` so its `Store`/`SlotLoad` use `llvm.store`/`llvm.load`. (#235)
@@ -1295,6 +1315,10 @@ pub fn emit_function_mlir(
                 } else if *pslot_of.get(ins.operand1.0 as usize)? {
                     // A pointer local: store the `!llvm.ptr` value into its `llvm.alloca` cell. (#235)
                     body += &format!("  llvm.store {val}, {slot} : !llvm.ptr, !llvm.ptr\n");
+                } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
+                    // An address-taken scalar slot (an `llvm.alloca` of the element): `llvm.store`. (#230)
+                    let mt = mlir_scalar(&e)?;
+                    body += &format!("  llvm.store {val}, {slot} : {mt}, !llvm.ptr\n");
                 } else {
                     let e = elem_at(&etypes, ins.operand1.0)?;
                     let mt = mlir_scalar(&e)?;
@@ -1323,6 +1347,14 @@ pub fn emit_function_mlir(
                     body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> !llvm.ptr\n");
                     names[idx] = n;
                     ptr_of[idx] = true;
+                } else if let Some(e) = sslot_of.get(ins.operand1.0 as usize).cloned().flatten() {
+                    // An address-taken scalar slot: `llvm.load` the element back from the `!llvm.ptr`. (#230)
+                    let mt = mlir_scalar(&e)?;
+                    let slot = names.get(ins.operand1.0 as usize)?;
+                    let n = format!("%v{idx}");
+                    body += &format!("  {n} = llvm.load {slot} : !llvm.ptr -> {mt}\n");
+                    names[idx] = n;
+                    etypes[idx] = Some(e);
                 } else {
                     let e = ty_at(ins.type_idx.0)?;
                     let mt = mlir_scalar(&e)?;

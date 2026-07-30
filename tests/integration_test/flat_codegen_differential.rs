@@ -1026,12 +1026,17 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("refapp.vx"),
         dir.join("reflib.vxlib"),
     );
-    std::fs::write(&lib, "fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n").unwrap();
-    // A reference-heavy body is outside the flat subset; the borrow check passes (mutating the
-    // non-aliased `x` is sound), but the flat codegen declines and the AST path cannot link `pick`.
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    // `main` binds a *data-carrying enum from a call* (`let o = mk(..)`) — a flat-coverage gap (#274)
+    // that declines the flat path — while also calling the imported `double`. The decline forces the
+    // AST path, which has no AST for the imported body, so the driver must emit a clean diagnostic
+    // rather than ICE. (Scalar references — the construct this test used before — now lower on the
+    // flat path, see `driver_import_runs_cross_module_scalar_references`.)
     std::fs::write(
         &app,
-        "fn main() -> i32 { let mut x = 10i32; let y = 20i32; let r = pick(&x, &y); x = 99i32; return *r; }\n",
+        "enum Opt { None, Some(i32) }\n\
+         fn mk(v : i32) -> Opt { return Opt::Some(v); }\n\
+         fn main() -> i32 { let o = mk(double(10)); match o { Opt::Some(n) => { return n; } Opt::None => { return 0; } } }\n",
     )
     .unwrap();
 
@@ -1073,6 +1078,63 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
     assert!(
         !out.contains("Internal Error") && !out.contains("panicked"),
         "must be a clean error, not an ICE, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #230 cross-module scalar references: the borrow-checker showcase `fn pick(a : &i32, b : &i32) ->
+/// &i32` — the signature rustc cannot compile without a lifetime annotation — defined in a `.vxlib`
+/// and *called across the module boundary* with the library source absent. `main` borrows two locals
+/// (`&x`, `&y`), passes them, and derefs the returned reference. The whole program lowers on the flat
+/// path (address-taken scalars become `llvm.alloca` slots, `pick` links from the artifact) and JITs.
+/// `pick` returns `b`, so `*r == 20`.
+#[test]
+fn driver_import_runs_cross_module_scalar_references() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_import_scalar_ref_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("reflib.vx"),
+        dir.join("refapp.vx"),
+        dir.join("reflib.vxlib"),
+    );
+    std::fs::write(&lib, "fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n").unwrap();
+    std::fs::write(
+        &app,
+        "import reflib;\nfn main() -> i32 { let x = 10; let y = 20; let r = pick(&x, &y); return *r; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+    // Delete the library source: the reference-returning function must resolve purely from the artifact.
+    std::fs::remove_file(&lib).unwrap();
+
+    let run = Command::new(vxc)
+        .args([app.to_str().unwrap(), "--run"])
+        .env("VX_STD_PATH", dir.to_str().unwrap())
+        .env("RUST_BACKTRACE", "1")
+        .output()
+        .expect("run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.contains("code: 20"),
+        "expected 20 from the cross-module `pick(&x, &y)` returning `b`, got:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

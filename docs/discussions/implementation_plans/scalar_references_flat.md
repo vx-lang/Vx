@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** design — not implemented
+**Status:** **immutable slice implemented** (§9) — `&x` / `*r` / `&i32` params + returns lower on the flat path, verified differentially against the AST oracle, and run *across a module boundary*. The mutable (`let mut` + `&mut`) slice remains blocked on the AST-oracle bug (§6/§9).
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -13,9 +13,9 @@ Three related gaps, all around a reference whose pointee is a scalar:
 1. **`&i32` as a parameter.** `lower_ty_synth` (`src/hir/flatten.rs`) maps scalars, tensors and
    aggregates; `is_ptr_to_agg` (`src/hir/flatten.rs`) covers `&mut Vec` but not `&i32`. So
    `fn pick(a : &i32, b : &i32) -> &i32` never lowers.
-2. **`&x` on a scalar local** explicitly declines (the `Expr::Borrow` arm in `src/hir/flatten.rs`).
+1. **`&x` on a scalar local** explicitly declines (the `Expr::Borrow` arm in `src/hir/flatten.rs`).
    The local is an SSA register with no address; it would need promoting to an `Alloca` slot.
-3. **Returning a reference, and `*r`** need the reference threaded through as a pointer value.
+1. **Returning a reference, and `*r`** need the reference threaded through as a pointer value.
 
 The AST path also fails these (an unresolved `unrealized_conversion_cast`), so there is currently no
 differential oracle for the construct — see §6.
@@ -171,7 +171,7 @@ Recommended order:
 1. **Fix the AST path first.** Its failure is an unresolved `unrealized_conversion_cast` — it is
    producing the cast and failing to *resolve* it, not failing to model the construct. That is closer
    to working than it looks, and fixing it restores the differential oracle for free.
-2. **If flat-only is accepted anyway**, JIT verification has to be stronger than "it runs" to
+1. **If flat-only is accepted anyway**, JIT verification has to be stronger than "it runs" to
    compensate: differential against the value-semantics equivalent (`let r = &x; *r` versus plain
    `x`), which both paths already handle.
 
@@ -204,3 +204,38 @@ that claim is written up.
 Steps 1–2 are worth doing on their own merits even if scalar references slip: they strictly reduce
 memory traffic in every function that has control flow but no address-taken locals, which today is
 the common case.
+
+## 9. Status: the immutable slice, as implemented
+
+Landed as an **additive** change (not the full step-2 replacement of the function-global memory flag —
+that optimization is deferred, since it would perturb currently-working functions and the differential
+oracle is cheaper to trust than to re-establish):
+
+- **Address-taken pre-pass** (`body_address_taken` in `src/hir/flatten.rs`): a syntactic walk collecting
+  every local named by a `&x`, run once before the body lowers. Body-local, monotone, no fixpoint —
+  §3.4 holds as written.
+- **Per-local demotion** (`bind_local`): a scalar in that set gets a `Binding::Slot` *in addition to*
+  the existing `memory || aggregate` rule. Straight-line functions with no `&scalar` are untouched.
+- **`Expr::Borrow` on any slot** yields the slot register as `LoweredTy::Ptr` (the aggregate-only match
+  relaxed to any scalar/aggregate slot — §3.3).
+- **Codegen** (`src/codegen/flat.rs`): an address-taken scalar slot is an `llvm.alloca` of its element
+  (flagged `imm = 1` on the `Alloca`, tracked in `sslot_of`), so `&x` is a real `!llvm.ptr` and `*r`
+  GEPs cleanly — exactly the shape the AST path emits for a mutable scalar. A never-borrowed
+  memory-mode scalar keeps its rank-0 `memref` (§4's typed-instruction principle: the pointer stays
+  opaque; the load/store carry the element type).
+
+**Correction to §1/§6.** The claim that "the AST path also fails these" is only true for the
+**mutable** case. Empirically the AST path compiles and runs the **immutable** forms correctly
+(`&x`/`*r`/`&i32` params/returns over a `let x`), so a differential oracle *did* exist for the slice
+that shipped — §6 step 6 (fix the AST path first) was unnecessary for it. The `unrealized_conversion_cast`
+is specifically the `let mut x` alloca path (a mutable scalar local materialized as `memref<i32>`, whose
+`&x` never resolves to `!llvm.ptr`); that remains the blocker for the mutable slice and is unrelated to
+the flat work here.
+
+**Verified:** `driver_import_runs_cross_module_scalar_references` runs the `fn pick(a : &i32, b : &i32) -> &i32` showcase (§7) *across a `.vxlib` boundary* — the signature rustc cannot compile without a
+lifetime — plus flat unit tests (`address_taken_scalar_demotes_to_a_flagged_slot`,
+`non_address_taken_scalar_stays_a_register`, `reference_param_derefs_without_a_slot`) and JIT
+differentials against the value-semantics equivalent.
+
+**Deferred:** the mutable slice (needs the §6 AST-oracle fix, or a flat-only acceptance with stronger
+JIT verification); the step-2 memory-flag replacement (a pure optimization); and §5 places/projections.
