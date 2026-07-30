@@ -183,6 +183,16 @@ struct Val {
     ty: LoweredTy,
 }
 
+/// A step in a place's projection path (#275): a field of an aggregate (by field index). A place is a
+/// base local plus a `Vec<Projection>`; an empty path is a direct alias of the local (Example A), a
+/// non-empty path names a nested field (`&o.inner.v` — Example B). Array indexing is a later addition.
+// `Field` is constructed by the M2 field-projection slice (§5 Example B); M1 only builds empty paths.
+#[allow(dead_code)]
+#[derive(Clone)]
+enum Projection {
+    Field(u32),
+}
+
 /// How an in-scope name is materialized.
 #[derive(Clone)]
 enum Binding {
@@ -191,6 +201,18 @@ enum Binding {
     /// Memory model: the name is a stack slot (`Alloca`); reads emit `SlotLoad`, writes `Store`, so
     /// the value survives across basic blocks. `ty` is the slot's type.
     Slot { reg: Register, ty: LoweredTy },
+    /// A non-escaping reference bound as a symbolic *place* (#275, §5): the reference names a location
+    /// (`base` local + projection `path`) whose address is never materialized. A read/write of `*r`
+    /// resolves *through* the base binding — for an empty path, directly to the local (so `let r = &x;
+    /// return *r` needs no `alloca`, Example A); for a non-empty path, by GEP'ing the base aggregate
+    /// (Example B). `ty` is the pointee type. Created only when escape analysis proves the reference
+    /// never needs a real address — an escaping borrow (call arg, return, struct field) instead
+    /// materializes its base to a `Slot` and binds a `Ptr`, exactly as before.
+    Place {
+        base: Symbol,
+        path: Vec<Projection>,
+        ty: LoweredTy,
+    },
 }
 
 /// Per-function lowering accumulator. Instructions and their result-type GIDs are built into local
@@ -236,12 +258,12 @@ struct Lowerer<'r> {
     /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
     /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
     ret_ty: Option<LoweredTy>,
-    /// Locals (params + `let`s) whose address is taken somewhere in the body (`&x`). Such a local must
-    /// live in an addressable `Slot` so `&x` has a pointer to yield — the *demotion* that inverts
-    /// clang's alloca-everything-then-`mem2reg`: the flat path registers by default and demotes only
-    /// the address-taken few. Computed once as a syntactic pre-pass (Vx has no auto-borrow, so `&x` is
-    /// the sole way a scalar local's address escapes — see `scalar_references_flat.md` §3). (#230)
-    address_taken: HashSet<Symbol>,
+    /// Base locals whose address must be **materialized** — a borrow of them *escapes* (a call arg, a
+    /// return, a struct field, or a reference local used as anything but `*r`). Such a local lives in an
+    /// addressable `Slot` so `&x` has a real pointer to yield. This refines the old "any `&x` slots x"
+    /// rule (§9): a `&x` that only feeds a local `*r` never materializes — its base stays a register and
+    /// the reference is a `Binding::Place` (§5 Example A). Computed by the escape pre-pass. (#230/#275)
+    materialized: HashSet<Symbol>,
     /// Locals reassigned after their `let` (`x = ..`, `x += ..`). A *scalar* such local needs a memory
     /// slot to carry its new value across a block boundary — but **only when the function has control
     /// flow**; a straight-line reassignment stays a pure-SSA rebind. This is the per-local half of the
@@ -270,7 +292,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             agg_layouts: Vec::new(),
             ret_ty: None,
-            address_taken: HashSet::new(),
+            materialized: HashSet::new(),
             mutated: HashSet::new(),
             has_control_flow: false,
         }
@@ -409,14 +431,15 @@ impl<'r> Lowerer<'r> {
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
-        let address_taken_scalar =
-            matches!(v.ty, LoweredTy::Scalar(_)) && self.address_taken.contains(&name);
-        // The per-local slot decision (§3.2, step 2), replacing the function-global "memory mode slots
-        // *every* local":
+        let materialized_scalar =
+            matches!(v.ty, LoweredTy::Scalar(_)) && self.materialized.contains(&name);
+        // The per-local slot decision (§3.2 step 2 + §5 escape refinement):
         //   - an aggregate always needs a slot (its fields must be `getelementptr`'d, #215);
-        //   - a scalar needs one only if its address is taken (`&x`, §9) or it is reassigned in a
-        //     control-flow function (the new value must cross a block boundary). A non-mutated scalar —
-        //     even under control flow — stays a dominating SSA register, strictly less memory traffic;
+        //   - a scalar needs one only if its address is *materialized* (an escaping `&x`, #275) or it is
+        //     reassigned in a control-flow function (the new value must cross a block boundary). A
+        //     non-materialized, non-mutated scalar stays a dominating SSA register — and a scalar
+        //     borrowed only into a non-escaping place is *not* materialized, so `let r = &x; *r` needs
+        //     no slot at all (§5 Example A);
         //   - a pointer / (unexpected) tensor local keeps the coarser function-global model.
         // Safety: a register only ever holds a *single-definition* local's value (the right one), and
         // any read outside that definition's dominance is rejected by the MLIR verifier — so the flat
@@ -424,16 +447,16 @@ impl<'r> Lowerer<'r> {
         let needs_slot = match &v.ty {
             LoweredTy::Aggregate(_) => true,
             LoweredTy::Scalar(_) => {
-                address_taken_scalar || (self.has_control_flow && self.mutated.contains(&name))
+                materialized_scalar || (self.has_control_flow && self.mutated.contains(&name))
             }
             _ => self.memory,
         };
         if needs_slot {
-            // An address-taken scalar needs an `llvm.alloca` (a real `!llvm.ptr`) so `&x` yields a
+            // A materialized scalar needs an `llvm.alloca` (a real `!llvm.ptr`) so `&x` yields a
             // pointer, not a rank-0 `memref` (which cannot be `getelementptr`'d). Signalled to codegen
             // by `imm = 1` on the `Alloca`; a memory-mode-but-never-borrowed scalar keeps the memref
             // (`imm = 0`). This matches the AST codegen, which allocas every mutable scalar as `!llvm.ptr`.
-            let slot = if address_taken_scalar {
+            let slot = if materialized_scalar {
                 self.emit_typed(Opcode::Alloca, Register(0), Register(0), v.ty.clone(), 1)
             } else {
                 self.emit_alloca(v.ty.clone())
@@ -463,6 +486,9 @@ impl<'r> Lowerer<'r> {
                 self.scope.insert(name.clone(), Binding::Reg(v));
                 Some(())
             }
+            // A place-bound reference reassigned by name (`r = ..`) is an escape the analysis routes to
+            // materialization; if one reaches here, decline to the AST oracle. (#275)
+            Binding::Place { .. } => None,
         }
     }
 
@@ -496,6 +522,9 @@ impl<'r> Lowerer<'r> {
                     Some(Binding::Slot { reg, ty }) => {
                         Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
                     }
+                    // Reading a place-bound reference *as a value* (`f(r)`, `return r`) is an escape —
+                    // the analysis materializes those, so this arm is the safety-net decline. (#275)
+                    Some(Binding::Place { .. }) => None,
                     None => self.lower_func_const(&id.name),
                 }
             }
@@ -807,7 +836,18 @@ impl<'r> Lowerer<'r> {
             Expr::StringLiteral(sl) => Some(self.emit_string_const(sl.value.as_ref())),
             // `*p`: a raw-pointer dereference read, lowered as `p[0]` (`let v = *p`, a `Box`'s heap
             // cell). The store form (`*p = val`) is in `lower_stmt`'s assignment. (#242)
-            Expr::Dereference(d) => self.lower_ptr_deref(&d.expr, false),
+            Expr::Dereference(d) => {
+                // `*r` where `r` is a non-escaping place resolves *through* the base binding — no
+                // address is materialized (§5 Example A). Any other `*p` is a real pointer deref. (#275)
+                if let Expr::Identifier(id) = &*d.expr {
+                    if let Some(Binding::Place { base, path, ty }) =
+                        self.scope.get(&id.name).cloned()
+                    {
+                        return self.lower_place_read(&base, &path, &ty);
+                    }
+                }
+                self.lower_ptr_deref(&d.expr, false)
+            }
             // Short-circuit `&&` / `||` (#239): a branch skeleton producing a `bool`.
             Expr::LogicalOp(l) => self.lower_logical(l),
             // A value array literal `[a, b, c]` (#239): a rank-1 tensor buffer with the elements
@@ -832,6 +872,8 @@ impl<'r> Lowerer<'r> {
             Expr::Identifier(id) => match self.scope.get(&id.name)? {
                 Binding::Reg(v) => Some(v.ty.clone()),
                 Binding::Slot { ty, .. } => Some(ty.clone()),
+                // A place read as a value has no value type here — decline the inference. (#275)
+                Binding::Place { .. } => None,
             },
             Expr::BinaryOp(b) => {
                 // Mirror `lower_expr`: the result is the tensor side if either operand is a tensor,
@@ -1862,6 +1904,8 @@ impl<'r> Lowerer<'r> {
         let fnptr = match callee {
             Binding::Reg(v) => v,
             Binding::Slot { reg, ty } => self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0),
+            // A place-bound reference is not a function pointer — decline. (#275)
+            Binding::Place { .. } => return None,
         };
         if !matches!(fnptr.ty, LoweredTy::Ptr) {
             return None;
@@ -1956,6 +2000,43 @@ impl<'r> Lowerer<'r> {
     /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
     /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). A non-pointer, or a
     /// pointer whose element isn't a scalar/aggregate, declines. (#242)
+    /// The lowered type of an in-scope local — a place's pointee type for an empty path. (#275)
+    fn local_ty(&self, name: &Symbol) -> Option<LoweredTy> {
+        match self.scope.get(name)? {
+            Binding::Reg(v) => Some(v.ty.clone()),
+            Binding::Slot { ty, .. } => Some(ty.clone()),
+            Binding::Place { ty, .. } => Some(ty.clone()),
+        }
+    }
+
+    /// Read an in-scope local as a value: an SSA alias (`Reg`) or a `SlotLoad` (`Slot`). The plain
+    /// counterpart of the `Expr::Identifier` read arm, reused by place resolution. (#275)
+    fn read_local(&mut self, name: &Symbol) -> Option<Val> {
+        match self.scope.get(name).cloned()? {
+            Binding::Reg(v) => Some(v),
+            Binding::Slot { reg, ty } => {
+                Some(self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0))
+            }
+            // A place aliasing another place (nested reference) — out of M1 scope; decline. (#275)
+            Binding::Place { .. } => None,
+        }
+    }
+
+    /// Read `*r` for a place `(base, path)`. An empty path is a *direct* read of the base local — the
+    /// whole point of §5 Example A: no `alloca`, no `store`/`load`, just the local's value. A non-empty
+    /// (field) path is Example B (M2) and declines for now. (#275)
+    fn lower_place_read(
+        &mut self,
+        base: &Symbol,
+        path: &[Projection],
+        _ty: &LoweredTy,
+    ) -> Option<Val> {
+        if path.is_empty() {
+            return self.read_local(base);
+        }
+        None
+    }
+
     fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Option<Val> {
         let base = self.lower_expr(ptr_expr)?;
         if !matches!(base.ty, LoweredTy::Ptr) {
@@ -2038,6 +2119,31 @@ impl<'r> Lowerer<'r> {
                 // annotation is authoritative; else fall back to inferring the initializer's type.
                 if let Some(t) = l.ty_ann.clone().or_else(|| self.infer_ast_type(&l.expr)) {
                     self.ast_types.insert(l.name.clone(), t);
+                }
+                // `let r = &x` whose borrow does not escape (§5 Example A): bind `r` as a symbolic
+                // *place* aliasing the local `x`, so `*r` reads `x` directly and `x` never needs an
+                // address. The escape pre-pass signals this by leaving `x` out of `materialized`; an
+                // escaping borrow keeps `x` materialized, so this guard is false and the general path
+                // lowers a real `&x` pointer instead. Immutable only in M1 (a `&mut` always
+                // materializes). (#275)
+                if let Expr::Borrow(b) = &l.expr {
+                    if !b.is_mut {
+                        if let Expr::Identifier(id) = &*b.expr {
+                            if !self.materialized.contains(&id.name) {
+                                if let Some(ty) = self.local_ty(&id.name) {
+                                    self.scope.insert(
+                                        l.name.clone(),
+                                        Binding::Place {
+                                            base: id.name.clone(),
+                                            path: Vec::new(),
+                                            ty,
+                                        },
+                                    );
+                                    return Some(());
+                                }
+                            }
+                        }
+                    }
                 }
                 // A struct literal is constructed *in place* into its own slot; the local is that
                 // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
@@ -2346,7 +2452,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Opti
     // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
     // Must run before params bind, since a param can be address-taken or reassigned too.
     let uses = analyze_local_uses(&func.body);
-    lw.address_taken = uses.address_taken;
+    lw.materialized = uses.materialized;
     lw.mutated = uses.mutated;
     // Control flow drives the block model (entry block + branch skeletons) and is the precondition for
     // slotting a *mutated* scalar (it must cross a block boundary). An aggregate param or a struct
@@ -2490,131 +2596,297 @@ fn body_constructs_struct(stmts: &[Statement]) -> bool {
         .any(|s| matches!(s, Statement::LetDecl(l) if matches!(l.expr, Expr::StructInit(_))))
 }
 
-/// Per-body local-usage facts driving slot allocation (#230): the locals whose address is taken (`&x`,
-/// need an addressable slot — §9) and those reassigned (`x = ..`/`x += ..`, need a memory slot to carry
-/// the new value across a block boundary under control flow — §3.2 step 2).
+/// Per-body local-usage facts driving slot allocation (#230/#275): which base locals must have their
+/// address **materialized** (a borrow of them escapes — §5), and which are reassigned (need a memory
+/// slot to carry the value across a block boundary under control flow — §3.2 step 2).
+///
+/// The place-vs-materialize split is the #275 refinement of the old "any `&x` slots x" rule: a `&x`
+/// that only feeds a local `*r` never needs a real address, so its base stays a register and the
+/// reference is a symbolic `Binding::Place` (Example A). A borrow that *escapes* — a call argument, a
+/// return, a struct field, or a reference local used as anything but `*r` — still materializes.
+///
+/// Missing a fact is *safe*: an under-collected escape leaves a base a register, and the borrow that
+/// actually escapes then hits the `Expr::Borrow` arm with a non-slot base and **declines** to the AST
+/// oracle (the MLIR verifier is the backstop) — never a silent miscompile. The walk still covers every
+/// form the flat subset lowers, to avoid needless declines. Body-local, no fixpoint (§3.4).
 #[derive(Default)]
 struct LocalUses {
-    address_taken: HashSet<Symbol>,
+    materialized: HashSet<Symbol>,
     mutated: HashSet<Symbol>,
 }
 
-/// One syntactic walk collecting both facts. Purely syntactic and body-local (Vx has no auto-borrow, so
-/// a scalar's address escapes only through an explicit `&x`), monotone, no fixpoint — it runs inside
-/// Phase 3 with no new barrier (§3.4). Missing a fact is *safe*: an under-collected `&x` declines to
-/// the AST oracle; an under-collected reassignment can only leave a single-definition SSA register read
-/// out of dominance, which the MLIR verifier rejects (→ decline), never a silent miscompile. The walk
-/// still covers every form the flat subset lowers, to avoid needless declines.
 fn analyze_local_uses(stmts: &[Statement]) -> LocalUses {
-    let mut u = LocalUses::default();
-    walk_local_uses_block(stmts, &mut u);
-    u
+    // Pass 1: direct reassignments, `let r = &x` place candidates, and every *other* (raw) borrow base.
+    let mut scan = BorrowScan::default();
+    scan.block(stmts);
+    // Pass 2: which candidate ref-locals escape (used as anything but `*r`) or are written through.
+    let mut refs = RefUseScan {
+        place_refs: &scan.place_refs,
+        escaping: HashSet::new(),
+        written: HashSet::new(),
+    };
+    refs.block(stmts);
+    // A base is materialized if it is raw-borrowed, or its place-ref escapes / is written through (M1
+    // supports read-only places; a written place falls back to a materialized `&mut`).
+    let mut materialized = scan.raw_borrowed;
+    for (r, base) in &scan.place_refs {
+        if refs.escaping.contains(r) || refs.written.contains(r) {
+            materialized.insert(base.clone());
+        }
+    }
+    LocalUses {
+        materialized,
+        mutated: scan.mutated,
+    }
 }
 
-fn walk_local_uses_block(stmts: &[Statement], u: &mut LocalUses) {
-    for s in stmts {
-        match s {
-            Statement::LetDecl(l) => walk_local_uses_expr(&l.expr, u),
-            Statement::Return(r) => walk_local_uses_expr(&r.expr, u),
-            Statement::ExprStmt(e) => walk_local_uses_expr(&e.expr, u),
-            // A reassignment to a bare name (`x = ..`) mutates that local; `arr[i] = ..` / `*p = ..` /
-            // `o.f = ..` write *through a place*, not the local binding, so they do not count.
-            Statement::Assign(a) => {
-                if let Expr::Identifier(id) = &a.lhs {
-                    u.mutated.insert(id.name.clone());
+/// Pass-1 accumulator: reassigned locals, `let r = &<ident>` place candidates (`r -> base`), and the
+/// bases of every *other* borrow (which forces materialization).
+#[derive(Default)]
+struct BorrowScan {
+    mutated: HashSet<Symbol>,
+    place_refs: HashMap<Symbol, Symbol>,
+    raw_borrowed: HashSet<Symbol>,
+}
+
+impl BorrowScan {
+    fn block(&mut self, stmts: &[Statement]) {
+        for s in stmts {
+            match s {
+                // `let r = &x` (immutable borrow of a plain local) is a place candidate — record it and
+                // do *not* count the borrow as raw. Any other initializer is scanned normally.
+                Statement::LetDecl(l) => {
+                    if let Expr::Borrow(b) = &l.expr {
+                        if !b.is_mut {
+                            if let Expr::Identifier(id) = &*b.expr {
+                                self.place_refs.insert(l.name.clone(), id.name.clone());
+                                continue;
+                            }
+                        }
+                    }
+                    self.expr(&l.expr);
                 }
-                walk_local_uses_expr(&a.lhs, u);
-                walk_local_uses_expr(&a.rhs, u);
-            }
-            Statement::CompoundAssign(a) => {
-                if let Expr::Identifier(id) = &a.lhs {
-                    u.mutated.insert(id.name.clone());
+                Statement::Return(r) => self.expr(&r.expr),
+                Statement::ExprStmt(e) => self.expr(&e.expr),
+                Statement::Assign(a) => {
+                    if let Expr::Identifier(id) = &a.lhs {
+                        self.mutated.insert(id.name.clone());
+                    }
+                    self.expr(&a.lhs);
+                    self.expr(&a.rhs);
                 }
-                walk_local_uses_expr(&a.lhs, u);
-                walk_local_uses_expr(&a.rhs, u);
+                Statement::CompoundAssign(a) => {
+                    if let Expr::Identifier(id) = &a.lhs {
+                        self.mutated.insert(id.name.clone());
+                    }
+                    self.expr(&a.lhs);
+                    self.expr(&a.rhs);
+                }
+                Statement::ForLoop(f) => {
+                    self.expr(&f.iterable);
+                    self.block(&f.body);
+                }
+                Statement::Loop(l) => self.block(&l.body),
+                Statement::Assert(a) => self.expr(&a.expr),
+                _ => {}
             }
-            Statement::ForLoop(f) => {
-                walk_local_uses_expr(&f.iterable, u);
-                walk_local_uses_block(&f.body, u);
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            // A borrow reached here (not a `let r = &x` candidate) is a raw/escaping borrow: its base
+            // must be materialized.
+            Expr::Borrow(b) => {
+                if let Expr::Identifier(id) = &*b.expr {
+                    self.raw_borrowed.insert(id.name.clone());
+                }
+                self.expr(&b.expr);
             }
-            Statement::Loop(l) => walk_local_uses_block(&l.body, u),
-            Statement::Assert(a) => walk_local_uses_expr(&a.expr, u),
+            Expr::Dereference(d) => self.expr(&d.expr),
+            Expr::BinaryOp(b) => {
+                self.expr(&b.lhs);
+                self.expr(&b.rhs);
+            }
+            Expr::RelationalOp(r) => {
+                self.expr(&r.lhs);
+                self.expr(&r.rhs);
+            }
+            Expr::LogicalOp(l) => {
+                self.expr(&l.lhs);
+                self.expr(&l.rhs);
+            }
+            Expr::UnaryOp(un) => self.expr(&un.expr),
+            Expr::AsCast(c) => self.expr(&c.expr),
+            Expr::FunctionCall(fc) => fc.args.iter().for_each(|a| self.expr(a)),
+            Expr::MethodCall(mc) => {
+                self.expr(&mc.base);
+                mc.args.iter().for_each(|a| self.expr(a));
+            }
+            Expr::MemberAccess(m) => self.expr(&m.base),
+            Expr::IndexAccess(ix) => {
+                self.expr(&ix.base);
+                self.expr(&ix.index);
+            }
+            Expr::Array(arr) => arr.elements.iter().for_each(|el| self.expr(el)),
+            Expr::If(i) => {
+                self.expr(&i.cond);
+                self.block(&i.then_block);
+                if let Some(eb) = &i.else_block {
+                    self.block(eb);
+                }
+            }
+            Expr::Match(m) => {
+                self.expr(&m.expr);
+                m.arms.iter().for_each(|arm| self.block(&arm.body));
+            }
+            Expr::UnsafeBlock(ub) => {
+                self.block(&ub.stmts);
+                if let Some(r) = &ub.ret {
+                    self.expr(r);
+                }
+            }
+            Expr::ComptimeBlock(c) => {
+                self.block(&c.stmts);
+                if let Some(r) = &c.ret {
+                    self.expr(r);
+                }
+            }
             _ => {}
         }
     }
 }
 
-fn walk_local_uses_expr(e: &Expr, u: &mut LocalUses) {
+/// Pass-2 scan: classify each place-candidate ref-local. A ref `r` **escapes** if it appears as
+/// anything but the operand of a `*r` (a call arg, a return, an rvalue, a re-borrow); it is **written**
+/// if `*r = ..`. Either disqualifies its base from staying a register.
+struct RefUseScan<'a> {
+    place_refs: &'a HashMap<Symbol, Symbol>,
+    escaping: HashSet<Symbol>,
+    written: HashSet<Symbol>,
+}
+
+impl RefUseScan<'_> {
+    fn block(&mut self, stmts: &[Statement]) {
+        for s in stmts {
+            match s {
+                // `*r = v` writes through the ref; the deref-lhs is a write use (not an escape), the rhs
+                // is scanned normally.
+                Statement::Assign(a) => {
+                    if let Some(r) = deref_ident(&a.lhs) {
+                        if self.place_refs.contains_key(&r) {
+                            self.written.insert(r);
+                        } else {
+                            self.expr(&a.lhs);
+                        }
+                    } else {
+                        self.expr(&a.lhs);
+                    }
+                    self.expr(&a.rhs);
+                }
+                Statement::CompoundAssign(a) => {
+                    if let Some(r) = deref_ident(&a.lhs) {
+                        if self.place_refs.contains_key(&r) {
+                            self.written.insert(r);
+                        } else {
+                            self.expr(&a.lhs);
+                        }
+                    } else {
+                        self.expr(&a.lhs);
+                    }
+                    self.expr(&a.rhs);
+                }
+                Statement::LetDecl(l) => self.expr(&l.expr),
+                Statement::Return(r) => self.expr(&r.expr),
+                Statement::ExprStmt(e) => self.expr(&e.expr),
+                Statement::ForLoop(f) => {
+                    self.expr(&f.iterable);
+                    self.block(&f.body);
+                }
+                Statement::Loop(l) => self.block(&l.body),
+                Statement::Assert(a) => self.expr(&a.expr),
+                _ => {}
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            // `*r` is the one non-escaping use — do not descend into `r`. Any *other* mention of a
+            // ref-local is an escape.
+            Expr::Dereference(d) => {
+                if let Expr::Identifier(id) = &*d.expr {
+                    if self.place_refs.contains_key(&id.name) {
+                        return;
+                    }
+                }
+                self.expr(&d.expr);
+            }
+            Expr::Identifier(id) if self.place_refs.contains_key(&id.name) => {
+                self.escaping.insert(id.name.clone());
+            }
+            Expr::Borrow(b) => self.expr(&b.expr),
+            Expr::BinaryOp(b) => {
+                self.expr(&b.lhs);
+                self.expr(&b.rhs);
+            }
+            Expr::RelationalOp(r) => {
+                self.expr(&r.lhs);
+                self.expr(&r.rhs);
+            }
+            Expr::LogicalOp(l) => {
+                self.expr(&l.lhs);
+                self.expr(&l.rhs);
+            }
+            Expr::UnaryOp(un) => self.expr(&un.expr),
+            Expr::AsCast(c) => self.expr(&c.expr),
+            Expr::FunctionCall(fc) => fc.args.iter().for_each(|a| self.expr(a)),
+            Expr::MethodCall(mc) => {
+                self.expr(&mc.base);
+                mc.args.iter().for_each(|a| self.expr(a));
+            }
+            Expr::MemberAccess(m) => self.expr(&m.base),
+            Expr::IndexAccess(ix) => {
+                self.expr(&ix.base);
+                self.expr(&ix.index);
+            }
+            Expr::Array(arr) => arr.elements.iter().for_each(|el| self.expr(el)),
+            Expr::If(i) => {
+                self.expr(&i.cond);
+                self.block(&i.then_block);
+                if let Some(eb) = &i.else_block {
+                    self.block(eb);
+                }
+            }
+            Expr::Match(m) => {
+                self.expr(&m.expr);
+                m.arms.iter().for_each(|arm| self.block(&arm.body));
+            }
+            Expr::UnsafeBlock(ub) => {
+                self.block(&ub.stmts);
+                if let Some(r) = &ub.ret {
+                    self.expr(r);
+                }
+            }
+            Expr::ComptimeBlock(c) => {
+                self.block(&c.stmts);
+                if let Some(r) = &c.ret {
+                    self.expr(r);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `*r` -> `Some(r)` when the dereferenced expression is a plain identifier (a ref-local write target).
+fn deref_ident(e: &Expr) -> Option<Symbol> {
     match e {
-        // The address-taken collection site: `&x` names `x`. Also recurse (`&*p`).
-        Expr::Borrow(b) => {
-            if let Expr::Identifier(id) = &*b.expr {
-                u.address_taken.insert(id.name.clone());
-            }
-            walk_local_uses_expr(&b.expr, u);
-        }
-        Expr::Dereference(d) => walk_local_uses_expr(&d.expr, u),
-        Expr::BinaryOp(b) => {
-            walk_local_uses_expr(&b.lhs, u);
-            walk_local_uses_expr(&b.rhs, u);
-        }
-        Expr::RelationalOp(r) => {
-            walk_local_uses_expr(&r.lhs, u);
-            walk_local_uses_expr(&r.rhs, u);
-        }
-        Expr::LogicalOp(l) => {
-            walk_local_uses_expr(&l.lhs, u);
-            walk_local_uses_expr(&l.rhs, u);
-        }
-        Expr::UnaryOp(un) => walk_local_uses_expr(&un.expr, u),
-        Expr::AsCast(c) => walk_local_uses_expr(&c.expr, u),
-        Expr::FunctionCall(fc) => {
-            for a in &fc.args {
-                walk_local_uses_expr(a, u);
-            }
-        }
-        Expr::MethodCall(mc) => {
-            walk_local_uses_expr(&mc.base, u);
-            for a in &mc.args {
-                walk_local_uses_expr(a, u);
-            }
-        }
-        Expr::MemberAccess(m) => walk_local_uses_expr(&m.base, u),
-        Expr::IndexAccess(ix) => {
-            walk_local_uses_expr(&ix.base, u);
-            walk_local_uses_expr(&ix.index, u);
-        }
-        Expr::Array(arr) => {
-            for el in &arr.elements {
-                walk_local_uses_expr(el, u);
-            }
-        }
-        Expr::If(i) => {
-            walk_local_uses_expr(&i.cond, u);
-            walk_local_uses_block(&i.then_block, u);
-            if let Some(eb) = &i.else_block {
-                walk_local_uses_block(eb, u);
-            }
-        }
-        Expr::Match(m) => {
-            walk_local_uses_expr(&m.expr, u);
-            for arm in &m.arms {
-                walk_local_uses_block(&arm.body, u);
-            }
-        }
-        Expr::UnsafeBlock(ub) => {
-            walk_local_uses_block(&ub.stmts, u);
-            if let Some(r) = &ub.ret {
-                walk_local_uses_expr(r, u);
-            }
-        }
-        Expr::ComptimeBlock(c) => {
-            walk_local_uses_block(&c.stmts, u);
-            if let Some(r) = &c.ret {
-                walk_local_uses_expr(r, u);
-            }
-        }
-        _ => {}
+        Expr::Dereference(d) => match &*d.expr {
+            Expr::Identifier(id) => Some(id.name.clone()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3697,39 +3969,54 @@ mod tests {
     }
 
     #[test]
-    fn address_taken_scalar_demotes_to_a_flagged_slot() {
-        // `&x` on a scalar local demotes it to an `llvm.alloca` slot (flagged `imm = 1`) even in a
-        // straight-line function — the per-local demotion, additive over the function-global memory
-        // flag: no control flow, so no blocks, but the address-taken scalar still gets a slot so `&x`
-        // has a pointer to yield, and `*r` lowers to a `PtrIndex`. (#230)
+    fn non_escaping_borrow_binds_a_place_with_no_alloca() {
+        // §5 Example A (#275): `let r = &x; return *r` where the borrow never escapes. `r` binds as a
+        // symbolic `Binding::Place` aliasing `x`, `*r` reads `x` directly, and `x` — no longer forced
+        // to materialize an address — stays a register. No `Alloca`, no `Store`, no `PtrIndex`: the
+        // whole reference round-trip compiles to `const 5; ret`. This is the alloca that should not
+        // exist, gone.
         let f = parse_fn("fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return *r; }");
         let mut w = worker();
         assert!(
             lower_function_to_hir(&f, &mut w),
-            "scalar borrow+deref lowers"
+            "non-escaping scalar borrow+deref lowers"
         );
         assert_eq!(
-            count(&w, Opcode::BlockStart),
+            count(&w, Opcode::Alloca),
             0,
-            "no control flow -> no blocks"
+            "the base stays a register — no materialized address"
         );
+        assert_eq!(
+            count(&w, Opcode::Store),
+            0,
+            "no store: nothing spilled to memory"
+        );
+        assert_eq!(
+            count(&w, Opcode::PtrIndex),
+            0,
+            "`*r` reads the local directly, not via a pointer"
+        );
+        assert_eq!(count(&w, Opcode::Ret), 1);
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn escaping_borrow_materializes_a_flagged_slot() {
+        // The counterpart: when the reference *escapes* (here as a call argument), the base must
+        // materialize a real address — an `llvm.alloca` flagged `imm = 1`, and `&x` a `PtrIndex`-able
+        // pointer. `r` is used as `id(r)`, not `*r`, so the escape analysis keeps `x` materialized. (#275)
+        let (did, w) = lower_with_registry(
+            "fn id(p : &i32) -> i32 { return *p; }\n\
+             fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return id(r); }",
+            "f",
+        );
+        assert!(did, "the escaping borrow lowers via materialization");
         let alloca = w
             .local_hir_stream
             .iter()
             .find(|i| i.opcode == Opcode::Alloca)
-            .expect("the address-taken scalar gets a slot");
-        assert_eq!(
-            alloca.imm, 1,
-            "the address-taken flag distinguishes it from a memref scalar slot"
-        );
-        assert_eq!(count(&w, Opcode::Alloca), 1);
-        assert_eq!(
-            count(&w, Opcode::Store),
-            1,
-            "the initial value is stored into the slot"
-        );
-        assert_eq!(count(&w, Opcode::PtrIndex), 1, "`*r` is a PtrIndex read");
-        verify_hir_stream(&w);
+            .expect("the escaping base gets a materialized slot");
+        assert_eq!(alloca.imm, 1, "an addressable `llvm.alloca`, not a memref");
     }
 
     #[test]

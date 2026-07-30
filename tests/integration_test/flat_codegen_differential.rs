@@ -440,6 +440,35 @@ fn flat_still_slots_a_mutated_local_under_control_flow() {
     );
 }
 
+/// #275 §5 Example A: a non-escaping `&x` binds a symbolic place, so `x` never materializes an
+/// address — `let r = &x; return *r` compiles with NO `alloca` (the "alloca that should not exist"),
+/// yet still matches the AST oracle. This is the precision win places buy over §9's demote-on-any-`&x`.
+#[test]
+fn flat_non_escaping_borrow_needs_no_alloca() {
+    let src = "fn main() -> i32 { let x = 5; let r = &x; return *r; }";
+    assert_parity(src, 5);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        !mlir.contains("alloca"),
+        "a non-escaping borrow needs no materialized address:\n{mlir}"
+    );
+}
+
+/// The escaping counterpart: passing the reference on (`id(r)`, where `r` is used as a value, not
+/// `*r`) forces the base to materialize a real address. Parity with the AST oracle; the `alloca` is
+/// expected here — the escape analysis correctly distinguishes it from Example A.
+#[test]
+fn flat_escaping_borrow_materializes_an_address() {
+    let src = "fn id(p : &i32) -> i32 { return *p; }\n\
+               fn main() -> i32 { let x = 5; let r = &x; return id(r); }";
+    assert_parity(src, 5);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        mlir.contains("alloca"),
+        "an escaping reference needs a real address:\n{mlir}"
+    );
+}
+
 #[test]
 fn flat_matches_ast_if_expression() {
     // A value-position `if` (`let m: i32 = if a > b { a } else { b }`, #201): lowered to blocks + a

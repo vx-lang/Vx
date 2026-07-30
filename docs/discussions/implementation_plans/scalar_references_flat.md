@@ -493,3 +493,38 @@ loops, value-`if`, match) still matches the AST oracle; and a corpus differentia
 
 **Deferred:** applying the same per-local rule to *pointer* locals (still on the coarse model — a
 missed optimization, not a correctness gap) and §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)).
+
+## 12. Status: places, M1 — the non-escaping borrow (§5 Example A)
+
+The first slice of the place representation ([#275](https://github.com/hiraditya/Vx/issues/275)), landing
+§5 Example A: a `&x` that never escapes binds `x` to a **symbolic place** instead of materializing an
+address, so `let r = &x; return *r` compiles to `const 5; ret` — **zero `alloca`**, the alloca that
+should not exist, gone.
+
+The key structural choice (from §5.5): a **non-escaping** place is pure lowerer data — a
+`Binding::Place { base, path: Vec<Projection>, ty }` in the scope map — so the variable-length
+projection path lives in Rust data, not in the fixed-width `HirInstruction`. The side-table §5.5 flags
+is only needed if a place must become a first-class HIR *value*, which is exactly the escaping case that
+materializes to a pointer anyway. M1 uses **empty** paths (Example A); the `Projection::Field` variant
+is defined for the M2 field slice (Example B).
+
+**Escape analysis** (`analyze_local_uses`, two passes, body-local, §3.4-safe): a `let r = &x`
+(immutable, plain local) is a place *candidate*; a candidate's base stays a register unless the
+reference **escapes** — used as anything but `*r` (a call arg, a return, an rvalue, `f(r)`), or written
+through. The old "any `&x` slots x" set (§9) is replaced by a `materialized` set of bases whose address
+actually escapes. So `dbl(*r)` (only the *value* escapes) stays a place, while `id(r)` (the reference
+escapes) materializes — verified both ways.
+
+**Why it can't miscompile.** If the analysis wrongly keeps a base a register, the escaping `&x` reaches
+the `Expr::Borrow` arm with a non-slot base and **declines** to the AST oracle (the same MLIR-verifier
+backstop as §11). Reading a place *as a value*, assigning to it by name, or a nested place all decline.
+M1 is immutable-only: a `&mut` borrow always materializes (its mutation path is §10), and a written
+place falls back to materialization — Example C's mutable disjoint fields wait for a later slice.
+
+**Verified:** `non_escaping_borrow_binds_a_place_with_no_alloca` /
+`escaping_borrow_materializes_a_flagged_slot` (unit); `flat_non_escaping_borrow_needs_no_alloca` /
+`flat_escaping_borrow_materializes_an_address` (flat-vs-AST parity + the alloca assertion, both
+directions); the full suite and the `tests/backend/pass` corpus differential show no regression.
+
+**Next (M2):** field-projection resolution — a non-empty path GEP'd through the base aggregate, landing
+§5 Example B (`&mut o.inner.v`), with the AST path as the oracle (aggregates compile on it).
