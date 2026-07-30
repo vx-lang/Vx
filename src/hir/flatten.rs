@@ -2719,7 +2719,11 @@ fn encode_imm(s: &str, elem: &ElementType) -> Option<u64> {
 /// strictly-earlier instruction (temporaries are block-local, so the linear check still captures SSA
 /// dominance), and every branch targets a declared block. One worker holds exactly one function's
 /// stream.
-#[cfg(debug_assertions)]
+///
+/// Gated on `any(debug_assertions, test)`, not `debug_assertions` alone: the production callers in
+/// `pipeline.rs` are `#[cfg(debug_assertions)]`, but the `#[cfg(test)]` unit tests below call it
+/// directly, so it must also exist under `cargo test --release` (test on, debug-assertions off).
+#[cfg(any(debug_assertions, test))]
 pub fn verify_hir_stream(worker: &LocalWorkerState) {
     let n_types = worker.local_type_stream.len() as u32;
     // Declared basic blocks (a `BlockStart` per block id) — branch targets must land in this set.

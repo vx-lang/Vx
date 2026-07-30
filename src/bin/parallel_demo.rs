@@ -17,8 +17,8 @@
 //   * determinism  — the flat 256-bit GID stream is *byte-identical, in order*
 //                    across every thread count (identity is a content hash, not a
 //                    scheduling-dependent counter);
-//   * zero-lock    — no Mutex/RwLock anywhere on the path (CI enforces it), so the
-//                    speedup comes from genuine isolation, not lock contention.
+//   * zero-lock    — no lock primitives anywhere on the path (CI enforces it), so
+//                    the speedup comes from genuine isolation, not lock contention.
 //
 // The pipeline's own phase logging goes to stdout; this demo's report goes to
 // stderr, so `cargo run --bin parallel_demo >/dev/null` shows just the report.
@@ -160,7 +160,7 @@ fn main() {
     .unwrap();
     writeln!(
         w,
-        "    read-only session — zero Mutex/RwLock on the path (CI lint enforces it)."
+        "    read-only session — zero lock primitives on the path (CI lint enforces it)."
     )
     .unwrap();
     writeln!(

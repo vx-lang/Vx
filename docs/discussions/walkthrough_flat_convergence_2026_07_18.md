@@ -16,19 +16,23 @@ flat HIR in both directions.
 ## What landed (grouped)
 
 ### 1. Bug fixes (start of session)
+
 - **#185** — scalar `print(x)` (call form) failed codegen; now routes to the `print_*` FFI helpers
   (added `print_i64`). `87dde50`.
 - **#186** — a loop index used in a float expr left an unreconciled `i64→index` cast; `coerce_type`
   now routes `index↔float` through i64 (`index_cast` + `sitofp`/`fptosi`). `4d01f3d`.
 
 ### 2. Backlog hygiene (verified-done issues closed)
+
 Several "open" issues were already implemented on `main` (commits used `(#N)`, not `Fixes:`), so they
 never auto-closed. Verified against code + passing acceptance tests, then closed: **#193/#194/#195**
 (GID word-2 codec / cross-module resolution / stable FNV hash) and the entire slice-ops epic
 **#188–#192** (S1 indexing … S4 FA-4). No code change — tracker reconciliation only.
 
 ### 3. #199 — the non-scalar flat HIR (C1.3), now closed
+
 The bulk of the session. Journal Entries 13–18.
+
 - Freeze-time **struct/enum layouts** (size/align/field offsets) — new `src/layout.rs`,
   `TypeDefinition.fields`. `3a19fa0`.
 - **Aggregate values**: `LoweredTy::{Scalar,Aggregate,Tensor}`; struct params bind to registry-sized
@@ -43,16 +47,19 @@ The bulk of the session. Journal Entries 13–18.
   `flashattention_write_path_composes`.
 
 ### 4. Attention corpus (#200/#197)
+
 Five hand-checkable, JIT-verified attention variants under `tests/backend/pass/` — the differential
 target for C2 and standalone AST-oracle coverage now: `full_softmax_attention.vx`,
 `multi_query_attention.vx`, `grouped_query_attention.vx`, `linear_attention.vx`,
 `sparse_local_attention.vx`. `9398c4d`.
 
 ### 5. #200 — C2 start: differential harness
+
 `tests/integration_test/flat_codegen_differential.rs` — flat-vs-AST **JIT exit-code parity** for the
 scalar subset, through the real `lower_to_llvm` + `execute_mlir`. `bfe5156`. Journal Entry 20.
 
 ### 6. #198 — C1 Calls (C1 now complete)
+
 Fixed-arity calls: registry `fn_sigs` (name → GID + return type) for callee resolution, the `Arg`
 opcode for N-ary args, `Call` (callee GID in `type_idx`, arg count in `imm`). `08c8d3a`. Journal
 Entry 19.
