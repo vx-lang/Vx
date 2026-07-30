@@ -375,11 +375,14 @@ suite green.
 ### 8.2 Unresolvable-callee coverage (#268, #266)
 
 §5's residual risk — "unresolvable callee ⇒ no borrow record" — was a real unsound accept for
-**generic** callees (bc9 through a generic, #268): `resolve_callee_ref_signature` returned `None`, so
-`track_reference_arg_borrow` recorded nothing and the reborrow leaked. Closed by resolving a
-generic's **declared** signature (no instantiation) — the reference *shape* is all the reborrow
-decision needs, and the summary stays `AnyParam` (every reference argument treated as deriving). Two
-supporting fixes fell out:
+**generic** callees and **function-pointer / closure *values*** (bc9 through a generic / through a
+`fn(..)->..` parameter, #268): `resolve_callee_ref_signature` returned `None`, so
+`track_reference_arg_borrow` recorded nothing and the reborrow leaked. Closed by resolving the
+callee's **declared** signature — a generic's (no instantiation) or a function-pointer value's (from
+its type, `self.lookup`). The reference *shape* is all the reborrow decision needs, and the summary
+stays `AnyParam` (every reference argument treated as deriving); which concrete function a pointer
+holds is irrelevant to the aliasing. A callee returning a non-reference persists nothing, so
+`g: fn(&Map)->i32` followed by `insert(m, ..)` still compiles. Two supporting fixes fell out:
 
 - **Access vs record mutability.** The conflict check uses the *parameter*'s mutability (what the
   call does to the argument — `insert(&mut Map)` mutates), while the persisted record uses the
@@ -395,8 +398,8 @@ Other unresolvable kinds (#266): **closures** are covered (the unsound reborrow 
 escape rule, `E4005`); **trait objects / `dyn`** are not expressible in Vx, so N/A; reference-returning
 **intrinsics** derived from a reference argument do not exist in the builtin set. Known follow-up: a
 *sound* closure-return that derives from a reference parameter is over-rejected by the escape rule — a
-precision gap, not a soundness one. Fixtures: `borrow_reborrow_generic_{alias,ok}.vx`,
-`borrow_reborrow_closure_alias.vx`.
+precision gap, not a soundness one (tracked as #269). Fixtures: `borrow_reborrow_generic_{alias,ok}.vx`,
+`borrow_reborrow_fnptr_{alias,value_ok}.vx`, `borrow_reborrow_closure_alias.vx`.
 
 ______________________________________________________________________
 

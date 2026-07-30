@@ -4045,7 +4045,17 @@ impl<'a> TypeChecker<'a> {
     /// A generic returning a non-reference has a non-reference declared return, so nothing persists —
     /// no false positive. Only genuinely unresolvable callees (closures resolved via other rules,
     /// `dyn`, intrinsics) still return `None`.
+    ///
+    /// **Function-pointer / closure *values*** (a parameter or local of `fn(..)->..` type, #268)
+    /// carry their signature in their type, so a reborrow through `f(m)` is tracked even though which
+    /// function `f` holds is unknown — the aliasing depends only on the signature. Checked first so a
+    /// shadowing local wins over a same-named global function.
     fn resolve_callee_ref_signature(&self, resolved_name: &str) -> Option<(Vec<Type>, Type)> {
+        if let Some((Type::Function(params, ret) | Type::Closure(params, ret), _)) =
+            self.lookup(resolved_name)
+        {
+            return Some((params.clone(), (**ret).clone()));
+        }
         if let Some(f) = self
             .monomorphized_functions
             .iter()

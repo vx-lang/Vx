@@ -1,0 +1,26 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E4003]
+// Soundness (#268): bc9 through a *function-pointer* callee. Which function `f` holds is unknown,
+// but its signature `fn(&Map) -> &i32` is not — the result reborrows `*m`, so mutating `m` via
+// `insert(m, 42)` while that reborrow is live must be rejected. `resolve_callee_ref_signature` now
+// reads the pointer's signature from its type; it recorded nothing before (accepted on 97d495b1).
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn probe(q : &Map) -> &i32 {
+  return &q.slot;
+}
+fn bad(f : fn(&Map) -> &i32, m : &mut Map) -> &i32 {
+  let found = f(m);
+  insert(m, 42);
+  return found;
+}
+fn main() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  return *bad(probe, &mut x);
+}

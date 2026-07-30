@@ -1,0 +1,25 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Non-regression for #268: a function-pointer callee that returns a *non-reference* must not
+// persist a borrow of its argument — `g(m)` yields an `i32`, so mutating `m` afterwards is sound.
+// The reborrow decision keys on the pointer's declared return type, so no false positive here.
+struct Map {
+  slot : i32, present : i32
+}
+fn insert(m : &mut Map, v : i32) -> void {
+  m.slot = v; m.present = 1;
+}
+fn peek(q : &Map) -> i32 {
+  return q.slot;
+}
+fn ok(g : fn(&Map) -> i32, m : &mut Map) -> i32 {
+  let n = g(m);
+  insert(m, 42);
+  return n;
+}
+fn main() -> i32 {
+  let mut x = Map {
+    slot : 1, present : 1
+  };
+  return ok(peek, &mut x);
+}
