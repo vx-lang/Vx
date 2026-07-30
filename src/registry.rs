@@ -33,13 +33,24 @@ pub struct TypeDefinition {
     pub by_value_dependencies: Vec<TypeId>,
 }
 
-/// The signature a call site needs: the callee's GID (its stable identity) and its return type.
-/// Lets the flat-HIR lowerer resolve a call `f(..)` -- identify the callee and type the result --
-/// from the frozen registry it already holds, without a name->AST walk (#198).
+/// The signature a call site needs: the callee's GID (its stable identity), its parameter types, its
+/// return type, and its return-provenance code. Lets the flat-HIR lowerer resolve a call `f(..)` --
+/// identify the callee and type the result -- from the frozen registry it already holds, without a
+/// name->AST walk (#198); and lets the borrow checker reborrow-track and provenance-refine an
+/// *imported* call whose AST is absent (#265 step 7).
 #[derive(Debug, Clone)]
 pub struct FnSig {
     pub gid: TypeId,
+    /// Parameter types in declaration order. The borrow checker needs each parameter's reference-ness
+    /// to decide reborrow conflicts for a call resolved from the registry (no AST). Enriched for the
+    /// cross-module borrow check; also the enrichment #219's imported-call type-check flip needs.
+    pub params: Vec<crate::syntax::Type>,
     pub ret_ty: crate::syntax::Type,
+    /// The return-provenance code (`hir::provenance::encode_return_provenance`): which parameter an
+    /// imported reference return derives from — `0` none, `1..=4` parameter slot 0..3, `7` conservative
+    /// top. Read at a cross-module call site in place of the AST-only `return_provenances` side table
+    /// (empty for imports). A conservative refinement by construction, so it is never unsound (#265).
+    pub ret_prov: u8,
 }
 
 /// The generic field-type information the flat path needs to resolve a member access *through a

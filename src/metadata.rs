@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v3";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v4";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -687,6 +687,36 @@ fn read_fn_body(r: &mut Reader) -> Result<(TypeId, FnBody), String> {
     ))
 }
 
+/// Encode a `FnSig`'s payload (everything after its name/gid/receiver): the param count, each param
+/// type, the return type, then the 1-byte return-provenance code (#265 step 7). Returns `None` if any
+/// param or the return type is not encodable yet, so the caller skips the whole signature — fail-closed,
+/// matching the body codec.
+fn encode_sig_record(sig: &FnSig) -> Option<Vec<u8>> {
+    let mut rec = Writer::new();
+    rec.u64(sig.params.len() as u64);
+    for p in &sig.params {
+        write_type(&mut rec, p).ok()?;
+    }
+    write_type(&mut rec, &sig.ret_ty).ok()?;
+    rec.u8(sig.ret_prov);
+    Some(rec.buf)
+}
+
+/// Decode the payload written by [`encode_sig_record`] — params, return type, provenance code. The
+/// caller reads the name/gid/receiver that precede it.
+fn read_sig_record(
+    r: &mut Reader,
+) -> Result<(Vec<crate::syntax::Type>, crate::syntax::Type, u8), String> {
+    let n_params = r.u64()? as usize;
+    let mut params = Vec::new();
+    for _ in 0..n_params {
+        params.push(read_type(r)?);
+    }
+    let ret_ty = read_type(r)?;
+    let ret_prov = r.u8()?;
+    Ok((params, ret_ty, ret_prov))
+}
+
 /// Serialize the frozen registry's import-oracle interface to a versioned byte buffer. Covers the
 /// identity (`module_indices`), structural-layout (`layouts`), signature (`fn_sigs` / `methods`), and
 /// flat-HIR-body (`bodies`) tables. Keys are sorted so the output is byte-reproducible for the same
@@ -727,11 +757,12 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     let mut sub = Writer::new();
     let mut n = 0u64;
     for (name, sig) in fns {
-        let mut ret = Writer::new();
-        if write_type(&mut ret, &sig.ret_ty).is_ok() {
+        // Encode params + return type + provenance code into a record; include the entry only if
+        // every type is encodable (an unencodable param/return skips the whole signature).
+        if let Some(rec) = encode_sig_record(sig) {
             sub.sym(name);
             sub.typeid(&sig.gid);
-            sub.buf.extend_from_slice(&ret.buf);
+            sub.buf.extend_from_slice(&rec);
             n += 1;
         }
     }
@@ -744,12 +775,11 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     let mut sub = Writer::new();
     let mut n = 0u64;
     for ((recv, name), sig) in meths {
-        let mut ret = Writer::new();
-        if write_type(&mut ret, &sig.ret_ty).is_ok() {
+        if let Some(rec) = encode_sig_record(sig) {
             sub.typeid(recv);
             sub.sym(name);
             sub.typeid(&sig.gid);
-            sub.buf.extend_from_slice(&ret.buf);
+            sub.buf.extend_from_slice(&rec);
             n += 1;
         }
     }
@@ -776,9 +806,9 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
 }
 
 /// Rebuild a queryable [`ImmutableGlobalRegistry`] from bytes produced by
-/// [`serialize_registry_interface`]. `fn_sigs` / `methods` are left empty until their encoders land
-/// (#220). Returns `Err` on a bad magic, a format-version mismatch (stale artifact), or a truncated
-/// buffer -- never a silent misread.
+/// [`serialize_registry_interface`]. Each `fn_sigs` / `methods` entry carries its params, return type,
+/// and return-provenance code (#265 step 7). Returns `Err` on a bad magic, a format-version mismatch
+/// (stale artifact), or a truncated buffer -- never a silent misread.
 pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalRegistry, String> {
     let mut r = Reader::new(bytes);
     if r.take(4)? != VXLIB_MAGIC {
@@ -816,8 +846,16 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
     for _ in 0..n_fns {
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let ret_ty = read_type(&mut r)?;
-        fn_sigs.insert(name, FnSig { gid, ret_ty });
+        let (params, ret_ty, ret_prov) = read_sig_record(&mut r)?;
+        fn_sigs.insert(
+            name,
+            FnSig {
+                gid,
+                params,
+                ret_ty,
+                ret_prov,
+            },
+        );
     }
 
     let mut methods: FxHashMap<(TypeId, Symbol), FnSig> = FxHashMap::default();
@@ -826,8 +864,16 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         let recv = r.typeid()?;
         let name = r.sym()?;
         let gid = r.typeid()?;
-        let ret_ty = read_type(&mut r)?;
-        methods.insert((recv, name), FnSig { gid, ret_ty });
+        let (params, ret_ty, ret_prov) = read_sig_record(&mut r)?;
+        methods.insert(
+            (recv, name),
+            FnSig {
+                gid,
+                params,
+                ret_ty,
+                ret_prov,
+            },
+        );
     }
 
     let mut bodies: FxHashMap<TypeId, FnBody> = FxHashMap::default();
@@ -940,6 +986,7 @@ mod tests {
              fn origin() -> Point { return Point { x: 0i32, y: 0i32 }; }\n\
              fn scale() -> f32 { return 2.0f32; }\n\
              fn zeros() -> Tensor<f32> { return zeros(); }\n\
+             fn pick(a: &Point, b: &Point) -> &i32 { return &b.x; }\n\
              impl Point { fn sum(self: Point) -> i32 { return self.x + self.y; } }\n\
              trait Sq { fn sq(self: Self) -> f32; }\n\
              impl Sq for f32 { fn sq(self: f32) -> f32 { return self * self; } }\n",
@@ -958,7 +1005,16 @@ mod tests {
                 .expect("fn resolves after round-trip");
             assert_eq!(got.gid, sig.gid, "fn GID parity for {name}");
             assert_eq!(got.ret_ty, sig.ret_ty, "fn return type parity for {name}");
+            assert_eq!(got.params, sig.params, "fn param types parity for {name}");
+            assert_eq!(got.ret_prov, sig.ret_prov, "fn ret_prov parity for {name}");
         }
+        // The provenance code carries a real value across the boundary: `pick(a, b) -> &b.x` derives
+        // from parameter slot 1, encoded as `2` (#265 step 7).
+        assert_eq!(
+            round.resolve_fn(&Symbol::from("pick")).unwrap().ret_prov,
+            2,
+            "pick's return derives from parameter slot 1"
+        );
 
         // Same for methods, keyed by (receiver GID, method name).
         assert!(!reg.methods.is_empty());
@@ -971,6 +1027,14 @@ mod tests {
             assert_eq!(
                 got.ret_ty, sig.ret_ty,
                 "method return type parity for {name}"
+            );
+            assert_eq!(
+                got.params, sig.params,
+                "method param types parity for {name}"
+            );
+            assert_eq!(
+                got.ret_prov, sig.ret_prov,
+                "method ret_prov parity for {name}"
             );
         }
     }

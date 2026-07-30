@@ -470,7 +470,14 @@ pub fn build_frozen_registry(
                         f.name.clone(),
                         crate::registry::FnSig {
                             gid,
+                            params: f.params.iter().map(|(_, t)| t.clone()).collect(),
                             ret_ty: f.return_type.clone(),
+                            // Precompute the return-provenance code from the AST body now (it is
+                            // present here), so a downstream compile that only has this interface can
+                            // still refine the reborrow decision for a call to `f` (#265 step 7).
+                            ret_prov: crate::hir::provenance::encode_return_provenance(
+                                &crate::hir::provenance::compute_return_provenance(f),
+                            ),
                         },
                     );
                 }
@@ -503,7 +510,13 @@ pub fn build_frozen_registry(
                         ext.name.clone(),
                         crate::registry::FnSig {
                             gid,
+                            params: ext.params.iter().map(|(_, t)| t.clone()).collect(),
                             ret_ty: ext.return_type.clone(),
+                            // An `extern` is an opaque foreign symbol with no analysable body, so its
+                            // return provenance is unknown: the conservative top (any parameter).
+                            ret_prov: crate::hir::provenance::encode_return_provenance(
+                                &crate::hir::provenance::ReturnProvenance::AnyParam,
+                            ),
                         },
                     );
                 }
@@ -546,7 +559,11 @@ pub fn build_frozen_registry(
                             key,
                             crate::registry::FnSig {
                                 gid,
+                                params: m.params.iter().map(|(_, t)| t.clone()).collect(),
                                 ret_ty: m.return_type.clone(),
+                                ret_prov: crate::hir::provenance::encode_return_provenance(
+                                    &crate::hir::provenance::compute_return_provenance(m),
+                                ),
                             },
                         );
                     }
@@ -1256,6 +1273,99 @@ mod gid_stream_tests {
             hard_errors.is_empty(),
             "type check reported errors: {:?}",
             hard_errors
+        );
+    }
+
+    /// Cross-module return provenance (#265 step 7): the borrow checker refines a reborrow through an
+    /// *imported* callee using the provenance code carried in the `.vxlib` interface, not the AST
+    /// summary (empty for an import). `pick(a, b) -> &b.slot` derives from `b` only, so a caller that
+    /// keeps the result live may mutate `a`'s storage but not `b`'s — and that precision must survive
+    /// the compile boundary. Contrast with the conservative default (no interface), which assumes the
+    /// result aliases *both* arguments.
+    #[test]
+    fn borrow_check_reads_return_provenance_from_a_vxlib_interface() {
+        use crate::metadata::{deserialize_registry_interface, serialize_registry_interface};
+
+        // The "library": Map + a per-parameter-provenance reference return + a mutator. Freeze its
+        // registry and round-trip it through the interface codec, exactly as a `.vxlib` would.
+        let lib = parse_and_resolve(
+            "crate::lib",
+            "struct Map { slot: i32, present: i32 }\n\
+             fn insert(m: &mut Map, v: i32) -> void { m.slot = v; m.present = 1i32; }\n\
+             fn pick(a: &Map, b: &Map) -> &i32 { return &b.slot; }\n",
+        );
+        let lib_reg = build_frozen_registry(std::slice::from_ref(&lib)).expect("acyclic");
+        let imported = deserialize_registry_interface(&serialize_registry_interface(&lib_reg))
+            .expect("round-trip");
+        assert_eq!(
+            imported
+                .fn_sigs
+                .get(&crate::symbol::Symbol::from("pick"))
+                .unwrap()
+                .ret_prov,
+            2,
+            "pick's return derives from parameter slot 1 (b), carried across the boundary"
+        );
+
+        // The consumer calls the imported `pick`/`insert`. It is checked with the *signatures*
+        // visible (so the calls resolve) but no *bodies* — modeling what a `.vxlib` provides — so
+        // `return_provenances` misses `pick` and the checker must read the registry's `ret_prov`.
+        // (The redeclared signatures are a scaffold to feed the env; their bodies are stripped by
+        // `clone_signature` and never consulted — the provenance comes only from the merged registry.)
+        let consumer = parse_and_resolve(
+            "crate::app",
+            "struct Map { slot: i32, present: i32 }\n\
+             fn insert(m: &mut Map, v: i32) -> void { m.slot = v; m.present = 1i32; }\n\
+             fn pick(a: &Map, b: &Map) -> &i32 { return &b.slot; }\n\
+             fn main() -> i32 {\n\
+               let mut x = Map { slot: 1i32, present: 1i32 };\n\
+               let mut y = Map { slot: 2i32, present: 1i32 };\n\
+               let r = pick(&x, &y);\n\
+               insert(&mut y, 99i32);\n\
+               insert(&mut x, 99i32);\n\
+               return *r;\n\
+             }\n",
+        );
+
+        // Check `main` against a session whose registry is `reg`; count hard borrow errors. The env
+        // is the signature-only clone (bodies stripped → `pick` absent from `return_provenances`),
+        // and we deliberately do not annotate provenances — modeling a summary that lives only in the
+        // interface.
+        let run = |reg: crate::registry::ImmutableGlobalRegistry| -> usize {
+            let session = Arc::new(GlobalSession::with_registry(1, reg));
+            let env_mods = vec![consumer.clone_signature()];
+            let env = GlobalAstEnv::build(&env_mods);
+            let mut worker = LocalWorkerState::new(session);
+            let mut checker = TypeChecker::new(&env, &mut worker);
+            let mut main_fn = consumer
+                .functions
+                .iter()
+                .find(|f| f.name.as_ref() == "main")
+                .unwrap()
+                .clone();
+            checker.check_function(&mut main_fn);
+            checker
+                .errors
+                .iter()
+                .filter(|d| d.level == DiagnosticLevel::Error)
+                .count()
+        };
+
+        // With the interface merged, `r` aliases only `y` (slot 1): mutating `y` conflicts, mutating
+        // `x` is accepted — exactly one borrow error.
+        assert_eq!(
+            run(imported),
+            1,
+            "cross-module provenance: only the mutation of `y` (which `r` aliases) is rejected"
+        );
+
+        // Baseline: no interface (empty registry). The summary misses AND the registry misses, so the
+        // checker falls to the conservative `AnyParam` — `r` is assumed to alias *both* args, so both
+        // mutations are rejected. That delta is exactly what the `.vxlib` provenance buys.
+        assert_eq!(
+            run(build_frozen_registry(&[]).expect("empty registry")),
+            2,
+            "without the interface, the conservative default rejects both mutations"
         );
     }
 

@@ -2298,6 +2298,26 @@ impl<'a> TypeChecker<'a> {
                     self.resolve_callee_ref_signature(&resolved_name)
                 };
                 let return_prov = self.env.return_provenance_of(resolved_name.as_ref());
+                // Cross-module refinement (#265 step 7): an *imported* callee has no AST body, so it is
+                // absent from the `return_provenances` summary map and `return_provenance_of` falls to
+                // the conservative `AnyParam`. Its per-parameter provenance instead travels in the
+                // frozen registry's `FnSig.ret_prov` (populated by a `.vxlib` deserialize). Read it
+                // only on a genuine summary *miss*, so a local definition's summary always wins; a hit
+                // (any in-compilation function, even one that is legitimately `AnyParam`) is untouched.
+                let imported_prov: Option<u8> = if self
+                    .env
+                    .return_provenances
+                    .contains_key(resolved_name.as_ref())
+                {
+                    None
+                } else {
+                    self.worker
+                        .global
+                        .registry
+                        .fn_sigs
+                        .get(&crate::symbol::Symbol::from(resolved_name.as_ref()))
+                        .map(|sig| sig.ret_prov)
+                };
                 // (#265) The same summary lowers into the return type's inline slot-0 provenance code,
                 // which the cross-module path (step 7, `.vxlib`) will read straight from the `TypeId`
                 // with no side table. Intra-compilation the side table above still drives the persist
@@ -2379,8 +2399,16 @@ impl<'a> TypeChecker<'a> {
 
                 if !silent && callee_sig.is_some() {
                     // An argument's reborrow outlives the call iff the callee returns a reference
-                    // and its result derives from that argument's parameter slot.
-                    let persists = |i: usize| ret_is_ref && return_prov.includes(i);
+                    // and its result derives from that argument's parameter slot. For an imported
+                    // callee the summary comes from the registry's inline code (#265 step 7); for an
+                    // in-compilation callee, from the AST `return_provenances` summary.
+                    let persists = |i: usize| {
+                        ret_is_ref
+                            && match imported_prov {
+                                Some(code) => crate::hir::provenance::inline_prov_includes(code, i),
+                                None => return_prov.includes(i),
+                            }
+                    };
                     // (a) Record reborrows for bare-reference arguments (`foo(m)`); `&x` literals
                     //     were already recorded by `check_borrow_expr` during the arg loop. A
                     //     non-deriving argument still runs the conflict check but records nothing —
@@ -4172,6 +4200,10 @@ impl<'a> TypeChecker<'a> {
                 gf.return_type.clone(),
             ));
         }
+        // NOTE: resolving a callee whose *signature* is present only in the frozen registry (an
+        // import with no AST in this compile) is the #219 type-check flip — deferred to phase 2 of
+        // `cross_module_return_provenance.md`, where it is exercised. The provenance *read* below
+        // (`FnSig.ret_prov`) needs only the callee's name, not this resolution, so it lands now.
         None
     }
 
