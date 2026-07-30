@@ -290,16 +290,82 @@ Either way the borrow-checker fixtures give cheap extra coverage — `bc10`/`bc1
 [`borrow_checker_precision_analysis.md`](../borrow_checker_precision_analysis.md) exercise these
 shapes over `&Map`; the same programs over `&i32` have known-correct expected verdicts.
 
+### 6.1 What was actually chosen
+
+Resolved **per slice** rather than once, and both branches above ended up used — recorded here so it
+is not re-litigated:
+
+| Slice | Oracle | Why |
+|---|---|---|
+| Immutable (§9) — `&x`, `*r`, `&i32` params/returns | **AST differential** (option 1) | The AST path handles these once the cast resolves, so the invariant holds unmodified. |
+| Mutable (§10) — `&mut x`, `*p = v` | **Value-semantics differential** (option 2) | No AST oracle available for the mutating forms; compared against the equivalent program written without references. |
+
+So the invariant in §6 is intact for the immutable surface and consciously relaxed for the mutable
+one, with a substitute check rather than "it runs." If the AST path later grows the mutating forms,
+§10's cases should move to the stronger oracle.
+
 ## 7. Why this matters beyond the flat path
 
-`fn pick(a : &i32, b : &i32) -> &i32` is one line away from the motivating example in
+### 7.1 A flat decline is graceful intra-module and fatal cross-module
+
+This is the general property, and it is the reason the work was urgent rather than tidy.
+
+[`hir_flattening.md`](hir_flattening.md) states the keep-green strategy as: *"unsupported functions are
+simply un-lowered until their constructs land."* Graceful degradation — the flat emitter declines, the
+AST path picks it up, the subset grows by corpus over time.
+
+That has an **unstated precondition: the AST path is available as a fallback.** For an *imported* body
+it is not — the consumer has no AST for the library, only the `.vxlib`. So the identical decline
+reclassifies:
+
+| | intra-module | cross-module |
+|---|---|---|
+| flat emitter declines | AST path handles it — harmless, catch it next release | **hard error — this program cannot link** |
+
+Nothing about the decline changes. What changes is whether a fallback exists.
+
+### 7.2 The precedent, and what else it applies to
+
+[#230](https://github.com/hiraditya/Vx/issues/230) is the worked example. It closed borrows and pointer
+values *for the aggregate subset*, and that is precisely why structs link across a module boundary
+today — [#274](https://github.com/hiraditya/Vx/issues/274) notes that functions and structs "work
+end-to-end from a `.vxlib`... because the flat emitter handles them." Closing a flat decline is what
+unlocks the cross-module case for that construct.
+
+The same shape is open elsewhere:
+
+- [#273](https://github.com/hiraditya/Vx/issues/273) — scalar references (this document).
+- [#274](https://github.com/hiraditya/Vx/issues/274) — an enum value bound from a call.
+- [#233](https://github.com/hiraditya/Vx/issues/233) — data-carrying enums.
+
+Each reads as a coverage gap and is in fact a linking blocker.
+
+**Consequence for prioritisation.** "Grow the subset by corpus" gains a second driver: *what do
+imported bodies need*. The two rank differently — a construct that is rare in local code but common in
+stdlib bodies jumps the queue under the second rule and not the first. Worth applying deliberately
+rather than discovering per-issue.
+
+### 7.3 The concrete case this unblocked
+
+[#273](https://github.com/hiraditya/Vx/issues/273): a runnable cross-module return-provenance demo — a
+consumer that compiles and JITs a program the *conservative* borrow rule would reject, because the
+imported `pick`'s provenance says the result derives from `b` only.
+
+The frontend already worked end to end. With `--link-interface` the consumer type-checks and
+borrow-checks against the `.vxlib` with no library source, correctly accepting a mutable reborrow of
+the non-aliased local and rejecting the aliased one. **Only codegen of the reference pattern was
+missing** — which is what §9/§10 closed.
+
+### 7.4 And the paper example
+
+`fn pick(a : &i32, b : &i32) -> &i32` is one line from the motivating example in
 [`borrow_checker_parameter_provenance.md`](../borrow_checker_parameter_provenance.md) §1, which leads
 with `fn pick(a : &Map, b : &Map) -> &i32` — the signature rustc cannot compile without a lifetime
 annotation.
 
-That example works **because `&Map` is an aggregate and gets a slot for unrelated reasons.** The
-scalar variant — the first thing anyone will try — does not lower on either path. Worth closing before
-that claim is written up.
+That example worked **because `&Map` is an aggregate and got a slot for unrelated reasons**; the scalar
+variant — the first thing a reader will try — did not lower on either path. It does now (§9–§11), so
+the claim is safe to write up with either spelling.
 
 ## 8. Implementation sketch
 
