@@ -160,18 +160,22 @@ Phase 2 was taken as far as the flat-codegen coverage allows, in keep-green mile
   needed and nothing regresses. Proven by `borrow_check_resolves_imported_call_from_registry_only`
   (the callee exists *only* in the registry) — accepts a reborrow of the non-aliased local, rejects
   the aliased one.
+
 - **M1d — the `--link-interface` driver flag (landed).** `vxc --link-interface <f.vxlib>` deserialises
   the interface and builds the session `with_registry(merged)` for the frontend, and merges it into
   `build_flat_module`'s registry for codegen. Verified through the real driver: a consumer compiled
   with only the app + the artifact (the library source never on the command line) borrow-checks the
   cross-module provenance correctly.
+
 - **M2 — runnable, scalar import (landed).** `vxc --link-interface mathlib.vxlib app.vx --run` JITs
   `double(21) → 42`, the library never parsed — `build_flat_module` merges the interface and appends
   each referenced imported body (from `body_of`) as a signature-only `Function` to the emit list.
   Proven by `driver_link_interface_runs_a_scalar_import`.
+
 - **Clean decline (landed).** The AST codegen path cannot link an imported body (it has no AST for it),
   so under `--link-interface` a flat decline is a **clean error**, never an AST-fallback ICE. Guard:
   `driver_link_interface_declines_cleanly_outside_flat_subset`.
+
 - **M3 — runnable *reference*-provenance demo (blocked, [#273](https://github.com/hiraditya/Vx/issues/273)).**
   The remaining goal — a consumer that *compiles + runs* a program the conservative rule would reject,
   because the imported reference return derives from one specific parameter — needs the flat path to
@@ -182,10 +186,18 @@ Phase 2 was taken as far as the flat-codegen coverage allows, in keep-green mile
   non-aliased mutable reborrow, reject the aliased one) — the provenance crosses and is enforced; it
   just can't be *run* until #273 lands.
 
-### Still deferred (unchanged)
+- **`load_import` auto-detecting a sibling `.vxlib`** (landed, #219). An `import mathlib;` now resolves
+  to `mathlib.vxlib` where the source would be (`resolve_artifact_path`), and its interface bytes are
+  collected (`ModuleLoader.loaded_interfaces`) and merged into both the frontend session and the flat
+  codegen — with the module's source never parsed, and no `--link-interface` flag. `--link-interface`
+  and any number of auto-loaded imports compose (the driver merges the whole set). Proven by
+  `driver_import_auto_resolves_a_vxlib_artifact` (`import mathlib;` + a sibling `.vxlib`, source
+  deleted, JITs to 42). A `.vxlib` is preferred over `.vx` when both exist; staleness (rebuild on a
+  newer source) is a follow-up.
 
-- **`load_import` auto-detecting a sibling `.vxlib`** (so an `import` resolves to an artifact without
-  `--link-interface`), and **retiring the borrowed-AST env** for imported *structs*/fields (`FieldTy`
-  loses field types) — the deeper #219 flips.
+### Still deferred
+
+- **Retiring the borrowed-AST env for imported *structs*/fields** (`FieldTy` loses field types) — the
+  remaining #219 flip; imported struct field-access still needs the AST env.
 - **Imported-body codegen for the full language** — convergence-gated (C2/C3); the flat path links what
-  it can lower, which is why M2 (scalar) runs and M3 (references) waits on #273.
+  it can lower, which is why a scalar import runs and a reference one waits on #273.

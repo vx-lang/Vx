@@ -252,7 +252,7 @@ impl CompilerDriver {
         // Topology declarations are carried on the AST (`Program.topologies`) and indexed
         // per-compilation by `GlobalAstEnv`, so there is no process-global state to reset --
         // declarations cannot leak between compilations by construction.
-        let mut program_arr = self.load_and_expand(filename)?;
+        let (mut program_arr, auto_interfaces) = self.load_and_expand(filename)?;
 
         if self.options.action == Action::ParseOnly {
             return self.handle_parse_only(&program_arr, filename);
@@ -262,23 +262,43 @@ impl CompilerDriver {
             return self.handle_emit_interface(&mut program_arr, filename);
         }
 
+        // Interfaces to merge into the registry: `.vxlib` imports auto-loaded above, plus an explicit
+        // `--link-interface`. Both the frontend session and the flat codegen consume this set (#219).
+        let interfaces = self.all_interface_bytes(auto_interfaces)?;
+
         let (mut main_ast, mut other_asts) =
             self.prepare_semantic_analysis(&mut program_arr, filename)?;
-        self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename)?;
+        self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename, &interfaces)?;
 
         if self.options.action == Action::PrintAst {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
             return Ok(());
         }
 
-        self.run_codegen(main_ast, other_asts, filename, main_file, mlir_args)
+        self.run_codegen(
+            main_ast,
+            other_asts,
+            filename,
+            main_file,
+            mlir_args,
+            &interfaces,
+        )
     }
 
-    fn load_and_expand(&self, filename: &str) -> Result<Vec<crate::syntax::Program>, String> {
+    /// Load + macro-expand the entry module and its imports. Returns the parsed modules plus the
+    /// serialized interface bytes of any import that resolved to a precompiled `.vxlib` (#219) — those
+    /// modules are never parsed; their interfaces are merged into the registry instead.
+    fn load_and_expand(
+        &self,
+        filename: &str,
+    ) -> Result<(Vec<crate::syntax::Program>, Vec<Vec<u8>>), String> {
         let mut loader = ModuleLoader::new();
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
         }
+        let auto_interfaces: Vec<Vec<u8>> = std::mem::take(&mut loader.loaded_interfaces)
+            .into_values()
+            .collect();
         let mut program_arr = loader.into_programs();
 
         let mut global_macros = std::collections::HashMap::new();
@@ -293,7 +313,37 @@ impl CompilerDriver {
                 return Err(format!("Macro expansion failed: {}", e));
             }
         }
-        Ok(program_arr)
+        Ok((program_arr, auto_interfaces))
+    }
+
+    /// Every module interface to merge into this compile's registry: those auto-loaded from imports
+    /// resolved to a `.vxlib` (#219), plus an explicit `--link-interface` artifact if given.
+    fn all_interface_bytes(&self, auto: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
+        let mut out = auto;
+        if let Some(flag) = self.linked_interface_bytes()? {
+            out.push(flag);
+        }
+        Ok(out)
+    }
+
+    /// Build the compile session, deserializing + merging every module interface into its frozen
+    /// registry (own entries would win, but a fresh registry starts empty so imports simply fill it).
+    /// With no interfaces, an empty registry — the AST env resolves everything, as before.
+    fn session_with_interfaces(
+        interfaces: &[Vec<u8>],
+    ) -> Result<std::sync::Arc<GlobalSession>, String> {
+        if interfaces.is_empty() {
+            return Ok(std::sync::Arc::new(GlobalSession::new(1)));
+        }
+        let load = |b: &[u8]| {
+            crate::metadata::deserialize_registry_interface(b)
+                .map_err(|e| format!("Failed to load module interface: {}", e))
+        };
+        let mut reg = load(&interfaces[0])?;
+        for bytes in &interfaces[1..] {
+            reg.merge_from(load(bytes)?);
+        }
+        Ok(std::sync::Arc::new(GlobalSession::with_registry(1, reg)))
     }
 
     fn handle_parse_only(
@@ -396,18 +446,12 @@ impl CompilerDriver {
         ast: &mut crate::syntax::Program,
         other_asts: &mut std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         filename: &str,
+        interfaces: &[Vec<u8>],
     ) -> Result<(), String> {
-        // A `--link-interface` compile resolves imported calls against the merged registry (their AST
-        // is never parsed), so the session carries the deserialized interface; otherwise the driver
-        // uses an empty registry and resolves everything against the AST env (#265 step 7 / #219).
-        let global_session = match self.linked_interface_bytes()? {
-            Some(bytes) => {
-                let reg = crate::metadata::deserialize_registry_interface(&bytes)
-                    .map_err(|e| format!("Failed to load --link-interface: {}", e))?;
-                std::sync::Arc::new(GlobalSession::with_registry(1, reg))
-            }
-            None => std::sync::Arc::new(GlobalSession::new(1)),
-        };
+        // Imported calls whose module resolved to a `.vxlib` (auto-loaded or `--link-interface`) are
+        // never parsed; the session carries the merged interface registry so those calls resolve
+        // against it. With no interfaces, an empty registry — the AST env resolves everything (#219).
+        let global_session = Self::session_with_interfaces(interfaces)?;
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
@@ -522,6 +566,7 @@ impl CompilerDriver {
         filename: &str,
         main_file: &std::path::Path,
         mlir_args: &[String],
+        interfaces: &[Vec<u8>],
     ) -> Result<(), String> {
         codegen::register_vx_passes();
 
@@ -544,16 +589,10 @@ impl CompilerDriver {
         // `flat::emit_module_mlir` instead of the AST walk. It declines (falls back) for anything
         // outside the flat subset, so it never regresses against the AST oracle; `--legacy-codegen`
         // forces the AST path (#201).
-        let linked_interface = self.linked_interface_bytes()?;
         let flat_module = if self.options.legacy_codegen {
             None
         } else {
-            Self::build_flat_module(
-                &context,
-                &monomorphized_ast,
-                &module_syntaxes,
-                linked_interface.as_deref(),
-            )
+            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes, interfaces)
         };
 
         let mut module = match flat_module {
@@ -561,16 +600,16 @@ impl CompilerDriver {
                 eprintln!("[flat-codegen] emitted module via the flat path");
                 m
             }
-            None if self.options.link_interface.is_some() => {
-                // The AST codegen path cannot link a `--link-interface` import: only the flat path
-                // reads `body_of` (the imported function has no AST in this compile). So a flat
-                // decline here is a hard, clean error — never an AST-fallback ICE ("Function … not
-                // found"). The frontend type/borrow check (incl. cross-module provenance) already
-                // succeeded; only codegen is blocked, by the flat subset's current coverage.
+            None if !interfaces.is_empty() => {
+                // The AST codegen path cannot link an interface import: only the flat path reads
+                // `body_of` (the imported function has no AST in this compile). So a flat decline here
+                // is a hard, clean error — never an AST-fallback ICE ("Function … not found"). The
+                // frontend type/borrow check (incl. cross-module provenance) already succeeded; only
+                // codegen is blocked, by the flat subset's current coverage.
                 return Err(format!(
-                    "Cannot codegen '{}' with --link-interface: it uses constructs outside the \
-                     flat-codegen subset, and an imported body links only on the flat path (the AST \
-                     codegen has no AST for it). The frontend check passed; this is a flat-coverage \
+                    "Cannot codegen '{}' with a linked module interface: it uses constructs outside \
+                     the flat-codegen subset, and an imported body links only on the flat path (the \
+                     AST codegen has no AST for it). The frontend check passed; this is a flat-coverage \
                      limit — see docs/discussions/implementation_plans/cross_module_return_provenance.md.",
                     filename
                 ));
@@ -731,7 +770,7 @@ impl CompilerDriver {
         context: &'c melior::Context,
         main_ast: &crate::syntax::Program,
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
-        linked_interface: Option<&[u8]>,
+        interfaces: &[Vec<u8>],
     ) -> Option<melior::ir::Module<'c>> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
@@ -742,10 +781,11 @@ impl CompilerDriver {
             m.resolve_names(&symbol_map);
         }
         let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
-        // `--link-interface`: fold the precompiled interface's signatures + portable flat-HIR bodies
-        // into this compile's registry, so an imported call resolves (`fn_sigs`) and its body links
-        // (`body_of`) with no parse of the library (#265 step 7 / #220). Own entries win on collision.
-        if let Some(bytes) = linked_interface {
+        // Fold each precompiled interface's signatures + portable flat-HIR bodies into this compile's
+        // registry (a `.vxlib` import auto-loaded from `import`, or an explicit `--link-interface`), so
+        // an imported call resolves (`fn_sigs`) and its body links (`body_of`) with no parse of the
+        // library (#219 / #265 step 7 / #220). Own entries win on collision.
+        for bytes in interfaces {
             let imported = crate::metadata::deserialize_registry_interface(bytes).ok()?;
             registry.merge_from(imported);
         }
@@ -1131,14 +1171,14 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, None).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, &[]).is_some());
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, None).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, &[]).is_some());
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -1147,11 +1187,11 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, None).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, &[]).is_some());
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
-        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, None).is_none());
+        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, &[]).is_none());
     }
 }

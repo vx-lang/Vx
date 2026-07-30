@@ -39,6 +39,11 @@ impl std::fmt::Display for ModuleError {
 pub struct ModuleLoader {
     search_paths: Vec<PathBuf>,
     pub loaded_modules: HashMap<crate::symbol::Symbol, Program>,
+    /// Imports resolved to a precompiled `.vxlib` **interface** instead of `.vx` source (#219): the
+    /// module's source is never parsed, and its serialized module-interface bytes are collected here
+    /// (keyed by module name) for the driver to deserialize + merge into the frozen registry. This is
+    /// the automatic form of `--link-interface`.
+    pub loaded_interfaces: HashMap<crate::symbol::Symbol, Vec<u8>>,
 }
 
 impl ModuleLoader {
@@ -58,6 +63,7 @@ impl ModuleLoader {
         Self {
             search_paths,
             loaded_modules: HashMap::new(),
+            loaded_interfaces: HashMap::new(),
         }
     }
 
@@ -89,7 +95,9 @@ impl ModuleLoader {
         self.loaded_modules.into_values().collect()
     }
 
-    fn resolve_module_path(&self, path: &[crate::symbol::Symbol]) -> Option<PathBuf> {
+    /// Resolve an import path against the search paths, trying the given file extension. Shared by
+    /// `.vx` source resolution and `.vxlib` artifact resolution (#219).
+    fn resolve_with_ext(&self, path: &[crate::symbol::Symbol], ext: &str) -> Option<PathBuf> {
         for search_path in &self.search_paths {
             let mut current_path = search_path.clone();
             if !path.is_empty() && *path[0] == *"std" {
@@ -101,7 +109,7 @@ impl ModuleLoader {
                     current_path.push(component.as_ref());
                 }
             }
-            current_path.set_extension("vx");
+            current_path.set_extension(ext);
 
             if current_path.exists() {
                 return Some(current_path);
@@ -110,13 +118,38 @@ impl ModuleLoader {
         None
     }
 
+    fn resolve_module_path(&self, path: &[crate::symbol::Symbol]) -> Option<PathBuf> {
+        self.resolve_with_ext(path, "vx")
+    }
+
+    /// Resolve an import to a precompiled `.vxlib` interface artifact, if one sits where the `.vx`
+    /// source would (#219). Preferred over the source: loading it skips parsing the module entirely.
+    fn resolve_artifact_path(&self, path: &[crate::symbol::Symbol]) -> Option<PathBuf> {
+        self.resolve_with_ext(path, "vxlib")
+    }
+
     fn load_import(&mut self, path: &[crate::symbol::Symbol]) -> Result<(), ModuleError> {
         let module_name = path
             .iter()
             .map(|s| s.as_ref())
             .collect::<Vec<_>>()
             .join("::");
-        if self.loaded_modules.contains_key(&*module_name) {
+        if self.loaded_modules.contains_key(&*module_name)
+            || self.loaded_interfaces.contains_key(&*module_name)
+        {
+            return Ok(());
+        }
+
+        // Prefer a precompiled `.vxlib` interface if one sits where the source would (#219): collect
+        // its serialized module-interface bytes and skip parsing the module's source entirely — the
+        // automatic form of `--link-interface`. The artifact is self-contained (its own dependencies
+        // were baked into its registry at emit time), so no further import recursion is needed.
+        if let Some(artifact) = self.resolve_artifact_path(path) {
+            let buf = fs::read(&artifact)
+                .map_err(|e| ModuleError::IO(artifact.to_string_lossy().into_owned(), e))?;
+            let meta = crate::metadata::VxMetadata::load_from_buffer(&buf);
+            self.loaded_interfaces
+                .insert(module_name.as_str().into(), meta.interface_data.to_vec());
             return Ok(());
         }
 

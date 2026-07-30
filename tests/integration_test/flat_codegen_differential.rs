@@ -1077,6 +1077,61 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The #219 auto-load flip: `import mathlib;` resolves to a sibling `mathlib.vxlib` and merges its
+/// interface **automatically — no `--link-interface` flag** — with the library source absent. The
+/// consumer links + JITs the imported body. This is the ergonomic form of the linking above.
+#[test]
+fn driver_import_auto_resolves_a_vxlib_artifact() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_import_auto_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("mathlib.vx"),
+        dir.join("imapp.vx"),
+        dir.join("mathlib.vxlib"),
+    );
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(
+        &app,
+        "import mathlib;\nfn main() -> i32 { return double(21); }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+    // Delete the library source: the import must resolve *purely* to the artifact.
+    std::fs::remove_file(&lib).unwrap();
+
+    // No --link-interface flag; VX_STD_PATH makes `import mathlib;` resolve to `<dir>/mathlib.vxlib`.
+    let run = Command::new(vxc)
+        .args([app.to_str().unwrap(), "--run"])
+        .env("VX_STD_PATH", dir.to_str().unwrap())
+        .env("RUST_BACKTRACE", "1")
+        .output()
+        .expect("run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.contains("code: 42"),
+        "expected 42 from the auto-loaded `import`, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn flat_matches_ast_string_value_pointer_arg() {
     // A string literal in *value* position (#231): bound to a local, then passed as an `!llvm.ptr`
