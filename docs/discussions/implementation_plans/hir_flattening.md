@@ -31,6 +31,19 @@ codegen (C2) will loop over with O(1) type-stream lookups. They are distinct rep
 - **Locals:** `let x = e` binds `x` to `e`'s result register (pure SSA alias, no store) for the
   immutable subset; mutation (`Assign`) is deferred to C1.2 with `Store`/reload.
 
+> [!IMPORTANT]
+> **Register by default, demote on address-taken.** Because locals start as SSA registers
+> (`Binding::Reg`) rather than allocas, this pass is the *inverse* of LLVM's `mem2reg`: clang allocas
+> everything and promotes what is never addressed; Vx registers everything and must **demote** what
+> is. Anything needing an address — an aggregate, a value crossing a block boundary, or an
+> `&x` — has to be moved to a slot (`Binding::Slot`) rather than being refused for lacking one.
+>
+> Today that choice is a **function-global** flag (memory mode: on if the function has control flow
+> or any aggregate local), which both over-allocates and blocks `&x` on a scalar. Making it per-local
+> is the fix, and it is the load-bearing idea behind
+> [`scalar_references_flat.md`](scalar_references_flat.md) — read that before touching the
+> `Reg`/`Slot` decision.
+
 ## All-or-nothing per function (keep-green)
 
 Lowering a function is **atomic**: an unsupported construct aborts and the partial output is
