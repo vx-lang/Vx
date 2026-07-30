@@ -1369,6 +1369,86 @@ mod gid_stream_tests {
         );
     }
 
+    /// Phase 2 (#219 flip): a consumer resolves an imported call *entirely* from the merged registry —
+    /// the callee is absent from the AST env — for both the type-check (the `E2002`-site `fn_sigs`
+    /// fallback) and the borrow reborrow-tracking (`resolve_callee_ref_signature`'s registry fallback),
+    /// then applies its `ret_prov`. `pick(a, b) -> b` (scalar refs, no struct GID) derives from slot 1,
+    /// so a caller may mutably reborrow `x` but not `y` — resolved with no imported AST at all.
+    #[test]
+    fn borrow_check_resolves_imported_call_from_registry_only() {
+        use crate::metadata::{deserialize_registry_interface, serialize_registry_interface};
+
+        // Library: a scalar-reference per-parameter-provenance return. Freeze + round-trip its
+        // interface. `pick` exists ONLY here and in the resulting registry — never in the consumer.
+        let lib = parse_and_resolve(
+            "crate::lib",
+            "fn pick(a: &i32, b: &i32) -> &i32 { return b; }",
+        );
+        let lib_reg = build_frozen_registry(std::slice::from_ref(&lib)).expect("acyclic");
+        let imported = deserialize_registry_interface(&serialize_registry_interface(&lib_reg))
+            .expect("round-trip");
+        assert_eq!(
+            imported
+                .fn_sigs
+                .get(&crate::symbol::Symbol::from("pick"))
+                .unwrap()
+                .ret_prov,
+            2
+        );
+
+        // Check a consumer that calls the registry-only `pick` and mutably reborrows one local. The
+        // consumer declares only `bump`/`main` — `pick` is resolved purely from the registry.
+        let check = |mutate: &str| -> usize {
+            let src = format!(
+                "fn bump(n: &mut i32) -> void {{ }}\n\
+                 fn main() -> i32 {{\n\
+                   let mut x = 10i32;\n\
+                   let mut y = 20i32;\n\
+                   let r = pick(&x, &y);\n\
+                   bump(&mut {mutate});\n\
+                   return *r;\n\
+                 }}\n"
+            );
+            let consumer = parse_and_resolve("crate::app", &src);
+            // Sanity: the consumer genuinely does NOT define `pick` — resolution must use the registry.
+            assert!(consumer.functions.iter().all(|f| f.name.as_ref() != "pick"));
+            let mut reg = build_frozen_registry(std::slice::from_ref(&consumer)).expect("app reg");
+            reg.merge_from(
+                deserialize_registry_interface(&serialize_registry_interface(&lib_reg)).unwrap(),
+            );
+            let session = Arc::new(GlobalSession::with_registry(1, reg));
+            let env_mods = vec![consumer.clone_signature()];
+            let env = GlobalAstEnv::build(&env_mods);
+            let mut worker = LocalWorkerState::new(session);
+            let mut checker = TypeChecker::new(&env, &mut worker);
+            let mut main_fn = consumer
+                .functions
+                .iter()
+                .find(|f| f.name.as_ref() == "main")
+                .unwrap()
+                .clone();
+            checker.check_function(&mut main_fn);
+            checker
+                .errors
+                .iter()
+                .filter(|d| d.level == DiagnosticLevel::Error)
+                .count()
+        };
+
+        // `r` derives from `b` (= `y`): reborrowing `x` is fine, reborrowing `y` conflicts — all with
+        // `pick` resolved from the interface, no imported AST.
+        assert_eq!(
+            check("x"),
+            0,
+            "mutably reborrowing the non-aliased `x` is accepted"
+        );
+        assert_eq!(
+            check("y"),
+            1,
+            "mutably reborrowing the aliased `y` is rejected"
+        );
+    }
+
     /// The freeze computes real layouts (#199), not the earlier 0/0 stub: field offsets honour
     /// natural alignment, nested nominals recurse by GID, and a C-like enum is an i32 discriminant.
     #[test]

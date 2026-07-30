@@ -2837,6 +2837,47 @@ impl<'a> TypeChecker<'a> {
                         }
                         Type::Tensor(ElementType::F32, vec![], None)
                     }
+                } else if let Some(sig) = self
+                    .worker
+                    .global
+                    .registry
+                    .fn_sigs
+                    .get(&crate::symbol::Symbol::from(resolved_name.as_ref()))
+                    .cloned()
+                {
+                    // Imported callee resolved from a merged `.vxlib` interface (#219 flip, phase 2):
+                    // its AST is absent from this compile, so type-check the call against the registry
+                    // `FnSig` — arg count + per-argument assignability against `params`, result type is
+                    // `ret_ty`. The flat codegen links the body separately via `body_of`. In a normal
+                    // compile the registry is empty, so this arm is inert and the call falls to E2002.
+                    if args.len() != sig.params.len() && !silent {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3010,
+                            format!(
+                                "Function '{}' expects {} arguments, got {}",
+                                resolved_name,
+                                sig.params.len(),
+                                args.len()
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    } else {
+                        for (i, param_ty) in sig.params.iter().enumerate() {
+                            let arg_ty =
+                                self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
+                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3003,
+                                    format!(
+                                        "Type mismatch in argument {} for function '{}'. Expected {:?}, got {:?}",
+                                        i + 1, resolved_name, param_ty, arg_ty
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                                );
+                            }
+                        }
+                    }
+                    sig.ret_ty.clone()
                 } else {
                     let mono_names: Vec<crate::symbol::Symbol> = self
                         .monomorphized_functions
@@ -4200,10 +4241,20 @@ impl<'a> TypeChecker<'a> {
                 gf.return_type.clone(),
             ));
         }
-        // NOTE: resolving a callee whose *signature* is present only in the frozen registry (an
-        // import with no AST in this compile) is the #219 type-check flip — deferred to phase 2 of
-        // `cross_module_return_provenance.md`, where it is exercised. The provenance *read* below
-        // (`FnSig.ret_prov`) needs only the callee's name, not this resolution, so it lands now.
+        // An *imported* callee resolved from a merged `.vxlib` interface (#219 flip, phase 2) has no
+        // AST in this compile, so it is absent from the env tables above — but its signature lives in
+        // the frozen registry's `fn_sigs`. Resolving it there is what lets the borrow checker
+        // reborrow-track (and, via `ret_prov`, provenance-refine) a cross-module reference call.
+        // Checked last so a local definition always shadows a same-named import.
+        if let Some(sig) = self
+            .worker
+            .global
+            .registry
+            .fn_sigs
+            .get(&crate::symbol::Symbol::from(resolved_name))
+        {
+            return Some((sig.params.clone(), sig.ret_ty.clone()));
+        }
         None
     }
 

@@ -954,6 +954,129 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     );
 }
 
+/// Phase 2 (#265 step 7 / #219), runnable through the **real driver**: a consumer compiled with
+/// `--link-interface` — the library source never passed on the command line — resolves the imported
+/// call from the merged registry (frontend) and links its flat-HIR body from the artifact (codegen),
+/// then JITs to the expected value. Productionizes the stage-4 mechanism above through `vxc` itself.
+#[test]
+fn driver_link_interface_runs_a_scalar_import() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_run_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("mathlib.vx"),
+        dir.join("app.vx"),
+        dir.join("mathlib.vxlib"),
+    );
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&app, "fn main() -> i32 { return double(21); }\n").unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    // The consumer compile is given only the app + the artifact — never `mathlib.vx`.
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .env("RUST_BACKTRACE", "1")
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.contains("code: 42"),
+        "expected the JIT to return 42 from the linked import, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The AST codegen cannot link a `--link-interface` import (it has no AST for the imported function),
+/// so a consumer whose body falls outside the flat subset must fail with a **clean diagnostic** — the
+/// frontend check (incl. cross-module provenance) still passes, only codegen is blocked. Regression
+/// guard for the fixed AST-fallback ICE ("Function … not found").
+#[test]
+fn driver_link_interface_declines_cleanly_outside_flat_subset() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_decline_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("reflib.vx"),
+        dir.join("refapp.vx"),
+        dir.join("reflib.vxlib"),
+    );
+    std::fs::write(&lib, "fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n").unwrap();
+    // A reference-heavy body is outside the flat subset; the borrow check passes (mutating the
+    // non-aliased `x` is sound), but the flat codegen declines and the AST path cannot link `pick`.
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { let mut x = 10i32; let y = 20i32; let r = pick(&x, &y); x = 99i32; return *r; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        !run.status.success(),
+        "linking an import into an out-of-flat-subset program must fail, got success:\n{out}"
+    );
+    assert!(
+        out.contains("flat-coverage") || out.contains("outside the flat-codegen subset"),
+        "expected a clean flat-coverage error, got:\n{out}"
+    );
+    assert!(
+        !out.contains("Internal Error") && !out.contains("panicked"),
+        "must be a clean error, not an ICE, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn flat_matches_ast_string_value_pointer_arg() {
     // A string literal in *value* position (#231): bound to a local, then passed as an `!llvm.ptr`

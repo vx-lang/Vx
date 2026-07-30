@@ -83,6 +83,13 @@ pub struct DriverOptions {
     #[arg(long = "emit-interface", overrides_with = "action")]
     pub emit_interface: bool,
 
+    /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
+    /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
+    /// flat-HIR bodies link in the flat codegen — all without parsing the library's source (#265 step
+    /// 7 / #219). The consumer side of `--emit-interface`.
+    #[arg(long = "link-interface", value_name = "FILE")]
+    pub link_interface: Option<PathBuf>,
+
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
@@ -335,6 +342,25 @@ impl CompilerDriver {
         Ok(())
     }
 
+    /// Read the `--link-interface` artifact and return its serialized module-interface bytes (the
+    /// `interface_data` section of the `.vxlib`), or `None` when the flag is absent.
+    /// [`crate::metadata::deserialize_registry_interface`] turns these back into a queryable registry
+    /// that a downstream compile merges — resolving imported symbols with no parse of the library.
+    fn linked_interface_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        let Some(path) = &self.options.link_interface else {
+            return Ok(None);
+        };
+        let buf = std::fs::read(path).map_err(|e| {
+            format!(
+                "Failed to read --link-interface '{}': {}",
+                path.display(),
+                e
+            )
+        })?;
+        let meta = crate::metadata::VxMetadata::load_from_buffer(&buf);
+        Ok(Some(meta.interface_data.to_vec()))
+    }
+
     fn prepare_semantic_analysis(
         &self,
         program_arr: &mut Vec<crate::syntax::Program>,
@@ -371,7 +397,17 @@ impl CompilerDriver {
         other_asts: &mut std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         filename: &str,
     ) -> Result<(), String> {
-        let global_session = std::sync::Arc::new(GlobalSession::new(1));
+        // A `--link-interface` compile resolves imported calls against the merged registry (their AST
+        // is never parsed), so the session carries the deserialized interface; otherwise the driver
+        // uses an empty registry and resolves everything against the AST env (#265 step 7 / #219).
+        let global_session = match self.linked_interface_bytes()? {
+            Some(bytes) => {
+                let reg = crate::metadata::deserialize_registry_interface(&bytes)
+                    .map_err(|e| format!("Failed to load --link-interface: {}", e))?;
+                std::sync::Arc::new(GlobalSession::with_registry(1, reg))
+            }
+            None => std::sync::Arc::new(GlobalSession::new(1)),
+        };
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
@@ -508,16 +544,36 @@ impl CompilerDriver {
         // `flat::emit_module_mlir` instead of the AST walk. It declines (falls back) for anything
         // outside the flat subset, so it never regresses against the AST oracle; `--legacy-codegen`
         // forces the AST path (#201).
+        let linked_interface = self.linked_interface_bytes()?;
         let flat_module = if self.options.legacy_codegen {
             None
         } else {
-            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes)
+            Self::build_flat_module(
+                &context,
+                &monomorphized_ast,
+                &module_syntaxes,
+                linked_interface.as_deref(),
+            )
         };
 
         let mut module = match flat_module {
             Some(m) => {
                 eprintln!("[flat-codegen] emitted module via the flat path");
                 m
+            }
+            None if self.options.link_interface.is_some() => {
+                // The AST codegen path cannot link a `--link-interface` import: only the flat path
+                // reads `body_of` (the imported function has no AST in this compile). So a flat
+                // decline here is a hard, clean error — never an AST-fallback ICE ("Function … not
+                // found"). The frontend type/borrow check (incl. cross-module provenance) already
+                // succeeded; only codegen is blocked, by the flat subset's current coverage.
+                return Err(format!(
+                    "Cannot codegen '{}' with --link-interface: it uses constructs outside the \
+                     flat-codegen subset, and an imported body links only on the flat path (the AST \
+                     codegen has no AST for it). The frontend check passed; this is a flat-coverage \
+                     limit — see docs/discussions/implementation_plans/cross_module_return_provenance.md.",
+                    filename
+                ));
             }
             None => {
                 if !self.options.legacy_codegen {
@@ -675,6 +731,7 @@ impl CompilerDriver {
         context: &'c melior::Context,
         main_ast: &crate::syntax::Program,
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
+        linked_interface: Option<&[u8]>,
     ) -> Option<melior::ir::Module<'c>> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
@@ -684,7 +741,14 @@ impl CompilerDriver {
         for m in &mut mods {
             m.resolve_names(&symbol_map);
         }
-        let registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
+        let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
+        // `--link-interface`: fold the precompiled interface's signatures + portable flat-HIR bodies
+        // into this compile's registry, so an imported call resolves (`fn_sigs`) and its body links
+        // (`body_of`) with no parse of the library (#265 step 7 / #220). Own entries win on collision.
+        if let Some(bytes) = linked_interface {
+            let imported = crate::metadata::deserialize_registry_interface(bytes).ok()?;
+            registry.merge_from(imported);
+        }
         let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
 
         // Re-run the type checker against the *frozen registry* purely to annotate each `StructInit`
@@ -781,7 +845,52 @@ impl CompilerDriver {
             }
             entries.push((f.clone(), worker));
         }
-        let funcs: Vec<(&crate::syntax::Function, &[_], &[_])> = entries
+        // Append any *imported* function bodies the lowering referenced but did not lower locally
+        // (absent from `fn_map` — their AST was never parsed). Their portable flat-HIR body comes from
+        // the merged `.vxlib` interface via `body_of`; give each a signature-only `Function` to emit
+        // against (the emitter reads only its `params`/`ret_ty` header). An import with no portable
+        // body (an extern, or a generic) is skipped here — an extern is declared `private` at emit and
+        // linked by the JIT (#265 step 7 / #220).
+        let mut imported_entries: Vec<(
+            crate::syntax::Function,
+            Vec<crate::hir::bytecode::HirInstruction>,
+            Vec<crate::gid::TypeId>,
+        )> = Vec::new();
+        for name in &lowered_names {
+            if fn_map.contains_key(name) {
+                continue;
+            }
+            let Some(sig) = session.registry.fn_sigs.get(name) else {
+                continue;
+            };
+            let Some(body) = session.registry.body_of(sig.gid) else {
+                continue;
+            };
+            let synth = crate::syntax::Function {
+                name: body.name.clone(),
+                generics: vec![],
+                params: body
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        (
+                            crate::symbol::Symbol::from(format!("a{i}").as_str()),
+                            t.clone(),
+                        )
+                    })
+                    .collect(),
+                topology: crate::syntax::Topology::CPU,
+                return_type: body.ret_ty.clone(),
+                requires: vec![],
+                ensures: vec![],
+                where_transfers: vec![],
+                body: vec![],
+                doc_comment: None,
+            };
+            imported_entries.push((synth, body.hir.clone(), body.types.clone()));
+        }
+        let mut funcs: Vec<(&crate::syntax::Function, &[_], &[_])> = entries
             .iter()
             .map(|(f, w)| {
                 (
@@ -791,6 +900,11 @@ impl CompilerDriver {
                 )
             })
             .collect();
+        funcs.extend(
+            imported_entries
+                .iter()
+                .map(|(f, hir, types)| (f, hir.as_slice(), types.as_slice())),
+        );
         let tensor_types: Vec<_> = entries
             .iter()
             .flat_map(|(_, w)| w.local_tensor_types.iter().cloned())
@@ -1017,14 +1131,14 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, None).is_some());
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, None).is_some());
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -1033,11 +1147,11 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, None).is_some());
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
-        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty).is_none());
+        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, None).is_none());
     }
 }
