@@ -88,6 +88,50 @@ The `Expr::Borrow` arm stops being a decline and becomes a lookup: the local is 
 the time lowering reaches the borrow, so `&x` yields the slot's register with `LoweredTy::Ptr` —
 exactly what the aggregate arm does today, minus the aggregate-specific reasoning.
 
+### 3.4 Parallel-architecture safety
+
+This was checked rather than assumed, because "add an analysis pass" is exactly the kind of change
+that can quietly acquire a cross-function dependency and need a new phase boundary.
+
+**The analysis is body-local, and that is a property of the language, not a coincidence.** The rule in
+§3.2 is only complete if `&x` is the *sole* way a local's address is taken. It is: Vx does not
+auto-borrow, so passing a scalar local to a `&i32` parameter is a type error, not an implicit
+address-of.
+
+```console
+$ vxc ab1.vx --action emit-mlir      # fn takes(r : &i32); let x = 5; takes(x)
+Error[E3003]: Type mismatch in argument 1 for function 'takes'.
+  Expected Borrow { inner: Scalar(I32), .. }, got Scalar(I32)
+```
+
+Had scalars auto-borrowed, `address_taken` would need the *callee's* signature at every call site and
+the analysis would stop being body-local. It does not, so the syntactic rule stands.
+
+**It satisfies Phase 3's isolation invariants trivially.** `verify_phase_3_isolation`
+(`src/parallel_architecture_verifier.rs`) asserts exactly two things per worker — every worker's
+`Arc` points at the same frozen `GlobalSession` (the aliasing proof), and local deferred type indices
+stay inside the worker's arena. The pass reads one function body and writes a `HashSet<Symbol>`
+consumed by that same function's lowering: no new global, no `Arc`, no atomic, nothing that could make
+a worker diverge from the frozen session.
+
+**No fixpoint, so no new phase boundary.** This is the part worth contrasting. Return-provenance
+(`0a42af51`, #243) is *genuinely* inter-procedural — it needs an SCC fixpoint over the call graph —
+which is why it had to be computed and **frozen into the env** as its own step. Address-taken needs
+none of that: one walk, monotone, per function. It runs inside Phase 3 with no additional barrier.
+
+Two consequences worth recording:
+
+- §4's typed load/store uses `type_idx` into the per-worker `local_type_stream`, which is already the
+  deferred-interning mechanism — so it *inherits* the arena-bounding invariant rather than
+  side-stepping it.
+- The per-local rule is **narrower** than what it replaces. Function-global memory mode makes the
+  `Reg`/`Slot` choice depend on a whole-function property (does this function have control flow);
+  per-local makes it depend on a per-symbol property. Strictly less coupling, same isolation.
+
+The one place this could come back is §5. If projections ever needed cross-function reasoning, places
+would acquire the same shape as return-provenance and want the same freeze-point treatment. That is a
+second, independent reason to keep §5 out of scope.
+
 ## 4. Keep `Ptr` opaque; type the load and store instead
 
 The obvious move is `LoweredTy::Ptr(Box<LoweredTy>)` so a deref knows what to load. **Don't.**
