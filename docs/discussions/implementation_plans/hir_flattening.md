@@ -51,6 +51,20 @@ discarded, so `local_hir_stream` is *either a complete, correct lowering or empt
 wrong. This lets the corpus grow safely: unsupported functions are simply un-lowered until their
 constructs land, and C2 differential testing (later) can trust every non-empty stream.
 
+> [!WARNING]
+> **"Simply un-lowered" holds only *intra-module*.** Graceful degradation has an unstated
+> precondition — that the AST path is available as a fallback. For an **imported** body it is not: the
+> consumer has the `.vxlib` and no library AST, so the identical decline stops being "catch it next
+> release" and becomes *this program cannot link*.
+>
+> Nothing about the decline changes; only whether a fallback exists. The practical consequence is that
+> subset growth has a **second** driver alongside "by corpus" — *what do imported bodies need* — and
+> the two rank differently. A construct that is rare in local code but common in stdlib bodies jumps
+> the queue under one rule and not the other.
+>
+> Worked precedent and the currently-open cases (#273, #274, #233) are in
+> [`scalar_references_flat.md`](scalar_references_flat.md) §7.1–7.2.
+
 ## Subsets (grown by corpus)
 
 - **C1.1 — scalar core.** Params (scalar), integer/float/bool literals (`Const`), locals
