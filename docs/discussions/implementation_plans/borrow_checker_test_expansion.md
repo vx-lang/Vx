@@ -107,11 +107,19 @@ ______________________________________________________________________
 
 ## Documentation Updates
 
-### `docs/lang/borrow_checker_mapping.md`
+### `docs/lang/borrow_checker_mapping.md` *(retired)*
 
 - **§5 Split Borrows**: Path-based overlap analysis, disjoint fields example.
 - **§6 Non-Lexical Lifetimes**: Partial NLL via liveness analysis, with
   `[!IMPORTANT]` note on the identifier-access limitation.
+
+> [!NOTE]
+> That file has since been retired. §5 and §6 duplicated
+> [`borrow_checker_architecture.md`](../borrow_checker_architecture.md), which now owns both and
+> supersedes §6 — loans release at *last use*, not only at lexical scope exit, so the
+> "use explicit scopes" workaround the old §6 recommended is no longer needed. Its one durable
+> part, the Rust-FFI opaque-pointer ownership contract, moved to
+> [`docs/lang/abi.md` §2.1](../../lang/abi.md).
 
 ### `docs/lang/types.md`
 

@@ -150,9 +150,32 @@ pin this invariant.
 
 ______________________________________________________________________
 
+## 3. Out of scope: the Rust stdlib FFI boundary
+
+Neither half of the borrow checker reaches across the C ABI into the Rust core
+(`stdlib/rust_core`, built as `libvx_std_core.a`). Non-scalar values cross that boundary as
+opaque `*mut c_void`, so ownership there is a **hand-maintained convention**, not a checked
+property: Vx cannot observe a Rust `Drop`, and Rust cannot observe a Vx scope exit.
+
+That convention — `Box::into_raw` in constructors, plain references in accessors,
+`Box::from_raw` exactly once in destructors — is specified in
+**[`docs/lang/abi.md` §2.1 "Opaque-pointer ownership lifecycle"](../lang/abi.md)**, and generated
+for the collections surface by `instantiate_vec_ffi!` / `instantiate_hash_map_ffi!` in
+[`stdlib/rust_core/src/ffi/macros.rs`](../../stdlib/rust_core/src/ffi/macros.rs).
+
+Read it before adding a stdlib binding: a violation there is a use-after-free or a leak that
+*neither* language's checker will catch, and it will not show up in any of the borrow-checker
+fixtures.
+
+> [!NOTE]
+> This is unrelated to `transfer(x, Memory::X)`. That is a compiler-level memory-space move
+> lowered to the `vx.transfer` op (`memref.alloc` + `memref.copy`), not an FFI call — see
+> [`docs/topology_representation.md`](../topology_representation.md).
+
 ## Summary
 
 If you are modifying the Borrow Checker, always remember this split:
 
 - **Fixing rules about borrowing a variable twice?** Look in `src/sema.rs` (`active_borrows`).
 - **Fixing rules about passing references to functions or structs?** Look in `src/borrow.rs` (`verify_subtyping_bounds`).
+- **Adding a Rust stdlib FFI shim?** Not the borrow checker's job — follow the ownership contract in [`docs/lang/abi.md` §2.1](../lang/abi.md).

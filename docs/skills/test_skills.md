@@ -313,6 +313,11 @@ Example: We discovered that `transfer()` does **not** consume the source
 variable (contrary to what `borrow_checker_mapping.md` implied). The test
 `linear_transfer_reuse.vx` proves that `transfer` uses copy semantics.
 
+That doc has since been retired — it described `transfer` as lowering to a
+consuming Rust FFI call, when it actually lowers to the `vx.transfer` op
+(`memref.alloc` + `memref.copy`). The lesson stands: the test outlived the
+prose by two years of drift.
+
 **Action**: Update the docs AND add the test.
 
 ### Pattern: "The algorithm exists but is unreachable"

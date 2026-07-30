@@ -54,6 +54,67 @@ A Vx type maps to its natural C counterpart:
 Because Vx follows the platform convention, calling a C library function or
 being called from C requires no shims as long as the declared signature matches.
 
+### 2.1 Opaque-pointer ownership lifecycle (the Rust core contract)
+
+Vx's standard library is backed by a Rust crate (`stdlib/rust_core`, built as
+`libvx_std_core.a`) exposing ~100 `extern "C"` entry points. Rust generics cannot
+cross a C ABI, so every non-scalar type crosses as an **opaque `*mut c_void`**,
+and ownership is transferred explicitly. This is a normative contract: every new
+stdlib FFI binding must follow it, because the Vx side has no way to observe a
+Rust `Drop` and the Rust side has no way to observe a Vx scope exit.
+
+**Constructors** allocate on the Rust heap and release ownership to Vx:
+
+```rust
+#[no_mangle]
+pub extern "C" fn vx_vec_new_i32() -> *mut c_void {
+    Box::into_raw(Box::new(Vec::<i32>::new())) as *mut c_void
+}
+```
+
+**Borrowing operations** reconstruct a reference and must *not* take ownership —
+no `Box::from_raw`, or the buffer is freed while Vx still holds the pointer:
+
+```rust
+#[no_mangle]
+pub extern "C" fn vx_vec_len_i32(ptr: *mut c_void) -> usize {
+    if ptr.is_null() { return 0; }
+    let v = unsafe { &*(ptr as *const Vec<i32>) };
+    v.len()
+}
+```
+
+**Destructors** reclaim ownership exactly once; Rust's `Drop` then runs:
+
+```rust
+#[no_mangle]
+pub extern "C" fn vx_vec_drop_i32(ptr: *mut c_void) {
+    if ptr.is_null() { return; }
+    drop(unsafe { Box::from_raw(ptr as *mut Vec<i32>) });
+}
+```
+
+Three rules follow, and violating any of them is a use-after-free or a leak that
+neither language's checker will catch:
+
+1. **`Box::from_raw` exactly once per `Box::into_raw`.** A borrowing accessor that
+   uses `from_raw` frees the value at the end of the call.
+1. **Null-check every pointer parameter.** Vx may pass a null for an
+   uninitialised handle; Rust must not dereference it.
+1. **Monomorphise per concrete type.** Symbol names carry the instantiation
+   (`vx_vec_push_i32`, `vx_hash_map_insert_i32_f32`), because C has no generics.
+
+The collections surface is generated from these rules by the
+`instantiate_vec_ffi!` / `instantiate_hash_map_ffi!` macros in
+[`stdlib/rust_core/src/ffi/macros.rs`](../../stdlib/rust_core/src/ffi/macros.rs) —
+prefer extending a macro over hand-writing a shim.
+
+> [!NOTE]
+> This lifecycle governs the **stdlib FFI boundary only**. It is unrelated to
+> `transfer(x, Memory::X)`, which is a compiler-level memory-space move lowered to
+> the `vx.transfer` op (`memref.alloc` + `memref.copy`), not an FFI call. See
+> [`docs/topology_representation.md`](../topology_representation.md).
+
 ## 3. `spawn on(...)` kernel dispatch ABI
 
 `spawn on(Topology::...)` outlines its body into a kernel function. For CPU
