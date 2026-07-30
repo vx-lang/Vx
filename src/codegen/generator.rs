@@ -1489,7 +1489,19 @@ impl<'c> MeliorGenerator<'c> {
 
     pub fn infer_ast_type(&self, expr: &Expr) -> Option<syntax::Type> {
         match expr {
-            Expr::Identifier(id) => self.ast_env.get(&id.name).cloned(),
+            Expr::Identifier(id) => self.ast_env.get(&id.name).cloned().or_else(|| {
+                // A bare function name used as a *value* (`let f = probe`) is a function pointer;
+                // recover its signature from the function registry so a later indirect call `f(..)`
+                // can build the callee type (#268). The frontend already types this via `self.lookup`;
+                // this is the codegen counterpart, keeping `ast_env` populated so `lower/expr.rs`'s
+                // indirect-call path does not hit "Missing signature for function pointer".
+                self.syntax_functions.get(&id.name).map(|f| {
+                    syntax::Type::Function(
+                        f.params.iter().map(|(_, t)| t.clone()).collect(),
+                        Box::new(f.return_type.clone()),
+                    )
+                })
+            }),
             Expr::MemberAccess(ma) => {
                 let mut base_ty = self.infer_ast_type(&ma.base)?;
                 if let syntax::Type::Borrow { inner, .. } = base_ty {

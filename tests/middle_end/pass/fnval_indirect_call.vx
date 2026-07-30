@@ -1,0 +1,19 @@
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: module
+// Regression for #270: assigning a function to a variable and calling it indirectly used to ICE in
+// codegen ("Missing signature for function pointer 'f'") because `infer_ast_type` did not recover a
+// bare function name's signature from the function registry, so `ast_env` had no type for `f`. It is
+// a *sound* program — no mutation — so the borrow checker does not mask the ICE. JITs to 7.
+struct Map {
+  slot : i32, present : i32
+}
+fn probe(q : &Map) -> &i32 {
+  return &q.slot;
+}
+fn main() -> i32 {
+  let x = Map {
+    slot : 7, present : 1
+  };
+  let f = probe;
+  return *f(&x);
+}
