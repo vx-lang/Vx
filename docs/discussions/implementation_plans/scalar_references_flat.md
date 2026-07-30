@@ -148,14 +148,123 @@ to "is this a reference or pointer type," with the aggregate clause **deleted** 
 
 **Tracked by [#275](https://github.com/hiraditya/Vx/issues/275).**
 
-The principled long-term representation is MIR-style `Place = local + projection path`, which would
-subsume `&outer.inner`, reborrows, and nested references under one model. It also lines up with what
-the borrow checker already tracks — `BorrowRecord` stores `path: Vec<String>`, which is a projection
-path under another name (see [`borrow_checker_architecture.md`](../borrow_checker_architecture.md)).
+### 5.1 What a "place" is
 
-This is deliberately **out of scope**. §3 and §4 unblock `&i32` without it. Recorded here so the
-choice in §4 (typed instructions rather than typed pointers) is understood as *compatible* with a
-later move to places, not as a step away from it.
+Today a reference is a **pointer value**: an `!llvm.ptr` sitting in an SSA register, which you load
+from and store through. A *place* is the other option — a **symbolic description of a location** that
+has not been turned into an address yet:
+
+```
+Pointer (today):  r = <some register holding a machine address>
+Place:            r = (local `x`, projections [ .field(0), .index(7) ])
+```
+
+The difference is *when the address gets materialized*. With pointers, the moment you write `&x` an
+address must exist, so `x` must live in memory. With places, `&x` only records **which location you
+mean**; an actual address is computed at the point of use — and often never, because the use can read
+the local directly.
+
+### 5.2 Example A — the alloca that should not exist
+
+This is the motivating case, and it is one §3 cannot fix:
+
+```rust
+fn f() -> i32 {
+  let x = 5;
+  let r = &x;
+  return *r;
+}
+```
+
+Under §3, `x` is in `address_taken`, so it is demoted to a `Slot`:
+
+```
+alloca x            ; a stack slot
+store 5 -> x
+%p = <x's slot>     ; &x
+%v = load %p        ; *r
+ret %v
+```
+
+Under places, `r` is just `(x, [])` — no address is ever needed, because `*r` resolves to "read local
+`x`", and `x` stays a register:
+
+```
+%c = const 5        ; x
+ret %c
+```
+
+The address is taken syntactically but never *materialized*. §3 demotes on **syntactic** address-taken
+because it cannot tell the difference; places let you demote only on **actual materialization** — when
+the reference escapes into a return value, a struct field, or an opaque callee. §3 is the conservative
+approximation of that rule.
+
+### 5.3 Example B — nested projections
+
+```rust
+struct Inner { v : i32 }
+struct Outer { inner : Inner }
+
+let mut o = Outer { inner : Inner { v : 1 } };
+let r = &mut o.inner.v;
+*r = 42;
+```
+
+With pointers, each hop materializes an intermediate address:
+
+```
+%a = gep o, 0       ; &o.inner        <- an intermediate pointer value
+%b = gep %a, 0      ; &o.inner.v      <- another one
+store 42 -> %b
+```
+
+With places, `r` is `(o, [.field(inner), .field(v)])` and the whole path resolves at the store. The
+intermediate pointers never become IR values, so nothing downstream has to prove they were only used
+to reach the final one.
+
+### 5.4 Example C — disjointness the borrow checker already proved
+
+```rust
+fn update(p : &mut Point) {
+  let bx = &mut p.x;
+  let by = &mut p.y;   // legal: x and y are disjoint fields
+  *bx = 1;
+  *by = 2;
+}
+```
+
+The borrow checker accepts this via path-overlap analysis — `BorrowRecord` stores
+`path: Vec<String>`, so it knows `["x"]` and `["y"]` cannot alias (see
+[`borrow_checker_architecture.md`](../borrow_checker_architecture.md)).
+
+**Codegen then throws that away.** Both borrows become opaque `!llvm.ptr` values, and LLVM has to
+*re-derive* the disjointness from GEP offsets — work the frontend already did, with a proof the
+frontend already had. With places, `(p, [.field(x)])` and `(p, [.field(y)])` carry it into the IR.
+
+That is also why places are the natural fit rather than an arbitrary choice: `BorrowRecord.path` **is
+a projection path**. The two layers are computing the same structure in different representations and
+never reconciling them.
+
+### 5.5 Why it is still deferred
+
+Two concrete costs, not just effort:
+
+- **Paths are variable-length; the instruction is fixed-width.** `HirInstruction` is
+  `{ opcode, operand1, operand2, type_idx, imm }` (see [`hir_flattening.md`](hir_flattening.md)).
+  A place needs a base plus an arbitrary-length projection list, which does not fit — it would need a
+  side table or an interning scheme for paths, and that is a real addition to the flat representation.
+- **§3 and §4 already unblock `&i32`.** The gain from places is *precision* (Example A's missing
+  alloca) and *information preservation* (Example C), not capability.
+
+### 5.6 Why §4 is compatible with this
+
+If `LoweredTy::Ptr` carried its pointee (`Ptr<T>`), places would arrive as a *second, parallel* way to
+say "reference" — two representations, two sets of load/store forms. Because §4 keeps `Ptr` opaque and
+puts the type on the **instruction**, a place lowers to the *same* typed `Load`/`Store`; only the
+operand changes from "a register holding an address" to "a place descriptor." The instruction set does
+not fork.
+
+That is what "compatible, not a step away" means concretely.
 
 ## 6. The oracle question
 
