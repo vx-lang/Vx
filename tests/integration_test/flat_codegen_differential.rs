@@ -411,6 +411,35 @@ fn flat_matches_ast_if_else() {
     );
 }
 
+/// #230 step 2: the per-local slot rule. A control-flow function no longer slots *every* local — a
+/// non-mutated local stays a dominating SSA register. Correctness is the flat-vs-AST parity; the
+/// memory-traffic win is asserted directly on the flat MLIR (no `memref.alloca` for the non-mutated
+/// locals `k`/`c`, which the old function-global memory mode would have slotted).
+#[test]
+fn flat_registers_non_mutated_locals_under_control_flow() {
+    let src =
+        "fn main() -> i32 { let k = 40; let c = 1; if c > 0 { return k + 2; } return k + 1; }";
+    assert_parity(src, 42);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        !mlir.contains("memref.alloca"),
+        "non-mutated locals should be SSA registers, not memref slots:\n{mlir}"
+    );
+}
+
+/// #230 step 2, the other half: a *mutated* local under control flow still gets its slot (its value
+/// must cross the branch merge), so the optimization does not over-reach. Parity with the AST oracle.
+#[test]
+fn flat_still_slots_a_mutated_local_under_control_flow() {
+    let src = "fn main() -> i32 { let mut x = 5; if x < 10 { x = x + 100; } return x; }";
+    assert_parity(src, 105);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        mlir.contains("memref.alloca"),
+        "the mutated `x` must live in a slot to cross the merge:\n{mlir}"
+    );
+}
+
 #[test]
 fn flat_matches_ast_if_expression() {
     // A value-position `if` (`let m: i32 = if a > b { a } else { b }`, #201): lowered to blocks + a

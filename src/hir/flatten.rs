@@ -242,6 +242,17 @@ struct Lowerer<'r> {
     /// the address-taken few. Computed once as a syntactic pre-pass (Vx has no auto-borrow, so `&x` is
     /// the sole way a scalar local's address escapes — see `scalar_references_flat.md` §3). (#230)
     address_taken: HashSet<Symbol>,
+    /// Locals reassigned after their `let` (`x = ..`, `x += ..`). A *scalar* such local needs a memory
+    /// slot to carry its new value across a block boundary — but **only when the function has control
+    /// flow**; a straight-line reassignment stays a pure-SSA rebind. This is the per-local half of the
+    /// step-2 refinement (§3.2): a non-mutated scalar keeps a register even under control flow, where
+    /// the old function-global rule slotted *every* local. (#230)
+    mutated: HashSet<Symbol>,
+    /// Whether the function has control flow (`if`/`loop`/`for`/`match`/logical op) — the precondition
+    /// for the mutated-scalar slot rule above. Distinct from `memory` (which also turns on for an
+    /// aggregate param / struct construction to drive the block model): a mutated scalar in a
+    /// *straight-line* struct-constructing function does not need a slot. (#230)
+    has_control_flow: bool,
 }
 
 impl<'r> Lowerer<'r> {
@@ -260,6 +271,8 @@ impl<'r> Lowerer<'r> {
             agg_layouts: Vec::new(),
             ret_ty: None,
             address_taken: HashSet::new(),
+            mutated: HashSet::new(),
+            has_control_flow: false,
         }
     }
 
@@ -396,18 +409,26 @@ impl<'r> Lowerer<'r> {
     }
 
     fn bind_local(&mut self, name: Symbol, v: Val) {
-        // An aggregate must live in an addressable slot so its fields can be `getelementptr`'d, even in
-        // a straight-line function (e.g. binding a struct-returning call result, #215) — so it always
-        // takes the memory path, not just when `self.memory` is set for control flow.
-        //
-        // A *scalar* whose address is taken (`&x`) is demoted to a slot for the same reason: `&x` needs
-        // a pointer to yield. This is the per-local demotion — additive over the function-global memory
-        // flag, so a straight-line function with no `&scalar` is unchanged. Tensors (memrefs) and
-        // pointer values are never slotted this way: a tensor is already a reference and borrowing it is
-        // transparent, and a ref-to-ref (`&r`) is out of scope (projections, §5). (#230)
         let address_taken_scalar =
             matches!(v.ty, LoweredTy::Scalar(_)) && self.address_taken.contains(&name);
-        if self.memory || matches!(v.ty, LoweredTy::Aggregate(_)) || address_taken_scalar {
+        // The per-local slot decision (§3.2, step 2), replacing the function-global "memory mode slots
+        // *every* local":
+        //   - an aggregate always needs a slot (its fields must be `getelementptr`'d, #215);
+        //   - a scalar needs one only if its address is taken (`&x`, §9) or it is reassigned in a
+        //     control-flow function (the new value must cross a block boundary). A non-mutated scalar —
+        //     even under control flow — stays a dominating SSA register, strictly less memory traffic;
+        //   - a pointer / (unexpected) tensor local keeps the coarser function-global model.
+        // Safety: a register only ever holds a *single-definition* local's value (the right one), and
+        // any read outside that definition's dominance is rejected by the MLIR verifier — so the flat
+        // path declines to the AST oracle rather than ever silently miscompiling.
+        let needs_slot = match &v.ty {
+            LoweredTy::Aggregate(_) => true,
+            LoweredTy::Scalar(_) => {
+                address_taken_scalar || (self.has_control_flow && self.mutated.contains(&name))
+            }
+            _ => self.memory,
+        };
+        if needs_slot {
             // An address-taken scalar needs an `llvm.alloca` (a real `!llvm.ptr`) so `&x` yields a
             // pointer, not a rank-0 `memref` (which cannot be `getelementptr`'d). Signalled to codegen
             // by `imm = 1` on the `Alloca`; a memory-mode-but-never-borrowed scalar keeps the memref
@@ -2321,20 +2342,22 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
 
 fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Option<Lowerer<'r>> {
     let mut lw = Lowerer::new(registry);
-    // Address-taken pre-pass (#230): a syntactic walk over the body collecting every local whose
-    // address is taken (`&x`), so `bind_local` can demote those (and only those) scalars to slots.
-    // Must run before params bind, since a param can be address-taken too.
-    lw.address_taken = body_address_taken(&func.body);
-    // Control flow forces the memory model so locals survive across basic blocks (like the AST
-    // codegen); an aggregate parameter also forces it, since an aggregate must live in an
-    // addressable slot. Straight-line scalar functions stay pure-SSA.
+    // Local-usage pre-pass (#230): one syntactic walk collecting the locals whose address is taken
+    // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
+    // Must run before params bind, since a param can be address-taken or reassigned too.
+    let uses = analyze_local_uses(&func.body);
+    lw.address_taken = uses.address_taken;
+    lw.mutated = uses.mutated;
+    // Control flow drives the block model (entry block + branch skeletons) and is the precondition for
+    // slotting a *mutated* scalar (it must cross a block boundary). An aggregate param or a struct
+    // construction also turns on the memory model (an aggregate must live in an addressable slot), but
+    // *not* the per-scalar rule — a mutated scalar in a straight-line function stays a pure-SSA rebind.
+    lw.has_control_flow = body_has_control_flow(&func.body);
     let has_aggregate_param = func
         .params
         .iter()
         .any(|(_, ty)| matches!(lowered_ty(ty, registry), Some(LoweredTy::Aggregate(_))));
-    lw.memory = body_has_control_flow(&func.body)
-        || has_aggregate_param
-        || body_constructs_struct(&func.body);
+    lw.memory = lw.has_control_flow || has_aggregate_param || body_constructs_struct(&func.body);
     lw.ret_ty = lw.lower_ty_synth(&func.return_type);
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
@@ -2467,113 +2490,128 @@ fn body_constructs_struct(stmts: &[Statement]) -> bool {
         .any(|s| matches!(s, Statement::LetDecl(l) if matches!(l.expr, Expr::StructInit(_))))
 }
 
-/// Collect the locals whose address is taken (`&x`) anywhere in a body — the address-taken pre-pass
-/// that drives per-local slot demotion (#230). A purely *syntactic* walk suffices because Vx has no
-/// auto-borrow: a scalar local's address escapes only through an explicit `&x`, never implicitly at a
-/// call site (passing a scalar where `&i32` is expected is a type error, not an address-of). Missing a
-/// form is safe — the borrow then declines to the AST oracle rather than miscompiling — but the walk
-/// covers every expression the flat subset lowers. Body-local, monotone, no fixpoint: it reads one
-/// function body and writes a `HashSet`, so it runs inside Phase 3 with no new barrier (see
-/// `scalar_references_flat.md` §3.4).
-fn body_address_taken(stmts: &[Statement]) -> HashSet<Symbol> {
-    let mut set = HashSet::new();
-    collect_addr_taken_block(stmts, &mut set);
-    set
+/// Per-body local-usage facts driving slot allocation (#230): the locals whose address is taken (`&x`,
+/// need an addressable slot — §9) and those reassigned (`x = ..`/`x += ..`, need a memory slot to carry
+/// the new value across a block boundary under control flow — §3.2 step 2).
+#[derive(Default)]
+struct LocalUses {
+    address_taken: HashSet<Symbol>,
+    mutated: HashSet<Symbol>,
 }
 
-fn collect_addr_taken_block(stmts: &[Statement], set: &mut HashSet<Symbol>) {
+/// One syntactic walk collecting both facts. Purely syntactic and body-local (Vx has no auto-borrow, so
+/// a scalar's address escapes only through an explicit `&x`), monotone, no fixpoint — it runs inside
+/// Phase 3 with no new barrier (§3.4). Missing a fact is *safe*: an under-collected `&x` declines to
+/// the AST oracle; an under-collected reassignment can only leave a single-definition SSA register read
+/// out of dominance, which the MLIR verifier rejects (→ decline), never a silent miscompile. The walk
+/// still covers every form the flat subset lowers, to avoid needless declines.
+fn analyze_local_uses(stmts: &[Statement]) -> LocalUses {
+    let mut u = LocalUses::default();
+    walk_local_uses_block(stmts, &mut u);
+    u
+}
+
+fn walk_local_uses_block(stmts: &[Statement], u: &mut LocalUses) {
     for s in stmts {
         match s {
-            Statement::LetDecl(l) => collect_addr_taken_expr(&l.expr, set),
-            Statement::Return(r) => collect_addr_taken_expr(&r.expr, set),
-            Statement::ExprStmt(e) => collect_addr_taken_expr(&e.expr, set),
+            Statement::LetDecl(l) => walk_local_uses_expr(&l.expr, u),
+            Statement::Return(r) => walk_local_uses_expr(&r.expr, u),
+            Statement::ExprStmt(e) => walk_local_uses_expr(&e.expr, u),
+            // A reassignment to a bare name (`x = ..`) mutates that local; `arr[i] = ..` / `*p = ..` /
+            // `o.f = ..` write *through a place*, not the local binding, so they do not count.
             Statement::Assign(a) => {
-                collect_addr_taken_expr(&a.lhs, set);
-                collect_addr_taken_expr(&a.rhs, set);
+                if let Expr::Identifier(id) = &a.lhs {
+                    u.mutated.insert(id.name.clone());
+                }
+                walk_local_uses_expr(&a.lhs, u);
+                walk_local_uses_expr(&a.rhs, u);
             }
             Statement::CompoundAssign(a) => {
-                collect_addr_taken_expr(&a.lhs, set);
-                collect_addr_taken_expr(&a.rhs, set);
+                if let Expr::Identifier(id) = &a.lhs {
+                    u.mutated.insert(id.name.clone());
+                }
+                walk_local_uses_expr(&a.lhs, u);
+                walk_local_uses_expr(&a.rhs, u);
             }
             Statement::ForLoop(f) => {
-                collect_addr_taken_expr(&f.iterable, set);
-                collect_addr_taken_block(&f.body, set);
+                walk_local_uses_expr(&f.iterable, u);
+                walk_local_uses_block(&f.body, u);
             }
-            Statement::Loop(l) => collect_addr_taken_block(&l.body, set),
-            Statement::Assert(a) => collect_addr_taken_expr(&a.expr, set),
+            Statement::Loop(l) => walk_local_uses_block(&l.body, u),
+            Statement::Assert(a) => walk_local_uses_expr(&a.expr, u),
             _ => {}
         }
     }
 }
 
-fn collect_addr_taken_expr(e: &Expr, set: &mut HashSet<Symbol>) {
+fn walk_local_uses_expr(e: &Expr, u: &mut LocalUses) {
     match e {
-        // The one collection site: `&x` names `x`. Also recurse into the borrowed expression (`&*p`).
+        // The address-taken collection site: `&x` names `x`. Also recurse (`&*p`).
         Expr::Borrow(b) => {
             if let Expr::Identifier(id) = &*b.expr {
-                set.insert(id.name.clone());
+                u.address_taken.insert(id.name.clone());
             }
-            collect_addr_taken_expr(&b.expr, set);
+            walk_local_uses_expr(&b.expr, u);
         }
-        Expr::Dereference(d) => collect_addr_taken_expr(&d.expr, set),
+        Expr::Dereference(d) => walk_local_uses_expr(&d.expr, u),
         Expr::BinaryOp(b) => {
-            collect_addr_taken_expr(&b.lhs, set);
-            collect_addr_taken_expr(&b.rhs, set);
+            walk_local_uses_expr(&b.lhs, u);
+            walk_local_uses_expr(&b.rhs, u);
         }
         Expr::RelationalOp(r) => {
-            collect_addr_taken_expr(&r.lhs, set);
-            collect_addr_taken_expr(&r.rhs, set);
+            walk_local_uses_expr(&r.lhs, u);
+            walk_local_uses_expr(&r.rhs, u);
         }
         Expr::LogicalOp(l) => {
-            collect_addr_taken_expr(&l.lhs, set);
-            collect_addr_taken_expr(&l.rhs, set);
+            walk_local_uses_expr(&l.lhs, u);
+            walk_local_uses_expr(&l.rhs, u);
         }
-        Expr::UnaryOp(u) => collect_addr_taken_expr(&u.expr, set),
-        Expr::AsCast(c) => collect_addr_taken_expr(&c.expr, set),
+        Expr::UnaryOp(un) => walk_local_uses_expr(&un.expr, u),
+        Expr::AsCast(c) => walk_local_uses_expr(&c.expr, u),
         Expr::FunctionCall(fc) => {
             for a in &fc.args {
-                collect_addr_taken_expr(a, set);
+                walk_local_uses_expr(a, u);
             }
         }
         Expr::MethodCall(mc) => {
-            collect_addr_taken_expr(&mc.base, set);
+            walk_local_uses_expr(&mc.base, u);
             for a in &mc.args {
-                collect_addr_taken_expr(a, set);
+                walk_local_uses_expr(a, u);
             }
         }
-        Expr::MemberAccess(m) => collect_addr_taken_expr(&m.base, set),
+        Expr::MemberAccess(m) => walk_local_uses_expr(&m.base, u),
         Expr::IndexAccess(ix) => {
-            collect_addr_taken_expr(&ix.base, set);
-            collect_addr_taken_expr(&ix.index, set);
+            walk_local_uses_expr(&ix.base, u);
+            walk_local_uses_expr(&ix.index, u);
         }
         Expr::Array(arr) => {
             for el in &arr.elements {
-                collect_addr_taken_expr(el, set);
+                walk_local_uses_expr(el, u);
             }
         }
         Expr::If(i) => {
-            collect_addr_taken_expr(&i.cond, set);
-            collect_addr_taken_block(&i.then_block, set);
+            walk_local_uses_expr(&i.cond, u);
+            walk_local_uses_block(&i.then_block, u);
             if let Some(eb) = &i.else_block {
-                collect_addr_taken_block(eb, set);
+                walk_local_uses_block(eb, u);
             }
         }
         Expr::Match(m) => {
-            collect_addr_taken_expr(&m.expr, set);
+            walk_local_uses_expr(&m.expr, u);
             for arm in &m.arms {
-                collect_addr_taken_block(&arm.body, set);
+                walk_local_uses_block(&arm.body, u);
             }
         }
-        Expr::UnsafeBlock(u) => {
-            collect_addr_taken_block(&u.stmts, set);
-            if let Some(r) = &u.ret {
-                collect_addr_taken_expr(r, set);
+        Expr::UnsafeBlock(ub) => {
+            walk_local_uses_block(&ub.stmts, u);
+            if let Some(r) = &ub.ret {
+                walk_local_uses_expr(r, u);
             }
         }
         Expr::ComptimeBlock(c) => {
-            collect_addr_taken_block(&c.stmts, set);
+            walk_local_uses_block(&c.stmts, u);
             if let Some(r) = &c.ret {
-                collect_addr_taken_expr(r, set);
+                walk_local_uses_expr(r, u);
             }
         }
         _ => {}
@@ -3581,15 +3619,25 @@ mod tests {
     }
 
     #[test]
-    fn if_else_lowers_to_basic_blocks_and_memory_locals() {
+    fn if_else_slots_only_the_mutated_local() {
+        // Per-local rule (step 2): control flow no longer slots *every* local. `x` is reassigned in
+        // both branches (its value must cross the merge), so it gets a slot; the param `a` is only read
+        // (a dominating entry value), so it stays a register. One `Alloca`, not two — strictly less
+        // memory traffic than the old function-global memory mode. (#230)
         let f = parse_fn(
             "fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } else { x = 1; } return x; }",
         );
         let mut w = worker();
         assert!(lower_function_to_hir(&f, &mut w));
-        // Control flow forced the memory model: slots for `a` and `x`.
-        assert!(count(&w, Opcode::Alloca) >= 2, "alloca slots for a and x");
-        assert!(count(&w, Opcode::SlotLoad) >= 1);
+        assert_eq!(
+            count(&w, Opcode::Alloca),
+            1,
+            "only the mutated `x` gets a slot"
+        );
+        assert!(
+            count(&w, Opcode::SlotLoad) >= 1,
+            "`x` is read back after the merge"
+        );
         assert_eq!(count(&w, Opcode::CondBr), 1);
         assert_eq!(
             count(&w, Opcode::Br),

@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9) and mutable slice (§10) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2). Deferred: the step-2 memory-flag optimization and §5 places/projections.
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Deferred: §5 places/projections.
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -237,8 +237,8 @@ lifetime — plus flat unit tests (`address_taken_scalar_demotes_to_a_flagged_sl
 `non_address_taken_scalar_stays_a_register`, `reference_param_derefs_without_a_slot`) and JIT
 differentials against the value-semantics equivalent.
 
-**Deferred (from the immutable slice):** the step-2 memory-flag replacement (a pure optimization) and
-§5 places/projections. The mutable slice below is no longer deferred.
+**Deferred (from the immutable slice):** §5 places/projections. The mutable slice (§10) and the step-2
+memory-flag replacement (§11) are no longer deferred.
 
 ## 10. Status: the mutable slice, as implemented
 
@@ -276,3 +276,43 @@ corpus has no `-> void` functions, so no program changed path).
 **Still deferred:** taking the address of a mutable local *and reading it while borrowed* is an
 E4002 borrow error (correctly rejected, not a codegen gap); and reference-typed struct fields / returns
 of borrowed locals remain out of scope (§5).
+
+## 11. Status: the step-2 per-local memory rule, as implemented
+
+The §9 slice left the function-global memory flag in place (address-taken demotion was *additive* over
+it). Step 2 (§3.2) replaces that coarse flag for scalars with a per-local decision. A scalar local now
+gets a slot iff:
+
+- its **address is taken** (`&x`, §9), or
+- it is **reassigned in a control-flow function** (`x = ..`/`x += ..` where the function has
+  `if`/`loop`/`for`/`match`/`&&`/`||`) — the new value must cross a block boundary.
+
+A non-mutated scalar — even under control flow — stays a dominating SSA register. Where the old rule
+slotted *every* local in any function with a single `if`, `fn main() { let k = 40; let c = 1; if c > 0 { .. } .. }` now emits **zero** `memref.alloca`: `k` and `c` are `arith.constant`s used directly across
+blocks.
+
+Implementation (`src/hir/flatten.rs`):
+
+- one `analyze_local_uses` pre-pass collects both `address_taken` and `mutated` (assignment targets);
+- `has_control_flow` is split out from `memory` (an aggregate param / struct construction still turns
+  on the block model, but does *not* force a mutated scalar into a slot in a straight-line function —
+  a straight-line reassignment is a pure-SSA rebind);
+- `bind_local` applies the rule; aggregates always slot, pointer/tensor locals keep the coarse model.
+  Loop induction variables are bound directly as slots by `lower_for` (not via `bind_local`), so they
+  are unaffected.
+
+**Why this can't silently miscompile.** A register only ever names a *single-definition* local's value
+— always the correct one — because every reassigned local is kept in a slot. The only failure mode is
+a register read outside its definition's dominance (e.g. a value defined in one branch read after the
+merge), and that is **invalid MLIR** the verifier rejects, so the flat path declines to the AST oracle
+rather than emitting a wrong answer. Under-collecting `mutated` therefore costs at most a decline, never
+correctness.
+
+**Verified:** `if_else_slots_only_the_mutated_local` (unit: one `Alloca`, not two);
+`flat_registers_non_mutated_locals_under_control_flow` / `flat_still_slots_a_mutated_local_under_control_flow`
+(flat-vs-AST parity + the memory-traffic assertion); the full flat differential suite (control flow,
+loops, value-`if`, match) still matches the AST oracle; and a corpus differential over
+`tests/backend/pass` (12 programs on the flat path) shows no regression.
+
+**Deferred:** applying the same per-local rule to *pointer* locals (still on the coarse model — a
+missed optimization, not a correctness gap) and §5 places/projections.
