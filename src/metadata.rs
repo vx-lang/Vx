@@ -15,7 +15,7 @@
 use crate::gid::{deserialize_metadata_symbols, serialize_metadata_symbols, TypeId};
 use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::layout::{FieldLayout, FieldTy};
-use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, TypeDefinition};
+use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
 use crate::symbol::Symbol;
 use crate::syntax::{ElementType, MemorySpace, Topology, Type};
 use rustc_hash::FxHashMap;
@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v4";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v5";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -802,6 +802,37 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     w.u64(n);
     w.buf.extend_from_slice(&sub.buf);
 
+    // structs: each struct's declared (un-erased) field AST `Type`s + generic parameters (#219) — the
+    // `StructFields` a downstream compile needs to type member access on an imported struct without
+    // its AST. Sorted by name; a struct with an un-encodable field type is skipped (fail-closed).
+    let mut structs: Vec<(&Symbol, &StructFields)> = reg.structs.iter().collect();
+    structs.sort_by(|a, b| a.0.cmp(b.0));
+    let mut sub = Writer::new();
+    let mut n = 0u64;
+    for (name, sf) in structs {
+        let mut rec = Writer::new();
+        rec.u64(sf.generics.len() as u64);
+        for g in &sf.generics {
+            rec.sym(g);
+        }
+        rec.u64(sf.fields.len() as u64);
+        let mut ok = true;
+        for (fname, fty) in &sf.fields {
+            rec.sym(fname);
+            if write_type(&mut rec, fty).is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            sub.sym(name);
+            sub.buf.extend_from_slice(&rec.buf);
+            n += 1;
+        }
+    }
+    w.u64(n);
+    w.buf.extend_from_slice(&sub.buf);
+
     w.buf
 }
 
@@ -883,6 +914,27 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         bodies.insert(gid, body);
     }
 
+    // structs: declared field AST types + generics, so imported struct member access types the same
+    // as a local struct (#219). Mirrors the serializer's per-struct record.
+    let mut structs: FxHashMap<Symbol, StructFields> = FxHashMap::default();
+    let n_structs = r.u64()?;
+    for _ in 0..n_structs {
+        let name = r.sym()?;
+        let n_generics = r.u64()? as usize;
+        let mut generics = Vec::new();
+        for _ in 0..n_generics {
+            generics.push(r.sym()?);
+        }
+        let n_fields = r.u64()? as usize;
+        let mut fields = Vec::new();
+        for _ in 0..n_fields {
+            let fname = r.sym()?;
+            let fty = read_type(&mut r)?;
+            fields.push((fname, fty));
+        }
+        structs.insert(name, StructFields { generics, fields });
+    }
+
     Ok(ImmutableGlobalRegistry {
         layouts,
         module_indices,
@@ -892,10 +944,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // Enum-variant ordinals are not serialized into a `.vxlib` yet; a downstream compile that
         // constructs/matches an imported enum falls back to the AST path (#227).
         enum_variants: FxHashMap::default(),
-        // Struct field AST types are not serialized into a `.vxlib` yet; a downstream compile that
-        // accesses a pointer field through a monomorphized imported aggregate falls back to the AST
-        // path (#242).
-        structs: FxHashMap::default(),
+        structs,
         // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
@@ -1037,6 +1086,31 @@ mod tests {
                 "method ret_prov parity for {name}"
             );
         }
+
+        // structs round-trip: the declared field AST types come back, so a downstream compile can
+        // type member access on an imported struct (#219).
+        assert!(!reg.structs.is_empty());
+        assert_eq!(reg.structs.len(), round.structs.len());
+        for (name, sf) in &reg.structs {
+            let got = round.structs.get(name).expect("struct round-trips");
+            assert_eq!(
+                got.generics, sf.generics,
+                "struct generics parity for {name}"
+            );
+            assert_eq!(got.fields, sf.fields, "struct field-type parity for {name}");
+        }
+        // `Point.x` specifically survives with its exact declared type — the field an imported `p.x`
+        // reads back from the interface.
+        let point = round
+            .structs
+            .get(&Symbol::from("Point"))
+            .expect("Point round-trips");
+        let point_orig = reg.structs.get(&Symbol::from("Point")).unwrap();
+        assert_eq!(point.fields[0].0, Symbol::from("x"));
+        assert_eq!(
+            point.fields[0], point_orig.fields[0],
+            "Point.x field type survives"
+        );
     }
 
     /// A real function's flat-HIR body round-trips: lower `fn add(..)` to flat HIR, stash it as a

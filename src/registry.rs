@@ -283,6 +283,11 @@ impl ImmutableGlobalRegistry {
         for (name, variants) in other.enum_variants {
             self.enum_variants.entry(name).or_insert(variants);
         }
+        // Imported structs' declared field types, so member access on an imported struct resolves
+        // from the registry with no AST (#219).
+        for (name, fields) in other.structs {
+            self.structs.entry(name).or_insert(fields);
+        }
     }
 }
 

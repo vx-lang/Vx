@@ -195,9 +195,21 @@ Phase 2 was taken as far as the flat-codegen coverage allows, in keep-green mile
   deleted, JITs to 42). A `.vxlib` is preferred over `.vx` when both exist; staleness (rebuild on a
   newer source) is a follow-up.
 
+- **Imported struct field access off the AST env** (landed, #219). `registry.structs` (`StructFields` —
+  the un-erased declared field types) is now serialized into the `.vxlib` (format tag `v5`) and
+  carried by `merge_from`; `check_memberaccess_expr` falls back to it when `env.structs` misses, so
+  `p.x` on an imported struct types the same way a local one does. Proven runnable by
+  `driver_import_uses_a_struct_from_a_vxlib` (`origin() -> Point` in a `.vxlib`, source deleted, `p.x`
+  JITs to 7).
+
 ### Still deferred
 
-- **Retiring the borrowed-AST env for imported *structs*/fields** (`FieldTy` loses field types) — the
-  remaining #219 flip; imported struct field-access still needs the AST env.
+- **Constructing / annotating an imported struct in the consumer.** `check_structinit_expr` (a
+  `Point { .. }` literal) and `resolve_parsed_type` (a `let p: Point` annotation) still read
+  `env.structs`; an imported struct there is not yet registry-resolved (a bare imported nominal is
+  demoted to `Generic`). Member access — the flagged blocker — is done; these are the same-theme
+  follow-ups.
+- **`.vxlib` staleness** — a `.vxlib` is preferred over `.vx` unconditionally; rebuild-on-newer-source
+  is unimplemented.
 - **Imported-body codegen for the full language** — convergence-gated (C2/C3); the flat path links what
-  it can lower, which is why a scalar import runs and a reference one waits on #273.
+  it can lower, which is why a scalar/struct-by-value import runs and a reference one waits on #273.

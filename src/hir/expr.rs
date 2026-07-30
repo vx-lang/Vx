@@ -3323,6 +3323,50 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // An *imported* struct resolved from a `.vxlib` (no AST in this compile) is absent from
+                // `env.structs`; its declared field types live in the frozen registry's `structs`
+                // table (#219). Fall back to it so member access on an imported struct types the same
+                // way a local one does. Checked only when the AST env misses, so a local definition
+                // always shadows a same-named import.
+                if struct_decl_opt.is_none() {
+                    let imported_name = match &base_ty {
+                        Type::Struct(n, _) => Some(n.clone()),
+                        Type::GenericInstance(inner, _) => match &**inner {
+                            Type::Struct(n, _) => Some(n.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(name) = imported_name {
+                        // Clone out so the registry borrow ends before `self.errors` is touched.
+                        let imported = self
+                            .worker
+                            .global
+                            .registry
+                            .structs
+                            .get(&name)
+                            .map(|sf| (sf.generics.clone(), sf.fields.clone()));
+                        if let Some((generics, fields)) = imported {
+                            if let Type::GenericInstance(_, args) = &base_ty {
+                                for (i, param) in generics.iter().enumerate() {
+                                    if i < args.len() {
+                                        mapping.insert(param.as_ref().into(), args[i].clone());
+                                    }
+                                }
+                            }
+                            *struct_name_field = Some(base_ty.to_string().into());
+                            for (f_name, f_type) in &fields {
+                                if f_name == member {
+                                    return f_type.substitute(&mapping);
+                                }
+                            }
+                            self.errors
+                                .push(format!("Struct '{}' has no field '{}'", name, member));
+                            return Type::Tensor(ElementType::F32, vec![], None);
+                        }
+                    }
+                }
+
                 if let Some(decl) = struct_decl_opt {
                     *struct_name_field = Some(base_ty.to_string().into());
                     for (f_name, f_type) in &decl.fields {
