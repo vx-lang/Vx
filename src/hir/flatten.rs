@@ -1754,7 +1754,17 @@ impl<'r> Lowerer<'r> {
                 .find(|(n, _)| n.as_ref() == name.as_ref())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
-            let v = self.lower_expr(init_expr)?;
+            let mut v = self.lower_expr(init_expr)?;
+            // A by-value nested-aggregate field (`Outer { inner : Inner { .. } }`): the initializer
+            // yields the inner construction *slot* (a pointer), but the field must hold the struct
+            // *value*. Load it so the `FieldStore` stores the value, not the address (#277) — the same
+            // fix `lower_assign` applies to an aggregate-construction RHS. First cut per §16.1 option 1;
+            // constructing in place (option 2) is the destination-passing follow-up.
+            if matches!(init_expr, Expr::StructInit(_) | Expr::EnumVariant(_))
+                && matches!(v.ty, LoweredTy::Aggregate(_))
+            {
+                v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+            }
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
         }
         Some(slot)

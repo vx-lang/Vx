@@ -550,6 +550,30 @@ fn flat_reads_and_writes_a_field_through_a_place() {
     assert_parity(src, 42);
 }
 
+/// #275 §5 Example B (#276 + #277): a two-level `&mut o.inner.v` place over a by-value nested
+/// aggregate. The nested construction stores the inner struct *value* (#277 — not the inner slot's
+/// address), the borrow check accepts the read after the loan is dead (#276), and the two-level
+/// projection resolves the write and read through `o.inner.v`. Parity: writes 42 through `*r`, reads it
+/// back. This is the case §12 originally named as M2's target.
+#[test]
+fn flat_runs_nested_field_place_example_b() {
+    let src = "struct Inner { v : i32 }\n\
+               struct Outer { inner : Inner }\n\
+               fn main() -> i32 { let mut o = Outer { inner : Inner { v : 1 } }; let r = &mut o.inner.v; *r = 42; return *r; }";
+    assert_parity(src, 42);
+}
+
+/// #277 in isolation: by-value nested-aggregate construction must store the inner struct *value*, so a
+/// later read of the nested field yields it rather than a stored pointer reinterpreted as an `i32`. No
+/// reference involved — this pins the constructor fix independently of the place machinery.
+#[test]
+fn flat_constructs_a_nested_aggregate_by_value() {
+    let src = "struct Inner { v : i32 }\n\
+               struct Outer { inner : Inner }\n\
+               fn main() -> i32 { let mut o = Outer { inner : Inner { v : 7 } }; let r = &mut o.inner.v; return *r; }";
+    assert_parity(src, 7);
+}
+
 /// An immutable single-level field reference read through a place. `&p.x; return *r` — the field is
 /// `FieldLoad`ed at the deref. Parity with the AST oracle.
 #[test]
