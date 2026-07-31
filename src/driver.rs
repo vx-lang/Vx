@@ -959,12 +959,19 @@ impl CompilerDriver {
             .iter()
             .flat_map(|(_, w)| w.local_agg_layouts.iter().cloned())
             .collect();
+        // Per-function place-write alias tables, index-aligned with `funcs` (imported entries have none,
+        // so the emitter defaults them empty — like the string tables). (#275, §5.4)
+        let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = entries
+            .iter()
+            .map(|(_, w)| w.local_place_alias_stores.as_slice())
+            .collect();
         let text = match crate::codegen::flat::emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
             &string_tables,
             &agg_layouts,
+            &alias_tables,
             &subspaces,
         ) {
             Some(t) => t,

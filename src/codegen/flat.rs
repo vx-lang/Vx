@@ -217,6 +217,36 @@ fn param_alias_attrs(ty: &Type) -> &'static str {
     }
 }
 
+/// The `llvm.store` attribute dict for a disjoint place-write (M2b-2): the store belongs to alias scope
+/// `own` and does not alias the `siblings` scopes (fields the borrow checker proved disjoint). All
+/// scopes share the module domain `distinct[0]`; each scope is `distinct[k]`. Rendered with a leading
+/// space for direct concatenation after the store's value/pointer operands, or `""` (via the caller's
+/// `unwrap_or_default`) when the store isn't a tagged place-write.
+///
+/// Like `param_alias_attrs`, an `-O0` differential can't see this (alias metadata only bites under
+/// optimization), so its soundness rests on the borrow checker + the structural field-disjointness the
+/// lowerer computed, not on a runtime oracle. (#275, §5.4)
+fn alias_store_attrs(own: u32, siblings: &[u32]) -> String {
+    let scope = |k: u32| {
+        format!(
+            "#llvm.alias_scope<id = distinct[{k}]<>, domain = #llvm.alias_scope_domain<id = distinct[0]<>>>"
+        )
+    };
+    if siblings.is_empty() {
+        format!(" {{alias_scopes = [{}]}}", scope(own))
+    } else {
+        let noalias = siblings
+            .iter()
+            .map(|s| scope(*s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            " {{alias_scopes = [{}], noalias_scopes = [{noalias}]}}",
+            scope(own)
+        )
+    }
+}
+
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     let f = is_float(e);
@@ -731,6 +761,7 @@ pub fn emit_module_mlir(
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
+    alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
 ) -> Option<String> {
     let mut ctx = EmitCtx::from_registry(registry);
@@ -785,8 +816,22 @@ pub fn emit_module_mlir(
     // Each function's string literals are numbered from a running module-wide base, so a `PrintStr`'s
     // `@".str.<n>"` reference (emitted with the same `str_base`) resolves the global emitted here.
     let mut str_base = 0usize;
+    // Module-global `distinct[]` counter for alias scopes (M2b-2). 0 is reserved for the shared alias
+    // domain; each function reserves a contiguous block for its groups, so scopes stay distinct across
+    // functions even after inlining. (#275, §5.4)
+    let mut distinct_ctr: u32 = 1;
     for (fi, (func, hir, types)) in funcs.iter().enumerate() {
-        match emit_function_mlir(func, hir, types, &ctx, &mut calls, str_base) {
+        let alias_stores = alias_tables.get(fi).copied().unwrap_or(&[]);
+        match emit_function_mlir(
+            func,
+            hir,
+            types,
+            &ctx,
+            &mut calls,
+            str_base,
+            alias_stores,
+            &mut distinct_ctr,
+        ) {
             Some(t) => out += &t,
             None => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
@@ -987,6 +1032,7 @@ fn tensor_memref_ty(elem: &ElementType, shape: &[String]) -> Option<String> {
 /// calls + all-scalar-field struct construction/field access; the AST path stays the oracle there).
 /// `ctx` resolves the callee/struct GIDs the stream references. The returned text is a bare
 /// `func.func` op; wrap it in a `module { … }` before parsing.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_function_mlir(
     func: &Function,
     hir: &[HirInstruction],
@@ -994,6 +1040,8 @@ pub fn emit_function_mlir(
     ctx: &EmitCtx,
     calls: &mut Vec<(String, Vec<String>, String)>,
     str_base: usize,
+    alias_stores: &[(usize, usize, Vec<usize>)],
+    distinct_ctr: &mut u32,
 ) -> Option<String> {
     // Signature (taken from the resolved AST signature; the *body* is flat-driven). A scalar param is
     // its element type; a tensor param is a memref recovered by GID from the side table (`ctx.tensors`
@@ -1084,6 +1132,31 @@ pub fn emit_function_mlir(
     // rather than the rank-0 `memref` a never-borrowed scalar local uses. The scalar analogue of
     // `pslot_of`, carrying the element so the load/store types match. (#230)
     let mut sslot_of: Vec<Option<ElementType>> = vec![None; hir.len()];
+    // Alias-scope metadata for place-write field stores (M2b-2): map each tagged store's stream
+    // position to its own alias-scope `distinct[]` id and its disjoint-sibling ids. Groups are numbered
+    // from the module-global `distinct_ctr` (0 is the shared domain), so scopes stay distinct across
+    // functions. The `FieldStore` arm attaches `alias_scopes`/`noalias_scopes` from this. (#275, §5.4)
+    let alias_scope_of: HashMap<usize, (u32, Vec<u32>)> = {
+        let n_groups = alias_stores
+            .iter()
+            .map(|(_, g, _)| *g as u32 + 1)
+            .max()
+            .unwrap_or(0);
+        let base = *distinct_ctr;
+        *distinct_ctr += n_groups;
+        alias_stores
+            .iter()
+            .map(|(pos, own, sibs)| {
+                (
+                    *pos,
+                    (
+                        base + *own as u32,
+                        sibs.iter().map(|s| base + *s as u32).collect(),
+                    ),
+                )
+            })
+            .collect()
+    };
     let mut body = String::new();
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -1633,7 +1706,13 @@ pub fn emit_function_mlir(
                     "  {p} = llvm.getelementptr {slot}[0, {field_idx}] : (!llvm.ptr) -> !llvm.ptr, {}\n",
                     agg.struct_ty
                 );
-                body += &format!("  llvm.store {val}, {p} : {fty}, !llvm.ptr\n");
+                // A place-write store carries alias-scope metadata (M2b-2): it belongs to its own scope
+                // and does not alias its disjoint siblings' scopes. Direct field stores are unscoped.
+                let attrs = alias_scope_of
+                    .get(&idx)
+                    .map(|(own, sibs)| alias_store_attrs(*own, sibs))
+                    .unwrap_or_default();
+                body += &format!("  llvm.store {val}, {p}{attrs} : {fty}, !llvm.ptr\n");
             }
             // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
             // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
@@ -2076,6 +2155,8 @@ mod tests {
             &EmitCtx::default(),
             &mut Vec::new(),
             0,
+            &w.local_place_alias_stores,
+            &mut 1,
         )
         .expect("emits flat MLIR");
 
@@ -2151,12 +2232,17 @@ mod tests {
             .iter()
             .flat_map(|w| w.local_agg_layouts.iter().cloned())
             .collect();
+        let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = lowered
+            .iter()
+            .map(|w| w.local_place_alias_stores.as_slice())
+            .collect();
         let mlir = emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
             &string_tables,
             &agg_layouts,
+            &alias_tables,
             &[],
         )
         .expect("emits flat module");

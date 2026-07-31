@@ -107,6 +107,14 @@ pub struct LocalWorkerState {
     /// lowerer synthesizes it here as it constructs/matches an enum, and the flat codegen folds these
     /// into its aggregate map — the tagged-union analogue of `local_tensor_types`. (#242)
     pub local_agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+
+    /// Per-function place-write alias table (M2b-2): for each `*r = v` store through a `&mut o.field`
+    /// place, `(stream position, group id, disjoint-sibling group ids)`. Codegen emits an `alias_scopes`
+    /// scope per group and `noalias_scopes` from the siblings, carrying the disjointness of
+    /// simultaneously live mutable field borrows (which the borrow checker proved) into the IR. One
+    /// function per worker, so positions are 0-based into the function's stream (like the string table).
+    /// (#275, §5.4)
+    pub local_place_alias_stores: Vec<(usize, usize, Vec<usize>)>,
 }
 
 use crate::gid::LifetimeSignature;
@@ -123,6 +131,7 @@ impl LocalWorkerState {
             local_tensor_types: Vec::new(),
             local_string_table: Vec::new(),
             local_agg_layouts: Vec::new(),
+            local_place_alias_stores: Vec::new(),
         }
     }
 

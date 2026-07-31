@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path. Deferred: the §5.4 disjointness→alias-metadata payoff (M2b).
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2).
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -593,3 +593,45 @@ the attribute doesn't break translation; the full suite + corpus differential ar
 **Next (M2b-2):** the literal §5.4 field alias-scopes — redundant for struct fields today (LLVM derives
 it), but the machinery (recover `[x]`/`[y]` from the places, emit `llvm.alias_scope`/`noalias_scopes`)
 generalizes to disjointness LLVM can't derive from a GEP (opaque bases, dynamic indices).
+
+## 15. Status: places, M2b-2 — field alias-scope metadata, as implemented
+
+The other half of §5.4: attach `alias_scopes`/`noalias_scopes` to the disjoint place-writes, so Example
+C's `*bx = 1` / `*by = 2` each declare their own alias scope and name the other as a `noalias` sibling.
+As M2b-1 conceded, this is **redundant for constant-offset struct fields** (LLVM already proves `%p[0,0]`
+and `%p[0,1]` disjoint); it is built because the *machinery* — carrying a frontend-proved disjointness
+onto individual stores — generalizes to disjointness a GEP can't express (opaque bases, dynamic indices).
+
+**Carry the proof, don't re-derive it (§5.4's actual point).** The disjointness is computed in the
+lowerer from the *places*, not in codegen from GEP offsets:
+
+- lowering a place-write `*r = v` (`lower_assign`), the borrowed place's `(root, field path)` is recorded
+  alongside the `FieldStore`'s stream position (`pending_place_write` → `place_field_stores`). A *direct*
+  `p.x = v` (not through a `&mut` place) leaves the tag unset and is never scoped — only
+  reference-mediated writes carry metadata;
+- after lowering, `reduce_place_alias` interns each distinct `(root, path)` as a **group** and, per
+  store, lists the groups that are *disjoint siblings*: same root, non-prefix-disjoint path
+  (`paths_may_alias` — `[x]` vs `[y]` disjoint, `[inner]` vs `[inner, v]` overlapping). Stores to the
+  *same* field share a group (they alias); to different fields they become mutual `noalias` siblings.
+  This structural field-disjointness is sound independent of borrow *liveness*; the frontend contribution
+  is knowing the writes came from distinct, borrow-checker-admitted `&mut` borrows;
+- the numeric table `(position, group, siblings)` rides to codegen per-function on the worker
+  (`local_place_alias_stores`), index-aligned with `funcs` like the string tables.
+
+Codegen (`emit_function_mlir`) numbers each function's groups from a **module-global `distinct[]`
+counter** (0 reserved for the shared `alias_scope_domain`), so scopes stay distinct across functions even
+after inlining, and `alias_store_attrs` renders `{alias_scopes = [<own>], noalias_scopes = [<siblings>]}`
+on the tagged `llvm.store`. A lone place-write gets its own scope but **no** `noalias_scopes` (nothing
+proven disjoint from it).
+
+**Verification caveat (same as M2b-1).** An `-O0` differential is blind to alias metadata — it changes no
+result, only what an optimizer may assume — so correctness rests on the borrow checker plus the
+structural disjointness above, not a runtime oracle. Tests assert the reduction
+(`disjoint_place_writes_reduce_to_mutual_noalias_siblings`, `a_lone_place_write_has_no_noalias_sibling`,
+`direct_field_assignment_is_not_tagged`) and the emitted metadata
+(`flat_tags_disjoint_field_stores_with_alias_scopes`, `flat_tags_a_lone_field_store_without_noalias`),
+each paired with a parity run proving the attributes don't break translation or the JIT result. Untagged
+stores emit byte-identically (`unwrap_or_default`), so nothing outside the `&mut`-field-place shape moves.
+
+This closes M2b (both halves of §5.4). The place representation now carries disjointness proofs to the
+IR; extending them past constant field offsets (where they stop being redundant) is future work.

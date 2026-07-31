@@ -270,6 +270,15 @@ struct Lowerer<'r> {
     /// set binds `r` to a `Binding::Place` over the borrowed lvalue rather than materializing an
     /// address. (#275)
     place_bindings: HashSet<Symbol>,
+    /// Set while lowering a place-write `*r = v` (M2b-2): the borrowed place's `(root local, field
+    /// path)`. The `FieldStore` the write lowers to reads this to tag itself as a place-write for
+    /// alias-scope metadata; a direct `p.x = v` leaves it `None` and its store is untagged. (#275, §5.4)
+    pending_place_write: Option<(Symbol, Vec<Symbol>)>,
+    /// Place-write field stores collected during lowering, as `(stream position, borrowed root, field
+    /// path)`. Post-lowering these reduce to a numeric group/sibling table (`reduce_place_alias`) so
+    /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
+    /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
+    place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
 }
 
 impl<'r> Lowerer<'r> {
@@ -291,6 +300,8 @@ impl<'r> Lowerer<'r> {
             mutated: HashSet::new(),
             has_control_flow: false,
             place_bindings: HashSet::new(),
+            pending_place_write: None,
+            place_field_stores: Vec::new(),
         }
     }
 
@@ -2078,7 +2089,15 @@ impl<'r> Lowerer<'r> {
         if let Expr::Dereference(d) = lhs {
             if let Expr::Identifier(id) = &*d.expr {
                 if let Some(Binding::Place { place }) = self.scope.get(&id.name).cloned() {
-                    return self.lower_assign(&place, rhs);
+                    // Tag the write with the borrowed place so its `FieldStore` records alias-scope
+                    // metadata (M2b-2): a set of simultaneously live `&mut o.field` borrows the checker
+                    // admitted is pairwise disjoint, which the store carries as `noalias` scopes.
+                    // Restore the prior tag afterwards so a nested/adjacent write isn't mis-tagged. (#275)
+                    let prev = self.pending_place_write.take();
+                    self.pending_place_write = place_base_path(&place);
+                    let r = self.lower_assign(&place, rhs);
+                    self.pending_place_write = prev;
+                    return r;
                 }
             }
         }
@@ -2129,7 +2148,13 @@ impl<'r> Lowerer<'r> {
                 return None;
             }
             let v = self.lower_expr(rhs)?;
+            let pos = self.code.len();
             self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
+            // A place-write field store (`*r = v` through a `&mut o.field` place): record it for
+            // alias-scope metadata. A direct `p.x = v` leaves `pending_place_write` unset. (#275, §5.4)
+            if let Some((root, path)) = self.pending_place_write.take() {
+                self.place_field_stores.push((pos, root, path));
+            }
             return Some(());
         }
         // `name = expr` (simple identifier target). The value already matches the slot's type (the
@@ -2383,6 +2408,11 @@ impl<'r> Lowerer<'r> {
         // The string side table is indexed by each `PrintStr`'s `imm`; a fresh worker lowers exactly
         // one function, so the indices need no rebasing (they start at 0 per function).
         worker.local_string_table.extend(self.strings);
+        // Place-write alias table (M2b-2): reduce collected field stores to `(position, group, siblings)`.
+        // Positions are stream-relative; a fresh worker lowers one function, so they need no rebasing.
+        worker
+            .local_place_alias_stores
+            .extend(reduce_place_alias(&self.place_field_stores));
         for mut ins in self.code {
             if ins.type_idx.0 != NO_TYPE {
                 ins.type_idx = TypeIdx(ins.type_idx.0 + base);
@@ -2600,6 +2630,63 @@ fn place_root(e: &Expr) -> Option<Symbol> {
         Expr::MemberAccess(m) => place_root(&m.base),
         _ => None,
     }
+}
+
+/// The root local *and* field path of an lvalue place: `o.x.y` -> `(o, [x, y])`, a bare local -> `(o,
+/// [])`. `None` for a non-lvalue base. The path drives M2b-2's field-disjointness reasoning. (#275)
+fn place_base_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
+    match e {
+        Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
+        Expr::MemberAccess(m) => {
+            let (root, mut path) = place_base_path(&m.base)?;
+            path.push(m.member.clone());
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// Whether two field paths under the *same* root may name overlapping memory — true when one is a
+/// prefix of the other (`[inner]` vs `[inner, v]`) or they are equal; distinct fields at any shared
+/// level (`[x]` vs `[y]`) are disjoint. Structural field disjointness, sound regardless of borrow
+/// liveness — the fact codegen turns into a `noalias` relationship. (#275, §5.4)
+fn paths_may_alias(a: &[Symbol], b: &[Symbol]) -> bool {
+    let n = a.len().min(b.len());
+    a[..n] == b[..n]
+}
+
+/// Index of the `(root, path)` key in `keys`, or `None` if absent — the group-id lookup for the alias
+/// reduction. (#275)
+fn place_group_of(keys: &[(Symbol, Vec<Symbol>)], root: &Symbol, path: &[Symbol]) -> Option<usize> {
+    keys.iter()
+        .position(|(r, p)| r == root && p.as_slice() == path)
+}
+
+/// Reduce collected place-write field stores to codegen's numeric alias table: assign each distinct
+/// `(root, path)` a group id (first-appearance order) and, per store, the group ids of its disjoint
+/// siblings (same root, non-overlapping path). Codegen turns a group into a `distinct[]` alias scope
+/// and its siblings into `noalias_scopes`. Stores to the *same* field share a group (they alias); to
+/// disjoint fields become mutual `noalias` siblings. (#275, §5.4)
+fn reduce_place_alias(stores: &[(usize, Symbol, Vec<Symbol>)]) -> Vec<(usize, usize, Vec<usize>)> {
+    let mut keys: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
+    for (_, root, path) in stores {
+        if place_group_of(&keys, root, path).is_none() {
+            keys.push((root.clone(), path.clone()));
+        }
+    }
+    stores
+        .iter()
+        .map(|(pos, root, path)| {
+            let own = place_group_of(&keys, root, path).unwrap();
+            let siblings = keys
+                .iter()
+                .enumerate()
+                .filter(|(gi, (r, p))| *gi != own && r == root && !paths_may_alias(path, p))
+                .map(|(gi, _)| gi)
+                .collect();
+            (*pos, own, siblings)
+        })
+        .collect()
 }
 
 fn analyze_local_uses(stmts: &[Statement]) -> LocalUses {
@@ -4054,6 +4141,81 @@ mod tests {
             count(&w, Opcode::PtrStore),
             0,
             "the field places materialize no pointer"
+        );
+    }
+
+    #[test]
+    fn disjoint_place_writes_reduce_to_mutual_noalias_siblings() {
+        // §5.4 (M2b-2): the two disjoint place-writes above reduce to a numeric alias table — each store
+        // gets its own group, and (same base `p`, disjoint fields `x`/`y`) each lists the other as a
+        // sibling. The two FieldStores sit at distinct stream positions; the table pairs them mutually.
+        let (did, w) = lower_with_registry(
+            "struct Point { x : i32, y : i32 }\n\
+             fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }",
+            "update",
+        );
+        assert!(did, "the mutator lowers");
+        let table = &w.local_place_alias_stores;
+        assert_eq!(table.len(), 2, "both place-writes are tagged: {table:?}");
+        // Two distinct groups (`p.x` and `p.y` are different fields).
+        let groups: std::collections::HashSet<usize> = table.iter().map(|(_, g, _)| *g).collect();
+        assert_eq!(
+            groups.len(),
+            2,
+            "distinct fields => distinct groups: {table:?}"
+        );
+        // Each store names the *other* store's group as its lone disjoint sibling.
+        for (_, own, sibs) in table {
+            assert_eq!(sibs.len(), 1, "one disjoint sibling per store: {table:?}");
+            assert_ne!(sibs[0], *own, "a store is not its own noalias sibling");
+        }
+        // The two positions are the two FieldStores in the stream.
+        let fs_positions: Vec<usize> = w
+            .local_hir_stream
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.opcode == Opcode::FieldStore)
+            .map(|(p, _)| p)
+            .collect();
+        let tagged: std::collections::HashSet<usize> = table.iter().map(|(p, _, _)| *p).collect();
+        assert_eq!(
+            tagged,
+            fs_positions.into_iter().collect(),
+            "tagged positions are exactly the FieldStores"
+        );
+    }
+
+    #[test]
+    fn a_lone_place_write_has_no_noalias_sibling() {
+        // A single place-write has nothing proven disjoint from it: it still gets its own group, but an
+        // empty sibling set — the reduction only pairs stores the frontend actually proved disjoint.
+        let (did, w) = lower_with_registry(
+            "struct P { x : i32, y : i32 }\n\
+             fn main() -> i32 { let mut p = P { x : 1, y : 2 }; let r = &mut p.x; *r = 42; return *r; }",
+            "main",
+        );
+        assert!(did, "the single-field mutator lowers");
+        assert_eq!(w.local_place_alias_stores.len(), 1, "one tagged store");
+        assert!(
+            w.local_place_alias_stores[0].2.is_empty(),
+            "a lone place-write has no disjoint sibling"
+        );
+    }
+
+    #[test]
+    fn direct_field_assignment_is_not_tagged() {
+        // A *direct* `p.x = v` (not through a `&mut` place) is a plain field store, not a disjoint
+        // place-write, so it carries no alias metadata — only reference-mediated writes are tagged.
+        let (did, w) = lower_with_registry(
+            "struct P { x : i32, y : i32 }\n\
+             fn main() -> i32 { let mut p = P { x : 0, y : 0 }; p.x = 1; p.y = 2; return p.x + p.y; }",
+            "main",
+        );
+        assert!(did, "the direct-assignment fn lowers");
+        assert!(
+            w.local_place_alias_stores.is_empty(),
+            "direct field assignments are untagged: {:?}",
+            w.local_place_alias_stores
         );
     }
 

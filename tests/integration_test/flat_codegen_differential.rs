@@ -196,12 +196,17 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
+    let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = lowered
+        .iter()
+        .map(|w| w.local_place_alias_stores.as_slice())
+        .collect();
     let body = vxc::codegen::flat::emit_module_mlir(
         &funcs,
         &session.registry,
         &tensor_types,
         &string_tables,
         &agg_layouts,
+        &alias_tables,
         &[],
     )?;
 
@@ -295,12 +300,17 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
+    let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = lowered
+        .iter()
+        .map(|w| w.local_place_alias_stores.as_slice())
+        .collect();
     vxc::codegen::flat::emit_module_mlir(
         &funcs,
         &session.registry,
         &tensor_types,
         &string_tables,
         &agg_layouts,
+        &alias_tables,
         &subspaces,
     )
 }
@@ -479,6 +489,56 @@ fn flat_runs_disjoint_field_borrows_through_places() {
                fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }\n\
                fn main() -> i32 { let mut pt = Point { x : 0, y : 0 }; update(&mut pt); return pt.x * 10 + pt.y; }";
     assert_parity(src, 12);
+}
+
+/// #275 §5.4 (M2b-2): the two disjoint place-writes above carry alias-scope metadata — each `*b = v`
+/// store belongs to its own `alias_scopes` scope and lists the other as a `noalias_scopes` sibling
+/// (the borrow checker proved `p.x` and `p.y` disjoint). Verified structurally: an `-O0` differential
+/// is blind to alias metadata (it only bites under optimization), so `assert_parity` proves the
+/// attributes don't break translation while this asserts they are present + mutually non-aliasing.
+#[test]
+fn flat_tags_disjoint_field_stores_with_alias_scopes() {
+    let src = "struct Point { x : i32, y : i32 }\n\
+               fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }\n\
+               fn main() -> i32 { let mut pt = Point { x : 0, y : 0 }; update(&mut pt); return pt.x * 10 + pt.y; }";
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    // `{alias_scopes` is the own-scope attribute; matching the `{` avoids also counting the tail of
+    // `noalias_scopes` (which ends in the same `alias_scopes` substring).
+    assert_eq!(
+        mlir.matches("{alias_scopes = [").count(),
+        2,
+        "each disjoint place-write store declares its own alias scope:\n{mlir}"
+    );
+    assert_eq!(
+        mlir.matches("noalias_scopes = [").count(),
+        2,
+        "each store lists the disjoint sibling as noalias:\n{mlir}"
+    );
+    // The two stores' own scopes must be *distinct* ids (they name different fields), and each store's
+    // noalias sibling must be the *other* store's own scope — mutual non-aliasing.
+    assert!(
+        mlir.contains("distinct[1]") && mlir.contains("distinct[2]"),
+        "the two disjoint fields get distinct alias-scope ids:\n{mlir}"
+    );
+}
+
+/// A *single* place-write field store has no disjoint sibling, so it declares its own `alias_scopes`
+/// scope but carries **no** `noalias_scopes` (there is nothing proven disjoint from it) — the reduction
+/// only emits a `noalias` relationship when the frontend actually proved one. Parity at 42.
+#[test]
+fn flat_tags_a_lone_field_store_without_noalias() {
+    let src = "struct P { x : i32, y : i32 }\n\
+               fn main() -> i32 { let mut p = P { x : 1, y : 2 }; let r = &mut p.x; *r = 42; return *r; }";
+    assert_parity(src, 42);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        mlir.contains("{alias_scopes = ["),
+        "the lone place-write store declares its alias scope:\n{mlir}"
+    );
+    assert!(
+        !mlir.contains("noalias_scopes = ["),
+        "a lone place-write has no proven-disjoint sibling, so no noalias scope:\n{mlir}"
+    );
 }
 
 /// #275 §5 field place, read + write through a single-level field reference. `&mut p.x; *r = 42;
@@ -1107,8 +1167,9 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .collect();
     funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
 
-    let mlir = vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[], &[])
-        .expect("flat codegen emits the linked module");
+    let mlir =
+        vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[], &[], &[])
+            .expect("flat codegen emits the linked module");
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
         .expect("linked flat MLIR parses");
