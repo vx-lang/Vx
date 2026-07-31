@@ -814,15 +814,23 @@ impl<'r> Lowerer<'r> {
                         });
                     }
                 }
-                // `&outer.inner`: the address of a by-value nested-aggregate field — a method receiver
-                // (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`. `lower_agg_base` GEPs to
-                // the field (a `FieldAddr`); the resulting pointer is the borrow value. (#242)
-                if matches!(&*b.expr, Expr::MemberAccess(_)) {
+                if let Expr::MemberAccess(m) = &*b.expr {
+                    // `&outer.inner`: the address of a by-value nested-aggregate field — a method
+                    // receiver (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`.
+                    // `lower_agg_base` GEPs to the field (a `FieldAddr`); the pointer is the borrow. (#242)
                     if let Some((reg, _)) = self.lower_agg_base(&b.expr) {
                         return Some(Val {
                             reg,
                             ty: LoweredTy::Ptr,
                         });
+                    }
+                    // `&param.scalar` — the address of a *scalar* field (a reference return
+                    // `probe(m : &Map) -> &i32 { return &m.slot; }`, #275 M3b). `lower_agg_base` only
+                    // addresses nested-aggregate fields; a scalar field GEPs to its element pointer here.
+                    // Safety is the borrow checker's (return-provenance, #243): the flat path only emits
+                    // the address the frontend already proved outlives the callee.
+                    if let Some(val) = self.lower_scalar_field_addr(m) {
+                        return Some(val);
                     }
                 }
                 let v = self.lower_expr(&b.expr)?;
@@ -1030,6 +1038,43 @@ impl<'r> Lowerer<'r> {
         let gid = agg_gid_of_ty(&base_ty, self.registry)?;
         let v = self.lower_expr(base)?;
         matches!(v.ty, LoweredTy::Ptr).then_some((v.reg, gid))
+    }
+
+    /// The address of a **scalar** field as an element pointer (`&param.slot`): GEP the parent aggregate
+    /// (resolved by `lower_agg_base`, so a param `&Map`, a local slot, or a nested aggregate all work) to
+    /// the field and yield a `!llvm.ptr`. The result type GID is the field's *scalar* GID so codegen
+    /// tracks it as a plain pointer (not an aggregate slot). `None` when the parent doesn't resolve or the
+    /// field is not scalar (a nested-aggregate field is the `lower_agg_base` path instead). (#275 M3b)
+    fn lower_scalar_field_addr(&mut self, m: &crate::syntax::MemberAccessExpr) -> Option<Val> {
+        let (parent_reg, parent_gid) = self.lower_agg_base(&m.base)?;
+        // Snapshot the field's offset + element so the immutable registry borrow ends before we emit.
+        let (offset, elem) = {
+            let field = self
+                .registry
+                .layouts
+                .get(&parent_gid)?
+                .fields
+                .iter()
+                .find(|f| f.name.as_ref() == m.member.as_ref())?;
+            match &field.ty {
+                FieldTy::Scalar(e) => (field.offset as u64, e.clone()),
+                _ => return None,
+            }
+        };
+        let type_idx = TypeIdx(self.types.len() as u32);
+        self.types.push(scalar_gid(&elem));
+        let reg = Register(self.code.len() as u32);
+        self.code.push(HirInstruction::new(
+            Opcode::FieldAddr,
+            parent_reg,
+            Register(0),
+            type_idx,
+            offset,
+        ));
+        Some(Val {
+            reg,
+            ty: LoweredTy::Ptr,
+        })
     }
 
     /// Lower an `if`/`else` statement to basic blocks + branches (memory mode only, so mutated or

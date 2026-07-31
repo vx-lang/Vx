@@ -825,7 +825,27 @@ Test: `pointer_local_under_control_flow_stays_a_register` (unit) — the distill
 shape lowers with **zero** `Alloca` (verified to fail — one slot — with the rule reverted, so it genuinely
 pins the rule).
 
-**Still open from §16:** M3b part 2 (reference returns as places — §12 treats a return as escape); M4
-(reborrows, `&&T`, reference-typed fields), with §16.2 deferred (both path derivations are sound; revisit
-only if M4 makes the duplication painful); the §16.3 `-O2` differential; and the §16.1 hardening (assert
-no emitted module fails to parse, so #277's class is a clean decline).
+### 17.2 M3b part 2 — reference returns (scalar-field address)
+
+§16.4 grouped "reference returns as places" with M3b as "no new machinery." A probe corrected that: a
+reference-returning function (`probe(m : &Map) -> &i32 { return &m.slot; }`) returned `flat=None` — it
+declined entirely. The cause was *not* the cross-function return-provenance §5 deferred (the borrow
+checker already proves a returned reference outlives the callee, #243) but a **bounded emitter gap**: the
+`Expr::Borrow` arm addressed only nested-*aggregate* fields (via `lower_agg_base`, which requires
+`FieldTy::Nominal`); a `&scalar_field` fell through and declined.
+
+Fixed by addressing a scalar field too: `lower_scalar_field_addr` GEPs the parent aggregate (a `&Map`
+param, a local slot, or a nested aggregate — whatever `lower_agg_base` resolves) to the field and yields
+a `!llvm.ptr`, tagging the `FieldAddr` with the field's *scalar* GID. Codegen's `FieldAddr` then branches:
+a GID in `aggs` is an aggregate slot (a chained access GEPs through it, as before); a scalar GID is a
+plain element pointer (`ptr_of`). Existing nested-aggregate receivers are unchanged (their GID is in
+`aggs`), so the full differential is unregressed. The safety proof stays the borrow checker's — the flat
+path only emits the address the frontend already validated.
+
+Tests: `flat_returns_a_reference_to_a_scalar_field` (`&m.slot`, first field, reads 7),
+`flat_returns_a_reference_to_a_non_first_field` (`&m.present`, non-zero offset, reads 9 — guards the
+`field_idx`). Full flat differential unregressed. This is the *scalar-field* reference return; a reference
+to a nested-aggregate field or to a by-value local (not through a pointer) is follow-up.
+
+**Still open from §16:** M4 (reborrows, `&&T`, reference-typed fields), with §16.2 deferred (both path
+derivations are sound; revisit only if M4 makes the duplication painful). §16.1 and §16.3 are done (above).

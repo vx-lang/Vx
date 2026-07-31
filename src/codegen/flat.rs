@@ -1757,7 +1757,7 @@ pub fn emit_function_mlir(
                 let parent_gid = (*agg_of.get(ins.operand1.0 as usize)?)?;
                 let agg = ctx.aggs.get(&parent_gid)?;
                 let field_idx = agg.offsets.iter().position(|&o| o == ins.imm)?;
-                let nested_gid = *types.get(ins.type_idx.0 as usize)?;
+                let field_gid = *types.get(ins.type_idx.0 as usize)?;
                 let slot = names.get(ins.operand1.0 as usize)?;
                 let n = format!("%v{idx}");
                 body += &format!(
@@ -1765,7 +1765,15 @@ pub fn emit_function_mlir(
                     agg.struct_ty
                 );
                 names[idx] = n;
-                agg_of[idx] = Some(nested_gid);
+                // A nested-aggregate field's address is tracked as an aggregate slot, so a chained field
+                // access GEPs through it (#242); a *scalar* field's address (`&param.scalar`, #275 M3b
+                // reference returns) is a plain element pointer — the result GID is the field's scalar GID,
+                // which is not in `aggs`, so track it as a pointer instead.
+                if ctx.aggs.contains_key(&field_gid) {
+                    agg_of[idx] = Some(field_gid);
+                } else {
+                    ptr_of[idx] = true;
+                }
             }
             // Allocate a tensor buffer (`Tensor<T>([..])`): a static `memref` of the shape recovered
             // from the side table by GID. Its register is tracked in `mem_of` for later index/store.

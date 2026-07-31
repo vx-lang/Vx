@@ -585,6 +585,30 @@ fn flat_reads_and_writes_a_field_through_a_place() {
     assert_parity(src, 42);
 }
 
+/// #275 M3b part 2: a *reference-returning* function whose result is the address of a scalar field of a
+/// reference parameter (`probe(m : &Map) -> &i32 { return &m.slot; }`). Previously declined — the flat
+/// path only addressed nested-aggregate fields, so a scalar field's `&` fell through. Now it GEPs to the
+/// element and returns the pointer; the borrow checker's return-provenance (#243) is the safety proof.
+/// `probe(&mm)` returns `&mm.slot` (7); `*r` reads it. Parity with the AST oracle.
+#[test]
+fn flat_returns_a_reference_to_a_scalar_field() {
+    let src = "struct Map { slot : i32, present : i32 }\n\
+               fn probe(m : &Map) -> &i32 { return &m.slot; }\n\
+               fn main() -> i32 { let mm = Map { slot : 7, present : 0 }; let r = probe(&mm); return *r; }";
+    assert_parity(src, 7);
+}
+
+/// The reference-return address must GEP the *right* field: returning `&m.present` (the second field,
+/// non-zero offset) reads back 9, not `slot`. Guards the `field_idx`/offset resolution the first-field
+/// test above cannot distinguish from a hardcoded `[0, 0]`. (#275 M3b)
+#[test]
+fn flat_returns_a_reference_to_a_non_first_field() {
+    let src = "struct Map { slot : i32, present : i32 }\n\
+               fn probe(m : &Map) -> &i32 { return &m.present; }\n\
+               fn main() -> i32 { let mm = Map { slot : 3, present : 9 }; let r = probe(&mm); return *r; }";
+    assert_parity(src, 9);
+}
+
 /// #275 §5 Example B (#276 + #277): a two-level `&mut o.inner.v` place over a by-value nested
 /// aggregate. The nested construction stores the inner struct *value* (#277 — not the inner slot's
 /// address), the borrow check accepts the read after the loan is dead (#276), and the two-level
