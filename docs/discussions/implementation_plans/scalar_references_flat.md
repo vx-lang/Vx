@@ -493,6 +493,7 @@ loops, value-`if`, match) still matches the AST oracle; and a corpus differentia
 
 **Deferred:** applying the same per-local rule to *pointer* locals (still on the coarse model — a
 missed optimization, not a correctness gap) and §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)).
+*(The pointer-local half is now done — M3b, §17.)*
 
 ## 12. Status: places, M1 — the non-escaping borrow (§5 Example A)
 
@@ -728,6 +729,14 @@ existed to remove.
 > worth more than the unification) or schedule a slice that reconciles them. Leaving it implicit means
 > the third derivation gets written when reborrows land.
 
+> [!NOTE]
+> **Resolved: deferred, not scheduled.** Both derivations are individually sound — the checker's
+> `BorrowRecord.path` and the lowerer's `place_base_path`/`paths_may_alias` compute the same fact
+> correctly, just twice. The only cost is the ~15 lines of duplicated path logic, not correctness. This
+> is not on M3b's critical path, so the alignment goal is dropped as a *blocker*; revisit only if M4
+> (reborrows) makes the duplication genuinely painful — at which point the checker's path can be threaded
+> down rather than a third copy written.
+
 ### 16.3 The M2b verification caveat has no exit
 
 §14 and §15 both rest on "correctness follows from the borrow checker's soundness, not a runtime
@@ -778,6 +787,27 @@ Tests: `flat_runs_nested_field_place_example_b` (writes 42 through `*r`),
 `flat_constructs_a_nested_aggregate_by_value` (#277 in isolation, reads 7),
 `borrow_read_after_dead_field_mut.vx` (accepts). Full flat differential module 96 pass (was 94).
 
-**Still open from §16:** M3b (reference returns as places, pointer locals off the coarse model); M4
-(reborrows, `&&T`, reference-typed fields) pending the §16.2 decision; the §16.3 `-O2` differential; and
-the §16.1 hardening (assert no emitted module fails to parse, so #277's class is a clean decline).
+### 17.1 M3b part 1 — pointer locals off the coarse model
+
+§11 left pointer locals on the function-global `memory` flag ("a missed optimization, not a correctness
+gap"). The per-local rule now covers them: a `LoweredTy::Ptr` local that is *not* address-taken binds as
+an SSA register unless it is reassigned in a control-flow function — identical to the scalar rule, with
+the same MLIR-verifier backstop (a register read out of its definition's dominance is invalid MLIR → the
+flat path declines, never miscompiles). An *address-taken* pointer (`&p`, a pointer-to-pointer) keeps the
+coarse model, since its addressable-slot codegen isn't in the subset.
+
+**Where it fires.** The direct shape — a `let p = &mut x` scalar pointer local dereferenced under control
+flow — does *not* lower yet (mutable-through-a-named-local isn't in the subset; only `&mut` *params* in a
+callee and `&mut x` as a *call argument* are), so it can't exercise the rule. The real consumer is the
+raw-pointer local: `Vec::push`'s `let ptr: *mut i8 = self.data;` inside the grow `if` — a pointer local,
+under control flow, read once and never reassigned. Before, it was slotted; now it is a register. The Vec
+differential programs still match the AST oracle, so the flip is sound.
+
+Test: `pointer_local_under_control_flow_stays_a_register` (unit) — the distilled `let ptr = b.data`
+shape lowers with **zero** `Alloca` (verified to fail — one slot — with the rule reverted, so it genuinely
+pins the rule).
+
+**Still open from §16:** M3b part 2 (reference returns as places — §12 treats a return as escape); M4
+(reborrows, `&&T`, reference-typed fields), with §16.2 deferred (both path derivations are sound; revisit
+only if M4 makes the duplication painful); the §16.3 `-O2` differential; and the §16.1 hardening (assert
+no emitted module fails to parse, so #277's class is a clean decline).

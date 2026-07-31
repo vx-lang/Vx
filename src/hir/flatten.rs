@@ -447,7 +447,13 @@ impl<'r> Lowerer<'r> {
         //     non-materialized, non-mutated scalar stays a dominating SSA register — and a scalar
         //     borrowed only into a non-escaping place is *not* materialized, so `let r = &x; *r` needs
         //     no slot at all (§5 Example A);
-        //   - a pointer / (unexpected) tensor local keeps the coarser function-global model.
+        //   - a *pointer* local gets the same per-local rule as a scalar (M3b, §11's remainder): a slot
+        //     only when it is reassigned in a control-flow function (the new pointer value must cross a
+        //     block boundary). A non-reassigned pointer — e.g. a materialized `&mut x` used as `*p` in a
+        //     branch — stays a dominating SSA register, one fewer `alloca`. An *address-taken* pointer
+        //     (`&p`, a pointer-to-pointer) keeps the coarse model: its addressable-slot codegen isn't in
+        //     the subset, so relaxing it is deferred (a missed optimization, never a correctness gap);
+        //   - a tensor local keeps the coarser function-global model.
         // Safety: a register only ever holds a *single-definition* local's value (the right one), and
         // any read outside that definition's dominance is rejected by the MLIR verifier — so the flat
         // path declines to the AST oracle rather than ever silently miscompiling.
@@ -455,6 +461,9 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Aggregate(_) => true,
             LoweredTy::Scalar(_) => {
                 materialized_scalar || (self.has_control_flow && self.mutated.contains(&name))
+            }
+            LoweredTy::Ptr if !self.materialized.contains(&name) => {
+                self.has_control_flow && self.mutated.contains(&name)
             }
             _ => self.memory,
         };
@@ -4209,6 +4218,25 @@ mod tests {
         assert!(
             w.local_place_alias_stores[0].2.is_empty(),
             "a lone place-write has no disjoint sibling"
+        );
+    }
+
+    #[test]
+    fn pointer_local_under_control_flow_stays_a_register() {
+        // M3b (§11's remainder): a `*mut` pointer local under control flow that is not reassigned binds
+        // as an SSA register, not a slot — the same per-local rule scalars got. `ptr` here is the
+        // `let ptr = self.data` shape from `Vec::push`'s grow branch: a raw-pointer field read inside an
+        // `if`, read once (`b.data = ptr`), never reassigned. It gets no `Alloca`.
+        let (did, w) = lower_with_registry(
+            "struct Buf { data : *mut i32, n : i32 }\n\
+             fn grow(b : &mut Buf, c : i32) -> i32 { if c > 0 { let ptr : *mut i32 = b.data; b.data = ptr; } return 0; }",
+            "grow",
+        );
+        assert!(did, "the raw-pointer mutator lowers");
+        assert_eq!(
+            count(&w, Opcode::Alloca),
+            0,
+            "the non-reassigned pointer local under control flow stays a register, no slot"
         );
     }
 
