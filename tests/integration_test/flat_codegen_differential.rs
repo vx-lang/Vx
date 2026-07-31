@@ -56,13 +56,21 @@ fn parse(src: &str) -> Program {
 /// return value): `execute_mlir` yields `Ok` for a zero exit and an `Err`
 /// carrying the code otherwise.
 fn exit_code(llvm_mlir: &str) -> i32 {
-    match execute_mlir(llvm_mlir, vec![], 0, false) {
+    exit_code_at_opt(llvm_mlir, 0)
+}
+
+/// The process exit code of the given LLVM-dialect MLIR JIT-compiled at a chosen optimization level.
+/// `execute_mlir` runs `mlir-translate --mlir-to-llvmir` (which lowers MLIR `alias_scopes`/`noalias_scopes`
+/// to LLVM IR `!alias.scope`/`!noalias`) then `opt -passes=default<O{opt}>` — so `opt > 0` is where an
+/// optimizer actually *consumes* the alias metadata. Used by the §16.3 `-O0`-vs-`-O2` differential.
+fn exit_code_at_opt(llvm_mlir: &str, opt: u8) -> i32 {
+    match execute_mlir(llvm_mlir, vec![], opt, false) {
         Ok(_) => 0,
         Err(e) => e
             .rsplit(':')
             .next()
             .and_then(|s| s.trim().parse::<i32>().ok())
-            .unwrap_or_else(|| panic!("unexpected execute_mlir error: {e}")),
+            .unwrap_or_else(|| panic!("unexpected execute_mlir error at -O{opt}: {e}")),
     }
 }
 
@@ -538,6 +546,33 @@ fn flat_tags_a_lone_field_store_without_noalias() {
     assert!(
         !mlir.contains("noalias_scopes = ["),
         "a lone place-write has no proven-disjoint sibling, so no noalias scope:\n{mlir}"
+    );
+}
+
+/// §16.3 — the `-O0`-vs-`-O2` differential, the check the M2b caveat lacked. The disjoint-field
+/// `noalias` metadata (§15) changes no result at `-O0` (the pipeline ignores alias metadata), so the
+/// `-O0` flat differential cannot tell a *sound* `noalias` from an unsound one. Re-run the same lowered
+/// module at `-O2`, where `opt` actually consumes `!alias.scope`/`!noalias`: a wrong `noalias` would
+/// license the optimizer to reorder or drop a store and diverge from the `-O0` ground truth. Example C
+/// carries the metadata (two mutually-`noalias` field writes); both levels must return 12.
+#[test]
+fn flat_alias_metadata_is_sound_under_o2() {
+    let src = "struct Point { x : i32, y : i32 }\n\
+               fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }\n\
+               fn main() -> i32 { let mut pt = Point { x : 0, y : 0 }; update(&mut pt); return pt.x * 10 + pt.y; }";
+    let llvm = flat_llvm(src).expect("Example C lowers on the flat path");
+    // The metadata must survive `lower_to_llvm` to reach the optimizer, else this differential is
+    // vacuous. (`alias_scope` appears in the LLVM-dialect `llvm.store` attribute.)
+    assert!(
+        llvm.contains("alias_scope"),
+        "alias-scope metadata must survive lower_to_llvm to reach -O2:\n{llvm}"
+    );
+    let o0 = exit_code_at_opt(&llvm, 0);
+    let o2 = exit_code_at_opt(&llvm, 2);
+    assert_eq!(o0, 12, "Example C ground truth at -O0");
+    assert_eq!(
+        o2, o0,
+        "the disjoint-field noalias metadata must not change the result under -O2 (soundness)"
     );
 }
 

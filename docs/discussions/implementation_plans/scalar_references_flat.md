@@ -757,6 +757,14 @@ for two slices with no named way to ever check it.
 > exercises exactly what the attributes license an optimizer to assume, and a wrong `noalias` would
 > diverge. It is the only proposed check that tests the thing the caveat waives.
 
+> [!NOTE]
+> **Done (`flat_alias_metadata_is_sound_under_o2`).** The lowered Example C module (which carries the
+> `noalias` metadata — asserted present, so the check isn't vacuous) is JIT-run at `-O0` and `-O2` and
+> both return 12. `execute_mlir` translates the MLIR `alias_scopes`/`noalias_scopes` to LLVM
+> `!alias.scope`/`!noalias` via `mlir-translate` and then runs `opt -passes=default<O2>`, so `-O2` is
+> where the optimizer actually consumes them; a wrong `noalias` would let it reorder/drop a store and
+> diverge from the `-O0` ground truth. The caveat now has its exit.
+
 ### 16.4 Suggested milestones for the rest
 
 | | Content | Why grouped | Status |
