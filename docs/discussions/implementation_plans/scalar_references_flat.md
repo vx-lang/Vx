@@ -849,3 +849,37 @@ to a nested-aggregate field or to a by-value local (not through a pointer) is fo
 
 **Still open from §16:** M4 (reborrows, `&&T`, reference-typed fields), with §16.2 deferred (both path
 derivations are sound; revisit only if M4 makes the duplication painful). §16.1 and §16.3 are done (above).
+
+## 18. Status: M4 — assessment and the reachable slice
+
+M4's three constructs were **classified by AST-oracle availability** (a flat differential needs the AST
+path to compile the program) before committing to any of them:
+
+| Construct | AST oracle | Flat (before) | Verdict |
+|---|---|---|---|
+| reborrow-by-name to a `&param` (`via(m) { read(m) }`) | ✓ = 7 | ✓ = 7 | **already lowers** — the common case is done |
+| reference-typed struct field (`struct H { r : &i32 }`) | ✓ = 5 | declined | **closable** — a bounded escape gap (§18.1) |
+| nested reference `&&T` (`let rr = &r; **rr`) | unreliable (≠ expected) | declined | **deferred** — no clean oracle, #233-class |
+
+So reborrow-by-passing needs nothing; `&&T` has no trustworthy oracle to differentiate against (the AST
+path itself does not produce the expected value), so it is deferred like #233; and the one reachable
+slice was reference-typed struct fields.
+
+### 18.1 Reference-typed struct fields
+
+`Holder { r : &x }` / `*h.r` declined at the **construction**, and the cause was a one-line escape-analysis
+gap, not a representational one: `BorrowScan::expr` (and `RefUseScan::expr`) had no `Expr::StructInit` /
+`Expr::EnumVariant` arm, so a `&x` *inside* an aggregate literal was never seen — `x` stayed a register
+and the `&x` declined at lowering (the "missing a fact is safe" invariant, §3, turned it into a decline
+rather than a miscompile). Descending into the literal's field/payload values materializes `x`; the store
+of the pointer into the `Opaque` field and the `*h.r` load-then-deref then lower on the existing
+raw-pointer-field machinery (#242) with no further change.
+
+Tests: `flat_runs_a_reference_typed_struct_field` (reads 5, parity),
+`borrow_inside_a_struct_literal_materializes_its_base` (unit: the literal's `&x` produces an addressable
+`imm = 1` alloca). Full flat differential unregressed — the scan only descends further, and no existing
+program has a borrow inside a literal that was relying on the old under-collection.
+
+**Remaining M4, deferred:** `&&T` / nested references (needs a working AST oracle first — an AST-path
+issue, not a flat one) and reborrow-as-place refinements beyond the by-passing case. Reference-typed
+fields and reference returns (§17.2) close the reachable reference surface for now.

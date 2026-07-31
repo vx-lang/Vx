@@ -2916,6 +2916,15 @@ impl BorrowScan {
                     self.expr(r);
                 }
             }
+            // A borrow inside an aggregate literal (`Holder { r : &x }`, a reference-typed field — #275
+            // M4) escapes into the aggregate, so its base must materialize. Descend into the field/payload
+            // values so the `&x` is seen (else `x` stays a register and the `&x` declines at lowering).
+            Expr::StructInit(si) => si.fields.iter().for_each(|(_, e)| self.expr(e)),
+            Expr::EnumVariant(ev) => {
+                if let Some(p) = &ev.payload {
+                    p.iter().for_each(|e| self.expr(e));
+                }
+            }
             _ => {}
         }
     }
@@ -3036,6 +3045,14 @@ impl RefUseScan<'_> {
                 self.block(&c.stmts);
                 if let Some(r) = &c.ret {
                     self.expr(r);
+                }
+            }
+            // A ref-local mentioned inside an aggregate literal escapes into it (a non-`*r` use), so it
+            // can't stay a symbolic place — descend to catch it, matching pass 1. (#275 M4)
+            Expr::StructInit(si) => si.fields.iter().for_each(|(_, e)| self.expr(e)),
+            Expr::EnumVariant(ev) => {
+                if let Some(p) = &ev.payload {
+                    p.iter().for_each(|e| self.expr(e));
                 }
             }
             _ => {}
@@ -4181,6 +4198,28 @@ mod tests {
             .find(|i| i.opcode == Opcode::Alloca)
             .expect("the escaping base gets a materialized slot");
         assert_eq!(alloca.imm, 1, "an addressable `llvm.alloca`, not a memref");
+    }
+
+    #[test]
+    fn borrow_inside_a_struct_literal_materializes_its_base() {
+        // #275 M4: a `&x` inside an aggregate literal (`Holder { r : &x }`, a reference-typed field)
+        // escapes into the struct, so the escape scan must descend into the literal and materialize `x`
+        // — an addressable `llvm.alloca` (`imm = 1`). Without the StructInit arm in the scan, `x` stayed
+        // a register and the `&x` declined. The whole reference-field program then lowers.
+        let (did, w) = lower_with_registry(
+            "struct Holder { r : &i32 }\n\
+             fn main() -> i32 { let x = 5; let h = Holder { r : &x }; return *h.r; }",
+            "main",
+        );
+        assert!(did, "the reference-typed-field program lowers");
+        let addressable = w
+            .local_hir_stream
+            .iter()
+            .any(|i| i.opcode == Opcode::Alloca && i.imm == 1);
+        assert!(
+            addressable,
+            "`&x` inside the struct literal materializes `x` as an addressable slot"
+        );
     }
 
     #[test]

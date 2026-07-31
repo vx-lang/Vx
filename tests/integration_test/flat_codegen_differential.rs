@@ -585,6 +585,17 @@ fn flat_reads_and_writes_a_field_through_a_place() {
     assert_parity(src, 42);
 }
 
+/// #275 M4: a reference-typed struct field (`struct Holder { r : &i32 }`). Constructing `Holder { r : &x }`
+/// stores the address of `x` into the reference field, and `*h.r` loads the field pointer and derefs it.
+/// Previously declined: the escape scan didn't descend into aggregate literals, so the `&x` never
+/// materialized `x`. Now it does; the whole program lowers and matches the AST oracle (5).
+#[test]
+fn flat_runs_a_reference_typed_struct_field() {
+    let src = "struct Holder { r : &i32 }\n\
+               fn main() -> i32 { let x = 5; let h = Holder { r : &x }; return *h.r; }";
+    assert_parity(src, 5);
+}
+
 /// #275 M3b part 2: a *reference-returning* function whose result is the address of a scalar field of a
 /// reference parameter (`probe(m : &Map) -> &i32 { return &m.slot; }`). Previously declined — the flat
 /// path only addressed nested-aggregate fields, so a scalar field's `&` fell through. Now it GEPs to the
