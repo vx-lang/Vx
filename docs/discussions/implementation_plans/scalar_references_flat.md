@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Deferred: §5 places/projections ([#275](https://github.com/hiraditya/Vx/issues/275)).
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path. Deferred: the §5.4 disjointness→alias-metadata payoff (M2b).
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -528,3 +528,36 @@ directions); the full suite and the `tests/backend/pass` corpus differential sho
 
 **Next (M2):** field-projection resolution — a non-empty path GEP'd through the base aggregate, landing
 §5 Example B (`&mut o.inner.v`), with the AST path as the oracle (aggregates compile on it).
+
+## 13. Status: places, M2a — field references (§5 Example B/C substrate)
+
+The field-projection slice, and the substrate §5.4's disjointness payoff needs: a `let bx = &[mut] p.x`
+whose reference does not escape binds `bx` to a **field place** over the borrowed expression, and `*bx`
+/ `*bx = v` re-lower it — a `FieldLoad` / `FieldStore` through `p` — with no pointer materialized. §5
+Example C (`let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2`) now runs on the flat path, matching
+the AST oracle.
+
+The key simplification over a base + interned-path representation: `Binding::Place` stores the
+**borrowed place-expression itself** (`Identifier(x)` for `&x`, `MemberAccess(p.x)` for `&p.x`), and
+resolution just re-lowers it through the *existing* member-access read (`FieldLoad`) and field-store
+(`FieldStore`) paths — the same code that already lowers `p.x` / `p.x = v` directly. So M1 and M2
+unified: a deref is `lower_expr(place)`, a deref-store is `lower_assign(place, rhs)` (the `Assign` body
+factored out for exactly this re-dispatch). The variable-length projection path §5.5 worried about
+lives in the AST expression it already came from — no side table.
+
+Escape analysis (`analyze_local_uses`) generalized: a candidate is now `let r = &[mut] <lvalue>` for any
+lvalue rooted at a local (`place_root`), classified `is_field`. A field candidate realizes as a place
+whenever the reference does not escape (mutable and written are fine — they resolve to field stores); a
+scalar candidate keeps the stricter Example A rule (immutable, read-only, un-materialized base). Escape
+still means decline: an escaping or unsupported field borrow (e.g. a two-level `&o.inner.v`, whose
+nested `FieldLoad` is an independent flat-emitter gap) falls back to the AST oracle, never a miscompile.
+
+**Verified:** `flat_runs_disjoint_field_borrows_through_places` (Example C, flat-vs-AST parity),
+`flat_reads_and_writes_a_field_through_a_place`, `flat_reads_an_immutable_field_through_a_place`
+(parity); `field_places_resolve_writes_to_field_stores` (unit: two `FieldStore`s, zero `PtrStore`); full
+suite + corpus differential unchanged.
+
+**Next (M2b):** the disjointness payoff — recover the projection paths from the two places, prove
+`[x]`/`[y]` disjoint, and emit LLVM alias-scope / `noalias` metadata on the stores so the frontend's
+proof is not re-derived (§5.4). No alias-metadata infrastructure exists yet, so this is the larger,
+codegen-side half.

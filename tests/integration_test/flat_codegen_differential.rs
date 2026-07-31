@@ -469,6 +469,36 @@ fn flat_escaping_borrow_materializes_an_address() {
     );
 }
 
+/// #275 §5 Example C: disjoint field borrows through a `&mut` parameter. `let bx = &mut p.x; let by =
+/// &mut p.y; *bx = 1; *by = 2` binds `bx`/`by` as symbolic *field places*; each `*b = v` re-lowers as a
+/// `FieldStore` through `p`. The borrow checker proves `x` and `y` disjoint; this brings the whole
+/// program onto the flat path, matching the AST oracle (`x*10 + y == 12`).
+#[test]
+fn flat_runs_disjoint_field_borrows_through_places() {
+    let src = "struct Point { x : i32, y : i32 }\n\
+               fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }\n\
+               fn main() -> i32 { let mut pt = Point { x : 0, y : 0 }; update(&mut pt); return pt.x * 10 + pt.y; }";
+    assert_parity(src, 12);
+}
+
+/// #275 §5 field place, read + write through a single-level field reference. `&mut p.x; *r = 42;
+/// return *r` resolves both the write and the read through `p.x` — no pointer materialized. Parity.
+#[test]
+fn flat_reads_and_writes_a_field_through_a_place() {
+    let src = "struct P { x : i32, y : i32 }\n\
+               fn main() -> i32 { let mut p = P { x : 1, y : 2 }; let r = &mut p.x; *r = 42; return *r; }";
+    assert_parity(src, 42);
+}
+
+/// An immutable single-level field reference read through a place. `&p.x; return *r` — the field is
+/// `FieldLoad`ed at the deref. Parity with the AST oracle.
+#[test]
+fn flat_reads_an_immutable_field_through_a_place() {
+    let src = "struct P { x : i32, y : i32 }\n\
+               fn main() -> i32 { let p = P { x : 7, y : 2 }; let r = &p.x; return *r; }";
+    assert_parity(src, 7);
+}
+
 #[test]
 fn flat_matches_ast_if_expression() {
     // A value-position `if` (`let m: i32 = if a > b { a } else { b }`, #201): lowered to blocks + a
