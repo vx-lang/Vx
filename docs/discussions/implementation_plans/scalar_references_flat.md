@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2). §16 audits what remains; **M3a (§17) landed Example B (`&mut o.inner.v`) end to end** by fixing the borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)) and by-value nested-aggregate construction ([#277](https://github.com/hiraditya/Vx/issues/277)).
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2). §16 audits what remains; **M3a (§17) landed Example B (`&mut o.inner.v`) end to end** by fixing the borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)) and by-value nested-aggregate construction ([#277](https://github.com/hiraditya/Vx/issues/277)). **M3b** landed pointer-locals off the coarse model (§17.1) and scalar-field reference returns (§17.2); the §16.1 parse-assert and §16.3 `-O2` differential hardenings are done; and **M4 (§18)** landed reference-typed struct fields, leaving only `&&T` (blocked on an AST-codegen bug, §18.2) and §16.2 (deferred) open.
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -859,7 +859,7 @@ path to compile the program) before committing to any of them:
 |---|---|---|---|
 | reborrow-by-name to a `&param` (`via(m) { read(m) }`) | ✓ = 7 | ✓ = 7 | **already lowers** — the common case is done |
 | reference-typed struct field (`struct H { r : &i32 }`) | ✓ = 5 | declined | **closable** — a bounded escape gap (§18.1) |
-| nested reference `&&T` (`let rr = &r; **rr`) | unreliable (≠ expected) | declined | **deferred** — no clean oracle, #233-class |
+| nested reference `&&T` (`let rr = &r; **rr`) | **miscompiles** (crashes, ≠ 5) | declined | **blocked** — no clean oracle, an AST-codegen bug (below) |
 
 So reborrow-by-passing needs nothing; `&&T` has no trustworthy oracle to differentiate against (the AST
 path itself does not produce the expected value), so it is deferred like #233; and the one reachable
@@ -880,6 +880,22 @@ Tests: `flat_runs_a_reference_typed_struct_field` (reads 5, parity),
 `imm = 1` alloca). Full flat differential unregressed — the scan only descends further, and no existing
 program has a borrow inside a literal that was relying on the old under-collection.
 
-**Remaining M4, deferred:** `&&T` / nested references (needs a working AST oracle first — an AST-path
-issue, not a flat one) and reborrow-as-place refinements beyond the by-passing case. Reference-typed
-fields and reference returns (§17.2) close the reachable reference surface for now.
+**Remaining M4, deferred:** `&&T` / nested references and reborrow-as-place refinements beyond the
+by-passing case. Reference-typed fields and reference returns (§17.2) close the reachable reference
+surface for now.
+
+### 18.2 The `&&T` blocker is an AST-codegen bug, not a flat gap
+
+`fn main() -> i32 { let x = 5; let r = &x; let rr = &r; return **rr; }` **type-checks** on the AST path
+(`check_dereference_expr` unwraps one `Borrow` layer per `*`, so `**rr : i32`) but the compiled program
+**crashes at runtime** — `execute_mlir` returns `Err("...non-zero code: -1")`, not `5`, and no
+"Dereference of raw pointer outside unsafe" diagnostic fires (it is treated as a normal `&`-deref). So the
+AST codegen mishandles a *reference to a reference*: `&r` (taking the address of a reference-holding
+local) and/or the double load `**rr` produce a bad address chain.
+
+Consequence for this document: there is **no trustworthy oracle** to differentiate a flat `&&T` lowering
+against — the differential harness asserts flat == AST == expected, and here AST ≠ expected. So `&&T` on
+the flat path is **blocked upstream on the AST bug**, exactly the §7.1 shape (a construct whose oracle is
+itself broken), and is out of scope for this flat-path document. It is filed here as a found AST-codegen
+defect (worth its own issue); fixing it is AST-generator work, not flat lowering, and would be verified by
+its own AST-level test before any flat differential could use it as an oracle.
