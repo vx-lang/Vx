@@ -714,6 +714,16 @@ cross-module, where a decline is fatal and one that only appears as a parse fail
 enumerate ahead of time. Worth asserting in the emitter that no emitted module fails to parse, so this
 class becomes a decline.
 
+> [!NOTE]
+> **Hardened (`build_flat_module`).** When `emit_module_mlir` returns `Some(text)` — the emitter
+> *claiming* it handled the module — but that text fails `Module::parse`, that is now a `debug_assert`
+> failure: an emitter bug (a construct emitted unparseable text instead of declining in
+> `emit_module_mlir`), distinct from the designed `None` decline. Debug/test builds fail hard so the gap
+> surfaces where a fallback and the corpus exist; release still falls back gracefully. Verified the whole
+> `tests/backend/pass` corpus and the flat differential run clean under the assert (nothing currently
+> emits invalid text and silently degrades). The `-O2` differential (§16.3) is the remaining unaddressed
+> hardening.
+
 ### 16.2 The `BorrowRecord.path` alignment goal is now unaddressed
 
 #275's rationale was that both stages should "speak the same language about which memory a reference

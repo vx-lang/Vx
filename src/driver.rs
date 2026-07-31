@@ -984,8 +984,24 @@ impl CompilerDriver {
         };
 
         let parsed = melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"));
-        if parsed.is_none() && std::env::var("VX_FLAT_DBG").is_ok() {
-            eprintln!("[flat-dbg] emitted flat MLIR failed to parse:\n{text}");
+        if parsed.is_none() {
+            // `emit_module_mlir` returned `Some(text)` — it *claimed* to handle this module — yet the
+            // text does not parse. That is an emitter **bug** (a construct emitted invalid MLIR, e.g.
+            // #277), distinct from the designed decline: an unsupported construct must make
+            // `emit_module_mlir` return `None` *before* emitting, an enumerable "outside the subset".
+            // Both degrade to the same AST fallback intra-module, but a parse failure is not something
+            // the decline predicate can enumerate ahead of time — and cross-module there is no fallback
+            // to degrade to (§7.1), so a `.vxlib` built from this HIR would fail at the consumer's link
+            // step. Fail hard in debug/test builds so the gap surfaces here (where a fallback and the
+            // corpus exist) rather than at a consumer; release still falls back gracefully.
+            if std::env::var("VX_FLAT_DBG").is_ok() {
+                eprintln!("[flat-dbg] emitted flat MLIR failed to parse:\n{text}");
+            }
+            debug_assert!(
+                parsed.is_some(),
+                "flat emitter produced invalid MLIR (emit returned Some, parse failed): a construct \
+                 emitted unparseable text instead of declining in emit_module_mlir.\n{text}"
+            );
         }
         parsed
     }
