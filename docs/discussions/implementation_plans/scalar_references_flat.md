@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2).
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2). §16 audits what remains; **M3a (§17) landed Example B (`&mut o.inner.v`) end to end** by fixing the borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)) and by-value nested-aggregate construction ([#277](https://github.com/hiraditya/Vx/issues/277)).
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -642,6 +642,10 @@ Audited after M2b-2 (`c625954f`). Recorded here because the per-slice "Next (Mx)
 with no successor, so the remaining [#275](https://github.com/hiraditya/Vx/issues/275) scope had no
 plan attached to it.
 
+> [!NOTE]
+> **Resolved by M3a (§17).** Both defects below are fixed: #276 (`0cee9a4`) and #277 (`1886814`).
+> Example B now runs end to end on the flat path with AST parity. The diagnosis is kept for the record.
+
 ### 16.1 §5 Example B is blocked by two separate defects, neither of them a place bug
 
 §12 named Example B (`&mut o.inner.v`) as M2's target; §13 delivered Example C instead and reassigned
@@ -736,13 +740,44 @@ for two slices with no named way to ever check it.
 
 ### 16.4 Suggested milestones for the rest
 
-| | Content | Why grouped |
-|---|---|---|
-| **M3a** | #276 + #277 | Prerequisites for Example B; small, and unblock a deliverable already named in §12 |
-| **M3b** | Reference returns as places (§12 treats a return as escape); pointer locals off the coarse model (§11's remainder) | Both extend the existing representation — no new machinery |
-| **M4** | Reborrows, nested references (`&&T`), reference-typed struct fields | The genuinely new representational work, and where §16.2's decision must be made |
-| **Ongoing** | The `-O2` differential (§16.3) | Retires a caveat that otherwise compounds per slice |
+| | Content | Why grouped | Status |
+|---|---|---|---|
+| **M3a** | #276 + #277 | Prerequisites for Example B; small, and unblock a deliverable already named in §12 | **Done (§17)** |
+| **M3b** | Reference returns as places (§12 treats a return as escape); pointer locals off the coarse model (§11's remainder) | Both extend the existing representation — no new machinery | Open |
+| **M4** | Reborrows, nested references (`&&T`), reference-typed struct fields | The genuinely new representational work, and where §16.2's decision must be made | Open (needs §16.2) |
+| **Ongoing** | The `-O2` differential (§16.3) | Retires a caveat that otherwise compounds per slice | Open |
 
 The alternative is to close #275 as "places, first cut, delivered" — M1 and M2a landed real value
 (Example A's eliminated alloca; Example C running on flat) — and re-file M4 with §16.2 decided up
 front. The remaining bullets are arguably different work from what M1/M2 built.
+
+## 17. Status: M3a — Example B end to end, as implemented
+
+Example B (`&mut o.inner.v`, §5.3) — named as M2's target in §12, then reassigned to "an independent
+flat-emitter gap" in §13 — now lowers and runs on the flat path with AST parity. §16.1 found it blocked
+by two defects in front of the place machinery, neither a place bug; M3a fixed both.
+
+**#276 — borrow-checker over-rejection (`0cee9a4`).** The NLL dead-borrow sweep ran only when a *new*
+borrow was created (`track_reference_arg_borrow`), so `let r = &mut p.x; *r = 42; return p.x;` was
+rejected: reading `p` while `r`'s (dead) loan was still lexically in scope. Factored the sweep into
+`sweep_dead_borrows` and ran it in the identifier- and member-access checks too, so a read after a loan
+is dead is accepted exactly as a new borrow after it is. One-directional (removing a dead record can only
+withdraw a diagnostic), skipped under `silent` speculation. `borrow_use_after_mut.vx` — a *live* borrow —
+still rejects. The retired `borrow_checker_mapping.md` §6 note is reinstated in
+[`borrow_checker_architecture.md`](../borrow_checker_architecture.md), updated to record the shared sweep.
+
+**#277 — by-value nested-aggregate construction (`1886814`).** `Outer { inner : Inner { .. } }` lowered
+the inner `StructInit` to its construction *slot* (a pointer) and `FieldStore`d that address into the
+outer's field, which codegen types as the field's struct *value* — invalid MLIR (a parse failure, caught,
+so never a miscompile, but not the designed decline). Load the inner aggregate to a value before the
+store, mirroring `lower_assign`'s existing aggregate-RHS fix. This is §16.1 option 1; destination-passing
+(option 2) — build directly into the GEP'd field, sharing one mechanism with places — remains the better
+follow-up.
+
+Tests: `flat_runs_nested_field_place_example_b` (writes 42 through `*r`),
+`flat_constructs_a_nested_aggregate_by_value` (#277 in isolation, reads 7),
+`borrow_read_after_dead_field_mut.vx` (accepts). Full flat differential module 96 pass (was 94).
+
+**Still open from §16:** M3b (reference returns as places, pointer locals off the coarse model); M4
+(reborrows, `&&T`, reference-typed fields) pending the §16.2 decision; the §16.3 `-O2` differential; and
+the §16.1 hardening (assert no emitted module fails to parse, so #277's class is a clean decline).
