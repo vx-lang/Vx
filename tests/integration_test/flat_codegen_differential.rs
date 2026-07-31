@@ -499,6 +499,41 @@ fn flat_reads_an_immutable_field_through_a_place() {
     assert_parity(src, 7);
 }
 
+/// #275 §5.4: carry the borrow checker's exclusivity into the signature. A `&mut T` parameter is an
+/// exclusive borrow → `llvm.noalias` — the aliasing guarantee LLVM cannot re-derive (the callee can't
+/// see the caller's borrows). This is what rustc emits; verified structurally (an `-O0` differential is
+/// blind to alias attributes) plus a parity run that the attribute doesn't break translation.
+#[test]
+fn flat_marks_mut_ref_param_noalias() {
+    let src = "struct P { x : i32, y : i32 }\n\
+               fn set(p : &mut P) -> void { p.x = 9; }\n\
+               fn main() -> i32 { let mut p = P { x : 0, y : 0 }; set(&mut p); return p.x; }";
+    assert_parity(src, 9);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        mlir.contains("!llvm.ptr {llvm.noalias}"),
+        "the `&mut P` param should carry llvm.noalias:\n{mlir}"
+    );
+}
+
+/// A `&T` shared reference cannot be written *through* (type-guaranteed) → `llvm.readonly`; but two
+/// `&T` may alias, so it is deliberately *not* `noalias`. Structural + parity.
+#[test]
+fn flat_marks_shared_ref_param_readonly() {
+    let src = "fn rd(x : &i32) -> i32 { return *x; }\n\
+               fn main() -> i32 { let a = 7; let r = &a; return rd(r); }";
+    assert_parity(src, 7);
+    let mlir = flat_module_mlir(src).expect("lowers on the flat path");
+    assert!(
+        mlir.contains("!llvm.ptr {llvm.readonly}"),
+        "the `&i32` param should carry llvm.readonly:\n{mlir}"
+    );
+    assert!(
+        !mlir.contains("noalias"),
+        "a shared reference must not be marked noalias (two `&T` may alias):\n{mlir}"
+    );
+}
+
 #[test]
 fn flat_matches_ast_if_expression() {
     // A value-position `if` (`let m: i32 = if a > b { a } else { b }`, #201): lowered to blocks + a

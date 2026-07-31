@@ -561,3 +561,35 @@ suite + corpus differential unchanged.
 `[x]`/`[y]` disjoint, and emit LLVM alias-scope / `noalias` metadata on the stores so the frontend's
 proof is not re-derived (§5.4). No alias-metadata infrastructure exists yet, so this is the larger,
 codegen-side half.
+
+## 14. Status: places, M2b-1 — reference-parameter aliasing attributes (§5.4)
+
+Investigating the §5.4 payoff surfaced a correction worth recording: **for struct fields the alias
+metadata is redundant.** Example C's two stores lower to `getelementptr %p[0,0]` / `%p[0,1]` — constant
+offsets off one base — from which LLVM already proves disjointness. So scope metadata on *those* stores
+tells LLVM nothing (the section itself concedes "LLVM re-derives from GEP offsets"). The guarantee LLVM
+genuinely **cannot** re-derive is the exclusivity of the reference *itself*: a `&mut` parameter aliases
+nothing, but the callee cannot see the caller's borrows.
+
+M2b-1 carries that guarantee into the function signature, exactly as rustc does:
+
+- `&mut T` parameter → `llvm.noalias` (an exclusive borrow — the borrow checker forbids any other
+  reference to the same memory for its duration);
+- `&T` parameter → `llvm.readonly` (a shared reference cannot be written *through* — type-guaranteed).
+  Deliberately **not** `noalias`: two `&T` may alias, so only the no-write guarantee is sound;
+- raw `*mut`/`*const` → nothing (no exclusivity).
+
+`param_alias_attrs` (`src/codegen/flat.rs`) renders the attribute after the param type;
+`func.func @update(%arg0 : !llvm.ptr {llvm.noalias})` survives lowering to `llvm.func` and translates to
+an LLVM IR parameter attribute.
+
+**Verification caveat, made explicit.** An `-O0` differential is *blind* to alias attributes — they
+change no result, only what an optimizer may assume. A *wrong* attribute would miscompile only under
+optimization, which the oracle never runs. So correctness here rests on the **borrow checker's
+soundness**, not a runtime check — hence the conservative split above. Tests assert structural presence
+(`flat_marks_mut_ref_param_noalias`, `flat_marks_shared_ref_param_readonly`) plus a parity run proving
+the attribute doesn't break translation; the full suite + corpus differential are unchanged.
+
+**Next (M2b-2):** the literal §5.4 field alias-scopes — redundant for struct fields today (LLVM derives
+it), but the machinery (recover `[x]`/`[y]` from the places, emit `llvm.alias_scope`/`noalias_scopes`)
+generalizes to disjointness LLVM can't derive from a GEP (opaque bases, dynamic indices).

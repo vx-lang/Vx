@@ -197,6 +197,26 @@ pub fn is_void_ty(ty: &Type) -> bool {
     matches!(ty, Type::Struct(n, _) if n.as_ref() == "void" || n.as_ref() == "none")
 }
 
+/// The MLIR argument-attribute suffix carrying the borrow checker's aliasing guarantee into the
+/// function signature (#275, §5.4) — the disjointness LLVM cannot re-derive on its own. A `&mut T`
+/// parameter is an *exclusive* borrow (the borrow checker forbids any other reference to the same
+/// memory for its duration), so it earns `llvm.noalias`. A `&T` shared reference cannot be written
+/// *through* (type-guaranteed), so it earns `llvm.readonly` — but *not* `noalias`, since two `&T` may
+/// legitimately alias and only the no-write guarantee is sound. Raw `*mut`/`*const` pointers carry no
+/// such guarantee and get nothing.
+///
+/// This is the guarantee an `-O0` differential cannot see (attributes only bite under optimization), so
+/// it rests on the borrow checker's soundness rather than on a runtime oracle — hence the deliberately
+/// conservative choice above (exactly what rustc emits for `&mut`/`&`). Rendered with a leading space
+/// for direct concatenation after the param type, or `""` for none.
+fn param_alias_attrs(ty: &Type) -> &'static str {
+    match ty {
+        Type::Borrow { is_mut: true, .. } => " {llvm.noalias}",
+        Type::Borrow { is_mut: false, .. } => " {llvm.readonly}",
+        _ => "",
+    }
+}
+
 /// The arith op mnemonic for a binary opcode at a given element type.
 fn arith_op(op: Opcode, e: &ElementType) -> Option<&'static str> {
     let f = is_float(e);
@@ -983,7 +1003,7 @@ pub fn emit_function_mlir(
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
-        params.push(format!("%arg{i}: {pty}"));
+        params.push(format!("%arg{i}: {pty}{}", param_alias_attrs(ty)));
     }
     let ret_elem = match &func.return_type {
         Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => Some(e.clone()),
