@@ -635,3 +635,114 @@ stores emit byte-identically (`unwrap_or_default`), so nothing outside the `&mut
 
 This closes M2b (both halves of §5.4). The place representation now carries disjointness proofs to the
 IR; extending them past constant field offsets (where they stop being redundant) is future work.
+
+## 16. What remains, and how to fix it
+
+Audited after M2b-2 (`c625954f`). Recorded here because the per-slice "Next (Mx)" chain ends at §15
+with no successor, so the remaining [#275](https://github.com/hiraditya/Vx/issues/275) scope had no
+plan attached to it.
+
+### 16.1 §5 Example B is blocked by two separate defects, neither of them a place bug
+
+§12 named Example B (`&mut o.inner.v`) as M2's target; §13 delivered Example C instead and reassigned
+it to "an independent flat-emitter gap." Probing that gap found **two** defects, in this order:
+
+**First — a borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)).**
+Example B never reaches codegen:
+
+```rust
+let r = &mut p.x;  *r = 42;  return p.x;   // Error: Cannot access 'p' because it is mutably borrowed
+```
+
+One level of projection, so not a depth problem. The discriminator: creating a **new borrow** after
+`r`'s last use is accepted, **reading** after it is not —
+
+```rust
+let r = &mut p.x;  *r = 42;  let s = &mut p.y;  *s = 7;   // ACCEPTED
+```
+
+NLL dead-borrow cleanup runs in `check_borrow_expr` and `track_reference_arg_borrow` (both sweep with
+`is_variable_used_after` before testing for a conflict — that sweep is what makes bc5 pass) but the
+identifier-access check does not.
+
+> *Fix:* factor the existing sweep out of `track_reference_arg_borrow` and run it in the
+> identifier-access arm before iterating `active_borrows`. The change only *removes* diagnostics, so
+> it cannot introduce an unsound accept — the same safety argument that made #269 landable.
+
+> [!NOTE]
+> The retired `docs/lang/borrow_checker_mapping.md` §6 described this split precisely. It was assessed
+> as stale when that file was retired (`0440ead0`) — **incorrectly**: `bc5` only ever exercised the
+> borrow-*creation* path, so it never contradicted the note. The rest of that retirement stands. The
+> note should be reinstated in [`borrow_checker_architecture.md`](../borrow_checker_architecture.md)
+> once #276 is fixed, as a record of what the two checks now share.
+
+**Second — by-value nested-aggregate construction
+([#277](https://github.com/hiraditya/Vx/issues/277)).** With the borrow error sidestepped, the flat
+emitter produces invalid MLIR:
+
+```mlir
+%v2 = llvm.alloca %n2 x !llvm.struct<(i32)>            ; Inner{v:1} -> %v2 is a POINTER
+%p5 = llvm.getelementptr %v1[0, 0]                     ; &o.inner
+llvm.store %v2, %p5 : !llvm.struct<(i32)>, !llvm.ptr   ; stores the ADDRESS, typed as the VALUE
+```
+
+```
+error: use of value '%v2' expects different type than prior uses: '!llvm.struct<(i32)>' vs '!llvm.ptr'
+```
+
+**The two-level projection itself is correct** — `gep %v1[0,0]` then `gep %v6[0,0]`, with M2b-2's
+alias metadata rendering fine on the final store. Only the constructor is wrong. (The nested type
+spelling `!llvm.struct<(!llvm.struct<(i32)>)>` is also fine; both prefixed and unprefixed nestings
+parse — checked against `mlir-opt`.)
+
+> *Fix, two options:* (1) load the inner aggregate and store the **value** — minimal, one extra
+> aggregate copy; (2) **construct in place** — do not allocate the inner slot at all, GEP the outer's
+> field and build directly into it. (2) is the better shape *and* composes with places: a place is
+> precisely "a destination to build into," so once construction accepts a place, nested construction
+> and nested projection share one mechanism. (1) is a fine first cut if destination-passing is too
+> large to bundle.
+
+**Severity note.** This surfaces as *invalid MLIR caught by the parser*, not as a clean decline. The
+end result today is the same (AST fallback, no miscompile), but it is a different safety net than the
+designed one, and the decline predicate does not know about the gap. Per §7.1 that matters
+cross-module, where a decline is fatal and one that only appears as a parse failure is harder to
+enumerate ahead of time. Worth asserting in the emitter that no emitted module fails to parse, so this
+class becomes a decline.
+
+### 16.2 The `BorrowRecord.path` alignment goal is now unaddressed
+
+#275's rationale was that both stages should "speak the same language about which memory a reference
+names." M2a instead stores the **borrowed AST expression** and re-lowers it — a good simplification
+(§13), and it removed the need for the side table §5.5 anticipated. But there is consequently no
+`Vec<Projection>` to align with `BorrowRecord.path`, and M2b-2 had to *recover* `(root, field path)`
+ad hoc in `reduce_place_alias` to compute disjointness.
+
+So there are now **two independent path derivations**, which is the situation the alignment goal
+existed to remove.
+
+> *Decision needed, not a fix:* either drop the alignment goal explicitly (the M2a simplification is
+> worth more than the unification) or schedule a slice that reconciles them. Leaving it implicit means
+> the third derivation gets written when reborrows land.
+
+### 16.3 The M2b verification caveat has no exit
+
+§14 and §15 both rest on "correctness follows from the borrow checker's soundness, not a runtime
+check," because an `-O0` differential is blind to alias metadata. Fair once; it is now load-bearing
+for two slices with no named way to ever check it.
+
+> *Fix:* an **`-O2` differential** — same program at `-O0` and `-O2`, results must agree. That
+> exercises exactly what the attributes license an optimizer to assume, and a wrong `noalias` would
+> diverge. It is the only proposed check that tests the thing the caveat waives.
+
+### 16.4 Suggested milestones for the rest
+
+| | Content | Why grouped |
+|---|---|---|
+| **M3a** | #276 + #277 | Prerequisites for Example B; small, and unblock a deliverable already named in §12 |
+| **M3b** | Reference returns as places (§12 treats a return as escape); pointer locals off the coarse model (§11's remainder) | Both extend the existing representation — no new machinery |
+| **M4** | Reborrows, nested references (`&&T`), reference-typed struct fields | The genuinely new representational work, and where §16.2's decision must be made |
+| **Ongoing** | The `-O2` differential (§16.3) | Retires a caveat that otherwise compounds per slice |
+
+The alternative is to close #275 as "places, first cut, delivered" — M1 and M2a landed real value
+(Example A's eliminated alloca; Example C running on flat) — and re-file M4 with §16.2 decided up
+front. The remaining bullets are arguably different work from what M1/M2 built.
