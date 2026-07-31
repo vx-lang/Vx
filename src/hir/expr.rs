@@ -555,10 +555,14 @@ impl<'a> TypeChecker<'a> {
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
 
-                if !self.skip_borrow_check {
+                if !self.skip_borrow_check && !silent {
+                    // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
+                    // semantically dead `&mut x` does not spuriously block reading `x` (#276). Gated on
+                    // `!silent`: speculative checks must not mutate borrow state.
+                    self.sweep_dead_borrows(name.as_ref());
                     if let Some(borrows) = self.active_borrows.get(name.as_ref()) {
                         for b in borrows {
-                            if b.is_mut && !silent {
+                            if b.is_mut {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4002,
                                     format!(
@@ -3251,12 +3255,16 @@ impl<'a> TypeChecker<'a> {
                 let obj_ty = self.check_expr_type_flag(obj, false, silent);
                 self.skip_borrow_check = old_skip;
 
-                if !self.skip_borrow_check {
+                if !self.skip_borrow_check && !silent {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
                         path.push(member.to_string());
+                        // NLL: sweep dead borrows of the base before testing path overlap, so reading a
+                        // field after its `&mut p.x` borrow is dead is accepted — Example B's
+                        // `return p.x` after `*r = 42` (#276). Gated on `!silent` like the identifier arm.
+                        self.sweep_dead_borrows(&name);
                         if let Some(borrows) = self.active_borrows.get(&*name) {
                             for b in borrows {
-                                if b.is_mut && !silent {
+                                if b.is_mut {
                                     let mut overlap = true;
                                     let min_len = std::cmp::min(path.len(), b.path.len());
                                     for (i, p) in path.iter().enumerate().take(min_len) {
@@ -4302,6 +4310,34 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// NLL dead-borrow cleanup for `base`: drop every borrow record whose borrower local is no longer
+    /// used past the current statement. A borrow that is still lexically in scope but semantically dead
+    /// must not conflict with a later access. Shared by the borrow-*creation* path
+    /// (`track_reference_arg_borrow`) and the borrow-*access* checks (`check_identifier_expr`, member
+    /// access — #276), so both speak the same NLL language. Removing records can only *remove*
+    /// diagnostics, never add an unsound accept (the same safety argument as #269).
+    fn sweep_dead_borrows(&mut self, base: &str) {
+        let mut dead_borrowers = std::collections::HashSet::new();
+        if let Some(borrows) = self.active_borrows.get(base) {
+            for b in borrows.iter() {
+                if let Some(borrower) = &b.borrower_name {
+                    if !self.is_variable_used_after(borrower) {
+                        dead_borrowers.insert(borrower.clone());
+                    }
+                }
+            }
+        }
+        if dead_borrowers.is_empty() {
+            return;
+        }
+        if let Some(borrows) = self.active_borrows.get_mut(base) {
+            borrows.retain(|b| match &b.borrower_name {
+                Some(borrower) => !dead_borrowers.contains(borrower),
+                None => true,
+            });
+        }
+    }
+
     /// Track a reborrow created by passing an existing reference *by name* to a reference
     /// parameter (#243, bc9). Mirrors `check_borrow_expr`'s NLL dead-borrow cleanup and
     /// shared-XOR-mutable conflict check, keyed on the underlying variable.
@@ -4326,22 +4362,10 @@ impl<'a> TypeChecker<'a> {
         if silent {
             return;
         }
-        // NLL: drop records whose borrower is no longer used past this point.
-        let mut dead_borrowers = std::collections::HashSet::new();
+        // NLL: drop records whose borrower is no longer used past this point (the same sweep the
+        // access checks now run, #276).
+        self.sweep_dead_borrows(base);
         if let Some(borrows) = self.active_borrows.get(base) {
-            for b in borrows.iter() {
-                if let Some(borrower) = &b.borrower_name {
-                    if !self.is_variable_used_after(borrower) {
-                        dead_borrowers.insert(borrower.clone());
-                    }
-                }
-            }
-        }
-        if let Some(borrows) = self.active_borrows.get_mut(base) {
-            borrows.retain(|b| match &b.borrower_name {
-                Some(borrower) => !dead_borrowers.contains(borrower),
-                None => true,
-            });
             for b in borrows.iter() {
                 // Overlapping-path conflict, identical to `check_borrow_expr`.
                 let mut overlap = true;

@@ -1,0 +1,31 @@
+//===- borrow_read_after_dead_field_mut.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Non-regression for #276: reading a field after its `&mut p.x` borrow is dead
+// must be accepted. NLL — `r`'s last use is `*r = 42`, so the mutable loan of
+// `p.x` is dead by `return p.x`. The borrow-*creation* path already ran this
+// dead-borrow sweep (bc5); the field-*access* check now does too, so the read
+// no longer spuriously reports E4002 "Cannot access 'p' because it is mutably
+// borrowed." The companion `borrow_use_after_mut.vx` (where the borrower is
+// still live) must still be rejected.
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+fn main() -> i32 {
+  let mut p = Point {
+    x : 1, y : 2
+  };
+  let r = &mut p.x;
+  *r = 42;
+  return p.x;
+}

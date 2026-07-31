@@ -58,6 +58,17 @@ This approach handles local variable lifetimes without the overhead of tracking 
 > named locals; the fast-path region encoding (§2) means NLL-grade is also the ceiling (no Polonius
 > location sensitivity). See [`borrow_checker_precision_analysis.md`](borrow_checker_precision_analysis.md).
 
+> **The access checks run the same sweep (#276).** The dead-borrow cleanup above once ran *only* on
+> the borrow-*creation* path, so reborrowing worked but *reading* the owner while a semantically dead
+> loan was still lexically in scope was over-rejected (`let r = &mut p.x; *r = 42; return p.x;` — E4002,
+> spuriously). The sweep is now factored into `sweep_dead_borrows` and run before **both** the
+> identifier access (`check_identifier_expr`) and the field access (member-access arm) tests, so a read
+> after a loan's last use is accepted exactly as a new borrow after it was. Removing a dead record can
+> only *withdraw* a diagnostic, never admit an unsound access, so the change is one-directional (the
+> same safety argument as #269). The sweep is skipped under `silent` speculation, which must not mutate
+> borrow state. (This supersedes the old "identifier access does not perform NLL cleanup" limitation
+> noted in the retired `borrow_checker_mapping.md` §6.)
+
 ### Reborrows and escapes (#243)
 
 Two rules extend the lexical checker beyond `&x`-on-a-named-local:

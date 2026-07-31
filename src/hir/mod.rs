@@ -390,12 +390,20 @@ fn bad_matmul() -> Tensor {
 
     #[test]
     fn test_sema_borrow_blocks_access() {
-        // A mutable borrow should block direct access to the original variable.
+        // A *live* mutable borrow blocks direct access to the original variable. `y` is used after the
+        // access (`use_ref(y)`), so its loan of `x` is alive at `let z = x` and the access is rejected.
+        // (Without that later use `y` would be a dead borrow under NLL — #276 — and `let z = x` would
+        // correctly compile; `use_ref(y)` is what makes this a genuine conflict, as in the companion
+        // fixture `borrow_use_after_mut.vx`.)
         let input = r#"
+        fn use_ref(r : &mut Tensor<f32>) -> i32 {
+            return 0;
+        }
         fn test() -> i32 {
             let mut x : Tensor<f32> = 1.0;
             let y = &mut x;
             let z = x;
+            use_ref(y);
             return 0;
         }
         "#;
