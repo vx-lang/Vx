@@ -585,23 +585,16 @@ fn flat_reads_and_writes_a_field_through_a_place() {
     assert_parity(src, 42);
 }
 
-/// #275 M4: nested references (`&&T`). `let rr = &r` binds `rr : &&i32`; `**rr` derefs twice — the inner
-/// load yields the `&i32` pointer, the outer loads its `i32`. The AST codegen is broken for this (§18.2 —
-/// it miscompiles nested address-of and the program crashes), so there is no AST oracle; ground on the
-/// **value-semantics equivalent** (§6.2): `**rr` over `&&5` must equal `5`. Only the flat path is asserted.
+/// #275 M4 / #278: nested references (`&&T`). `let rr = &r` binds `rr : &&i32`; `**rr` derefs twice — the
+/// inner load yields the `&i32` pointer, the outer loads its `i32`. The AST codegen used to miscompile
+/// nested address-of and segfault (§18.2), so this once had to ground on the value-semantics equivalent.
+/// #278 fixed `BorrowExpr::lower` to materialize a slot for `&r`, restoring the AST oracle, so this is now
+/// a real flat-vs-AST differential (the `nested_reference.vx` backend fixture is the AST-path guard).
 #[test]
 fn flat_runs_a_nested_reference() {
-    let ref_src = "fn main() -> i32 { let x = 5; let r = &x; let rr = &r; return **rr; }";
-    let val_src = "fn main() -> i32 { let x = 5; return x; }";
-    assert_eq!(
-        flat_exit_code(val_src),
-        Some(5),
-        "value-semantics equivalent grounds the expected result"
-    );
-    assert_eq!(
-        flat_exit_code(ref_src),
-        Some(5),
-        "nested reference `**rr` on the flat path equals the value-semantics result",
+    assert_parity(
+        "fn main() -> i32 { let x = 5; let r = &x; let rr = &r; return **rr; }",
+        5,
     );
 }
 

@@ -136,6 +136,50 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
                         return Ok((*val, *val_ty, block));
                     }
                 }
+            } else if let Some((val, ptr_ty)) = gen
+                .env
+                .get(&*id.name)
+                .filter(|(_, t)| *t == gen.ptr_ty)
+                .map(|(v, t)| (*v, *t))
+            {
+                // `&r` where `r : &T` is a non-`mut` reference local: `let r = &x` bound it to a
+                // bare SSA pointer with no backing storage, so there is no address to hand back.
+                // Materialize a slot, store the pointer into it, and return the slot — otherwise
+                // `&r` would alias `r`'s pointee (returning `r`'s value verbatim) and `**rr` reads
+                // garbage / segfaults (#278). Only bare pointers take this path; a memref descriptor
+                // or a non-pointer rvalue falls through to the general materialization below.
+                let i32_ty = gen.i32_ty;
+                let c1 = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                            .add_results(&[i32_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "value"),
+                                IntegerAttribute::new(i32_ty, 1).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                let slot = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.alloca", gen.loc())
+                            .add_operands(&[c1])
+                            .add_results(&[ptr_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "elem_type"),
+                                TypeAttribute::new(ptr_ty).into(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[val, slot])
+                        .build()?,
+                );
+                return Ok((slot, ptr_ty, block));
             }
         }
         let prev_lvalue = gen.is_lvalue_context;
