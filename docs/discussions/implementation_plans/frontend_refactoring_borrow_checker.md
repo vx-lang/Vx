@@ -3,8 +3,9 @@
 **Status:** **R1 + R2 landed.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
 NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
 `84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
-zero logic change. R3–R5 open (R3 has a borrow-side-effect subtlety noted below; R4 decomposes the ~655-line
-`check_functioncall_expr`). Tracked as [#279](https://github.com/hiraditya/Vx/issues/279).
+zero logic change. R3 **audited** — the plan's sink-swap is unsound (`silent` also changes if/match result types and gates
+`consume`'s scope/move mutations), revised to a `speculating`-field approach; not yet implemented (§R3).
+R4/R5 open. Tracked as [#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
 frontend has no *chokepoint* for the invariants those fixes maintain, so each round had to rediscover every
@@ -176,32 +177,65 @@ test edits, clippy clean.
 single function can't drop below the ~800 target by *moving*. That is **R4**'s job (decompose the oversized
 functions), not R2's (one family per file). The dispatch-seam split is complete.
 
-### R3 — Retire the `(consume, silent)` boolean pair
+### R3 — Retire the `(consume, silent)` boolean pair — **audited; plan revised, not yet implemented**
 
 183 `silent` / 97 `consume` occurrences across 36 signatures. Two positional booleans at every call is the
-classic unreadable-call-site smell (`check_expr_type_flag(e, false, true)` — which is which?).
+classic unreadable-call-site smell (`check_expr_type_flag(e, false, true)` — which is which?). The original
+idea was to model `silent` as a **diagnostics-sink swap** (check into a scratch sink, discard) and to fold
+`consume` into the borrow/move context. **A full audit of both flags (Aug 2026) shows that plan is unsound
+and revises it.** Findings below; this is the guidance for whoever implements R3.
 
-`silent` is really "suppress diagnostics for a speculative check" — better modelled as a **diagnostics sink
-swap** (check into a scratch sink, discard it) than as a flag every function must thread and honour. `consume`
-is a move-semantics question that belongs to the borrow/move context R1 introduces.
+**1. `silent` is not a diagnostics flag — it gates four different things.** A sink-swap (or any post-hoc
+"discard the errors" checkpoint) only covers the first:
 
-*Why after R2:* the split makes it obvious which functions genuinely need each flag; several likely ignore
-one (`_silent`, `_consume` already appear in signatures).
+- **(a) diagnostics** — `if !silent { self.errors.push / error_with_code / warn }`. The common case; a
+  checkpoint could roll these back (`DiagnosticsVec.inner` is `pub`, appends in strict order with no dedup,
+  so `inner.truncate(saved_len)` is exact; the 10-error cap doesn't break it).
+- **(b) borrow-state side effects** — `!self.skip_borrow_check && !silent` gates the `live_borrows` sweep +
+  conflict check in `check_identifier_expr` / `check_memberaccess_expr`; `calls.rs` gates the whole
+  reborrow-tracking + `retain_present` block on `!silent`; `track_reference_arg_borrow` early-returns on
+  `silent`. Covered by `BorrowCx::snapshot`/`restore` (R1) — but only `active_borrows`, see (d).
+- **(c) it changes the RETURNED type** — `check_if_expr` and `check_match_expr` return the placeholder
+  `Tensor(F32,[],None)` and skip checking their block when `silent`, instead of the real branch type. A
+  post-hoc checkpoint **cannot** reproduce this: it's a *during-check* behavior, not a rollback. Running them
+  non-silently yields a different (real) type, which can flow into the outer method-call's generic deduction.
+- **(d) it gates `self.consume()`** in `check_identifier_expr` (`if consume && ty.is_linear() && !silent`)
+  and `check_closure_expr`. `self.consume` mutates `self.scopes` **and** `self.moved_vars` — **neither is in
+  `borrow.snapshot()`** — so a checkpoint that only restores errors+borrow leaks the move-mark, and a later
+  real check then fires spurious E4001/E2001 and returns `Type::Unknown`.
 
-> **⚠️ R2 uncovered a subtlety the naive sink-swap misses.** `silent` today gates **two** things, not one:
-> (1) diagnostic emission (`if !silent { self.errors.push(..) }`), and (2) **borrow-state side effects** —
-> the NLL sweep + record in the access arms (`check_identifier_expr`, `check_memberaccess_expr`,
-> `check_borrow_expr`) run `!self.skip_borrow_check && !silent`, and `track_reference_arg_borrow` early-returns
-> on `silent`. A diagnostics-sink swap only covers (1). A safe R3 must **also** wrap every speculative
-> (`silent = true`) call site in a borrow snapshot/restore so it cannot leak borrow mutations — the
-> `BorrowCx::snapshot`/`restore` R1 introduced is exactly that tool, and some speculative sites (e.g.
-> `check_expr_block`'s `ExprStmt` arm, `check_statement`) already do it, but the audit must confirm *all* of
-> them (e.g. `check_operand_pair`'s literal-inference probes) before `silent` can be removed. So R3 is
-> "sink-swap + borrow-snapshot every speculative probe," not sink-swap alone.
+**2. There is exactly ONE speculative (`silent = true`) call site:** `check_methodcall_expr`
+(`src/hir/check/calls.rs`) re-checks a synthetic lowered `FunctionCall` to recover its return type without
+duplicate diagnostics. It has **no** borrow/error isolation today — it relies entirely on `silent`. So the
+"183 occurrences" are threading noise: `silent` propagates from the top-level `check_function` (which passes
+`false`) and is flipped `true` only here.
 
-**Acceptance:** the boolean pair is gone from the dispatch signature; speculative checks provably emit no
-diagnostics **and** leave borrow state unchanged (a test that asserts the error count *and* the active-borrow
-table are unchanged after a speculative probe).
+**3. `consume` cannot be deleted the way the plan assumed.** It has a single *read* — `check_identifier_expr`,
+`if consume && ty.is_linear() && !silent { self.consume(name) }` — and encodes "this is a by-value use, so
+move a linear value." It is positionally overridden to `false` at receiver / index-base / borrow-inner /
+assignment-LHS / builtin-ref-arg positions (so `x.f`, `&x`, `print(x)`, `lhs = ..` don't move `x`), and
+`true` at value positions. Dropping it forces either always-consume (wrongly moves those) or never-consume
+(loses all use-after-move / E4001). Removing it means reconstructing that positional signal another way
+(derive value-vs-receiver from the parent expression, or a `Usage::{Value,Borrow}` enum) — a real
+move-semantics change, not a flag deletion.
+
+**Revised recommendation.** The clean, behavior-preserving win is to turn `silent` from a threaded
+*parameter* into a `speculating` **field** on `TypeChecker` (per-worker, no shared state). The one
+speculative site does `let prev = self.speculating; self.speculating = true; …; self.speculating = prev;`;
+every `!silent` becomes `!self.speculating`. This removes the confusing positional boolean from all ~36
+signatures **and preserves all four behaviors verbatim** — (c) and (d) included — because `!self.speculating`
+substitutes for `!silent` in place, with nothing rolled back post-hoc. `consume` stays a parameter (it is a
+genuine positional signal, not a mode); retiring it is separate, larger move-semantics work. If instead a
+*true effect-free speculation* is ever wanted, the checkpoint must additionally snapshot `scopes` +
+`moved_vars` and special-case if/match (c), and note that AST rewrites (`*expr = …`), `monomorphized_functions`,
+`generated_structs`, `memory_placements`, `used_vars`, and `next_id` are mutated ungated today and would also
+leak — they already do under the current single `silent=true` site, so it is not a regression, just not
+"effect-free."
+
+**Acceptance (if implemented as the field approach):** `silent` is gone from every signature; the sole
+speculative site sets/restores `self.speculating`; full suite green with no test edits (the change is
+mechanical and behavior-preserving). A regression test that a speculative probe leaves the error count, the
+active-borrow table, **and** `scopes`/`moved_vars` unchanged documents the invariant.
 
 ### R4 — Decompose the oversized functions
 
