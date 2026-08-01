@@ -896,6 +896,25 @@ local) and/or the double load `**rr` produce a bad address chain.
 Consequence for this document: there is **no trustworthy oracle** to differentiate a flat `&&T` lowering
 against — the differential harness asserts flat == AST == expected, and here AST ≠ expected. So `&&T` on
 the flat path is **blocked upstream on the AST bug**, exactly the §7.1 shape (a construct whose oracle is
-itself broken), and is out of scope for this flat-path document. It is filed here as a found AST-codegen
-defect (worth its own issue); fixing it is AST-generator work, not flat lowering, and would be verified by
-its own AST-level test before any flat differential could use it as an oracle.
+itself broken). It is filed here as a found AST-codegen defect (worth its own issue); fixing it is
+AST-generator work, not flat lowering.
+
+**Both paths were diagnosed precisely (so a later attempt need not re-derive them):**
+
+- *AST codegen* (`BorrowExpr::lower`, `src/codegen/lower/expr.rs`): `&r` for a reference-holding local
+  returns `r`'s alloca tagged with `r`'s **value** type (`&i32`), and Vx references lower to memref/ptr
+  **descriptors** (a memref is a multi-word struct, not a bare pointer). Taking the address of a
+  descriptor-holding local and then chasing it as a single pointer through `**rr` builds a bad address
+  chain — the compiled program crashes rather than loading `5`. This is a representational fix (represent
+  references as bare `!llvm.ptr` consistently, or special-case nested references), not a one-liner.
+- *Flat lowerer* (`lower_ptr_deref` → `pointer_elem_ty`, `src/hir/flatten.rs`): `**rr` declines at the
+  inner `*rr` because `pointer_elem_ty(&&i32)` returns `None` — the pointee `&i32` lowers to
+  `LoweredTy::Ptr`, which the function admits only for `Scalar`/`Aggregate` pointees. Enabling it is
+  bounded but multi-touch (accept a `Ptr` pointee → load an `!llvm.ptr` in `PtrIndex`, track the result
+  as a pointer), and it touches the deref machinery Vec/Box share. Crucially it could only be verified
+  against the **value-semantics equivalent** (§6.2: `return 5`), since the AST oracle above is broken —
+  a weakly-verified change to core code, deliberately deferred to a supervised session rather than an
+  autonomous one.
+
+Reachable, well-verified reference work is complete; `&&T` is the one construct that is genuinely-new
+representational work on both paths, and it waits for a deliberate decision.
