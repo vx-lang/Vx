@@ -211,7 +211,10 @@ pub struct TypeChecker<'a> {
     pub(crate) active_topology: Topology,
     pub(crate) active_memory: MemorySpace,
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
-    pub active_borrows: HashMap<crate::symbol::Symbol, Vec<BorrowRecord>>,
+    /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
+    /// cannot bypass the dead-borrow sweep (frontend_refactoring.md R1; the #276 bug class). Replaces
+    /// the former `active_borrows` / `block_liveness` / `current_stmt_idx` fields.
+    pub(crate) borrow: crate::hir::borrow_cx::BorrowCx,
     pub constraints: Vec<Expr>,
     pub return_constraints: Vec<Expr>,
     pub(crate) next_id: u32,
@@ -224,8 +227,6 @@ pub struct TypeChecker<'a> {
     pub(crate) closure_captures_stack: Vec<HashMap<crate::symbol::Symbol, Type>>,
     pub generated_structs: Vec<StructDecl>,
     pub(crate) current_assignment_target: Option<String>,
-    pub(crate) block_liveness: Vec<HashMap<crate::symbol::Symbol, usize>>,
-    pub(crate) current_stmt_idx: Vec<usize>,
     pub skip_borrow_check: bool,
     /// Tracks which variables have been read during the current function check.
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
@@ -322,7 +323,7 @@ impl<'a> TypeChecker<'a> {
             active_topology: Topology::CPU,
             active_memory,
             transfer_cost_graph,
-            active_borrows: HashMap::new(),
+            borrow: crate::hir::borrow_cx::BorrowCx::default(),
             constraints: Vec::new(),
             return_constraints: Vec::new(),
             next_id: 1,
@@ -333,8 +334,6 @@ impl<'a> TypeChecker<'a> {
             closure_captures_stack: Vec::new(),
             generated_structs: Vec::new(),
             current_assignment_target: None,
-            block_liveness: Vec::new(),
-            current_stmt_idx: Vec::new(),
             skip_borrow_check: false,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
@@ -369,9 +368,7 @@ impl<'a> TypeChecker<'a> {
         self.eval_env.pop();
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
-        for (_, borrows) in self.active_borrows.iter_mut() {
-            borrows.retain(|b| b.scope_depth < depth);
-        }
+        self.borrow.retain_scope(depth);
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
@@ -379,18 +376,6 @@ impl<'a> TypeChecker<'a> {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));
         }
-    }
-
-    pub fn is_variable_used_after(&self, name: &str) -> bool {
-        if let (Some(liveness), Some(&current_idx)) =
-            (self.block_liveness.last(), self.current_stmt_idx.last())
-        {
-            return liveness
-                .get(name)
-                .map(|&u| u > current_idx)
-                .unwrap_or(false);
-        }
-        false
     }
 
     pub fn extract_uses_stmt(stmt: &Statement, uses: &mut std::collections::HashSet<String>) {

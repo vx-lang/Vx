@@ -70,9 +70,9 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) = s
             {
-                let saved_borrows = self.active_borrows.clone();
+                let saved_borrows = self.borrow.snapshot();
                 ret_ty = self.check_expr_type_flag(expr, consume, silent);
-                self.active_borrows = saved_borrows;
+                self.borrow.restore(saved_borrows);
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
                     ElementType::F32,
@@ -557,22 +557,16 @@ impl<'a> TypeChecker<'a> {
 
                 if !self.skip_borrow_check && !silent {
                     // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
-                    // semantically dead `&mut x` does not spuriously block reading `x` (#276). Gated on
-                    // `!silent`: speculative checks must not mutate borrow state.
-                    self.sweep_dead_borrows(name.as_ref());
-                    if let Some(borrows) = self.active_borrows.get(name.as_ref()) {
-                        for b in borrows {
-                            if b.is_mut {
-                                self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E4002,
-                                    format!(
-                                        "Cannot access '{}' because it is mutably borrowed.",
-                                        name
-                                    ),
-                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
-                                );
-                                break;
-                            }
+                    // semantically dead `&mut x` does not spuriously block reading `x` (#276). `live_borrows`
+                    // sweeps first; the `!silent` gate keeps speculative checks from mutating borrow state.
+                    for b in self.borrow.live_borrows(name.as_ref()) {
+                        if b.is_mut {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4002,
+                                format!("Cannot access '{}' because it is mutably borrowed.", name),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                            );
+                            break;
                         }
                     }
                 }
@@ -2381,7 +2375,7 @@ impl<'a> TypeChecker<'a> {
                             Some(pty) if Self::is_ref_type(pty) => {
                                 if let Some((base, path)) = Self::arg_reborrow_base(arg) {
                                     base_snapshots.entry(base.clone()).or_insert_with(|| {
-                                        self.active_borrows.get(base.as_str()).cloned()
+                                        self.borrow.snapshot_base(base.as_str())
                                     });
                                     ref_args.push((
                                         i,
@@ -2451,12 +2445,7 @@ impl<'a> TypeChecker<'a> {
                         // would resurrect borrows the arg loop legitimately NLL-released, firing
                         // spurious conflicts later.
                         let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-                        if let Some(list) = self.active_borrows.get_mut(base.as_str()) {
-                            list.retain(|r| prev.contains(r));
-                            if list.is_empty() {
-                                self.active_borrows.remove(base.as_str());
-                            }
-                        }
+                        self.borrow.retain_present(base.as_str(), prev);
                     }
                 }
 
@@ -3045,9 +3034,9 @@ impl<'a> TypeChecker<'a> {
                 // `m` in the caller) makes the callee's own `&m.field` run the NLL dead-borrow
                 // cleanup against the caller's records with the callee's liveness — wrongly
                 // releasing the caller's live reborrow before the next statement is checked (#268).
-                let saved_borrows = std::mem::take(&mut self.active_borrows);
+                let saved_borrows = self.borrow.take();
                 self.check_function(&mut inst_func);
-                self.active_borrows = saved_borrows;
+                self.borrow.restore(saved_borrows);
                 self.monomorphized_functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -3258,19 +3247,16 @@ impl<'a> TypeChecker<'a> {
                 if !self.skip_borrow_check && !silent {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
                         path.push(member.to_string());
-                        // NLL: sweep dead borrows of the base before testing path overlap, so reading a
-                        // field after its `&mut p.x` borrow is dead is accepted — Example B's
+                        // NLL: `live_borrows` sweeps dead borrows of the base before testing path overlap,
+                        // so reading a field after its `&mut p.x` borrow is dead is accepted — Example B's
                         // `return p.x` after `*r = 42` (#276). Gated on `!silent` like the identifier arm.
-                        self.sweep_dead_borrows(&name);
-                        if let Some(borrows) = self.active_borrows.get(&*name) {
-                            for b in borrows {
-                                if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
-                                    self.errors.push(format!(
-                                        "Cannot access '{}' because it is mutably borrowed.",
-                                        name
-                                    ));
-                                    break;
-                                }
+                        for b in self.borrow.live_borrows(&name) {
+                            if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
+                                self.errors.push(format!(
+                                    "Cannot access '{}' because it is mutably borrowed.",
+                                    name
+                                ));
+                                break;
                             }
                         }
                     }
@@ -3995,59 +3981,40 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr_type_flag(inner, false, silent);
 
                 if let Some((name, path)) = Self::extract_base_and_path(inner) {
-                    let mut dead_borrowers = std::collections::HashSet::new();
-                    if let Some(borrows) = self.active_borrows.get(&*name) {
-                        for b in borrows.iter() {
-                            if let Some(borrower) = &b.borrower_name {
-                                if !self.is_variable_used_after(borrower) {
-                                    dead_borrowers.insert(borrower.clone());
-                                }
-                            }
+                    // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
+                    // check, so a borrow whose borrower is dead no longer blocks a new one (#276). This
+                    // was the hand-copied sweep duplicate the R1 refactor removed.
+                    for b in self.borrow.live_borrows(&name) {
+                        // Split borrows: skip a record whose path is disjoint from this borrow's.
+                        if !crate::hir::places::paths_may_alias(&path, &b.path) {
+                            continue;
                         }
-                    }
-                    if let Some(borrows) = self.active_borrows.get_mut(&*name) {
-                        // NLL: Remove dead borrows
-                        borrows.retain(|b| {
-                            if let Some(borrower) = &b.borrower_name {
-                                !dead_borrowers.contains(borrower)
-                            } else {
-                                true
-                            }
-                        });
-
-                        for b in borrows.iter() {
-                            // Split borrows: skip a record whose path is disjoint from this borrow's.
-                            if !crate::hir::places::paths_may_alias(&path, &b.path) {
-                                continue;
-                            }
-
-                            if b.is_mut {
-                                if !silent {
-                                    self.errors.error_with_code(
-                                        crate::diagnostic::DiagnosticCode::E4004,
-                                        format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
-                                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                                    );
-                                }
-                            } else if *is_mut && !silent {
+                        if b.is_mut {
+                            if !silent {
                                 self.errors.error_with_code(
-                                    crate::diagnostic::DiagnosticCode::E4003,
-                                    format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
+                                    crate::diagnostic::DiagnosticCode::E4004,
+                                    format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
                             }
+                        } else if *is_mut && !silent {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4003,
+                                format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                            );
                         }
                     }
                     if !silent {
-                        self.active_borrows
-                            .entry(name.clone().into())
-                            .or_default()
-                            .push(BorrowRecord {
+                        self.borrow.record(
+                            &name,
+                            BorrowRecord {
                                 is_mut: *is_mut,
                                 scope_depth: self.scopes.len(),
                                 borrower_name: self.current_assignment_target.clone(),
                                 path,
-                            });
+                            },
+                        );
                     }
                 }
 
@@ -4289,34 +4256,6 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    /// NLL dead-borrow cleanup for `base`: drop every borrow record whose borrower local is no longer
-    /// used past the current statement. A borrow that is still lexically in scope but semantically dead
-    /// must not conflict with a later access. Shared by the borrow-*creation* path
-    /// (`track_reference_arg_borrow`) and the borrow-*access* checks (`check_identifier_expr`, member
-    /// access — #276), so both speak the same NLL language. Removing records can only *remove*
-    /// diagnostics, never add an unsound accept (the same safety argument as #269).
-    fn sweep_dead_borrows(&mut self, base: &str) {
-        let mut dead_borrowers = std::collections::HashSet::new();
-        if let Some(borrows) = self.active_borrows.get(base) {
-            for b in borrows.iter() {
-                if let Some(borrower) = &b.borrower_name {
-                    if !self.is_variable_used_after(borrower) {
-                        dead_borrowers.insert(borrower.clone());
-                    }
-                }
-            }
-        }
-        if dead_borrowers.is_empty() {
-            return;
-        }
-        if let Some(borrows) = self.active_borrows.get_mut(base) {
-            borrows.retain(|b| match &b.borrower_name {
-                Some(borrower) => !dead_borrowers.contains(borrower),
-                None => true,
-            });
-        }
-    }
-
     /// Track a reborrow created by passing an existing reference *by name* to a reference
     /// parameter (#243, bc9). Mirrors `check_borrow_expr`'s NLL dead-borrow cleanup and
     /// shared-XOR-mutable conflict check, keyed on the underlying variable.
@@ -4341,46 +4280,43 @@ impl<'a> TypeChecker<'a> {
         if silent {
             return;
         }
-        // NLL: drop records whose borrower is no longer used past this point (the same sweep the
-        // access checks now run, #276).
-        self.sweep_dead_borrows(base);
-        if let Some(borrows) = self.active_borrows.get(base) {
-            for b in borrows.iter() {
-                // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
-                if !crate::hir::places::paths_may_alias(&path, &b.path) {
-                    continue;
-                }
-                if b.is_mut {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E4004,
-                        format!(
-                            "Cannot borrow '{}' because it is already borrowed as mutable.",
-                            base
-                        ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                    );
-                } else if access_is_mut {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E4003,
-                        format!(
-                            "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
-                            base
-                        ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                    );
-                }
+        // NLL: `live_borrows` drops records whose borrower is no longer used past this point (the same
+        // sweep the access checks run, #276) before the shared-XOR-mutable conflict check.
+        for b in self.borrow.live_borrows(base) {
+            // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
+            if !crate::hir::places::paths_may_alias(&path, &b.path) {
+                continue;
+            }
+            if b.is_mut {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4004,
+                    format!(
+                        "Cannot borrow '{}' because it is already borrowed as mutable.",
+                        base
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            } else if access_is_mut {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4003,
+                    format!(
+                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
+                        base
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
             }
         }
         if persist {
-            self.active_borrows
-                .entry(base.to_string().into())
-                .or_default()
-                .push(BorrowRecord {
+            self.borrow.record(
+                base,
+                BorrowRecord {
                     is_mut: record_is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: self.current_assignment_target.clone(),
                     path,
-                });
+                },
+            );
         }
     }
 

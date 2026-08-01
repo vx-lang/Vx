@@ -34,10 +34,10 @@ impl<'a> TypeChecker<'a> {
     ///    statement (`extract_uses_stmt`) and insert them into `last_use` with the current statement index `i`.
     /// 4. By the end of the pass, `last_use[var]` holds the exact index of the *last* statement
     ///    that references `var` within this block.
-    /// 5. We push this map onto `self.block_liveness`, and we track the current execution index
-    ///    using `self.current_stmt_idx`.
+    /// 5. We hand this map to `self.borrow` (via `enter_block`) and advance its statement cursor with
+    ///    `set_stmt`, so the borrow context carries the per-block liveness.
     ///
-    /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query `is_variable_used_after`
+    /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query its `is_variable_used_after`
     /// in O(1) time instead of performing an O(N^2) AST tree-walk!
     pub(crate) fn check_block(&mut self, body: &mut [Statement], return_type: &Type) {
         let mut terminated = false;
@@ -45,12 +45,11 @@ impl<'a> TypeChecker<'a> {
         // 1. Liveness Analysis Pass
         let last_use = Self::compute_block_liveness(body);
 
-        self.block_liveness.push(last_use);
-        self.current_stmt_idx.push(0);
+        self.borrow.enter_block(last_use);
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
-            *self.current_stmt_idx.last_mut().unwrap() = i;
+            self.borrow.set_stmt(i);
             if terminated {
                 let stmt_span = body[i].span();
                 self.errors.warn(
@@ -69,8 +68,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        self.block_liveness.pop();
-        self.current_stmt_idx.pop();
+        self.borrow.exit_block();
     }
 
     pub(crate) fn compute_block_liveness(
@@ -391,9 +389,9 @@ impl<'a> TypeChecker<'a> {
                 has_semi: _,
                 span: _,
             }) => {
-                let saved_borrows = self.active_borrows.clone();
+                let saved_borrows = self.borrow.snapshot();
                 self.check_expr_type_flag(expr, consume, silent);
-                self.active_borrows = saved_borrows;
+                self.borrow.restore(saved_borrows);
             }
             Statement::Assert(AssertStmt { expr, msg, span }) => {
                 let ty = self.check_expr_type_flag(expr, consume, silent);

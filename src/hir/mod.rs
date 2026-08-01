@@ -13,6 +13,7 @@
 use crate::syntax::*;
 
 pub mod arena;
+pub mod borrow_cx;
 pub mod bytecode;
 pub mod env;
 pub mod expr;
