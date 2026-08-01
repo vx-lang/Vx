@@ -1,6 +1,6 @@
 # Design: Scalar References (`&i32`) on the Flat Path
 
-**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2). §16 audits what remains; **M3a (§17) landed Example B (`&mut o.inner.v`) end to end** by fixing the borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)) and by-value nested-aggregate construction ([#277](https://github.com/hiraditya/Vx/issues/277)). **M3b** landed pointer-locals off the coarse model (§17.1) and scalar-field reference returns (§17.2); the §16.1 parse-assert and §16.3 `-O2` differential hardenings are done; and **M4 (§18)** landed reference-typed struct fields, leaving only `&&T` (blocked on an AST-codegen bug, §18.2) and §16.2 (deferred) open.
+**Status:** **immutable slice (§9), mutable slice (§10), and the step-2 per-local memory rule (§11) implemented** — `&x` / `&mut x` / `*r` / `*p = v` / `&i32` params + returns lower on the flat path and run (locally and *across a module boundary*), the immutable forms verified against the AST oracle and the mutable forms against the value-semantics equivalent (§6.2); a control-flow function now slots only the locals that need it. Places ([#275](https://github.com/hiraditya/Vx/issues/275)): empty-path (§12, Example A — the alloca that should not exist) and field references (§13, Example B/C substrate) lower on the flat path, and the §5.4 disjointness→alias-metadata payoff is landed end to end — reference-parameter `noalias`/`readonly` (§14, M2b-1) and field alias-scopes on disjoint place-writes (§15, M2b-2). §16 audits what remains; **M3a (§17) landed Example B (`&mut o.inner.v`) end to end** by fixing the borrow-checker over-rejection ([#276](https://github.com/hiraditya/Vx/issues/276)) and by-value nested-aggregate construction ([#277](https://github.com/hiraditya/Vx/issues/277)). **M3b** landed pointer-locals off the coarse model (§17.1) and scalar-field reference returns (§17.2); the §16.1 parse-assert and §16.3 `-O2` differential hardenings are done; and **M4 (§18)** landed reference-typed struct fields and nested `&&T` on the flat path (§18.3, verified against the value-semantics equivalent since the AST oracle crashes), leaving only the AST-codegen `&&T` defect (§18.2, its own issue) and §16.2 (deferred) open.
 **Relates to:** [#230](https://github.com/hiraditya/Vx/issues/230) (borrows / pointer values, closed for the aggregate subset) · [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) · [#275](https://github.com/hiraditya/Vx/issues/275) (§5 places / projections, the next direction)
 **Companion:** [`hir_flattening.md`](hir_flattening.md) — the SSA/instruction conventions this builds on
 
@@ -859,11 +859,11 @@ path to compile the program) before committing to any of them:
 |---|---|---|---|
 | reborrow-by-name to a `&param` (`via(m) { read(m) }`) | ✓ = 7 | ✓ = 7 | **already lowers** — the common case is done |
 | reference-typed struct field (`struct H { r : &i32 }`) | ✓ = 5 | declined | **closable** — a bounded escape gap (§18.1) |
-| nested reference `&&T` (`let rr = &r; **rr`) | **miscompiles** (crashes, ≠ 5) | declined | **blocked** — no clean oracle, an AST-codegen bug (below) |
+| nested reference `&&T` (`let rr = &r; **rr`) | **miscompiles** (crashes, ≠ 5) | **now lowers** (§18.3) | flat done vs value-semantics; AST bug still open |
 
-So reborrow-by-passing needs nothing; `&&T` has no trustworthy oracle to differentiate against (the AST
-path itself does not produce the expected value), so it is deferred like #233; and the one reachable
-slice was reference-typed struct fields.
+So reborrow-by-passing needs nothing; reference-typed struct fields (§18.1) and — after a corrected
+diagnosis — nested `&&T` on the flat path (§18.3) both landed. The AST codegen bug behind `&&T` (§18.2)
+remains a separate, filed defect.
 
 ### 18.1 Reference-typed struct fields
 
@@ -880,11 +880,11 @@ Tests: `flat_runs_a_reference_typed_struct_field` (reads 5, parity),
 `imm = 1` alloca). Full flat differential unregressed — the scan only descends further, and no existing
 program has a borrow inside a literal that was relying on the old under-collection.
 
-**Remaining M4, deferred:** `&&T` / nested references and reborrow-as-place refinements beyond the
-by-passing case. Reference-typed fields and reference returns (§17.2) close the reachable reference
-surface for now.
+**Remaining M4:** reborrow-as-place refinements beyond the by-passing case. Reference-typed fields,
+reference returns (§17.2), and nested `&&T` (§18.3) close the reachable reference surface; only the AST
+codegen bug behind `&&T` (§18.2) stays open, as its own defect.
 
-### 18.2 The `&&T` blocker is an AST-codegen bug, not a flat gap
+### 18.2 The `&&T` AST-codegen bug (still open)
 
 `fn main() -> i32 { let x = 5; let r = &x; let rr = &r; return **rr; }` **type-checks** on the AST path
 (`check_dereference_expr` unwraps one `Borrow` layer per `*`, so `**rr : i32`) but the compiled program
@@ -893,28 +893,36 @@ surface for now.
 AST codegen mishandles a *reference to a reference*: `&r` (taking the address of a reference-holding
 local) and/or the double load `**rr` produce a bad address chain.
 
-Consequence for this document: there is **no trustworthy oracle** to differentiate a flat `&&T` lowering
-against — the differential harness asserts flat == AST == expected, and here AST ≠ expected. So `&&T` on
-the flat path is **blocked upstream on the AST bug**, exactly the §7.1 shape (a construct whose oracle is
-itself broken). It is filed here as a found AST-codegen defect (worth its own issue); fixing it is
-AST-generator work, not flat lowering.
+The AST path (`BorrowExpr::lower`, `src/codegen/lower/expr.rs`) mishandles `&r` for a reference-holding
+local: it returns `r`'s alloca tagged with `r`'s **value** type (`&i32`), and Vx references lower to
+memref/ptr **descriptors** (a memref is a multi-word struct, not a bare pointer). Taking the address of a
+descriptor-holding local and chasing it as a single pointer through `**rr` builds a bad address chain —
+the compiled program crashes rather than loading `5`. This is a representational fix (represent references
+as bare `!llvm.ptr` consistently, or special-case nested references), not a one-liner, and it lives in the
+AST generator. It is a **found defect, filed for its own issue**; it does not block the flat path.
 
-**Both paths were diagnosed precisely (so a later attempt need not re-derive them):**
+Because the AST oracle is broken here, flat `&&T` is verified against the **value-semantics equivalent**
+(§6.2) rather than a flat==AST differential — exactly the pattern the mutable slice (§10) used when the
+AST path couldn't compile a borrowed mutable scalar.
 
-- *AST codegen* (`BorrowExpr::lower`, `src/codegen/lower/expr.rs`): `&r` for a reference-holding local
-  returns `r`'s alloca tagged with `r`'s **value** type (`&i32`), and Vx references lower to memref/ptr
-  **descriptors** (a memref is a multi-word struct, not a bare pointer). Taking the address of a
-  descriptor-holding local and then chasing it as a single pointer through `**rr` builds a bad address
-  chain — the compiled program crashes rather than loading `5`. This is a representational fix (represent
-  references as bare `!llvm.ptr` consistently, or special-case nested references), not a one-liner.
-- *Flat lowerer* (`lower_ptr_deref` → `pointer_elem_ty`, `src/hir/flatten.rs`): `**rr` declines at the
-  inner `*rr` because `pointer_elem_ty(&&i32)` returns `None` — the pointee `&i32` lowers to
-  `LoweredTy::Ptr`, which the function admits only for `Scalar`/`Aggregate` pointees. Enabling it is
-  bounded but multi-touch (accept a `Ptr` pointee → load an `!llvm.ptr` in `PtrIndex`, track the result
-  as a pointer), and it touches the deref machinery Vec/Box share. Crucially it could only be verified
-  against the **value-semantics equivalent** (§6.2: `return 5`), since the AST oracle above is broken —
-  a weakly-verified change to core code, deliberately deferred to a supervised session rather than an
-  autonomous one.
+### 18.3 Nested `&&T` on the flat path (landed)
 
-Reachable, well-verified reference work is complete; `&&T` is the one construct that is genuinely-new
-representational work on both paths, and it waits for a deliberate decision.
+The initial §18.2 diagnosis guessed the flat blocker was `pointer_elem_ty` rejecting a `Ptr` pointee in
+`lower_ptr_deref` — a "bounded but multi-touch" change to the deref machinery Vec/Box share. **Building it
+disproved that guess.** With `rr` bound as a symbolic *place* (`Binding::Place`), the inner `*rr` resolves
+via the place shortcut (re-lowering `r`) and never reaches `pointer_elem_ty`; the actual decline was the
+*outer* `*`, which routes through `lower_ptr_deref` and needs `infer_ast_type(rr)` to recover the pointee
+element — and that returned `None`.
+
+The root cause was one missing arm: `infer_ast_type` had no `Expr::Number` case, so `let x = 5` recorded
+no type for `x`, and the whole chain (`x : i32` → `r : &i32` → `rr : &&i32`) went untyped. Single-level
+refs never noticed because `*r` takes the place shortcut and skips `infer_ast_type` entirely; only the
+*second* deref of a nested reference needs it. Adding `Expr::Number(n) => Some(Type::Scalar(number_elem(n)?))`
+types the chain and `**rr` lowers. The speculative `pointer_elem_ty`/`PtrIndex` changes were **reverted as
+unexercised** (the place path never hits them), leaving a one-line fix.
+
+Test: `flat_runs_a_nested_reference` — `**rr` over `&&5` returns `5` on the flat path, asserted against the
+value-semantics equivalent (`return x` → `5`), since the AST oracle crashes. Full flat differential
+unregressed (the `Number` arm only *adds* type facts; a literal used as a non-pointer still resolves the
+same). This closes the reachable reference surface for #275; the AST `&&T` bug (§18.2) is the one open
+item, tracked separately.

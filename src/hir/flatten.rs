@@ -944,6 +944,11 @@ impl<'r> Lowerer<'r> {
     fn infer_ast_type(&self, e: &Expr) -> Option<Type> {
         match e {
             Expr::Identifier(id) => self.ast_types.get(&id.name).cloned(),
+            // A numeric literal's own scalar type (`let x = 5` -> `i32`), so an unannotated `let`
+            // records its type in `ast_types` and a later chain resolves — `&x : &i32`, `&&x : &&i32`,
+            // and a nested `**rr` can recover the pointee element. Without this the chain breaks at the
+            // literal and only single-level refs (which take the place shortcut) worked. (#275 nested refs)
+            Expr::Number(n) => Some(Type::Scalar(number_elem(n)?)),
             Expr::MemberAccess(m) => {
                 let base_ty = self.infer_ast_type(&m.base)?;
                 let (base_name, args) = nominal_name_and_args(deref_to_pointee(&base_ty))?;
