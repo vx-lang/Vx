@@ -15,6 +15,7 @@ use crate::syntax::*;
 pub mod arena;
 pub mod borrow_cx;
 pub mod bytecode;
+pub mod check;
 pub mod env;
 pub mod expr;
 pub mod flatten;
