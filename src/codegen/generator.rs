@@ -441,6 +441,52 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(val);
         }
 
+        // A scalar-`memref` reference coerced to a bare `!llvm.ptr` — passing `&x` for a *mutable* scalar
+        // local (a `memref<i32>` descriptor) to a `&i32` parameter (which lowers to `!llvm.ptr`). A raw
+        // bitcast of the multi-word descriptor to a single pointer produces an `unrealized_conversion_cast`
+        // that fails LLVM translation. Extract the memref's aligned data pointer instead, matching how a
+        // nested `&mut r` is lowered (#278) — the resulting `!llvm.ptr` aliases the same storage. (#273)
+        if to_ty == self.ptr_ty
+            && from_str.starts_with("memref<")
+            && !from_str.contains('x')
+            && !from_str.starts_with("memref<memref<")
+        {
+            let raw_idx = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new(
+                        "memref.extract_aligned_pointer_as_index",
+                        self.loc(),
+                    )
+                    .add_operands(&[val])
+                    .add_results(&[self.index_ty])
+                    .build()
+                    .unwrap(),
+                )
+                .result(0)?
+                .into();
+            let raw_i64 = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
+                        .add_operands(&[raw_idx])
+                        .add_results(&[self.i64_ty])
+                        .build()
+                        .unwrap(),
+                )
+                .result(0)?
+                .into();
+            let ptr = block
+                .append_operation(
+                    melior::ir::operation::OperationBuilder::new("llvm.inttoptr", self.loc())
+                        .add_operands(&[raw_i64])
+                        .add_results(&[self.ptr_ty])
+                        .build()
+                        .unwrap(),
+                )
+                .result(0)?
+                .into();
+            return Ok(ptr);
+        }
+
         if cfg!(debug_assertions) {
             println!(
                 "Warning: Falling back to bitcast from {} to {}\nBacktrace:\n{:?}",

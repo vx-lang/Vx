@@ -2202,3 +2202,31 @@ fn flat_carries_subspace_scheduling_metadata() {
         "expected 4 slots on each of the two transfers\n{mlir}"
     );
 }
+
+/// #273: `&scalar_local` passed to a *reference-returning* call, whose reference result binds a local that
+/// is then dereferenced — the return-provenance example (`pick` returns `b`, so `*r` is `y`). The flat path
+/// already lowers this (the #275/#278 reference substrate covers `&x` call-args, a reference return, and
+/// `*r`); the gap was the AST *oracle*, which coerced a mutable scalar's `memref<i32>` descriptor to the
+/// `&i32` parameter's `!llvm.ptr` via a bitcast that failed LLVM translation. `coerce_type` now extracts the
+/// memref's aligned pointer (as #278 does), so both paths run. `x` is mutable and mutated after the call to
+/// exercise the memref path; `pick` returns `b`, so the later `x = 99` does not change the result (20).
+#[test]
+fn flat_runs_a_reference_returning_call_over_scalar_locals() {
+    assert_parity(
+        "fn pick(a : &i32, b : &i32) -> &i32 { return b; }\n\
+         fn main() -> i32 { let mut x = 10; let y = 20; let r = pick(&x, &y); x = 99; return *r; }",
+        20,
+    );
+}
+
+/// #273 companion: the call returns the *first* reference argument (`return a`), so `*r` observes the
+/// mutation through the same storage — `let mut x = 10; …; x = 99; return *r` yields 99. Proves the
+/// extracted aligned pointer aliases `x`'s real memref cell across the call boundary, on both paths.
+#[test]
+fn flat_reference_returning_call_aliases_the_mutated_local() {
+    assert_parity(
+        "fn pick(a : &i32, b : &i32) -> &i32 { return a; }\n\
+         fn main() -> i32 { let mut x = 10; let y = 20; let r = pick(&x, &y); x = 99; return *r; }",
+        99,
+    );
+}

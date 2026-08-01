@@ -1,6 +1,6 @@
 # Implementation Plan: Cross-Module Return Provenance (`.vxlib` step 7)
 
-**Status:** phase 1 (vertical slice) **landed** and phase 2 **largely landed** — a consumer compiled with `vxc --link-interface <f.vxlib>`, the library source never passed, resolves imported calls from the merged registry and borrow-checks them with cross-module provenance (accepting a reborrow of a non-aliased local, rejecting the aliased one); a scalar import also **runs** (`double(21) → 42` via `--link-interface --run`). The one piece left is a *runnable reference-provenance* demo, blocked on flat-codegen coverage of scalar references ([#273](https://github.com/hiraditya/Vx/issues/273)). See [§7](#7-phase-2-status).
+**Status:** phase 1 (vertical slice) **landed** and phase 2 **largely landed** — a consumer compiled with `vxc --link-interface <f.vxlib>`, the library source never passed, resolves imported calls from the merged registry and borrow-checks them with cross-module provenance (accepting a reborrow of a non-aliased local, rejecting the aliased one); a scalar import also **runs** (`double(21) → 42` via `--link-interface --run`). The one piece left is a *runnable reference-provenance* demo; its codegen blocker ([#273](https://github.com/hiraditya/Vx/issues/273) — scalar references on the flat path + the AST oracle's memref→ptr coercion) is now **closed**, leaving only the runnable `.vxlib` wiring. See [§7](#7-phase-2-status).
 **Tracks:** the "step 7" of [`borrow_checker_parameter_provenance.md`](../borrow_checker_parameter_provenance.md) §4.3 / §8.1 — serialise the per-function return-provenance summary into the module interface so the borrow check stays precise **across a compile boundary**.
 **Companions:** [`stdlib_decoupling_protocol.md`](stdlib_decoupling_protocol.md) (the `ModuleInterface` protocol), [`vxlib_bodies_and_loader.md`](vxlib_bodies_and_loader.md) (the artifact codec + loader), [`../borrow_checker_architecture.md`](../borrow_checker_architecture.md) §2 (the inline slot-0 encoding).
 **Issues:** [#265](https://github.com/hiraditya/Vx/issues/265) (inline encoding — landed), [#220](https://github.com/hiraditya/Vx/issues/220) / [#224](https://github.com/hiraditya/Vx/issues/224) (the `.vxlib` interface / stdlib-decoupling epic).
@@ -176,15 +176,20 @@ Phase 2 was taken as far as the flat-codegen coverage allows, in keep-green mile
   so under `--link-interface` a flat decline is a **clean error**, never an AST-fallback ICE. Guard:
   `driver_link_interface_declines_cleanly_outside_flat_subset`.
 
-- **M3 — runnable *reference*-provenance demo (blocked, [#273](https://github.com/hiraditya/Vx/issues/273)).**
+- **M3 — runnable *reference*-provenance demo (codegen unblocked, [#273](https://github.com/hiraditya/Vx/issues/273) closed).**
   The remaining goal — a consumer that *compiles + runs* a program the conservative rule would reject,
-  because the imported reference return derives from one specific parameter — needs the flat path to
-  lower scalar references (`&x` on a local, a reference return, a `*r` load). That pattern is outside
-  the flat subset today (and the AST path fails it too), so only *codegen* of the reference case is
-  missing. The **frontend already does the full job**: with `--link-interface`, the consumer
-  type-checks and borrow-checks against the `.vxlib` with per-parameter precision (accept the
-  non-aliased mutable reborrow, reject the aliased one) — the provenance crosses and is enforced; it
-  just can't be *run* until #273 lands.
+  because the imported reference return derives from one specific parameter — needed the flat path to
+  lower scalar references (`&x` on a local, a reference return, a `*r` load). **That pattern now lowers
+  on both paths.** The flat subset absorbed it via the #275/#278 reference work (`&scalar_local`
+  call-arguments, reference returns, `*r`); the AST *oracle*'s remaining gap — coercing a mutable
+  scalar's `memref<i32>` descriptor to a `&i32` parameter's `!llvm.ptr` produced an invalid bitcast — is
+  fixed by extracting the memref's aligned pointer in `coerce_type` (the #278 technique). Proven by
+  `flat_runs_a_reference_returning_call_over_scalar_locals` (`pick(&x,&y)` returns `b`, `*r` = 20) and
+  `flat_reference_returning_call_aliases_the_mutated_local` (`return a`, then `x = 99`, `*r` = 99 — the
+  reference aliases the mutated local across the call). The **frontend already did the full job**: with
+  `--link-interface` the consumer type-checks and borrow-checks against the `.vxlib` with per-parameter
+  precision (accept the non-aliased mutable reborrow, reject the aliased one). What remains for the demo
+  is wiring the runnable `.vxlib` end (packaging `pick` + running the consumer), not codegen coverage.
 
 - **`load_import` auto-detecting a sibling `.vxlib`** (landed, #219). An `import mathlib;` now resolves
   to `mathlib.vxlib` where the source would be (`resolve_artifact_path`), and its interface bytes are
