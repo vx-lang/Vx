@@ -1,0 +1,26 @@
+//===- nested_mut_reference.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// #278 Defect 2: a *mutable* nested reference (`&mut &mut i32`). `let mut x`
+// makes `x` a `memref<i32>`, so `&mut x` binds `r` to that descriptor; `&mut r`
+// used to `memref.load` (dereferencing `r`) instead of taking its address, and
+// `**rr` segfaulted. `BorrowExpr` now extracts the memref's aligned data pointer
+// and materializes a bare `!llvm.ptr` slot, so `rr` is a real `&mut &mut i32`.
+// Writing `**rr = 10` mutates `x` through the pointer-to-pointer; `x` then prints 10.
+// This is the AST-path oracle for `flat_writes_through_a_nested_mutable_reference`.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+fn main() -> i32 {
+  let mut x = 5;
+  let r = &mut x;   // r  : &mut i32
+  let rr = &mut r;  // rr : &mut &mut i32
+  **rr = 10;        // mutate x through the pointer-to-pointer
+  print(x);         // 10
+  return 0;
+}
+
+// EXPECT: 10

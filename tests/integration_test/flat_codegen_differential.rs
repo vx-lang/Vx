@@ -598,6 +598,32 @@ fn flat_runs_a_nested_reference() {
     );
 }
 
+/// #278 Defect 2: the *mutable* nested reference (`&mut &mut i32`). Unlike the immutable form (which the
+/// flat path resolves as nested symbolic places), a mutable reference local can't be a place, so `rr` is a
+/// **materialized** pointer-to-pointer: `r` gets a real `!llvm.ptr` slot (`bind_local` now slots an
+/// address-taken pointer local) and `**rr` derefs through two `PtrIndex`es — the inner one loading a
+/// *pointer* element (`pointer_elem_ty`/`PtrIndex` now accept a `Ptr` pointee). On the AST path `&mut r`
+/// extracts the memref's aligned pointer so the same chain stays llvm-pointer-based. Read form: `**rr` = 5.
+#[test]
+fn flat_runs_a_nested_mutable_reference() {
+    assert_parity(
+        "fn main() -> i32 { let mut x = 5; let r = &mut x; let rr = &mut r; return **rr; }",
+        5,
+    );
+}
+
+/// #278 Defect 2: mutation *through* a mutable nested reference. `**rr = 10` writes 10 to `x` via the
+/// pointer-to-pointer, and `return x` observes it — proving `rr` aliases `x`'s real storage (not a copy)
+/// on both paths. The flat path stores through the inner `PtrIndex` element pointer; the AST path stores
+/// through the extracted aligned pointer, which aliases `x`'s memref cell.
+#[test]
+fn flat_writes_through_a_nested_mutable_reference() {
+    assert_parity(
+        "fn main() -> i32 { let mut x = 5; let r = &mut x; let rr = &mut r; **rr = 10; return x; }",
+        10,
+    );
+}
+
 /// #275 M4: a reference-typed struct field (`struct Holder { r : &i32 }`). Constructing `Holder { r : &x }`
 /// stores the address of `x` into the reference field, and `*h.r` loads the field pointer and derefs it.
 /// Previously declined: the escape scan didn't descend into aggregate literals, so the `&x` never

@@ -448,11 +448,11 @@ impl<'r> Lowerer<'r> {
         //     borrowed only into a non-escaping place is *not* materialized, so `let r = &x; *r` needs
         //     no slot at all (§5 Example A);
         //   - a *pointer* local gets the same per-local rule as a scalar (M3b, §11's remainder): a slot
-        //     only when it is reassigned in a control-flow function (the new pointer value must cross a
-        //     block boundary). A non-reassigned pointer — e.g. a materialized `&mut x` used as `*p` in a
-        //     branch — stays a dominating SSA register, one fewer `alloca`. An *address-taken* pointer
-        //     (`&p`, a pointer-to-pointer) keeps the coarse model: its addressable-slot codegen isn't in
-        //     the subset, so relaxing it is deferred (a missed optimization, never a correctness gap);
+        //     when it is *address-taken* (`&p` — a pointer-to-pointer, so `&p` has a real `!llvm.ptr`
+        //     cell to hand out; this is how nested `&mut &mut T` materializes, #278) or reassigned in a
+        //     control-flow function (the new pointer value must cross a block boundary). A non-reassigned,
+        //     non-address-taken pointer — e.g. a materialized `&mut x` used as `*p` in a branch — stays a
+        //     dominating SSA register, one fewer `alloca`;
         //   - a tensor local keeps the coarser function-global model.
         // Safety: a register only ever holds a *single-definition* local's value (the right one), and
         // any read outside that definition's dominance is rejected by the MLIR verifier — so the flat
@@ -462,8 +462,9 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Scalar(_) => {
                 materialized_scalar || (self.has_control_flow && self.mutated.contains(&name))
             }
-            LoweredTy::Ptr if !self.materialized.contains(&name) => {
-                self.has_control_flow && self.mutated.contains(&name)
+            LoweredTy::Ptr => {
+                self.materialized.contains(&name)
+                    || (self.has_control_flow && self.mutated.contains(&name))
             }
             _ => self.memory,
         };
@@ -3188,7 +3189,10 @@ fn pointer_elem_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<Lowe
         _ => return None,
     };
     match lowered_ty(inner, registry)? {
-        e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_)) => Some(e),
+        // A pointer whose pointee is itself a pointer (`&&T`, `*mut *mut T`): the deref loads/stores a
+        // bare `!llvm.ptr` element. This is what makes a *materialized* nested reference (`&mut &mut i32`,
+        // whose `rr` is a real ptr-to-ptr rather than a symbolic place) deref through `PtrIndex`. (#278)
+        e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
         _ => None,
     }
 }

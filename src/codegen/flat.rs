@@ -2070,7 +2070,13 @@ pub fn emit_function_mlir(
                 // (`*mut Vec<i32>`, #242 Vec<Vec<T>>). The GEP's base element type (`et`) sets the
                 // stride either way; a struct element loads/stores the whole `!llvm.struct`.
                 let gid = *types.get(ins.type_idx.0 as usize)?;
-                let (et, scalar_e, agg_gid) = if let Some(e) = elem_of_gid(gid) {
+                // A pointer whose pointee is itself a pointer (`&&T`): the element is a bare `!llvm.ptr`
+                // — the deref loads/stores an 8-byte pointer and the loaded value is itself a pointer
+                // (`ptr_of`), so a further deref (`**rr`) chains. (#278)
+                let elem_is_ptr = gid == ptr_gid();
+                let (et, scalar_e, agg_gid) = if elem_is_ptr {
+                    ("!llvm.ptr".to_string(), None, None)
+                } else if let Some(e) = elem_of_gid(gid) {
                     (mlir_scalar(&e)?.to_string(), Some(e), None)
                 } else if let Some(agg) = ctx.aggs.get(&gid) {
                     (agg.struct_ty.clone(), None, Some(gid))
@@ -2094,6 +2100,11 @@ pub fn emit_function_mlir(
                     names[idx] = n;
                     etypes[idx] = scalar_e;
                     agg_val_of[idx] = agg_gid;
+                    // The loaded value is a pointer (`*rr : &i32`): mark it so an outer deref treats it
+                    // as a `!llvm.ptr` base rather than a scalar. (#278)
+                    if elem_is_ptr {
+                        ptr_of[idx] = true;
+                    }
                 }
             }
             // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
