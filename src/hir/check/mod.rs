@@ -14,3 +14,6 @@
 //===----------------------------------------------------------------------===//
 
 pub mod autodiff;
+pub mod control;
+pub mod literals;
+pub mod operators;
