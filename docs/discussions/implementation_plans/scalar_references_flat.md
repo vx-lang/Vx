@@ -740,12 +740,23 @@ existed to remove.
 > the third derivation gets written when reborrows land.
 
 > [!NOTE]
-> **Resolved: deferred, not scheduled.** Both derivations are individually sound — the checker's
-> `BorrowRecord.path` and the lowerer's `place_base_path`/`paths_may_alias` compute the same fact
-> correctly, just twice. The only cost is the ~15 lines of duplicated path logic, not correctness. This
-> is not on M3b's critical path, so the alignment goal is dropped as a *blocker*; revisit only if M4
-> (reborrows) makes the duplication genuinely painful — at which point the checker's path can be threaded
-> down rather than a third copy written.
+> **Done — deduplicated into `src/hir/places.rs`.** The audit understated the duplication: path
+> *extraction* had two copies (the checker's `extract_base_and_path`, the lowerer's `place_base_path`)
+> and the overlap *predicate* had **four** (three inline loops in the checker — one commented "identical
+> to `check_borrow_expr`" — plus the lowerer's `paths_may_alias`). Both are now single functions in a
+> shared `places` module:
+>
+> - `base_and_path(&Expr) -> Option<(Symbol, Vec<Symbol>)>` — the checker's `extract_base_and_path` is a
+>   thin `String` adapter over it (its `BorrowRecord.path` stays `Vec<String>`); the lowerer calls it
+>   directly. The shared version sees through `IndexAccess` (the checker's behaviour), which is the
+>   conservative direction for the lowerer's disjointness (an index-only difference → same path → *may*
+>   alias → no `noalias` emitted).
+> - `paths_may_alias<T: PartialEq>(&[T], &[T])` — generic over the element, so the checker's `[String]`
+>   and the lowerer's `[Symbol]` share it with no conversion; replaces all four copies.
+>
+> Behaviour-preserving: the middle-end and frontend borrow fixtures (pass **and** fail), the backend
+> corpus, the flat differential, and the lib borrow unit tests all pass unchanged. When reborrows (M4)
+> land they extend one derivation, not a fifth copy.
 
 ### 16.3 The M2b verification caveat has no exit
 

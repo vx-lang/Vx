@@ -2163,7 +2163,7 @@ impl<'r> Lowerer<'r> {
                     // admitted is pairwise disjoint, which the store carries as `noalias` scopes.
                     // Restore the prior tag afterwards so a nested/adjacent write isn't mis-tagged. (#275)
                     let prev = self.pending_place_write.take();
-                    self.pending_place_write = place_base_path(&place);
+                    self.pending_place_write = crate::hir::places::base_and_path(&place);
                     let r = self.lower_assign(&place, rhs);
                     self.pending_place_write = prev;
                     return r;
@@ -2701,29 +2701,6 @@ fn place_root(e: &Expr) -> Option<Symbol> {
     }
 }
 
-/// The root local *and* field path of an lvalue place: `o.x.y` -> `(o, [x, y])`, a bare local -> `(o,
-/// [])`. `None` for a non-lvalue base. The path drives M2b-2's field-disjointness reasoning. (#275)
-fn place_base_path(e: &Expr) -> Option<(Symbol, Vec<Symbol>)> {
-    match e {
-        Expr::Identifier(id) => Some((id.name.clone(), Vec::new())),
-        Expr::MemberAccess(m) => {
-            let (root, mut path) = place_base_path(&m.base)?;
-            path.push(m.member.clone());
-            Some((root, path))
-        }
-        _ => None,
-    }
-}
-
-/// Whether two field paths under the *same* root may name overlapping memory — true when one is a
-/// prefix of the other (`[inner]` vs `[inner, v]`) or they are equal; distinct fields at any shared
-/// level (`[x]` vs `[y]`) are disjoint. Structural field disjointness, sound regardless of borrow
-/// liveness — the fact codegen turns into a `noalias` relationship. (#275, §5.4)
-fn paths_may_alias(a: &[Symbol], b: &[Symbol]) -> bool {
-    let n = a.len().min(b.len());
-    a[..n] == b[..n]
-}
-
 /// Index of the `(root, path)` key in `keys`, or `None` if absent — the group-id lookup for the alias
 /// reduction. (#275)
 fn place_group_of(keys: &[(Symbol, Vec<Symbol>)], root: &Symbol, path: &[Symbol]) -> Option<usize> {
@@ -2750,7 +2727,9 @@ fn reduce_place_alias(stores: &[(usize, Symbol, Vec<Symbol>)]) -> Vec<(usize, us
             let siblings = keys
                 .iter()
                 .enumerate()
-                .filter(|(gi, (r, p))| *gi != own && r == root && !paths_may_alias(path, p))
+                .filter(|(gi, (r, p))| {
+                    *gi != own && r == root && !crate::hir::places::paths_may_alias(path, p)
+                })
                 .map(|(gi, _)| gi)
                 .collect();
             (*pos, own, siblings)

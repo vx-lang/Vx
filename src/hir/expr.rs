@@ -3264,22 +3264,12 @@ impl<'a> TypeChecker<'a> {
                         self.sweep_dead_borrows(&name);
                         if let Some(borrows) = self.active_borrows.get(&*name) {
                             for b in borrows {
-                                if b.is_mut {
-                                    let mut overlap = true;
-                                    let min_len = std::cmp::min(path.len(), b.path.len());
-                                    for (i, p) in path.iter().enumerate().take(min_len) {
-                                        if p != &b.path[i] {
-                                            overlap = false;
-                                            break;
-                                        }
-                                    }
-                                    if overlap {
-                                        self.errors.push(format!(
-                                            "Cannot access '{}' because it is mutably borrowed.",
-                                            name
-                                        ));
-                                        break;
-                                    }
+                                if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
+                                    self.errors.push(format!(
+                                        "Cannot access '{}' because it is mutably borrowed.",
+                                        name
+                                    ));
+                                    break;
                                 }
                             }
                         }
@@ -4026,15 +4016,8 @@ impl<'a> TypeChecker<'a> {
                         });
 
                         for b in borrows.iter() {
-                            // Split borrows check
-                            let mut overlap = true;
-                            for (i, p) in path.iter().enumerate() {
-                                if i < b.path.len() && b.path[i] != *p {
-                                    overlap = false;
-                                    break;
-                                }
-                            }
-                            if !overlap {
+                            // Split borrows: skip a record whose path is disjoint from this borrow's.
+                            if !crate::hir::places::paths_may_alias(&path, &b.path) {
                                 continue;
                             }
 
@@ -4079,20 +4062,16 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Base variable and field path of an lvalue, in the checker's `String` representation (its
+    /// `BorrowRecord.path` is `Vec<String>`). A thin adapter over the shared `places::base_and_path` —
+    /// one derivation for both the checker and the flat lowerer (#275 §16.2).
     fn extract_base_and_path(expr: &Expr) -> Option<(String, Vec<String>)> {
-        match expr {
-            Expr::Identifier(id) => Some((id.name.to_string(), Vec::new())),
-            Expr::MemberAccess(ma) => {
-                if let Some((base_name, mut path)) = Self::extract_base_and_path(&ma.base) {
-                    path.push(ma.member.to_string());
-                    Some((base_name, path))
-                } else {
-                    None
-                }
-            }
-            Expr::IndexAccess(idx) => Self::extract_base_and_path(&idx.base),
-            _ => None,
-        }
+        crate::hir::places::base_and_path(expr).map(|(root, path)| {
+            (
+                root.to_string(),
+                path.iter().map(|s| s.to_string()).collect(),
+            )
+        })
     }
 
     /// Base variable and field path a reference *argument* reborrows, seeing through a leading `&`.
@@ -4367,15 +4346,8 @@ impl<'a> TypeChecker<'a> {
         self.sweep_dead_borrows(base);
         if let Some(borrows) = self.active_borrows.get(base) {
             for b in borrows.iter() {
-                // Overlapping-path conflict, identical to `check_borrow_expr`.
-                let mut overlap = true;
-                for (i, p) in path.iter().enumerate() {
-                    if i < b.path.len() && b.path[i] != *p {
-                        overlap = false;
-                        break;
-                    }
-                }
-                if !overlap {
+                // Overlapping-path conflict, shared with `check_borrow_expr` (#275 §16.2).
+                if !crate::hir::places::paths_may_alias(&path, &b.path) {
                     continue;
                 }
                 if b.is_mut {
