@@ -1,6 +1,6 @@
 //! Borrow-checking state whose coherence the frontend depends on: the active borrow records and the
 //! per-block liveness that decides which of them are dead (NLL). This is the chokepoint the frontend
-//! previously lacked (frontend_refactoring.md, R1).
+//! previously lacked (frontend_refactoring_borrow_checker.md, R1; #279).
 //!
 //! The point of the module boundary is that `active_borrows` is **private** — no code outside this file
 //! can read it. The only conflict-check read path is [`BorrowCx::live_borrows`], which sweeps dead

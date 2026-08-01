@@ -212,7 +212,7 @@ pub struct TypeChecker<'a> {
     pub(crate) active_memory: MemorySpace,
     pub transfer_cost_graph: crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
-    /// cannot bypass the dead-borrow sweep (frontend_refactoring.md R1; the #276 bug class). Replaces
+    /// cannot bypass the dead-borrow sweep (frontend_refactoring_borrow_checker.md R1; the #276 bug class). Replaces
     /// the former `active_borrows` / `block_liveness` / `current_stmt_idx` fields.
     pub(crate) borrow: crate::hir::borrow_cx::BorrowCx,
     pub constraints: Vec<Expr>,

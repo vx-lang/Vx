@@ -1,12 +1,15 @@
 # Frontend refactoring plan
 
-**Status:** proposed — no code moved yet.
+**Status:** **R1 landed** (`522a2ae8` — `BorrowCx` encapsulates the borrow state; the NLL-sweep-before-read
+invariant is now enforced by module privacy, not convention). R2–R5 open. Tracked as
+[#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
 frontend has no *chokepoint* for the invariants those fixes maintain, so each round had to rediscover every
 site that needed the same treatment. This plan targets that structural cause.
 
-**Relates to:** [#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) ·
+**Relates to:** [#279](https://github.com/hiraditya/Vx/issues/279) (this plan's tracking issue) ·
+[#197](https://github.com/hiraditya/Vx/issues/197) (flat pipeline epic) ·
 [#243](https://github.com/hiraditya/Vx/issues/243) (borrow-checker matrix) ·
 [#276](https://github.com/hiraditya/Vx/issues/276) (the NLL-sweep-at-access bug this plan would prevent by
 construction)
@@ -118,9 +121,18 @@ criterion is uniformly: the whole suite passes unchanged, with no test edits.
 Ordered by value-per-risk. Each phase is independently landable and independently valuable — if we stop
 after R1 we have still removed the bug class that motivated this.
 
-### R1 — Encapsulate borrow state so the NLL sweep cannot be forgotten
+### R1 — Encapsulate borrow state so the NLL sweep cannot be forgotten — **LANDED (`522a2ae8`)**
 
-**The highest-value change in this document.** Move the 7-field borrow cluster into a `BorrowCx` struct with
+Delivered in `src/hir/borrow_cx.rs`: `BorrowCx` owns `active_borrows` (**private**) plus the NLL liveness it
+depends on (`block_liveness`, `current_stmt_idx` — the cohesive unit `is_variable_used_after` reads), exposed
+only through `live_borrows()`, which sweeps dead borrows first. The hand-copied inline sweep duplicate in
+`check_borrow_expr` and the standalone `sweep_dead_borrows` are gone (both fold into one private
+`BorrowCx::sweep`); all four conflict-check readers route through `live_borrows`. Behaviour-preserving with
+zero test edits. *Scope actually landed:* the three fields carrying the sweep invariant. The other four
+fields §3 groups under "borrow checking" (`skip_borrow_check`, `moved_vars`, `ref_provenance`,
+`current_params`) carry no sweep invariant, so folding them in is a cosmetic follow-up, tracked in #279.
+
+**The highest-value change in this document.** Move the borrow cluster into a `BorrowCx` struct with
 `active_borrows` **private**, exposed only through methods that sweep first:
 
 ```rust
