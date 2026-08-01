@@ -1,8 +1,10 @@
 # Frontend refactoring plan
 
-**Status:** **R1 landed** (`522a2ae8` — `BorrowCx` encapsulates the borrow state; the NLL-sweep-before-read
-invariant is now enforced by module privacy, not convention). R2–R5 open. Tracked as
-[#279](https://github.com/hiraditya/Vx/issues/279).
+**Status:** **R1 + R2 landed.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
+NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
+`84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
+zero logic change. R3–R5 open (R3 has a borrow-side-effect subtlety noted below; R4 decomposes the ~655-line
+`check_functioncall_expr`). Tracked as [#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
 frontend has no *chokepoint* for the invariants those fixes maintain, so each round had to rediscover every
@@ -152,22 +154,27 @@ move any files, so it will not conflict with in-flight work.
 **Acceptance:** `active_borrows` has no direct reader outside `BorrowCx`; the duplicate sweep is gone; full
 suite green with no test edits.
 
-### R2 — Split `hir/expr.rs` along the dispatch seam
+### R2 — Split `hir/expr.rs` along the dispatch seam — **LANDED** (`c657a442`, `f8cb71de`, `84dc1604`)
 
-`check_expr_type_flag` (`:129`) is already a clean `match expr { … }` delegating one function per expression
-kind. That is a natural, pre-existing seam: each arm's function moves to a submodule with **zero logic
-change**.
+`check_expr_type_flag` was already a clean `match expr { … }` delegating one function per expression kind —
+a natural, pre-existing seam. Each arm's function moved to a `src/hir/check/` submodule as an additional
+`impl TypeChecker` block, **zero logic change**, in three keep-green commits (autodiff pilot; then
+operators/literals/control; then transfer/access/calls).
 
-Proposed split (`src/hir/check/`): `calls.rs` (function/method/indirect/generic instantiation — the largest
-cluster), `places.rs`-adjacent `access.rs` (identifier/member/index/borrow/deref), `literals.rs`,
-`control.rs` (if/match/closure/range), `transfer.rs` (transfer/spawn/topology/capacity/seam), `autodiff.rs`
-(grad/vjp/jvp), `intrinsics.rs`.
+Delivered split: `autodiff.rs` (grad/vjp/jvp + differentiability), `operators.rs` (binary/relational/
+logical/unary + `as`), `literals.rs` (number/array/struct-init/enum-variant/vec!), `control.rs` (if/match/
+closure/range/unsafe & comptime blocks), `transfer.rs` (transfer/spawn + topology/memory/capacity/seam),
+`access.rs` (identifier/member/index/borrow/deref + provenance/reborrow helpers), `calls.rs` (function/
+method/indirect + generic instantiation + intrinsic resolution). Each submodule reaches the shared surface
+via `use super::super::*`; methods a sibling or the dispatch calls became `pub(crate)`.
 
-*Why after R1:* this produces a large, mechanical diff. Landing it on top of a settled borrow encapsulation
-means any post-split failure is attributable to the move, not to entangled semantics.
+**`hir/expr.rs`: 5165 → 545 lines** — now the dispatch, `check_expr_type`/`check_expr_block`, and the shared
+type helpers `is_assignable`/`lower_to_type_id`/`tensor_of`. Verified lib 410 + integration 172 green, no
+test edits, clippy clean.
 
-**Acceptance:** no file over ~800 lines; `git diff --stat` shows moves only (verify with
-`git log --follow -M`); full suite green.
+**Acceptance:** met except `calls.rs` (~1735 lines) — because `check_functioncall_expr` alone is ~655; a
+single function can't drop below the ~800 target by *moving*. That is **R4**'s job (decompose the oversized
+functions), not R2's (one family per file). The dispatch-seam split is complete.
 
 ### R3 — Retire the `(consume, silent)` boolean pair
 
@@ -181,8 +188,20 @@ is a move-semantics question that belongs to the borrow/move context R1 introduc
 *Why after R2:* the split makes it obvious which functions genuinely need each flag; several likely ignore
 one (`_silent`, `_consume` already appear in signatures).
 
+> **⚠️ R2 uncovered a subtlety the naive sink-swap misses.** `silent` today gates **two** things, not one:
+> (1) diagnostic emission (`if !silent { self.errors.push(..) }`), and (2) **borrow-state side effects** —
+> the NLL sweep + record in the access arms (`check_identifier_expr`, `check_memberaccess_expr`,
+> `check_borrow_expr`) run `!self.skip_borrow_check && !silent`, and `track_reference_arg_borrow` early-returns
+> on `silent`. A diagnostics-sink swap only covers (1). A safe R3 must **also** wrap every speculative
+> (`silent = true`) call site in a borrow snapshot/restore so it cannot leak borrow mutations — the
+> `BorrowCx::snapshot`/`restore` R1 introduced is exactly that tool, and some speculative sites (e.g.
+> `check_expr_block`'s `ExprStmt` arm, `check_statement`) already do it, but the audit must confirm *all* of
+> them (e.g. `check_operand_pair`'s literal-inference probes) before `silent` can be removed. So R3 is
+> "sink-swap + borrow-snapshot every speculative probe," not sink-swap alone.
+
 **Acceptance:** the boolean pair is gone from the dispatch signature; speculative checks provably emit no
-diagnostics (a test that asserts the error count is unchanged after a speculative probe).
+diagnostics **and** leave borrow state unchanged (a test that asserts the error count *and* the active-borrow
+table are unchanged after a speculative probe).
 
 ### R4 — Decompose the oversized functions
 
