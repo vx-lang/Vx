@@ -1,14 +1,15 @@
 # Frontend refactoring plan
 
-**Status:** **R1 + R2 + R3 landed; R4 in progress.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
+**Status:** **R1 + R2 + R3 + R4 landed; R5 optional.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
 NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
 `84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
 zero logic change. R3: the `silent` half retired — the plan's sink-swap was unsound (`silent` also changes
 if/match result types and gates `consume`'s scope/move mutations), so `silent` became a `speculating` **field**
 instead, removing the positional boolean from every checker signature with behavior preserved (§R3). `consume`
-stays a parameter (a genuine positional signal, not a mode), as audited. R4: `check_functioncall_expr`
-decomposed 652 → ~358 and `check_methodcall_expr` 346 → ~195 (five helpers extracted across the two);
-`lower_to_type_id` still open (§R4). R5 open. Tracked as
+stays a parameter (a genuine positional signal, not a mode), as audited. R4: the three largest frontend
+god-functions decomposed — `check_functioncall_expr` 652 → ~358, `check_methodcall_expr` 346 → ~195, and
+`check_statement` 360 → 39 (eleven helpers extracted; `lower_to_type_id` was already ~33 lines, its plan count
+stale) (§R4). R5 optional. Tracked as
 [#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
@@ -255,11 +256,14 @@ dynamic scope reproduces the parameter's exactly. Guarded by
 does not clobber the caller's flag; the fresh entry forces-off-then-restores). `consume` stays a parameter, as
 audited.
 
-### R4 — Decompose the oversized functions — **`check_functioncall_expr` + `check_methodcall_expr` LANDED; `lower_to_type_id` open**
+### R4 — Decompose the oversized functions — **LANDED** (`check_functioncall_expr`, `check_methodcall_expr`, `check_statement`)
 
 `check_functioncall_expr` at **660 lines** is the worst; then `check_methodcall_expr` (322) and
 `lower_to_type_id` (320). These are where overload resolution, generic deduction, intrinsic dispatch,
 provenance and reborrow tracking all interleave — the hardest code in the frontend to change confidently.
+(*Correction from implementation:* `lower_to_type_id` is actually ~33 lines — a two-arm AST-type → `TypeId`
+hash that does none of that interleaving; its "320" here was a stale/misnamed count. The genuinely largest
+oversized function turned out to be `check_statement` at **360**, which was decomposed instead.)
 
 *Why last among the code phases:* R2 and R3 remove much of the incidental bulk (flag threading, unrelated
 neighbours) and will make the real structure visible. Decomposing before that risks carving along the wrong
@@ -283,8 +287,18 @@ the caller does the `*expr = …` after the receiver/argument borrows are releas
 trick that keeps a whole-node rewrite out of a borrow conflict). Behavior-preserving, full suite green, no test
 edits.
 
-**Open:** `lower_to_type_id`; and, in `check_functioncall_expr`, the closure-struct-call arm still rewrites
-`*expr` inline (extractable with the same return-the-node trick, deferred as lower-value).
+**Landed — `check_statement` 360 → 39.** The largest function in the frontend was a flat match on statement
+kinds; its six substantial arms are now named helpers (`check_let_decl_stmt`, `check_for_loop_stmt`,
+`check_loop_stmt`, `check_assign_stmt`, `check_return_stmt`, `check_assert_stmt`), each re-destructuring the
+statement with the arm's own pattern so the bodies moved verbatim. The remaining 39 lines are a pure dispatcher.
+Behavior-preserving, full suite green, no test edits.
+
+**R4 done.** `lower_to_type_id` needs no work (see the correction above). The remaining large frontend
+functions — `is_assignable` (286), `check_transfer_expr` (244), `check_identifier_expr` (238) — are either flat
+decision cascades that read fine as-is (`is_assignable` is a type-pair rule table) or single-concern checkers,
+not the multi-concern god-functions R4 targeted; and the closure-struct-call arm in `check_functioncall_expr`
+still rewrites `*expr` inline (extractable with the same return-the-node trick). All are optional future cleanup,
+not blocking work.
 
 ### R5 — Split the remaining `TypeChecker` concerns (optional)
 

@@ -99,196 +99,10 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
-        // No more HIR interception block needed.
-
         match stmt {
-            Statement::LetDecl(LetDeclStmt {
-                name,
-                is_mut: _is_mut,
-                ty_ann,
-                expr,
-                span,
-            }) => {
-                // Track declared variables for W1001 (unused variable) detection
-                self.declared_vars.push((name.clone(), *span));
-
-                self.current_assignment_target = Some(name.to_string());
-                // Forward the annotation as an expected-type hint so a generic call can
-                // deduce a return-only topology/type variable from it.
-                let prev_expected = self.expected_type.take();
-                self.expected_type = ty_ann.clone();
-                let ty = self.check_expr_type_flag(expr, consume);
-                self.expected_type = prev_expected;
-                self.current_assignment_target = None;
-
-                let mut tmp_env = HashMap::new();
-                for env in &self.eval_env {
-                    for (k, v) in env {
-                        tmp_env.insert(k.clone(), v.clone());
-                    }
-                }
-                if let Some(val) = self.eval_expr(expr, &tmp_env) {
-                    self.eval_env
-                        .last_mut()
-                        .unwrap()
-                        .insert(name.to_string().into(), val);
-                }
-
-                let binding_ty = if let Some(ann) = ty_ann {
-                    if !self.is_assignable(ann, &ty) {
-                        self.errors
-                            .push(format!("Type mismatch in variable declaration '{}'", name));
-                    }
-                    // Capacity: a `Ref`/`Pinned` tensor annotation must fit its memory space.
-                    self.check_type_placement(ann, &format!("variable '{}'", name));
-                    self.insert(name.to_string(), ann.clone());
-                    ann.clone()
-                } else {
-                    self.insert(name.to_string(), ty.clone());
-                    ty
-                };
-
-                // Record where a reference binding roots, so a later `return` of it can be
-                // checked for escape (#243). A binding whose provenance we can't determine is
-                // left unrecorded rather than assumed safe-or-unsafe.
-                if Self::is_ref_type(&binding_ty) {
-                    if let Some(prov) = self.ref_provenance_of(expr) {
-                        self.ref_provenance.insert(name.clone(), prov);
-                    }
-                }
-
-                if !*_is_mut {
-                    let id_expr = Expr::Identifier(IdentifierExpr {
-                        name: name.clone(),
-                        span: Span::default(),
-                    });
-                    let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                        lhs: Box::new(id_expr),
-                        op: RelationalOp::Eq,
-                        rhs: Box::new(expr.clone()),
-                        span: Span::default(),
-                    });
-                    self.constraints.push(eq_expr);
-                }
-            }
-            Statement::ForLoop(ForLoopStmt {
-                iter,
-                iterable,
-                invariants,
-                body,
-                span: _,
-            }) => {
-                let iterable_ty = self.check_expr_type_flag(iterable, consume);
-                self.push_scope();
-
-                // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
-                // If it's Tensor, we extract the ElementType
-                let mut iter_ty = Type::Scalar(ElementType::I64); // fallback
-
-                // Check if it's a generic iterator by synthesizing a `.next()` call
-                if matches!(iterable_ty, Type::GenericInstance(..))
-                    || matches!(iterable_ty, Type::Struct(..))
-                {
-                    use syntax::expr::{Expr, MethodCallExpr};
-                    use syntax::Span;
-                    let mut next_call = Expr::MethodCall(MethodCallExpr {
-                        base: (*iterable).clone(),
-                        method_name: "next".to_string().into(),
-                        type_args: None,
-                        args: vec![],
-                        span: Span::default(),
-                    });
-                    // This will resolve and monomorphize `next`! Its result is `Option<Element>`, so
-                    // the loop variable takes the payload type. The `Option` base may be spelled
-                    // `Enum` *or* `Struct` after resolution — accept both, else the element type is
-                    // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
-                    // body, the for-over-iterator typing bug, #242).
-                    let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
-                    if let Type::GenericInstance(base, args) = opt_ty {
-                        if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
-                            if name.as_ref() == "Option" && args.len() == 1 {
-                                iter_ty = args[0].clone();
-                            }
-                        }
-                    }
-                } else {
-                    iter_ty = match iterable_ty {
-                        Type::GenericInstance(base, args) => {
-                            if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
-                                if name.as_ref() == "Option" && args.len() == 1 {
-                                    args[0].clone()
-                                } else {
-                                    Type::Scalar(ElementType::I64)
-                                }
-                            } else {
-                                Type::Scalar(ElementType::I64)
-                            }
-                        }
-                        Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
-                        // A scalar iterable is an integer range (`a..b`); the induction variable takes
-                        // the range's element type, so `for i in 0..10` binds `i: i32` and code like
-                        // `sum + i` / `return i` type-checks without a coercion (#240). The flat
-                        // lowerer already types the loop var from the same range bound.
-                        Type::Scalar(e) => Type::Scalar(e),
-                        _ => Type::Scalar(ElementType::I64),
-                    };
-                }
-
-                self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
-
-                // Prove invariants hold on entry, then assume them inside the loop
-                let prev_constraints_len = self.constraints.len();
-                for inv in invariants.iter() {
-                    if !self.prove_expr(inv) {
-                        self.errors
-                            .push("Loop invariant cannot be proven on entry".to_string());
-                    }
-                    self.constraints.push(inv.clone());
-                }
-
-                self.check_block(body, return_type);
-
-                // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
-                for inv in invariants.iter() {
-                    if !self.prove_expr(inv) {
-                        self.errors.push(
-                            "Loop invariant cannot be proven to hold across iterations".to_string(),
-                        );
-                    }
-                }
-
-                self.constraints.truncate(prev_constraints_len);
-                self.pop_scope();
-            }
-            Statement::Loop(LoopStmt {
-                body,
-                span: _,
-                invariants,
-            }) => {
-                self.push_scope();
-
-                let prev_constraints_len = self.constraints.len();
-                for inv in invariants.iter() {
-                    if !self.prove_expr(inv) {
-                        self.errors
-                            .push("Loop invariant cannot be proven on entry".to_string());
-                    }
-                    self.constraints.push(inv.clone());
-                }
-
-                self.check_block(body, return_type);
-
-                for inv in invariants.iter() {
-                    if !self.prove_expr(inv) {
-                        self.errors.push(
-                            "Loop invariant cannot be proven to hold across iterations".to_string(),
-                        );
-                    }
-                }
-
-                self.constraints.truncate(prev_constraints_len);
-                self.pop_scope();
-            }
+            Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
+            Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
+            Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             Statement::Break(_) => {}
             Statement::Continue(_) => {}
             Statement::Assign(AssignStmt { lhs, rhs, span: _ })
@@ -297,100 +111,8 @@ impl<'a> TypeChecker<'a> {
                 op: _,
                 rhs,
                 span: _,
-            }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false);
-
-                // Determine target name for NLL
-                if let Expr::Identifier(id) = lhs {
-                    self.current_assignment_target = Some(id.name.to_string());
-                } else if let Expr::MemberAccess(ma) = lhs {
-                    if let Expr::Identifier(id) = &*ma.base {
-                        self.current_assignment_target = Some(id.name.to_string());
-                    }
-                }
-
-                // Check the RHS expecting the target's type, so an untyped literal is born at that
-                // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
-                // defaulting and mismatching (#240).
-                let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
-                self.current_assignment_target = None;
-                if !self.is_assignable(&lhs_ty, &rhs_ty) {
-                    self.errors.push("Type mismatch in assignment".to_string());
-                }
-
-                if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
-                    let mut tmp_env = HashMap::new();
-                    for env in &self.eval_env {
-                        for (k, v) in env {
-                            tmp_env.insert(k.clone(), v.clone());
-                        }
-                    }
-                    if let Some(val) = self.eval_expr(rhs, &tmp_env) {
-                        // find the scope that has the variable
-                        for env in self.eval_env.iter_mut().rev() {
-                            if env.contains_key(name.as_ref()) {
-                                env.insert(name.to_string().into(), val);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Statement::Return(ReturnStmt { expr, span }) => {
-                let prev_expected = self.expected_type.take();
-                self.expected_type = Some(return_type.clone());
-                let ty = self.check_expr_type_flag(expr, consume);
-                self.expected_type = prev_expected;
-
-                let mut expected_ty = return_type.clone();
-                if let Some(Type::Unknown) = self.current_return_type {
-                    self.current_return_type = Some(ty.clone());
-                    expected_ty = ty.clone();
-                }
-
-                if !self.is_assignable(&expected_ty, &ty) {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E3002,
-                        format!(
-                            "Type mismatch on return. Expected {:?}, got {:?}",
-                            expected_ty, ty
-                        ),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                    );
-                }
-
-                // Return-escape analysis (#243, bc4): a returned reference must root in
-                // caller-owned memory. Returning a reference to a function-local — `return &x`
-                // for a local `x`, or a binding that reborrows one — leaves a dangling pointer
-                // once this frame unwinds.
-                if !self.speculating
-                    && Self::is_ref_type(&ty)
-                    && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
-                {
-                    self.errors.error_with_code(
-                        crate::diagnostic::DiagnosticCode::E4005,
-                        "Cannot return a reference to a local value: it would dangle after the \
-                         function returns. A returned reference must borrow from a reference \
-                         parameter, not a local."
-                            .to_string(),
-                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                    );
-                }
-
-                // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
-                let return_ident = Expr::Identifier(IdentifierExpr {
-                    name: "return".to_string().into(),
-                    span: *span,
-                });
-                let return_eq = Expr::RelationalOp(RelationalOpExpr {
-                    lhs: Box::new(return_ident),
-                    op: RelationalOp::Eq,
-                    rhs: Box::new(expr.clone()),
-                    span: *span,
-                });
-                self.return_constraints.push(return_eq);
-            }
-
+            }) => self.check_assign_stmt(lhs, rhs, consume),
+            Statement::Return(ret) => self.check_return_stmt(ret, consume, return_type),
             Statement::ExprStmt(ExprStmtStmt {
                 expr,
                 has_semi: _,
@@ -400,56 +122,356 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
             }
-            Statement::Assert(AssertStmt { expr, msg, span }) => {
-                let ty = self.check_expr_type_flag(expr, consume);
-                if ty != Type::Scalar(ElementType::Bool) {
-                    self.errors
-                        .push("Assertion condition must be boolean".to_string());
-                }
-
-                let is_verified = matches!(return_type, Type::Verified(_));
-                let mut tmp_env = HashMap::new();
-                for env in &self.eval_env {
-                    for (k, v) in env {
-                        tmp_env.insert(k.clone(), v.clone());
-                    }
-                }
-                let eval_res = self.eval_expr(expr, &tmp_env);
-
-                if let Some(Value::Bool(b)) = eval_res {
-                    if !b {
-                        let m = msg
-                            .clone()
-                            .unwrap_or_else(|| "Comptime assertion failed".to_string());
-                        if is_verified {
-                            self.errors
-                                .push(format!("Contract violated for Verified return type: {}", m));
-                        } else {
-                            self.errors.error_with_code(
-                                crate::diagnostic::DiagnosticCode::E8002,
-                                format!("Comptime assert failed: {}", m),
-                                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                            );
-                        }
-                    }
-                } else if is_verified {
-                    // Try to prove mathematically using our SMT constraints
-                    if !self.prove_expr(expr) {
-                        self.errors.push(
-                            "Cannot statically prove assertion for Verified return type"
-                                .to_string(),
-                        );
-                    }
-                } else {
-                    // It's a standard dynamic assert, add it to our mathematical constraints
-                    // so we can prove future Verified<T> return conditions!
-                    self.constraints.push(*expr.clone());
-                }
-            }
+            Statement::Assert(assert) => self.check_assert_stmt(assert, consume, return_type),
             Statement::MacroCall(_) => {
                 self.errors.push("Macro failed to expand".to_string());
             }
             Statement::Error(_) => {}
+        }
+    }
+
+    /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
+    /// binding's reference provenance (#243), and register an equality constraint for an immutable.
+    fn check_let_decl_stmt(&mut self, decl: &mut LetDeclStmt, consume: bool) {
+        let LetDeclStmt {
+            name,
+            is_mut: _is_mut,
+            ty_ann,
+            expr,
+            span,
+        } = decl;
+        // Track declared variables for W1001 (unused variable) detection
+        self.declared_vars.push((name.clone(), *span));
+
+        self.current_assignment_target = Some(name.to_string());
+        // Forward the annotation as an expected-type hint so a generic call can
+        // deduce a return-only topology/type variable from it.
+        let prev_expected = self.expected_type.take();
+        self.expected_type = ty_ann.clone();
+        let ty = self.check_expr_type_flag(expr, consume);
+        self.expected_type = prev_expected;
+        self.current_assignment_target = None;
+
+        let mut tmp_env = HashMap::new();
+        for env in &self.eval_env {
+            for (k, v) in env {
+                tmp_env.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(val) = self.eval_expr(expr, &tmp_env) {
+            self.eval_env
+                .last_mut()
+                .unwrap()
+                .insert(name.to_string().into(), val);
+        }
+
+        let binding_ty = if let Some(ann) = ty_ann {
+            if !self.is_assignable(ann, &ty) {
+                self.errors
+                    .push(format!("Type mismatch in variable declaration '{}'", name));
+            }
+            // Capacity: a `Ref`/`Pinned` tensor annotation must fit its memory space.
+            self.check_type_placement(ann, &format!("variable '{}'", name));
+            self.insert(name.to_string(), ann.clone());
+            ann.clone()
+        } else {
+            self.insert(name.to_string(), ty.clone());
+            ty
+        };
+
+        // Record where a reference binding roots, so a later `return` of it can be
+        // checked for escape (#243). A binding whose provenance we can't determine is
+        // left unrecorded rather than assumed safe-or-unsafe.
+        if Self::is_ref_type(&binding_ty) {
+            if let Some(prov) = self.ref_provenance_of(expr) {
+                self.ref_provenance.insert(name.clone(), prov);
+            }
+        }
+
+        if !*_is_mut {
+            let id_expr = Expr::Identifier(IdentifierExpr {
+                name: name.clone(),
+                span: Span::default(),
+            });
+            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(id_expr),
+                op: RelationalOp::Eq,
+                rhs: Box::new(expr.clone()),
+                span: Span::default(),
+            });
+            self.constraints.push(eq_expr);
+        }
+    }
+
+    /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
+    /// loop invariants on entry, and check the body.
+    fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
+        let ForLoopStmt {
+            iter,
+            iterable,
+            invariants,
+            body,
+            span: _,
+        } = floop;
+        let iterable_ty = self.check_expr_type_flag(iterable, consume);
+        self.push_scope();
+
+        // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
+        // If it's Tensor, we extract the ElementType
+        let mut iter_ty = Type::Scalar(ElementType::I64); // fallback
+
+        // Check if it's a generic iterator by synthesizing a `.next()` call
+        if matches!(iterable_ty, Type::GenericInstance(..))
+            || matches!(iterable_ty, Type::Struct(..))
+        {
+            use syntax::expr::{Expr, MethodCallExpr};
+            use syntax::Span;
+            let mut next_call = Expr::MethodCall(MethodCallExpr {
+                base: (*iterable).clone(),
+                method_name: "next".to_string().into(),
+                type_args: None,
+                args: vec![],
+                span: Span::default(),
+            });
+            // This will resolve and monomorphize `next`! Its result is `Option<Element>`, so
+            // the loop variable takes the payload type. The `Option` base may be spelled
+            // `Enum` *or* `Struct` after resolution — accept both, else the element type is
+            // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
+            // body, the for-over-iterator typing bug, #242).
+            let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
+            if let Type::GenericInstance(base, args) = opt_ty {
+                if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
+                    if name.as_ref() == "Option" && args.len() == 1 {
+                        iter_ty = args[0].clone();
+                    }
+                }
+            }
+        } else {
+            iter_ty = match iterable_ty {
+                Type::GenericInstance(base, args) => {
+                    if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
+                        if name.as_ref() == "Option" && args.len() == 1 {
+                            args[0].clone()
+                        } else {
+                            Type::Scalar(ElementType::I64)
+                        }
+                    } else {
+                        Type::Scalar(ElementType::I64)
+                    }
+                }
+                Type::Tensor(el_ty, _, _) => Type::Scalar(el_ty),
+                // A scalar iterable is an integer range (`a..b`); the induction variable takes
+                // the range's element type, so `for i in 0..10` binds `i: i32` and code like
+                // `sum + i` / `return i` type-checks without a coercion (#240). The flat
+                // lowerer already types the loop var from the same range bound.
+                Type::Scalar(e) => Type::Scalar(e),
+                _ => Type::Scalar(ElementType::I64),
+            };
+        }
+
+        self.insert(iter.clone(), iter_ty); // Still assuming i64 for most things, but it works for our current test cases.
+
+        // Prove invariants hold on entry, then assume them inside the loop
+        let prev_constraints_len = self.constraints.len();
+        for inv in invariants.iter() {
+            if !self.prove_expr(inv) {
+                self.errors
+                    .push("Loop invariant cannot be proven on entry".to_string());
+            }
+            self.constraints.push(inv.clone());
+        }
+
+        self.check_block(body, return_type);
+
+        // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
+        for inv in invariants.iter() {
+            if !self.prove_expr(inv) {
+                self.errors
+                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
+            }
+        }
+
+        self.constraints.truncate(prev_constraints_len);
+        self.pop_scope();
+    }
+
+    /// Check an infinite `loop`: prove invariants on entry, check the body, then re-prove them
+    /// across iterations.
+    fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
+        let LoopStmt {
+            body,
+            span: _,
+            invariants,
+        } = lp;
+        self.push_scope();
+
+        let prev_constraints_len = self.constraints.len();
+        for inv in invariants.iter() {
+            if !self.prove_expr(inv) {
+                self.errors
+                    .push("Loop invariant cannot be proven on entry".to_string());
+            }
+            self.constraints.push(inv.clone());
+        }
+
+        self.check_block(body, return_type);
+
+        for inv in invariants.iter() {
+            if !self.prove_expr(inv) {
+                self.errors
+                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
+            }
+        }
+
+        self.constraints.truncate(prev_constraints_len);
+        self.pop_scope();
+    }
+
+    /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
+    /// type (#240), verify assignability, and fold a const RHS into the eval environment.
+    fn check_assign_stmt(&mut self, lhs: &mut Expr, rhs: &mut Expr, consume: bool) {
+        let lhs_ty = self.check_expr_type_flag(lhs, false);
+
+        // Determine target name for NLL
+        if let Expr::Identifier(id) = lhs {
+            self.current_assignment_target = Some(id.name.to_string());
+        } else if let Expr::MemberAccess(ma) = lhs {
+            if let Expr::Identifier(id) = &*ma.base {
+                self.current_assignment_target = Some(id.name.to_string());
+            }
+        }
+
+        // Check the RHS expecting the target's type, so an untyped literal is born at that
+        // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
+        // defaulting and mismatching (#240).
+        let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+        self.current_assignment_target = None;
+        if !self.is_assignable(&lhs_ty, &rhs_ty) {
+            self.errors.push("Type mismatch in assignment".to_string());
+        }
+
+        if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
+            let mut tmp_env = HashMap::new();
+            for env in &self.eval_env {
+                for (k, v) in env {
+                    tmp_env.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(val) = self.eval_expr(rhs, &tmp_env) {
+                // find the scope that has the variable
+                for env in self.eval_env.iter_mut().rev() {
+                    if env.contains_key(name.as_ref()) {
+                        env.insert(name.to_string().into(), val);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check a `return`: type the returned expression against the declared return type, run the
+    /// return-escape analysis (#243), and bind `return` for `ensures` constraints.
+    fn check_return_stmt(&mut self, ret: &mut ReturnStmt, consume: bool, return_type: &Type) {
+        let ReturnStmt { expr, span } = ret;
+        let prev_expected = self.expected_type.take();
+        self.expected_type = Some(return_type.clone());
+        let ty = self.check_expr_type_flag(expr, consume);
+        self.expected_type = prev_expected;
+
+        let mut expected_ty = return_type.clone();
+        if let Some(Type::Unknown) = self.current_return_type {
+            self.current_return_type = Some(ty.clone());
+            expected_ty = ty.clone();
+        }
+
+        if !self.is_assignable(&expected_ty, &ty) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3002,
+                format!(
+                    "Type mismatch on return. Expected {:?}, got {:?}",
+                    expected_ty, ty
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+
+        // Return-escape analysis (#243, bc4): a returned reference must root in
+        // caller-owned memory. Returning a reference to a function-local — `return &x`
+        // for a local `x`, or a binding that reborrows one — leaves a dangling pointer
+        // once this frame unwinds.
+        if !self.speculating
+            && Self::is_ref_type(&ty)
+            && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
+        {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4005,
+                "Cannot return a reference to a local value: it would dangle after the \
+                         function returns. A returned reference must borrow from a reference \
+                         parameter, not a local."
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+
+        // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
+        let return_ident = Expr::Identifier(IdentifierExpr {
+            name: "return".to_string().into(),
+            span: *span,
+        });
+        let return_eq = Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(return_ident),
+            op: RelationalOp::Eq,
+            rhs: Box::new(expr.clone()),
+            span: *span,
+        });
+        self.return_constraints.push(return_eq);
+    }
+
+    /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and
+    /// either flag a failure or fold it into the SMT constraints (Verified<T> discharge).
+    fn check_assert_stmt(&mut self, assert: &mut AssertStmt, consume: bool, return_type: &Type) {
+        let AssertStmt { expr, msg, span } = assert;
+        let ty = self.check_expr_type_flag(expr, consume);
+        if ty != Type::Scalar(ElementType::Bool) {
+            self.errors
+                .push("Assertion condition must be boolean".to_string());
+        }
+
+        let is_verified = matches!(return_type, Type::Verified(_));
+        let mut tmp_env = HashMap::new();
+        for env in &self.eval_env {
+            for (k, v) in env {
+                tmp_env.insert(k.clone(), v.clone());
+            }
+        }
+        let eval_res = self.eval_expr(expr, &tmp_env);
+
+        if let Some(Value::Bool(b)) = eval_res {
+            if !b {
+                let m = msg
+                    .clone()
+                    .unwrap_or_else(|| "Comptime assertion failed".to_string());
+                if is_verified {
+                    self.errors
+                        .push(format!("Contract violated for Verified return type: {}", m));
+                } else {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E8002,
+                        format!("Comptime assert failed: {}", m),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        } else if is_verified {
+            // Try to prove mathematically using our SMT constraints
+            if !self.prove_expr(expr) {
+                self.errors
+                    .push("Cannot statically prove assertion for Verified return type".to_string());
+            }
+        } else {
+            // It's a standard dynamic assert, add it to our mathematical constraints
+            // so we can prove future Verified<T> return conditions!
+            self.constraints.push(*expr.clone());
         }
     }
 
