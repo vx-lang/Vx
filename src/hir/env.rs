@@ -228,7 +228,6 @@ pub struct TypeChecker<'a> {
     pub constraints: Vec<Expr>,
     pub return_constraints: Vec<Expr>,
     pub(crate) next_id: u32,
-    pub(crate) moved_vars: Vec<std::collections::HashSet<String>>,
     pub eval_env: Vec<HashMap<crate::symbol::Symbol, Value>>,
     pub current_return_type: Option<Type>,
     #[allow(dead_code)]
@@ -237,7 +236,6 @@ pub struct TypeChecker<'a> {
     pub(crate) closure_captures_stack: Vec<HashMap<crate::symbol::Symbol, Type>>,
     pub generated_structs: Vec<StructDecl>,
     pub(crate) current_assignment_target: Option<String>,
-    pub skip_borrow_check: bool,
     /// Tracks which variables have been read during the current function check.
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
@@ -294,15 +292,6 @@ pub struct TypeChecker<'a> {
     /// `.map(|x| ...)`). See `check_closure_expr` and `unify_types_internal`.
     pub(crate) closure_signatures:
         std::collections::HashMap<crate::symbol::Symbol, (Vec<Type>, Type)>,
-    /// Parameters (name -> declared type) of the function currently being checked. Lets the
-    /// return-escape analysis tell a caller-owned *reference parameter* (safe to reborrow and
-    /// return) apart from a local binding of the same reference type (#243). Reset per function.
-    pub(crate) current_params: HashMap<crate::symbol::Symbol, Type>,
-    /// Provenance of each reference-typed *local* binding, recorded at its `let`: does the
-    /// reference root in caller memory (`External`) or a function-local slot (`Local`)? A
-    /// `return` of a `Local`-provenance reference is a dangling escape (E4005, #243). Reset
-    /// per function.
-    pub(crate) ref_provenance: HashMap<crate::symbol::Symbol, RefProvenance>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -338,14 +327,12 @@ impl<'a> TypeChecker<'a> {
             constraints: Vec::new(),
             return_constraints: Vec::new(),
             next_id: 1,
-            moved_vars: vec![std::collections::HashSet::new()],
             eval_env: vec![HashMap::new()],
             current_return_type: None,
             closure_depths: Vec::new(),
             closure_captures_stack: Vec::new(),
             generated_structs: Vec::new(),
             current_assignment_target: None,
-            skip_borrow_check: false,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
             pending_transfer_relaxed: false,
@@ -361,21 +348,21 @@ impl<'a> TypeChecker<'a> {
             pending_topo_bindings: std::collections::HashMap::new(),
             expected_type: None,
             closure_signatures: std::collections::HashMap::new(),
-            current_params: HashMap::new(),
-            ref_provenance: HashMap::new(),
         }
     }
 
     pub fn push_scope(&mut self) {
         self.scopes.push(std::collections::HashMap::new());
-        self.moved_vars.push(std::collections::HashSet::new());
+        self.borrow
+            .moved_vars
+            .push(std::collections::HashSet::new());
         self.eval_env.push(std::collections::HashMap::new());
     }
 
     pub fn pop_scope(&mut self) {
         let depth = self.scopes.len();
         self.scopes.pop();
-        self.moved_vars.pop();
+        self.borrow.moved_vars.pop();
         self.eval_env.pop();
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
@@ -500,7 +487,7 @@ impl<'a> TypeChecker<'a> {
         for scope in self.scopes.iter_mut().rev() {
             if scope.contains_key(name) {
                 scope.remove(name);
-                if let Some(last) = self.moved_vars.last_mut() {
+                if let Some(last) = self.borrow.moved_vars.last_mut() {
                     last.insert(name.to_string());
                 }
                 return;
@@ -509,7 +496,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn is_moved(&self, name: &str) -> bool {
-        for moved in self.moved_vars.iter().rev() {
+        for moved in self.borrow.moved_vars.iter().rev() {
             if moved.contains(name) {
                 return true;
             }
@@ -944,11 +931,11 @@ impl<'a> TypeChecker<'a> {
         // Record the parameter set and clear per-function provenance state for the
         // return-escape analysis (#243). Saved/restored so nested checks (closures) don't
         // clobber the enclosing function's view.
-        let prev_params = std::mem::take(&mut self.current_params);
-        let prev_provenance = std::mem::take(&mut self.ref_provenance);
+        let prev_params = std::mem::take(&mut self.borrow.current_params);
+        let prev_provenance = std::mem::take(&mut self.borrow.ref_provenance);
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
-            self.current_params.insert(name.clone(), ty.clone());
+            self.borrow.current_params.insert(name.clone(), ty.clone());
         }
 
         // Add preconditions (requires) to our constraints
@@ -1038,8 +1025,8 @@ impl<'a> TypeChecker<'a> {
         self.constraints = prev_constraints;
         self.active_topology = prev_top;
         self.active_memory = prev_mem;
-        self.current_params = prev_params;
-        self.ref_provenance = prev_provenance;
+        self.borrow.current_params = prev_params;
+        self.borrow.ref_provenance = prev_provenance;
         self.used_vars.clear();
     }
 

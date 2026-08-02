@@ -1,7 +1,9 @@
 # Frontend refactoring plan
 
-**Status:** **R1 + R2 + R3 + R4 landed; R5 optional.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
-NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
+**Status:** **R1 + R2 + R3 + R4 landed; R5 optional.** R1 (`522a2ae8`, + follow-up): `BorrowCx` encapsulates the
+borrow state; the NLL-sweep-before-read invariant is enforced by module privacy, not convention. The follow-up
+folded the remaining four borrow-cluster fields (`skip_borrow_check`, `moved_vars`, `ref_provenance`,
+`current_params`) in too, so all borrow/move state lives on `BorrowCx`. R2 (`c657a442`, `f8cb71de`,
 `84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
 zero logic change. R3: the `silent` half retired — the plan's sink-swap was unsound (`silent` also changes
 if/match result types and gates `consume`'s scope/move mutations), so `silent` became a `speculating` **field**
@@ -136,9 +138,12 @@ depends on (`block_liveness`, `current_stmt_idx` — the cohesive unit `is_varia
 only through `live_borrows()`, which sweeps dead borrows first. The hand-copied inline sweep duplicate in
 `check_borrow_expr` and the standalone `sweep_dead_borrows` are gone (both fold into one private
 `BorrowCx::sweep`); all four conflict-check readers route through `live_borrows`. Behaviour-preserving with
-zero test edits. *Scope actually landed:* the three fields carrying the sweep invariant. The other four
-fields §3 groups under "borrow checking" (`skip_borrow_check`, `moved_vars`, `ref_provenance`,
-`current_params`) carry no sweep invariant, so folding them in is a cosmetic follow-up, tracked in #279.
+zero test edits. *Scope landed in two steps:* first the three fields carrying the sweep invariant; then
+(**follow-up, landed**) the other four fields §3 groups under "borrow checking" — `skip_borrow_check`,
+`moved_vars`, `ref_provenance`, `current_params` — folded in too, so all borrow/move-checking state now lives
+on `BorrowCx`. Those four carry no sweep invariant, so they are plain `pub(crate)` fields with direct access
+(no new method surface); `BorrowCx` gains a manual `Default` so `moved_vars` keeps its one-scope initial value.
+Cosmetic consolidation, behaviour-preserving, zero test edits.
 
 **The highest-value change in this document.** Move the borrow cluster into a `BorrowCx` struct with
 `active_borrows` **private**, exposed only through methods that sweep first:

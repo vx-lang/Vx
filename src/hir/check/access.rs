@@ -30,7 +30,7 @@ impl<'a> TypeChecker<'a> {
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
 
-                if !self.skip_borrow_check && !self.speculating {
+                if !self.borrow.skip_borrow_check && !self.speculating {
                     // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
                     // semantically dead `&mut x` does not spuriously block reading `x` (#276). `live_borrows`
                     // sweeps first; the `!self.speculating` gate keeps speculative checks from mutating borrow state.
@@ -263,12 +263,12 @@ impl<'a> TypeChecker<'a> {
                 struct_name: struct_name_field,
                 span: _,
             }) => {
-                let old_skip = self.skip_borrow_check;
-                self.skip_borrow_check = true;
+                let old_skip = self.borrow.skip_borrow_check;
+                self.borrow.skip_borrow_check = true;
                 let obj_ty = self.check_expr_type_flag(obj, false);
-                self.skip_borrow_check = old_skip;
+                self.borrow.skip_borrow_check = old_skip;
 
-                if !self.skip_borrow_check && !self.speculating {
+                if !self.borrow.skip_borrow_check && !self.speculating {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
                         path.push(member.to_string());
                         // NLL: `live_borrows` sweeps dead borrows of the base before testing path overlap,
@@ -619,7 +619,7 @@ impl<'a> TypeChecker<'a> {
             // Borrowing a by-value parameter, a local, or a temporary all yield stack-local refs.
             Expr::Borrow(b) => {
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
-                    match self.current_params.get(base.as_str()) {
+                    match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
                         _ => Some(RefProvenance::Local),
                     }
@@ -632,13 +632,13 @@ impl<'a> TypeChecker<'a> {
             // whatever provenance we recorded at its `let`. An untracked reference identifier is
             // left unresolved (`None`) rather than guessed, to avoid false escapes.
             Expr::Identifier(id) => {
-                if let Some(pty) = self.current_params.get(id.name.as_ref()) {
+                if let Some(pty) = self.borrow.current_params.get(id.name.as_ref()) {
                     if Self::is_ref_type(pty) {
                         return Some(RefProvenance::External);
                     }
                     return None;
                 }
-                self.ref_provenance.get(id.name.as_ref()).copied()
+                self.borrow.ref_provenance.get(id.name.as_ref()).copied()
             }
             // A call yielding a reference reborrows from its reference arguments: local iff any
             // reference argument is local (e.g. `identity(&x)` for a local `x`).

@@ -11,12 +11,13 @@
 //! Per-worker, owned by value inside `TypeChecker` — no shared state and no lock, so it composes with
 //! the parallel pipeline's phase-3 isolation invariant.
 
-use crate::hir::env::BorrowRecord;
+use crate::hir::env::{BorrowRecord, RefProvenance};
 use crate::symbol::Symbol;
+use crate::syntax::Type;
 use std::collections::{HashMap, HashSet};
 
-/// The active borrow table plus the NLL liveness that keeps it honest. See the module docs.
-#[derive(Default)]
+/// The active borrow table plus the NLL liveness that keeps it honest, and the rest of the frontend's
+/// borrow/move-checking state (moves, reference provenance, current parameters). See the module docs.
 pub(crate) struct BorrowCx {
     /// `variable -> its borrow records`. **Private**: readable for a conflict check only via
     /// [`Self::live_borrows`], which sweeps dead borrows before returning.
@@ -25,6 +26,35 @@ pub(crate) struct BorrowCx {
     block_liveness: Vec<HashMap<Symbol, usize>>,
     /// The statement index currently being checked, one entry per open block. Innermost is `.last()`.
     current_stmt_idx: Vec<usize>,
+    /// Whether borrow-conflict checks are suppressed (e.g. while typing a member-access receiver,
+    /// which must not itself trip the borrow rules it is only being read to resolve).
+    pub(crate) skip_borrow_check: bool,
+    /// Moved/consumed linear locals, one `HashSet` per lexical scope, kept in lock-step with
+    /// `TypeChecker::scopes` (pushed/popped together). Innermost is `.last()`; starts with one scope
+    /// so a top-level `consume` always has a slot to mark.
+    pub(crate) moved_vars: Vec<HashSet<String>>,
+    /// Provenance of each reference-typed *local* binding (#243): does it root in caller memory
+    /// (`External`) or a function-local slot (`Local`)? Reset per function.
+    pub(crate) ref_provenance: HashMap<Symbol, RefProvenance>,
+    /// Parameters (name -> declared type) of the function currently being checked (#243). Reset per
+    /// function; lets the return-escape analysis tell a caller-owned reference parameter apart from a
+    /// local binding of the same reference type.
+    pub(crate) current_params: HashMap<Symbol, Type>,
+}
+
+impl Default for BorrowCx {
+    fn default() -> Self {
+        Self {
+            active_borrows: HashMap::new(),
+            block_liveness: Vec::new(),
+            current_stmt_idx: Vec::new(),
+            skip_borrow_check: false,
+            // One scope so `consume`'s `moved_vars.last_mut()` is always `Some` at top level.
+            moved_vars: vec![HashSet::new()],
+            ref_provenance: HashMap::new(),
+            current_params: HashMap::new(),
+        }
+    }
 }
 
 impl BorrowCx {

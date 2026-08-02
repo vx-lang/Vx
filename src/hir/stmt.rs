@@ -184,7 +184,7 @@ impl<'a> TypeChecker<'a> {
         // left unrecorded rather than assumed safe-or-unsafe.
         if Self::is_ref_type(&binding_ty) {
             if let Some(prov) = self.ref_provenance_of(expr) {
-                self.ref_provenance.insert(name.clone(), prov);
+                self.borrow.ref_provenance.insert(name.clone(), prov);
             }
         }
 
