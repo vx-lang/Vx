@@ -7,7 +7,7 @@ zero logic change. R3: the `silent` half retired — the plan's sink-swap was un
 if/match result types and gates `consume`'s scope/move mutations), so `silent` became a `speculating` **field**
 instead, removing the positional boolean from every checker signature with behavior preserved (§R3). `consume`
 stays a parameter (a genuine positional signal, not a mode), as audited. R4: `check_functioncall_expr`
-decomposed 652 → ~358 (reborrow subsystem + `Struct::method` arm extracted); `check_methodcall_expr` /
+decomposed 652 → ~358 and `check_methodcall_expr` 346 → ~195 (five helpers extracted across the two);
 `lower_to_type_id` still open (§R4). R5 open. Tracked as
 [#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
@@ -255,7 +255,7 @@ dynamic scope reproduces the parameter's exactly. Guarded by
 does not clobber the caller's flag; the fresh entry forces-off-then-restores). `consume` stays a parameter, as
 audited.
 
-### R4 — Decompose the oversized functions — **`check_functioncall_expr` LANDED; `check_methodcall_expr` / `lower_to_type_id` open**
+### R4 — Decompose the oversized functions — **`check_functioncall_expr` + `check_methodcall_expr` LANDED; `lower_to_type_id` open**
 
 `check_functioncall_expr` at **660 lines** is the worst; then `check_methodcall_expr` (322) and
 `lower_to_type_id` (320). These are where overload resolution, generic deduction, intrinsic dispatch,
@@ -273,9 +273,18 @@ shape rather than logic interleaved with argument checking; and (2) the 144-line
 static-call resolution → `check_static_method_call`. The remaining ~358 lines are the argument-processing
 preamble plus the callee-resolution `if let … else if let` chain — long but flat and simple (each arm resolves
 one name-kind and checks its arguments), so it reads cleanly as-is. Behavior-preserving, full suite green, no
-test edits. **Open:** `check_methodcall_expr` (~347) and `lower_to_type_id`; and, in `check_functioncall_expr`,
-the closure-struct-call arm still rewrites `*expr` inline (extractable, but its whole-node reassignment makes
-the seam fiddlier than the two taken here).
+test edits.
+
+**Landed — `check_methodcall_expr` 346 → ~195.** Same treatment: (1) the impl-block walk that unifies the
+receiver and fills the generic `mapping` (plus the #219 debug parity gate) → `resolve_method_in_impls`, a pure
+resolver returning `Option<(Function, ImplBlock)>`; and (2) the generic-method instantiation + MethodCall →
+FunctionCall rewrite → `instantiate_method_call_rewrite`, which returns `(return type, replacement node)` so
+the caller does the `*expr = …` after the receiver/argument borrows are released (the same return-the-node
+trick that keeps a whole-node rewrite out of a borrow conflict). Behavior-preserving, full suite green, no test
+edits.
+
+**Open:** `lower_to_type_id`; and, in `check_functioncall_expr`, the closure-struct-call arm still rewrites
+`*expr` inline (extractable with the same return-the-node trick, deferred as lower-value).
 
 ### R5 — Split the remaining `TypeChecker` concerns (optional)
 

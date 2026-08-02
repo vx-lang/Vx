@@ -1196,6 +1196,194 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Resolve `base_ty`'s method `method` by walking every impl block (unifying the receiver,
+    /// peeling references), filling `mapping` with the deduced impl-level generic bindings. Returns
+    /// the matching method + its impl block, or `None`. In debug builds also asserts the frozen
+    /// registry's `ModuleInterface` resolves the same concrete `(receiver GID, method)` — the #219
+    /// keep-green parity gate. Split out of `check_methodcall_expr` (R4, #279).
+    fn resolve_method_in_impls(
+        &mut self,
+        base_ty: &Type,
+        method: &crate::symbol::Symbol,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
+    ) -> Option<(Function, decl::ImplBlock)> {
+        let mut found_method = None;
+        for impl_blocks in self.env.impls.values() {
+            for ib in impl_blocks {
+                mapping.clear();
+                let mut check_ty = base_ty.clone();
+                while let Type::Borrow { inner, .. }
+                | Type::Pointer(inner, _, _)
+                | Type::Ref(inner, _) = &check_ty
+                {
+                    check_ty = *inner.clone();
+                }
+
+                if self.unify_types(&ib.target_type, &check_ty, mapping) {
+                    for m in &ib.methods {
+                        if m.name == *method {
+                            found_method = Some((m.clone(), (*ib).clone()));
+                            break;
+                        }
+                    }
+                }
+                if found_method.is_some() {
+                    break;
+                }
+            }
+            if found_method.is_some() {
+                break;
+            }
+        }
+
+        // Dual-run parity gate for the stdlib<->compiler decoupling (#219): when the AST
+        // impl-walk above resolves a method on a *concrete* receiver via a non-generic impl,
+        // the registry-backed `ModuleInterface` must resolve the same `(receiver GID, method)`.
+        // This proves the frozen registry is a sufficient oracle at real resolution sites --
+        // the keep-green gate before imported-symbol resolution stops consulting the borrowed
+        // AST env. Generic impls and non-nominal / generic receivers are outside the registry
+        // method table's scope (#218), so they are skipped rather than asserted. The gate only
+        // runs when a frozen registry is actually in use: an *empty* method table means this
+        // compilation never built one (the sequential driver / legacy AST-only harnesses use
+        // `GlobalSession::new`), so there is nothing to dual-run against.
+        #[cfg(debug_assertions)]
+        if let Some((ref m, ref ib)) = found_method {
+            if !self.worker.global.registry.methods.is_empty()
+                && ib.generics.is_empty()
+                && m.generics.is_empty()
+            {
+                let mut recv = base_ty.clone();
+                while let Type::Borrow { inner, .. }
+                | Type::Pointer(inner, _, _)
+                | Type::Ref(inner, _) = &recv
+                {
+                    recv = (**inner).clone();
+                }
+                let recv_gid = match &recv {
+                    Type::Scalar(ElementType::Generic(_)) => None,
+                    Type::Scalar(e) => Some(crate::hir::flatten::scalar_gid(e)),
+                    Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
+                    _ => None,
+                };
+                if let Some(gid) = recv_gid {
+                    let mi: &dyn crate::registry::ModuleInterface = &*self.worker.global.registry;
+                    debug_assert!(
+                        mi.resolve_method(gid, &m.name).is_some(),
+                        "ModuleInterface missing a method the AST resolved: {}.{}",
+                        recv.mangle(),
+                        m.name
+                    );
+                }
+            }
+        }
+        found_method
+    }
+
+    /// Instantiate the resolved generic method, register + type-check the monomorphized function,
+    /// and build the `FunctionCall` node the method call rewrites to (prepending the receiver,
+    /// borrowed to match a `&self`/`&mut self` first parameter). Probes the synthesized call
+    /// speculatively (R3) to recover its return type without double-reporting. Returns `(return
+    /// type, replacement node)`; the caller performs the `*expr = …` rewrite. Split out of
+    /// `check_methodcall_expr` (R4, #279).
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_method_call_rewrite(
+        &mut self,
+        generic_method: Function,
+        mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type>,
+        base_ty: &Type,
+        obj: &Expr,
+        args: &[Expr],
+        checked_arg_types: &[Type],
+        consume: bool,
+    ) -> (Type, Expr) {
+        // Infer method-level generics from argument types. Reuse the types from the
+        // single check above: re-checking here would re-consume linear args (a closure
+        // struct passed to `.map`) and yield `Unknown`, defeating the deduction.
+        for (i, arg_ty) in checked_arg_types.iter().enumerate() {
+            if i + 1 < generic_method.params.len() {
+                let expected_param = &generic_method.params[i + 1].1;
+                self.unify_types(expected_param, arg_ty, &mut mapping);
+            }
+        }
+
+        // Provide generic mapping to the method itself by copying impl block generics
+        let mut modified_func = generic_method.clone();
+        modified_func.generics = mapping
+            .keys()
+            .map(|k| decl::GenericParam::Type {
+                name: k.clone(),
+                bound: None,
+            })
+            .collect();
+        let mut method_func =
+            self.instantiate_function(&modified_func, &mapping, &std::collections::HashMap::new());
+
+        // Create a unique mangled name for the method based on the target type
+        let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
+
+        method_func.name = mangled_name.clone().into();
+
+        if !self.env.functions.contains_key(&*mangled_name)
+            && !self
+                .monomorphized_functions
+                .iter()
+                .any(|(f, _)| f.name == crate::symbol::Symbol::from(mangled_name.as_str()))
+        {
+            // Type check the instantiated method
+            let mut func_to_check = method_func.clone();
+            self.check_function(&mut func_to_check);
+            self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
+        }
+
+        // Rewrite AST from MethodCall to FunctionCall
+        let mut call_args = vec![];
+        if let Some(first_param) = method_func.params.first() {
+            let param_is_ref =
+                matches!(first_param.1, Type::Borrow { .. } | Type::Pointer(_, _, _));
+            let is_mut = match &first_param.1 {
+                Type::Borrow { is_mut: m, .. } => *m,
+                Type::Pointer(_, _, m) => *m,
+                _ => false,
+            };
+
+            let obj_is_ref = matches!(base_ty, Type::Borrow { .. } | Type::Pointer(_, _, _));
+
+            if param_is_ref && !obj_is_ref {
+                call_args.push(Expr::Borrow(BorrowExpr {
+                    expr: Box::new((*obj).clone()),
+                    is_mut,
+                    span: Span::default(),
+                }));
+            } else {
+                call_args.push((*obj).clone());
+            }
+        } else {
+            call_args.push((*obj).clone());
+        }
+
+        for a in args.iter() {
+            call_args.push(a.clone());
+        }
+
+        let mut func_call = Expr::FunctionCall(FunctionCallExpr {
+            name: crate::symbol::Symbol::from(mangled_name.as_str()),
+            type_args: None,
+            args: call_args,
+            span: Span::default(),
+        });
+        // Probe the synthesized call *speculatively* to recover its return type without
+        // emitting diagnostics or committing borrow/move side effects: the method-call
+        // node is only now being rewritten into this call, so a second (real) check
+        // would double-report. This is the sole site that turns `speculating` on; the
+        // "fresh check" entry points (`check_expr_type`, `check_block`) force it back off
+        // for independent subtrees. Replaces the old `silent = true` argument (#279 R3).
+        let saved_speculating = self.speculating;
+        self.speculating = true;
+        let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
+        self.speculating = saved_speculating;
+        (ret_ty, func_call)
+    }
+
     pub(crate) fn check_methodcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::MethodCall(MethodCallExpr {
@@ -1264,169 +1452,18 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Dynamic Method Resolution
-                let mut found_method = None;
                 let mut mapping = HashMap::new();
-                for impl_blocks in self.env.impls.values() {
-                    for ib in impl_blocks {
-                        mapping.clear();
-                        let mut check_ty = base_ty.clone();
-                        while let Type::Borrow { inner, .. }
-                        | Type::Pointer(inner, _, _)
-                        | Type::Ref(inner, _) = &check_ty
-                        {
-                            check_ty = *inner.clone();
-                        }
-
-                        if self.unify_types(&ib.target_type, &check_ty, &mut mapping) {
-                            for m in &ib.methods {
-                                if m.name == *_method {
-                                    found_method = Some((m.clone(), (*ib).clone()));
-                                    break;
-                                }
-                            }
-                        }
-                        if found_method.is_some() {
-                            break;
-                        }
-                    }
-                    if found_method.is_some() {
-                        break;
-                    }
-                }
-
-                // Dual-run parity gate for the stdlib<->compiler decoupling (#219): when the AST
-                // impl-walk above resolves a method on a *concrete* receiver via a non-generic impl,
-                // the registry-backed `ModuleInterface` must resolve the same `(receiver GID, method)`.
-                // This proves the frozen registry is a sufficient oracle at real resolution sites --
-                // the keep-green gate before imported-symbol resolution stops consulting the borrowed
-                // AST env. Generic impls and non-nominal / generic receivers are outside the registry
-                // method table's scope (#218), so they are skipped rather than asserted. The gate only
-                // runs when a frozen registry is actually in use: an *empty* method table means this
-                // compilation never built one (the sequential driver / legacy AST-only harnesses use
-                // `GlobalSession::new`), so there is nothing to dual-run against.
-                #[cfg(debug_assertions)]
-                if let Some((ref m, ref ib)) = found_method {
-                    if !self.worker.global.registry.methods.is_empty()
-                        && ib.generics.is_empty()
-                        && m.generics.is_empty()
-                    {
-                        let mut recv = base_ty.clone();
-                        while let Type::Borrow { inner, .. }
-                        | Type::Pointer(inner, _, _)
-                        | Type::Ref(inner, _) = &recv
-                        {
-                            recv = (**inner).clone();
-                        }
-                        let recv_gid = match &recv {
-                            Type::Scalar(ElementType::Generic(_)) => None,
-                            Type::Scalar(e) => Some(crate::hir::flatten::scalar_gid(e)),
-                            Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => Some(*id),
-                            _ => None,
-                        };
-                        if let Some(gid) = recv_gid {
-                            let mi: &dyn crate::registry::ModuleInterface =
-                                &*self.worker.global.registry;
-                            debug_assert!(
-                                mi.resolve_method(gid, &m.name).is_some(),
-                                "ModuleInterface missing a method the AST resolved: {}.{}",
-                                recv.mangle(),
-                                m.name
-                            );
-                        }
-                    }
-                }
-
+                let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
                 if let Some((generic_method, _ib)) = found_method {
-                    // Infer method-level generics from argument types. Reuse the types from the
-                    // single check above: re-checking here would re-consume linear args (a closure
-                    // struct passed to `.map`) and yield `Unknown`, defeating the deduction.
-                    for (i, arg_ty) in checked_arg_types.iter().enumerate() {
-                        if i + 1 < generic_method.params.len() {
-                            let expected_param = &generic_method.params[i + 1].1;
-                            self.unify_types(expected_param, arg_ty, &mut mapping);
-                        }
-                    }
-
-                    // Provide generic mapping to the method itself by copying impl block generics
-                    let mut modified_func = generic_method.clone();
-                    modified_func.generics = mapping
-                        .keys()
-                        .map(|k| decl::GenericParam::Type {
-                            name: k.clone(),
-                            bound: None,
-                        })
-                        .collect();
-                    let mut method_func = self.instantiate_function(
-                        &modified_func,
-                        &mapping,
-                        &std::collections::HashMap::new(),
+                    let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
+                        generic_method,
+                        mapping,
+                        &base_ty,
+                        obj,
+                        args.as_slice(),
+                        &checked_arg_types,
+                        consume,
                     );
-
-                    // Create a unique mangled name for the method based on the target type
-                    let mangled_name = format!("{}${}", base_ty.mangle(), method_func.name);
-
-                    method_func.name = mangled_name.clone().into();
-
-                    if !self.env.functions.contains_key(&*mangled_name)
-                        && !self.monomorphized_functions.iter().any(|(f, _)| {
-                            f.name == crate::symbol::Symbol::from(mangled_name.as_str())
-                        })
-                    {
-                        // Type check the instantiated method
-                        let mut func_to_check = method_func.clone();
-                        self.check_function(&mut func_to_check);
-                        self.monomorphized_functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
-                    }
-
-                    // Rewrite AST from MethodCall to FunctionCall
-                    let mut call_args = vec![];
-                    if let Some(first_param) = method_func.params.first() {
-                        let param_is_ref =
-                            matches!(first_param.1, Type::Borrow { .. } | Type::Pointer(_, _, _));
-                        let is_mut = match &first_param.1 {
-                            Type::Borrow { is_mut: m, .. } => *m,
-                            Type::Pointer(_, _, m) => *m,
-                            _ => false,
-                        };
-
-                        let obj_is_ref =
-                            matches!(base_ty, Type::Borrow { .. } | Type::Pointer(_, _, _));
-
-                        if param_is_ref && !obj_is_ref {
-                            call_args.push(Expr::Borrow(BorrowExpr {
-                                expr: Box::new((**obj).clone()),
-                                is_mut,
-                                span: Span::default(),
-                            }));
-                        } else {
-                            call_args.push((**obj).clone());
-                        }
-                    } else {
-                        call_args.push((**obj).clone());
-                    }
-
-                    for a in args.iter() {
-                        call_args.push(a.clone());
-                    }
-
-                    let mut func_call = Expr::FunctionCall(FunctionCallExpr {
-                        name: crate::symbol::Symbol::from(mangled_name.as_str()),
-                        type_args: None,
-                        args: call_args,
-                        span: Span::default(),
-                    });
-                    // Probe the synthesized call *speculatively* to recover its return type without
-                    // emitting diagnostics or committing borrow/move side effects: the method-call
-                    // node is only now being rewritten into this call, so a second (real) check
-                    // would double-report. This is the sole site that turns `speculating` on; the
-                    // "fresh check" entry points (`check_expr_type`, `check_block`) force it back off
-                    // for independent subtrees. Replaces the old `silent = true` argument (#279 R3).
-                    let saved_speculating = self.speculating;
-                    self.speculating = true;
-                    let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
-                    self.speculating = saved_speculating;
-
-                    // Replace the AST node in-place!
                     *expr = func_call;
                     return ret_ty;
                 }
