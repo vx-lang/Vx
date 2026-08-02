@@ -18,20 +18,15 @@ use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_indirectcall_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let (callee, args) = match expr {
             Expr::IndirectCall(c) => (&mut c.callee, &mut c.args),
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
-        let callee_ty = self.check_expr_type_flag(callee, consume, silent);
+        let callee_ty = self.check_expr_type_flag(callee, consume);
         let mut arg_types = Vec::new();
         for arg in args.iter_mut() {
-            arg_types.push(self.check_expr_type_flag(arg, consume, silent));
+            arg_types.push(self.check_expr_type_flag(arg, consume));
         }
 
         if let Type::Struct(struct_name, _) = callee_ty {
@@ -48,7 +43,7 @@ impl<'a> TypeChecker<'a> {
                         .map(|(_, t)| t.clone())
                         .collect();
                     if args.len() != param_types.len() {
-                        if !silent {
+                        if !self.speculating {
                             self.errors.push(format!(
                                 "Closure expects {} arguments, got {}",
                                 param_types.len(),
@@ -58,7 +53,7 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                     "Type mismatch in argument {} for closure. Expected {:?}, got {:?}",
                                     i + 1, param_ty, arg_ty
@@ -83,7 +78,7 @@ impl<'a> TypeChecker<'a> {
 
                     return func.0.return_type.clone();
                 } else {
-                    if !silent {
+                    if !self.speculating {
                         self.errors.push(format!(
                             "Missing call method for closure struct '{}'",
                             struct_name
@@ -91,14 +86,14 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             } else {
-                if !silent {
+                if !self.speculating {
                     self.errors
                         .push(format!("Cannot call non-closure struct '{}'", struct_name));
                 }
             }
         } else if let Type::Closure(param_types, ret_ty) = &callee_ty {
             if args.len() != param_types.len() {
-                if !silent {
+                if !self.speculating {
                     self.errors.push(format!(
                         "Closure fat pointer expects {} arguments, got {}",
                         param_types.len(),
@@ -108,7 +103,7 @@ impl<'a> TypeChecker<'a> {
             } else {
                 for (i, param_ty) in param_types.iter().enumerate() {
                     let arg_ty = &arg_types[i];
-                    if !self.is_assignable(param_ty, arg_ty) && !silent {
+                    if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                         self.errors.push(format!(
                             "Type mismatch in argument {} for closure fat pointer. Expected {:?}, got {:?}",
                             i + 1, param_ty, arg_ty
@@ -123,14 +118,14 @@ impl<'a> TypeChecker<'a> {
 
             return *ret_ty.clone();
         } else if let Type::Function(_, _) = callee_ty {
-            if !silent {
+            if !self.speculating {
                 self.errors.push(
                     "Function pointers are not natively callable yet; use closure interfaces."
                         .to_string(),
                 );
             }
         } else {
-            if !silent {
+            if !self.speculating {
                 self.errors
                     .push(format!("Cannot call expression of type {:?}", callee_ty));
             }
@@ -149,11 +144,10 @@ impl<'a> TypeChecker<'a> {
         e: &mut Expr,
         expected: Option<Type>,
         consume: bool,
-        silent: bool,
     ) -> Type {
         let prev = self.expected_type.take();
         self.expected_type = expected;
-        let ty = self.check_expr_type_flag(e, consume, silent);
+        let ty = self.check_expr_type_flag(e, consume);
         self.expected_type = prev;
         ty
     }
@@ -182,12 +176,7 @@ impl<'a> TypeChecker<'a> {
         arg_ty.clone()
     }
 
-    pub(crate) fn check_functioncall_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
                 name,
@@ -237,7 +226,7 @@ impl<'a> TypeChecker<'a> {
                 // snapshot each reference-argument base *before* the arguments are checked, let the
                 // arguments record their borrows (so intra-call conflicts like `f(&mut x, &x)` still
                 // fire), then revert the non-deriving bases to their pre-call state.
-                let callee_sig = if silent {
+                let callee_sig = if self.speculating {
                     None
                 } else {
                     self.resolve_callee_ref_signature(&resolved_name)
@@ -339,10 +328,10 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 for arg in args.iter_mut() {
-                    arg_types.push(self.check_expr_type_flag(arg, arg_consume, silent));
+                    arg_types.push(self.check_expr_type_flag(arg, arg_consume));
                 }
 
-                if !silent && callee_sig.is_some() {
+                if !self.speculating && callee_sig.is_some() {
                     // An argument's reborrow outlives the call iff the callee returns a reference
                     // and its result derives from that argument's parameter slot. For an imported
                     // callee the summary comes from the registry's inline code (#265 step 7); for an
@@ -371,7 +360,6 @@ impl<'a> TypeChecker<'a> {
                             result_is_mut,
                             persists(*i),
                             span,
-                            silent,
                         );
                     }
                     // (b) Selective revert: a base keeps its borrow past the call iff at least one
@@ -408,7 +396,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some((Type::Function(param_types, ret_ty), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
-                    if args.len() != param_types.len() && !silent {
+                    if args.len() != param_types.len() && !self.speculating {
                         self.errors.push(format!(
                             "Function pointer '{}' expects {} arguments, got {}",
                             resolved_name,
@@ -418,7 +406,7 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for function pointer '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
@@ -430,7 +418,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((Type::Closure(param_types, ret_ty), _)) =
                     self.lookup(&resolved_name).cloned()
                 {
-                    if args.len() != param_types.len() && !silent {
+                    if args.len() != param_types.len() && !self.speculating {
                         self.errors.push(format!(
                             "Closure '{}' expects {} arguments, got {}",
                             resolved_name,
@@ -440,7 +428,7 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty = &arg_types[i];
-                            if !self.is_assignable(param_ty, arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                 self.errors.push(format!(
                                         "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
                                         i + 1, resolved_name, param_ty, arg_ty
@@ -467,7 +455,7 @@ impl<'a> TypeChecker<'a> {
                                 .map(|(_, t)| t.clone())
                                 .collect();
                             if args.len() != param_types.len() {
-                                if !silent {
+                                if !self.speculating {
                                     self.errors.push(format!(
                                         "Closure '{}' expects {} arguments, got {}",
                                         resolved_name,
@@ -478,7 +466,7 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 for (i, param_ty) in param_types.iter().enumerate() {
                                     let arg_ty = &arg_types[i];
-                                    if !self.is_assignable(param_ty, arg_ty) && !silent {
+                                    if !self.is_assignable(param_ty, arg_ty) && !self.speculating {
                                         self.errors.push(format!(
                                                 "Type mismatch in argument {} for closure '{}'. Expected {:?}, got {:?}",
                                                 i + 1, resolved_name, param_ty, arg_ty
@@ -506,7 +494,7 @@ impl<'a> TypeChecker<'a> {
 
                             func.0.return_type.clone()
                         } else {
-                            if !silent {
+                            if !self.speculating {
                                 self.errors.push(format!(
                                     "Missing call method for closure struct '{}'",
                                     struct_name
@@ -515,7 +503,7 @@ impl<'a> TypeChecker<'a> {
                             Type::Tensor(ElementType::F32, vec![], None)
                         }
                     } else {
-                        if !silent {
+                        if !self.speculating {
                             self.errors.push(format!(
                                 "Cannot call non-closure struct '{}'",
                                 resolved_name
@@ -526,7 +514,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(resolved_name.as_ref())
                 {
-                    if (*req_topology != self.active_topology) && !silent {
+                    if (*req_topology != self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
@@ -536,14 +524,14 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if *is_unsafe && !self.in_unsafe_block && !silent {
+                    if *is_unsafe && !self.in_unsafe_block && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if args.len() != param_types.len() && !silent {
+                    if args.len() != param_types.len() && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3010,
                             format!(
@@ -558,7 +546,7 @@ impl<'a> TypeChecker<'a> {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty =
                                 self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
@@ -576,7 +564,7 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
-                    if (func.0.topology != self.active_topology) && !silent {
+                    if (func.0.topology != self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
@@ -589,7 +577,7 @@ impl<'a> TypeChecker<'a> {
                     let param_types: Vec<Type> =
                         func.0.params.iter().map(|(_, t)| t.clone()).collect();
                     if args.len() != param_types.len() {
-                        if !silent {
+                        if !self.speculating {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E3010,
                                 format!(
@@ -605,7 +593,7 @@ impl<'a> TypeChecker<'a> {
                         for (i, param_ty) in param_types.iter().enumerate() {
                             let arg_ty =
                                 self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
@@ -629,7 +617,6 @@ impl<'a> TypeChecker<'a> {
                         args,
                         &arg_types,
                         &explicit_generic_args,
-                        silent,
                     )
                     .unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
                 } else if let Some(idx) = resolved_name.find("::") {
@@ -771,7 +758,7 @@ impl<'a> TypeChecker<'a> {
 
                         inst_ret
                     } else {
-                        if !silent {
+                        if !self.speculating {
                             self.errors
                                 .push(format!("Undefined static method '{}'.", resolved_name));
                         }
@@ -790,7 +777,7 @@ impl<'a> TypeChecker<'a> {
                     // `FnSig` — arg count + per-argument assignability against `params`, result type is
                     // `ret_ty`. The flat codegen links the body separately via `body_of`. In a normal
                     // compile the registry is empty, so this arm is inert and the call falls to E2002.
-                    if args.len() != sig.params.len() && !silent {
+                    if args.len() != sig.params.len() && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3010,
                             format!(
@@ -805,7 +792,7 @@ impl<'a> TypeChecker<'a> {
                         for (i, param_ty) in sig.params.iter().enumerate() {
                             let arg_ty =
                                 self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
-                            if !self.is_assignable(param_ty, &arg_ty) && !silent {
+                            if !self.is_assignable(param_ty, &arg_ty) && !self.speculating {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3003,
                                     format!(
@@ -824,7 +811,7 @@ impl<'a> TypeChecker<'a> {
                         .iter()
                         .map(|(f, _)| f.name.clone())
                         .collect();
-                    if !silent {
+                    if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E2002,
                             format!(
@@ -851,7 +838,6 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
-        silent: bool,
     ) -> Option<Type> {
         let mut mapping: std::collections::HashMap<crate::symbol::Symbol, Type> = HashMap::new();
         let mut success = true;
@@ -870,7 +856,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
         self.pending_topo_bindings.clear();
         if args.len() != generic_func.params.len() {
-            if !silent {
+            if !self.speculating {
                 self.errors.push(format!(
                     "Generic function '{}' expects {} arguments, got {}",
                     resolved_name,
@@ -889,7 +875,7 @@ impl<'a> TypeChecker<'a> {
                 let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
-                    if !silent {
+                    if !self.speculating {
                         self.errors.push(format!("Failed to deduce types for generic function '{}': Expected {:?}, got {:?}", name, param_ty, arg_ty));
                     }
                     success = false;
@@ -928,7 +914,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         if !implements_trait {
-                            if !silent {
+                            if !self.speculating {
                                 self.errors.push(format!(
                                     "Type '{:?}' does not implement trait '{}' required by parameter '{}'",
                                     concrete_ty, bound_name, g_name
@@ -952,7 +938,7 @@ impl<'a> TypeChecker<'a> {
                     let ma = self.transfer_cost_graph.default_memory_for(ta);
                     let mb = self.transfer_cost_graph.default_memory_for(tb);
                     if self.transfer_cost_graph.transfer_path(&ma, &mb).is_none() {
-                        if !silent {
+                        if !self.speculating {
                             self.errors.push(format!(
                                 "unsatisfied `where Transfer<{}, {}>` in call to '{}': no transfer \
                                  path from {:?} to {:?}",
@@ -1138,12 +1124,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_methodcall_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_methodcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::MethodCall(MethodCallExpr {
                 base: obj,
@@ -1153,7 +1134,7 @@ impl<'a> TypeChecker<'a> {
                 span: method_span,
             }) => {
                 let method_span = *method_span;
-                let mut base_ty = self.check_expr_type_flag(obj, false, silent);
+                let mut base_ty = self.check_expr_type_flag(obj, false);
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
                 if let Type::Tensor(el_ty, _, _) = &base_ty {
@@ -1362,7 +1343,16 @@ impl<'a> TypeChecker<'a> {
                         args: call_args,
                         span: Span::default(),
                     });
-                    let ret_ty = self.check_expr_type_flag(&mut func_call, consume, true);
+                    // Probe the synthesized call *speculatively* to recover its return type without
+                    // emitting diagnostics or committing borrow/move side effects: the method-call
+                    // node is only now being rewritten into this call, so a second (real) check
+                    // would double-report. This is the sole site that turns `speculating` on; the
+                    // "fresh check" entry points (`check_expr_type`, `check_block`) force it back off
+                    // for independent subtrees. Replaces the old `silent = true` argument (#279 R3).
+                    let saved_speculating = self.speculating;
+                    self.speculating = true;
+                    let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
+                    self.speculating = saved_speculating;
 
                     // Replace the AST node in-place!
                     *expr = func_call;
@@ -1402,7 +1392,7 @@ impl<'a> TypeChecker<'a> {
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
                     // published payloads to TOP (a stale read).
                     self.pending_transfer_relaxed = is_relaxed;
-                    return self.check_transfer_expr(expr, consume, silent);
+                    return self.check_transfer_expr(expr, consume);
                 } else if _method.as_ref() == "to_host" {
                     let target_mem = MemorySpace::CPUDRAM;
                     base_ty = Type::Pinned(Box::new(base_ty), Topology::CPU);

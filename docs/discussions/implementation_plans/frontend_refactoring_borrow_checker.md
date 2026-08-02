@@ -1,11 +1,13 @@
 # Frontend refactoring plan
 
-**Status:** **R1 + R2 landed.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
+**Status:** **R1 + R2 + R3 landed.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
 NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
 `84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
-zero logic change. R3 **audited** — the plan's sink-swap is unsound (`silent` also changes if/match result types and gates
-`consume`'s scope/move mutations), revised to a `speculating`-field approach; not yet implemented (§R3).
-R4/R5 open. Tracked as [#279](https://github.com/hiraditya/Vx/issues/279).
+zero logic change. R3: the `silent` half retired — the plan's sink-swap was unsound (`silent` also changes
+if/match result types and gates `consume`'s scope/move mutations), so `silent` became a `speculating` **field**
+instead, removing the positional boolean from every checker signature with behavior preserved (§R3). `consume`
+stays a parameter (a genuine positional signal, not a mode), as audited. R4/R5 open. Tracked as
+[#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
 frontend has no *chokepoint* for the invariants those fixes maintain, so each round had to rediscover every
@@ -177,7 +179,7 @@ test edits, clippy clean.
 single function can't drop below the ~800 target by *moving*. That is **R4**'s job (decompose the oversized
 functions), not R2's (one family per file). The dispatch-seam split is complete.
 
-### R3 — Retire the `(consume, silent)` boolean pair — **audited; plan revised, not yet implemented**
+### R3 — Retire the `(consume, silent)` boolean pair — **LANDED** (the `silent` half, as the `speculating` field)
 
 183 `silent` / 97 `consume` occurrences across 36 signatures. Two positional booleans at every call is the
 classic unreadable-call-site smell (`check_expr_type_flag(e, false, true)` — which is which?). The original
@@ -232,10 +234,24 @@ genuine positional signal, not a mode); retiring it is separate, larger move-sem
 leak — they already do under the current single `silent=true` site, so it is not a regression, just not
 "effect-free."
 
-**Acceptance (if implemented as the field approach):** `silent` is gone from every signature; the sole
-speculative site sets/restores `self.speculating`; full suite green with no test edits (the change is
-mechanical and behavior-preserving). A regression test that a speculative probe leaves the error count, the
-active-borrow table, **and** `scopes`/`moved_vars` unchanged documents the invariant.
+**Acceptance (field approach):** `silent` is gone from every signature; the sole speculative site
+sets/restores `self.speculating`; full suite green with no test edits (the change is mechanical and
+behavior-preserving). A regression test that a speculative probe leaves the error count, the active-borrow
+table, **and** `scopes`/`moved_vars` unchanged documents the invariant.
+
+**Implemented.** `speculating: bool` field on `TypeChecker` (per-worker; default `false`); the `silent`
+parameter removed from every checker signature; each `!silent` → `!self.speculating`. One refinement the
+audit above understated: `silent` had **three** literal setter sites, not just the one speculative flip. The
+two "fresh check" entries — `check_expr_type` and `check_block` — passed a hard-coded `silent = false`, and
+**both are reachable from *inside* the speculative probe**: a generic function instantiated during the probe
+reaches `check_function → check_block`, and an `if`/`match` argument reaches `check_if_expr → check_expr_type(cond)`.
+A naive field (flip on at the probe, never forced off) would therefore suppress diagnostics the parameter
+emitted in those subtrees. The faithful conversion **forces `speculating = false` (save/restore) at those two
+entries** and forces it `true` at the probe; in all non-probe execution both forces are no-ops, so the field's
+dynamic scope reproduces the parameter's exactly. Guarded by
+`hir::tests::r3_speculating_gates_diagnostics_and_the_fresh_entry_forces_it_off` (probe suppresses; callee
+does not clobber the caller's flag; the fresh entry forces-off-then-restores). `consume` stays a parameter, as
+audited.
 
 ### R4 — Decompose the oversized functions
 

@@ -16,11 +16,12 @@
 // For a comprehensive overview of the Borrow Checker architecture (and how it interacts with
 // the FastPath in borrow.rs), see: `docs/discussions/borrow_checker_architecture.md`.
 //
-// DESIGN NOTE: The `silent` parameter (used in `check_expr_type_flag` and others)
-// prevents duplicate compiler errors. Because AST nodes are often traversed multiple
-// times (once for initial type validation, and again later when lowering to HIR),
-// the `silent` flag is set to `true` on subsequent passes to suppress redundant
-// error emissions.
+// DESIGN NOTE: Speculative checking is carried by the `speculating` field (see its doc on
+// `TypeChecker`), not a threaded `silent` parameter. It prevents duplicate compiler errors:
+// an AST node is sometimes checked twice — once to probe a type (e.g. the method-call →
+// function-call return-type probe), then again for real — so the probe runs with `speculating`
+// on to suppress redundant emissions and side effects. Retired the former `silent: bool`
+// parameter that threaded through ~36 checker signatures (#279 R3).
 //
 //===----------------------------------------------------------------------===//
 use crate::syntax::*;
@@ -215,6 +216,15 @@ pub struct TypeChecker<'a> {
     /// cannot bypass the dead-borrow sweep (frontend_refactoring_borrow_checker.md R1; the #276 bug class). Replaces
     /// the former `active_borrows` / `block_liveness` / `current_stmt_idx` fields.
     pub(crate) borrow: crate::hir::borrow_cx::BorrowCx,
+    /// Speculative-check mode. When set, expression checking is a *probe* — diagnostics are
+    /// suppressed, borrow/move side effects and unreachable-code warnings are skipped, and
+    /// `check_if_expr`/`check_match_expr` return a placeholder without descending into the block.
+    /// Replaces the `silent: bool` parameter that used to thread through ~36 checker signatures
+    /// (frontend_refactoring_borrow_checker.md R3, #279). The only site that turns it on is the
+    /// method-call → function-call return-type probe in `check_methodcall_expr`; the two
+    /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
+    /// field's dynamic scope reproduces the old parameter's exactly.
+    pub(crate) speculating: bool,
     pub constraints: Vec<Expr>,
     pub return_constraints: Vec<Expr>,
     pub(crate) next_id: u32,
@@ -324,6 +334,7 @@ impl<'a> TypeChecker<'a> {
             active_memory,
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
+            speculating: false,
             constraints: Vec::new(),
             return_constraints: Vec::new(),
             next_id: 1,

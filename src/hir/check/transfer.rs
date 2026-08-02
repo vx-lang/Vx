@@ -505,7 +505,6 @@ impl<'a> TypeChecker<'a> {
         buffer: &str,
         known_val: Option<u64>,
         span: Span,
-        silent: bool,
     ) {
         use crate::hir::seam::{AbsState, Cell, Solver, Transfer, Verdict};
 
@@ -553,7 +552,7 @@ impl<'a> TypeChecker<'a> {
         match verdict {
             Ok(Verdict::Accept) => {}
             Ok(Verdict::Reject { counterexample }) => {
-                if !silent {
+                if !self.speculating {
                     self.errors
                         .error_with_code(
                             crate::diagnostic::DiagnosticCode::E6004,
@@ -584,7 +583,7 @@ impl<'a> TypeChecker<'a> {
             }
             Err(e) => {
                 // Solver error: fail open (as prover.rs does) but record a warning.
-                if !silent {
+                if !self.speculating {
                     self.errors.warn(
                         crate::diagnostic::DiagnosticCode::E6004,
                         format!("seam obligation could not be discharged: {}", e),
@@ -595,12 +594,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_transfer_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_transfer_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let mut do_rewrite = None;
         let target_mem;
         let inner_ty;
@@ -612,7 +606,7 @@ impl<'a> TypeChecker<'a> {
         if let Expr::Transfer(t) = expr {
             let prev = self.allow_cross_topology;
             self.allow_cross_topology = true;
-            inner_ty = self.check_expr_type_flag(&mut t.expr, false, silent);
+            inner_ty = self.check_expr_type_flag(&mut t.expr, false);
             self.allow_cross_topology = prev;
 
             // Extract source memory space, preferring exact space from an inner transfer if present
@@ -679,7 +673,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             if path_result.is_none() {
-                if !silent {
+                if !self.speculating {
                     self.errors.push(format!(
                         "Cannot transfer from {:?} to {:?}: no hardware path exists",
                         source_mem, target_mem
@@ -727,7 +721,6 @@ impl<'a> TypeChecker<'a> {
                         &buffer,
                         known_val,
                         span,
-                        silent,
                     );
                 }
             }
@@ -762,7 +755,7 @@ impl<'a> TypeChecker<'a> {
             // Propagate the relaxed marker so each rewritten single-hop transfer is checked
             // with the right transfer function.
             self.pending_transfer_relaxed = relaxed;
-            return self.check_transfer_expr(expr, consume, silent);
+            return self.check_transfer_expr(expr, consume);
         }
 
         match inner_ty {
@@ -798,7 +791,7 @@ impl<'a> TypeChecker<'a> {
             }
             Type::Verified(_inner) => {
                 if let Expr::Transfer(t) = expr {
-                    let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume, silent);
+                    let inner_pinned = self.check_expr_type_flag(&mut t.expr, consume);
                     Type::Verified(Box::new(inner_pinned))
                 } else {
                     unreachable!()
@@ -834,7 +827,7 @@ impl<'a> TypeChecker<'a> {
                 Type::Pinned(base, pinned_top)
             }
             _ => {
-                if !silent {
+                if !self.speculating {
                     self.errors.push(format!(
                         "Cannot transfer non-reference type: {:?}",
                         inner_ty
@@ -845,12 +838,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_spawnon_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
                 top,
@@ -917,12 +905,12 @@ impl<'a> TypeChecker<'a> {
 
                 self.push_scope();
 
-                self.check_expr_block(stmts, consume, silent);
+                self.check_expr_block(stmts, consume);
 
                 let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None); // default void-like type
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
-                    ret_ty = self.check_expr_type_flag(r, consume, silent);
+                    ret_ty = self.check_expr_type_flag(r, consume);
                 }
 
                 self.pop_scope();

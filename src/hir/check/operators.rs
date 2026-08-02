@@ -16,13 +16,8 @@
 use super::super::*;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_ascast_expr(
-        &mut self,
-        expr: &mut AsCastExpr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
-        let source_ty = self.check_expr_type_flag(&mut expr.expr, consume, silent);
+    pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
+        let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         let target_ty = expr.target_ty.clone();
         expr.source_ty = Some(source_ty.clone());
 
@@ -82,7 +77,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
-                if !self.in_unsafe_block && !silent {
+                if !self.in_unsafe_block && !self.speculating {
                     self.errors.push(
                         "Casting an integer to a raw pointer requires an unsafe block".to_string(),
                     );
@@ -110,34 +105,28 @@ impl<'a> TypeChecker<'a> {
         lhs: &mut Expr,
         rhs: &mut Expr,
         consume: bool,
-        silent: bool,
     ) -> (Type, Type) {
         let lhs_untyped_lit = matches!(&*lhs, Expr::Number(n) if n.ty.is_none());
         let rhs_untyped_lit = matches!(&*rhs, Expr::Number(n) if n.ty.is_none());
         if rhs_untyped_lit && !lhs_untyped_lit {
-            let lt = self.check_expr_type_flag(lhs, consume, silent);
-            let rt = self.check_expr_expecting(rhs, Some(lt.clone()), consume, silent);
+            let lt = self.check_expr_type_flag(lhs, consume);
+            let rt = self.check_expr_expecting(rhs, Some(lt.clone()), consume);
             (lt, rt)
         } else if lhs_untyped_lit && !rhs_untyped_lit {
-            let rt = self.check_expr_type_flag(rhs, consume, silent);
-            let lt = self.check_expr_expecting(lhs, Some(rt.clone()), consume, silent);
+            let rt = self.check_expr_type_flag(rhs, consume);
+            let lt = self.check_expr_expecting(lhs, Some(rt.clone()), consume);
             (lt, rt)
         } else {
-            let lt = self.check_expr_type_flag(lhs, consume, silent);
-            let rt = self.check_expr_type_flag(rhs, consume, silent);
+            let lt = self.check_expr_type_flag(lhs, consume);
+            let rt = self.check_expr_type_flag(rhs, consume);
             (lt, rt)
         }
     }
 
-    pub(crate) fn check_binaryop_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
 
                 // Tensor operator overloading (A * B) -> Matmul
                 if let (
@@ -220,7 +209,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::RelationalOp(RelationalOpExpr {
                 lhs,
@@ -228,7 +217,7 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span,
             }) => {
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
                 // A relational compares element *values*, so wrapper differences
                 // (Pinned/Ref/Tensor vs a bare Scalar) are fine as long as the element
                 // types agree -- e.g. comparing a device-resident scalar to a constant.
@@ -253,7 +242,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_logicalop_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_logicalop_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::LogicalOp(LogicalOpExpr {
                 lhs,
@@ -261,7 +250,7 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span,
             }) => {
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false, silent);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, false);
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3006,
@@ -278,7 +267,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_unaryop_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_unaryop_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::UnaryOp(UnaryOpExpr {
                 op,

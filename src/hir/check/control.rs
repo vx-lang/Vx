@@ -17,12 +17,7 @@ use super::super::*;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_comptimeblock_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_comptimeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::ComptimeBlock(ComptimeBlockExpr {
                 stmts,
@@ -30,7 +25,7 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 self.push_scope();
-                let mut ret_ty = self.check_expr_block(stmts, consume, silent);
+                let mut ret_ty = self.check_expr_block(stmts, consume);
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type(r);
                 }
@@ -42,7 +37,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+    pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let if_expr = match expr {
             Expr::If(e) => e,
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -75,8 +70,8 @@ impl<'a> TypeChecker<'a> {
 
         self.push_scope();
         let mut then_ty = Type::Tensor(ElementType::F32, vec![], None);
-        if !silent && !if_expr.then_block.is_empty() {
-            then_ty = self.check_expr_block(&mut if_expr.then_block, consume, silent);
+        if !self.speculating && !if_expr.then_block.is_empty() {
+            then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
 
@@ -84,8 +79,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
                 self.push_scope();
-                if !silent {
-                    else_ty = self.check_expr_block(else_b, consume, silent);
+                if !self.speculating {
+                    else_ty = self.check_expr_block(else_b, consume);
                 }
                 self.pop_scope();
 
@@ -117,12 +112,7 @@ impl<'a> TypeChecker<'a> {
         then_ty
     }
 
-    pub(crate) fn check_unsafeblock_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_unsafeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
@@ -132,9 +122,9 @@ impl<'a> TypeChecker<'a> {
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
                 self.push_scope();
-                let mut ret_ty = self.check_expr_block(stmts, consume, silent);
+                let mut ret_ty = self.check_expr_block(stmts, consume);
                 if let Some(r) = ret_expr {
-                    ret_ty = self.check_expr_type_flag(r, consume, silent);
+                    ret_ty = self.check_expr_type_flag(r, consume);
                 }
                 self.pop_scope();
                 self.in_unsafe_block = prev_unsafe;
@@ -144,7 +134,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_range_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_range_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Range(RangeExpr {
                 start,
@@ -153,7 +143,7 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 // Reconcile the bounds so an untyped literal adopts the other bound's type
                 // (`0..n` with `n: i64` → `0` becomes i64), mirroring binary-operand inference (#240).
-                let (start_ty, end_ty) = self.check_operand_pair(start, end, true, silent);
+                let (start_ty, end_ty) = self.check_operand_pair(start, end, true);
                 if start_ty != end_ty {
                     self.errors.push(format!(
                         "Range start and end types must match, got {:?} and {:?}",
@@ -212,12 +202,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_match_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_match_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Match(MatchExpr {
                 expr: match_expr,
@@ -231,8 +216,8 @@ impl<'a> TypeChecker<'a> {
                     self.push_scope();
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
 
-                    let arm_ty = if !silent {
-                        self.check_expr_block(&mut arm.body, consume, silent)
+                    let arm_ty = if !self.speculating {
+                        self.check_expr_block(&mut arm.body, consume)
                     } else {
                         Type::Tensor(ElementType::F32, vec![], None)
                     };
@@ -272,12 +257,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_closure_expr(
-        &mut self,
-        expr: &mut Expr,
-        _consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
                 let struct_name = format!("Closure_{}", self.next_id);
@@ -317,7 +297,7 @@ impl<'a> TypeChecker<'a> {
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
-                if !silent {
+                if !self.speculating {
                     // Consume captured variables in the outer scope if they are linear
                     for (name, ty) in &captured_vars {
                         if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)) {

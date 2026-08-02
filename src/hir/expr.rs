@@ -39,20 +39,23 @@ pub(crate) fn expected_numeric_elem(expected: &Type, value: &str) -> Option<Elem
 
 impl<'a> TypeChecker<'a> {
     pub fn check_expr_type(&mut self, expr: &mut Expr) -> Type {
-        self.check_expr_type_flag(expr, true, false)
+        // A "fresh", non-speculative check. Force `speculating` off for the duration so a probe
+        // higher on the stack (the methodcall return-type probe in `check_methodcall_expr`) can't
+        // leak into this independent subtree — reproducing the old hard-coded `silent = false`
+        // argument this call used to pass (#279 R3).
+        let saved = self.speculating;
+        self.speculating = false;
+        let ty = self.check_expr_type_flag(expr, true);
+        self.speculating = saved;
+        ty
     }
 
-    pub(crate) fn check_expr_block(
-        &mut self,
-        stmts: &mut [Statement],
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_expr_block(&mut self, stmts: &mut [Statement], consume: bool) -> Type {
         let mut ret_ty = Type::Tensor(ElementType::F32, vec![], None);
         let mut terminated = false;
 
         for s in stmts.iter_mut() {
-            if terminated && !silent {
+            if terminated && !self.speculating {
                 let stmt_span = s.span();
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1003,
@@ -69,7 +72,7 @@ impl<'a> TypeChecker<'a> {
             }) = s
             {
                 let saved_borrows = self.borrow.snapshot();
-                ret_ty = self.check_expr_type_flag(expr, consume, silent);
+                ret_ty = self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
             } else {
                 let expected_ret = self.current_return_type.clone().unwrap_or(Type::Tensor(
@@ -77,7 +80,7 @@ impl<'a> TypeChecker<'a> {
                     vec![],
                     None,
                 ));
-                self.check_statement(s, &expected_ret, consume, silent);
+                self.check_statement(s, &expected_ret, consume);
             }
 
             match s {
@@ -90,7 +93,7 @@ impl<'a> TypeChecker<'a> {
         ret_ty
     }
 
-    pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool, silent: bool) -> Type {
+    pub fn check_expr_type_flag(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let mut is_enum_variant = false;
         if let Expr::FunctionCall(fc) = expr {
             if let Some((enum_name, _)) = fc.name.split_once("::") {
@@ -125,30 +128,30 @@ impl<'a> TypeChecker<'a> {
         }
 
         match expr {
-            Expr::Identifier(..) => self.check_identifier_expr(expr, consume, silent),
-            Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume, silent),
+            Expr::Identifier(..) => self.check_identifier_expr(expr, consume),
+            Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume),
             Expr::Number(n) => self.check_number_literal(n),
             Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
                 Box::new(Type::Scalar(ElementType::I8)),
                 None,
                 false, // const
             ),
-            Expr::Transfer(..) => self.check_transfer_expr(expr, consume, silent),
+            Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
             // `Transfer<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
-            Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume, silent),
-            Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume, silent),
-            Expr::If(..) => self.check_if_expr(expr, consume, silent),
+            Expr::ComptimeBlock(..) => self.check_comptimeblock_expr(expr, consume),
+            Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume),
+            Expr::If(..) => self.check_if_expr(expr, consume),
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
-            Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume, silent),
-            Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume, silent),
-            Expr::Array(..) => self.check_array_expr(expr, silent),
-            Expr::MemberAccess(..) => self.check_memberaccess_expr(expr, silent),
-            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, silent),
-            Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume, silent),
-            Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume, silent),
-            Expr::RelationalOp(..) => self.check_relationalop_expr(expr, silent),
-            Expr::LogicalOp(..) => self.check_logicalop_expr(expr, silent),
+            Expr::FunctionCall(..) => self.check_functioncall_expr(expr, consume),
+            Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
+            Expr::Array(..) => self.check_array_expr(expr),
+            Expr::MemberAccess(..) => self.check_memberaccess_expr(expr),
+            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr),
+            Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume),
+            Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
+            Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
+            Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
             Expr::MemorySpace(MemorySpaceExpr { .. }) => {
                 Type::Tensor(ElementType::F32, vec![], None)
             }
@@ -162,39 +165,39 @@ impl<'a> TypeChecker<'a> {
                 // type/statement, not through this expression's value type.
                 Type::Scalar(ElementType::I32)
             }
-            Expr::UnaryOp(..) => self.check_unaryop_expr(expr, silent),
-            Expr::Borrow(..) => self.check_borrow_expr(expr, silent),
-            Expr::Dereference(..) => self.check_dereference_expr(expr, consume, silent),
-            Expr::UnsafeBlock(..) => self.check_unsafeblock_expr(expr, consume, silent),
-            Expr::StructInit(..) => self.check_structinit_expr(expr, consume, silent),
-            Expr::Grad(..) => self.check_grad_expr(expr, silent),
-            Expr::Vjp(..) => self.check_vjp_expr(expr, silent),
-            Expr::Jvp(..) => self.check_jvp_expr(expr, silent),
-            Expr::Range(..) => self.check_range_expr(expr, silent),
-            Expr::Match(..) => self.check_match_expr(expr, consume, silent),
-            Expr::VecMacro(..) => self.check_vecmacro_expr(expr, silent),
-            Expr::Closure(..) => self.check_closure_expr(expr, consume, silent),
-            Expr::AsCast(e) => self.check_ascast_expr(e, consume, silent),
+            Expr::UnaryOp(..) => self.check_unaryop_expr(expr),
+            Expr::Borrow(..) => self.check_borrow_expr(expr),
+            Expr::Dereference(..) => self.check_dereference_expr(expr, consume),
+            Expr::UnsafeBlock(..) => self.check_unsafeblock_expr(expr, consume),
+            Expr::StructInit(..) => self.check_structinit_expr(expr, consume),
+            Expr::Grad(..) => self.check_grad_expr(expr),
+            Expr::Vjp(..) => self.check_vjp_expr(expr),
+            Expr::Jvp(..) => self.check_jvp_expr(expr),
+            Expr::Range(..) => self.check_range_expr(expr),
+            Expr::Match(..) => self.check_match_expr(expr, consume),
+            Expr::VecMacro(..) => self.check_vecmacro_expr(expr),
+            Expr::Closure(..) => self.check_closure_expr(expr, consume),
+            Expr::AsCast(e) => self.check_ascast_expr(e, consume),
             Expr::Print(p) => {
                 for arg in &mut p.args {
-                    self.check_expr_type_flag(arg, consume, silent);
+                    self.check_expr_type_flag(arg, consume);
                 }
                 Type::Scalar(ElementType::I32) // Assuming print returns 0 as i32 for C compatibility
             }
             Expr::Println(p) => {
                 for arg in &mut p.args {
-                    self.check_expr_type_flag(arg, consume, silent);
+                    self.check_expr_type_flag(arg, consume);
                 }
                 Type::Scalar(ElementType::I32)
             }
             Expr::InlineMlir(e) => {
                 // Typecheck inputs
                 for (_, arg_expr, _) in &mut e.inputs {
-                    self.check_expr_type_flag(arg_expr, consume, silent);
+                    self.check_expr_type_flag(arg_expr, consume);
                 }
                 // Typecheck clobbers and mark them as mutated if needed
                 for clobber in &mut e.clobbers {
-                    self.check_expr_type_flag(clobber, consume, silent);
+                    self.check_expr_type_flag(clobber, consume);
                 }
 
                 // Return the specified type or Unknown if void

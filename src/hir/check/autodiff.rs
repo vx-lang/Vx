@@ -23,7 +23,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_grad_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_grad_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Grad(GradExpr {
                 target_fn,
@@ -66,7 +66,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_vjp_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_vjp_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Vjp(VjpExpr {
                 target_fn,
@@ -109,7 +109,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_jvp_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_jvp_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Jvp(JvpExpr {
                 target_fn,

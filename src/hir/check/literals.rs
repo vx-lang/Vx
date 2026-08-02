@@ -18,12 +18,7 @@ use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_enumvariant_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_enumvariant_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
@@ -44,7 +39,7 @@ impl<'a> TypeChecker<'a> {
                         if let Some(expr_payload) = payload {
                             if let Some(exp_types) = expected_payload {
                                 if expr_payload.len() != exp_types.len() {
-                                    if !silent {
+                                    if !self.speculating {
                                         self.errors.error_with_code(
                                             crate::diagnostic::DiagnosticCode::E3009,
                                             format!("Enum variant {}::{} expects {} payload arguments, got {}", actual_enum_name, variant, exp_types.len(), expr_payload.len()),
@@ -91,12 +86,11 @@ impl<'a> TypeChecker<'a> {
                                     }
 
                                     for (i, expr) in expr_payload.iter_mut().enumerate() {
-                                        let expr_ty =
-                                            self.check_expr_type_flag(expr, consume, silent);
+                                        let expr_ty = self.check_expr_type_flag(expr, consume);
                                         let expected_ty = exp_types[i].substitute(&mapping);
                                         if !self.is_assignable(&expected_ty, &expr_ty)
                                             && !matches!(&expected_ty, Type::Generic(_, _))
-                                            && !silent
+                                            && !self.speculating
                                         {
                                             self.errors.error_with_code(
                                                 crate::diagnostic::DiagnosticCode::E3008,
@@ -106,7 +100,7 @@ impl<'a> TypeChecker<'a> {
                                         }
                                     }
                                 }
-                            } else if !silent {
+                            } else if !self.speculating {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E3009,
                                     format!(
@@ -116,7 +110,7 @@ impl<'a> TypeChecker<'a> {
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
                             }
-                        } else if expected_payload.is_some() && !silent {
+                        } else if expected_payload.is_some() && !self.speculating {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E3009,
                                 format!(
@@ -126,7 +120,7 @@ impl<'a> TypeChecker<'a> {
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                             );
                         }
-                    } else if !silent {
+                    } else if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E2004,
                             format!(
@@ -136,7 +130,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                } else if !silent {
+                } else if !self.speculating {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E2003,
                         format!("Unknown enum {}", enum_name),
@@ -212,7 +206,7 @@ impl<'a> TypeChecker<'a> {
         matches!(inner, Type::Tensor(ElementType::F32, _, _))
     }
 
-    pub(crate) fn check_array_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_array_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Array(ArrayExpr { elements, span: _ }) => {
                 // The array's element type is its first element's — an integer array literal
@@ -226,12 +220,7 @@ impl<'a> TypeChecker<'a> {
                             elem_ty = e;
                         }
                     } else {
-                        self.check_expr_expecting(
-                            el,
-                            Some(Type::Scalar(elem_ty.clone())),
-                            true,
-                            _silent,
-                        );
+                        self.check_expr_expecting(el, Some(Type::Scalar(elem_ty.clone())), true);
                     }
                 }
                 Type::Tensor(elem_ty, vec![], None)
@@ -240,12 +229,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_structinit_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_structinit_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::StructInit(StructInitExpr {
                 name,
@@ -336,8 +320,9 @@ impl<'a> TypeChecker<'a> {
                         for (f_name, f_expr) in fields.iter_mut() {
                             if f_name == expected_name {
                                 found = true;
-                                let f_type = self.check_expr_type_flag(f_expr, consume, silent);
-                                if !self.is_assignable(expected_type, &f_type) && !silent {
+                                let f_type = self.check_expr_type_flag(f_expr, consume);
+                                if !self.is_assignable(expected_type, &f_type) && !self.speculating
+                                {
                                     self.errors.push(format!(
                                             "Type mismatch in struct initialization for field '{}'. Expected {:?}, got {:?}",
                                             expected_name, expected_type, f_type
@@ -346,7 +331,7 @@ impl<'a> TypeChecker<'a> {
                                 break;
                             }
                         }
-                        if !found && !silent {
+                        if !found && !self.speculating {
                             self.errors.push(format!(
                                 "Missing field '{}' in initialization of struct '{}'",
                                 expected_name, resolved_name
@@ -356,22 +341,22 @@ impl<'a> TypeChecker<'a> {
                     // Check extra fields
                     for (f_name, f_expr) in fields.iter_mut() {
                         if !struct_fields.iter().any(|(n, _)| n == f_name) {
-                            if !silent {
+                            if !self.speculating {
                                 self.errors.push(format!(
                                     "Struct '{}' has no field '{}'",
                                     resolved_name, f_name
                                 ));
                             }
-                            self.check_expr_type_flag(f_expr, consume, silent); // evaluate to find errors
+                            self.check_expr_type_flag(f_expr, consume); // evaluate to find errors
                         }
                     }
                 } else {
-                    if !silent {
+                    if !self.speculating {
                         self.errors
                             .push(format!("Unknown struct {} (expr.rs:2175)", resolved_name));
                     }
                     for (_, f_expr) in fields.iter_mut() {
-                        self.check_expr_type_flag(f_expr, consume, silent);
+                        self.check_expr_type_flag(f_expr, consume);
                     }
                 }
 
@@ -388,7 +373,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_vecmacro_expr(&mut self, expr: &mut Expr, _silent: bool) -> Type {
+    pub(crate) fn check_vecmacro_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::VecMacro(VecMacroExpr { elements, span }) => {
                 let mut element_type = Type::Scalar(ElementType::I32); // Default

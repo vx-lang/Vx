@@ -95,6 +95,80 @@ fn make() -> Point {
         );
     }
 
+    /// R3 (#279): speculative checking is carried by the `speculating` field, not a threaded
+    /// `silent` parameter. This guards the three mechanisms the field replaced: (1) `speculating`
+    /// suppresses diagnostics (a probe is silent), (2) a callee does not clobber the caller's flag,
+    /// and (3) the "fresh check" entry `check_expr_type` forces the flag off for its subtree (so an
+    /// independent subtree reached under a probe is still fully checked) then restores it. An
+    /// undefined-variable reference is the probe: `check_identifier_expr` pushes its diagnostic
+    /// exactly when `!self.speculating`.
+    #[test]
+    fn r3_speculating_gates_diagnostics_and_the_fresh_entry_forces_it_off() {
+        let input = "fn f() -> i32 { return 0; }";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let program = parser.parse().unwrap();
+
+        let program_arr = [program.clone()];
+        let env = GlobalAstEnv::build(&program_arr);
+        let mut worker = crate::session::LocalWorkerState::new(std::sync::Arc::new(
+            crate::session::GlobalSession::new(1),
+        ));
+        let mut checker = TypeChecker::new(&env, &mut worker);
+
+        let undefined = || {
+            crate::syntax::Expr::Identifier(crate::syntax::IdentifierExpr::new(
+                crate::symbol::Symbol::from("undefined_xyz"),
+                crate::syntax::Span::default(),
+            ))
+        };
+
+        // A checker starts non-speculative.
+        assert!(!checker.speculating, "checker starts non-speculative");
+
+        // (1a) A real check of an undefined variable emits a diagnostic.
+        let mut e = undefined();
+        let before = checker.errors.error_count();
+        checker.check_expr_type_flag(&mut e, true);
+        assert_eq!(
+            checker.errors.error_count(),
+            before + 1,
+            "a real (non-speculative) check of an undefined variable emits one error"
+        );
+
+        // (1b) + (2) The same reference under `speculating = true` emits nothing, and the callee
+        // leaves the flag as it found it.
+        let mut e = undefined();
+        let mid = checker.errors.error_count();
+        checker.speculating = true;
+        checker.check_expr_type_flag(&mut e, true);
+        assert_eq!(
+            checker.errors.error_count(),
+            mid,
+            "a speculative check suppresses the diagnostic"
+        );
+        assert!(
+            checker.speculating,
+            "the callee does not clobber the caller's speculating flag"
+        );
+
+        // (3) The "fresh check" entry forces `speculating` off for its subtree even under an
+        // ambient probe, then restores the ambient value.
+        let mut e = undefined();
+        let before = checker.errors.error_count();
+        checker.check_expr_type(&mut e);
+        assert_eq!(
+            checker.errors.error_count(),
+            before + 1,
+            "check_expr_type forces a fresh (emitting) check even while speculating"
+        );
+        assert!(
+            checker.speculating,
+            "check_expr_type restores the ambient speculating = true"
+        );
+    }
+
     #[test]
     fn test_sema_distributed_matmul() {
         let input = r#"

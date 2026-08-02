@@ -47,6 +47,13 @@ impl<'a> TypeChecker<'a> {
 
         self.borrow.enter_block(last_use);
 
+        // A block is always checked for real, never speculatively. Force `speculating` off for the
+        // loop so a block reached from *inside* a return-type probe (e.g. a generic function body
+        // instantiated during the methodcall probe) is still fully checked — reproducing the old
+        // hard-coded `silent = false` this loop passed to `check_statement` (#279 R3).
+        let saved_speculating = self.speculating;
+        self.speculating = false;
+
         #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
             self.borrow.set_stmt(i);
@@ -60,7 +67,7 @@ impl<'a> TypeChecker<'a> {
                 break; // Only warn once per block
             }
 
-            self.check_statement(&mut body[i], return_type, true, false);
+            self.check_statement(&mut body[i], return_type, true);
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
                     terminated = true;
@@ -68,6 +75,7 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
 
@@ -90,7 +98,6 @@ impl<'a> TypeChecker<'a> {
         stmt: &mut Statement,
         return_type: &Type,
         consume: bool,
-        silent: bool,
     ) {
         // No more HIR interception block needed.
 
@@ -110,7 +117,7 @@ impl<'a> TypeChecker<'a> {
                 // deduce a return-only topology/type variable from it.
                 let prev_expected = self.expected_type.take();
                 self.expected_type = ty_ann.clone();
-                let ty = self.check_expr_type_flag(expr, consume, silent);
+                let ty = self.check_expr_type_flag(expr, consume);
                 self.expected_type = prev_expected;
                 self.current_assignment_target = None;
 
@@ -171,7 +178,7 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
             }) => {
-                let iterable_ty = self.check_expr_type_flag(iterable, consume, silent);
+                let iterable_ty = self.check_expr_type_flag(iterable, consume);
                 self.push_scope();
 
                 // If it's Range, it's I64. If it's Iterator, we extract from Option<T>
@@ -196,7 +203,7 @@ impl<'a> TypeChecker<'a> {
                     // `Enum` *or* `Struct` after resolution — accept both, else the element type is
                     // lost and the loop variable wrongly falls back to `i64` (E3004 against an i32
                     // body, the for-over-iterator typing bug, #242).
-                    let opt_ty = self.check_expr_type_flag(&mut next_call, consume, silent);
+                    let opt_ty = self.check_expr_type_flag(&mut next_call, consume);
                     if let Type::GenericInstance(base, args) = opt_ty {
                         if let Type::Enum(name, _) | Type::Struct(name, _) = &*base {
                             if name.as_ref() == "Option" && args.len() == 1 {
@@ -291,7 +298,7 @@ impl<'a> TypeChecker<'a> {
                 rhs,
                 span: _,
             }) => {
-                let lhs_ty = self.check_expr_type_flag(lhs, false, silent);
+                let lhs_ty = self.check_expr_type_flag(lhs, false);
 
                 // Determine target name for NLL
                 if let Expr::Identifier(id) = lhs {
@@ -305,7 +312,7 @@ impl<'a> TypeChecker<'a> {
                 // Check the RHS expecting the target's type, so an untyped literal is born at that
                 // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
                 // defaulting and mismatching (#240).
-                let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume, silent);
+                let rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
                 self.current_assignment_target = None;
                 if !self.is_assignable(&lhs_ty, &rhs_ty) {
                     self.errors.push("Type mismatch in assignment".to_string());
@@ -332,7 +339,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Return(ReturnStmt { expr, span }) => {
                 let prev_expected = self.expected_type.take();
                 self.expected_type = Some(return_type.clone());
-                let ty = self.check_expr_type_flag(expr, consume, silent);
+                let ty = self.check_expr_type_flag(expr, consume);
                 self.expected_type = prev_expected;
 
                 let mut expected_ty = return_type.clone();
@@ -356,7 +363,7 @@ impl<'a> TypeChecker<'a> {
                 // caller-owned memory. Returning a reference to a function-local — `return &x`
                 // for a local `x`, or a binding that reborrows one — leaves a dangling pointer
                 // once this frame unwinds.
-                if !silent
+                if !self.speculating
                     && Self::is_ref_type(&ty)
                     && self.ref_provenance_of(expr) == Some(crate::hir::env::RefProvenance::Local)
                 {
@@ -390,11 +397,11 @@ impl<'a> TypeChecker<'a> {
                 span: _,
             }) => {
                 let saved_borrows = self.borrow.snapshot();
-                self.check_expr_type_flag(expr, consume, silent);
+                self.check_expr_type_flag(expr, consume);
                 self.borrow.restore(saved_borrows);
             }
             Statement::Assert(AssertStmt { expr, msg, span }) => {
-                let ty = self.check_expr_type_flag(expr, consume, silent);
+                let ty = self.check_expr_type_flag(expr, consume);
                 if ty != Type::Scalar(ElementType::Bool) {
                     self.errors
                         .push("Assertion condition must be boolean".to_string());

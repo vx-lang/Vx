@@ -17,12 +17,7 @@ use super::super::*;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    pub(crate) fn check_identifier_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
                 let name = id.name.clone();
@@ -35,10 +30,10 @@ impl<'a> TypeChecker<'a> {
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
 
-                if !self.skip_borrow_check && !silent {
+                if !self.skip_borrow_check && !self.speculating {
                     // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
                     // semantically dead `&mut x` does not spuriously block reading `x` (#276). `live_borrows`
-                    // sweeps first; the `!silent` gate keeps speculative checks from mutating borrow state.
+                    // sweeps first; the `!self.speculating` gate keeps speculative checks from mutating borrow state.
                     for b in self.borrow.live_borrows(name.as_ref()) {
                         if b.is_mut {
                             self.errors.error_with_code(
@@ -68,7 +63,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 if lookup_res.is_none() && self.is_moved(name.as_ref()) {
-                    if !silent {
+                    if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4001,
                             format!("Use of moved or consumed linear variable: {}", name),
@@ -92,7 +87,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
 
-                    if !silent {
+                    if !self.speculating {
                         // Collect all visible variable names for "did you mean?" suggestion
                         let mut candidate_names: Vec<String> = Vec::new();
                         for scope in &self.scopes {
@@ -136,7 +131,8 @@ impl<'a> TypeChecker<'a> {
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::CPU);
-                            if !is_pinned_on_host && !silent && !self.allow_cross_topology {
+                            if !is_pinned_on_host && !self.speculating && !self.allow_cross_topology
+                            {
                                 let mut implements_transfer = false;
                                 if let Some(impl_blocks) = self.env.impls.get("Transfer") {
                                     for ib in impl_blocks {
@@ -195,7 +191,7 @@ impl<'a> TypeChecker<'a> {
 
                                     let old_allow = self.allow_cross_topology;
                                     self.allow_cross_topology = true;
-                                    let ret_ty = self.check_methodcall_expr(expr, consume, silent);
+                                    let ret_ty = self.check_methodcall_expr(expr, consume);
                                     self.allow_cross_topology = old_allow;
                                     return ret_ty;
                                 } else {
@@ -241,13 +237,13 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                         }
-                        if consume && ty.is_linear() && !silent {
+                        if consume && ty.is_linear() && !self.speculating {
                             self.consume(name.as_ref());
                         }
                         ty.clone()
                     }
                     None => {
-                        if !silent {
+                        if !self.speculating {
                             let msg = format!("Undefined variable '{}'", name);
                             self.errors.push(msg);
                         }
@@ -259,7 +255,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {
                 base: obj,
@@ -269,15 +265,15 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let old_skip = self.skip_borrow_check;
                 self.skip_borrow_check = true;
-                let obj_ty = self.check_expr_type_flag(obj, false, silent);
+                let obj_ty = self.check_expr_type_flag(obj, false);
                 self.skip_borrow_check = old_skip;
 
-                if !self.skip_borrow_check && !silent {
+                if !self.skip_borrow_check && !self.speculating {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {
                         path.push(member.to_string());
                         // NLL: `live_borrows` sweeps dead borrows of the base before testing path overlap,
                         // so reading a field after its `&mut p.x` borrow is dead is accepted — Example B's
-                        // `return p.x` after `*r = 42` (#276). Gated on `!silent` like the identifier arm.
+                        // `return p.x` after `*r = 42` (#276). Gated on `!self.speculating` like the identifier arm.
                         for b in self.borrow.live_borrows(&name) {
                             if b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path) {
                                 self.errors.push(format!(
@@ -460,14 +456,14 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::IndexAccess(IndexAccessExpr {
                 base: obj,
                 index: idx,
                 span: _,
             }) => {
-                let obj_ty = self.check_expr_type_flag(obj, false, silent);
+                let obj_ty = self.check_expr_type_flag(obj, false);
 
                 // Enforce topology boundary for Pinned types
                 if let Type::Pinned(_, pinned_top) = &obj_ty {
@@ -475,7 +471,7 @@ impl<'a> TypeChecker<'a> {
                         &self.active_topology,
                         pinned_top,
                         &obj_ty,
-                    ) && !silent
+                    ) && !self.speculating
                     {
                         self.errors.push(format!(
                             "Cross-topology access error: Cannot access Pinned type on {:?} from {:?}",
@@ -516,14 +512,14 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_borrow_expr(&mut self, expr: &mut Expr, silent: bool) -> Type {
+    pub(crate) fn check_borrow_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Borrow(BorrowExpr {
                 expr: inner,
                 is_mut,
                 span,
             }) => {
-                let inner_ty = self.check_expr_type_flag(inner, false, silent);
+                let inner_ty = self.check_expr_type_flag(inner, false);
 
                 if let Some((name, path)) = Self::extract_base_and_path(inner) {
                     // NLL: `live_borrows` sweeps dead borrows before the shared-XOR-mutable conflict
@@ -535,14 +531,14 @@ impl<'a> TypeChecker<'a> {
                             continue;
                         }
                         if b.is_mut {
-                            if !silent {
+                            if !self.speculating {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4004,
                                     format!("Cannot borrow '{}' because it is already borrowed as mutable.", name),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                 );
                             }
-                        } else if *is_mut && !silent {
+                        } else if *is_mut && !self.speculating {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4003,
                                 format!("Cannot borrow '{}' as mutable because it is also borrowed as immutable.", name),
@@ -550,7 +546,7 @@ impl<'a> TypeChecker<'a> {
                             );
                         }
                     }
-                    if !silent {
+                    if !self.speculating {
                         self.borrow.record(
                             &name,
                             BorrowRecord {
@@ -731,9 +727,8 @@ impl<'a> TypeChecker<'a> {
         record_is_mut: bool,
         persist: bool,
         span: &crate::syntax::Span,
-        silent: bool,
     ) {
-        if silent {
+        if self.speculating {
             return;
         }
         // NLL: `live_borrows` drops records whose borrower is no longer used past this point (the same
@@ -776,18 +771,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn check_dereference_expr(
-        &mut self,
-        expr: &mut Expr,
-        consume: bool,
-        silent: bool,
-    ) -> Type {
+    pub(crate) fn check_dereference_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Dereference(e) => {
-                let inner_ty = self.check_expr_type_flag(&mut e.expr, consume, silent);
+                let inner_ty = self.check_expr_type_flag(&mut e.expr, consume);
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {
-                        if !self.in_unsafe_block && !silent {
+                        if !self.in_unsafe_block && !self.speculating {
                             println!("DEREF ERROR! inner_ty is {:?}", inner_ty);
                             let bt = std::backtrace::Backtrace::force_capture();
                             println!("{}", bt);
