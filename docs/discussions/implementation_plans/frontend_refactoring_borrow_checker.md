@@ -1,12 +1,14 @@
 # Frontend refactoring plan
 
-**Status:** **R1 + R2 + R3 landed.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
+**Status:** **R1 + R2 + R3 landed; R4 in progress.** R1 (`522a2ae8`): `BorrowCx` encapsulates the borrow state; the
 NLL-sweep-before-read invariant is enforced by module privacy, not convention. R2 (`c657a442`, `f8cb71de`,
 `84dc1604`): `hir/expr.rs` split along the dispatch seam into seven `check/` submodules, **5165 → 545 lines**,
 zero logic change. R3: the `silent` half retired — the plan's sink-swap was unsound (`silent` also changes
 if/match result types and gates `consume`'s scope/move mutations), so `silent` became a `speculating` **field**
 instead, removing the positional boolean from every checker signature with behavior preserved (§R3). `consume`
-stays a parameter (a genuine positional signal, not a mode), as audited. R4/R5 open. Tracked as
+stays a parameter (a genuine positional signal, not a mode), as audited. R4: `check_functioncall_expr`
+decomposed 652 → ~358 (reborrow subsystem + `Struct::method` arm extracted); `check_methodcall_expr` /
+`lower_to_type_id` still open (§R4). R5 open. Tracked as
 [#279](https://github.com/hiraditya/Vx/issues/279).
 **Motivation:** the borrow checker took ~8 rounds of fixes (#243, #268, #269, #275, #276, #277, #278) across
 several months. The recurring cost was not that borrow checking is conceptually hard; it was that the
@@ -253,7 +255,7 @@ dynamic scope reproduces the parameter's exactly. Guarded by
 does not clobber the caller's flag; the fresh entry forces-off-then-restores). `consume` stays a parameter, as
 audited.
 
-### R4 — Decompose the oversized functions
+### R4 — Decompose the oversized functions — **`check_functioncall_expr` LANDED; `check_methodcall_expr` / `lower_to_type_id` open**
 
 `check_functioncall_expr` at **660 lines** is the worst; then `check_methodcall_expr` (322) and
 `lower_to_type_id` (320). These are where overload resolution, generic deduction, intrinsic dispatch,
@@ -262,6 +264,18 @@ provenance and reborrow tracking all interleave — the hardest code in the fron
 *Why last among the code phases:* R2 and R3 remove much of the incidental bulk (flag threading, unrelated
 neighbours) and will make the real structure visible. Decomposing before that risks carving along the wrong
 joints.
+
+**Landed — `check_functioncall_expr` 652 → ~358.** Its two biggest, most self-contained joints were pulled
+out as pure moves: (1) the #243 reference-argument reborrow bookkeeping that straddled the argument loop —
+`prepare_reference_arg_reborrows` (before the loop) + `commit_reference_arg_reborrows` (after), carried by a
+`ReborrowPlan` struct, so the "snapshot before, revert after" invariant is a closed prepare → loop → commit
+shape rather than logic interleaved with argument checking; and (2) the 144-line `Struct::method(...)`
+static-call resolution → `check_static_method_call`. The remaining ~358 lines are the argument-processing
+preamble plus the callee-resolution `if let … else if let` chain — long but flat and simple (each arm resolves
+one name-kind and checks its arguments), so it reads cleanly as-is. Behavior-preserving, full suite green, no
+test edits. **Open:** `check_methodcall_expr` (~347) and `lower_to_type_id`; and, in `check_functioncall_expr`,
+the closure-struct-call arm still rewrites `*expr` inline (extractable, but its whole-node reassignment makes
+the seam fiddlier than the two taken here).
 
 ### R5 — Split the remaining `TypeChecker` concerns (optional)
 

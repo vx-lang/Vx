@@ -17,6 +17,27 @@ use super::super::*;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
 
+/// Everything `check_functioncall_expr` computes *before* the argument loop so it can decide,
+/// *after* it, which reference-argument reborrows persist past the call (#243). Built by
+/// `prepare_reference_arg_reborrows`, consumed by `commit_reference_arg_reborrows`.
+struct ReborrowPlan {
+    /// Callee `(param types, return type)` if resolvable and not speculating; `None` disables all
+    /// reborrow bookkeeping.
+    callee_sig: Option<(Vec<Type>, Type)>,
+    /// The callee returns a reference (only then can an argument borrow outlive the call).
+    ret_is_ref: bool,
+    /// The returned reference is mutable (the reborrow's mutability is the result's, not the param's).
+    result_is_mut: bool,
+    /// Parameter slots the returned reference derives from (in-compilation summary).
+    return_prov: crate::hir::provenance::ReturnProvenance,
+    /// Same, for an imported callee read from the registry inline code (`None` = use `return_prov`).
+    imported_prov: Option<u8>,
+    /// (arg index, base, path, param-is-mut, arg-is-a-`&x`-literal) for each reference argument.
+    ref_args: Vec<(usize, String, Vec<String>, bool, bool)>,
+    /// Pre-call borrow list of each distinct reference-argument base, for the selective revert.
+    base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
+}
+
 impl<'a> TypeChecker<'a> {
     pub(crate) fn check_indirectcall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let (callee, args) = match expr {
@@ -176,6 +197,204 @@ impl<'a> TypeChecker<'a> {
         arg_ty.clone()
     }
 
+    /// Compute, *before* the argument loop, everything the post-call reborrow revert needs (#243):
+    /// the callee signature, whether it returns a (mutable) reference, the parameter slots the
+    /// return derives from (in-compilation summary + imported inline code), and — per reference
+    /// argument — its base/path plus a snapshot of that base's pre-call borrow list. Consumed by
+    /// `commit_reference_arg_reborrows`. Split out of `check_functioncall_expr` (R4, #279).
+    fn prepare_reference_arg_reborrows(
+        &mut self,
+        resolved_name: crate::symbol::Symbol,
+        args: &[Expr],
+    ) -> ReborrowPlan {
+        // Reborrow tracking (#243). Passing a reference to a reference parameter reborrows
+        // the underlying storage; whether that reborrow *persists past the call* is decided
+        // per argument by the callee's return-provenance summary — only an argument the
+        // returned reference actually derives from stays borrowed once the call returns
+        // (`pick(&x, &y)` returning from `b` must keep `y` borrowed but release `x`). We
+        // snapshot each reference-argument base *before* the arguments are checked, let the
+        // arguments record their borrows (so intra-call conflicts like `f(&mut x, &x)` still
+        // fire), then revert the non-deriving bases to their pre-call state.
+        let callee_sig = if self.speculating {
+            None
+        } else {
+            self.resolve_callee_ref_signature(&resolved_name)
+        };
+        let return_prov = self.env.return_provenance_of(resolved_name.as_ref());
+        // Cross-module refinement (#265 step 7): an *imported* callee has no AST body, so it is
+        // absent from the `return_provenances` summary map and `return_provenance_of` falls to
+        // the conservative `AnyParam`. Its per-parameter provenance instead travels in the
+        // frozen registry's `FnSig.ret_prov` (populated by a `.vxlib` deserialize). Read it
+        // only on a genuine summary *miss*, so a local definition's summary always wins; a hit
+        // (any in-compilation function, even one that is legitimately `AnyParam`) is untouched.
+        let imported_prov: Option<u8> = if self
+            .env
+            .return_provenances
+            .contains_key(resolved_name.as_ref())
+        {
+            None
+        } else {
+            self.worker
+                .global
+                .registry
+                .fn_sigs
+                .get(&crate::symbol::Symbol::from(resolved_name.as_ref()))
+                .map(|sig| sig.ret_prov)
+        };
+        // (#265) The same summary lowers into the return type's inline slot-0 provenance code,
+        // which the cross-module path (step 7, `.vxlib`) will read straight from the `TypeId`
+        // with no side table. Intra-compilation the side table above still drives the persist
+        // decision; here we populate and *check* the inline form on every real call — proving
+        // it round-trips through the `TypeId` API and stays a conservative refinement of the
+        // summary it will replace, so wiring the consumer later can never silently read a
+        // narrower (unsound) alias set. Debug-only: the release hot path is untouched.
+        #[cfg(debug_assertions)]
+        {
+            let code = crate::hir::provenance::encode_return_provenance(&return_prov);
+            let mut sig = crate::gid::TypeId::new(0, 0, 0, 0);
+            sig.set_return_provenance(code);
+            debug_assert_eq!(
+                sig.extract_return_provenance(),
+                code,
+                "slot-0 provenance code must round-trip through the TypeId encoding"
+            );
+            debug_assert!(
+                (0..32).all(|slot| {
+                    !return_prov.includes(slot)
+                        || crate::hir::provenance::inline_prov_includes(
+                            sig.extract_return_provenance(),
+                            slot,
+                        )
+                }),
+                "inline provenance must conservatively refine the summary for '{}'",
+                resolved_name.as_ref()
+            );
+        }
+        // A reference argument's borrow can only outlive the call if the callee actually
+        // returns a reference. Gating on the return *type* (not just the summary) keeps
+        // void/value-returning callees correct even when their summary is absent — e.g. an
+        // impl method, which `build` does not summarize (it defaults to the conservative
+        // `AnyParam`). Without this, `foo(&mut x)` on a void method would wrongly persist a
+        // mutable borrow of `x` and fire a spurious `E4004` at the next use.
+        let ret_is_ref = callee_sig
+            .as_ref()
+            .map(|(_, ret)| Self::is_ref_type(ret))
+            .unwrap_or(false);
+        // A reborrow's mutability is the *result* reference's, not the parameter's: `found =
+        // probe_mut(m)` where `probe_mut(m: &mut Map) -> &i32` yields a *shared* alias of
+        // `*m`, so the reborrow is shared. Keying on the return type (rather than the param)
+        // is both more correct and what keeps a shared-returning generic from marking its
+        // argument mutably borrowed — which would collide with the callee body's own reads
+        // of a same-named parameter during instantiation (#268).
+        let result_is_mut = callee_sig
+            .as_ref()
+            .map(|(_, ret)| Self::is_mut_ref(ret))
+            .unwrap_or(false);
+        // (index, base, path, param-is-mut, arg-is-a-`&x`-literal) for each reference arg,
+        // plus a snapshot of each distinct base's pre-call borrow list.
+        let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
+        let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+        if let Some((param_types, _)) = &callee_sig {
+            for (i, arg) in args.iter().enumerate() {
+                match param_types.get(i) {
+                    Some(pty) if Self::is_ref_type(pty) => {
+                        if let Some((base, path)) = Self::arg_reborrow_base(arg) {
+                            base_snapshots
+                                .entry(base.clone())
+                                .or_insert_with(|| self.borrow.snapshot_base(base.as_str()));
+                            ref_args.push((
+                                i,
+                                base,
+                                path,
+                                Self::is_mut_ref(pty),
+                                matches!(arg, Expr::Borrow(_)),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        ReborrowPlan {
+            callee_sig,
+            ret_is_ref,
+            result_is_mut,
+            return_prov,
+            imported_prov,
+            ref_args,
+            base_snapshots,
+        }
+    }
+
+    /// After the argument loop, decide which reference-argument reborrows persist past the call
+    /// and revert the rest (#243). A reborrow outlives the call iff the callee returns a reference
+    /// the argument's slot derives from; every other base is restored to the borrows it had before
+    /// the call (releasing the `&x` literals `check_borrow_expr` over-recorded). No-op while
+    /// speculating or when the callee signature was unresolved. Split out of
+    /// `check_functioncall_expr` (R4, #279).
+    fn commit_reference_arg_reborrows(
+        &mut self,
+        plan: &ReborrowPlan,
+        arg_types: &[Type],
+        span: &Span,
+    ) {
+        if self.speculating || plan.callee_sig.is_none() {
+            return;
+        }
+        // An argument's reborrow outlives the call iff the callee returns a reference
+        // and its result derives from that argument's parameter slot. For an imported
+        // callee the summary comes from the registry's inline code (#265 step 7); for an
+        // in-compilation callee, from the AST `return_provenances` summary.
+        let persists = |i: usize| {
+            plan.ret_is_ref
+                && match plan.imported_prov {
+                    Some(code) => crate::hir::provenance::inline_prov_includes(code, i),
+                    None => plan.return_prov.includes(i),
+                }
+        };
+        // (a) Record reborrows for bare-reference arguments (`foo(m)`); `&x` literals
+        //     were already recorded by `check_borrow_expr` during the arg loop. A
+        //     non-deriving argument still runs the conflict check but records nothing —
+        //     so passing the same reference to two parameters of a non-reference-
+        //     returning call (`rmsnorm(x, x, ..)`, an in-place reborrow) does not
+        //     self-conflict, matching the pre-#243 behaviour.
+        for (i, base, path, is_mut_param, is_borrow_lit) in &plan.ref_args {
+            if *is_borrow_lit || !Self::is_ref_type(&arg_types[*i]) {
+                continue;
+            }
+            self.track_reference_arg_borrow(
+                base,
+                path.clone(),
+                *is_mut_param,
+                plan.result_is_mut,
+                persists(*i),
+                span,
+            );
+        }
+        // (b) Selective revert: a base keeps its borrow past the call iff at least one
+        //     of its argument positions is one the return derives from. Non-deriving
+        //     bases are restored to their pre-call state (call-duration borrow only).
+        //     This is what releases the `&x` literals `check_borrow_expr` over-recorded.
+        let deriving: std::collections::HashSet<&str> = plan
+            .ref_args
+            .iter()
+            .filter(|(i, _, _, _, _)| persists(*i))
+            .map(|(_, base, _, _, _)| base.as_str())
+            .collect();
+        for (base, snap) in &plan.base_snapshots {
+            if deriving.contains(base.as_str()) {
+                continue;
+            }
+            // Drop only the borrows *this call* added; keep exactly the records that
+            // were present pre-call and still are. Restoring the raw snapshot instead
+            // would resurrect borrows the arg loop legitimately NLL-released, firing
+            // spurious conflicts later.
+            let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
+            self.borrow.retain_present(base.as_str(), prev);
+        }
+    }
+
     pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
@@ -218,172 +437,16 @@ impl<'a> TypeChecker<'a> {
                     || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
 
-                // Reborrow tracking (#243). Passing a reference to a reference parameter reborrows
-                // the underlying storage; whether that reborrow *persists past the call* is decided
-                // per argument by the callee's return-provenance summary — only an argument the
-                // returned reference actually derives from stays borrowed once the call returns
-                // (`pick(&x, &y)` returning from `b` must keep `y` borrowed but release `x`). We
-                // snapshot each reference-argument base *before* the arguments are checked, let the
-                // arguments record their borrows (so intra-call conflicts like `f(&mut x, &x)` still
-                // fire), then revert the non-deriving bases to their pre-call state.
-                let callee_sig = if self.speculating {
-                    None
-                } else {
-                    self.resolve_callee_ref_signature(&resolved_name)
-                };
-                let return_prov = self.env.return_provenance_of(resolved_name.as_ref());
-                // Cross-module refinement (#265 step 7): an *imported* callee has no AST body, so it is
-                // absent from the `return_provenances` summary map and `return_provenance_of` falls to
-                // the conservative `AnyParam`. Its per-parameter provenance instead travels in the
-                // frozen registry's `FnSig.ret_prov` (populated by a `.vxlib` deserialize). Read it
-                // only on a genuine summary *miss*, so a local definition's summary always wins; a hit
-                // (any in-compilation function, even one that is legitimately `AnyParam`) is untouched.
-                let imported_prov: Option<u8> = if self
-                    .env
-                    .return_provenances
-                    .contains_key(resolved_name.as_ref())
-                {
-                    None
-                } else {
-                    self.worker
-                        .global
-                        .registry
-                        .fn_sigs
-                        .get(&crate::symbol::Symbol::from(resolved_name.as_ref()))
-                        .map(|sig| sig.ret_prov)
-                };
-                // (#265) The same summary lowers into the return type's inline slot-0 provenance code,
-                // which the cross-module path (step 7, `.vxlib`) will read straight from the `TypeId`
-                // with no side table. Intra-compilation the side table above still drives the persist
-                // decision; here we populate and *check* the inline form on every real call — proving
-                // it round-trips through the `TypeId` API and stays a conservative refinement of the
-                // summary it will replace, so wiring the consumer later can never silently read a
-                // narrower (unsound) alias set. Debug-only: the release hot path is untouched.
-                #[cfg(debug_assertions)]
-                {
-                    let code = crate::hir::provenance::encode_return_provenance(&return_prov);
-                    let mut sig = crate::gid::TypeId::new(0, 0, 0, 0);
-                    sig.set_return_provenance(code);
-                    debug_assert_eq!(
-                        sig.extract_return_provenance(),
-                        code,
-                        "slot-0 provenance code must round-trip through the TypeId encoding"
-                    );
-                    debug_assert!(
-                        (0..32).all(|slot| {
-                            !return_prov.includes(slot)
-                                || crate::hir::provenance::inline_prov_includes(
-                                    sig.extract_return_provenance(),
-                                    slot,
-                                )
-                        }),
-                        "inline provenance must conservatively refine the summary for '{}'",
-                        resolved_name.as_ref()
-                    );
-                }
-                // A reference argument's borrow can only outlive the call if the callee actually
-                // returns a reference. Gating on the return *type* (not just the summary) keeps
-                // void/value-returning callees correct even when their summary is absent — e.g. an
-                // impl method, which `build` does not summarize (it defaults to the conservative
-                // `AnyParam`). Without this, `foo(&mut x)` on a void method would wrongly persist a
-                // mutable borrow of `x` and fire a spurious `E4004` at the next use.
-                let ret_is_ref = callee_sig
-                    .as_ref()
-                    .map(|(_, ret)| Self::is_ref_type(ret))
-                    .unwrap_or(false);
-                // A reborrow's mutability is the *result* reference's, not the parameter's: `found =
-                // probe_mut(m)` where `probe_mut(m: &mut Map) -> &i32` yields a *shared* alias of
-                // `*m`, so the reborrow is shared. Keying on the return type (rather than the param)
-                // is both more correct and what keeps a shared-returning generic from marking its
-                // argument mutably borrowed — which would collide with the callee body's own reads
-                // of a same-named parameter during instantiation (#268).
-                let result_is_mut = callee_sig
-                    .as_ref()
-                    .map(|(_, ret)| Self::is_mut_ref(ret))
-                    .unwrap_or(false);
-                // (index, base, path, param-is-mut, arg-is-a-`&x`-literal) for each reference arg,
-                // plus a snapshot of each distinct base's pre-call borrow list.
-                let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
-                let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
-                if let Some((param_types, _)) = &callee_sig {
-                    for (i, arg) in args.iter().enumerate() {
-                        match param_types.get(i) {
-                            Some(pty) if Self::is_ref_type(pty) => {
-                                if let Some((base, path)) = Self::arg_reborrow_base(arg) {
-                                    base_snapshots.entry(base.clone()).or_insert_with(|| {
-                                        self.borrow.snapshot_base(base.as_str())
-                                    });
-                                    ref_args.push((
-                                        i,
-                                        base,
-                                        path,
-                                        Self::is_mut_ref(pty),
-                                        matches!(arg, Expr::Borrow(_)),
-                                    ));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
+                // Reference-argument reborrow bookkeeping (#243): snapshot each base before the
+                // args are checked so the post-call revert can tell a call-duration borrow from
+                // one the return keeps alive.
+                let reborrow_plan =
+                    self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
                 }
 
-                if !self.speculating && callee_sig.is_some() {
-                    // An argument's reborrow outlives the call iff the callee returns a reference
-                    // and its result derives from that argument's parameter slot. For an imported
-                    // callee the summary comes from the registry's inline code (#265 step 7); for an
-                    // in-compilation callee, from the AST `return_provenances` summary.
-                    let persists = |i: usize| {
-                        ret_is_ref
-                            && match imported_prov {
-                                Some(code) => crate::hir::provenance::inline_prov_includes(code, i),
-                                None => return_prov.includes(i),
-                            }
-                    };
-                    // (a) Record reborrows for bare-reference arguments (`foo(m)`); `&x` literals
-                    //     were already recorded by `check_borrow_expr` during the arg loop. A
-                    //     non-deriving argument still runs the conflict check but records nothing —
-                    //     so passing the same reference to two parameters of a non-reference-
-                    //     returning call (`rmsnorm(x, x, ..)`, an in-place reborrow) does not
-                    //     self-conflict, matching the pre-#243 behaviour.
-                    for (i, base, path, is_mut_param, is_borrow_lit) in &ref_args {
-                        if *is_borrow_lit || !Self::is_ref_type(&arg_types[*i]) {
-                            continue;
-                        }
-                        self.track_reference_arg_borrow(
-                            base,
-                            path.clone(),
-                            *is_mut_param,
-                            result_is_mut,
-                            persists(*i),
-                            span,
-                        );
-                    }
-                    // (b) Selective revert: a base keeps its borrow past the call iff at least one
-                    //     of its argument positions is one the return derives from. Non-deriving
-                    //     bases are restored to their pre-call state (call-duration borrow only).
-                    //     This is what releases the `&x` literals `check_borrow_expr` over-recorded.
-                    let deriving: std::collections::HashSet<&str> = ref_args
-                        .iter()
-                        .filter(|(i, _, _, _, _)| persists(*i))
-                        .map(|(_, base, _, _, _)| base.as_str())
-                        .collect();
-                    for (base, snap) in &base_snapshots {
-                        if deriving.contains(base.as_str()) {
-                            continue;
-                        }
-                        // Drop only the borrows *this call* added; keep exactly the records that
-                        // were present pre-call and still are. Restoring the raw snapshot instead
-                        // would resurrect borrows the arg loop legitimately NLL-released, firing
-                        // spurious conflicts later.
-                        let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-                        self.borrow.retain_present(base.as_str(), prev);
-                    }
-                }
-
+                self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 if let Some(intrinsic_ty) = self.resolve_intrinsic_function(
                     &resolved_name,
                     args,
@@ -619,151 +682,8 @@ impl<'a> TypeChecker<'a> {
                         &explicit_generic_args,
                     )
                     .unwrap_or(Type::Tensor(ElementType::F32, vec![], None))
-                } else if let Some(idx) = resolved_name.find("::") {
-                    let mut struct_name = resolved_name[..idx].to_string();
-                    let mut method_name = resolved_name[idx + 2..].to_string();
-                    let mut explicit_ty_str = String::new();
-
-                    if let Some(lt) = struct_name.find('<') {
-                        if struct_name.ends_with('>') {
-                            explicit_ty_str =
-                                struct_name[lt + 1..struct_name.len() - 1].to_string();
-                            struct_name = struct_name[..lt].to_string();
-                        }
-                    }
-
-                    if let Some(lt) = method_name.find('<') {
-                        if method_name.ends_with('>') {
-                            let method_ty_str =
-                                method_name[lt + 1..method_name.len() - 1].to_string();
-                            if explicit_ty_str.is_empty() {
-                                explicit_ty_str = method_ty_str;
-                            } else {
-                                explicit_ty_str = format!("{}, {}", explicit_ty_str, method_ty_str);
-                            }
-                            method_name = method_name[..lt].to_string();
-                        }
-                    }
-
-                    let mut found_generic_func = None;
-                    let mut found_mapping = HashMap::new();
-
-                    if let Some(impl_blocks) = self.env.impls.get("_inherent") {
-                        for ib in impl_blocks {
-                            let mut matches = false;
-                            if let Type::Struct(n, _) = &ib.target_type {
-                                if *struct_name == **n {
-                                    matches = true;
-                                }
-                            } else if let Type::Enum(n, _) = &ib.target_type {
-                                if *struct_name == **n {
-                                    matches = true;
-                                }
-                            } else if let Type::Generic(n, _) = &ib.target_type {
-                                if *struct_name == **n {
-                                    matches = true;
-                                }
-                            } else if let Type::GenericInstance(inner, _) = &ib.target_type {
-                                if let Type::Struct(n, _) = &**inner {
-                                    if *struct_name == **n {
-                                        matches = true;
-                                    }
-                                } else if let Type::Enum(n, _) = &**inner {
-                                    if *struct_name == **n {
-                                        matches = true;
-                                    }
-                                }
-                            }
-
-                            if matches {
-                                for m in &ib.methods {
-                                    if m.name == method_name.as_str().into() {
-                                        found_generic_func = Some(m.clone());
-                                        if !explicit_ty_str.is_empty() {
-                                            let mut explicit_args = Vec::new();
-                                            let mut depth = 0;
-                                            let mut current = String::new();
-                                            for c in explicit_ty_str.chars() {
-                                                if c == '<' {
-                                                    depth += 1;
-                                                    current.push(c);
-                                                } else if c == '>' {
-                                                    depth -= 1;
-                                                    current.push(c);
-                                                } else if c == ',' && depth == 0 {
-                                                    explicit_args.push(self.parse_ty_str(&current));
-                                                    current.clear();
-                                                } else {
-                                                    current.push(c);
-                                                }
-                                            }
-                                            if !current.trim().is_empty() {
-                                                explicit_args.push(self.parse_ty_str(&current));
-                                            }
-
-                                            for (i, parsed_ty) in
-                                                explicit_args.into_iter().enumerate()
-                                            {
-                                                if i < ib.generics.len() {
-                                                    found_mapping.insert(
-                                                        ib.generics[i].name().to_string(),
-                                                        parsed_ty,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            if found_generic_func.is_some() {
-                                break;
-                            }
-                        }
-                    }
-
-                    if let Some(generic_func) = found_generic_func {
-                        let mut modified_func = generic_func.clone();
-                        modified_func.name = format!("{}::{}", struct_name, method_name).into();
-                        modified_func.generics = found_mapping
-                            .keys()
-                            .map(|k| decl::GenericParam::Type {
-                                name: k.clone().into(),
-                                bound: None,
-                            })
-                            .collect();
-
-                        let mut inst_func = self.instantiate_function(
-                            &modified_func,
-                            &found_mapping
-                                .into_iter()
-                                .map(|(k, v)| (k.into(), v))
-                                .collect(),
-                            &std::collections::HashMap::new(),
-                        );
-                        let inst_ret = inst_func.return_type.clone();
-                        let inst_name = inst_func.name.clone();
-
-                        *name = inst_name.clone();
-
-                        if !self.env.functions.contains_key(inst_name.as_ref())
-                            && !self
-                                .monomorphized_functions
-                                .iter()
-                                .any(|(f, _)| f.name == inst_name)
-                        {
-                            self.check_function(&mut inst_func);
-                            self.monomorphized_functions.push((inst_func, 0));
-                        }
-
-                        inst_ret
-                    } else {
-                        if !self.speculating {
-                            self.errors
-                                .push(format!("Undefined static method '{}'.", resolved_name));
-                        }
-                        Type::Tensor(ElementType::F32, vec![], None)
-                    }
+                } else if resolved_name.contains("::") {
+                    self.check_static_method_call(&resolved_name, name)
                 } else if let Some(sig) = self
                     .worker
                     .global
@@ -825,6 +745,158 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// Resolve and instantiate a `Struct::method(...)` static call (an inherent-impl method
+    /// named through its type). Parses any explicit type args on the struct or method, finds the
+    /// matching `_inherent` impl method, instantiates it, rewrites `name` to the mangled instance
+    /// and checks that instance once. Returns the instance return type, or an `f32` placeholder
+    /// after E-undefined if no such method exists. Split out of `check_functioncall_expr`
+    /// (frontend_refactoring_borrow_checker.md R4, #279).
+    fn check_static_method_call(
+        &mut self,
+        resolved_name: &crate::symbol::Symbol,
+        name: &mut crate::symbol::Symbol,
+    ) -> Type {
+        let idx = resolved_name.find("::").expect("caller guards on `::`");
+        let mut struct_name = resolved_name[..idx].to_string();
+        let mut method_name = resolved_name[idx + 2..].to_string();
+        let mut explicit_ty_str = String::new();
+
+        if let Some(lt) = struct_name.find('<') {
+            if struct_name.ends_with('>') {
+                explicit_ty_str = struct_name[lt + 1..struct_name.len() - 1].to_string();
+                struct_name = struct_name[..lt].to_string();
+            }
+        }
+
+        if let Some(lt) = method_name.find('<') {
+            if method_name.ends_with('>') {
+                let method_ty_str = method_name[lt + 1..method_name.len() - 1].to_string();
+                if explicit_ty_str.is_empty() {
+                    explicit_ty_str = method_ty_str;
+                } else {
+                    explicit_ty_str = format!("{}, {}", explicit_ty_str, method_ty_str);
+                }
+                method_name = method_name[..lt].to_string();
+            }
+        }
+
+        let mut found_generic_func = None;
+        let mut found_mapping = HashMap::new();
+
+        if let Some(impl_blocks) = self.env.impls.get("_inherent") {
+            for ib in impl_blocks {
+                let mut matches = false;
+                if let Type::Struct(n, _) = &ib.target_type {
+                    if *struct_name == **n {
+                        matches = true;
+                    }
+                } else if let Type::Enum(n, _) = &ib.target_type {
+                    if *struct_name == **n {
+                        matches = true;
+                    }
+                } else if let Type::Generic(n, _) = &ib.target_type {
+                    if *struct_name == **n {
+                        matches = true;
+                    }
+                } else if let Type::GenericInstance(inner, _) = &ib.target_type {
+                    if let Type::Struct(n, _) = &**inner {
+                        if *struct_name == **n {
+                            matches = true;
+                        }
+                    } else if let Type::Enum(n, _) = &**inner {
+                        if *struct_name == **n {
+                            matches = true;
+                        }
+                    }
+                }
+
+                if matches {
+                    for m in &ib.methods {
+                        if m.name == method_name.as_str().into() {
+                            found_generic_func = Some(m.clone());
+                            if !explicit_ty_str.is_empty() {
+                                let mut explicit_args = Vec::new();
+                                let mut depth = 0;
+                                let mut current = String::new();
+                                for c in explicit_ty_str.chars() {
+                                    if c == '<' {
+                                        depth += 1;
+                                        current.push(c);
+                                    } else if c == '>' {
+                                        depth -= 1;
+                                        current.push(c);
+                                    } else if c == ',' && depth == 0 {
+                                        explicit_args.push(self.parse_ty_str(&current));
+                                        current.clear();
+                                    } else {
+                                        current.push(c);
+                                    }
+                                }
+                                if !current.trim().is_empty() {
+                                    explicit_args.push(self.parse_ty_str(&current));
+                                }
+
+                                for (i, parsed_ty) in explicit_args.into_iter().enumerate() {
+                                    if i < ib.generics.len() {
+                                        found_mapping
+                                            .insert(ib.generics[i].name().to_string(), parsed_ty);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if found_generic_func.is_some() {
+                    break;
+                }
+            }
+        }
+
+        if let Some(generic_func) = found_generic_func {
+            let mut modified_func = generic_func.clone();
+            modified_func.name = format!("{}::{}", struct_name, method_name).into();
+            modified_func.generics = found_mapping
+                .keys()
+                .map(|k| decl::GenericParam::Type {
+                    name: k.clone().into(),
+                    bound: None,
+                })
+                .collect();
+
+            let mut inst_func = self.instantiate_function(
+                &modified_func,
+                &found_mapping
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v))
+                    .collect(),
+                &std::collections::HashMap::new(),
+            );
+            let inst_ret = inst_func.return_type.clone();
+            let inst_name = inst_func.name.clone();
+
+            *name = inst_name.clone();
+
+            if !self.env.functions.contains_key(inst_name.as_ref())
+                && !self
+                    .monomorphized_functions
+                    .iter()
+                    .any(|(f, _)| f.name == inst_name)
+            {
+                self.check_function(&mut inst_func);
+                self.monomorphized_functions.push((inst_func, 0));
+            }
+
+            inst_ret
+        } else {
+            if !self.speculating {
+                self.errors
+                    .push(format!("Undefined static method '{}'.", resolved_name));
+            }
+            Type::Tensor(ElementType::F32, vec![], None)
         }
     }
 
