@@ -144,7 +144,9 @@ pub struct ImmutableGlobalRegistry {
     pub merge_state: MergeState,
 }
 
-/// See [`ImmutableGlobalRegistry::merge_state`].
+/// See [`ImmutableGlobalRegistry::merge_state`]. The `poisoned_*` tombstones are read back through
+/// [`ImmutableGlobalRegistry::poisoned_reason`], so a diagnostic can distinguish "never defined"
+/// from "defined twice and deliberately tombstoned" (#294).
 #[derive(Debug, Default)]
 pub struct MergeState {
     pub imported_fns: FxHashSet<crate::symbol::Symbol>,
@@ -153,6 +155,25 @@ pub struct MergeState {
     pub poisoned_methods: FxHashSet<(TypeId, crate::symbol::Symbol)>,
     pub imported_enums: FxHashSet<crate::symbol::Symbol>,
     pub poisoned_enums: FxHashSet<crate::symbol::Symbol>,
+}
+
+/// Which table a poisoned name was tombstoned in — see [`ImmutableGlobalRegistry::poisoned_reason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoisonKind {
+    Function,
+    Method,
+    EnumVariant,
+}
+
+/// The one wording for "this bare name is defined in more than one imported artifact", shared by
+/// the nominal (struct) decline path and the poisoned-tombstone paths so the two messages cannot
+/// drift (#294). `kind` is the declaration kind as it should appear in the message ("Struct",
+/// "Function", ...).
+pub fn ambiguous_import_message(kind: &str, name: &dyn std::fmt::Display) -> String {
+    format!(
+        "{kind} '{name}' is defined in more than one imported module; the bare name cannot \
+         resolve to a unique definition"
+    )
 }
 
 /// Merge one *imported* name-keyed table into `dst`. An entry this compile built itself (present
@@ -356,6 +377,28 @@ impl ImmutableGlobalRegistry {
         for (gid, fields) in other.structs {
             self.structs.entry(gid).or_insert(fields);
         }
+    }
+
+    /// Whether `name` was tombstoned by `merge_from`'s conflict policy — defined in more than one
+    /// imported artifact and deliberately removed — and from which table. Diagnostic paths consult
+    /// this *before* reporting "undefined", so a poisoned name reports the ambiguity instead of
+    /// sending the reader hunting for a missing import when the cause is a duplicate one (#294).
+    pub fn poisoned_reason(&self, name: &crate::symbol::Symbol) -> Option<PoisonKind> {
+        if self.merge_state.poisoned_fns.contains(name) {
+            return Some(PoisonKind::Function);
+        }
+        if self
+            .merge_state
+            .poisoned_methods
+            .iter()
+            .any(|(_, m)| m == name)
+        {
+            return Some(PoisonKind::Method);
+        }
+        if self.merge_state.poisoned_enums.contains(name) {
+            return Some(PoisonKind::EnumVariant);
+        }
+        None
     }
 
     /// Whether `name` is defined in more than one module with *distinct* GIDs — exactly the case
@@ -693,6 +736,16 @@ mod tests {
             assert!(reg
                 .fn_sigs
                 .contains_key(&crate::symbol::Symbol::from("only_b")));
+            // The tombstone is queryable, so a diagnostic can say "defined twice" rather than
+            // "undefined" (#294); a cleanly-resolved name is not poisoned.
+            assert_eq!(
+                reg.poisoned_reason(&crate::symbol::Symbol::from("helper")),
+                Some(PoisonKind::Function)
+            );
+            assert_eq!(
+                reg.poisoned_reason(&crate::symbol::Symbol::from("only_a")),
+                None
+            );
         }
     }
 

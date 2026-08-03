@@ -725,6 +725,26 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     sig.ret_ty.clone()
+                } else if self
+                    .worker
+                    .global
+                    .registry
+                    .poisoned_reason(&crate::symbol::Symbol::from(resolved_name.as_ref()))
+                    .is_some()
+                {
+                    // Not undefined — defined in *more than one* imported artifact and tombstoned
+                    // by the order-independent merge (#291). "Undefined" would send the reader
+                    // hunting for a missing import when the cause is a duplicate one; report the
+                    // ambiguity, in the same wording as the struct path (#294). `Unknown` is the
+                    // poison result type, so the return check doesn't add a noise mismatch.
+                    if !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E2002,
+                            crate::registry::ambiguous_import_message("Function", &resolved_name),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
+                    Type::Unknown
                 } else {
                     let mono_names: Vec<crate::symbol::Symbol> = self
                         .monomorphized_functions

@@ -1,0 +1,29 @@
+//===- vxlib_ambiguous_import_fn.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A function two imported .vxlib artifacts both define is tombstoned by the
+// order-independent merge (#291); calling it must report the ambiguity — not
+// "Undefined function" — and must not cascade a return-type mismatch (#294).
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn dup(x : i32) -> i32 { return x + 1; }\n' > %t.d/fa.vx
+// RUN: vxc %t.d/fa.vx --action emit-interface -o %t.d/fa.vxlib
+// RUN: printf 'fn dup(x : i32) -> i32 { return x + 100; }\n' > %t.d/fb.vx
+// RUN: vxc %t.d/fb.vx --action emit-interface -o %t.d/fb.vxlib
+// RUN: rm %t.d/fa.vx %t.d/fb.vx
+// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+
+import fa;
+import fb;
+
+fn main() -> i32 {
+  return dup(5);
+}
+
+// CHECK: Function 'dup' is defined in more than one imported module
+// CHECK-NOT: Undefined function
+// CHECK-NOT: E3002

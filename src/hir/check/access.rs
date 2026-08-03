@@ -818,11 +818,7 @@ fn unknown_struct_message(
     site: &str,
 ) -> String {
     if registry.is_ambiguous_nominal(struct_name) {
-        format!(
-            "Struct '{}' is defined in more than one imported module; the bare name cannot \
-             resolve to a unique type",
-            struct_name
-        )
+        crate::registry::ambiguous_import_message("Struct", struct_name)
     } else {
         format!("Unknown struct '{}' ({})", struct_name, site)
     }

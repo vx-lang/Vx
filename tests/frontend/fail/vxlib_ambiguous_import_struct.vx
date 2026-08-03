@@ -1,0 +1,31 @@
+//===- vxlib_ambiguous_import_struct.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A struct two imported .vxlib artifacts both define coexists in the GID-keyed
+// registry, but the *bare* name cannot pick one (#291): constructing it must
+// report the ambiguity, in the same wording as the poisoned-function path so
+// the two messages cannot drift (#294).
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'struct Val { a : i32 }\nfn geta() -> i32 { return 1; }\n' > %t.d/sa.vx
+// RUN: vxc %t.d/sa.vx --action emit-interface -o %t.d/sa.vxlib
+// RUN: printf 'struct Val { a : i32, b : i32 }\nfn getb() -> i32 { return 2; }\n' > %t.d/sb.vx
+// RUN: vxc %t.d/sb.vx --action emit-interface -o %t.d/sb.vxlib
+// RUN: rm %t.d/sa.vx %t.d/sb.vx
+// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+
+import sa;
+import sb;
+
+fn main() -> i32 {
+  let v = Val {
+    a : 1
+  };
+  return v.a;
+}
+
+// CHECK: Struct 'Val' is defined in more than one imported module

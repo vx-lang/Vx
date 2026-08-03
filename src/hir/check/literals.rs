@@ -358,10 +358,9 @@ impl<'a> TypeChecker<'a> {
                         // the latter used to resolve by coin flip before the bare name learned to
                         // decline, and "unknown" would send the user hunting the wrong bug (#291).
                         if self.worker.global.registry.is_ambiguous_nominal(&base_name) {
-                            self.errors.push(format!(
-                                "Struct '{}' is defined in more than one imported module; the bare \
-                                 name cannot resolve to a unique type",
-                                resolved_name
+                            self.errors.push(crate::registry::ambiguous_import_message(
+                                "Struct",
+                                &resolved_name,
                             ));
                         } else {
                             self.errors

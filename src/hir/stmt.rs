@@ -384,7 +384,10 @@ impl<'a> TypeChecker<'a> {
             expected_ty = ty.clone();
         }
 
-        if !self.is_assignable(&expected_ty, &ty) {
+        // `Unknown` is the poison type of an already-reported resolution failure (an undefined
+        // variable, a name tombstoned by the import merge): a mismatch against it is pure noise
+        // that misdirects from the root cause, so only genuinely-typed values are checked (#294).
+        if ty != Type::Unknown && !self.is_assignable(&expected_ty, &ty) {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3002,
                 format!(
