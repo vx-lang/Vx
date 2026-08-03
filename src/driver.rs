@@ -98,6 +98,17 @@ pub struct DriverOptions {
     #[arg(long = "machine", value_name = "FILE")]
     pub machine: Option<PathBuf>,
 
+    /// Write the compile's admission verdict as one JSON record: every diagnostic with its code
+    /// and structured fields (capacity rejects carry space / required / available / margin), plus
+    /// the staging routes and per-edge costs an *admitted* program resolved. The schema is
+    /// versioned (`vx-diagnostics-v1`); see `src/diagnostics_json.rs` (#282).
+    ///
+    /// Takes an optional path; bare `--diagnostics-json` writes to stdout. Prefer a path when the
+    /// action also prints to stdout (`--action emit-mlir` does), so the record stays parseable —
+    /// which is also what a campaign harness wants: one file per (config, SKU) cell.
+    #[arg(long = "diagnostics-json", num_args = 0..=1, default_missing_value = "-")]
+    pub diagnostics_json: Option<PathBuf>,
+
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
@@ -547,6 +558,34 @@ impl CompilerDriver {
             .errors
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error);
+
+        // The machine-readable verdict, before the human-readable rendering below: one record on
+        // stdout carrying every diagnostic plus the resolved staging routes, so an admission
+        // campaign harvests numbers instead of parsing prose (#282). Emitted whether the compile
+        // was admitted or rejected -- a reject is a result, not a failure to report.
+        if let Some(dest) = &self.options.diagnostics_json {
+            let record = crate::diagnostics_json::render(
+                &checker.errors,
+                &checker.staging_routes,
+                filename,
+                self.options
+                    .machine
+                    .as_ref()
+                    .map(|p| p.to_string_lossy())
+                    .as_deref(),
+            );
+            if dest == std::path::Path::new("-") {
+                println!("{}", record);
+            } else {
+                std::fs::write(dest, format!("{}\n", record)).map_err(|e| {
+                    format!(
+                        "Failed to write --diagnostics-json '{}': {}",
+                        dest.display(),
+                        e
+                    )
+                })?;
+            }
+        }
 
         // Print warnings first (so they appear before errors)
         for diag in checker.errors.iter() {

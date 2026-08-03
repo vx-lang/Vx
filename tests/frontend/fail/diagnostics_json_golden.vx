@@ -1,0 +1,65 @@
+//===- diagnostics_json_golden.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Golden record for `--diagnostics-json` (#282): the machine-readable form of an
+// admission verdict, which is how the (config x SKU) matrix gets harvested
+// without parsing prose. This program places three 64 KiB tiles in a 150 KB
+// SMEM, so it is rejected by the working-set check (E6010) -- exercising the
+// reject path, the structured capacity fields, and the staging routes on the
+// same record.
+//
+// The schema is versioned: `vx-diagnostics-v1`. Changing any field name or
+// meaning without bumping that string breaks every consumer, so this test pins
+// both the version and the field set.
+//
+// RUN: not vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+
+Memory HBM {
+  capacity: 8 GB, bandwidth: 3 TB/s
+}
+Memory SMEM {
+  within: Memory::HBM, capacity: 150 KB, granule: 1 KB, managed: explicit, scope: sm
+}
+Topology TC {
+  memory: Memory::SMEM,
+  visible: [Memory::SMEM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::SMEM : 40
+}
+
+fn main() -> i32 {
+  let q : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
+  let k : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
+  let v : Tensor<f32, [128, 128]> = Tensor<f32>([128, 128]);
+  let _sq = transfer(q, Memory::SMEM);
+  let _sk = transfer(k, Memory::SMEM);
+  let _sv = transfer(v, Memory::SMEM);
+  return 0;
+}
+
+// The record identifies its own schema and the cell it represents.
+// CHECK: "schema": "vx-diagnostics-v1"
+// CHECK: "verdict": "rejected"
+// CHECK: "error_count": 1
+//
+// The reject carries numbers, not prose: 3 tiles of 64 KiB against a 150 KB
+// space, over by 43008 bytes.
+// CHECK: "code": "E6010"
+// CHECK-SAME: "space": "SMEM"
+// CHECK-SAME: "required_bytes": 196608
+// CHECK-SAME: "available_bytes": 153600
+// CHECK-SAME: "margin_bytes": -43008
+// CHECK-SAME: "tiles": 3
+//
+// The accept side of the schema is populated too: each staged hop with its
+// declared per-edge cost. The CPU_DRAM -> HBM -> SMEM route is synthesized,
+// so it appears as its two rewritten single hops.
+// CHECK: "routes":
+// CHECK: "path": ["CPU_DRAM", "HBM"]
+// CHECK-SAME: "cost": 300
+// CHECK: "path": ["HBM", "SMEM"]
+// CHECK-SAME: "cost": 40

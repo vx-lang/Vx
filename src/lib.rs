@@ -16,6 +16,7 @@ pub mod arch;
 pub mod borrow;
 pub mod codegen;
 pub mod diagnostic;
+pub mod diagnostics_json;
 pub mod driver;
 pub mod error;
 pub mod formatter;

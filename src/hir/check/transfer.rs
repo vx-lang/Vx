@@ -375,14 +375,22 @@ impl<'a> TypeChecker<'a> {
         let (rounded, cap) = sized;
         // Precise per-tile check: a single tile larger than the whole space is always wrong.
         if rounded > cap {
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E6009,
-                format!(
-                    "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
-                    space.name()
-                ),
-                None,
-            );
+            self.errors
+                .error_with_code(
+                    crate::diagnostic::DiagnosticCode::E6009,
+                    format!(
+                        "{context} needs {rounded} bytes but memory space '{}' has capacity {cap} bytes",
+                        space.name()
+                    ),
+                    None,
+                )
+                // Machine-readable form of the same verdict, for `--diagnostics-json` (#282).
+                .facts = Some(crate::diagnostic::DiagnosticFacts::Capacity {
+                space: space.name(),
+                required_bytes: rounded,
+                available_bytes: cap,
+                tiles: None,
+            });
         }
         // Record for the cumulative (working-set) budget check at end of function.
         let key = match &self.current_assignment_target {
@@ -455,18 +463,30 @@ impl<'a> TypeChecker<'a> {
                 total,
                 cap
             );
+            // The same working-set numbers in machine-readable form, on whichever of the two
+            // codes this space's `overcommit` selects (#282).
+            let facts = crate::diagnostic::DiagnosticFacts::Capacity {
+                space: space.name(),
+                required_bytes: total,
+                available_bytes: cap,
+                tiles: Some(count),
+            };
             if overcommit {
-                self.errors.warn(
-                    crate::diagnostic::DiagnosticCode::W1028,
-                    format!("{msg}; allowed because '{}' is `overcommit`", space.name()),
-                    None,
-                );
+                self.errors
+                    .warn(
+                        crate::diagnostic::DiagnosticCode::W1028,
+                        format!("{msg}; allowed because '{}' is `overcommit`", space.name()),
+                        None,
+                    )
+                    .facts = Some(facts);
             } else {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E6010,
-                    format!("{msg}; place fewer/smaller tiles or declare it `overcommit`"),
-                    None,
-                );
+                self.errors
+                    .error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6010,
+                        format!("{msg}; place fewer/smaller tiles or declare it `overcommit`"),
+                        None,
+                    )
+                    .facts = Some(facts);
             }
         }
     }
@@ -714,6 +734,21 @@ impl<'a> TypeChecker<'a> {
             if path.len() > 2 {
                 do_rewrite = Some(path);
             } else {
+                // Record the resolved hop for `--diagnostics-json`'s accept side (#282). Only
+                // single-hop routes are recorded: a multi-hop route is rewritten into a chain of
+                // single-hop transfers that each re-enter here, so recording it too would count
+                // the same movement twice.
+                if !self.speculating {
+                    let edge = self
+                        .transfer_cost_graph
+                        .transfer_cost(&source_mem, &target_mem);
+                    self.staging_routes.push(crate::hir::env::StagingRoute {
+                        path: path.clone(),
+                        edge_costs: vec![edge],
+                        total_cost: _cost,
+                        derived_cost,
+                    });
+                }
                 // Record the bandwidth-derived roofline cost when the hierarchy provides one;
                 // otherwise leave it unset (the fixed reachability cost stays internal, so
                 // bandwidth-less transfers emit no `cost` attribute — unchanged output).

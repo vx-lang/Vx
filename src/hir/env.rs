@@ -34,6 +34,23 @@ pub enum Value {
     Topology(Topology),
 }
 
+/// A resolved `transfer`: the chain of memory spaces the value actually moves through and the
+/// declared cost of each hop. A direct transfer has one hop; a multi-hop route (synthesized when
+/// no direct edge exists) has one per staging step. `derived_cost` is the bandwidth-roofline cost
+/// when the declarations make it computable, which is what the emitted `vx.transfer` carries.
+/// See [`TypeChecker::staging_routes`] (#282).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StagingRoute {
+    /// The spaces traversed, source first: `[CPU_DRAM, HBM3e, SMEM]`.
+    pub path: Vec<crate::syntax::MemorySpace>,
+    /// Per-edge declared cost, one shorter than `path`; `None` for an edge with no declared cost.
+    pub edge_costs: Vec<Option<u32>>,
+    /// The cost graph's total for the whole route.
+    pub total_cost: u32,
+    /// Bandwidth-derived (roofline) cost, when the declarations supply bandwidths.
+    pub derived_cost: Option<u32>,
+}
+
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
 /// [`GlobalAstEnv::duplicate_decls`].
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +299,11 @@ pub struct TypeChecker<'a> {
     pub(crate) pending_transfer_relaxed: bool,
     /// Number of per-seam obligations discharged (eval metric M1).
     pub seam_checks: usize,
+    /// Every staging route this compilation resolved, in source order: the hops a `transfer`
+    /// lowered to and their per-edge costs. An *admitted* program emits no diagnostics, so this
+    /// is what `--diagnostics-json` reports for it -- the accept side of the admission verdict
+    /// (#282).
+    pub staging_routes: Vec<StagingRoute>,
     /// Total marginal solving time across all seams, excluding the one-time solver
     /// startup below (eval metric M1: per-seam proof cost).
     pub seam_check_time: std::time::Duration,
@@ -373,6 +395,7 @@ impl<'a> TypeChecker<'a> {
             declared_vars: Vec::new(),
             pending_transfer_relaxed: false,
             seam_checks: 0,
+            staging_routes: Vec::new(),
             seam_check_time: std::time::Duration::ZERO,
             solver_init_time: std::time::Duration::ZERO,
             seam_solver: None,

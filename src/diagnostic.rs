@@ -278,6 +278,21 @@ pub struct FixIt {
     pub replacement: Cow<'static, str>,
 }
 
+/// The machine-readable payload of an admission verdict, carried alongside the human-readable
+/// message so `--diagnostics-json` reports numbers rather than making a consumer parse prose
+/// back out of a sentence (#282). Only the diagnostics an admission campaign keys on carry one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiagnosticFacts {
+    /// A capacity verdict: one tile against a space (E6009), or a function's whole working set
+    /// against it (E6010 / W1028). `tiles` is `None` for the single-tile case.
+    Capacity {
+        space: String,
+        required_bytes: u64,
+        available_bytes: u64,
+        tiles: Option<usize>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
@@ -287,6 +302,9 @@ pub struct Diagnostic {
     pub source_span: Option<SourceSpan>,
     pub notes: Vec<Note>,
     pub fix_its: Vec<FixIt>,
+    /// Structured fields for `--diagnostics-json`; `None` for diagnostics with no campaign-
+    /// relevant numbers. Never affects the rendered text.
+    pub facts: Option<DiagnosticFacts>,
 }
 
 impl Diagnostic {
@@ -299,6 +317,7 @@ impl Diagnostic {
             source_span: None,
             notes: Vec::new(),
             fix_its: Vec::new(),
+            facts: None,
         }
     }
 
@@ -311,6 +330,7 @@ impl Diagnostic {
             source_span: None,
             notes: Vec::new(),
             fix_its: Vec::new(),
+            facts: None,
         }
     }
 
@@ -429,6 +449,7 @@ impl DiagnosticsVec {
                     source_span: None,
                     notes: Vec::new(),
                     fix_its: Vec::new(),
+                    facts: None,
                 });
             }
             return;
@@ -442,6 +463,7 @@ impl DiagnosticsVec {
             source_span: None,
             notes: Vec::new(),
             fix_its: Vec::new(),
+            facts: None,
         });
     }
 
@@ -461,6 +483,7 @@ impl DiagnosticsVec {
             source_span: span,
             notes: Vec::new(),
             fix_its: Vec::new(),
+            facts: None,
         });
         self.inner.last_mut().unwrap()
     }
@@ -481,6 +504,7 @@ impl DiagnosticsVec {
             source_span: span,
             notes: Vec::new(),
             fix_its: Vec::new(),
+            facts: None,
         });
         self.inner.last_mut().unwrap()
     }
