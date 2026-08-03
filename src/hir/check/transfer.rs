@@ -937,6 +937,29 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // A non-constant device index resolves to no instance, so dispatch falls back to
+                // index 0 -- every `GPU[i]` spawn lands on device 0. That used to be silent, which
+                // in a fleet program reads as "8 devices" while meaning "device 0, eight times".
+                // Vx models one representative device per declared kind (#284), so this is a
+                // modelling boundary the program has crossed, not a compiler shortcoming.
+                if let Some(idx) = crate::arch::non_constant_index(&actual_top) {
+                    let what = match idx {
+                        Expr::Identifier(id) => format!("the runtime value '{}'", id.name),
+                        _ => "a runtime expression".to_string(),
+                    };
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1030,
+                        format!(
+                            "device index of '{}' is {}, not a compile-time constant; it cannot \
+                             select a device instance and falls back to index 0, so every such \
+                             spawn targets the same device",
+                            actual_top.display_name(),
+                            what
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                    );
+                }
+
                 // Validate topology index expressions BEFORE switching context,
                 // since the index (e.g., NPU[i]) refers to variables in the
                 // outer scope.

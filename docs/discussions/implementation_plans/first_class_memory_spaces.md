@@ -308,6 +308,63 @@ conservative (it assumes all placed tiles are simultaneously live), a space decl
 not all coexist, so the check informs without blocking. The precise per-tile check (a single
 tile larger than the whole space, always impossible) stays a hard `E6009`.
 
+### The resident-set modelling rule
+
+The sum is **per function**, and the placement map resets at each function boundary. That raises
+an obvious question for a long-lived serving deployment, whose residents outlive any one call:
+what does "working set" mean over a deployment's lifetime?
+
+**The V1 rule: the deployment is one admission function.** A program written for admission places
+every resident — weights, KV cache, activations — in a single function, and `E6010`'s sum over
+that function is then exactly the deployment's resident set. `fleet/admit.vx` is the reference
+shape; the rule is stated at the top of that file because violating it is silent.
+
+This is a modelling convention, not a compiler limitation, and it is load-bearing in one
+direction only. Splitting placements across helper functions does not produce a wrong number — it
+produces **no number**, and therefore a false *accept*: each function's working set is checked
+alone, none exceeds capacity, and the program is admitted. An early draft of `fleet/admit.vx` did
+exactly this and reported a configuration needing 100 GiB of residents on an 80 GiB card as
+admitted. Nothing in the output indicated that the sum the verdict depended on had never been
+taken.
+
+That asymmetry is why the rule is written down rather than left implicit: the failure mode is
+invisible in the artifact, so it cannot be caught by reading a diagnostic — only by knowing the
+convention. It is also why the fleet regression test asserts the *tile count* on a rejection
+(`"tiles": 3`) and not merely that a rejection occurred: the count is the evidence that the sum
+actually happened, and it is the one field that distinguishes a genuine working-set verdict from
+a lone oversized tensor.
+
+Finer lifetime modelling — a `resident` attribute distinguishing load-time from per-request
+allocations, so residents could be summed across functions — is deliberately **not** built. It
+would only be needed if a deployment could not be expressed as one function, and none of the
+configurations in `fleet/` come close to that. Add it if reviewers ask; resist pre-building it.
+
+### The multi-GPU modelling rule
+
+Memory spaces attach to declared *kinds*, not device instances: eight H100s share one declared
+`HBM`. So a second convention is needed for multi-GPU deployments, and it is the same shape as the
+one above.
+
+**The V1 rule: model one representative device, and express parallelism as shard arithmetic.**
+`fleet/admit.vx` divides weights and KV by `TP` rather than declaring eight spaces; the verdict is
+then "does one rank's share fit one device". This assumes a **uniform node** — every device the
+same SKU, every rank the same share — which is what the fleet in `fleet/` describes and what a
+neocloud rents. Non-uniform placement is out of scope, not approximated.
+
+The rule has a hard prerequisite: a device index must resolve at compile time. `Topology::NPU[i]`
+for a runtime `i` cannot select an instance, so `topology_dispatch_id` falls back to device 0.
+Constant indices — literals, const generics, and arithmetic over them — resolve properly and are
+const-folded (`arch::const_topology_index`); a genuine runtime index emits **W1030** rather than
+defaulting silently, because eight spawns that all mean device 0 is a wrong answer that reads
+like a right one.
+
+That warning exists because the silent version shipped. Until #284 the monomorphizer cloned a
+spawn's topology without substituting into its index, so `NPU[R]` in a `shard<const R>` body
+stayed a bare identifier after instantiation and *every* shard dispatched to device 0 — with
+nothing in the output saying so. `Topology::substitute` now handles the index, and the fleet
+regression test asserts that `shard<3>` and `shard<5>` emit distinct dispatch ids rather than
+merely that they compile.
+
 1. **Deliberate divergence from topologies.** Memory descriptors will be AST-carried + env-indexed
    while topology descriptors remain in the process-global `TOPOLOGY_REGISTRY` (§4). This is an
    intentional inconsistency: memories set the better precedent and topologies should migrate to

@@ -121,6 +121,26 @@ impl Topology {
         self.kind() == other.kind()
     }
 
+    /// Substitute const generics into this topology's *index* expressions, so `NPU[R]` in a
+    /// `shard<const R : i32>` body becomes `NPU[5]` at the `shard<5>` instantiation. Without this
+    /// a monomorphized index stayed a bare identifier, `topology_dispatch_id` fell back to device
+    /// 0, and every shard of a parallel program silently targeted the same device (#284).
+    ///
+    /// Substitutes only the indices; a topology *variable* (`<D: Topology>`) is bound separately
+    /// during monomorphization, since it maps to a `Topology` rather than a `Type`.
+    pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Topology {
+        match self {
+            Topology::NPU(e) => Topology::NPU(Box::new(e.substitute(mapping))),
+            Topology::AccCore(e) => Topology::AccCore(Box::new(e.substitute(mapping))),
+            Topology::Slice(base, start, end) => Topology::Slice(
+                Box::new(base.substitute(mapping)),
+                Box::new(start.substitute(mapping)),
+                Box::new(end.substitute(mapping)),
+            ),
+            other => other.clone(),
+        }
+    }
+
     /// The surface spelling of a topology, for diagnostics — `NPU[0]`, `NPU[0..144]`, `RubinCPX`.
     /// Diagnostics previously interpolated the `Debug` form, which rendered an indexed topology as
     /// `NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: .. }))` — unreadable in a headline

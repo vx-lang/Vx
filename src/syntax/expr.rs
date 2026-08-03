@@ -1014,7 +1014,9 @@ impl Expr {
                 span: e.span,
             }),
             Expr::SpawnOn(e) => Expr::SpawnOn(SpawnOnExpr {
-                top: e.top.clone(),
+                // The device index is substituted too: `spawn on(NPU[R])` in a generic body must
+                // become `NPU[5]` at `f<5>`, or dispatch silently falls back to device 0 (#284).
+                top: e.top.substitute(mapping),
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,

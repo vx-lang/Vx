@@ -147,12 +147,48 @@ fn fnv_dispatch_id(name: &str) -> i32 {
     1000 + (fnv32(name) % 1000) as i32
 }
 
-fn topology_index(expr: &crate::syntax::Expr) -> i32 {
-    if let crate::syntax::Expr::Number(n) = expr {
-        n.value.parse::<i32>().unwrap_or(0)
-    } else {
-        0
+/// A topology index's compile-time value: a literal, or exact integer arithmetic over literals
+/// (`GPU[TP * 2]` once monomorphization has substituted its const generics). `None` when the index
+/// is a genuine runtime value.
+pub fn const_topology_index(expr: &crate::syntax::Expr) -> Option<i32> {
+    match expr {
+        crate::syntax::Expr::Number(n) => n.value.parse::<i32>().ok(),
+        crate::syntax::Expr::BinaryOp(b) => {
+            let l = const_topology_index(&b.lhs)?;
+            let r = const_topology_index(&b.rhs)?;
+            match b.op {
+                crate::syntax::BinaryOp::Add => l.checked_add(r),
+                crate::syntax::BinaryOp::Sub => l.checked_sub(r),
+                crate::syntax::BinaryOp::Mul => l.checked_mul(r),
+                crate::syntax::BinaryOp::Div => (r != 0).then(|| l / r),
+                crate::syntax::BinaryOp::MatMul => None,
+            }
+        }
+        _ => None,
     }
+}
+
+/// The first index expression in `top` that is *not* a compile-time constant, if any. A
+/// non-constant index cannot be resolved to a device instance at compile time, so
+/// `topology_dispatch_id` falls back to 0 -- silently placing `GPU[i]` on device 0. Callers use
+/// this to warn loudly instead (#284); the fallback itself stays, since declining would reject
+/// programs that compile today.
+pub fn non_constant_index(top: &Topology) -> Option<&crate::syntax::Expr> {
+    match top {
+        Topology::NPU(e) | Topology::AccCore(e) => {
+            const_topology_index(e).is_none().then_some(&**e)
+        }
+        Topology::Slice(base, start, end) => non_constant_index(base)
+            .or_else(|| const_topology_index(start).is_none().then_some(&**start))
+            .or_else(|| const_topology_index(end).is_none().then_some(&**end)),
+        _ => None,
+    }
+}
+
+/// A topology's device index, folding constant arithmetic. Falls back to 0 for a non-constant
+/// index -- see `non_constant_index`, which callers consult to warn about exactly that case.
+fn topology_index(expr: &crate::syntax::Expr) -> i32 {
+    const_topology_index(expr).unwrap_or(0)
 }
 
 /// Dispatch id for a topology (`vx.spawn topology(N)`). Single source of truth.

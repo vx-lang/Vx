@@ -103,6 +103,11 @@ pub enum DiagnosticCode {
     /// when the destination space actually declares a capacity. See P0-4 in
     /// docs/discussions/heterogeneous_target_gap_analysis.md.
     W1029,
+    /// A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so
+    /// it cannot be resolved to a device instance and falls back to index 0. Every such spawn
+    /// therefore targets the same device. Vx models one representative device per declared kind
+    /// (#284), so a fleet program should index with constants or const generics.
+    W1030,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

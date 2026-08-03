@@ -1,0 +1,71 @@
+//===- topology_index_constant_and_runtime.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Device indices under the multi-GPU modelling rule (#284).
+//
+// Vx models one representative device per declared *kind*, with shard
+// arithmetic expressing parallelism -- 8xH100 share one declared HBM space.
+// A device index therefore has to resolve at compile time to mean anything; a
+// runtime index cannot select an instance and falls back to device 0.
+//
+// Two behaviours are pinned here:
+//
+//   1. A constant index -- a literal, a const generic, or arithmetic over them
+//      -- resolves to its own device. `NPU[R]` at `shard<3>` and `shard<5>`
+//      must emit *distinct* dispatch ids. They did not until #284: the
+//      monomorphizer cloned a spawn's topology without substituting into its
+//      index, so every shard of a parallel program silently ran on device 0.
+//
+//   2. A genuine runtime index warns loudly (W1030) rather than defaulting in
+//      silence, because "8 devices" that all mean device 0 is a wrong answer
+//      that looks like a right one.
+//
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>/dev/null | FileCheck --check-prefix=IDS %s
+// RUN: vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck --check-prefix=WARN %s
+
+fn shard<const R : i32>() -> i32 {
+  spawn on(Topology::NPU[R]) {
+    let _k = 7;
+  }
+  return R;
+}
+
+fn scaled<const R : i32>() -> i32 {
+  // Arithmetic over a const generic is still constant after substitution.
+  spawn on(Topology::NPU[2 * R]) {
+    let _k = 8;
+  }
+  return R;
+}
+
+fn runtime_index(n : i32) -> i32 {
+  // Not resolvable: this is the case that must warn.
+  spawn on(Topology::NPU[n]) {
+    let _k = 9;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = shard<3>();
+  let b = shard<5>();
+  let c = scaled<2>();
+  let d = runtime_index(1);
+  return a + b + c + d;
+}
+
+// Distinct constant indices reach codegen as distinct devices: NPU[3] -> 103,
+// NPU[5] -> 105, NPU[2*2] -> 104. All-100 would mean an index was dropped.
+// IDS-DAG: topology(103)
+// IDS-DAG: topology(105)
+// IDS-DAG: topology(104)
+
+// The runtime index warns, and names the value so the fix is obvious.
+// WARN: W1030
+// WARN-SAME: 'NPU[n]'
+// WARN-SAME: runtime value 'n'
+// WARN-SAME: falls back to index 0
