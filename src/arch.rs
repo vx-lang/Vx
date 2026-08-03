@@ -130,16 +130,21 @@ pub fn descriptor_coherence(
 // adjacent and cannot silently diverge: a topology and its canonical memory space share an id
 // (e.g. GPU and GpuHbm are both 500), and `Custom` uses the same FNV scheme in both.
 
-/// A stable per-name dispatch id in the 1000..1999 band. FNV-1a (not `DefaultHasher`, whose
-/// algorithm may change between Rust releases) so the id is reproducible across toolchains --
-/// it is part of the runtime dispatch contract.
-fn fnv_dispatch_id(name: &str) -> i32 {
+/// FNV-1a over `s` (not `DefaultHasher`, whose algorithm may change between Rust releases), so
+/// the derived dispatch ids are reproducible across toolchains -- they are part of the runtime
+/// dispatch contract. Shared by the `Custom` and `Slice` banded id schemes.
+fn fnv32(s: &str) -> u32 {
     let mut hash: u32 = 2166136261;
-    for b in name.as_bytes() {
+    for b in s.as_bytes() {
         hash ^= *b as u32;
         hash = hash.wrapping_mul(16777619);
     }
-    1000 + (hash % 1000) as i32
+    hash
+}
+
+/// A stable per-name dispatch id in the 1000..1999 band.
+fn fnv_dispatch_id(name: &str) -> i32 {
+    1000 + (fnv32(name) % 1000) as i32
 }
 
 fn topology_index(expr: &crate::syntax::Expr) -> i32 {
@@ -161,7 +166,20 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
         Topology::GPU => 500,
         Topology::CpuAvx512 => 600,
         Topology::CpuNeon => 700,
-        Topology::Slice(..) => 900,
+        // A slice is identified by (base topology, extent): `NPU[0..144]` and `NPU[0..72]` are
+        // distinct devices for dispatch and seam identity, so they carry distinct stable ids
+        // (B4, #253) — every slice used to collapse onto one constant (900), which made a slice
+        // unable to name an NVL domain. FNV over the canonical triple, banded to 2000..2999
+        // (`Custom` names own 1000..1999).
+        Topology::Slice(base, start, end) => {
+            let key = format!(
+                "{}:{}:{}",
+                topology_dispatch_id(base),
+                topology_index(start),
+                topology_index(end)
+            );
+            2000 + (fnv32(&key) % 1000) as i32
+        }
         Topology::Custom(name) => fnv_dispatch_id(name),
     }
 }
@@ -336,7 +354,15 @@ impl TransferCostGraph {
         }
         self.descriptor(&topology.kind())
             .map(|d| d.default_space.clone())
-            .unwrap_or(MemorySpace::CPUDRAM)
+            .unwrap_or_else(|| match topology {
+                // The `Memory::Foo <-> Topology::Foo` naming convention, in the direction
+                // `topology_address_space` already applies: a transfer into a custom space
+                // records residence as `Pinned<_, Topology::Foo>`, so an *undeclared* custom
+                // topology's memory is the like-named space — not host DRAM, which made every
+                // custom-space value look CPU-resident to the visibility check (#253).
+                Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
+                _ => MemorySpace::CPUDRAM,
+            })
     }
 
     /// Precomputes the all-pairs shortest path transfer costs. Covers the built-in spaces

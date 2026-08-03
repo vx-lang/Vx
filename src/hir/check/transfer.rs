@@ -615,11 +615,19 @@ impl<'a> TypeChecker<'a> {
             } else {
                 match &inner_ty {
                     Type::Ref(_, mem) => mem.clone(),
-                    // A value pinned on a custom topology lives in the like-named space
-                    // (`Memory::Foo` <-> `Topology::Foo`), not the CPU fallback -- so a re-transfer
-                    // out of a sub-space (SMEM/TMEM) is recognized as starting there.
+                    // A value pinned on a *declared* custom topology lives in the memory its
+                    // descriptor names (`Topology RubinCPX { memory: Memory::GDDR7 }`) -- resolving
+                    // through the descriptor, or the declared GDDR7->HBM4 edge is missed and the
+                    // handoff reports "no hardware path" (#253). Only an undeclared custom topology
+                    // falls back to the like-named space (`Memory::Foo` <-> `Topology::Foo`), the
+                    // sub-space placement case (SMEM/TMEM), which has no descriptor.
                     Type::Pinned(_, Topology::Custom(name)) => {
-                        MemorySpace::from_name(name.as_ref())
+                        let top = Topology::Custom(name.clone());
+                        if self.transfer_cost_graph.descriptor(&top.kind()).is_some() {
+                            self.transfer_cost_graph.default_memory_for(&top)
+                        } else {
+                            MemorySpace::from_name(name.as_ref())
+                        }
                     }
                     Type::Pinned(_, top) => self.transfer_cost_graph.default_memory_for(top),
                     _ => MemorySpace::CPUDRAM,

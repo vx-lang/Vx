@@ -8,7 +8,10 @@ fn main() -> i32 {
 
   spawn on(Topology::GPU) {
     // This is illegal! GPU cannot natively access NPU HBM directly.
-    // CHECK: Cross-topology access error
+    // CHECK: E6003
+    // CHECK-SAME: 't_npu' lives in NPU_HBM
+    // CHECK-SAME: GPU sees only [GPU_HBM, CPU_DRAM]
+    // CHECK-SAME: insert an explicit transfer to GPU_HBM
     let invalid = t_npu;
   }
 

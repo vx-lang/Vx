@@ -1,0 +1,53 @@
+//===- rubin_disaggregated_missing_transfer.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The pass sibling (`tests/frontend/pass/rubin_disaggregated.vx`) with the
+// KV-cache handoff deleted: decode reads a GDDR7-resident value from the HBM4
+// die. In a Dynamo-style config this mistake surfaces at runtime as a wrong
+// answer or a silent PCIe stall; here it is E6003, naming where the value
+// lives, what the topology can see, and the costed fix (#253).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory GDDR7 {
+  capacity: 128 GB, bandwidth: 2 TB/s, managed: explicit
+}
+Memory HBM4 {
+  capacity: 288 GB, bandwidth: 13 TB/s, managed: explicit
+}
+Topology RubinCPX {
+  memory: Memory::GDDR7,
+  visible: [Memory::GDDR7],
+  transfer Memory::CPU_DRAM -> Memory::GDDR7 : 300,
+  transfer Memory::GDDR7 -> Memory::HBM4 : 120
+}
+Topology Rubin {
+  memory: Memory::HBM4,
+  visible: [Memory::HBM4]
+}
+
+fn serve() -> i32 {
+  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32>([8192, 128]);
+  let staged = transfer(prompt, Memory::GDDR7);
+  let kv = spawn on(Topology::RubinCPX) {
+    staged
+  };
+  // BUG under test: no `transfer(kv, Memory::HBM4)` before decode.
+  let _out = spawn on(Topology::Rubin) {
+    kv
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  return serve();
+}
+
+// CHECK: E6003
+// CHECK-SAME: 'kv' lives in GDDR7
+// CHECK-SAME: sees only [HBM4]
+// CHECK-SAME: insert an explicit transfer to HBM4 (cost 120 on the declared path)

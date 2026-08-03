@@ -10,4 +10,9 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: Error: Cross-topology access error
+// The NPU cannot see host DRAM: E6003 names where the value lives, what the
+// topology sees, and the costed fix (#253).
+// CHECK: E6003
+// CHECK-SAME: 'host_data' lives in CPU_DRAM
+// CHECK-SAME: NPU[0] sees only [NPU_HBM]
+// CHECK-SAME: insert an explicit transfer to NPU_HBM

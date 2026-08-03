@@ -213,26 +213,58 @@ impl<'a> TypeChecker<'a> {
                                         && self
                                             .space_is_cached(&self.value_memory_space(&ty, &top));
                                     if !allowed {
-                                        let msg = match reach {
-                                        Reachability::NeedsSeam { cost } => format!(
-                                            "Cross-topology access error: '{}' (type: {:?}) is not \
-                                             visible from {:?}; insert an explicit transfer to {:?} \
-                                             (cost {})",
-                                            name, ty, self.active_topology, self.active_topology, cost
-                                        ),
-                                        Reachability::Unreachable => format!(
+                                        match reach {
+                                        Reachability::NeedsSeam { cost } => {
+                                            // E6003, naming the value's space, the topology's
+                                            // visible set, and the costed fix — so a misplaced
+                                            // handoff (e.g. an un-transferred KV cache in a
+                                            // disaggregated prefill/decode split) is a compile
+                                            // error carrying its own remedy (#253).
+                                            let src = self.value_memory_space(&ty, &top);
+                                            let dst = self
+                                                .transfer_cost_graph
+                                                .default_memory_for(&self.active_topology);
+                                            let visible = self
+                                                .transfer_cost_graph
+                                                .descriptor(&self.active_topology.kind())
+                                                .map(|d| {
+                                                    d.visibility
+                                                        .iter()
+                                                        .map(|s| s.name())
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ")
+                                                })
+                                                .unwrap_or_default();
+                                            self.errors.error_with_code(
+                                                crate::diagnostic::DiagnosticCode::E6003,
+                                                format!(
+                                                    "'{}' lives in {} but {} sees only [{}]; \
+                                                     insert an explicit transfer to {} (cost {} \
+                                                     on the declared path)",
+                                                    name,
+                                                    src.name(),
+                                                    self.active_topology.display_name(),
+                                                    visible,
+                                                    dst.name(),
+                                                    cost
+                                                ),
+                                                Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                                    &span,
+                                                )),
+                                            );
+                                        }
+                                        Reachability::Unreachable => self.errors.push(format!(
                                             "Cross-topology access error: '{}' (type: {:?}) is \
                                              unreachable from {:?}: no transfer path exists",
                                             name, ty, self.active_topology
-                                        ),
+                                        )),
                                         // Not visible here by construction; fall back to the plain message.
-                                        Reachability::Visible => format!(
+                                        Reachability::Visible => self.errors.push(format!(
                                             "Cross-topology access error: Variable '{}' belongs to {:?} \
                                              (type: {:?}), but accessed from {:?}",
                                             name, top, ty, self.active_topology
-                                        ),
-                                        };
-                                        self.errors.push(msg);
+                                        )),
+                                        }
                                     }
                                 }
                             }

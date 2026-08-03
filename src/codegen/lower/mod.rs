@@ -774,12 +774,28 @@ mod tests {
 
     #[test]
     fn test_topology_to_i32_slice() {
-        let slice = Topology::Slice(
-            Box::new(Topology::NPU(make_num_expr("0"))),
-            make_num_expr("0"),
-            make_num_expr("4"),
+        // B4 (#253): a slice's id derives from (base, start, end) in the dedicated 2000..2999
+        // band — stable across calls, distinct for a different extent or base, no longer the
+        // single constant every slice used to collapse onto.
+        let slice = |base: &str, start: &str, end: &str| {
+            Topology::Slice(
+                Box::new(Topology::NPU(make_num_expr(base))),
+                make_num_expr(start),
+                make_num_expr(end),
+            )
+        };
+        let nvl144 = topology_to_i32(&slice("0", "0", "144"));
+        let nvl72 = topology_to_i32(&slice("0", "0", "72"));
+        let other_base = topology_to_i32(&slice("1", "0", "144"));
+        assert!((2000..3000).contains(&nvl144), "banded: {nvl144}");
+        assert!((2000..3000).contains(&nvl72), "banded: {nvl72}");
+        assert_ne!(nvl144, nvl72, "distinct extents get distinct ids");
+        assert_ne!(nvl144, other_base, "distinct bases get distinct ids");
+        assert_eq!(
+            nvl144,
+            topology_to_i32(&slice("0", "0", "144")),
+            "stable across calls"
         );
-        assert_eq!(topology_to_i32(&slice), 900);
     }
 
     #[test]

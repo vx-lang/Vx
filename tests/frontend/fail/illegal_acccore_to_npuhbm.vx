@@ -9,7 +9,10 @@ fn main() -> i32 {
   spawn on(Topology::AccCore[0]) {
     // This is illegal! AccCore can only operate on LocalSRAM natively.
     // It must first explicitly transfer t_npu into LocalSRAM.
-    // CHECK: Cross-topology access error
+    // CHECK: E6003
+    // CHECK-SAME: 't_npu' lives in NPU_HBM
+    // CHECK-SAME: AccCore[0] sees only [Local_SRAM]
+    // CHECK-SAME: insert an explicit transfer to Local_SRAM
     let invalid = t_npu;
   }
 

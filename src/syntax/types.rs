@@ -120,6 +120,35 @@ impl Topology {
     pub fn is_same_kind(&self, other: &Self) -> bool {
         self.kind() == other.kind()
     }
+
+    /// The surface spelling of a topology, for diagnostics — `NPU[0]`, `NPU[0..144]`, `RubinCPX`.
+    /// Diagnostics previously interpolated the `Debug` form, which rendered an indexed topology as
+    /// `NPU(Number(NumberExpr { value: "0", ty: Some(I32), span: .. }))` — unreadable in a headline
+    /// error. An index that is not a literal falls back to its own display (`NPU[i]`). (#253)
+    pub fn display_name(&self) -> String {
+        let idx = |e: &Expr| -> String {
+            match e {
+                Expr::Number(n) => n.value.to_string(),
+                Expr::Identifier(id) => id.name.to_string(),
+                _ => "?".to_string(),
+            }
+        };
+        match self {
+            Topology::CPU => "CPU".to_string(),
+            Topology::NPU(e) => format!("NPU[{}]", idx(e)),
+            Topology::AccCore(e) => format!("AccCore[{}]", idx(e)),
+            Topology::AMX => "AMX".to_string(),
+            Topology::ANE => "ANE".to_string(),
+            Topology::GPU => "GPU".to_string(),
+            Topology::CpuAvx512 => "CpuAvx512".to_string(),
+            Topology::CpuNeon => "CpuNeon".to_string(),
+            Topology::Slice(base, start, end) => {
+                format!("{}[{}..{}]", base.display_name(), idx(start), idx(end))
+            }
+            Topology::Custom(name) => name.to_string(),
+            Topology::Current => "Current".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

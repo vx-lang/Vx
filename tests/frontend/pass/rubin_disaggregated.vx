@@ -1,0 +1,66 @@
+//===- rubin_disaggregated.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The Rubin CPX disaggregated-serving shape (#253): prefill on a compute die
+// with cheap GDDR7, decode on an HBM4 die, one workload, and an explicit,
+// costed KV-cache handoff between them. The declarations are the machine
+// model; the program is the placement. Both memories are `managed: explicit`
+// -- the dies are not hardware-coherent, which is why the handoff must be
+// written (and is checked). Deleting the `transfer(kv, Memory::HBM4)` line is
+// a compile error naming the fix and its declared cost: see the fail sibling
+// `tests/frontend/fail/rubin_disaggregated_missing_transfer.vx`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory GDDR7 {
+  capacity: 128 GB, bandwidth: 2 TB/s, managed: explicit
+}
+Memory HBM4 {
+  capacity: 288 GB, bandwidth: 13 TB/s, managed: explicit
+}
+Topology RubinCPX {
+  memory: Memory::GDDR7,
+  visible: [Memory::GDDR7],
+  transfer Memory::CPU_DRAM -> Memory::GDDR7 : 300,
+  transfer Memory::GDDR7 -> Memory::HBM4 : 120
+}
+Topology Rubin {
+  memory: Memory::HBM4,
+  visible: [Memory::HBM4]
+}
+
+fn serve() -> i32 {
+  let prompt : Tensor<f32, [8192, 128]> = Tensor<f32>([8192, 128]);
+  // Stage the prompt into the prefill die's memory (declared path, cost 300).
+  let staged = transfer(prompt, Memory::GDDR7);
+  // Prefill: builds the KV cache in GDDR7.
+  let kv = spawn on(Topology::RubinCPX) {
+    staged
+  };
+  // The handoff the whole system economics hinge on: explicit and costed (120).
+  let kv_hbm = transfer(kv, Memory::HBM4);
+  // Decode: reads the KV cache from HBM4.
+  let _out = spawn on(Topology::Rubin) {
+    kv_hbm
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  return serve();
+}
+
+// The staged prompt lands in GDDR7 with its declared capacity...
+// CHECK: vx.transfer
+// CHECK-SAME: space = "GDDR7"
+// ...prefill runs as a real spawn...
+// CHECK: vx.spawn
+// ...the KV handoff is a distinct transfer into HBM4...
+// CHECK: vx.transfer
+// CHECK-SAME: space = "HBM4"
+// ...and decode is its own spawn on the HBM die.
+// CHECK: vx.spawn
