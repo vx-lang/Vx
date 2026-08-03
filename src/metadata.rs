@@ -693,18 +693,18 @@ fn read_fn_body(r: &mut Reader) -> Result<(TypeId, FnBody), String> {
 }
 
 /// Encode a `FnSig`'s payload (everything after its name/gid/receiver): the param count, each param
-/// type, the return type, then the 1-byte return-provenance code (#265 step 7). Returns `None` if any
-/// param or the return type is not encodable yet, so the caller skips the whole signature — fail-closed,
-/// matching the body codec.
-fn encode_sig_record(sig: &FnSig) -> Option<Vec<u8>> {
+/// type, the return type, then the 1-byte return-provenance code (#265 step 7). `Err` (with the codec's
+/// reason) if any param or the return type is not encodable yet, so the caller skips the whole
+/// signature — fail-closed, matching the body codec — and can report *why* it was dropped (#292).
+fn encode_sig_record(sig: &FnSig) -> Result<Vec<u8>, String> {
     let mut rec = Writer::new();
     rec.u64(sig.params.len() as u64);
     for p in &sig.params {
-        write_type(&mut rec, p).ok()?;
+        write_type(&mut rec, p)?;
     }
-    write_type(&mut rec, &sig.ret_ty).ok()?;
+    write_type(&mut rec, &sig.ret_ty)?;
     rec.u8(sig.ret_prov);
-    Some(rec.buf)
+    Ok(rec.buf)
 }
 
 /// Decode the payload written by [`encode_sig_record`] — params, return type, provenance code. The
@@ -722,11 +722,72 @@ fn read_sig_record(
     Ok((params, ret_ty, ret_prov))
 }
 
+/// One table's encode/skip accounting for a `serialize_registry_interface` run (#292).
+#[derive(Debug)]
+pub struct TableReport {
+    pub table: &'static str,
+    pub encoded: usize,
+    /// Each fail-closed skip: the entry's display name and the codec error that excluded it.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// What one interface emit encoded vs skipped, per skipping-capable table (#292). The skips are
+/// fail-closed and correct — a half-encoded signature would be worse — but they used to be
+/// *silent*: the producer printed only a byte count, and the omission surfaced later, in a
+/// different compilation, as an unrelated-looking "not found". `Display` renders the summary the
+/// driver prints under the "Wrote module interface" line.
+#[derive(Debug)]
+pub struct InterfaceEmitReport {
+    pub tables: Vec<TableReport>,
+}
+
+impl InterfaceEmitReport {
+    pub fn total_skipped(&self) -> usize {
+        self.tables.iter().map(|t| t.skipped.len()).sum()
+    }
+}
+
+impl std::fmt::Display for InterfaceEmitReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let counts = self
+            .tables
+            .iter()
+            .map(|t| format!("{} {}/{}", t.table, t.encoded, t.encoded + t.skipped.len()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        write!(f, "  {}", counts)?;
+        match self.total_skipped() {
+            0 => write!(f, "  (nothing skipped)")?,
+            n => write!(
+                f,
+                "  ({} entr{} skipped)",
+                n,
+                if n == 1 { "y" } else { "ies" }
+            )?,
+        }
+        for t in &self.tables {
+            for (entry, reason) in &t.skipped {
+                write!(f, "\n  skipped {} '{}': {}", t.table, entry, reason)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Serialize the frozen registry's import-oracle interface to a versioned byte buffer. Covers the
 /// identity (`module_indices`), structural-layout (`layouts`), signature (`fn_sigs` / `methods`), and
 /// flat-HIR-body (`bodies`) tables. Keys are sorted so the output is byte-reproducible for the same
 /// registry.
 pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
+    serialize_registry_interface_reporting(reg).0
+}
+
+/// [`serialize_registry_interface`] plus the per-table encoded/skipped accounting, so the emit path
+/// can surface an incomplete artifact at produce time instead of letting it fail later, elsewhere,
+/// as a "not found" (#292).
+pub fn serialize_registry_interface_reporting(
+    reg: &ImmutableGlobalRegistry,
+) -> (Vec<u8>, InterfaceEmitReport) {
     let mut w = Writer::new();
     w.buf.extend_from_slice(VXLIB_MAGIC);
     w.u64(crate::hash::compute_module_hash(VXLIB_FORMAT_TAG));
@@ -761,14 +822,23 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     fns.sort_by(|a, b| a.0.cmp(b.0));
     let mut sub = Writer::new();
     let mut n = 0u64;
+    let mut fn_report = TableReport {
+        table: "fn_sigs",
+        encoded: 0,
+        skipped: Vec::new(),
+    };
     for (name, sig) in fns {
         // Encode params + return type + provenance code into a record; include the entry only if
         // every type is encodable (an unencodable param/return skips the whole signature).
-        if let Some(rec) = encode_sig_record(sig) {
-            sub.sym(name);
-            sub.typeid(&sig.gid);
-            sub.buf.extend_from_slice(&rec);
-            n += 1;
+        match encode_sig_record(sig) {
+            Ok(rec) => {
+                sub.sym(name);
+                sub.typeid(&sig.gid);
+                sub.buf.extend_from_slice(&rec);
+                n += 1;
+                fn_report.encoded += 1;
+            }
+            Err(reason) => fn_report.skipped.push((name.to_string(), reason)),
         }
     }
     w.u64(n);
@@ -779,13 +849,24 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     meths.sort_by(|a, b| a.0 .0.words.cmp(&b.0 .0.words).then(a.0 .1.cmp(&b.0 .1)));
     let mut sub = Writer::new();
     let mut n = 0u64;
+    let mut meth_report = TableReport {
+        table: "methods",
+        encoded: 0,
+        skipped: Vec::new(),
+    };
     for ((recv, name), sig) in meths {
-        if let Some(rec) = encode_sig_record(sig) {
-            sub.typeid(recv);
-            sub.sym(name);
-            sub.typeid(&sig.gid);
-            sub.buf.extend_from_slice(&rec);
-            n += 1;
+        match encode_sig_record(sig) {
+            Ok(rec) => {
+                sub.typeid(recv);
+                sub.sym(name);
+                sub.typeid(&sig.gid);
+                sub.buf.extend_from_slice(&rec);
+                n += 1;
+                meth_report.encoded += 1;
+            }
+            Err(reason) => meth_report
+                .skipped
+                .push((format!("{}.{}", nominal_name(reg, recv), name), reason)),
         }
     }
     w.u64(n);
@@ -797,11 +878,20 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     bodies.sort_by_key(|(gid, _)| gid.words);
     let mut sub = Writer::new();
     let mut n = 0u64;
+    let mut body_report = TableReport {
+        table: "bodies",
+        encoded: 0,
+        skipped: Vec::new(),
+    };
     for (gid, body) in bodies {
         let mut one = Writer::new();
-        if write_fn_body(&mut one, gid, body).is_ok() {
-            sub.buf.extend_from_slice(&one.buf);
-            n += 1;
+        match write_fn_body(&mut one, gid, body) {
+            Ok(()) => {
+                sub.buf.extend_from_slice(&one.buf);
+                n += 1;
+                body_report.encoded += 1;
+            }
+            Err(reason) => body_report.skipped.push((body.name.to_string(), reason)),
         }
     }
     w.u64(n);
@@ -815,6 +905,11 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
     structs.sort_by_key(|(g, _)| g.words);
     let mut sub = Writer::new();
     let mut n = 0u64;
+    let mut struct_report = TableReport {
+        table: "structs",
+        encoded: 0,
+        skipped: Vec::new(),
+    };
     for (gid, sf) in structs {
         let mut rec = Writer::new();
         rec.u64(sf.generics.len() as u64);
@@ -822,24 +917,43 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
             rec.sym(g);
         }
         rec.u64(sf.fields.len() as u64);
-        let mut ok = true;
+        let mut failed: Option<(String, String)> = None;
         for (fname, fty) in &sf.fields {
             rec.sym(fname);
-            if write_type(&mut rec, fty).is_err() {
-                ok = false;
+            if let Err(reason) = write_type(&mut rec, fty) {
+                failed = Some((
+                    format!("{} (field '{}')", nominal_name(reg, gid), fname),
+                    reason,
+                ));
                 break;
             }
         }
-        if ok {
-            sub.typeid(gid);
-            sub.buf.extend_from_slice(&rec.buf);
-            n += 1;
+        match failed {
+            None => {
+                sub.typeid(gid);
+                sub.buf.extend_from_slice(&rec.buf);
+                n += 1;
+                struct_report.encoded += 1;
+            }
+            Some(entry) => struct_report.skipped.push(entry),
         }
     }
     w.u64(n);
     w.buf.extend_from_slice(&sub.buf);
 
-    w.buf
+    let report = InterfaceEmitReport {
+        tables: vec![fn_report, meth_report, body_report, struct_report],
+    };
+    (w.buf, report)
+}
+
+/// A nominal type's display name for skip reporting: the layout's name when the registry has one,
+/// else the GID's debug form (better an opaque-but-unique identity than nothing).
+fn nominal_name(reg: &ImmutableGlobalRegistry, gid: &TypeId) -> String {
+    reg.layouts
+        .get(gid)
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| format!("{:?}", gid.words))
 }
 
 /// Rebuild a queryable [`ImmutableGlobalRegistry`] from bytes produced by
@@ -1222,5 +1336,61 @@ mod tests {
 
         // Truncated mid-stream: a bounds-checked read fails rather than panicking.
         assert!(deserialize_registry_interface(&good[..good.len() - 4]).is_err());
+    }
+
+    /// The #292 acceptance: a deliberately unencodable signature is skipped from the artifact AND
+    /// reported — named, counted, with the codec's reason — instead of silently dropped.
+    #[test]
+    fn emit_reports_skipped_entries_per_table() {
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        reg.fn_sigs.insert(
+            Symbol::from("good"),
+            FnSig {
+                gid: TypeId::new(1, 1, 0, 0),
+                params: Vec::new(),
+                ret_ty: Type::Scalar(ElementType::I32),
+                ret_prov: 0,
+            },
+        );
+        // A dimensioned tensor return is not yet serializable (`write_type` rejects it).
+        let dim = crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+            "4".to_string(),
+            None,
+            crate::syntax::Span::default(),
+        ));
+        reg.fn_sigs.insert(
+            Symbol::from("bad"),
+            FnSig {
+                gid: TypeId::new(1, 2, 0, 0),
+                params: Vec::new(),
+                ret_ty: Type::Tensor(ElementType::F32, vec![dim], None),
+                ret_prov: 0,
+            },
+        );
+
+        let (bytes, report) = serialize_registry_interface_reporting(&reg);
+        let fns = report
+            .tables
+            .iter()
+            .find(|t| t.table == "fn_sigs")
+            .expect("fn_sigs table reported");
+        assert_eq!(fns.encoded, 1);
+        assert_eq!(fns.skipped.len(), 1);
+        assert_eq!(fns.skipped[0].0, "bad");
+        assert!(
+            fns.skipped[0].1.contains("tensor"),
+            "reason names the offending type: {}",
+            fns.skipped[0].1
+        );
+        assert_eq!(report.total_skipped(), 1);
+        // The rendered summary carries the counts and the named skip.
+        let rendered = report.to_string();
+        assert!(rendered.contains("fn_sigs 1/2"), "{rendered}");
+        assert!(rendered.contains("skipped fn_sigs 'bad'"), "{rendered}");
+
+        // The artifact itself stays fail-closed: `good` crosses, `bad` is absent.
+        let round = deserialize_registry_interface(&bytes).expect("deserialize");
+        assert!(round.resolve_fn(&Symbol::from("good")).is_some());
+        assert!(round.resolve_fn(&Symbol::from("bad")).is_none());
     }
 }

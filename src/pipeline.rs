@@ -600,9 +600,19 @@ fn method_receiver_gid(ty: &crate::syntax::Type) -> Option<crate::gid::TypeId> {
 /// portably. This is the artifact producer -- a downstream compile deserializes it and resolves + links
 /// the module with no AST (#220, `docs/discussions/implementation_plans/vxlib_bodies_and_loader.md`).
 pub fn emit_module_interface(modules: &[VxModule]) -> Result<Vec<u8>, PipelineError> {
+    emit_module_interface_reporting(modules).map(|(bytes, _)| bytes)
+}
+
+/// [`emit_module_interface`] plus the codec's per-table encoded/skipped accounting, so
+/// `--emit-interface` can report an incomplete artifact at produce time (#292).
+pub fn emit_module_interface_reporting(
+    modules: &[VxModule],
+) -> Result<(Vec<u8>, crate::metadata::InterfaceEmitReport), PipelineError> {
     let mut registry = build_frozen_registry(modules)?;
     harvest_bodies(&mut registry, modules)?;
-    Ok(crate::metadata::serialize_registry_interface(&registry))
+    Ok(crate::metadata::serialize_registry_interface_reporting(
+        &registry,
+    ))
 }
 
 /// Lower each non-generic free function to flat HIR and stash a portable `FnBody` in `registry.bodies`,

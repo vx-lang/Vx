@@ -383,7 +383,7 @@ impl CompilerDriver {
         for m in program_arr.iter_mut() {
             m.resolve_names(&symbol_map);
         }
-        let bytes = crate::pipeline::emit_module_interface(program_arr)
+        let (bytes, report) = crate::pipeline::emit_module_interface_reporting(program_arr)
             .map_err(|e| format!("Failed to build module interface: {}", e))?;
 
         let out = self
@@ -399,6 +399,10 @@ impl CompilerDriver {
             bytes.len(),
             out.display()
         );
+        // Per-table encoded/skipped accounting (#292): a fail-closed skip is correct, but silent it
+        // surfaces much later, in a *different* compile, as an unrelated-looking "not found". Naming
+        // every dropped symbol here turns that into a one-line answer at produce time.
+        println!("{}", report);
         Ok(())
     }
 
