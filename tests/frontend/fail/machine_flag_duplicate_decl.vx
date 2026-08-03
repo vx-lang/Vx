@@ -1,0 +1,30 @@
+//===- machine_flag_duplicate_decl.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A `--machine` file and the program both declaring `Memory HBM` is an error,
+// not a silent shadow (#281). The declaration tables are name-keyed and module
+// order is a HashMap iteration, so one would win arbitrarily -- and which SKU
+// was actually in force could differ between runs, which is precisely the
+// property the flag exists to make trustworthy.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'Memory HBM {\n  capacity: 1 MB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\n' > %t.d/machine.vx
+// RUN: not vxc --machine %t.d/machine.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+
+// Conflicts with the machine file's `HBM`.
+Memory HBM {
+  capacity: 8 GB
+}
+
+fn main() -> i32 {
+  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32>([1024, 1024]);
+  let _staged = transfer(kv, Memory::HBM);
+  return 0;
+}
+
+// CHECK: E6012
+// CHECK-SAME: memory space 'HBM' is declared in more than one input

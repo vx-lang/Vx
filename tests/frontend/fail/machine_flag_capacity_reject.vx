@@ -1,0 +1,33 @@
+//===- machine_flag_capacity_reject.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The paper's headline claim, made literally true: the *same* program text is
+// admitted against one SKU and rejected against another, with only the
+// `--machine` file swapped -- no edit to the program (#281). This file is the
+// program; the two machine models are written to a temp dir by the RUN lines.
+//
+// A 1024x1024 f32 tile is 4 MiB: it does not fit the 1 MB SKU (E6009) and does
+// fit the 64 GB one, where the program compiles clean.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'Memory HBM {\n  capacity: 1 MB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\nTopology Dev {\n  memory: Memory::HBM,\n  visible: [Memory::HBM],\n  transfer Memory::CPU_DRAM -> Memory::HBM : 300\n}\n' > %t.d/small.vx
+// RUN: sed 's/capacity: 1 MB/capacity: 64 GB/' %t.d/small.vx > %t.d/big.vx
+//
+// Rejected against the small SKU...
+// RUN: not vxc --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// ...and admitted against the large one, same program text.
+// RUN: vxc --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
+
+fn main() -> i32 {
+  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32>([1024, 1024]);
+  let _staged = transfer(kv, Memory::HBM);
+  return 0;
+}
+
+// CHECK: E6009
+// CHECK-SAME: needs 4194304 bytes
+// CHECK-SAME: 'HBM' has capacity 1048576 bytes

@@ -90,6 +90,14 @@ pub struct DriverOptions {
     #[arg(long = "link-interface", value_name = "FILE")]
     pub link_interface: Option<PathBuf>,
 
+    /// Prepend a machine-model file (`Memory` / `Topology` declarations) to the compilation unit,
+    /// so the same program can be admitted against a different SKU without editing it:
+    /// `vxc --machine fleet/h100-sxm.vx program.vx`. Its declarations are visible to the program's
+    /// capacity and placement checks exactly as if they were written inline. A name the machine
+    /// file and the program both declare is an error (E6012), never a silent shadow (#281).
+    #[arg(long = "machine", value_name = "FILE")]
+    pub machine: Option<PathBuf>,
+
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
@@ -293,6 +301,19 @@ impl CompilerDriver {
         filename: &str,
     ) -> Result<(Vec<crate::syntax::Program>, Vec<Vec<u8>>), String> {
         let mut loader = ModuleLoader::new();
+        // The machine model loads first, so its declarations are in the unit before the program's
+        // own module. It is a peer module, not an import: the program never names it, which is the
+        // point -- the same program text is admitted against a different SKU by swapping the flag
+        // (#281).
+        if let Some(machine) = &self.options.machine {
+            let path = machine.to_string_lossy().to_string();
+            if let Err(e) = loader.load_main(&path) {
+                return Err(format!(
+                    "Frontend failed to parse --machine file '{}': {}",
+                    path, e
+                ));
+            }
+        }
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
         }
@@ -484,6 +505,9 @@ impl CompilerDriver {
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.verify_seams = self.options.verify_seams;
 
+        // A name declared by two inputs (e.g. a `--machine` file and the program) is ambiguous:
+        // report it before any check that reads the collapsed declaration tables (#281).
+        checker.check_declaration_conflicts();
         // Reject/flag incoherent user-defined topology declarations before checking bodies.
         checker.check_topology_coherence(&ast.topologies);
         // Reject incoherent memory-space declarations (cycles, oversized sub-spaces, ...).

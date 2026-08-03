@@ -225,6 +225,26 @@ impl<'a> TypeChecker<'a> {
     /// `within:` is acyclic, a sub-space's capacity does not exceed its parent's, and declared
     /// properties are positive. Reads descriptors from the per-compilation env (`self.env`),
     /// not a process-global registry, so it needs no scoping list (unlike topologies).
+    /// Report a `Memory`/`Topology` name declared by two modules of this compilation unit with
+    /// different declarations (E6012). The declaration tables are name-keyed, so one would
+    /// otherwise silently shadow the other -- and since module order is a `HashMap` iteration,
+    /// *which* one survived could vary between runs. The motivating case is a `--machine` file
+    /// whose SKU declares a space the program also declares inline: the whole point of the flag is
+    /// that the machine model is swappable, which requires knowing it is the one in force (#281).
+    pub fn check_declaration_conflicts(&mut self) {
+        for dup in &self.env.duplicate_decls {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6012,
+                format!(
+                    "{} '{}' is declared in more than one input (also in '{}'); remove one or \
+                     rename it -- a duplicate declaration would silently shadow the other",
+                    dup.kind, dup.name, dup.module
+                ),
+                None,
+            );
+        }
+    }
+
     pub fn check_memory_coherence(&mut self) {
         use crate::hir::memory::{MemoryCoherenceIssue, MemoryHierarchy};
         let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();

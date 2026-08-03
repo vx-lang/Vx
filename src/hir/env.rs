@@ -34,6 +34,17 @@ pub enum Value {
     Topology(Topology),
 }
 
+/// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
+/// [`GlobalAstEnv::duplicate_decls`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateDecl {
+    /// What was re-declared, for the message: `"memory space"` or `"topology"`.
+    pub kind: &'static str,
+    pub name: crate::symbol::Symbol,
+    /// The module whose declaration collided with one already indexed.
+    pub module: crate::symbol::Symbol,
+}
+
 pub struct GlobalAstEnv<'a> {
     pub structs: HashMap<crate::symbol::Symbol, &'a StructDecl>,
     #[allow(clippy::type_complexity)]
@@ -52,6 +63,12 @@ pub struct GlobalAstEnv<'a> {
     /// `Program.topologies`; the per-compilation home for topology descriptors, seeded into each
     /// `TransferCostGraph` — no global registry (see docs/parallel_compiler_architecture.md).
     pub topologies: HashMap<crate::symbol::Symbol, &'a crate::arch::TopologyDecl>,
+    /// `Memory`/`Topology` names declared by more than one module in this compilation unit, with
+    /// the modules that declared them. The tables above are name-keyed, so a duplicate would
+    /// silently resolve to whichever module was indexed last -- and module order is a `HashMap`
+    /// iteration, so the machine model actually in force would vary between runs. Recorded here
+    /// and reported as E6012 by `check_declaration_conflicts` (#281).
+    pub duplicate_decls: Vec<DuplicateDecl>,
     /// Per-function return-provenance summary (#243): which parameter slot(s) a reference-returning
     /// function's result roots in. A read-only, precomputed artifact of the immutable env, consulted
     /// at call sites to make the reborrow-persistence decision per argument. Filled from *present*
@@ -79,6 +96,7 @@ impl<'a> GlobalAstEnv<'a> {
             generic_functions: HashMap::new(),
             memories: HashMap::new(),
             topologies: HashMap::new(),
+            duplicate_decls: Vec::new(),
             return_provenances: HashMap::new(),
         };
 
@@ -88,10 +106,28 @@ impl<'a> GlobalAstEnv<'a> {
                 env.structs.insert(s.name.clone(), s);
             }
             for m in &module.memories {
-                env.memories.insert(m.name.clone(), m);
+                if let Some(prev) = env.memories.insert(m.name.clone(), m) {
+                    // Re-declaring an *identical* space in two modules is harmless (the same
+                    // machine file reached twice); only a genuine disagreement is ambiguous.
+                    if prev != m {
+                        env.duplicate_decls.push(DuplicateDecl {
+                            kind: "memory space",
+                            name: m.name.clone(),
+                            module: module.module_path.clone(),
+                        });
+                    }
+                }
             }
             for t in &module.topologies {
-                env.topologies.insert(t.name.clone(), t);
+                if let Some(prev) = env.topologies.insert(t.name.clone(), t) {
+                    if prev != t {
+                        env.duplicate_decls.push(DuplicateDecl {
+                            kind: "topology",
+                            name: t.name.clone(),
+                            module: module.module_path.clone(),
+                        });
+                    }
+                }
             }
             for e in &module.enums {
                 env.enums.insert(e.name.clone(), e);

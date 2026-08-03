@@ -229,6 +229,10 @@ pub enum DiagnosticCode {
     E6010,
     /// A sub-space's `scope` is broader than its parent's (locality must narrow down `within:`).
     E6011,
+    /// The same `Memory` or `Topology` name is declared by two compilation inputs (e.g. a
+    /// `--machine` file and the program). Declarations are name-keyed, so one would silently
+    /// shadow the other and the machine model in force would depend on load order (#281).
+    E6012,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

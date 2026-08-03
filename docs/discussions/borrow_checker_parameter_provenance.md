@@ -8,17 +8,46 @@ ______________________________________________________________________
 
 ## 1. The claim this enables
 
-The motivating fact is concrete and checkable. This signature —
+> **Reframed 2026-08-03 after measuring the corpus.** This section previously led with the
+> annotation-burden claim — "rustc requires a lifetime annotation here and Vx does not." That framing
+> is measurably marginal and has been demoted to motivation; the encoding claim, which measured well,
+> now leads. Evidence and method: `scan_rust_corpus.py` in the paper folder. The original framing is
+> preserved in §1.2 because the `pick` example is still the right *motivation* — it is only the wrong
+> *headline*.
+
+### 1.1 The claim
+
+> **A reference's region, variance, and return-provenance fit in a fixed-width slot of the type's own
+> identity, so the cross-boundary lifetime check is a single masked-word comparison — no constraint
+> graph, no side table, and no re-analysis of the callee, even across a module boundary where its body
+> is unavailable.**
+
+Two measurements decide whether that is a contribution or a curiosity, and both are now in:
+
+- **99.7%** of reference-taking functions in a 177-crate Rust corpus (76,249 functions) have **≤4
+  reference parameters** — they fit the inline budget. The 0.3% that overflow fall back to
+  `AnyParam`, which is *exactly today's conservative behaviour*: the degradation is local and
+  precision-only, never unsound (§5).
+- The check itself is masked integer arithmetic over one word (§2), and the summary survives
+  serialisation into `.vxlib` (§4.3, landed), so a consumer type-checks against an imported signature
+  with no library source.
+
+That is the paper: **a fixed-width, comparison-in-place lifetime summary that is O(1) per call site
+and crosses a module boundary intact.** The cost claim is the load-bearing one — see §6.3's RQ3 — and
+it is the one still unmeasured.
+
+### 1.2 `pick`, and why it motivates rather than headlines
+
+The provenance field exists because of this signature:
 
 ```rust
 fn pick(a : &Map, b : &Map) -> &i32 { return &b.slot; }
 ```
 
-— is one **rustc cannot compile without a lifetime annotation**: elision fails (`expected named lifetime parameter`), and the programmer must write `fn pick<'a>(a: &Map, b: &'a Map) -> &'a i32` to
-say "the result borrows from `b`, not `a`." Vx already accepts `pick` annotation-free; it just
-answers the *use* of the result conservatively, treating `let r = pick(&x, &y)` as borrowing both
-`x` and `y`. Closing that gap makes Vx accept the same programs annotated Rust accepts here —
-**without the annotation** — at O(1) per call site.
+rustc **cannot compile it without a lifetime annotation**: elision fails (`expected named lifetime parameter`), and the programmer must write `fn pick<'a>(a: &Map, b: &'a Map) -> &'a i32` to say "the
+result borrows from `b`, not `a`." Vx accepts `pick` annotation-free but, before #243, answered the
+*use* of the result conservatively — `let r = pick(&x, &y)` borrowed both `x` and `y`. Per-parameter
+provenance closes that, at O(1) per call site.
 
 Stated precisely, and only as far as it is true:
 
@@ -27,11 +56,21 @@ Stated precisely, and only as far as it is true:
 > explicitly-annotated Rust with no annotation, checked in a single masked word comparison.
 
 The scope qualifier is load-bearing, not a hedge. Rust lifetimes also express *relationships* this
-summary deliberately does not model: outlives bounds (`'a: 'b`), or a return whose lifetime is a
-fresh variable constrained by several inputs. Genuine multi-source returns (`if c { &a.f } else { &b.f }`) fall back to "borrows from all of them," which is exactly today's behaviour. The claim is a
-precise statement about a common, well-defined class — the class rustc's elision rules were designed
-for and then refuse — not a general superiority claim. Lead with `pick`, which is verifiable, over
-any "as precise as annotated Rust" superlative, which is not true in the general case.
+summary deliberately does not model: outlives bounds (`'a: 'b`), or a return whose lifetime is a fresh
+variable constrained by several inputs. Genuine multi-source returns (`if c { &a.f } else { &b.f }`)
+fall back to "borrows from all of them," which is exactly today's behaviour. Lead with `pick`, which
+is verifiable, over any "as precise as annotated Rust" superlative, which is not true in general.
+
+**What the earlier draft got wrong.** It called this "a common, well-defined class." It is
+well-defined; it is not common. Measured over the same 177-crate corpus, the class rustc's elision
+rules refuse is **46 of 4,156 reference-returning functions — 1.1%**, and that is an over-estimate
+(the heuristic misclassifies `self: Pin<&mut Self>`, a self receiver). Reference-returning functions
+are 5.4% of all functions, so `pick` is roughly **0.05% of real Rust**.
+
+So the honest statement is: *the case exists, it is real, rustc genuinely refuses it, and we handle it
+for free as a consequence of the encoding.* It is a worked example that shows what the provenance
+field buys. It is not an annotation-burden result, and §6's E3 should no longer be described as the
+paper's most communicable number.
 
 **Priority.** This is a design document first. The evaluation in §6 exists to *validate* the design,
 not to drive it; where the two pull apart, the design principle wins. That principle is the one the
@@ -247,6 +286,15 @@ This section *validates* the design; it does not shape it (see the priority note
 
 RQ4 is the one that decides whether the inline encoding is a contribution or a curiosity. If 95%+ of functions fit inline, the story is "constant-time in practice." If it is 60%, the honest paper is a negative result about fixed-width inline encodings — still publishable, but a different paper.
 
+> **Answered 2026-08-03: 99.7%** (177-crate corpus, 31,870 functions taking ≥1 reference; ≤4
+> reference parameters). Comfortably above the bar this paragraph set, so the story is
+> "constant-time in practice" and §1.1 leads with it. **RQ2 answered the same day and came back
+> the other way — 1.1%, an over-estimate** — so the annotation-burden framing is demoted to
+> motivation (§1.2). **RQ3 is therefore the load-bearing measurement and is still at zero.**
+> Method and caveats: `scan_rust_corpus.py`. The remaining in-Vx half of RQ4 is fallback
+> *locality* — how many call sites lose precision when a summary is `AnyParam` — which needs
+> compiler instrumentation, not a corpus scan.
+
 ### 6.2 The corpus problem
 
 This is the weakest link in any evaluation of a young language's analysis, and reviewers will go straight at it. `tests/` is not a corpus — self-evaluation on one's own regression suite is the standard reject reason. Three viable options, in descending order of credibility:
@@ -284,7 +332,19 @@ This is the weakest link in any evaluation of a young language's analysis, and r
 
 **E2 — Adversarial soundness.** Hand-written attacks on O1, each expected to reject: parameter-derived pointer stashed through `unsafe`; return through a nested reference; return through a trait object; return through a closure capture; mutual recursion where the summary fixpoint could wrongly narrow; `extern` callee. A single false accept here sinks the paper, so this suite should be written *before* the implementation, adversarially, ideally by someone other than the implementer.
 
-**E3 — Annotation burden.** For every reference-returning function in the corpus, mechanically determine whether rustc's elision rules suffice. Report the fraction where they do not. This is RQ2's number and it is the most *communicable* result in the paper — "*N*% of reference-returning functions need a lifetime annotation in Rust and none in Vx" is a sentence a program committee remembers.
+**E3 — Annotation burden.** For every reference-returning function in the corpus, mechanically determine whether rustc's elision rules suffice. Report the fraction where they do not.
+
+> **Run 2026-08-03: 1.1%** (46 of 4,156 reference-returning functions), and that over-counts —
+> the heuristic misreads `self: Pin<&mut Self>` as a non-receiver. Reference-returning functions
+> are 5.4% of all functions, so the class is ~0.05% of real Rust.
+>
+> This paragraph used to call it "the most *communicable* result in the paper." **It is not a
+> headline result and must not be presented as one.** Report it as what it is: the class exists,
+> rustc genuinely refuses it, and the encoding handles it for free — a worked example (§1.2), not
+> an annotation-burden claim. Note also that the *corpus* moved: measuring this on Vx code is
+> useless (4 reference-returning functions in all of `stdlib` + `benchmarks` + `tests/backend`,
+> every one elision-handled), because the frequency question is about real code in general, not
+> about Vx. See §6.2.
 
 **E4 — Cost.** Microbenchmark `verify_subtyping_bounds` in isolation (instructions/check, cache behaviour) and end-to-end on the corpus (phase time, scaling with call-site count). Sweep parameter count 1..8 to show where the inline path ends and what the cliff costs.
 
