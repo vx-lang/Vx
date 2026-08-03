@@ -198,39 +198,122 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
     }
 }
 
-/// The MLIR/LLVM address space for a memory space. Distinct from the dispatch ids above: this
-/// is the coarse `memref<..., N>` / `!llvm.ptr<N>` annotation the backend understands, not a
-/// runtime device id.
-pub fn memory_space_address_space(mem: &MemorySpace) -> i32 {
+/// A target-independent address space: what the memory *is*, not what number a particular GPU
+/// ISA gives it. Codegen maps this to a concrete annotation per target (`nvptx_addrspace` today;
+/// the `#gpu.address_space<..>` attribute spelling when a GPU backend lands, #251), so the
+/// numbering lives in exactly one place instead of being hardcoded at every use.
+///
+/// Previously codegen emitted raw integers keyed only on the built-in `MemorySpace` variant, which
+/// was wrong twice over: on-chip scratchpad was given NVPTX 2 (reserved, not shared), and *every*
+/// user-declared space collapsed onto 4 -- NVPTX **constant** memory, which is read-only. A B200
+/// model declaring `Memory SMEM`/`Memory TMEM`/`Memory L2` therefore made all three the same
+/// read-only space. See #258.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressSpace {
+    /// Host memory (also NVPTX generic/flat).
+    Host,
+    /// Device-global memory: HBM, GDDR, L2.
+    Global,
+    /// Shared/on-chip memory private to one SM or thread block: SMEM, LDS.
+    Workgroup,
+    /// Per-thread private memory: registers, local spill.
+    Private,
+}
+
+impl AddressSpace {
+    /// The NVPTX numbering (0 generic, 1 global, 3 shared, 5 local). Only this function knows the
+    /// target's numbers; everything upstream reasons in terms of the enum.
+    pub fn nvptx_addrspace(self) -> i32 {
+        match self {
+            AddressSpace::Host => 0,
+            AddressSpace::Global => 1,
+            AddressSpace::Workgroup => 3,
+            AddressSpace::Private => 5,
+        }
+    }
+
+    /// The MLIR `#gpu.address_space<..>` attribute this corresponds to, for the GPU lowering path
+    /// that consumes `--convert-gpu-to-nvvm` (#251). `None` for host memory, which carries no
+    /// attribute.
+    pub fn gpu_attr(self) -> Option<&'static str> {
+        match self {
+            AddressSpace::Host => None,
+            AddressSpace::Global => Some("#gpu.address_space<global>"),
+            AddressSpace::Workgroup => Some("#gpu.address_space<workgroup>"),
+            AddressSpace::Private => Some("#gpu.address_space<private>"),
+        }
+    }
+}
+
+/// The address space of a *built-in* memory space. A user-declared (`Custom`) space has no
+/// intrinsic address space -- it is whatever its declaration's `scope:` says -- so this returns
+/// `None` for it and callers use [`declared_address_space`], which has the declaration in hand.
+/// `None` also for the network spaces, which have no GPU analogue at all (#258).
+pub fn builtin_address_space(mem: &MemorySpace) -> Option<AddressSpace> {
     match mem {
-        MemorySpace::CPUDRAM => 0,
-        // Device global memory (NVPTX/AMDGPU global is addrspace 1).
-        MemorySpace::NPUHBM | MemorySpace::GpuHbm => 1,
-        MemorySpace::LocalSRAM => 2, // on-chip scratchpad
-        MemorySpace::NicRam | MemorySpace::RemoteHbm => 3,
-        MemorySpace::Custom(_) => 4,
+        MemorySpace::CPUDRAM => Some(AddressSpace::Host),
+        // Device global memory.
+        MemorySpace::NPUHBM | MemorySpace::GpuHbm => Some(AddressSpace::Global),
+        // On-chip scratchpad is *shared* memory, not the reserved space it used to be given.
+        MemorySpace::LocalSRAM => Some(AddressSpace::Workgroup),
+        // Network-attached memory is not addressable from a GPU kernel; there is no honest
+        // mapping, so callers must diagnose rather than silently pick one.
+        MemorySpace::NicRam | MemorySpace::RemoteHbm => None,
+        MemorySpace::Custom(_) => None,
+    }
+}
+
+/// The address space of a memory space, consulting its declaration when it is user-declared: the
+/// `scope:` facet is the source of truth (`device` => global, `sm`/`cta` => workgroup, `thread` =>
+/// private), so `Memory SMEM { scope: sm }` lands in shared without the programmer ever naming an
+/// address space, and two declared spaces at different scopes stay distinguishable.
+///
+/// `None` when no honest mapping exists -- an undeclared custom space, a declaration with no
+/// `scope:`, or a space with no GPU analogue. The caller reports that rather than defaulting,
+/// which is how every declared space used to become read-only constant memory (#258).
+pub fn declared_address_space(
+    mem: &MemorySpace,
+    decl: Option<&crate::syntax::MemoryDecl>,
+) -> Option<AddressSpace> {
+    if let Some(built_in) = builtin_address_space(mem) {
+        return Some(built_in);
+    }
+    match decl?.scope? {
+        crate::syntax::Scope::Device => Some(AddressSpace::Global),
+        crate::syntax::Scope::Sm | crate::syntax::Scope::Cta => Some(AddressSpace::Workgroup),
+        crate::syntax::Scope::Thread => Some(AddressSpace::Private),
     }
 }
 
 /// The address space for a topology, derived from its default memory space so that a value
 /// expressed as `Pinned<T, GPU>` and one as `Ref<T, GpuHbm>` land in the same address space
-/// (previously two separate maps disagreed -- GPU was 5 but GpuHbm was 1).
-pub fn topology_address_space(top: &Topology) -> i32 {
+/// (previously two separate maps disagreed -- GPU was 5 but GpuHbm was 1). `decls` supplies the
+/// compilation's memory declarations so a custom topology's space is scope-mapped (#258); `None`
+/// when the space has no honest mapping, which the caller diagnoses.
+pub fn topology_address_space(
+    top: &Topology,
+    decls: &std::collections::HashMap<MemorySpace, crate::syntax::MemoryDecl>,
+    topologies: &std::collections::HashMap<crate::symbol::Symbol, TopologyDescriptor>,
+) -> Option<AddressSpace> {
     if matches!(top, Topology::Current) {
-        return 0;
+        return Some(AddressSpace::Host);
     }
     // The topology's default memory space determines its address space. Built-ins are known
-    // statically; a custom topology maps to its like-named space (`Memory::Foo <-> Topology::Foo`,
-    // address space 4). Codegen only needs this coarse backend address space, not the
-    // per-compilation descriptor.
+    // statically; a *declared* topology names its memory (`Topology SmemDev { memory:
+    // Memory::SMEM }`), so consult its descriptor before falling back to the like-named
+    // convention (`Memory::Foo <-> Topology::Foo`) for an undeclared one.
     let space = builtin_descriptors()
         .get(&top.kind())
         .map(|d| d.default_space.clone())
+        .or_else(|| match top {
+            Topology::Custom(name) => topologies.get(name).map(|d| d.default_space.clone()),
+            _ => None,
+        })
         .unwrap_or_else(|| match top {
             Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
             _ => MemorySpace::CPUDRAM,
         });
-    memory_space_address_space(&space)
+    declared_address_space(&space, decls.get(&space))
 }
 
 /// The built-in topology descriptions, encoding what `arch.rs` previously hardcoded.
@@ -606,6 +689,101 @@ mod tests {
             None,
             Span::default(),
         ))))
+    }
+
+    fn mem_decl(name: &str, scope: Option<crate::syntax::Scope>) -> crate::syntax::MemoryDecl {
+        crate::syntax::MemoryDecl {
+            name: name.into(),
+            parent: None,
+            capacity: None,
+            bandwidth: None,
+            managed: Default::default(),
+            granule: None,
+            scope,
+            overcommit: false,
+            doc_comment: None,
+        }
+    }
+
+    /// #258: the built-in spaces map to what they *are*, not to the numbers the old table
+    /// hardcoded — on-chip scratchpad is shared memory (NVPTX 3), never the reserved space 2.
+    #[test]
+    fn builtin_spaces_map_to_correct_address_spaces() {
+        assert_eq!(
+            builtin_address_space(&MemorySpace::CPUDRAM),
+            Some(AddressSpace::Host)
+        );
+        assert_eq!(
+            builtin_address_space(&MemorySpace::GpuHbm),
+            Some(AddressSpace::Global)
+        );
+        assert_eq!(
+            builtin_address_space(&MemorySpace::NPUHBM),
+            Some(AddressSpace::Global)
+        );
+        // The headline correction: scratchpad is shared (3), not the reserved NVPTX space 2.
+        assert_eq!(
+            builtin_address_space(&MemorySpace::LocalSRAM),
+            Some(AddressSpace::Workgroup)
+        );
+        assert_eq!(AddressSpace::Workgroup.nvptx_addrspace(), 3);
+        assert_eq!(AddressSpace::Global.nvptx_addrspace(), 1);
+        assert_eq!(AddressSpace::Private.nvptx_addrspace(), 5);
+        assert_eq!(AddressSpace::Host.nvptx_addrspace(), 0);
+        // No NVPTX number is ever 4 (constant/read-only) — the space every declared memory
+        // used to collapse onto.
+        for a in [
+            AddressSpace::Host,
+            AddressSpace::Global,
+            AddressSpace::Workgroup,
+            AddressSpace::Private,
+        ] {
+            assert_ne!(a.nvptx_addrspace(), 4, "{a:?} must not be constant memory");
+        }
+        // Network memory has no GPU analogue: no silent answer.
+        assert_eq!(builtin_address_space(&MemorySpace::NicRam), None);
+        assert_eq!(builtin_address_space(&MemorySpace::RemoteHbm), None);
+    }
+
+    /// #258's more serious defect: every user-declared space used to become address space 4.
+    /// The `scope:` facet now distinguishes them, and an unscoped/undeclared one declines.
+    #[test]
+    fn declared_spaces_map_by_scope_and_decline_when_unmappable() {
+        use crate::syntax::Scope;
+        let smem = MemorySpace::Custom("SMEM".into());
+        let l2 = MemorySpace::Custom("L2".into());
+        let regs = MemorySpace::Custom("REGS".into());
+        let tmem = MemorySpace::Custom("TMEM".into());
+
+        assert_eq!(
+            declared_address_space(&smem, Some(&mem_decl("SMEM", Some(Scope::Sm)))),
+            Some(AddressSpace::Workgroup)
+        );
+        assert_eq!(
+            declared_address_space(&l2, Some(&mem_decl("L2", Some(Scope::Device)))),
+            Some(AddressSpace::Global)
+        );
+        assert_eq!(
+            declared_address_space(&regs, Some(&mem_decl("REGS", Some(Scope::Thread)))),
+            Some(AddressSpace::Private)
+        );
+        // A CTA-private space shares the workgroup space with an SM-private one.
+        assert_eq!(
+            declared_address_space(&smem, Some(&mem_decl("SMEM", Some(Scope::Cta)))),
+            Some(AddressSpace::Workgroup)
+        );
+        // SMEM (sm) and L2 (device) are distinguishable — they used to be identical.
+        assert_ne!(
+            declared_address_space(&smem, Some(&mem_decl("SMEM", Some(Scope::Sm)))),
+            declared_address_space(&l2, Some(&mem_decl("L2", Some(Scope::Device)))),
+        );
+        // No `scope:` and no declaration at all: decline, so the caller diagnoses rather than
+        // lowering stores into read-only constant memory.
+        assert_eq!(
+            declared_address_space(&tmem, Some(&mem_decl("TMEM", None))),
+            None
+        );
+        assert_eq!(declared_address_space(&tmem, None), None);
     }
 
     #[test]

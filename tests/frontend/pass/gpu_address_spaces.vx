@@ -1,0 +1,61 @@
+//===- gpu_address_spaces.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A declared memory space's `scope:` decides its target address space (#258).
+// Two declared spaces at different scopes must be *distinguishable* in the
+// memref type: before this, every declared space collapsed onto address space
+// 4 -- NVPTX constant (read-only) memory -- so an SMEM store would have lowered
+// into read-only memory and SMEM/L2 were the same type.
+//
+// Address spaces are consumed by the AST codegen path; the flat path does not
+// model them in types yet, so this pins the AST path explicitly.
+//
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KB, granule: 1 KB, managed: explicit, scope: sm
+}
+Memory L2 {
+  within: Memory::GPU_HBM, capacity: 60 MB, granule: 1 KB, managed: explicit, scope: device
+}
+Topology SmemDev {
+  memory: Memory::SMEM,
+  visible: [Memory::SMEM]
+}
+Topology L2Dev {
+  memory: Memory::L2,
+  visible: [Memory::L2]
+}
+
+// `scope: sm` is shared memory: NVPTX 3, never the old reserved 2 or constant 4.
+fn f_smem(p : Tensor<f32, [4, 4], Topology::SmemDev>) -> i32 {
+  return 0;
+}
+
+// `scope: device` is global memory: NVPTX 1, distinct from the SM-scoped space.
+fn f_l2(p : Tensor<f32, [4, 4], Topology::L2Dev>) -> i32 {
+  return 0;
+}
+
+// Built-in device memory stays global.
+fn f_gpu(p : Tensor<f32, [4, 4], Topology::GPU>) -> i32 {
+  return 0;
+}
+
+// The built-in on-chip scratchpad is shared (3), not the reserved space it used to get.
+fn f_acc(p : Tensor<f32, [4, 4], Topology::AccCore[0]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: func.func @f_smem(%arg0: memref<4x4xf32, 3>)
+// CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1>)
+// CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1>)
+// CHECK-DAG: func.func @f_acc(%arg0: memref<4x4xf32, 3>)

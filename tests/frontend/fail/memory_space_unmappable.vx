@@ -1,0 +1,33 @@
+//===- memory_space_unmappable.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A declared space with no `scope:` has no honest target address space. It must
+// be reported, not silently lowered into NVPTX address space 4 -- constant,
+// read-only memory -- which is what every declared space used to get (#258).
+// TMEM is the motivating case: Blackwell tensor memory has no plain GPU
+// analogue, so it needs an explicit decision rather than a default.
+//
+// RUN: not vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+
+Memory TMEM {
+  within: Memory::GPU_HBM, capacity: 256 KB, granule: 16 KB, managed: explicit
+}
+Topology TmemDev {
+  memory: Memory::TMEM,
+  visible: [Memory::TMEM]
+}
+
+fn f_tmem(p : Tensor<f32, [4, 4], Topology::TmemDev>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: no memory space that maps to this target's address spaces
+// CHECK-SAME: declare its memory with a `scope:`

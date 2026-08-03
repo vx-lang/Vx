@@ -31,6 +31,10 @@ pub struct MeliorGenerator<'c> {
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
+    /// Declared topologies by name, so a `Pinned`/tensor value on a declared topology resolves the
+    /// memory that topology actually names (`Topology SmemDev { memory: Memory::SMEM }`) when
+    /// picking its address space, instead of guessing a like-named space (#258).
+    pub(crate) topologies: HashMap<crate::symbol::Symbol, crate::arch::TopologyDescriptor>,
     /// Next free byte per granule'd sub-space — a bump allocator that assigns each tile a
     /// granule-rounded `offset` within its sub-space (SS2). Reset at each function boundary, since
     /// a sub-space (e.g. per-SM SMEM) is reused across kernels.
@@ -536,6 +540,7 @@ impl<'c> MeliorGenerator<'c> {
             env: HashMap::new(),
             ast_env: HashMap::new(),
             memories: HashMap::new(),
+            topologies: HashMap::new(),
             subspace_offsets: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
@@ -631,6 +636,9 @@ impl<'c> MeliorGenerator<'c> {
         for m in &program.memories {
             self.memories
                 .insert(syntax::MemorySpace::from_name(m.name.as_ref()), m.clone());
+        }
+        for t in &program.topologies {
+            self.topologies.insert(t.name.clone(), t.descriptor.clone());
         }
         for module in modules.values() {
             for s in &module.structs {
@@ -1188,10 +1196,15 @@ impl<'c> MeliorGenerator<'c> {
                 if inner_str.starts_with("memref<") {
                     format!("memref<{}>", inner_str)
                 } else {
-                    let addr_space = mem
-                        .as_ref()
-                        .map_or(0, crate::arch::memory_space_address_space);
-                    format!("!llvm.ptr<{}>", addr_space)
+                    // A space with no honest target mapping (an undeclared custom space, or one
+                    // whose declaration gives no `scope:`) is an error, not a silent fallback --
+                    // the old code answered "4", NVPTX read-only constant memory (#258).
+                    let addr_space = match mem.as_ref() {
+                        None => crate::arch::AddressSpace::Host,
+                        Some(m) => crate::arch::declared_address_space(m, self.memories.get(m))
+                            .ok_or_else(|| LowerError::from(unmappable_space_message(m)))?,
+                    };
+                    format!("!llvm.ptr<{}>", addr_space.nvptx_addrspace())
                 }
             }
             syntax::Type::Struct(name, _) => {
@@ -1537,11 +1550,28 @@ impl<'c> MeliorGenerator<'c> {
         }
 
         // Address space follows the topology's default memory space (single source of truth
-        // in `arch`), so on-`Topology` and in-`MemorySpace` values of one buffer agree.
-        let addr_space = top.as_ref().map_or(0, crate::arch::topology_address_space);
+        // in `arch`), so on-`Topology` and in-`MemorySpace` values of one buffer agree. A
+        // topology whose memory has no honest target mapping is an error rather than a silent
+        // fallback to constant memory (#258).
+        let addr_space = match top.as_ref() {
+            None => crate::arch::AddressSpace::Host,
+            Some(t) => crate::arch::topology_address_space(t, &self.memories, &self.topologies)
+                .ok_or_else(|| {
+                    LowerError::from(format!(
+                    "topology '{}' has no memory space that maps to this target's address spaces; \
+                     declare its memory with a `scope:` (device/sm/cta/thread)",
+                    t.display_name()
+                ))
+                })?,
+        };
 
-        let memref_str = if addr_space != 0 {
-            format!("memref<{}{}, {}>", shape_str, ty_str, addr_space)
+        let memref_str = if addr_space != crate::arch::AddressSpace::Host {
+            format!(
+                "memref<{}{}, {}>",
+                shape_str,
+                ty_str,
+                addr_space.nvptx_addrspace()
+            )
         } else {
             format!("memref<{}{}>", shape_str, ty_str)
         };
@@ -1706,4 +1736,16 @@ impl<'c> MeliorGenerator<'c> {
             }
         }
     }
+}
+
+/// The diagnostic for a memory space that cannot be mapped to a target address space: an
+/// undeclared custom space, or a declaration carrying no `scope:`. Reported instead of silently
+/// lowering into NVPTX constant (read-only) memory, which is what every declared space used to
+/// get (#258).
+fn unmappable_space_message(mem: &syntax::MemorySpace) -> String {
+    format!(
+        "memory space '{}' has no address space on this target; declare it with a `scope:` \
+         (device/sm/cta/thread) so it maps to global/shared/private memory",
+        mem.name()
+    )
 }
