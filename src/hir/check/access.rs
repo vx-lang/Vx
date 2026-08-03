@@ -346,13 +346,14 @@ impl<'a> TypeChecker<'a> {
                         _ => None,
                     };
                     if let Some(name) = imported_name {
+                        // Resolved through the GID the type carries (else the unambiguous bare
+                        // name), so two artifacts' same-named structs can't cross wires (#291).
                         // Clone out so the registry borrow ends before `self.errors` is touched.
                         let imported = self
                             .worker
                             .global
                             .registry
-                            .structs
-                            .get(&name)
+                            .struct_fields_of(&base_ty)
                             .map(|sf| (sf.generics.clone(), sf.fields.clone()));
                         if let Some((generics, fields)) = imported {
                             if let Type::GenericInstance(_, args) = &base_ty {
@@ -387,12 +388,18 @@ impl<'a> TypeChecker<'a> {
                         actual_struct_name, member
                     ));
                 } else if let Type::Struct(struct_name, _) = &base_ty {
-                    self.errors
-                        .push(format!("Unknown struct '{}' (expr.rs:1481)", struct_name));
+                    self.errors.push(unknown_struct_message(
+                        &self.worker.global.registry,
+                        struct_name,
+                        "expr.rs:1481",
+                    ));
                 } else if let Type::GenericInstance(inner, _) = &base_ty {
                     if let Type::Struct(struct_name, _) = &**inner {
-                        self.errors
-                            .push(format!("Unknown struct '{}' (expr.rs:1485)", struct_name));
+                        self.errors.push(unknown_struct_message(
+                            &self.worker.global.registry,
+                            struct_name,
+                            "expr.rs:1485",
+                        ));
                     }
                 } else if let Type::Module(ref path, ref exports) = base_ty {
                     if let Some(exported_ty) = exports.get(member) {
@@ -799,5 +806,24 @@ impl<'a> TypeChecker<'a> {
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
+    }
+}
+
+/// The member-access "unknown struct" message, upgraded when the name is *ambiguous* rather than
+/// absent: two imported modules both defining it used to resolve by merge order before the bare
+/// name learned to decline, and "unknown" would send the user hunting the wrong bug (#291).
+fn unknown_struct_message(
+    registry: &crate::registry::ImmutableGlobalRegistry,
+    struct_name: &crate::symbol::Symbol,
+    site: &str,
+) -> String {
+    if registry.is_ambiguous_nominal(struct_name) {
+        format!(
+            "Struct '{}' is defined in more than one imported module; the bare name cannot \
+             resolve to a unique type",
+            struct_name
+        )
+    } else {
+        format!("Unknown struct '{}' ({})", struct_name, site)
     }
 }

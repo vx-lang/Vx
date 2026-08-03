@@ -952,8 +952,11 @@ impl<'r> Lowerer<'r> {
             Expr::Number(n) => Some(Type::Scalar(number_elem(n)?)),
             Expr::MemberAccess(m) => {
                 let base_ty = self.infer_ast_type(&m.base)?;
-                let (base_name, args) = nominal_name_and_args(deref_to_pointee(&base_ty))?;
-                let decl = self.registry.structs.get(&base_name)?;
+                let pointee = deref_to_pointee(&base_ty);
+                let (_base_name, args) = nominal_name_and_args(pointee)?;
+                // GID-routed since #291 (attached GID, else unambiguous bare name) — an ambiguous
+                // name declines here, keeping the AST path the oracle.
+                let decl = self.registry.struct_fields_of(pointee)?;
                 let (_, fty) = decl
                     .fields
                     .iter()

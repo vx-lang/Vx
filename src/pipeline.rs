@@ -416,14 +416,19 @@ pub fn build_frozen_registry(
         }
     }
 
-    // Base struct field types, keyed by name, so the flat path can substitute a monomorphized
-    // instance's type arguments into a generic field type and recover a pointer field's pointee
-    // (`Vec<i32>`'s `data : *mut T` -> `*mut i32`) — the field AST types the frozen `layouts` erase
-    // to `Opaque`. Mirrors the AST codegen's name-keyed `gen.structs` (#242).
+    // Base struct field types, keyed by the struct's GID (#291), so the flat path can substitute a
+    // monomorphized instance's type arguments into a generic field type and recover a pointer
+    // field's pointee (`Vec<i32>`'s `data : *mut T` -> `*mut i32`) — the field AST types the frozen
+    // `layouts` erase to `Opaque`. The GID key keeps two modules' same-named structs distinct;
+    // consumers resolve a bare name through `struct_fields_of` (#242).
     for module in modules {
+        let mod_syms = symbol_map.get(&module.module_path);
         for s in &module.structs {
+            let Some(&gid) = mod_syms.and_then(|m| m.get(&s.name)) else {
+                continue;
+            };
             registry.structs.insert(
-                s.name.clone(),
+                gid,
                 crate::registry::StructFields {
                     generics: s.generics.iter().map(|g| g.name().into()).collect(),
                     fields: s.fields.clone(),

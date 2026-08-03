@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 use petgraph::algo::toposort;
 use petgraph::graph::DiGraph;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gid::TypeId;
 
@@ -38,7 +38,7 @@ pub struct TypeDefinition {
 /// identify the callee and type the result -- from the frozen registry it already holds, without a
 /// name->AST walk (#198); and lets the borrow checker reborrow-track and provenance-refine an
 /// *imported* call whose AST is absent (#265 step 7).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FnSig {
     pub gid: TypeId,
     /// Parameter types in declaration order. The borrow checker needs each parameter's reference-ness
@@ -58,9 +58,9 @@ pub struct FnSig {
 /// substituting the instance's type arguments into the base struct's declared field types. The
 /// frozen `layouts` deliberately erase a pointer field's pointee (every pointer is `FieldTy::Opaque`,
 /// pointer-sized), so this carries the AST field `Type`s the substitution needs — the flat-path
-/// analogue of the AST codegen's `gen.structs`. Keyed by the *base* struct name (the display name a
-/// monomorphized instance renders to, e.g. `Vec`). (#242)
-#[derive(Debug, Clone)]
+/// analogue of the AST codegen's `gen.structs`. Keyed by the *base* struct's GID (`Vec<i32>`'s entry
+/// sits under `Vec`'s TypeId), so two modules' same-named structs never collide (#291). (#242)
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructFields {
     /// Generic parameter names in declaration order (`[T]` for `Vec<T>`) — the substitution keys.
     pub generics: Vec<crate::symbol::Symbol>,
@@ -125,9 +125,11 @@ pub struct ImmutableGlobalRegistry {
     /// AST type — the field `Type`s the frozen `layouts` erase (a pointer field becomes `Opaque`).
     /// The flat path substitutes a monomorphized instance's type arguments into these to recover a
     /// pointer field's pointee (`self.data : *mut T` → `*mut i32`), mirroring the AST codegen's
-    /// `gen.structs`. Populated by `build_frozen_registry`; empty when deserialized from a `.vxlib`
-    /// (a pointer-field aggregate then declines to the AST path). (#242)
-    pub structs: FxHashMap<crate::symbol::Symbol, StructFields>,
+    /// `gen.structs`. Keyed by the base struct's GID — not its name — so two artifacts' same-named
+    /// structs occupy distinct entries and the merge stays order-independent (#291). Resolve a bare
+    /// name through `struct_fields_of` / `resolve_unique_nominal`. Populated by
+    /// `build_frozen_registry` and when deserialized from a `.vxlib` (#219/#242).
+    pub structs: FxHashMap<TypeId, StructFields>,
     /// Data-carrying (tagged-union) enum declarations keyed by name, carrying each variant's *declared*
     /// (possibly generic) payload types + the enum's generic parameters. A monomorphized instance
     /// (`Option<i32>`) has an instance-dependent layout (`{ i32 tag, i32 payload }`) that the frozen
@@ -135,6 +137,55 @@ pub struct ImmutableGlobalRegistry {
     /// arguments into these to synthesize the concrete `{ tag, payload }` aggregate — the tagged-union
     /// analogue of `structs`. Populated by `build_frozen_registry`; empty when deserialized. (#242)
     pub enum_data: FxHashMap<crate::symbol::Symbol, EnumData>,
+    /// Book-keeping for `merge_from`'s name-keyed tables: which keys came from an imported
+    /// interface (own entries always win over imports) and which are poisoned by an
+    /// import-vs-import conflict (the name then resolves in *neither* artifact, whatever order
+    /// they merged in). Merge-session state only — never serialized (#291).
+    pub merge_state: MergeState,
+}
+
+/// See [`ImmutableGlobalRegistry::merge_state`].
+#[derive(Debug, Default)]
+pub struct MergeState {
+    pub imported_fns: FxHashSet<crate::symbol::Symbol>,
+    pub poisoned_fns: FxHashSet<crate::symbol::Symbol>,
+    pub imported_methods: FxHashSet<(TypeId, crate::symbol::Symbol)>,
+    pub poisoned_methods: FxHashSet<(TypeId, crate::symbol::Symbol)>,
+    pub imported_enums: FxHashSet<crate::symbol::Symbol>,
+    pub poisoned_enums: FxHashSet<crate::symbol::Symbol>,
+}
+
+/// Merge one *imported* name-keyed table into `dst`. An entry this compile built itself (present
+/// in `dst` but not in `imported`) always wins. Among imports, a key bound to two *different*
+/// values is ambiguous: the entry is removed and tombstoned in `poisoned`, so the merged result
+/// is the same whatever order the artifacts arrive in — never silent first-wins (#291).
+fn merge_imported_table<K, V>(
+    dst: &mut FxHashMap<K, V>,
+    imported: &mut FxHashSet<K>,
+    poisoned: &mut FxHashSet<K>,
+    src: FxHashMap<K, V>,
+) where
+    K: std::hash::Hash + Eq + Clone,
+    V: PartialEq,
+{
+    for (k, v) in src {
+        if poisoned.contains(&k) {
+            continue;
+        }
+        match dst.get(&k) {
+            Some(_) if !imported.contains(&k) => {} // this compile's own entry wins
+            Some(existing) if *existing != v => {
+                dst.remove(&k);
+                imported.remove(&k);
+                poisoned.insert(k);
+            }
+            Some(_) => {} // identical re-listing is a no-op
+            None => {
+                imported.insert(k.clone());
+                dst.insert(k, v);
+            }
+        }
+    }
 }
 
 impl ImmutableGlobalRegistry {
@@ -220,6 +271,7 @@ impl ImmutableGlobalRegistry {
             enum_variants: FxHashMap::default(),
             structs: FxHashMap::default(),
             enum_data: FxHashMap::default(),
+            merge_state: MergeState::default(),
         })
     }
 
@@ -258,9 +310,16 @@ impl ImmutableGlobalRegistry {
     /// Fold a precompiled module interface (deserialized from a `.vxlib`) into this registry, so a
     /// downstream compile resolves the imported module's types / functions / bodies without its AST
     /// (#220). `self`'s own entries win on any key collision -- the imported interface *fills in* the
-    /// symbols the current compilation didn't build. GIDs are content-addressed, so an identical type
-    /// re-listed is a harmless no-op; a genuine conflict would already have been caught by the freeze's
-    /// collision guard.
+    /// symbols the current compilation didn't build.
+    ///
+    /// The GID-keyed tables (`layouts`, `bodies`, `structs`, `module_indices`' inner maps) are
+    /// content-addressed: an identical entry re-listed is a harmless no-op, and a genuine GID
+    /// conflict would already have been caught by the freeze's collision guard. That argument does
+    /// NOT extend to the *name*-keyed tables (`fn_sigs`, `methods`, `enum_variants`): two artifacts
+    /// can bind the same name to different definitions, and no key discipline prevents it. Such an
+    /// import-vs-import conflict is *poisoned* -- the name then resolves in neither artifact,
+    /// mirroring `build_frozen_registry`'s intra-build ambiguity policy -- so the merged registry
+    /// is identical whatever order the artifacts arrive in, never silent first-wins (#291).
     pub fn merge_from(&mut self, other: ImmutableGlobalRegistry) {
         for (id, def) in other.layouts {
             self.layouts.entry(id).or_insert(def);
@@ -271,23 +330,69 @@ impl ImmutableGlobalRegistry {
                 dst.entry(name).or_insert(gid);
             }
         }
-        for (name, sig) in other.fn_sigs {
-            self.fn_sigs.entry(name).or_insert(sig);
-        }
-        for (key, sig) in other.methods {
-            self.methods.entry(key).or_insert(sig);
-        }
+        merge_imported_table(
+            &mut self.fn_sigs,
+            &mut self.merge_state.imported_fns,
+            &mut self.merge_state.poisoned_fns,
+            other.fn_sigs,
+        );
+        merge_imported_table(
+            &mut self.methods,
+            &mut self.merge_state.imported_methods,
+            &mut self.merge_state.poisoned_methods,
+            other.methods,
+        );
         for (gid, body) in other.bodies {
             self.bodies.entry(gid).or_insert(body);
         }
-        for (name, variants) in other.enum_variants {
-            self.enum_variants.entry(name).or_insert(variants);
+        merge_imported_table(
+            &mut self.enum_variants,
+            &mut self.merge_state.imported_enums,
+            &mut self.merge_state.poisoned_enums,
+            other.enum_variants,
+        );
+        // Imported structs' declared field types, GID-keyed (#291), so member access on an
+        // imported struct resolves from the registry with no AST (#219).
+        for (gid, fields) in other.structs {
+            self.structs.entry(gid).or_insert(fields);
         }
-        // Imported structs' declared field types, so member access on an imported struct resolves
-        // from the registry with no AST (#219).
-        for (name, fields) in other.structs {
-            self.structs.entry(name).or_insert(fields);
+    }
+
+    /// Whether `name` is defined in more than one module with *distinct* GIDs — exactly the case
+    /// `resolve_unique_nominal` declines. Lets a diagnostic report "ambiguous across imported
+    /// modules" instead of a misleading "unknown struct" when two artifacts both define the name
+    /// (#291).
+    pub fn is_ambiguous_nominal(&self, name: &crate::symbol::Symbol) -> bool {
+        let mut found: Option<TypeId> = None;
+        for by_name in self.module_indices.values() {
+            if let Some(&gid) = by_name.get(name) {
+                match found {
+                    Some(existing) if existing != gid => return true,
+                    _ => found = Some(gid),
+                }
+            }
         }
+        false
+    }
+
+    /// The declared field types of the (base) struct a `Type` names: through the GID the type
+    /// carries when resolution attached one (`Struct(_, Some(gid))`, possibly under a
+    /// `GenericInstance`), else through the *unambiguous* bare name (`resolve_unique_nominal`).
+    /// `None` when the type is not a nominal struct form, the bare name is defined in several
+    /// modules with distinct GIDs, or the registry has no entry -- the caller declines rather than
+    /// guessing between same-named structs (#291).
+    pub fn struct_fields_of(&self, ty: &crate::syntax::Type) -> Option<&StructFields> {
+        use crate::syntax::Type;
+        let (name, attached) = match ty {
+            Type::Struct(n, id) => (n, *id),
+            Type::GenericInstance(base, _) => match &**base {
+                Type::Struct(n, id) => (n, *id),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let gid = attached.or_else(|| self.resolve_unique_nominal(name))?;
+        self.structs.get(&gid)
     }
 }
 
@@ -496,5 +601,126 @@ mod tests {
             None,
             "absent symbol -> None"
         );
+    }
+
+    fn sig(w0: u64, w1: u64) -> FnSig {
+        FnSig {
+            gid: TypeId::new(w0, w1, 0, 0),
+            params: Vec::new(),
+            ret_ty: crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
+            ret_prov: 0,
+        }
+    }
+
+    fn point_fields(field_names: &[&str]) -> StructFields {
+        StructFields {
+            generics: Vec::new(),
+            fields: field_names
+                .iter()
+                .map(|f| {
+                    (
+                        crate::symbol::Symbol::from(*f),
+                        crate::syntax::Type::Scalar(crate::syntax::types::ElementType::I32),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// One artifact's registry for the merge tests: module `module` defines a struct `Point`
+    /// (module-distinct GID + field list) and the free functions in `fns`.
+    fn interface(
+        module: u64,
+        point_fields_list: &[&str],
+        fns: &[(&str, u64)],
+    ) -> ImmutableGlobalRegistry {
+        let def = make_def("Point", module, 100, vec![]);
+        let gid = def.id;
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![def]).unwrap();
+        reg.structs.insert(gid, point_fields(point_fields_list));
+        for (name, w1) in fns {
+            reg.fn_sigs
+                .insert(crate::symbol::Symbol::from(*name), sig(module, *w1));
+        }
+        reg
+    }
+
+    /// The #291 acceptance property: merging the same set of artifacts must produce the same
+    /// registry whatever order they arrive in, and an import-vs-import name conflict must be
+    /// poisoned (resolves in neither artifact), never silent first-wins.
+    #[test]
+    fn merge_is_order_independent_and_poisons_name_conflicts() {
+        let build = |order_ab: bool| {
+            let a = interface(1, &["x"], &[("helper", 10), ("only_a", 11)]);
+            let b = interface(2, &["x", "y"], &[("helper", 10), ("only_b", 12)]);
+            let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+            if order_ab {
+                reg.merge_from(a);
+                reg.merge_from(b);
+            } else {
+                reg.merge_from(b);
+                reg.merge_from(a);
+            }
+            reg
+        };
+        for order_ab in [true, false] {
+            let reg = build(order_ab);
+            // Both same-named structs coexist under their own GIDs.
+            assert_eq!(reg.structs.len(), 2, "order_ab={order_ab}");
+            let gid_a = TypeId::new(1, 100, 0, 0);
+            let gid_b = TypeId::new(2, 100, 0, 0);
+            assert_eq!(reg.structs.get(&gid_a).unwrap().fields.len(), 1);
+            assert_eq!(reg.structs.get(&gid_b).unwrap().fields.len(), 2);
+            // A GID-annotated type resolves to *its* module's fields; the ambiguous bare name
+            // declines rather than picking one.
+            let ty_b =
+                crate::syntax::Type::Struct(crate::symbol::Symbol::from("Point"), Some(gid_b));
+            assert_eq!(reg.struct_fields_of(&ty_b).unwrap().fields.len(), 2);
+            let ty_bare = crate::syntax::Type::Struct(crate::symbol::Symbol::from("Point"), None);
+            assert!(
+                reg.struct_fields_of(&ty_bare).is_none(),
+                "ambiguous bare name declines"
+            );
+            // `helper` is bound to different GIDs by the two artifacts: poisoned in both orders.
+            assert!(
+                !reg.fn_sigs
+                    .contains_key(&crate::symbol::Symbol::from("helper")),
+                "conflicting fn name is poisoned, order_ab={order_ab}"
+            );
+            assert!(reg
+                .fn_sigs
+                .contains_key(&crate::symbol::Symbol::from("only_a")));
+            assert!(reg
+                .fn_sigs
+                .contains_key(&crate::symbol::Symbol::from("only_b")));
+        }
+    }
+
+    /// This compile's own `fn_sigs` entries always win over an imported same-name signature —
+    /// locals shadow imports — and are never poisoned by one (#291).
+    #[test]
+    fn merge_keeps_own_entries_over_imported_conflicts() {
+        let mut own = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        own.fn_sigs
+            .insert(crate::symbol::Symbol::from("helper"), sig(9, 10));
+        own.merge_from(interface(1, &["x"], &[("helper", 10)]));
+        own.merge_from(interface(2, &["x", "y"], &[("helper", 10)]));
+        let kept = own
+            .fn_sigs
+            .get(&crate::symbol::Symbol::from("helper"))
+            .expect("own entry survives both imports");
+        assert_eq!(kept.gid, TypeId::new(9, 10, 0, 0));
+    }
+
+    /// Re-merging the same artifact (identical entries) is a no-op, not a conflict.
+    #[test]
+    fn merge_tolerates_identical_relisting() {
+        let mut reg = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        reg.merge_from(interface(1, &["x"], &[("helper", 10)]));
+        reg.merge_from(interface(1, &["x"], &[("helper", 10)]));
+        assert!(reg
+            .fn_sigs
+            .contains_key(&crate::symbol::Symbol::from("helper")));
+        assert_eq!(reg.structs.len(), 1);
     }
 }

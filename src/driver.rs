@@ -296,9 +296,15 @@ impl CompilerDriver {
         if let Err(e) = loader.load_main(filename) {
             return Err(format!("Frontend failed to parse '{}': {}", filename, e));
         }
-        let auto_interfaces: Vec<Vec<u8>> = std::mem::take(&mut loader.loaded_interfaces)
-            .into_values()
-            .collect();
+        // Sorted by module name: `merge_from` is order-independent since #291, but a deterministic
+        // merge order additionally keeps diagnostics and artifacts byte-stable across runs (the
+        // `HashMap` iteration order here used to decide name collisions by coin flip).
+        let mut auto: Vec<(crate::symbol::Symbol, Vec<u8>)> =
+            std::mem::take(&mut loader.loaded_interfaces)
+                .into_iter()
+                .collect();
+        auto.sort_by(|a, b| a.0.cmp(&b.0));
+        let auto_interfaces: Vec<Vec<u8>> = auto.into_iter().map(|(_, b)| b).collect();
         let mut program_arr = loader.into_programs();
 
         let mut global_macros = std::collections::HashMap::new();
@@ -339,8 +345,12 @@ impl CompilerDriver {
             crate::metadata::deserialize_registry_interface(b)
                 .map_err(|e| format!("Failed to load module interface: {}", e))
         };
-        let mut reg = load(&interfaces[0])?;
-        for bytes in &interfaces[1..] {
+        // Start empty and merge *every* interface as an import: seeding the registry with the
+        // first artifact would privilege its entries as "own" in `merge_from`'s conflict policy,
+        // silently first-winning name collisions instead of poisoning them (#291).
+        let mut reg = crate::registry::ImmutableGlobalRegistry::build_and_validate(Vec::new())
+            .map_err(|e| format!("Failed to build registry: {}", e))?;
+        for bytes in interfaces {
             reg.merge_from(load(bytes)?);
         }
         Ok(std::sync::Arc::new(GlobalSession::with_registry(1, reg)))

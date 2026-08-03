@@ -502,8 +502,9 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
             continue; // unmodelled stub, or an enum/field-less type (no struct body to emit)
         }
         // The declared field types (with generic pointees intact) for pointee resolution; the frozen
-        // `layouts` erase them to `Opaque`.
-        let decl_fields = registry.structs.get(def.name.as_str());
+        // `layouts` erase them to `Opaque`. GID-keyed since #291 — this loop iterates `layouts`, so
+        // the definition's own GID is the key.
+        let decl_fields = registry.structs.get(gid);
         let mut field_tys = Vec::with_capacity(def.fields.len());
         let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());

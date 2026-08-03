@@ -292,17 +292,19 @@ impl<'a> TypeChecker<'a> {
                             })
                     })
                     .or_else(|| {
-                        self.worker
-                            .global
-                            .registry
-                            .structs
-                            .get(&base_name)
-                            .map(|sf| {
-                                (
-                                    sf.generics.iter().map(|g| g.to_string()).collect(),
-                                    sf.fields.clone(),
-                                )
-                            })
+                        // GID-keyed since #291: resolve the base name to its unique GID (the
+                        // instance-annotation `resolved_gid` when it was computed, else a fresh
+                        // bare-name resolution for a generic instance's base). An ambiguous name
+                        // declines to "unknown struct" rather than picking an arbitrary module's.
+                        let reg = &self.worker.global.registry;
+                        let gid =
+                            resolved_gid.or_else(|| reg.resolve_unique_nominal(&base_name))?;
+                        reg.structs.get(&gid).map(|sf| {
+                            (
+                                sf.generics.iter().map(|g| g.to_string()).collect(),
+                                sf.fields.clone(),
+                            )
+                        })
                     });
 
                 if let Some((generic_names, struct_fields)) = struct_info {
@@ -352,8 +354,19 @@ impl<'a> TypeChecker<'a> {
                     }
                 } else {
                     if !self.speculating {
-                        self.errors
-                            .push(format!("Unknown struct {} (expr.rs:2175)", resolved_name));
+                        // Distinguish "no such struct" from "two imported modules both define it":
+                        // the latter used to resolve by coin flip before the bare name learned to
+                        // decline, and "unknown" would send the user hunting the wrong bug (#291).
+                        if self.worker.global.registry.is_ambiguous_nominal(&base_name) {
+                            self.errors.push(format!(
+                                "Struct '{}' is defined in more than one imported module; the bare \
+                                 name cannot resolve to a unique type",
+                                resolved_name
+                            ));
+                        } else {
+                            self.errors
+                                .push(format!("Unknown struct {} (expr.rs:2175)", resolved_name));
+                        }
                     }
                     for (_, f_expr) in fields.iter_mut() {
                         self.check_expr_type_flag(f_expr, consume);

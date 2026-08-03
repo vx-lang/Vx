@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v5";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v6";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -809,12 +809,13 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
 
     // structs: each struct's declared (un-erased) field AST `Type`s + generic parameters (#219) — the
     // `StructFields` a downstream compile needs to type member access on an imported struct without
-    // its AST. Sorted by name; a struct with an un-encodable field type is skipped (fail-closed).
-    let mut structs: Vec<(&Symbol, &StructFields)> = reg.structs.iter().collect();
-    structs.sort_by(|a, b| a.0.cmp(b.0));
+    // its AST. Keyed by the struct's GID (#291), sorted by GID words; a struct with an un-encodable
+    // field type is skipped (fail-closed).
+    let mut structs: Vec<(&TypeId, &StructFields)> = reg.structs.iter().collect();
+    structs.sort_by_key(|(g, _)| g.words);
     let mut sub = Writer::new();
     let mut n = 0u64;
-    for (name, sf) in structs {
+    for (gid, sf) in structs {
         let mut rec = Writer::new();
         rec.u64(sf.generics.len() as u64);
         for g in &sf.generics {
@@ -830,7 +831,7 @@ pub fn serialize_registry_interface(reg: &ImmutableGlobalRegistry) -> Vec<u8> {
             }
         }
         if ok {
-            sub.sym(name);
+            sub.typeid(gid);
             sub.buf.extend_from_slice(&rec.buf);
             n += 1;
         }
@@ -919,12 +920,12 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         bodies.insert(gid, body);
     }
 
-    // structs: declared field AST types + generics, so imported struct member access types the same
-    // as a local struct (#219). Mirrors the serializer's per-struct record.
-    let mut structs: FxHashMap<Symbol, StructFields> = FxHashMap::default();
+    // structs: declared field AST types + generics, GID-keyed (#291), so imported struct member
+    // access types the same as a local struct (#219). Mirrors the serializer's per-struct record.
+    let mut structs: FxHashMap<TypeId, StructFields> = FxHashMap::default();
     let n_structs = r.u64()?;
     for _ in 0..n_structs {
-        let name = r.sym()?;
+        let gid = r.typeid()?;
         let n_generics = r.u64()? as usize;
         let mut generics = Vec::new();
         for _ in 0..n_generics {
@@ -937,7 +938,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
             let fty = read_type(&mut r)?;
             fields.push((fname, fty));
         }
-        structs.insert(name, StructFields { generics, fields });
+        structs.insert(gid, StructFields { generics, fields });
     }
 
     Ok(ImmutableGlobalRegistry {
@@ -953,6 +954,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
         // monomorphized imported enum then falls back to the AST path (#242).
         enum_data: FxHashMap::default(),
+        merge_state: Default::default(),
     })
 }
 
@@ -1096,21 +1098,24 @@ mod tests {
         // type member access on an imported struct (#219).
         assert!(!reg.structs.is_empty());
         assert_eq!(reg.structs.len(), round.structs.len());
-        for (name, sf) in &reg.structs {
-            let got = round.structs.get(name).expect("struct round-trips");
+        for (gid, sf) in &reg.structs {
+            let got = round.structs.get(gid).expect("struct round-trips");
             assert_eq!(
                 got.generics, sf.generics,
-                "struct generics parity for {name}"
+                "struct generics parity for {gid:?}"
             );
-            assert_eq!(got.fields, sf.fields, "struct field-type parity for {name}");
+            assert_eq!(
+                got.fields, sf.fields,
+                "struct field-type parity for {gid:?}"
+            );
         }
         // `Point.x` specifically survives with its exact declared type — the field an imported `p.x`
-        // reads back from the interface.
-        let point = round
-            .structs
-            .get(&Symbol::from("Point"))
-            .expect("Point round-trips");
-        let point_orig = reg.structs.get(&Symbol::from("Point")).unwrap();
+        // reads back from the interface. The table is GID-keyed (#291), so resolve the name first.
+        let point_gid = round
+            .resolve_unique_nominal(&Symbol::from("Point"))
+            .expect("Point resolves to its GID");
+        let point = round.structs.get(&point_gid).expect("Point round-trips");
+        let point_orig = reg.structs.get(&point_gid).unwrap();
         assert_eq!(point.fields[0].0, Symbol::from("x"));
         assert_eq!(
             point.fields[0], point_orig.fields[0],
