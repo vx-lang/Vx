@@ -128,6 +128,8 @@ pub enum ElementType {
     F32,
     F64,
     BF16,
+    F8E4M3,
+    F8E5M2,
     I4,
     U4,
     I8,
@@ -279,11 +281,16 @@ impl Type {
 }
 
 impl ElementType {
-    /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`).
+    /// Whether this is a floating-point element type (`f16`/`f32`/`f64`/`bf16`/`f8e4m3`/`f8e5m2`).
     pub fn is_float(&self) -> bool {
         matches!(
             self,
-            ElementType::F16 | ElementType::F32 | ElementType::F64 | ElementType::BF16
+            ElementType::F16
+                | ElementType::F32
+                | ElementType::F64
+                | ElementType::BF16
+                | ElementType::F8E4M3
+                | ElementType::F8E5M2
         )
     }
 
@@ -297,7 +304,7 @@ impl ElementType {
         Some(match self {
             ElementType::Bool => 1,
             ElementType::I4 | ElementType::U4 => 4,
-            ElementType::I8 | ElementType::U8 => 8,
+            ElementType::I8 | ElementType::U8 | ElementType::F8E4M3 | ElementType::F8E5M2 => 8,
             ElementType::F16 | ElementType::BF16 | ElementType::I16 | ElementType::U16 => 16,
             ElementType::F32 | ElementType::I32 | ElementType::U32 => 32,
             ElementType::F64 | ElementType::I64 | ElementType::U64 => 64,
@@ -314,6 +321,8 @@ impl std::fmt::Display for ElementType {
             ElementType::F32 => write!(f, "f32"),
             ElementType::F64 => write!(f, "f64"),
             ElementType::BF16 => write!(f, "bf16"),
+            ElementType::F8E4M3 => write!(f, "f8e4m3"),
+            ElementType::F8E5M2 => write!(f, "f8e5m2"),
             ElementType::I4 => write!(f, "i4"),
             ElementType::U4 => write!(f, "u4"),
             ElementType::I8 => write!(f, "i8"),
@@ -341,6 +350,8 @@ impl std::str::FromStr for ElementType {
             "f32" => Ok(ElementType::F32),
             "f64" => Ok(ElementType::F64),
             "bf16" => Ok(ElementType::BF16),
+            "f8e4m3" => Ok(ElementType::F8E4M3),
+            "f8e5m2" => Ok(ElementType::F8E5M2),
             "i4" => Ok(ElementType::I4),
             "u4" => Ok(ElementType::U4),
             "i8" => Ok(ElementType::I8),

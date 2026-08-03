@@ -3135,6 +3135,9 @@ fn element_mlir(e: &ElementType) -> Option<&'static str> {
         I128 | U128 => "i128",
         I4 | U4 => "i4",
         Bool => "i1",
+        // fp8 is capacity/declaration-only for now: the JIT has no fp8 arithmetic,
+        // so the flat path declines. Compute support is #249.
+        F8E4M3 | F8E5M2 => return None,
         Generic(_) => return None,
     })
 }

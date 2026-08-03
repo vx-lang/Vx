@@ -455,6 +455,16 @@ mod tests {
             static_tensor_bytes(&ElementType::Bool, &[dim("3")]),
             Some(1)
         );
+        // 64x64 f8e4m3 = 4096 elems * 8 bits = 4096 bytes (fp8 stores like i8).
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F8E4M3, &[dim("64"), dim("64")]),
+            Some(4096)
+        );
+        // f8e5m2 has the same storage width; the variants differ only in exponent/mantissa split.
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F8E5M2, &[dim("50"), dim("50")]),
+            Some(2500)
+        );
     }
 
     fn mem_bw(name: &str, parent: Option<&str>, bw_bytes: u64, per: RatePer) -> MemoryDecl {

@@ -273,6 +273,8 @@ mod tests {
             ElementType::I4,
             ElementType::U4,
             ElementType::I8,
+            ElementType::F8E4M3,
+            ElementType::F8E5M2,
             ElementType::F16,
             ElementType::BF16,
             ElementType::F32,

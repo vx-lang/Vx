@@ -1,0 +1,29 @@
+//===- memory_capacity_fp8.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// fp8 element types count one byte per element in capacity math (E6009), for
+// both spellings: a 64x64 f8e4m3 tile is 4096 bytes and a 50x50 f8e5m2 tile is
+// 2500 bytes, each exceeding the 1 KiB NPU_SRAM.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory NPU_SRAM {
+  capacity: 1 KB
+}
+
+fn main() -> i32 {
+  let kv: Tensor<f8e4m3, [64, 64]> = Tensor<f8e4m3>([64, 64]);
+  let staged = transfer(kv, Memory::NPU_SRAM);
+  let w: Tensor<f8e5m2, [50, 50]> = Tensor<f8e5m2>([50, 50]);
+  let staged2 = transfer(w, Memory::NPU_SRAM);
+  return 0;
+}
+
+// CHECK: E6009
+// CHECK-SAME: 4096 bytes
+// CHECK: E6009
+// CHECK-SAME: 2500 bytes

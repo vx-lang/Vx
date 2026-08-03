@@ -1149,6 +1149,13 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I16 | ElementType::U16 => self.i16_ty,
                     ElementType::I128 | ElementType::U128 => self.i128_ty,
                     ElementType::Bool => self.i1_ty,
+                    ElementType::F8E4M3 | ElementType::F8E5M2 => {
+                        return Err(LowerError::from(
+                            "fp8 element types are capacity/declaration-only; fp8 codegen is \
+                             tracked in #249"
+                                .to_string(),
+                        ));
+                    }
                     ElementType::Generic(_) => {
                         return Err(LowerError::from(
                             "internal: generic element type reached codegen (monomorphization \
@@ -1377,6 +1384,13 @@ impl<'c> MeliorGenerator<'c> {
                     ElementType::I64 | ElementType::U64 => "i64",
                     ElementType::I128 | ElementType::U128 => "i128",
                     ElementType::Bool => "i1",
+                    ElementType::F8E4M3 | ElementType::F8E5M2 => {
+                        return Err(LowerError::from(
+                            "fp8 element types are capacity/declaration-only; fp8 codegen is \
+                             tracked in #249"
+                                .to_string(),
+                        ));
+                    }
                     ElementType::Generic(_) => {
                         return Err(LowerError::from(
                             "internal: generic element type reached codegen (monomorphization \
@@ -1479,6 +1493,13 @@ impl<'c> MeliorGenerator<'c> {
             ElementType::I64 | ElementType::U64 => "i64",
             ElementType::I128 | ElementType::U128 => "i128",
             ElementType::Bool => "i1",
+            ElementType::F8E4M3 | ElementType::F8E5M2 => {
+                return Err(LowerError::from(
+                    "fp8 element types are capacity/declaration-only; fp8 codegen is \
+                     tracked in #249"
+                        .to_string(),
+                ));
+            }
             ElementType::Generic(_) => {
                 return Err(LowerError::from(
                     "internal: generic element type reached codegen (monomorphization \
