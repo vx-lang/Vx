@@ -1,0 +1,42 @@
+//===- h200.vx - NVIDIA H200 SXM (141 GB) machine model ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/h200.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// NOTE: figures transcribed from vendor specs, NOT re-verified against the
+// datasheet PDF. Confirm before publication; see fleet/README.md.
+//
+// Same Hopper die as h100-sxm with HBM3e: the on-chip budget is unchanged, so
+// a config that fails on SMEM fails identically here. Only capacity-bound and
+// bandwidth-bound configs move.
+
+// spec: NVIDIA H200 Tensor Core GPU Datasheet -- 141 GB HBM3e, 4.8 TB/s.
+// The odd capacity is the vendor figure (6 stacks x 24 GB less reserved), not
+// a typo for 144.
+Memory HBM {
+  capacity: 141 GB, bandwidth: 4 TB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
+Memory L2 {
+  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
+// 228 KB configurable shared memory per SM.
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+}
+
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::L2 : 40,
+  transfer Memory::L2 -> Memory::SMEM : 10
+}

@@ -1,0 +1,48 @@
+//===- mi300x.vx - AMD Instinct MI300X (192 GB) machine model ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/mi300x.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// NOTE: figures transcribed from vendor specs, NOT re-verified against the
+// datasheet PDF. Confirm before publication; see fleet/README.md.
+//
+// The non-NVIDIA column, and the reason the vocabulary is deliberately generic:
+// AMD's names differ (LDS, not shared memory; Infinity Cache, not L2) but the
+// *roles* in a placement decision are the same, so one program admits against
+// this SKU unchanged. Where the mapping is a judgment call it is called out
+// below rather than buried.
+
+// spec: AMD Instinct MI300X Datasheet -- 192 GB HBM3, 5.3 TB/s.
+Memory HBM {
+  capacity: 192 GB, bandwidth: 5 TB/s, managed: explicit, scope: device
+}
+
+// spec: AMD CDNA 3 Architecture Whitepaper -- 256 MB AMD Infinity Cache.
+// Modelled under the shared name `L2` because it occupies the same slot in a
+// placement decision (device-scoped, hardware-managed, last level before HBM),
+// though architecturally it sits below a smaller per-XCD L2 not modelled here.
+Memory L2 {
+  within: Memory::HBM, capacity: 256 MB, bandwidth: 17 TB/s, managed: cached, scope: device
+}
+
+// spec: AMD CDNA 3 Architecture Whitepaper -- 64 KB LDS per compute unit.
+// Named `SMEM` for vocabulary compatibility; a CU is the scope analogue of an
+// SM. Materially smaller than NVIDIA's 164-228 KB, so an on-chip tiling that
+// fits every NVIDIA SKU can still be rejected here -- exactly the kind of
+// cross-vendor result the matrix should surface rather than hide.
+Memory SMEM {
+  within: Memory::L2, capacity: 64 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+}
+
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::L2 : 40,
+  transfer Memory::L2 -> Memory::SMEM : 10
+}

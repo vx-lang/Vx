@@ -1,0 +1,47 @@
+//===- b200.vx - NVIDIA B200 (Blackwell, 192 GB) machine model --*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/b200.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// NOTE: figures transcribed from vendor specs, NOT re-verified against the
+// datasheet PDF. Confirm before publication; see fleet/README.md.
+//
+// Blackwell is a two-die package presented as one logical GPU. This models the
+// package-level budget, which is what a single-GPU placement sees. Modelling
+// the two dies and their NV-HBI link separately would need per-instance memory
+// accounting, which #290 puts out of scope.
+//
+// Blackwell also adds tensor memory (TMEM), a distinct on-chip space alongside
+// SMEM. It is deliberately NOT declared here: nothing in the reference program
+// places into it yet, and a declared-but-unused space would appear in the
+// hierarchy without any placement exercising it. Add it with the kernel that
+// uses it.
+
+// spec: NVIDIA Blackwell Architecture Technical Brief -- 192 GB HBM3e, 8 TB/s.
+Memory HBM {
+  capacity: 192 GB, bandwidth: 8 TB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).
+Memory L2 {
+  within: Memory::HBM, capacity: 126 MB, bandwidth: 16 TB/s, managed: cached, scope: device
+}
+
+// spec: CUDA C Programming Guide, compute capability 10.0 -- 228 KB
+// configurable shared memory per SM.
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+}
+
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::L2 : 40,
+  transfer Memory::L2 -> Memory::SMEM : 10
+}

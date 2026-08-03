@@ -1,0 +1,42 @@
+//===- h100-sxm.vx - NVIDIA H100 SXM5 (80 GB) machine model -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/h100-sxm.vx prog.vx`.
+// Declarations only -- see fleet/README.md for the shared space vocabulary and
+// the provenance policy (every figure carries a `spec:` citation).
+//
+// NOTE: figures transcribed from vendor specs, NOT re-verified against the
+// datasheet PDF. Confirm before publication; see fleet/README.md.
+
+// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 80 GB HBM3, 3.35 TB/s.
+Memory HBM {
+  capacity: 80 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
+// Modelled as a device-scoped space within HBM: hardware-managed, so `cached`.
+Memory L2 {
+  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
+// 228 KB configurable shared memory per SM (up from 164 KB on A100). This is
+// the per-SM maximum, which is what a tile placement must fit.
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+}
+
+// The staging path a placement crosses: host -> device memory -> on-chip.
+// Costs are relative latencies for path selection; the physical claim is in
+// the `bandwidth:` figures above (see fleet/README.md).
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::L2 : 40,
+  transfer Memory::L2 -> Memory::SMEM : 10
+}

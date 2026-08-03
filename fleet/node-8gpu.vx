@@ -1,0 +1,73 @@
+//===- node-8gpu.vx - 8-GPU node (NVLink / PCIe / IB) -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// An 8-GPU HGX-class node: one GPU's local hierarchy plus the interconnect a
+// multi-GPU placement crosses. Use as `vxc --machine fleet/node-8gpu.vx prog.vx`
+// for a program whose tensors move *between* GPUs or off-node; the per-SKU
+// files model a single GPU and are the right choice otherwise.
+//
+// NOTE: figures transcribed from vendor specs, NOT re-verified against the
+// datasheet PDF. Confirm before publication; see fleet/README.md.
+//
+// This file re-declares the H100 SXM local hierarchy rather than composing with
+// fleet/h100-sxm.vx, because `--machine` takes a single file (#281) and two
+// files declaring `Memory HBM` is E6012, by design. Declaration import (#224)
+// would let a node model compose with a SKU model; until then, a node variant
+// per SKU means duplicating three declarations. Deliberate: silent shadowing
+// would be much worse than duplication.
+
+// --- One GPU's local hierarchy (H100 SXM; see fleet/h100-sxm.vx) ------------
+
+// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 80 GB HBM3, 3.35 TB/s.
+Memory HBM {
+  capacity: 80 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
+Memory L2 {
+  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 228 KB shared memory per SM.
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+}
+
+// --- The rest of the node ---------------------------------------------------
+
+// The aggregate HBM of the other seven GPUs, reachable over NVLink. Modelled as
+// one space rather than seven: Vx has no per-instance memory accounting (out of
+// scope per #290), so a tensor sharded across peers is checked against the total
+// peer budget. That is the honest bound the declarations can express -- it will
+// admit a placement that no *single* peer could hold, which is why per-instance
+// accounting is future work rather than something quietly approximated here.
+//
+// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 7 peers x 80 GB.
+Memory PEER_HBM {
+  capacity: 560 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+
+// The node's transfer topology. Three physical tiers, and the whole point of
+// declaring them: a placement that crosses IB costs ~40x one that stays on
+// NVLink, and the admission verdict should say so rather than leaving it to a
+// runtime surprise.
+//
+// spec: NVIDIA H100 Datasheet -- NVLink 4: 900 GB/s bidirectional per GPU,
+//       modelled as 450 GB/s unidirectional (see fleet/README.md on halving).
+// spec: PCIe Gen5 x16 -- 64 GB/s unidirectional (128 GB/s bidirectional).
+// spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port.
+Topology Node {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
+  transfer Memory::HBM -> Memory::L2 : 40,
+  transfer Memory::L2 -> Memory::SMEM : 10,
+  transfer Memory::HBM -> Memory::PEER_HBM : 60,
+  transfer Memory::PEER_HBM -> Memory::HBM : 60,
+  transfer Memory::HBM -> Memory::NIC_RAM : 200,
+  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 2400
+}

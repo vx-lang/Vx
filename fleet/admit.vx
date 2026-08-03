@@ -1,0 +1,74 @@
+//===- admit.vx - reference inference admission program ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The reference admission program: does one serving configuration fit one SKU?
+//
+//   vxc --machine fleet/h100-sxm.vx fleet/admit.vx --diagnostics-json cell.json
+//
+// This file is *never edited* to change SKU -- that is the claim. It is edited
+// only to change the model configuration, in the single `main` call below. One
+// (config, SKU) pair is one compile is one matrix cell.
+//
+// The three residents of device memory during decode, each derived from the
+// configuration by const-generic arithmetic rather than written as a literal:
+//
+//   weights      12 * LAYERS * DIM^2 / TP        (attn qkvo 4d^2 + mlp 8d^2)
+//   KV cache     2 * LAYERS * BATCH * CTX * DIM / TP    (K and V)
+//   activations  BATCH * CTX * DIM
+//
+// where DIM = HEADS * HDIM. Every dimension below is that arithmetic, which is
+// the point: the capacity check const-folds it and reports a verdict against
+// the real number. (It did not, until the fix this program's first draft
+// exposed -- arithmetic dims silently reported "unverified".)
+//
+// Element type is f16 throughout. An fp8 variant is a one-token change to
+// `f8e4m3` (#280) and roughly halves the resident set; that is a second row of
+// the matrix, not a second program.
+//
+// ---------------------------------------------------------------------------
+// THE RESIDENT-SET MODELLING RULE (#286) -- load-bearing, read before editing:
+//
+// The cumulative working-set check (E6010) sums the tiles placed in a space
+// *within one function*, and resets at each function boundary. So all three
+// residents must be placed in ONE function to be summed against capacity.
+//
+// This is not a stylistic preference. An earlier draft of this file placed
+// each tensor in its own helper function, and a configuration needing 100 GiB
+// of residents on an 80 GiB card compiled as **admitted** -- a false accept,
+// because no single tensor exceeded capacity and nothing ever added them up.
+// Splitting these placements across functions silently disables the check that
+// most operator-relevant rejections depend on.
+// ---------------------------------------------------------------------------
+
+// One serving configuration, one verdict. Every resident is placed here so the
+// working-set check sees them together.
+fn admit<const LAYERS : i32, const HEADS : i32, const HDIM : i32, const CTX : i32, const BATCH : i32, const TP : i32>() -> i32 {
+  // Weights: the parameter matrices, resident for the whole run. Sharded across
+  // TP ranks, so the per-GPU share is 1/TP of the total.
+  let w : Tensor<f16, [12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]> = Tensor<f16>([12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]);
+  let _weights = transfer(w, Memory::HBM);
+
+  // KV cache: K and V per layer, growing with batch x context. This is what
+  // makes long-context serving a capacity problem rather than a compute one,
+  // and what most admission verdicts turn on.
+  let kv : Tensor<f16, [2 * LAYERS * BATCH * CTX / TP, HEADS * HDIM]> = Tensor<f16>([2 * LAYERS * BATCH * CTX / TP, HEADS * HDIM]);
+  let _kv_cache = transfer(kv, Memory::HBM);
+
+  // Activations: the working tensor for the current step.
+  let a : Tensor<f16, [BATCH * CTX, HEADS * HDIM]> = Tensor<f16>([BATCH * CTX, HEADS * HDIM]);
+  let _activations = transfer(a, Memory::HBM);
+
+  return 0;
+}
+
+fn main() -> i32 {
+  // Configuration under test: a 70B-class model (80 layers, 64 heads x 128 =
+  // 8192 hidden), 4096-token context, batch 1, no tensor parallelism.
+  //
+  //   admit<LAYERS, HEADS, HDIM, CTX, BATCH, TP>
+  return admit<80, 64, 128, 4096, 1, 1>();
+}
