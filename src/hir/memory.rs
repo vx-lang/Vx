@@ -33,19 +33,48 @@ pub fn element_bits(elem: &ElementType) -> Option<u64> {
     elem.bits().map(|b| b as u64)
 }
 
+/// A tensor dimension's compile-time value: an integer literal, or exact integer arithmetic over
+/// literals (`2 * LAYERS * CTX` once monomorphization has substituted its const generics). `None`
+/// for anything not constant — a runtime identifier, a call — which keeps the capacity check
+/// fail-closed (the caller then reports W1029 "unverified" rather than inventing a size).
+///
+/// Deliberately exact `u64` rather than the checker's `f64` `eval_expr`: these become byte counts
+/// compared against a declared capacity, and a model-shape product (layers x context x heads x
+/// head_dim x batch) reaches magnitudes where float rounding would silently shift a verdict.
+/// Overflow, division by zero, and a negative intermediate all yield `None` rather than wrapping.
+fn const_dim(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Number(n) => n.value.as_ref().parse::<u64>().ok(),
+        Expr::BinaryOp(b) => {
+            let l = const_dim(&b.lhs)?;
+            let r = const_dim(&b.rhs)?;
+            match b.op {
+                crate::syntax::BinaryOp::Add => l.checked_add(r),
+                crate::syntax::BinaryOp::Sub => l.checked_sub(r),
+                crate::syntax::BinaryOp::Mul => l.checked_mul(r),
+                crate::syntax::BinaryOp::Div => (r != 0).then_some(l / r),
+                crate::syntax::BinaryOp::MatMul => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Byte size of a statically-shaped tensor: `ceil(element_bits × Π(dims) / 8)`. `None` when the
-/// shape is empty or any dimension is not a compile-time integer literal (so the size — and thus
-/// any capacity check — is unknown).
+/// shape is empty or any dimension is not a compile-time constant (so the size — and thus any
+/// capacity check — is unknown).
+///
+/// Dimensions are const-folded, not merely pattern-matched against a literal. A real model shape
+/// is arithmetic — a KV cache is `2 * layers * context` by `heads * head_dim` — and requiring a
+/// bare literal meant every such placement was silently reported "unverified" (W1029) instead of
+/// admitted or rejected, which would have made an admission matrix over realistic configs vacuous.
 pub fn static_tensor_bytes(elem: &ElementType, dims: &[Expr]) -> Option<u64> {
     if dims.is_empty() {
         return None;
     }
     let mut count: u64 = 1;
     for d in dims {
-        let Expr::Number(num) = d else {
-            return None;
-        };
-        count = count.checked_mul(num.value.as_ref().parse::<u64>().ok()?)?;
+        count = count.checked_mul(const_dim(d)?)?;
     }
     Some(element_bits(elem)?.checked_mul(count)?.div_ceil(8))
 }
@@ -436,6 +465,64 @@ mod tests {
             None,
             crate::syntax::Span::default(),
         ))
+    }
+
+    fn mul(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(crate::syntax::BinaryOpExpr {
+            lhs: Box::new(l),
+            op: crate::syntax::BinaryOp::Mul,
+            rhs: Box::new(r),
+            span: crate::syntax::Span::default(),
+        })
+    }
+
+    /// A real model shape is arithmetic, not a bare literal: a KV cache is `2 * layers * context`
+    /// by `heads * head_dim`. Requiring a literal per dimension made every such placement report
+    /// W1029 "unverified" instead of an admission verdict, which would make a matrix over
+    /// realistic configs vacuous. Dimensions are const-folded.
+    #[test]
+    fn tensor_bytes_folds_arithmetic_dimensions() {
+        // 2 * 512 x 512 f32 = 2 MiB. Previously `None` (not a bare literal).
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F32, &[mul(dim("2"), dim("512")), dim("512")]),
+            Some(2 * 1024 * 1024)
+        );
+        // The KV-cache shape: (2 * layers * ctx) x (heads * head_dim), f16.
+        let rows = mul(mul(dim("2"), dim("2")), dim("128")); // 512
+        let cols = mul(dim("8"), dim("64")); // 512
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F16, &[rows, cols]),
+            Some(512 * 512 * 2)
+        );
+        // Folding is exact integer arithmetic, so a product far past f64's exact-integer range
+        // is either right or `None` -- never silently rounded into a different verdict.
+        assert_eq!(
+            static_tensor_bytes(
+                &ElementType::F32,
+                &[mul(dim("4294967296"), dim("4294967296"))]
+            ),
+            None,
+            "overflow declines rather than wrapping"
+        );
+    }
+
+    /// A genuinely dynamic dimension must still decline, so the capacity check stays fail-closed
+    /// and the caller reports W1029 rather than inventing a size.
+    #[test]
+    fn tensor_bytes_declines_non_constant_dimensions() {
+        let ident = Expr::Identifier(crate::syntax::IdentifierExpr {
+            name: "n".into(),
+            span: crate::syntax::Span::default(),
+        });
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F32, &[ident.clone(), dim("4")]),
+            None
+        );
+        // Arithmetic *containing* a runtime value is equally unknown.
+        assert_eq!(
+            static_tensor_bytes(&ElementType::F32, &[mul(dim("2"), ident)]),
+            None
+        );
     }
 
     #[test]
