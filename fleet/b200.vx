@@ -22,19 +22,25 @@
 // hierarchy without any placement exercising it. Add it with the kernel that
 // uses it.
 
-// spec: NVIDIA DGX B200 specifications (verified 2026-08-03) -- "1,440 GB
-// total, 64 TB/s HBM3e bandwidth" across 8 GPUs, i.e. 180 GB and 8 TB/s per
-// GPU.
+// spec: NVIDIA HGX B200 per-GPU specifications, quoted verbatim from the
+// Lenovo ThinkSystem HGX B200 180GB product guide's GPU specification table
+// (verified 2026-08-03) -- GPU Memory "180 GB HBM3e", GPU Memory Bandwidth
+// "7.7 TB/s", form factor SXM6.
 //
-// DELIBERATELY 180, NOT 192. The B200 package carries 192 GB of HBM3e, and
-// that is the figure most secondary sources quote, but DGX B200 exposes
-// 1,440 GB / 8 = 180 GB per GPU. A neocloud rents the *system*, so the usable
-// per-GPU budget is the one an admission verdict must be measured against.
-// Using 192 here would admit configurations that do not fit a rented B200 --
-// a false accept of exactly the kind this campaign exists to catch. If a
-// future SKU exposes the full 192 GB, that is a separate machine file.
+// THREE FIGURES CIRCULATE FOR "B200"; THIS MODELS THE RENTABLE ONE.
+//   180 GB @ 7.7 TB/s  -- HGX B200 (SXM6). What a neocloud rents. Modelled.
+//   186 GB @ 8 TB/s    -- GB200 NVL variants. A different SKU; if the
+//                         campaign rents one, it gets its own machine file.
+//   192 GB             -- pre-release announcements, still widely repeated by
+//                         secondary sources. Not a production HGX B200 figure.
+//
+// Getting this wrong is a false accept: modelling 192 GB would admit
+// configurations that do not fit a rented B200, and pairing 180 GB with the
+// 186 GB part's 8 TB/s would understate every transfer cost. Both mistakes
+// were made in earlier revisions of this file, which is why the variants are
+// enumerated here rather than left to whoever reads a spec sheet next.
 Memory HBM {
-  capacity: 180 GB, bandwidth: 8 TB/s, managed: explicit, scope: device
+  capacity: 180 GB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).
