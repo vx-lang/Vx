@@ -27,18 +27,32 @@
 // (verified 2026-08-03) -- GPU Memory "180 GB HBM3e", GPU Memory Bandwidth
 // "7.7 TB/s", form factor SXM6.
 //
-// THREE FIGURES CIRCULATE FOR "B200"; THIS MODELS THE RENTABLE ONE.
-//   180 GB @ 7.7 TB/s  -- HGX B200 (SXM6). What a neocloud rents. Modelled.
-//   186 GB @ 8 TB/s    -- GB200 NVL variants. A different SKU; if the
-//                         campaign rents one, it gets its own machine file.
-//   192 GB             -- pre-release announcements, still widely repeated by
-//                         secondary sources. Not a production HGX B200 figure.
+// CAPACITY: 180 GB, well corroborated.
+//   Lenovo's HGX B200 product guide states "180 GB HBM3e" per GPU, and
+//   NVIDIA's DGX B200 page gives 1,440 GB across 8 GPUs = 180 GB. Two
+//   independent sources agree.
 //
-// Getting this wrong is a false accept: modelling 192 GB would admit
-// configurations that do not fit a rented B200, and pairing 180 GB with the
-// 186 GB part's 8 TB/s would understate every transfer cost. Both mistakes
-// were made in earlier revisions of this file, which is why the variants are
-// enumerated here rather than left to whoever reads a spec sheet next.
+//   192 GB circulates widely (secondary sites, pre-release announcements) and
+//   is NOT used here. Modelling it would admit configurations that do not fit
+//   a rented B200 -- a false accept, the class this campaign exists to catch.
+//   A secondary source asserting 192 GB does not outweigh two sources with
+//   per-GPU or system-aggregate figures that agree on 180.
+//
+// BANDWIDTH: 7.7 TB/s chosen, but genuinely contested. UNRESOLVED.
+//   Lenovo's per-GPU spec table:        7.7 TB/s
+//   NVIDIA DGX B200 aggregate / 8:      8.0 TB/s  (64 TB/s over 8 GPUs)
+//   Note 7.7 x 8 = 61.6, so NVIDIA's 64 may be a rounded-up aggregate, or the
+//   two may describe different bin/power configurations. Not established.
+//
+//   7.7 is used because it is an explicit *per-GPU* figure rather than a
+//   division, and because understating bandwidth is the safe direction: it
+//   inflates the derived roofline cost, so a transfer looks more expensive
+//   than it is rather than less. Revisit against the hardware the campaign
+//   actually rents -- that measurement settles it better than any spec sheet.
+//
+//   (An earlier revision of this file claimed 8 TB/s "belongs to the 186 GB
+//   GB200 NVL part". That was tidier than the evidence supports: NVIDIA's own
+//   DGX B200 aggregate implies 8 TB/s for this 180 GB part too.)
 Memory HBM {
   capacity: 180 GB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
 }

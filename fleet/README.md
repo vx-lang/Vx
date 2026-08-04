@@ -35,7 +35,9 @@ is a bug, not a detail.
 
 | Figure class | Status |
 |---|---|
-| `HBM` capacity and bandwidth (all six SKUs) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
+| `HBM` capacity and bandwidth (A100 40/80, H100, H200, MI300X) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
+| `HBM` capacity (**B200**) | **verified** — 180 GB, corroborated by two independent sources |
+| `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |
@@ -56,11 +58,17 @@ machine, which is worth recording as evidence that transcribing from memory is n
   do not fit a rented B200* (a false accept, the class this campaign exists to catch), and pairing
   180 GB with 8 TB/s would understate every transfer cost on that SKU.
 
-  This one took three passes to get right, which is the useful lesson: the first pass used memory
-  (192 GB), the second divided a DGX system aggregate (180 GB, 8 TB/s — capacity right, bandwidth
-  wrong, and both derived rather than quoted), and only the third found a per-GPU spec table. A
-  figure that is *plausible and self-consistent* can still be a mix of two different SKUs. The
-  variant table is enumerated in `b200.vx` so the next reader does not repeat it.
+  This one took four passes, which is the useful lesson. Memory said 192 GB. Dividing a DGX system
+  aggregate gave 180 GB @ 8 TB/s — capacity right, but derived rather than quoted. A per-GPU spec
+  table gave 180 GB @ 7.7 TB/s. Checking a secondary source that claimed 192 GB @ 8 TB/s then
+  showed the bandwidth is *genuinely contested* between two reputable sources, not settled as the
+  third pass had asserted.
+
+  Two distinct lessons. First: a figure that is *plausible and self-consistent* can still be a mix
+  of two SKUs — nothing about `180 GB @ 8 TB/s` looks wrong. Second, and easier to miss: the
+  correction can overclaim too. Pass three explained the discrepancy with a tidy story ("8 TB/s is
+  the GB200 NVL part") that the evidence did not support. **A resolved-sounding narrative is not
+  the same as a resolved question**, and the write-up should say which one it has.
 
 A rounded bandwidth is not cosmetic: `bandwidth:` drives the derived roofline cost, so an
 understated figure inflates every transfer cost on that SKU.
