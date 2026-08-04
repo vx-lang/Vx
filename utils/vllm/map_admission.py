@@ -4,7 +4,8 @@
     vxc --machine fleet/h100-sxm.vx fleet/admit.vx \
         --action emit-mlir -o /dev/null --diagnostics-json cell.json
     utils/vllm/map_admission.py --cell cell.json \
-        --layers 80 --heads 64 --hdim 128 --ctx 4096 --batch 1 --tp 1
+        --layers 80 --heads 64 --kv-heads 8 --hdim 128 \
+        --ctx 4096 --batch 1 --tp 1
 
 The toolchain's contract ends at emitting verified facts in a stable format
 (`--diagnostics-json`: the verdict, per-space resident totals, capacities,
@@ -99,13 +100,20 @@ def device_resident(cell: dict, space: str) -> dict:
     die(f"no resident set for space {space!r}; record has: {have}")
 
 
-def verify_model(config_path: Path, layers: int, heads: int, hdim: int) -> None:
+def verify_model(config_path: Path, layers: int, heads: int, kv_heads: int, hdim: int) -> None:
     """Assert the cell's const-generic geometry matches a real checkpoint.
 
-    The admission verdict is arithmetic over (layers, heads, head_dim). If those
-    do not match the checkpoint actually served, the verdict describes a model
-    that was never run and the ground truth is contaminated -- a harness bug, not
-    a data point. Checked *before* launch for exactly that reason.
+    The admission verdict is arithmetic over (layers, heads, kv_heads, head_dim).
+    If those do not match the checkpoint actually served, the verdict describes a
+    model that was never run and the ground truth is contaminated -- a harness
+    bug, not a data point. Checked *before* launch for exactly that reason.
+
+    `kv_heads` is checked because it is the field most likely to be wrong and the
+    one with the largest consequence: it sizes the KV cache, so confusing it with
+    the query head count overestimates a 70B model's 32k-context cache eightfold
+    (80 GiB instead of 10 GiB) -- enough to reject every SKU in the fleet for a
+    configuration that fits comfortably. A geometry check that omitted it would
+    pass a cell that is wrong in precisely the way that matters most.
     """
     try:
         cfg = json.loads(config_path.read_text())
@@ -114,6 +122,8 @@ def verify_model(config_path: Path, layers: int, heads: int, hdim: int) -> None:
 
     actual_layers = cfg.get("num_hidden_layers")
     actual_heads = cfg.get("num_attention_heads")
+    # Absent num_key_value_heads means MHA: KV heads equal query heads.
+    actual_kv_heads = cfg.get("num_key_value_heads", actual_heads)
     hidden = cfg.get("hidden_size")
     # head_dim is usually implicit; prefer an explicit field when present.
     actual_hdim = cfg.get("head_dim")
@@ -124,6 +134,7 @@ def verify_model(config_path: Path, layers: int, heads: int, hdim: int) -> None:
     for name, want, got in (
         ("layers", layers, actual_layers),
         ("heads", heads, actual_heads),
+        ("kv_heads", kv_heads, actual_kv_heads),
         ("head_dim", hdim, actual_hdim),
     ):
         if got is None:
@@ -150,6 +161,8 @@ def main() -> int:
                    help="cell.json from `vxc --diagnostics-json`")
     p.add_argument("--layers", type=int, required=True)
     p.add_argument("--heads", type=int, required=True)
+    p.add_argument("--kv-heads", type=int, required=True,
+                   help="the checkpoint's num_key_value_heads (GQA); equals --heads for MHA")
     p.add_argument("--hdim", type=int, required=True)
     p.add_argument("--ctx", type=int, required=True, help="max context; becomes --max-model-len")
     p.add_argument("--batch", type=int, required=True, help="becomes --max-num-seqs")
@@ -195,7 +208,7 @@ def main() -> int:
         return 1
 
     if args.verify_model:
-        verify_model(args.verify_model, args.layers, args.heads, args.hdim)
+        verify_model(args.verify_model, args.layers, args.heads, args.kv_heads, args.hdim)
 
     model = args.model
     if not model:
