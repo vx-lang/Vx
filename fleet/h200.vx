@@ -8,18 +8,18 @@
 // One SKU's memory hierarchy, for `vxc --machine fleet/h200.vx prog.vx`.
 // See fleet/README.md for the shared space vocabulary and provenance policy.
 //
-// NOTE: figures transcribed from vendor specs, NOT re-verified against the
-// datasheet PDF. Confirm before publication; see fleet/README.md.
+// HBM figures verified 2026-08-03 against NVIDIA's H200 product materials.
+// On-die figures (L2, SMEM) remain unverified -- see fleet/README.md.
 //
 // Same Hopper die as h100-sxm with HBM3e: the on-chip budget is unchanged, so
 // a config that fails on SMEM fails identically here. Only capacity-bound and
 // bandwidth-bound configs move.
 
-// spec: NVIDIA H200 Tensor Core GPU Datasheet -- 141 GB HBM3e, 4.8 TB/s.
-// The odd capacity is the vendor figure (6 stacks x 24 GB less reserved), not
-// a typo for 144.
+// spec: NVIDIA H200 Tensor Core GPU (verified 2026-08-03) -- 141 GB HBM3e at
+// 4.8 TB/s. The odd capacity is the vendor figure (six stacks of 24 GB HBM3e
+// less reserved), not a typo for 144.
 Memory HBM {
-  capacity: 141 GB, bandwidth: 4 TB/s, managed: explicit, scope: device
+  capacity: 141 GB, bandwidth: 4.8 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.

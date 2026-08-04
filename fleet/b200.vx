@@ -8,8 +8,8 @@
 // One SKU's memory hierarchy, for `vxc --machine fleet/b200.vx prog.vx`.
 // See fleet/README.md for the shared space vocabulary and provenance policy.
 //
-// NOTE: figures transcribed from vendor specs, NOT re-verified against the
-// datasheet PDF. Confirm before publication; see fleet/README.md.
+// HBM figures verified 2026-08-03 against NVIDIA's DGX B200 specifications.
+// On-die figures (L2, SMEM) remain unverified -- see fleet/README.md.
 //
 // Blackwell is a two-die package presented as one logical GPU. This models the
 // package-level budget, which is what a single-GPU placement sees. Modelling
@@ -22,9 +22,19 @@
 // hierarchy without any placement exercising it. Add it with the kernel that
 // uses it.
 
-// spec: NVIDIA Blackwell Architecture Technical Brief -- 192 GB HBM3e, 8 TB/s.
+// spec: NVIDIA DGX B200 specifications (verified 2026-08-03) -- "1,440 GB
+// total, 64 TB/s HBM3e bandwidth" across 8 GPUs, i.e. 180 GB and 8 TB/s per
+// GPU.
+//
+// DELIBERATELY 180, NOT 192. The B200 package carries 192 GB of HBM3e, and
+// that is the figure most secondary sources quote, but DGX B200 exposes
+// 1,440 GB / 8 = 180 GB per GPU. A neocloud rents the *system*, so the usable
+// per-GPU budget is the one an admission verdict must be measured against.
+// Using 192 here would admit configurations that do not fit a rented B200 --
+// a false accept of exactly the kind this campaign exists to catch. If a
+// future SKU exposes the full 192 GB, that is a separate machine file.
 Memory HBM {
-  capacity: 192 GB, bandwidth: 8 TB/s, managed: explicit, scope: device
+  capacity: 180 GB, bandwidth: 8 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).

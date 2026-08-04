@@ -22,9 +22,10 @@
 
 // --- One GPU's local hierarchy (H100 SXM; see fleet/h100-sxm.vx) ------------
 
-// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 80 GB HBM3, 3.35 TB/s.
+// spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) -- 80 GB
+// HBM3 at 3.35 TB/s. Keep in sync with fleet/h100-sxm.vx.
 Memory HBM {
-  capacity: 80 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+  capacity: 80 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
@@ -46,9 +47,9 @@ Memory SMEM {
 // admit a placement that no *single* peer could hold, which is why per-instance
 // accounting is future work rather than something quietly approximated here.
 //
-// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 7 peers x 80 GB.
+// spec: derived -- 7 peers x 80 GB (verified per-GPU figure above).
 Memory PEER_HBM {
-  capacity: 560 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+  capacity: 560 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // The node's transfer topology. Three physical tiers, and the whole point of

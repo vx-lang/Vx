@@ -8,13 +8,14 @@
 // One SKU's memory hierarchy, for `vxc --machine fleet/a100-40.vx prog.vx`.
 // See fleet/README.md for the shared space vocabulary and provenance policy.
 //
-// NOTE: figures transcribed from vendor specs, NOT re-verified against the
-// datasheet PDF. Confirm before publication; see fleet/README.md.
+// HBM figures verified 2026-08-03 against the NVIDIA A100 datasheet.
+// On-die figures (L2, SMEM) remain unverified -- see fleet/README.md.
 //
 // The smallest SKU in the fleet: the config that fits here but nowhere smaller
 // is the interesting boundary case for the admission matrix.
 
-// spec: NVIDIA A100 Tensor Core GPU Datasheet -- 40 GB HBM2e, 1555 GB/s.
+// spec: NVIDIA A100 Tensor Core GPU Datasheet (verified 2026-08-03) -- 40 GB
+// HBM2 at 1,555 GB/s. Note HBM2, not HBM2e: the 80 GB part moved to HBM2e.
 Memory HBM {
   capacity: 40 GB, bandwidth: 1555 GB/s, managed: explicit, scope: device
 }

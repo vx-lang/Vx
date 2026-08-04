@@ -9,12 +9,14 @@
 // Declarations only -- see fleet/README.md for the shared space vocabulary and
 // the provenance policy (every figure carries a `spec:` citation).
 //
-// NOTE: figures transcribed from vendor specs, NOT re-verified against the
-// datasheet PDF. Confirm before publication; see fleet/README.md.
+// HBM figures verified 2026-08-03 against nvidia.com/en-us/data-center/h100/
+// (SXM column). On-die figures (L2, SMEM) remain unverified -- see
+// fleet/README.md for which lines carry which confidence.
 
-// spec: NVIDIA H100 Tensor Core GPU Datasheet -- 80 GB HBM3, 3.35 TB/s.
+// spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) --
+// GPU Memory "80GB", GPU Memory Bandwidth "3.35TB/s".
 Memory HBM {
-  capacity: 80 GB, bandwidth: 3 TB/s, managed: explicit, scope: device
+  capacity: 80 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
