@@ -27,16 +27,26 @@
 // (verified 2026-08-03) -- GPU Memory "180 GB HBM3e", GPU Memory Bandwidth
 // "7.7 TB/s", form factor SXM6.
 //
-// CAPACITY: 180 GB, well corroborated.
-//   Lenovo's HGX B200 product guide states "180 GB HBM3e" per GPU, and
-//   NVIDIA's DGX B200 page gives 1,440 GB across 8 GPUs = 180 GB. Two
-//   independent sources agree.
+// CAPACITY: 192 GB -- MEASURED ON HARDWARE, which outranks the spec sheets.
+//   A B200 device reports 192 GB. Vendor materials say 180 GB (Lenovo's HGX
+//   B200 per-GPU table; NVIDIA's DGX B200 aggregate of 1,440 GB / 8), which is
+//   most likely a *usable* figure after ECC and reservation rather than a
+//   different part.
 //
-//   192 GB circulates widely (secondary sites, pre-release announcements) and
-//   is NOT used here. Modelling it would admit configurations that do not fit
-//   a rented B200 -- a false accept, the class this campaign exists to catch.
-//   A secondary source asserting 192 GB does not outweigh two sources with
-//   per-GPU or system-aggregate figures that agree on 180.
+//   A machine file should describe the machine, so it carries what the device
+//   has. How much of it a deployment may consume is a *policy*, and belongs in
+//   the admission program or the engine config -- not baked into the hardware
+//   model, where it would be invisible and unadjustable.
+//
+//   THE CONSEQUENCE, WHICH IS NOT YET MODELLED: admitting against a bare
+//   192 GB assumes a deployment can use all of it, and none can. vLLM's
+//   default `gpu_memory_utilization` is 0.9, giving ~173 GB usable -- *below*
+//   even the vendor's 180. So a config in roughly the 173-192 GB band will be
+//   admitted here and still OOM in practice. That gap is exactly what #285's
+//   `gpu_memory_utilization` field has to carry, and until it does, a verdict
+//   near this SKU's ceiling should be read as "fits the device", not "fits a
+//   serving deployment on the device". Neither 180 nor 192 is the right
+//   admission bound on its own; the bound is capacity x utilization.
 //
 // BANDWIDTH: 7.7 TB/s chosen, but genuinely contested. UNRESOLVED.
 //   Lenovo's per-GPU spec table:        7.7 TB/s
@@ -54,7 +64,7 @@
 //   GB200 NVL part". That was tidier than the evidence supports: NVIDIA's own
 //   DGX B200 aggregate implies 8 TB/s for this 180 GB part too.)
 Memory HBM {
-  capacity: 180 GB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
+  capacity: 192 GB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).

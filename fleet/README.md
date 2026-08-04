@@ -36,7 +36,7 @@ is a bug, not a detail.
 | Figure class | Status |
 |---|---|
 | `HBM` capacity and bandwidth (A100 40/80, H100, H200, MI300X) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
-| `HBM` capacity (**B200**) | **verified** — 180 GB, corroborated by two independent sources |
+| `HBM` capacity (**B200**) | **measured on hardware** — 192 GB reported by the device. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
@@ -73,12 +73,39 @@ machine, which is worth recording as evidence that transcribing from memory is n
 A rounded bandwidth is not cosmetic: `bandwidth:` drives the derived roofline cost, so an
 understated figure inflates every transfer cost on that SKU.
 
-**Units are binary.** Vx parses `GB` as 2^30 and `TB` as 2^40, so `capacity: 180 GB` means
-180 GiB. Vendors are inconsistent about whether their published "GB" is decimal or binary, and for
+**Units are binary.** Vx parses `GB` as 2^30 and `TB` as 2^40, so `capacity: 192 GB` means
+192 GiB. Vendors are inconsistent about whether their published "GB" is decimal or binary, and for
 memory capacity it is conventionally binary — but this has not been confirmed per figure, and a
 decimal reading would make each capacity ~7% smaller than modelled. That is smaller than the
 margins in the current matrix but large enough to flip a marginal cell, so it belongs on the
 verification list above rather than in a footnote.
+
+### Declared capacity is the device, not the deployment budget
+
+**These files declare what the hardware has. They do not declare how much of it a deployment may
+use, and those are different numbers — by more than the errors this document has been tracking.**
+
+A serving engine cannot allocate 100% of device memory: framework overhead, fragmentation, and the
+CUDA context all take a share. vLLM's `gpu_memory_utilization` defaults to `0.9`. So on a 192 GiB
+B200 the usable budget is roughly 173 GiB, and a configuration in the ~173–192 GiB band is
+**admitted by the current capacity check and will still OOM in practice**.
+
+This is a false accept of the same class as the B200 capacity error, but it is not a mistake in any
+figure — every number can be right and the verdict still wrong, because the check is comparing
+against the wrong bound. The correct bound is `capacity x utilization`, and nothing in the model
+expresses the second factor yet.
+
+Two consequences worth stating before results are collected:
+
+- A verdict near a SKU's ceiling means "fits the device", not "fits a serving deployment on the
+  device". Cells close to the boundary should be treated as unresolved until this is modelled.
+- This is what makes #285's `gpu_memory_utilization` field load-bearing rather than a convenience:
+  it is the factor that turns a capacity verdict into an admission verdict. Deriving it is not
+  optional polish.
+
+The alternative — baking the headroom into `capacity:` — is rejected deliberately. It would
+make the machine files describe a policy rather than a machine, hide the assumption where no
+reviewer would find it, and silently change every verdict if a deployment tuned the knob.
 
 > **⚠ Still to verify before submission.** The unverified rows above. Each `spec:` line must be
 > confirmed against the cited document, and this notice narrowed as rows are cleared.
