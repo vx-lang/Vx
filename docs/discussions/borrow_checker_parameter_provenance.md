@@ -28,9 +28,15 @@ Two measurements decide whether that is a contribution or a curiosity, and both 
   reference parameters** — they fit the inline budget. The 0.3% that overflow fall back to
   `AnyParam`, which is *exactly today's conservative behaviour*: the degradation is local and
   precision-only, never unsound (§5).
-- The check itself is masked integer arithmetic over one word (§2), and the summary survives
-  serialisation into `.vxlib` (§4.3, landed), so a consumer type-checks against an imported signature
-  with no library source.
+- The check itself is masked integer arithmetic over one word (§2), and the summary **does cross a
+  module boundary**: `ret_prov` is written into the `.vxlib` signature record and round-trips with a
+  parity test that asserts `pick(a, b) -> &b.x` decodes to parameter slot 1
+  (`src/metadata.rs`). So a consumer type-checks against an imported signature with no library source.
+  *Precisely:* what has landed is provenance-as-a-field in the interface record. Carrying it inside
+  the packed `TypeId` **across** the boundary — step 7 — is still deferred on
+  [#220](https://github.com/hiraditya/Vx/issues/220)/[#224](https://github.com/hiraditya/Vx/issues/224).
+  Do not conflate the two in a paper: the cross-module *capability* is real, the fully-inline
+  *representation* of it is not yet.
 
 That is the paper: **a fixed-width, comparison-in-place lifetime summary that is O(1) per call site
 and crosses a module boundary intact.** The cost claim is the load-bearing one — see §6.3's RQ3 — and
