@@ -63,3 +63,14 @@ fn main() -> i32 {
 // CHECK-SAME: "cost": 300
 // CHECK: "path": ["HBM", "SMEM"]
 // CHECK-SAME: "cost": 40
+//
+// Resident sets are reported per space with a derived utilization. They are
+// emitted whether or not the space overflowed -- an *admitted* program emits
+// no capacity diagnostic, so this is the only place its resident total
+// appears, and that total is what a downstream consumer turns into an
+// engine's required memory utilization (#285).
+// CHECK: "resident_sets":
+// CHECK: "space": "SMEM"
+// CHECK-SAME: "total_bytes": 196608
+// CHECK-SAME: "capacity_bytes": 153600
+// CHECK-SAME: "tiles": 3

@@ -419,9 +419,6 @@ impl<'a> TypeChecker<'a> {
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
         for (space, tiles) in &placements {
-            if tiles.len() < 2 {
-                continue;
-            }
             let Some(decl) = h.descriptor(space) else {
                 continue;
             };
@@ -438,7 +435,20 @@ impl<'a> TypeChecker<'a> {
                     None => b,
                 })
                 .sum();
-            if total > cap {
+            // Record the working set whether or not it violates. An *admitted* program emits no
+            // capacity diagnostic, so without this its resident set would be absent from the JSON
+            // record -- and the resident total is what a downstream consumer needs to compute the
+            // utilization an engine must be given (#285). A verdict alone does not carry it.
+            self.resident_sets.push(crate::hir::env::ResidentSet {
+                space: space.clone(),
+                total_bytes: total,
+                capacity_bytes: cap,
+                tiles: tiles.len(),
+                overcommit: decl.overcommit,
+            });
+            // The cumulative *diagnostic* stays gated on >1 tile: a lone oversized tile is
+            // E6009's job, and reporting it twice would double-count in the record.
+            if total > cap && tiles.len() > 1 {
                 violations.push((
                     space.clone(),
                     total,

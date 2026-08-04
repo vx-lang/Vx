@@ -19,6 +19,11 @@ A program that places a tile in `Memory::HBM` therefore means "this SKU's device
 capacity check resolves that to whichever number the selected machine file declares. Adding a SKU
 means adding a file with these three spaces, not touching any program.
 
+To turn an admission verdict into an engine launch command, see
+[`utils/vllm/map_admission.py`](../utils/vllm/). It reads the `--diagnostics-json` record, not these
+files — the mapping lives outside `fleet/` because it changes with vLLM's flag surface, not with
+SKU data.
+
 `node-8gpu.vx` is different in kind: it models one **8-GPU node**, adding the interconnect spaces
 and edges (NVLink, PCIe, InfiniBand) that a multi-GPU placement crosses. It is composed with a SKU
 file rather than replacing it — but note that the `--machine` flag currently takes a single file

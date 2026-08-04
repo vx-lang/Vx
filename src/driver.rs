@@ -567,6 +567,7 @@ impl CompilerDriver {
             let record = crate::diagnostics_json::render(
                 &checker.errors,
                 &checker.staging_routes,
+                &checker.resident_sets,
                 filename,
                 self.options
                     .machine

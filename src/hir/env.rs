@@ -34,6 +34,22 @@ pub enum Value {
     Topology(Topology),
 }
 
+/// One memory space's working set for a function: the granule-rounded sum of the tiles placed
+/// there, against the space's declared capacity. Recorded for *every* placed space, not only
+/// those that overflow — an admitted program emits no capacity diagnostic, so this is the only
+/// place its resident total appears. Downstream that total is what turns a capacity verdict into
+/// an engine's required memory utilization (#285). See [`TypeChecker::resident_sets`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidentSet {
+    pub space: crate::syntax::MemorySpace,
+    /// Granule-rounded sum of tiles placed in this space by one function.
+    pub total_bytes: u64,
+    pub capacity_bytes: u64,
+    pub tiles: usize,
+    /// Whether the space is declared `overcommit` (an overflow is W1028, not E6010).
+    pub overcommit: bool,
+}
+
 /// A resolved `transfer`: the chain of memory spaces the value actually moves through and the
 /// declared cost of each hop. A direct transfer has one hop; a multi-hop route (synthesized when
 /// no direct edge exists) has one per staging step. `derived_cost` is the bandwidth-roofline cost
@@ -304,6 +320,9 @@ pub struct TypeChecker<'a> {
     /// is what `--diagnostics-json` reports for it -- the accept side of the admission verdict
     /// (#282).
     pub staging_routes: Vec<StagingRoute>,
+    /// Per-function, per-space working sets — the resident sets an admitted program implies.
+    /// See [`ResidentSet`]; reported by `--diagnostics-json` (#285).
+    pub resident_sets: Vec<ResidentSet>,
     /// Total marginal solving time across all seams, excluding the one-time solver
     /// startup below (eval metric M1: per-seam proof cost).
     pub seam_check_time: std::time::Duration,
@@ -396,6 +415,7 @@ impl<'a> TypeChecker<'a> {
             pending_transfer_relaxed: false,
             seam_checks: 0,
             staging_routes: Vec::new(),
+            resident_sets: Vec::new(),
             seam_check_time: std::time::Duration::ZERO,
             solver_init_time: std::time::Duration::ZERO,
             seam_solver: None,

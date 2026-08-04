@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::diagnostic::{Diagnostic, DiagnosticFacts, DiagnosticLevel, DiagnosticsVec};
-use crate::hir::env::StagingRoute;
+use crate::hir::env::{ResidentSet, StagingRoute};
 
 /// The schema version embedded in every record. **Bump on any incompatible change** — a consumer
 /// pins this, and the rental campaign (#289) will be reading artifacts produced over a period of
@@ -51,9 +51,26 @@ use crate::hir::env::StagingRoute;
 ///       "total_cost": 300,
 ///       "derived_cost": 128             // bandwidth roofline, null when not computable
 ///     }
+///   ],
+///   "resident_sets": [                  // working set per space, emitted even when admitted
+///     {
+///       "space": "HBM",
+///       "total_bytes": 139653545984,
+///       "capacity_bytes": 206158430208,
+///       "utilization": 0.6774,          // total / capacity, rounded to 4 dp
+///       "tiles": 3,
+///       "overcommit": false
+///     }
 ///   ]
 /// }
 /// ```
+///
+/// `resident_sets` was added after the initial release of this schema. It is **additive** — a
+/// consumer reading only the original keys is unaffected — so the version is deliberately not
+/// bumped, per this constant's own rule of bumping on incompatible change. It exists because a
+/// verdict alone does not carry the resident total: an admitted program emits no capacity
+/// diagnostic, and the total is what a downstream consumer needs to compute the memory
+/// utilization an engine must be given (#285).
 pub const SCHEMA_VERSION: &str = "vx-diagnostics-v1";
 
 /// Escape a string for a JSON string literal (RFC 8259): the two mandatory escapes, the standard
@@ -158,12 +175,33 @@ fn route_json(r: &StagingRoute) -> String {
     )
 }
 
+fn resident_set_json(r: &ResidentSet) -> String {
+    // Utilization is derived here rather than stored so it cannot disagree with its operands.
+    // Rounded to 4 dp: enough to distinguish campaign cells, short enough to read.
+    let util = if r.capacity_bytes == 0 {
+        0.0
+    } else {
+        (r.total_bytes as f64 / r.capacity_bytes as f64 * 10_000.0).round() / 10_000.0
+    };
+    format!(
+        "{{\"space\": \"{}\", \"total_bytes\": {}, \"capacity_bytes\": {}, \"utilization\": {}, \
+         \"tiles\": {}, \"overcommit\": {}}}",
+        esc(&r.space.name()),
+        r.total_bytes,
+        r.capacity_bytes,
+        util,
+        r.tiles,
+        r.overcommit
+    )
+}
+
 /// Render one compile's admission verdict. `file` is the program compiled and `machine` the
 /// `--machine` model it was admitted against, so a harvested record identifies its own
 /// (config, SKU) cell without the caller having to correlate it back to the invocation.
 pub fn render(
     diagnostics: &DiagnosticsVec,
     routes: &[StagingRoute],
+    residents: &[ResidentSet],
     file: &str,
     machine: Option<&str>,
 ) -> String {
@@ -187,10 +225,15 @@ pub fn render(
         .map(route_json)
         .collect::<Vec<_>>()
         .join(",\n    ");
+    let residents_json = residents
+        .iter()
+        .map(resident_set_json)
+        .collect::<Vec<_>>()
+        .join(",\n    ");
     format!(
         "{{\n  \"schema\": \"{}\",\n  \"file\": \"{}\",\n  \"machine\": {},\n  \"verdict\": \
          \"{}\",\n  \"error_count\": {},\n  \"warning_count\": {},\n  \"diagnostics\": \
-         [{}{}{}],\n  \"routes\": [{}{}{}]\n}}",
+         [{}{}{}],\n  \"routes\": [{}{}{}],\n  \"resident_sets\": [{}{}{}]\n}}",
         SCHEMA_VERSION,
         esc(file),
         opt_str(machine),
@@ -203,6 +246,17 @@ pub fn render(
         if routes_json.is_empty() { "" } else { "\n    " },
         routes_json,
         if routes_json.is_empty() { "" } else { "\n  " },
+        if residents_json.is_empty() {
+            ""
+        } else {
+            "\n    "
+        },
+        residents_json,
+        if residents_json.is_empty() {
+            ""
+        } else {
+            "\n  "
+        },
     )
 }
 
@@ -232,7 +286,7 @@ mod tests {
             available_bytes: 1048576,
             tiles: None,
         });
-        let out = render(&diags, &[], "prog.vx", Some("fleet/h100.vx"));
+        let out = render(&diags, &[], &[], "prog.vx", Some("fleet/h100.vx"));
         assert!(out.contains("\"schema\": \"vx-diagnostics-v1\""), "{out}");
         assert!(out.contains("\"verdict\": \"rejected\""), "{out}");
         assert!(out.contains("\"code\": \"E6009\""), "{out}");
@@ -257,7 +311,7 @@ mod tests {
             available_bytes: 256,
             tiles: Some(3),
         });
-        let out = render(&diags, &[], "prog.vx", None);
+        let out = render(&diags, &[], &[], "prog.vx", None);
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
         assert!(out.contains("\"warning_count\": 1"), "{out}");
         assert!(out.contains("\"code\": \"W1028\""), "{out}");
@@ -280,7 +334,7 @@ mod tests {
             total_cost: 340,
             derived_cost: Some(128),
         };
-        let out = render(&DiagnosticsVec::default(), &[route], "prog.vx", None);
+        let out = render(&DiagnosticsVec::default(), &[route], &[], "prog.vx", None);
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
         assert!(out.contains("\"error_count\": 0"), "{out}");
         assert!(
@@ -302,7 +356,7 @@ mod tests {
     /// The empty case still parses as an object with both arrays present.
     #[test]
     fn clean_compile_renders_empty_arrays() {
-        let out = render(&DiagnosticsVec::default(), &[], "prog.vx", None);
+        let out = render(&DiagnosticsVec::default(), &[], &[], "prog.vx", None);
         assert!(out.contains("\"diagnostics\": []"), "{out}");
         assert!(out.contains("\"routes\": []"), "{out}");
         assert!(out.contains("\"verdict\": \"admitted\""), "{out}");
