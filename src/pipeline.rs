@@ -47,12 +47,12 @@ impl std::fmt::Display for PipelineError {
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     let mut parsed_modules = parse_phase(file_paths)?;
     macro_expansion_phase(&mut parsed_modules)?;
-    name_resolution_phase(&mut parsed_modules);
+    let symbol_map = name_resolution_phase(&mut parsed_modules);
 
     // Phase 2: Sequential Global Registry Build & Cycle Detection (the freeze point). Builds the
     // frozen nominal-type registry from the resolved modules; an infinite-sized recursive struct
     // (a by-value cycle) fails here.
-    let registry = build_frozen_registry(&parsed_modules)?;
+    let registry = build_frozen_registry_with(&parsed_modules, &symbol_map)?;
     println!(
         "Built Global Immutable Registry ({} types)",
         registry.layouts.len()
@@ -126,9 +126,9 @@ pub fn compile_pipeline_type_stream(
 ) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
     let mut parsed_modules = parse_phase(file_paths)?;
     macro_expansion_phase(&mut parsed_modules)?;
-    name_resolution_phase(&mut parsed_modules);
+    let symbol_map = name_resolution_phase(&mut parsed_modules);
 
-    let registry = build_frozen_registry(&parsed_modules)?;
+    let registry = build_frozen_registry_with(&parsed_modules, &symbol_map)?;
     let global_session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     let global_env_modules: Vec<VxModule> =
         parsed_modules.iter().map(|m| m.clone_signature()).collect();
@@ -179,25 +179,40 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
 }
 
 fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), PipelineError> {
+    // Collecting the macro table stays serial: it is one pass over macro *declarations*, which are
+    // few, and it must complete before any expansion since a macro defined in one module is visible
+    // to all.
     let mut global_macros = std::collections::HashMap::new();
     for m in parsed_modules.iter() {
         for mac in &m.macros {
             global_macros.insert(mac.name.clone(), mac.rules.clone());
         }
     }
-    let mut expander = MacroExpander::new(&global_macros);
-    for m in parsed_modules.iter_mut() {
-        expander.expand_module(m).map_err(PipelineError::Parse)?;
-    }
-    Ok(())
+    // Expansion is per-module and shares nothing. `MacroExpander` holds a single `&HashMap` and no
+    // mutable state, so its methods took `&mut self` without ever being able to use it; now that
+    // they take `&self`, one expander is shared across the parallel-for and the borrow checker
+    // proves the isolation rather than a comment asserting it.
+    let expander = MacroExpander::new(&global_macros);
+    parsed_modules
+        .par_iter_mut()
+        .try_for_each(|m| expander.expand_module(m).map_err(PipelineError::Parse))
 }
 
-fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) {
+/// Resolve names, and hand back the symbol map so the freeze point does not rebuild it.
+///
+/// `build_frozen_registry` needs the same map, and used to compute its own — two full passes over
+/// every module's declarations per compile, both on the serial spine. They are identical by
+/// construction: `build_symbol_map` reads only module paths and the *names* of top-level structs,
+/// enums and traits, and `resolve_names` attaches GIDs to type *references*, adding no declarations
+/// and renaming none. Returning it is what makes reusing it obviously safe rather than a claim a
+/// reader has to check.
+fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) -> crate::resolver::SymbolMap {
     let symbol_map = crate::resolver::build_symbol_map(parsed_modules);
     parsed_modules
         .par_iter_mut()
         .for_each(|m| m.resolve_names(&symbol_map));
     println!("Resolved {} modules in parallel", parsed_modules.len());
+    symbol_map
 }
 
 type TypeCheckResult = (
@@ -315,8 +330,20 @@ fn mint_deferred_generic(
 pub fn build_frozen_registry(
     modules: &[VxModule],
 ) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
-    use crate::registry::TypeDefinition;
     let symbol_map = crate::resolver::build_symbol_map(modules);
+    build_frozen_registry_with(modules, &symbol_map)
+}
+
+/// The freeze point, reusing a symbol map the caller already built.
+///
+/// The pipeline resolves names immediately before freezing the registry, and both steps need the
+/// same map; computing it twice put a second full pass over every module's declarations on the
+/// serial spine for no benefit. Callers outside the pipeline keep the one-argument form above.
+pub fn build_frozen_registry_with(
+    modules: &[VxModule],
+    symbol_map: &crate::resolver::SymbolMap,
+) -> Result<crate::registry::ImmutableGlobalRegistry, PipelineError> {
+    use crate::registry::TypeDefinition;
 
     // Index every nominal decl by its GID so nested by-value fields resolve
     // cross-module during layout computation (#199). Name resolution ran in the

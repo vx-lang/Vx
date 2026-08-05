@@ -59,7 +59,7 @@ impl<'a> MacroExpander<'a> {
         Ok(exprs)
     }
 
-    pub fn expand_module(&mut self, module: &mut VxModule) -> Result<(), String> {
+    pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
         // Expand top level decls
         for func in &mut module.functions {
             self.expand_function(func)?;
@@ -72,7 +72,7 @@ impl<'a> MacroExpander<'a> {
         Ok(())
     }
 
-    fn expand_function(&mut self, func: &mut Function) -> Result<(), String> {
+    fn expand_function(&self, func: &mut Function) -> Result<(), String> {
         let body = std::mem::take(&mut func.body);
         let mut new_body = Vec::with_capacity(body.len());
         for stmt in body {
@@ -82,7 +82,7 @@ impl<'a> MacroExpander<'a> {
         Ok(())
     }
 
-    fn expand_stmt(&mut self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
+    fn expand_stmt(&self, mut stmt: stmt::Statement) -> Result<Vec<stmt::Statement>, String> {
         if let stmt::Statement::MacroCall(call) = stmt {
             let expanded_expr =
                 self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
@@ -98,7 +98,7 @@ impl<'a> MacroExpander<'a> {
         Ok(vec![stmt])
     }
 
-    fn expand_stmt_children(&mut self, stmt: &mut stmt::Statement) -> Result<(), String> {
+    fn expand_stmt_children(&self, stmt: &mut stmt::Statement) -> Result<(), String> {
         match stmt {
             stmt::Statement::ExprStmt(e) => {
                 e.expr = self.expand_expr(take_expr(&mut e.expr))?;
@@ -142,7 +142,7 @@ impl<'a> MacroExpander<'a> {
         Ok(())
     }
 
-    fn expand_expr(&mut self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
+    fn expand_expr(&self, mut expr: expr::Expr) -> Result<expr::Expr, String> {
         if let expr::Expr::MacroCall(call) = expr {
             let expanded =
                 self.expand_macro_call(&call.name, &call.token_tree, &call.block_tree)?;
@@ -295,7 +295,7 @@ impl<'a> MacroExpander<'a> {
     }
 
     fn expand_macro_call(
-        &mut self,
+        &self,
         name: &str,
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
@@ -498,7 +498,7 @@ impl<'a> MacroExpander<'a> {
         Ok(tokens)
     }
 
-    fn expand_vec_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_vec_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for vec!".to_string()),
@@ -520,7 +520,7 @@ impl<'a> MacroExpander<'a> {
         }))
     }
 
-    fn expand_print_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_print_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for print!".to_string()),
@@ -542,7 +542,7 @@ impl<'a> MacroExpander<'a> {
         }))
     }
 
-    fn expand_println_macro(&mut self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_println_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for println!".to_string()),
@@ -565,7 +565,7 @@ impl<'a> MacroExpander<'a> {
     }
 
     fn expand_mlir_macro(
-        &mut self,
+        &self,
         tt: &TokenTree,
         block_tree: &Option<TokenTree>,
     ) -> Result<expr::Expr, String> {

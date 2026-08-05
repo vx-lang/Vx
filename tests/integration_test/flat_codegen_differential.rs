@@ -45,7 +45,7 @@ fn parse(src: &str) -> Program {
     for mac in &program.macros {
         global_macros.insert(mac.name.clone(), mac.rules.clone());
     }
-    let mut expander = vxc::syntax::MacroExpander::new(&global_macros);
+    let expander = vxc::syntax::MacroExpander::new(&global_macros);
     expander
         .expand_module(&mut program)
         .expect("macro expansion failed");

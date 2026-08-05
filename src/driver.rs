@@ -345,7 +345,7 @@ impl CompilerDriver {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let mut expander = MacroExpander::new(&global_macros);
+        let expander = MacroExpander::new(&global_macros);
         for m in &mut program_arr {
             if let Err(e) = expander.expand_module(m) {
                 return Err(format!("Macro expansion failed: {}", e));

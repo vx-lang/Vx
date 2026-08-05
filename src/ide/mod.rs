@@ -113,7 +113,7 @@ impl Analysis {
                 global_macros.insert(mac.name.clone(), mac.rules.clone());
             }
         }
-        let mut expander = MacroExpander::new(&global_macros);
+        let expander = MacroExpander::new(&global_macros);
         for m in modules.iter_mut() {
             let _ = expander.expand_module(m); // Ignore expansion errors for IDE
         }
