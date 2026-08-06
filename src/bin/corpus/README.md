@@ -24,7 +24,32 @@ Set `VX_PIPELINE_QUIET=1` for any timed run. See "Why quiet matters" below — i
 | `--seed`, `--out` | reproducibility |
 
 `intern_bench` accepts comma-separated lists for `--modules`, `--fns`, `--density` and `--threads`
-and sweeps the grid.
+and sweeps the grid. It also takes `--emit`:
+
+| flag | meaning |
+|---|---|
+| `--emit mlir` (default) | compile all the way to MLIR text (`compile_pipeline_mlir`, #311) |
+| `--emit none` | stop after the SIMD patch, the old frontend-only measurement |
+
+Default `mlir`, because a run that stops at the SIMD patch times a *frontend*, and its number cannot
+be quoted as a compile-time speedup however careful the rest of the harness is. Every cell reports
+how many bytes of MLIR it produced; `0 bytes` plus a `NOTE` means the flat emitter declined and the
+cell is not a compile measurement. Each phase's share, codegen included, is on the same line — on a
+small corpus codegen is already about half of measured phase time, which is the ratio a frontend-only
+sweep silently assumed away.
+
+## The carrier is pointer-backed on purpose
+
+A generic carrier is emitted as `struct G<T0> { f0: *mut T0 }`, never `{ f0: T0 }`. `lowered_ty`
+resolves a generic instance through its base layout, which is instance-independent only when every
+type parameter sits behind a pointer — a by-value `f0: T0` leaves the base a 0/0 stub and the whole
+function drops out of the flat subset. With a by-value carrier the density-1 arm compiles its
+frontend and then emits nothing, so the arm that exists to *show* interning pressure would be the one
+arm that never reaches codegen.
+
+Nothing the density knob controls changes: a parameter slot still holds either a settled nominal GID
+or an interned instantiation GID, and the key space is still `vocabulary^arity`. What a carrier's
+field looks like never reaches the interner.
 
 ## The design point
 
@@ -52,10 +77,13 @@ A generic GID is minted in exactly one place: `emit_type_gid`, reached from
    `deduplication_phase` both key on `Vec<TypeId>` of the arguments; the base lives in words 0–1. So
    `Pair<i32>` and `Box<i32>` share one arena entry, and distinct keys come from distinct *argument
    lists*. Hence `--arity`.
-1. **Only resolvable nominals count as arguments.** `nominal_gid` answers `None` for a bare type
-   parameter or a nested `GenericInstance`, and `filter_map` drops those. The generator therefore
-   emits only non-nested concrete arguments; anything else interns the empty key and measures
-   nothing. (That dropping is also a correctness bug in its own right — see #305.)
+1. **Every argument counts, now.** `nominal_gid` used to answer `None` for a bare type parameter or
+   a nested `GenericInstance` and the call site dropped those silently, so a nested argument interned
+   the empty key and measured nothing. That was also a correctness bug — `Foo<Bar<i32>>` and
+   `Foo<Bar<f64>>` collided on one arena entry — and it is fixed (#305/#309, `5d8116e6`):
+   `nominal_gid` is total, and an argument list that cannot be resolved fails rather than shrinking.
+   The generator still emits non-nested concrete arguments, because that keeps the key count
+   predictable, but it is no longer forced to.
 
 Every run prints the **actual** generic-slot and distinct-key counts, and `intern_bench` cross-checks
 the predicted key count against what the interner really ends up holding, printing a NOTE if the

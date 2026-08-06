@@ -63,17 +63,40 @@ fn phase_report(samples: Vec<Vec<(&'static str, Duration)>>) -> Vec<(&'static st
         .collect()
 }
 
-fn run_once(paths: &[String], threads: usize) -> Duration {
+/// What one rep compiled: its wall clock, and how many bytes of MLIR came out.
+///
+/// `Some(0)` means codegen ran and the flat emitter *declined* — the frontend still did all its
+/// work, but nothing was generated, so the rep timed an incomplete compile and must not be quoted
+/// as one. `None` means codegen was not asked for (`--emit=none`).
+struct Rep {
+    wall: Duration,
+    mlir_bytes: Option<usize>,
+}
+
+fn run_once(paths: &[String], threads: usize, emit_mlir: bool) -> Rep {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
         .expect("thread pool");
     let _ = intern_mode::take_phases(); // drop any timings from a prior rep
     let t = Instant::now();
-    pool.install(|| {
-        let _ = vxc::pipeline::compile_pipeline_type_stream(paths).expect("pipeline");
+    let mlir_bytes = pool.install(|| {
+        if emit_mlir {
+            Some(
+                vxc::pipeline::compile_pipeline_mlir(paths)
+                    .expect("pipeline")
+                    .map(|t| t.len())
+                    .unwrap_or(0),
+            )
+        } else {
+            let _ = vxc::pipeline::compile_pipeline_type_stream(paths).expect("pipeline");
+            None
+        }
     });
-    t.elapsed()
+    Rep {
+        wall: t.elapsed(),
+        mlir_bytes,
+    }
 }
 
 fn main() {
@@ -85,6 +108,11 @@ fn main() {
     let densities: Vec<f64> = corpus::arg_list(&args, "--density", vec![1.0]);
     let reps: usize = corpus::arg(&args, "--reps", 10);
     let threads: Vec<usize> = corpus::arg_list(&args, "--threads", vec![1, 2, 4, 8]);
+    // Codegen is on by default (#311). A sweep that stops at the SIMD patch times a frontend, not a
+    // compile, and the number it produces cannot be quoted as a compile-time speedup no matter how
+    // carefully the rest of the harness is built. `--emit=none` reproduces the old frontend-only
+    // measurement when the frontend is deliberately what is under study.
+    let emit_mlir = corpus::arg::<String>(&args, "--emit", "mlir".to_string()) != "none";
 
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -126,11 +154,23 @@ fn main() {
                     for &t in &threads {
                         // One warm-up rep, discarded: the first run pays page faults and
                         // filesystem-cache misses that have nothing to do with interning.
-                        let _ = run_once(&c.paths, t);
+                        let warm = run_once(&c.paths, t, emit_mlir);
+                        if warm.mlir_bytes == Some(0) {
+                            eprintln!(
+                                "  NOTE: the flat emitter declined this corpus, so every rep below \
+                                 times a frontend plus a codegen attempt that produced nothing. Not \
+                                 a compile-time measurement. Run with VX_FLAT_DBG=1 to see which \
+                                 construct declined, or --emit=none to measure the frontend on \
+                                 purpose."
+                            );
+                        }
                         let mut samples = Vec::with_capacity(reps);
                         let mut phase_samples = Vec::with_capacity(reps);
+                        let mut mlir_bytes = 0usize;
                         for _ in 0..reps {
-                            samples.push(run_once(&c.paths, t).as_secs_f64() * 1e3);
+                            let rep = run_once(&c.paths, t, emit_mlir);
+                            mlir_bytes = rep.mlir_bytes.unwrap_or(0);
+                            samples.push(rep.wall.as_secs_f64() * 1e3);
                             phase_samples.push(intern_mode::take_phases());
                         }
                         let (med, q1, q3) = median_iqr(samples);
@@ -141,23 +181,29 @@ fn main() {
                         );
                         let ph = phase_report(phase_samples);
                         let total: f64 = ph.iter().map(|(_, v)| v).sum();
-                        let parallel: f64 = ph
-                            .iter()
-                            .filter(|(n, _)| *n == "type_check")
-                            .map(|(_, v)| v)
-                            .sum();
+                        let share = |name: &str| -> f64 {
+                            let v: f64 =
+                                ph.iter().filter(|(n, _)| *n == name).map(|(_, v)| v).sum();
+                            if total > 0.0 {
+                                v / total * 100.0
+                            } else {
+                                0.0
+                            }
+                        };
                         eprintln!(
                             "  [{label} t={t}] {} | measured-phase total {:.1} ms, type_check \
-                             {:.0}% (the rest is serial or barrier work)",
+                             {:.0}%, codegen {:.0}% (the rest is serial or barrier work){}",
                             ph.iter()
                                 .map(|(n, v)| format!("{n} {v:.1}"))
                                 .collect::<Vec<_>>()
                                 .join("  "),
                             total,
-                            if total > 0.0 {
-                                parallel / total * 100.0
+                            share("type_check"),
+                            share("codegen"),
+                            if emit_mlir {
+                                format!(", {mlir_bytes} bytes of MLIR")
                             } else {
-                                0.0
+                                String::new()
                             }
                         );
                     }

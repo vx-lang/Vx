@@ -112,7 +112,7 @@ const CARRIERS_PER_MODULE: usize = 2;
 /// hypothetical: the first version of this generator named its parameters `p0..p3`, which tripped
 /// W1009 and printed a warning line per parameter from inside the timed region; renaming them to
 /// `_p0..` changed no parameter, so the fix appeared to do nothing until this constant existed.
-const GENERATOR_VERSION: u32 = 2;
+const GENERATOR_VERSION: u32 = 3;
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -241,9 +241,23 @@ fn module_source(p: &CorpusParams, m: usize) -> (String, Vec<Vec<String>>) {
         s.push_str(&format!("struct L{m}_{j} {{\n  a: i32,\n}}\n\n"));
     }
 
+    // Carriers hold each type parameter behind a pointer (`*mut T`), not by value.
+    //
+    // This is a codegen constraint, not a modelling choice. `lowered_ty` resolves a generic instance
+    // to its *base* layout, which is only instance-independent when every type parameter appears
+    // behind a pointer -- a pointer field is 8 bytes for any `T`, whereas a by-value `f0: T0` leaves
+    // the base a 0/0 stub and the whole function declines out of the flat subset. With a by-value
+    // carrier the density-1 arm compiles its frontend and then generates nothing (#311), so the arm
+    // that exists to *show* interning pressure would be the one arm that never reaches codegen.
+    //
+    // Nothing the density knob controls changes: a parameter slot still holds either a settled
+    // nominal GID or an interned instantiation GID, and the key space is still `vocabulary^arity`.
+    // What a carrier's field looks like never reaches the interner.
     for k in 0..CARRIERS_PER_MODULE {
         let tps: Vec<String> = (0..p.arity).map(|i| format!("T{i}")).collect();
-        let fields: Vec<String> = (0..p.arity).map(|i| format!("  f{i}: T{i},")).collect();
+        let fields: Vec<String> = (0..p.arity)
+            .map(|i| format!("  f{i}: *mut T{i},"))
+            .collect();
         s.push_str(&format!(
             "struct G{m}_{k}<{}> {{\n{}\n}}\n\n",
             tps.join(", "),
