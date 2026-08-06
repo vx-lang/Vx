@@ -109,6 +109,19 @@ pub struct DriverOptions {
     #[arg(long = "diagnostics-json", num_args = 0..=1, default_missing_value = "-")]
     pub diagnostics_json: Option<PathBuf>,
 
+    /// Select how a generic instantiation gets its identity.
+    ///
+    /// `deferred` (default) is the shipped path: a worker-local arena index, reconciled at the
+    /// `deduplication_phase` barrier and rewritten by the SIMD patch pass. `content` derives
+    /// identity from a digest of the argument GIDs, so there is no arena entry, no barrier and no
+    /// patch at all -- determinism becomes structural rather than earned by a canonical-order walk,
+    /// and therefore holds across any scheduling, partitioning or worker count (#307).
+    ///
+    /// The two are equivalent under canonical renumbering, not byte-identical: they assign word 2
+    /// differently by construction. See `src/intern_mode.rs`.
+    #[arg(long = "intern-mode", value_name = "MODE", default_value = "deferred")]
+    pub intern_mode: String,
+
     /// Emit MLIR/LLVM backend diagnostics
     #[arg(long = "emit-backend-diagnostics")]
     pub emit_backend_diagnostics: bool,
@@ -176,6 +189,19 @@ pub struct CompilerDriver {
 
 impl CompilerDriver {
     pub fn new(mut options: DriverOptions) -> Self {
+        // Install the interning strategy before any compilation runs, since `mint_deferred_generic`
+        // reads it on the hot path. An unrecognised value is rejected rather than defaulted: a
+        // benchmark that silently measured `deferred` while its command line said otherwise would
+        // produce a wrong number that looks right.
+        match options.intern_mode.as_str() {
+            "deferred" => crate::intern_mode::set_mode(crate::intern_mode::InternMode::Deferred),
+            "content" => crate::intern_mode::set_mode(crate::intern_mode::InternMode::Content),
+            other => {
+                eprintln!("error: unknown --intern-mode '{other}' (expected deferred|content)");
+                std::process::exit(2);
+            }
+        }
+
         // Handle alias flags
         if options.parse_only {
             options.action = Action::ParseOnly;

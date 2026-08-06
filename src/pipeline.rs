@@ -44,6 +44,21 @@ impl std::fmt::Display for PipelineError {
     }
 }
 
+/// The pipeline's progress chatter, suppressible with `VX_PIPELINE_QUIET=1`.
+///
+/// EVAL-ONLY (#295/#296). Some of these `println!`s sit *inside* rayon parallel-fors -- `parse_phase`
+/// emits one per module -- and `println!` takes the global stdout mutex, so each is a serialisation
+/// point in the region whose scaling the paper measures. Diagnostics (`Error:` / `Warning:`) are
+/// deliberately left unguarded: a corpus that stops compiling must stay visible even under a quiet
+/// measurement run.
+macro_rules! chatter {
+    ($($t:tt)*) => {
+        if !crate::intern_mode::quiet() {
+            println!($($t)*);
+        }
+    };
+}
+
 pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     let mut parsed_modules = parse_phase(file_paths)?;
     macro_expansion_phase(&mut parsed_modules)?;
@@ -53,7 +68,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
     // frozen nominal-type registry from the resolved modules; an infinite-sized recursive struct
     // (a by-value cycle) fails here.
     let registry = build_frozen_registry_with(&parsed_modules, &symbol_map)?;
-    println!(
+    chatter!(
         "Built Global Immutable Registry ({} types)",
         registry.layouts.len()
     );
@@ -124,27 +139,43 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
 pub fn compile_pipeline_type_stream(
     file_paths: &[String],
 ) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
-    let mut parsed_modules = parse_phase(file_paths)?;
-    macro_expansion_phase(&mut parsed_modules)?;
-    let symbol_map = name_resolution_phase(&mut parsed_modules);
+    // EVAL-ONLY (#295): phase timing, so the sweep can attribute wall clock to serial vs
+    // parallel work rather than inferring it from a plateau.
+    use crate::intern_mode::timed;
+    let mut parsed_modules = timed("parse", || parse_phase(file_paths))?;
+    timed("macro_expand", || {
+        macro_expansion_phase(&mut parsed_modules)
+    })?;
+    // `name_resolution_phase` now hands back the symbol map so the freeze point can reuse it
+    // instead of rebuilding it (main, c4c35e31); the timing wrapper carries the value through.
+    let symbol_map = timed("name_resolution", || {
+        name_resolution_phase(&mut parsed_modules)
+    });
 
-    let registry = build_frozen_registry_with(&parsed_modules, &symbol_map)?;
+    let registry = timed("registry_freeze", || {
+        build_frozen_registry_with(&parsed_modules, &symbol_map)
+    })?;
     let global_session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
     let global_env_modules: Vec<VxModule> =
         parsed_modules.iter().map(|m| m.clone_signature()).collect();
-    let mut global_env = GlobalAstEnv::build(&global_env_modules);
+    let mut global_env = timed("env_build", || GlobalAstEnv::build(&global_env_modules));
     // `clone_signature` above strips non-generic function bodies, so `build` could not summarize
     // their return provenance (#243). Refill from the full modules (bodies intact) before the
     // parallel check reads it. The map is frozen after this point — the per-function checkers only
     // read it, preserving the lock-free `type_check_phase`.
     global_env.annotate_return_provenances(&parsed_modules);
 
-    let mut check_results = type_check_phase(&mut parsed_modules, &global_session, &global_env)?;
-    let (_slow, _gen, _off, slow_mappings, gen_mappings) =
-        deduplication_phase(&check_results, &global_session);
+    let mut check_results = timed("type_check", || {
+        type_check_phase(&mut parsed_modules, &global_session, &global_env)
+    })?;
+    let (_slow, _gen, _off, slow_mappings, gen_mappings) = timed("dedup_barrier", || {
+        deduplication_phase(&check_results, &global_session)
+    });
 
     let mut all_type_streams = extract_type_streams(&mut check_results);
-    simd_patch_phase(&mut all_type_streams, &slow_mappings, &gen_mappings);
+    timed("simd_patch", || {
+        simd_patch_phase(&mut all_type_streams, &slow_mappings, &gen_mappings)
+    });
 
     Ok(all_type_streams
         .into_iter()
@@ -156,7 +187,7 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
     let modules: Result<Vec<VxModule>, PipelineError> = file_paths
         .par_iter()
         .map(|path| {
-            println!("Parsing file: {}", path);
+            chatter!("Parsing file: {}", path);
             let source = std::fs::read_to_string(path)
                 .map_err(|e| PipelineError::IO(format!("Failed to read {}: {}", path, e)))?;
             let mut lexer = Lexer::new(&source);
@@ -211,7 +242,7 @@ fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) -> crate::resolver:
     parsed_modules
         .par_iter_mut()
         .for_each(|m| m.resolve_names(&symbol_map));
-    println!("Resolved {} modules in parallel", parsed_modules.len());
+    chatter!("Resolved {} modules in parallel", parsed_modules.len());
     symbol_map
 }
 
@@ -403,6 +434,27 @@ fn mint_deferred_generic(
     base: crate::gid::TypeId,
     args: Vec<crate::gid::TypeId>,
 ) -> crate::gid::TypeId {
+    mint_generic_in_mode(crate::intern_mode::mode(), worker, base, args)
+}
+
+/// The minting rule, with the strategy passed in rather than read from process-global state.
+///
+/// Tests pick a mode by calling this directly. Reading the global inside would make every
+/// mode-sensitive test racy against every other: `cargo test` runs tests in parallel threads within
+/// one process, so a test that flipped the mode could change what a concurrently running test
+/// minted. That is not hypothetical -- it produced an intermittent failure before this split.
+fn mint_generic_in_mode(
+    mode: crate::intern_mode::InternMode,
+    worker: &mut LocalWorkerState,
+    base: crate::gid::TypeId,
+    args: Vec<crate::gid::TypeId>,
+) -> crate::gid::TypeId {
+    if mode == crate::intern_mode::InternMode::Content {
+        let mut id = base;
+        id.set_generic_digest(crate::gid::generic_digest(&args));
+        return id;
+    }
+
     let start = worker.local_generics_arena.len();
     let len = args.len();
     worker.local_generics_arena.extend(args);
@@ -879,9 +931,10 @@ fn type_check_phase(
         .map(|(_, monos, _, _, _)| monos.len())
         .sum();
 
-    println!(
+    chatter!(
         "Type checked bodies in parallel: {} errors, {} monomorphized variants generated",
-        total_errors, total_monomorphized
+        total_errors,
+        total_monomorphized
     );
 
     if total_errors > 0 {
@@ -966,7 +1019,7 @@ fn deduplication_phase(
         generics_thread_mappings.push(local_mapping_generics);
     }
 
-    println!(
+    chatter!(
         "Phase 5: Merged {} local arenas into global. Advancing to Epoch 2.",
         slow_path_thread_mappings.len()
     );
@@ -997,7 +1050,16 @@ fn simd_patch_phase(
     slow_path_thread_mappings: &[Vec<u64>],
     generics_thread_mappings: &[Vec<u64>],
 ) {
-    println!("Executing Phase 6: SIMD Patch Pass over Flat Type Streams");
+    // The pass runs in every mode, and the *classification* decides what work exists. An earlier
+    // version of this file early-returned for `locked`, which also skipped patching the slow-path
+    // (lifetime) arena -- those GIDs are still minted worker-local in every mode, so skipping the
+    // scan would have left unresolved local indices in the stream once a corpus exercised them.
+    //
+    // Charging the modes correctly falls out of the codec rather than from a flag: `locked` mints
+    // final global generic indices and `content` mints digests, so neither has a Local-scope
+    // generic GID for the loop to rewrite, while `deferred` does. The scan itself is shared work
+    // that every mode needs for the slow path.
+    chatter!("Executing Phase 6: SIMD Patch Pass over Flat Type Streams");
     use crate::gid::{Word2, Word2Scope};
 
     all_type_streams
@@ -1028,7 +1090,7 @@ fn simd_patch_phase(
             }
         });
 
-    println!("SIMD Patch Pass completed. AST is officially lowered to Flat Array.");
+    chatter!("SIMD Patch Pass completed. AST is officially lowered to Flat Array.");
 }
 
 fn codegen_and_metadata_phase(
@@ -1082,7 +1144,7 @@ fn codegen_and_metadata_phase(
             module.structs = new_structs;
         });
 
-    println!("Monomorphized generics deduplicated and appended to modules in parallel");
+    chatter!("Monomorphized generics deduplicated and appended to modules in parallel");
 
     let mut master_type_dictionary: Vec<crate::gid::TypeId> = all_type_streams
         .into_iter()
@@ -1098,7 +1160,7 @@ fn codegen_and_metadata_phase(
     VxMetadata::save_to_file(&master_type_dictionary, &test_path)
         .map_err(|e| PipelineError::IO(format!("Failed to save metadata: {}", e)))?;
 
-    println!(
+    chatter!(
         "Saved {} unique TypeIds to {:?}",
         master_type_dictionary.len(),
         test_path
@@ -1116,183 +1178,107 @@ fn codegen_and_metadata_phase(
 #[cfg(test)]
 mod gid_stream_tests {
     use super::*;
-    use crate::gid::{TypeId, Word2, Word2Arena, Word2Scope, LOCAL_DEFERRED_BIT};
+    use crate::gid::{TypeId, LOCAL_DEFERRED_BIT};
     use std::sync::Arc;
 
-    /// A generic instantiation lowers to a *deferred* GID (word 2 = a local generics-arena offset
-    /// index, deferred + generic flags set). Phase 5 (dedup) interns the arena and Phase 6 (SIMD
-    /// patch) remaps word 2 to the global offset index and clears the deferred bit, while
-    /// preserving the nominal identity in words 0/1. Exercises the escape-hatch local->global
-    /// handoff end-to-end (and guards the fixed per-kind mapping selection).
+    /// Deferred and content-addressed identity must describe the *same program*.
+    ///
+    /// Equality is checked after canonical renumbering rather than on raw bytes: `deferred` carries
+    /// arena indices assigned at the barrier, `content` carries digests of the argument list, so the
+    /// two never agree word-for-word. What must agree is which positions in the stream denote the
+    /// same instantiation, which is what equality of programs actually means here.
     #[test]
-    fn deferred_generic_gid_is_interned_and_patched() {
-        let session = Arc::new(GlobalSession::new(1));
-        let mut worker = LocalWorkerState::new(session.clone());
+    fn deferred_and_content_agree_under_canonical_renumbering() {
+        use crate::intern_mode::{canonicalise_stream, InternMode};
 
+        // Two distinct instantiations, the second repeated: exercises a fresh mint and a repeat,
+        // and gives the canonical ranks something to disagree about if they can.
+        let arg_a = vec![TypeId::new(0, 0x1111, 0, 0)];
+        let arg_b = vec![TypeId::new(0, 0x2222, 0, 0)];
         let base = TypeId::new(0xAAAA, 0xBBBB, 0, 0);
-        let deferred = mint_deferred_generic(&mut worker, base, vec![TypeId::new(0, 0x1111, 0, 0)]);
-        worker.local_type_stream.push(deferred);
 
-        // Pre-patch: word 2 is a *local* generics-arena index (offset 0), identity preserved in
-        // words 0/1. Under the codec, index 0 still carries the escape-hatch bit — that is exactly
-        // what distinguishes "arena index 0" from an empty fast-path lifetime bitfield (#193).
-        assert_eq!([deferred.words[0], deferred.words[1]], [0xAAAA, 0xBBBB]);
-        assert_eq!(
-            deferred.classify_word2(),
-            Word2::Index {
-                index: 0,
-                arena: Word2Arena::Generics,
-                scope: Word2Scope::Local,
+        let run = |mode: InternMode| -> (Vec<TypeId>, Vec<TypeId>, Vec<(usize, usize)>) {
+            let session = Arc::new(GlobalSession::new(1));
+            let mut worker = LocalWorkerState::new(session.clone());
+            for args in [&arg_a, &arg_b, &arg_a] {
+                let id = mint_generic_in_mode(mode, &mut worker, base, args.clone());
+                worker.local_type_stream.push(id);
             }
+            let mut results: Vec<TypeCheckResult> = vec![(
+                crate::diagnostic::DiagnosticsVec::new(),
+                Vec::new(),
+                worker,
+                0,
+                Vec::new(),
+            )];
+            let (_s, arena, offsets, slow, gen) = deduplication_phase(&results, &session);
+            let mut streams = extract_type_streams(&mut results);
+            simd_patch_phase(&mut streams, &slow, &gen);
+            (streams.remove(0).1, arena, offsets)
+        };
+
+        let (deferred_stream, d_arena, d_offsets) = run(InternMode::Deferred);
+        let (content_stream, c_arena, c_offsets) = run(InternMode::Content);
+
+        // Content addressing stages nothing for the barrier -- the claim it exists to make.
+        assert!(
+            c_arena.is_empty() && c_offsets.is_empty(),
+            "content mode must leave the global generics arena empty"
         );
 
-        let mut check_results: Vec<TypeCheckResult> = vec![(
-            crate::diagnostic::DiagnosticsVec::new(),
-            Vec::new(),
-            worker,
-            0,
-            Vec::new(),
-        )];
-        let (_s, _g, _o, slow_map, gen_map) = deduplication_phase(&check_results, &session);
-        let mut streams = extract_type_streams(&mut check_results);
-        simd_patch_phase(&mut streams, &slow_map, &gen_map);
-
-        let patched = streams[0].1[0];
-        // Post-patch: word 2 is now a *global* generics-arena index (offset 0), scope flipped
-        // local->global, identity preserved. Still an arena index (escape-hatch set), not a
-        // lifetime bitfield.
-        assert_eq!([patched.words[0], patched.words[1]], [0xAAAA, 0xBBBB]);
-        assert_eq!(
-            patched.classify_word2(),
-            Word2::Index {
-                index: 0,
-                arena: Word2Arena::Generics,
-                scope: Word2Scope::Global,
-            }
-        );
-    }
-
-    /// `emit_type_gid` harvests a settled GID for a resolved nominal type and a deferred GID for a
-    /// generic instantiation (whose argument lands in the local generics arena).
-    #[test]
-    fn emit_type_gid_harvests_nominal_and_generic() {
-        use crate::symbol::Symbol;
-        use syntax::Type;
-        let session = Arc::new(GlobalSession::new(1));
-        let mut worker = LocalWorkerState::new(session);
-
-        let foo = TypeId::new(1, 2, 0, 0);
-        emit_type_gid(&Type::Struct(Symbol::from("Foo"), Some(foo)), &mut worker); // settled
-
-        let list = TypeId::new(3, 4, 0, 0);
-        emit_type_gid(
-            &Type::GenericInstance(
-                Box::new(Type::Struct(Symbol::from("List"), Some(list))),
-                vec![Type::Struct(Symbol::from("Foo"), Some(foo))],
-            ),
-            &mut worker,
-        ); // deferred
-
-        assert_eq!(worker.local_type_stream.len(), 2);
-        assert_eq!(worker.local_type_stream[0], foo);
-        assert_ne!(worker.local_type_stream[1].words[3] & LOCAL_DEFERRED_BIT, 0);
-        assert_eq!(worker.local_generics_arena, vec![foo]); // the one arg
-    }
-
-    /// Drive a list of types through the whole identity path -- emit, reconcile, patch -- and hand
-    /// back the final GIDs. Distinctness has to be asserted on *patched* GIDs: pre-patch, two
-    /// instantiations differ merely by holding different local arena indices, which says nothing
-    /// about whether they will still differ once those indices are reconciled to global ones.
-    fn patched_gids(types: &[syntax::Type]) -> Vec<TypeId> {
-        let session = Arc::new(GlobalSession::new(1));
-        let mut worker = LocalWorkerState::new(session.clone());
-        for t in types {
-            emit_type_gid(t, &mut worker);
+        // Neither leaves a deferred GID: deferred patches them, content never creates them.
+        for id in deferred_stream.iter().chain(content_stream.iter()) {
+            assert_eq!(
+                id.words[3] & LOCAL_DEFERRED_BIT,
+                0,
+                "no deferred bit should survive either mode"
+            );
         }
-        let mut results: Vec<TypeCheckResult> = vec![(
-            crate::diagnostic::DiagnosticsVec::new(),
-            Vec::new(),
-            worker,
-            0,
-            Vec::new(),
-        )];
-        let (_s, _g, _o, slow, gen) = deduplication_phase(&results, &session);
-        let mut streams = extract_type_streams(&mut results);
-        simd_patch_phase(&mut streams, &slow, &gen);
-        streams.remove(0).1
+
+        let resolve = |arena: &[TypeId], offsets: &[(usize, usize)]| {
+            let arena = arena.to_vec();
+            let offsets = offsets.to_vec();
+            move |i: u64| {
+                offsets
+                    .get(i as usize)
+                    .map(|&(start, len)| arena[start..start + len].to_vec())
+            }
+        };
+        let d_canon = canonicalise_stream(&deferred_stream, resolve(&d_arena, &d_offsets));
+        let c_canon = canonicalise_stream(&content_stream, |_| None);
+        assert_eq!(
+            d_canon, c_canon,
+            "content addressing must describe the same program as deferred interning"
+        );
+
+        // The canonicalisation must not be vacuous: it has to tell the two distinct instantiations
+        // apart, and the repeat must share the first one's rank. Mapping everything to one rank
+        // would make the assertion above pass trivially.
+        assert_eq!(d_canon.len(), 3);
+        assert_eq!(d_canon[0], d_canon[2], "the repeat shares a rank");
+        assert_ne!(
+            d_canon[0], d_canon[1],
+            "distinct instantiations keep distinct ranks"
+        );
     }
 
-    /// #309: const-generic arguments contribute to instantiation identity.
-    ///
-    /// `Grid<i32,2,3>` and `Grid<i32,4,5>` used to reduce to the same argument list -- `Type::Const`
-    /// had no `nominal_gid` arm and `filter_map` dropped it -- so two differently-shaped matrices
-    /// shared one GID in the flat type stream.
+    /// Two independent workers must agree on a content-addressed instantiation with no barrier
+    /// between them -- the property the design turns on. Checked directly rather than inferred from
+    /// streams matching, which a shared worker would also satisfy.
     #[test]
-    fn const_generic_arguments_are_part_of_instantiation_identity() {
-        use crate::symbol::Symbol;
-        use syntax::Type;
-        let grid = TypeId::new(7, 8, 0, 0);
-        let num = |v: &str| {
-            Type::Const(Box::new(syntax::Expr::Number(syntax::NumberExpr::new(
-                v.into(),
-                None,
-                syntax::Span::default(),
-            ))))
-        };
-        let mk = |a: &str, b: &str| {
-            Type::GenericInstance(
-                Box::new(Type::Struct(Symbol::from("Grid"), Some(grid))),
-                vec![
-                    Type::Scalar(crate::syntax::ElementType::I32),
-                    num(a),
-                    num(b),
-                ],
-            )
-        };
-        let ids = patched_gids(&[mk("2", "3"), mk("4", "5"), mk("2", "3")]);
-        assert_eq!(ids.len(), 3);
-        assert_ne!(
-            ids[0], ids[1],
-            "Grid<i32,2,3> must differ from Grid<i32,4,5>"
+    fn content_addressed_workers_agree_without_coordinating() {
+        use crate::intern_mode::InternMode;
+        let base = TypeId::new(0xAAAA, 0xBBBB, 0, 0);
+        let args = vec![TypeId::new(0, 0x1111, 0, 0)];
+        let mut w1 = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
+        let mut w2 = LocalWorkerState::new(Arc::new(GlobalSession::new(1)));
+        let a = mint_generic_in_mode(InternMode::Content, &mut w1, base, args.clone());
+        let b = mint_generic_in_mode(InternMode::Content, &mut w2, base, args);
+        assert_eq!(a, b, "two workers must agree without coordinating");
+        assert!(
+            w1.local_generics_arena.is_empty(),
+            "content mode must not stage anything for the barrier"
         );
-        assert_eq!(ids[0], ids[2], "the same shape must keep one identity");
-    }
-
-    /// #305: a nested instantiation argument contributes to identity.
-    ///
-    /// `Foo<Bar<i32>>` and `Foo<Baz<i32>>` used to collapse to the same empty argument list, since
-    /// `nominal_gid` answered `None` for a nested `GenericInstance` and `filter_map` discarded it.
-    #[test]
-    fn nested_generic_arguments_are_part_of_instantiation_identity() {
-        use crate::symbol::Symbol;
-        use syntax::Type;
-        let foo = TypeId::new(3, 4, 0, 0);
-        let nest = |name: &str, id: TypeId| {
-            Type::GenericInstance(
-                Box::new(Type::Struct(Symbol::from("Foo"), Some(foo))),
-                vec![Type::GenericInstance(
-                    Box::new(Type::Struct(Symbol::from(name), Some(id))),
-                    vec![Type::Scalar(crate::syntax::ElementType::I32)],
-                )],
-            )
-        };
-        let bar = nest("Bar", TypeId::new(5, 6, 0, 0));
-        let baz = nest("Baz", TypeId::new(7, 8, 0, 0));
-        // `Foo<T>` too: an uninstantiated parameter used to share the same empty key as both of the
-        // above, so all three were one GID.
-        let param = Type::GenericInstance(
-            Box::new(Type::Struct(Symbol::from("Foo"), Some(foo))),
-            vec![Type::Generic(Symbol::from("T"), None)],
-        );
-        let ids = patched_gids(&[bar.clone(), baz, param, bar]);
-        assert_eq!(ids.len(), 4);
-        assert_ne!(
-            ids[0], ids[1],
-            "Foo<Bar<i32>> must differ from Foo<Baz<i32>>"
-        );
-        assert_ne!(ids[0], ids[2], "Foo<Bar<i32>> must differ from Foo<T>");
-        assert_ne!(ids[1], ids[2], "Foo<Baz<i32>> must differ from Foo<T>");
-        assert_eq!(ids[0], ids[3], "the same instantiation keeps one identity");
     }
 
     fn parse_and_resolve(path: &str, src: &str) -> VxModule {

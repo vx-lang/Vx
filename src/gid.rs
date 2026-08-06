@@ -53,14 +53,37 @@ pub const LOCAL_DEFERRED_BIT: u64 = 1 << 43;
 pub const SYNTHETIC_MONO_FLAG: u64 = 1 << 42;
 pub const IS_GENERIC_INST_FLAG: u64 = 1 << 41;
 
+/// EVAL-ONLY (#295/#296, never merged): word 2 holds a *content digest* of the instantiation's
+/// argument list rather than an arena index, for `--intern-mode=content`.
+///
+/// This is a distinct bit rather than a reuse of an existing state on purpose. "`IS_GENERIC_INST`
+/// set, `LOCAL_DEFERRED` clear" already means *post-patch global arena index*; overloading it would
+/// recreate exactly the failure #193 was about -- a word read under one format having been written
+/// under another. With its own bit, a digest and an index are distinguishable in the same stream,
+/// which is what makes a staged migration possible at all.
+///
+/// Note the asymmetry with main's use of [`generic_digest`] below: a *nested argument's* digest is
+/// written by `nominal_gid` without this flag, because such a GID only ever lives inside the
+/// generics arena as part of a key and is never decoded. Only a GID that reaches the type *stream*
+/// needs to announce which encoding word 2 carries.
+pub const GENERIC_DIGEST_FLAG: u64 = 1 << 40;
+
 /// The content digest of a generic instantiation's argument list: FNV-1a over every argument GID's
 /// four words, in order, masked into word 2's 63-bit payload.
 ///
-/// Used to give a *nested* instantiation a stable identity when it appears as an argument to
-/// another (`Foo<Bar<i32>>`). An arena index cannot serve there: the inner instantiation has only a
-/// worker-local index until the reconciliation barrier, so two workers would key the outer
-/// instantiation differently and dedup would fail to unify them. A digest is computed bottom-up
-/// with no coordination, so it is identical in every worker before any barrier runs.
+/// Two callers, arrived at independently and for the same underlying reason:
+///
+///  * `nominal_gid` (main) gives a *nested* instantiation a stable identity when it appears as an
+///    argument to another (`Foo<Bar<i32>>`). An arena index cannot serve there -- the inner
+///    instantiation has only a worker-local index until the reconciliation barrier, so two workers
+///    would key the outer instantiation differently and dedup would never unify them.
+///  * `mint_deferred_generic` under `--intern-mode=content` (this branch) uses it for the
+///    instantiation's *own* identity, which removes the barrier entirely.
+///
+/// Both rest on the same property: a digest is computed bottom-up with no coordination, so it is
+/// identical in every worker before any barrier runs. Keyed on the arguments alone, mirroring
+/// `intern_generic` and `deduplication_phase` -- the base type already lives in words 0-1, so
+/// `Pair<i32>` and `Box<i32>` share a digest and remain distinct GIDs.
 ///
 /// Order-sensitive, so `Pair<f32,f64>` and `Pair<f64,f32>` differ.
 pub fn generic_digest(args: &[TypeId]) -> u64 {
@@ -136,6 +159,10 @@ pub enum Word2 {
         arena: Word2Arena,
         scope: Word2Scope,
     },
+    /// EVAL-ONLY (#295/#296): word 2 is a content digest of a generic instantiation's argument
+    /// list. Final at mint time -- there is no arena to index, nothing to reconcile, and nothing to
+    /// patch. Never carries a deferred bit.
+    GenericDigest(u64),
 }
 
 impl TypeId {
@@ -146,6 +173,11 @@ impl TypeId {
     pub fn classify_word2(&self) -> Word2 {
         if self.words[2] & ESCAPE_HATCH_MASK == 0 {
             return Word2::FastLifetime(self.words[2]);
+        }
+        // EVAL-ONLY (#295/#296): checked before the index decode, because a digest must never be
+        // read as an index -- it would be an out-of-bounds arena reference, not a wrong answer.
+        if self.words[3] & GENERIC_DIGEST_FLAG != 0 {
+            return Word2::GenericDigest(self.words[2] & INDEX_MASK);
         }
         let arena = if self.words[3] & IS_GENERIC_INST_FLAG != 0 {
             Word2Arena::Generics
@@ -181,6 +213,25 @@ impl TypeId {
             Word2Scope::Local => self.words[3] |= LOCAL_DEFERRED_BIT,
             Word2Scope::Global => self.words[3] &= !LOCAL_DEFERRED_BIT,
         }
+        // An index is not a digest. Clearing here means a GID cannot end up claiming both
+        // encodings, whichever setter ran last.
+        self.words[3] &= !GENERIC_DIGEST_FLAG;
+    }
+
+    /// EVAL-ONLY (#295/#296): encode word 2 as a content digest of the argument list.
+    ///
+    /// Sets `IS_GENERIC_INST_FLAG` (this *is* a generic instantiation) and `GENERIC_DIGEST_FLAG`
+    /// (word 2 is a digest, not an index), and clears `LOCAL_DEFERRED_BIT` -- the identifier is
+    /// final as minted, which is the entire point.
+    #[inline]
+    pub fn set_generic_digest(&mut self, digest: u64) {
+        debug_assert!(
+            digest & ESCAPE_HATCH_MASK == 0,
+            "digest must fit in 63 bits"
+        );
+        self.words[2] = ESCAPE_HATCH_MASK | (digest & INDEX_MASK);
+        self.words[3] |= IS_GENERIC_INST_FLAG | GENERIC_DIGEST_FLAG;
+        self.words[3] &= !LOCAL_DEFERRED_BIT;
     }
 }
 
@@ -393,9 +444,52 @@ mod tests {
                         scope: s,
                     } => assert_eq!((index, a, s), (5, arena, scope)),
                     Word2::FastLifetime(_) => panic!("arena index misread as fast-path lifetime"),
+                    Word2::GenericDigest(_) => panic!("arena index misread as a content digest"),
                 }
             }
         }
+    }
+
+    /// EVAL-ONLY (#295/#296): a content digest and an arena index are distinguishable in the same
+    /// stream, and neither can be read as the other. This is the property that makes the digest a
+    /// *new* word-2 regime rather than an overload of an existing one -- overloading is how the
+    /// #193 bug happened, and a digest misread as an index is an out-of-bounds arena reference.
+    #[test]
+    fn content_digest_and_arena_index_are_not_confusable() {
+        let mut d = TypeId::new(0xAAAA, 0xBBBB, 0, 0);
+        d.set_generic_digest(generic_digest(&[TypeId::new(0, 0x1111, 0, 0)]));
+        assert_eq!([d.words[0], d.words[1]], [0xAAAA, 0xBBBB]);
+        assert!(!d.is_local_deferred(), "a digest is final as minted");
+        assert!(matches!(d.classify_word2(), Word2::GenericDigest(_)));
+
+        // Setting an index afterwards must fully leave the digest regime, and vice versa.
+        let mut back = d;
+        back.set_arena_index(5, Word2Arena::Generics, Word2Scope::Global);
+        assert!(matches!(
+            back.classify_word2(),
+            Word2::Index { index: 5, .. }
+        ));
+        let mut fwd = back;
+        fwd.set_generic_digest(9);
+        assert!(matches!(fwd.classify_word2(), Word2::GenericDigest(9)));
+
+        // Distinct argument lists get distinct digests, and order is significant.
+        let a = TypeId::new(0, 0x1111, 0, 0);
+        let b = TypeId::new(0, 0x2222, 0, 0);
+        assert_ne!(generic_digest(&[a]), generic_digest(&[b]));
+        assert_ne!(generic_digest(&[a, b]), generic_digest(&[b, a]));
+        assert_eq!(generic_digest(&[a, b]), generic_digest(&[a, b]));
+        // Nesting composes: an argument that is itself an instantiation is just another GID, which
+        // is precisely what the arena scheme could not represent (#305).
+        let mut nested_x = TypeId::new(3, 4, 0, 0);
+        nested_x.set_generic_digest(generic_digest(&[a]));
+        let mut nested_y = TypeId::new(5, 6, 0, 0);
+        nested_y.set_generic_digest(generic_digest(&[a]));
+        assert_ne!(
+            generic_digest(&[nested_x]),
+            generic_digest(&[nested_y]),
+            "Foo<Bar<T>> and Foo<Baz<T>> must not collide"
+        );
     }
 
     #[test]

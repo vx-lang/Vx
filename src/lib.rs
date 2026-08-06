@@ -17,6 +17,8 @@ pub mod borrow;
 pub mod codegen;
 pub mod diagnostic;
 pub mod diagnostics_json;
+// EVAL-ONLY (#295): the locked-interning baseline. This module exists only on the
+// `parallel-frontend-eval` branch and must never be merged to main.
 pub mod driver;
 pub mod error;
 pub mod formatter;
@@ -24,6 +26,7 @@ pub mod gid;
 pub mod hash;
 pub mod hir;
 pub mod ide;
+pub mod intern_mode;
 pub mod jit;
 pub mod layout;
 pub mod lexer;

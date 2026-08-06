@@ -147,6 +147,11 @@ impl LocalWorkerState {
                 arena: Word2Arena::Generics,
                 ..
             } => LifetimeSignature::FastPath(0),
+            // Same reasoning as the generics-arena case above, and for the same reason: a *pure*
+            // generic instantiation carries no lifetime metadata, whether its identity is an arena
+            // index or a content digest. A type that is both generic and borrowed lives in the
+            // SlowMeta arena, which is untouched by content addressing and still carries lifetimes.
+            Word2::GenericDigest(_) => LifetimeSignature::FastPath(0),
             Word2::Index {
                 index,
                 arena: Word2Arena::SlowMeta,

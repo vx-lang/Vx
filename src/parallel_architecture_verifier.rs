@@ -14,9 +14,7 @@
 //===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
-    use crate::gid::{
-        TypeId, ESCAPE_HATCH_MASK, INDEX_MASK, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT,
-    };
+    use crate::gid::{TypeId, INDEX_MASK, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT};
     use crate::session::{GlobalSession, LocalWorkerState};
     use crate::syntax;
     use rayon::prelude::*;
@@ -117,20 +115,31 @@ pub mod verify_arch {
                 "FATAL: SIMD Patch Pass missed a deferred bit. Absolute identity failed."
             );
 
-            // INVARIANT 2: Global Coordinate Integrity
-            if (gid.words[2] & ESCAPE_HATCH_MASK) != 0 {
-                let index = (gid.words[2] & INDEX_MASK) as usize;
-                if (gid.words[3] & IS_GENERIC_INST_FLAG) != 0 {
-                    assert!(
-                        index < session.generics_offsets.len(),
-                        "FATAL: Patched generics index OOB."
-                    );
-                } else {
-                    assert!(
-                        index < session.slow_path_arena.len(),
-                        "FATAL: Patched function index OOB."
-                    );
+            // INVARIANT 2: Global Coordinate Integrity.
+            //
+            // Routed through `classify_word2` rather than re-masking the words here. This function
+            // used to decode word 2 itself, which made it a *second* decoder -- the arrangement
+            // that produced the #193 bug, where the word was read under one format having been
+            // written under another. It also mattered concretely: under `--intern-mode=content`
+            // (#296) word 2 holds a digest, and a second decoder that only knows about indices
+            // reads that digest as an arena offset and asserts on a bound it was never subject to.
+            match gid.classify_word2() {
+                crate::gid::Word2::Index { index, arena, .. } => {
+                    let (limit, what) = match arena {
+                        crate::gid::Word2Arena::Generics => {
+                            (session.generics_offsets.len(), "generics")
+                        }
+                        crate::gid::Word2Arena::SlowMeta => {
+                            (session.slow_path_arena.len(), "function")
+                        }
+                    };
+                    assert!((index as usize) < limit, "FATAL: Patched {what} index OOB.");
                 }
+                // A content digest indexes nothing, so there is no bound to check. Its integrity
+                // condition is different in kind: equal arguments must give equal digests, which is
+                // true by construction and tested in `gid.rs`.
+                crate::gid::Word2::GenericDigest(_) => {}
+                crate::gid::Word2::FastLifetime(_) => {}
             }
         });
     }
