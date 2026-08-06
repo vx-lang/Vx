@@ -110,6 +110,15 @@ pub struct GlobalAstEnv<'a> {
     /// entry means `AnyParam` — today's conservative behaviour. See `crate::hir::provenance`.
     pub return_provenances:
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
+    /// topology's, with the all-pairs shortest-path matrix precomputed.
+    ///
+    /// Built once here, at the end of `build_from_refs`, and shared by `&` with every
+    /// `TypeChecker`. It used to be built inside `TypeChecker::new`, i.e. once per *function*,
+    /// running the all-pairs precompute twice each time — which a profile put at the top of the
+    /// whole compiler by self time. Every use in the checker is a `&self` read, so there is nothing
+    /// per-function about it.
+    pub transfer_cost_graph: crate::arch::TransferCostGraph,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -131,6 +140,7 @@ impl<'a> GlobalAstEnv<'a> {
             topologies: HashMap::new(),
             duplicate_decls: Vec::new(),
             return_provenances: HashMap::new(),
+            transfer_cost_graph: crate::arch::TransferCostGraph::default(),
         };
 
         for &module in modules {
@@ -220,6 +230,24 @@ impl<'a> GlobalAstEnv<'a> {
                 }
             }
         }
+        // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
+        // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
+        // all-pairs shortest-path precompute twice (once in `default()`, once in
+        // `seed_from_topologies`) and cloned every topology declaration in the compilation. A
+        // profile of a 6,000-module corpus put `TransferCostGraph::transfer_path` at the top of the
+        // whole compiler by self time, on a corpus that declares no topologies at all.
+        //
+        // The graph depends only on this compilation's topology declarations, and every one of its
+        // ~31 uses in the checker is a `&self` read, so one per compilation is not merely an
+        // optimisation -- it is what the comment on `seed_from_topologies` already claimed it was:
+        // "the per-compilation, lock-free carrier the parallel pipeline shares by `&`".
+        env.transfer_cost_graph = {
+            let mut g = crate::arch::TransferCostGraph::default();
+            let decls: Vec<crate::arch::TopologyDecl> =
+                env.topologies.values().map(|&d| d.clone()).collect();
+            g.seed_from_topologies(&decls);
+            g
+        };
         env
     }
 
@@ -280,7 +308,7 @@ pub struct TypeChecker<'a> {
     pub(crate) in_unsafe_block: bool,
     pub(crate) active_topology: Topology,
     pub(crate) active_memory: MemorySpace,
-    pub transfer_cost_graph: crate::arch::TransferCostGraph,
+    pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
     /// cannot bypass the dead-borrow sweep (frontend_refactoring_borrow_checker.md R1; the #276 bug class). Replaces
     /// the former `active_borrows` / `block_liveness` / `current_stmt_idx` fields.
@@ -380,13 +408,7 @@ impl<'a> TypeChecker<'a> {
         // declared (carried on the AST, indexed by `env.topologies`) so it holds both their
         // descriptors and transfer edges. No global registry -- the graph is the per-compilation,
         // lock-free carrier the parallel pipeline shares by `&`.
-        let transfer_cost_graph = {
-            let mut g = crate::arch::TransferCostGraph::default();
-            let decls: Vec<crate::arch::TopologyDecl> =
-                env.topologies.values().map(|&d| d.clone()).collect();
-            g.seed_from_topologies(&decls);
-            g
-        };
+        let transfer_cost_graph = &env.transfer_cost_graph;
         let active_memory = transfer_cost_graph.default_memory_for(&Topology::CPU);
         Self {
             env,

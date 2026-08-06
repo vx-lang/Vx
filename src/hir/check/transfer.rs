@@ -161,7 +161,7 @@ impl<'a> TypeChecker<'a> {
         for decl in declared {
             let name = &decl.name;
             for issue in
-                crate::arch::descriptor_coherence(&decl.descriptor, &self.transfer_cost_graph)
+                crate::arch::descriptor_coherence(&decl.descriptor, self.transfer_cost_graph)
             {
                 match issue {
                     crate::arch::CoherenceIssue::DefaultNotVisible => {
