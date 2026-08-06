@@ -253,9 +253,18 @@ fn emit_type_gid(ty: &syntax::Type, worker: &mut LocalWorkerState) {
             }
         }
         Type::GenericInstance(base, args) => {
-            if let Some(base_id) = nominal_gid(base) {
-                let arg_ids: Vec<crate::gid::TypeId> =
-                    args.iter().filter_map(nominal_gid).collect();
+            // `collect::<Option<Vec<_>>>`, not `filter_map`. Dropping an argument the key depends
+            // on is what made `Foo<Bar<i32>>` and `Foo<Baz<i32>>` share a GID (#305) and
+            // `Grid<i32,2,3>` and `Grid<i32,4,5>` share one (#309): every unresolvable argument
+            // collapsed to the same empty argument list. Declining to emit is the conservative
+            // failure -- the instantiation contributes no GID rather than a wrong one shared with
+            // an unrelated type.
+            if let (Some(base_id), Some(arg_ids)) = (
+                nominal_gid(base),
+                args.iter()
+                    .map(nominal_gid)
+                    .collect::<Option<Vec<crate::gid::TypeId>>>(),
+            ) {
                 let deferred = mint_deferred_generic(worker, base_id, arg_ids);
                 worker.local_type_stream.push(deferred);
             }
@@ -291,7 +300,96 @@ fn nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
         | Type::Pointer(inner, _, _)
         | Type::Verified(inner)
         | Type::Pinned(inner, _) => nominal_gid(inner),
-        _ => None,
+        // A *nested* instantiation is identified by its base plus a content digest of its own
+        // arguments, computed recursively (#305). It cannot be an arena index: the inner
+        // instantiation holds only a worker-local index until the barrier, so two workers would
+        // key the outer instantiation differently and dedup would never unify them. A digest is
+        // the same in every worker the moment it is computed.
+        Type::GenericInstance(base, args) => {
+            let base_id = nominal_gid(base)?;
+            let arg_ids: Vec<crate::gid::TypeId> =
+                args.iter().map(nominal_gid).collect::<Option<_>>()?;
+            let mut id = base_id;
+            id.words[2] = crate::gid::ESCAPE_HATCH_MASK | crate::gid::generic_digest(&arg_ids);
+            id.words[3] |= crate::gid::IS_GENERIC_INST_FLAG;
+            Some(id)
+        }
+        // Const generic arguments (#309). Identity is the constant's *structure*, via a
+        // span-free rendering -- `Type::Const`'s `Mangle` arm uses `format!("{:?}", expr)`, whose
+        // Debug output embeds spans, so the same constant written at two source locations would
+        // hash differently.
+        Type::Const(expr) => Some(crate::gid::TypeId::new(
+            0,
+            crate::hash::DefPath::Named(&format!("$const::{}", const_identity_key(expr)))
+                .compute_symbol_hash(),
+            0,
+            0,
+        )),
+        // A type *parameter* is an identity too: `Foo<T>` and `Foo<U>` are different type
+        // expressions, and both differ from `Foo<i32>`. Dropping it is what made every
+        // unresolvable argument collapse to the same empty key.
+        Type::Generic(name, _) => Some(crate::gid::TypeId::new(
+            0,
+            crate::hash::DefPath::Named(&format!("$typaram::{name}")).compute_symbol_hash(),
+            0,
+            0,
+        )),
+        Type::Simd(elem, lanes) => Some(crate::gid::TypeId::new(
+            0,
+            crate::hash::DefPath::Named(&format!("$simd::{elem:?}::{lanes}")).compute_symbol_hash(),
+            0,
+            0,
+        )),
+        Type::Function(args, ret) | Type::Closure(args, ret) => {
+            let mut ids: Vec<crate::gid::TypeId> =
+                args.iter().map(nominal_gid).collect::<Option<_>>()?;
+            ids.push(nominal_gid(ret)?);
+            let mut id = crate::gid::TypeId::new(
+                0,
+                crate::hash::DefPath::Named(if matches!(ty, Type::Function(..)) {
+                    "$fnty"
+                } else {
+                    "$closurety"
+                })
+                .compute_symbol_hash(),
+                0,
+                0,
+            );
+            id.words[2] = crate::gid::ESCAPE_HATCH_MASK | crate::gid::generic_digest(&ids);
+            Some(id)
+        }
+        Type::Matrix => Some(crate::gid::TypeId::new(
+            0,
+            crate::hash::DefPath::Named("$matrix").compute_symbol_hash(),
+            0,
+            0,
+        )),
+        // `Module` and `Unknown` genuinely have no type identity. They should not reach a generic
+        // argument position; `emit_type_gid` now declines the whole instantiation rather than
+        // silently interning it with the argument missing.
+        Type::Module(..) | Type::Unknown => None,
+    }
+}
+
+/// A span-free structural rendering of a const-generic argument, for identity only.
+///
+/// Recurses through the shapes a const argument actually takes -- literals, references to const
+/// parameters, and arithmetic over them (`Grid<i32, R, C>`, `Grid<i32, 2, 3>`, `Buf<N*2>`). Anything
+/// else falls back to a variant tag, which keeps distinct shapes from colliding without claiming to
+/// distinguish them precisely.
+fn const_identity_key(expr: &syntax::Expr) -> String {
+    use syntax::Expr;
+    match expr {
+        Expr::Number(n) => n.value.to_string(),
+        Expr::Identifier(i) => i.name.to_string(),
+        Expr::BinaryOp(b) => format!(
+            "({} {:?} {})",
+            const_identity_key(&b.lhs),
+            b.op,
+            const_identity_key(&b.rhs)
+        ),
+        Expr::UnaryOp(u) => format!("({:?} {})", u.op, const_identity_key(&u.expr)),
+        other => format!("{:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -1099,6 +1197,102 @@ mod gid_stream_tests {
         assert_eq!(worker.local_type_stream[0], foo);
         assert_ne!(worker.local_type_stream[1].words[3] & LOCAL_DEFERRED_BIT, 0);
         assert_eq!(worker.local_generics_arena, vec![foo]); // the one arg
+    }
+
+    /// Drive a list of types through the whole identity path -- emit, reconcile, patch -- and hand
+    /// back the final GIDs. Distinctness has to be asserted on *patched* GIDs: pre-patch, two
+    /// instantiations differ merely by holding different local arena indices, which says nothing
+    /// about whether they will still differ once those indices are reconciled to global ones.
+    fn patched_gids(types: &[syntax::Type]) -> Vec<TypeId> {
+        let session = Arc::new(GlobalSession::new(1));
+        let mut worker = LocalWorkerState::new(session.clone());
+        for t in types {
+            emit_type_gid(t, &mut worker);
+        }
+        let mut results: Vec<TypeCheckResult> = vec![(
+            crate::diagnostic::DiagnosticsVec::new(),
+            Vec::new(),
+            worker,
+            0,
+            Vec::new(),
+        )];
+        let (_s, _g, _o, slow, gen) = deduplication_phase(&results, &session);
+        let mut streams = extract_type_streams(&mut results);
+        simd_patch_phase(&mut streams, &slow, &gen);
+        streams.remove(0).1
+    }
+
+    /// #309: const-generic arguments contribute to instantiation identity.
+    ///
+    /// `Grid<i32,2,3>` and `Grid<i32,4,5>` used to reduce to the same argument list -- `Type::Const`
+    /// had no `nominal_gid` arm and `filter_map` dropped it -- so two differently-shaped matrices
+    /// shared one GID in the flat type stream.
+    #[test]
+    fn const_generic_arguments_are_part_of_instantiation_identity() {
+        use crate::symbol::Symbol;
+        use syntax::Type;
+        let grid = TypeId::new(7, 8, 0, 0);
+        let num = |v: &str| {
+            Type::Const(Box::new(syntax::Expr::Number(syntax::NumberExpr::new(
+                v.into(),
+                None,
+                syntax::Span::default(),
+            ))))
+        };
+        let mk = |a: &str, b: &str| {
+            Type::GenericInstance(
+                Box::new(Type::Struct(Symbol::from("Grid"), Some(grid))),
+                vec![
+                    Type::Scalar(crate::syntax::ElementType::I32),
+                    num(a),
+                    num(b),
+                ],
+            )
+        };
+        let ids = patched_gids(&[mk("2", "3"), mk("4", "5"), mk("2", "3")]);
+        assert_eq!(ids.len(), 3);
+        assert_ne!(
+            ids[0], ids[1],
+            "Grid<i32,2,3> must differ from Grid<i32,4,5>"
+        );
+        assert_eq!(ids[0], ids[2], "the same shape must keep one identity");
+    }
+
+    /// #305: a nested instantiation argument contributes to identity.
+    ///
+    /// `Foo<Bar<i32>>` and `Foo<Baz<i32>>` used to collapse to the same empty argument list, since
+    /// `nominal_gid` answered `None` for a nested `GenericInstance` and `filter_map` discarded it.
+    #[test]
+    fn nested_generic_arguments_are_part_of_instantiation_identity() {
+        use crate::symbol::Symbol;
+        use syntax::Type;
+        let foo = TypeId::new(3, 4, 0, 0);
+        let nest = |name: &str, id: TypeId| {
+            Type::GenericInstance(
+                Box::new(Type::Struct(Symbol::from("Foo"), Some(foo))),
+                vec![Type::GenericInstance(
+                    Box::new(Type::Struct(Symbol::from(name), Some(id))),
+                    vec![Type::Scalar(crate::syntax::ElementType::I32)],
+                )],
+            )
+        };
+        let bar = nest("Bar", TypeId::new(5, 6, 0, 0));
+        let baz = nest("Baz", TypeId::new(7, 8, 0, 0));
+        // `Foo<T>` too: an uninstantiated parameter used to share the same empty key as both of the
+        // above, so all three were one GID.
+        let param = Type::GenericInstance(
+            Box::new(Type::Struct(Symbol::from("Foo"), Some(foo))),
+            vec![Type::Generic(Symbol::from("T"), None)],
+        );
+        let ids = patched_gids(&[bar.clone(), baz, param, bar]);
+        assert_eq!(ids.len(), 4);
+        assert_ne!(
+            ids[0], ids[1],
+            "Foo<Bar<i32>> must differ from Foo<Baz<i32>>"
+        );
+        assert_ne!(ids[0], ids[2], "Foo<Bar<i32>> must differ from Foo<T>");
+        assert_ne!(ids[1], ids[2], "Foo<Baz<i32>> must differ from Foo<T>");
+        assert_eq!(ids[0], ids[3], "the same instantiation keeps one identity");
     }
 
     fn parse_and_resolve(path: &str, src: &str) -> VxModule {

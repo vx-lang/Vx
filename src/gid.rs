@@ -53,6 +53,27 @@ pub const LOCAL_DEFERRED_BIT: u64 = 1 << 43;
 pub const SYNTHETIC_MONO_FLAG: u64 = 1 << 42;
 pub const IS_GENERIC_INST_FLAG: u64 = 1 << 41;
 
+/// The content digest of a generic instantiation's argument list: FNV-1a over every argument GID's
+/// four words, in order, masked into word 2's 63-bit payload.
+///
+/// Used to give a *nested* instantiation a stable identity when it appears as an argument to
+/// another (`Foo<Bar<i32>>`). An arena index cannot serve there: the inner instantiation has only a
+/// worker-local index until the reconciliation barrier, so two workers would key the outer
+/// instantiation differently and dedup would fail to unify them. A digest is computed bottom-up
+/// with no coordination, so it is identical in every worker before any barrier runs.
+///
+/// Order-sensitive, so `Pair<f32,f64>` and `Pair<f64,f32>` differ.
+pub fn generic_digest(args: &[TypeId]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for a in args {
+        for w in a.words {
+            h ^= w;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h & INDEX_MASK
+}
+
 /// The 256-bit Global Identifier
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable, Debug)]
 #[repr(C)]
