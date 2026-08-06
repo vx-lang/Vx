@@ -20,49 +20,44 @@
 //   * zero-lock    — no lock primitives anywhere on the path (CI enforces it), so
 //                    the speedup comes from genuine isolation, not lock contention.
 //
+// The corpus comes from the shared generator in `src/bin/corpus` (#296), which the
+// `intern_bench` measurements also use — a demo and a benchmark that disagree about
+// the workload produce two numbers nobody can compare. Its knobs are documented in
+// `corpus/mod.rs`; the ones that matter here:
+//
+//   --modules N --fns M          corpus size
+//   --density 0.0 .. 1.0         fraction of parameter slots holding a generic
+//                                instantiation (0 = plain, 1 = instantiation-dense)
+//   --arity A --shared-frac S    key-space size, and how often two threads mint the
+//                                same interner key
+//   --seed S --out DIR           reproducibility
+//
 // The pipeline's own phase logging goes to stdout; this demo's report goes to
 // stderr, so `cargo run --bin parallel_demo >/dev/null` shows just the report.
 //
 //===----------------------------------------------------------------------===//
+#[path = "corpus/mod.rs"]
+mod corpus;
+
 use std::io::Write;
 use std::time::Instant;
 
-/// Write `n_modules` independent `.vx` modules, each with `fns_per` non-trivial scalar functions
-/// (params, a loop, an if/else, a mutable local — real work for the parallel type-checker and the
-/// flat-HIR lowering). Returns the file paths.
-fn generate_corpus(dir: &std::path::Path, n_modules: usize, fns_per: usize) -> Vec<String> {
-    std::fs::create_dir_all(dir).unwrap();
-    let mut paths = Vec::with_capacity(n_modules);
-    for m in 0..n_modules {
-        let mut src = String::new();
-        for f in 0..fns_per {
-            src.push_str(&format!(
-                "fn m{m}_f{f}(a: i32, b: i32) -> i32 {{\n\
-                 \x20 let mut s: i32 = a;\n\
-                 \x20 for k in 0..b {{\n\
-                 \x20   if a < k {{ s = s + a * k; }} else {{ s = s - k; }}\n\
-                 \x20 }}\n\
-                 \x20 return s + a * {f};\n\
-                 }}\n"
-            ));
-        }
-        let path = dir.join(format!("m{m}.vx"));
-        std::fs::write(&path, src).unwrap();
-        paths.push(path.to_string_lossy().into_owned());
-    }
-    paths
-}
-
 fn main() {
-    let n_modules: usize = std::env::args()
-        .nth(1)
-        .and_then(|a| a.parse().ok())
-        .unwrap_or(400);
-    let fns_per = 8;
-
-    let dir = std::env::temp_dir().join(format!("vx_parallel_demo_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let paths = generate_corpus(&dir, n_modules, fns_per);
+    let args: Vec<String> = std::env::args().collect();
+    // Positional N is kept working: `parallel_demo 400` predates the flags and still means
+    // "400 modules".
+    let positional = args
+        .get(1)
+        .filter(|a| !a.starts_with("--"))
+        .and_then(|a| a.parse().ok());
+    let modules = positional.unwrap_or_else(|| corpus::arg(&args, "--modules", 400));
+    let fns = corpus::arg(&args, "--fns", 8);
+    let params = corpus::params_from_args(&args, modules, fns);
+    let out = args
+        .windows(2)
+        .find(|w| w[0] == "--out")
+        .map(|w| std::path::PathBuf::from(&w[1]));
+    let c = corpus::generate(&params, out.as_deref());
 
     let report = std::io::stderr();
     let mut w = report.lock();
@@ -84,12 +79,10 @@ fn main() {
         "╚══════════════════════════════════════════════════════════════════╝"
     )
     .unwrap();
-    writeln!(
-        w,
-        "corpus: {n_modules} modules × {fns_per} functions = {} functions   (machine: {hw} cores)",
-        n_modules * fns_per
-    )
-    .unwrap();
+    // The corpus line carries every parameter plus the two counts that decide how much interning
+    // there is to do, so this report is self-describing when it is pasted into an issue.
+    writeln!(w, "{}", c.log_line()).unwrap();
+    writeln!(w, "corpus dir: {}   (machine: {hw} cores)", c.dir.display()).unwrap();
     writeln!(w, "pipeline: parse → resolve → freeze registry → parallel type-check + flat-HIR → dedup → SIMD-patch\n").unwrap();
     writeln!(
         w,
@@ -112,7 +105,7 @@ fn main() {
             .unwrap();
         let start = Instant::now();
         let stream: Vec<[u64; 4]> = pool.install(|| {
-            vxc::pipeline::compile_pipeline_type_stream(&paths)
+            vxc::pipeline::compile_pipeline_type_stream(&c.paths)
                 .expect("pipeline")
                 .into_iter()
                 .map(|id| id.words)
@@ -174,5 +167,7 @@ fn main() {
     )
     .unwrap();
 
-    let _ = std::fs::remove_dir_all(&dir);
+    // The corpus is left on disk. It is named by a digest of its parameters, so it is reused by the
+    // next run with the same flags rather than regenerated — and it can be inspected after the fact,
+    // which a PID-keyed directory deleted on exit could not be.
 }
