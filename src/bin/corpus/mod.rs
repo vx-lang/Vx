@@ -35,10 +35,13 @@
 //     distinct keys come from distinct *argument lists*. That is why `arity` is a knob: over a
 //     vocabulary of size V, arity 1 admits V keys and arity 2 admits V^2.
 //
-//  3. **Only resolvable nominals count as arguments.** `nominal_gid` answers `Some` for structs,
-//     enums, scalars and tensors, and `None` for a bare type parameter or a nested
-//     `GenericInstance` -- which `filter_map` then drops. So the generator emits only non-nested
-//     concrete arguments; anything else would silently intern the empty key and measure nothing.
+//  3. **Every argument counts.** `nominal_gid` used to answer `None` for a bare type parameter or a
+//     nested `GenericInstance` and the call site dropped those silently, so a nested argument
+//     interned the empty key -- a corpus could claim pressure it did not produce, and worse,
+//     `Foo<Bar<i32>>` and `Foo<Bar<f64>>` collided on one arena entry. `nominal_gid` is total as of
+//     5d8116e6 (#305/#309) and an unresolvable argument list now fails instead of shrinking. The
+//     generator still emits non-nested concrete arguments, because that keeps the predicted key
+//     count exact, but it is no longer obliged to.
 
 // Two binaries include this module and each uses a different subset of it -- `intern_bench` sweeps
 // with `arg_list`, `parallel_demo` reports `dir`. Neither is dead; `dead_code` just cannot see
