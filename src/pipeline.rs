@@ -223,7 +223,41 @@ pub fn compile_pipeline_mlir(file_paths: &[String]) -> Result<Option<String>, Pi
     }))
 }
 
+/// The module path a file is known by: its stem, so `.../m0.vx` is the module `m0`.
+///
+/// This is the name an `import` can write, which is the whole point. `ModuleLoader` — the loader
+/// `vxc` actually ships — stores an imported module under its *import path* (`a::b`), reserving the
+/// raw filename for the entry module alone, because nothing imports the entry module. The pipeline
+/// used to store the full filesystem path for every module, which no `import` statement can ever
+/// name and which `resolve_nominal` therefore can never match: a corpus compiled through the
+/// pipeline could not make a cross-module type reference at all.
+///
+/// A flat file list carries no search root, so a nested `a/b.vx -> a::b` cannot be recovered here;
+/// the stem is the rule that agrees with the loader for the layout the pipeline is given. Two files
+/// with the same stem would be one module with one hash, so [`parse_phase`] rejects that outright
+/// rather than silently merging them.
+fn module_path_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
+    // Distinct files, one module name: `compute_module_hash` would give both the same word 0, so
+    // every symbol in one would shadow or collide with the same-named symbol in the other. Refuse
+    // before that becomes a miscompile with no diagnostic.
+    let mut seen: std::collections::HashMap<String, &String> = std::collections::HashMap::new();
+    for path in file_paths {
+        let name = module_path_of(path);
+        if let Some(first) = seen.insert(name.clone(), path) {
+            return Err(PipelineError::IO(format!(
+                "two files share the module name '{name}': {first} and {path}. Module identity is \
+                 the file stem, so these would compile as one module."
+            )));
+        }
+    }
+
     let modules: Result<Vec<VxModule>, PipelineError> = file_paths
         .par_iter()
         .map(|path| {
@@ -236,7 +270,7 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
             let mut program = parser.parse().map_err(|e| {
                 PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
             })?;
-            program.module_path = path.clone().into();
+            program.module_path = module_path_of(path).into();
             Ok(program)
         })
         .collect();
@@ -2219,6 +2253,87 @@ mod gid_stream_tests {
         }
         assert_eq!(single, run(8), "emitted MLIR differs across thread counts");
         assert_eq!(single, run(8), "emitted MLIR differs across reruns");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A module can name another module's type, and the pipeline compiles the result to MLIR.
+    ///
+    /// This did not work before the module path became the file stem. `resolve_nominal` looks a
+    /// qualified reference up in the symbol map, which is keyed on `module_path`, and the pipeline
+    /// stored the full filesystem path there — a key no `import` statement can spell. So an imported
+    /// struct silently stayed unresolved, and the only reason no test caught it is that no test
+    /// crossed a module boundary with a *type*. Both spellings are checked: the unqualified name via
+    /// the import's leaf, and the explicit `mod::Name` form.
+    #[test]
+    fn pipeline_resolves_a_type_imported_from_another_module() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_xmod_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let srcs = [
+            ("shapes.vx", "struct Point { x: i32, y: i32 }\n"),
+            (
+                "user.vx",
+                "import shapes::Point;\n\
+                 fn ux(p: Point) -> i32 { return p.x; }\n\
+                 fn uy(q: shapes::Point) -> i32 { return q.y; }\n\
+                 fn main() -> i32 { return 0; }\n",
+            ),
+        ];
+        let mut paths = Vec::new();
+        for (name, src) in srcs {
+            let p = dir.join(name);
+            std::fs::File::create(&p)
+                .unwrap()
+                .write_all(src.as_bytes())
+                .unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+
+        let text = compile_pipeline_mlir(&paths)
+            .expect("pipeline")
+            .expect("an imported struct parameter is inside the flat subset");
+        // An unresolved `Point` would leave the parameter's GID unset and the function would drop
+        // out of the flat subset, declining the whole compile — so reaching a `func.func` for each
+        // is the assertion. Both take an aggregate by value.
+        for name in ["ux", "uy"] {
+            assert!(
+                text.contains(&format!("func.func @{name}(")),
+                "missing @{name}; the imported type did not resolve:\n{text}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Module identity is the file stem, so two files with the same stem would be one module with
+    /// one hash — every symbol in one colliding with the same-named symbol in the other. That has
+    /// to be an error at the door, not a miscompile with no diagnostic.
+    #[test]
+    fn pipeline_rejects_two_files_with_the_same_module_name() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_dup_mod_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir.join("a")).unwrap();
+        std::fs::create_dir_all(&dir.join("b")).unwrap();
+        let mut paths = Vec::new();
+        for sub in ["a", "b"] {
+            let p = dir.join(sub).join("m.vx");
+            std::fs::File::create(&p)
+                .unwrap()
+                .write_all(b"fn f() -> i32 { return 0; }\n")
+                .unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+
+        match compile_pipeline_type_stream(&paths) {
+            Err(PipelineError::IO(msg)) => assert!(
+                msg.contains("share the module name 'm'"),
+                "wrong diagnostic: {msg}"
+            ),
+            other => panic!("expected a duplicate-module-name error, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
