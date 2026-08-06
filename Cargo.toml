@@ -87,4 +87,9 @@ lto = "thin"      # Thin LTO drops dead LLVM code without taking 10 minutes to l
 codegen-units = 1 # Maximize optimization by compiling as a single unit
 
 [profile.test]
-opt-level = 3     # Run tests with optimizations to reduce runtime CI duration
+# opt-level 1, not 3. The suite's *execution* is ~2 minutes (172 integration tests; the 426 lib
+# tests run in 0.04s), while a pre-commit run takes ~10 -- so roughly 80% of the wall clock is
+# compiling and linking test binaries, not running them. Optimizing at 3 pays that cost on every
+# rebuild to speed up two minutes of work. 1 keeps the inlining that matters for the tests that
+# actually compute (they JIT through MLIR) without the expensive passes.
+opt-level = 1
