@@ -216,6 +216,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &agg_layouts,
         &alias_tables,
         &[],
+        vxc::pipeline::Schedule::Parallel,
     )?;
 
     let context = make_context();
@@ -320,6 +321,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &agg_layouts,
         &alias_tables,
         &subspaces,
+        vxc::pipeline::Schedule::Parallel,
     )
 }
 
@@ -1300,9 +1302,17 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .collect();
     funcs.push((&synth, body.hir.as_slice(), body.types.as_slice()));
 
-    let mlir =
-        vxc::codegen::flat::emit_module_mlir(&funcs, &session.registry, &[], &[], &[], &[], &[])
-            .expect("flat codegen emits the linked module");
+    let mlir = vxc::codegen::flat::emit_module_mlir(
+        &funcs,
+        &session.registry,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        vxc::pipeline::Schedule::Parallel,
+    )
+    .expect("flat codegen emits the linked module");
     let context = make_context();
     let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
         .expect("linked flat MLIR parses");

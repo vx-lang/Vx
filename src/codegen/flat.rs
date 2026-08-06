@@ -793,6 +793,7 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Option<String> {
 /// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
 /// layouts resolve through the frozen registry; `tensor_types` is the concatenation of each function's
 /// lowerer side table (`LocalWorkerState::local_tensor_types`). Wrap the result in `module { … }`.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
     registry: &ImmutableGlobalRegistry,
@@ -801,6 +802,7 @@ pub fn emit_module_mlir(
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
+    sched: crate::pipeline::Schedule,
 ) -> Option<String> {
     let mut ctx = EmitCtx::from_registry(registry);
     for s in subspaces {
@@ -884,10 +886,8 @@ pub fn emit_module_mlir(
     }
 
     type FnEmission = (String, Vec<(String, Vec<String>, String)>);
-    let emitted: Vec<Option<FnEmission>> = funcs
-        .par_iter()
-        .enumerate()
-        .map(|(fi, (func, hir, types))| {
+    let emit_one =
+        |(fi, (func, hir, types)): (usize, &(&Function, &[HirInstruction], &[TypeId]))| {
             let mut calls = Vec::new();
             let mut distinct_ctr = distinct_bases[fi];
             let text = emit_function_mlir(
@@ -901,8 +901,12 @@ pub fn emit_module_mlir(
                 &mut distinct_ctr,
             )?;
             Some((text, calls))
-        })
-        .collect();
+        };
+    let emitted: Vec<Option<FnEmission>> = if sched == crate::pipeline::Schedule::Sequential {
+        funcs.iter().enumerate().map(emit_one).collect()
+    } else {
+        funcs.par_iter().enumerate().map(emit_one).collect()
+    };
 
     let mut out = String::new();
     let mut globals = String::new();
@@ -2345,6 +2349,7 @@ mod tests {
             &agg_layouts,
             &alias_tables,
             &[],
+            crate::pipeline::Schedule::Parallel,
         )
         .expect("emits flat module");
 

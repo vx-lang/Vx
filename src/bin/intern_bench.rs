@@ -23,6 +23,7 @@ mod corpus;
 
 use std::time::{Duration, Instant};
 use vxc::intern_mode::{self, InternMode};
+use vxc::pipeline::Schedule;
 
 fn median_iqr(mut xs: Vec<f64>) -> (f64, f64, f64) {
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -73,26 +74,36 @@ struct Rep {
     mlir_bytes: Option<usize>,
 }
 
-fn run_once(paths: &[String], threads: usize, emit_mlir: bool) -> Rep {
+fn run_once(paths: &[String], threads: usize, emit_mlir: bool, sched: Schedule) -> Rep {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
         .expect("thread pool");
     let _ = intern_mode::take_phases(); // drop any timings from a prior rep
     let t = Instant::now();
-    let mlir_bytes = pool.install(|| {
+    let compile = || {
         if emit_mlir {
             Some(
-                vxc::pipeline::compile_pipeline_mlir(paths)
+                vxc::pipeline::compile_pipeline_mlir_with(paths, sched)
                     .expect("pipeline")
                     .map(|t| t.len())
                     .unwrap_or(0),
             )
         } else {
-            let _ = vxc::pipeline::compile_pipeline_type_stream(paths).expect("pipeline");
+            let _ =
+                vxc::pipeline::compile_pipeline_type_stream_with(paths, sched).expect("pipeline");
             None
         }
-    });
+    };
+    // The sequential arm runs *outside* the pool. Installing into a rayon pool that is then never
+    // asked to do parallel work would still be a rayon run, and the point of the arm is to have
+    // rayon nowhere on the path -- otherwise its cost is charged to both sides of the comparison and
+    // cancels out of every ratio.
+    let mlir_bytes = if sched == Schedule::Sequential {
+        compile()
+    } else {
+        pool.install(compile)
+    };
     Rep {
         wall: t.elapsed(),
         mlir_bytes,
@@ -113,6 +124,24 @@ fn main() {
     // carefully the rest of the harness is built. `--emit=none` reproduces the old frontend-only
     // measurement when the frontend is deliberately what is under study.
     let emit_mlir = corpus::arg::<String>(&args, "--emit", "mlir".to_string()) != "none";
+    // `both` (default) runs a rayon-free arm before the thread ladder, so the ladder's baseline is
+    // "the same compiler, not parallelised" rather than "the same compiler, parallelised, on one
+    // thread". Without it the parallel machinery's own cost sits on both sides of every ratio and
+    // cancels, and the sweep can only answer whether more threads help -- never whether any of this
+    // beats not doing it. `par` / `seq` run one arm alone.
+    let schedule_arg = corpus::arg::<String>(&args, "--schedule", "both".to_string());
+    let run_seq = schedule_arg != "par";
+    let run_par = schedule_arg != "seq";
+
+    // The ladder, with `0` standing for the sequential arm: one key space for the medians map, and
+    // `0 threads` reads as "no thread pool", which is what it is.
+    let mut ladder: Vec<usize> = Vec::new();
+    if run_seq {
+        ladder.push(0);
+    }
+    if run_par {
+        ladder.extend(threads.iter().copied());
+    }
 
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -151,10 +180,20 @@ fn main() {
                     ("content", InternMode::Content),
                 ] {
                     intern_mode::set_mode(mode);
-                    for &t in &threads {
+                    for &t in &ladder {
+                        let sched = if t == 0 {
+                            Schedule::Sequential
+                        } else {
+                            Schedule::Parallel
+                        };
+                        let tag = if t == 0 {
+                            "seq".to_string()
+                        } else {
+                            t.to_string()
+                        };
                         // One warm-up rep, discarded: the first run pays page faults and
                         // filesystem-cache misses that have nothing to do with interning.
-                        let warm = run_once(&c.paths, t, emit_mlir);
+                        let warm = run_once(&c.paths, t.max(1), emit_mlir, sched);
                         if warm.mlir_bytes == Some(0) {
                             eprintln!(
                                 "  NOTE: the flat emitter declined this corpus, so every rep below \
@@ -168,7 +207,7 @@ fn main() {
                         let mut phase_samples = Vec::with_capacity(reps);
                         let mut mlir_bytes = 0usize;
                         for _ in 0..reps {
-                            let rep = run_once(&c.paths, t, emit_mlir);
+                            let rep = run_once(&c.paths, t.max(1), emit_mlir, sched);
                             mlir_bytes = rep.mlir_bytes.unwrap_or(0);
                             samples.push(rep.wall.as_secs_f64() * 1e3);
                             phase_samples.push(intern_mode::take_phases());
@@ -176,7 +215,7 @@ fn main() {
                         let (med, q1, q3) = median_iqr(samples);
                         medians.insert((label, t), med);
                         println!(
-                            "{label},{n},{m},{d},{},{},{t},{med:.2},{q1:.2},{q3:.2},{reps}",
+                            "{label},{n},{m},{d},{},{},{tag},{med:.2},{q1:.2},{q3:.2},{reps}",
                             c.generic_slots, c.distinct_keys
                         );
                         let ph = phase_report(phase_samples);
@@ -191,7 +230,7 @@ fn main() {
                             }
                         };
                         eprintln!(
-                            "  [{label} t={t}] {} | measured-phase total {:.1} ms, type_check \
+                            "  [{label} t={tag}] {} | measured-phase total {:.1} ms, type_check \
                              {:.0}%, codegen {:.0}% (the rest is serial or barrier work){}",
                             ph.iter()
                                 .map(|(n, v)| format!("{n} {v:.1}"))
@@ -210,27 +249,52 @@ fn main() {
                 }
                 intern_mode::set_mode(InternMode::Deferred);
 
-                // The attribution number. Speedup is measured against each mode's *own*
-                // single-thread time, so the ratio isolates how well each design parallelises
-                // rather than conflating that with a constant-factor difference in serial work.
-                eprintln!("  threads  sp(deferred)  sp(content)   ms(deferred/content)");
-                let base = |mm: &str| medians.get(&(mm, threads[0])).copied().unwrap_or(f64::NAN);
+                // The attribution number. Speedup is measured against each mode's own *sequential*
+                // run when there is one -- the same compiler with rayon off the path -- so the ratio
+                // answers "is parallelising this worth it", not merely "does adding threads help a
+                // design that is already paying for parallelism". Falling back to the first thread
+                // count under `--schedule par` keeps that arm readable, but its ratios are the
+                // weaker claim and the header says which is in force.
                 let at = |mm: &str, t: usize| medians.get(&(mm, t)).copied().unwrap_or(f64::NAN);
-                for &t in &threads {
+                let base_key = ladder[0];
+                eprintln!(
+                    "  threads  sp(deferred)  sp(content)   ms(deferred/content)   [baseline: {}]",
+                    if base_key == 0 {
+                        "sequential, no rayon"
+                    } else {
+                        "1 thread (rayon)"
+                    }
+                );
+                let base = |mm: &str| at(mm, base_key);
+                for &t in &ladder {
                     let flag = if t > cores { "  <- oversubscribed" } else { "" };
+                    let tag = if t == 0 { "seq".into() } else { t.to_string() };
                     eprintln!(
-                        "  {t:>7}  {:>12.2}  {:>11.2}   {:>8.1}/{:>8.1}{flag}",
+                        "  {tag:>7}  {:>12.2}  {:>11.2}   {:>8.1}/{:>8.1}{flag}",
                         base("deferred") / at("deferred", t),
                         base("content") / at("content", t),
                         at("deferred", t),
                         at("content", t),
                     );
                 }
+                if run_seq && run_par {
+                    // What one rayon thread costs over no rayon at all. If it is near 1.00 the two
+                    // baselines are interchangeable and the scaling column can be read as speedup;
+                    // if it is not, every ratio taken against the 1-thread column was quietly
+                    // discounting the parallel machinery's own overhead.
+                    let overhead = |mm: &str| at(mm, threads[0]) / at(mm, 0);
+                    eprintln!(
+                        "  parallel-machinery overhead at {} thread(s) vs no rayon: deferred {:.3}x, \
+                         content {:.3}x (1.00 = the parallel structure is free when not used)",
+                        threads[0],
+                        overhead("deferred"),
+                        overhead("content"),
+                    );
+                }
                 eprintln!(
-                    "  single-thread: deferred {:.1} ms, content {:.1} ms. Absolute times matter \
-                     as much as the speedup ratios here: `content` removes work rather than \
-                     parallelising it, so a win shows up first in the single-thread column, not in \
-                     the scaling column.",
+                    "  baseline: deferred {:.1} ms, content {:.1} ms. Absolute times matter as much \
+                     as the speedup ratios here: `content` removes work rather than parallelising \
+                     it, so a win shows up first in the baseline column, not in the scaling column.",
                     base("deferred"),
                     base("content"),
                 );

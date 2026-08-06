@@ -1055,6 +1055,7 @@ impl CompilerDriver {
             &agg_layouts,
             &alias_tables,
             &subspaces,
+            crate::pipeline::Schedule::Parallel,
         ) {
             Some(t) => t,
             None => {

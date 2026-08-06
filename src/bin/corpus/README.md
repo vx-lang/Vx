@@ -32,6 +32,8 @@ and sweeps the grid. It also takes `--emit`:
 |---|---|
 | `--emit mlir` (default) | compile all the way to MLIR text (`compile_pipeline_mlir`, #311) |
 | `--emit none` | stop after the SIMD patch, the old frontend-only measurement |
+| `--schedule both` (default) | run a rayon-free arm (`seq`) *and* the thread ladder |
+| `--schedule par` / `seq` | one arm only |
 
 Default `mlir`, because a run that stops at the SIMD patch times a *frontend*, and its number cannot
 be quoted as a compile-time speedup however careful the rest of the harness is. Every cell reports
@@ -39,6 +41,25 @@ how many bytes of MLIR it produced; `0 bytes` plus a `NOTE` means the flat emitt
 cell is not a compile measurement. Each phase's share, codegen included, is on the same line — on a
 small corpus codegen is already about half of measured phase time, which is the ratio a frontend-only
 sweep silently assumed away.
+
+## The baseline is a flag, not a build
+
+`--schedule` picks `Schedule::Parallel` or `Schedule::Sequential` at run time. Sequential is **not**
+"rayon with one thread": it takes rayon off the path entirely, plain `iter()` where the parallel form
+uses `par_iter()`. Same phases, same order, same per-item work — a test asserts the two emit
+byte-identical MLIR, because a baseline that is not the same compiler measures something else.
+
+This matters for what the ladder can claim. With the 1-thread column as baseline, the parallel
+machinery's cost sits on *both* sides of every ratio and cancels, so the sweep can only answer "do
+more threads help a design that already pays for parallelism" — never "is parallelising this worth
+it at all". The `seq` row is the second question.
+
+It is a flag rather than a `cfg` or an edit for the same reason the corpus has a
+`GENERATOR_VERSION`: two numbers from two builds are two experiments, and everything that changed in
+between silently joins the comparison. One binary, one corpus, one flag.
+
+Note the harness also runs the sequential arm *outside* the rayon pool — installing into a pool that
+is never asked to do parallel work would still be a rayon run.
 
 ## Dependency layers
 

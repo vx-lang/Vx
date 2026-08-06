@@ -59,6 +59,29 @@ macro_rules! chatter {
     };
 }
 
+/// How a compile iterates: with rayon, or without it at all.
+///
+/// [`Schedule::Sequential`] is **not** "rayon with one thread". It takes rayon off the path
+/// entirely — plain `iter()` where the parallel form uses `par_iter()` — because otherwise the
+/// ladder's 1-thread column is both the baseline *and* a rayon run, so whatever the parallel
+/// machinery costs is charged to both sides and cancels out of every ratio. A speedup measured that
+/// way answers "does more threads help this design", never "is this design faster than not doing it
+/// at all", and only the second is a claim about compilers.
+///
+/// Everything else is identical: same phases, same order, same per-item work, same output. The only
+/// difference is the iterator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Schedule {
+    Parallel,
+    Sequential,
+}
+
+impl Schedule {
+    fn is_seq(self) -> bool {
+        self == Schedule::Sequential
+    }
+}
+
 /// The parallel frontend run to completion — through the reconciliation barrier and the Phase 6
 /// SIMD patch — with every artefact codegen needs still in hand.
 ///
@@ -85,15 +108,19 @@ struct Frontend {
     ),
 }
 
-fn run_frontend(file_paths: &[String]) -> Result<Frontend, PipelineError> {
+fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, PipelineError> {
     // Phase timing (#297), so a sweep can attribute wall clock to serial vs parallel work rather
     // than inferring it from a plateau.
     use crate::intern_mode::timed;
-    let mut modules = timed("parse", || parse_phase(file_paths))?;
-    timed("macro_expand", || macro_expansion_phase(&mut modules))?;
+    let mut modules = timed("parse", || parse_phase(file_paths, sched))?;
+    timed("macro_expand", || {
+        macro_expansion_phase(&mut modules, sched)
+    })?;
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
-    let symbol_map = timed("name_resolution", || name_resolution_phase(&mut modules));
+    let symbol_map = timed("name_resolution", || {
+        name_resolution_phase(&mut modules, sched)
+    });
 
     // Sequential global registry build and cycle detection (the freeze point). Builds the frozen
     // nominal-type registry from the resolved modules; an infinite-sized recursive struct (a
@@ -118,14 +145,14 @@ fn run_frontend(file_paths: &[String]) -> Result<Frontend, PipelineError> {
     env.annotate_return_provenances(&modules);
 
     let mut checks = timed("type_check", || {
-        type_check_phase(&mut modules, &session, &env)
+        type_check_phase(&mut modules, &session, &env, sched)
     })?;
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
 
     let mut type_streams = extract_type_streams(&mut checks);
     timed("simd_patch", || {
-        simd_patch_phase(&mut type_streams, &slow_mappings, &gen_mappings)
+        simd_patch_phase(&mut type_streams, &slow_mappings, &gen_mappings, sched)
     });
 
     Ok(Frontend {
@@ -146,7 +173,7 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
         type_streams,
         merged_arenas: (merged_slow, merged_gen, merged_off),
         ..
-    } = run_frontend(file_paths)?;
+    } = run_frontend(file_paths, Schedule::Parallel)?;
 
     let _epoch_2_session = std::sync::Arc::new(crate::session::GlobalSession {
         epoch: 2,
@@ -196,7 +223,15 @@ pub fn compile_pipeline(file_paths: &[String]) -> Result<(), PipelineError> {
 pub fn compile_pipeline_type_stream(
     file_paths: &[String],
 ) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
-    Ok(run_frontend(file_paths)?
+    compile_pipeline_type_stream_with(file_paths, Schedule::Parallel)
+}
+
+/// [`compile_pipeline_type_stream`] with the schedule chosen at run time.
+pub fn compile_pipeline_type_stream_with(
+    file_paths: &[String],
+    sched: Schedule,
+) -> Result<Vec<crate::gid::TypeId>, PipelineError> {
+    Ok(run_frontend(file_paths, sched)?
         .type_streams
         .into_iter()
         .flat_map(|(_, stream)| stream)
@@ -210,6 +245,18 @@ pub fn compile_pipeline_type_stream(
 /// walk; a measurement harness should answer it by reporting that the corpus was not compiled,
 /// rather than by timing a pipeline that quietly emitted nothing.
 pub fn compile_pipeline_mlir(file_paths: &[String]) -> Result<Option<String>, PipelineError> {
+    compile_pipeline_mlir_with(file_paths, Schedule::Parallel)
+}
+
+/// [`compile_pipeline_mlir`] with the schedule chosen at run time.
+///
+/// The sequential baseline is a *flag*, not a build. Measuring "parallel versus not" by editing the
+/// source between runs means the two numbers come from two binaries, and every unrelated change in
+/// between silently joins the comparison. One binary, one corpus, one flag.
+pub fn compile_pipeline_mlir_with(
+    file_paths: &[String],
+    sched: Schedule,
+) -> Result<Option<String>, PipelineError> {
     let Frontend {
         modules,
         session,
@@ -217,9 +264,16 @@ pub fn compile_pipeline_mlir(file_paths: &[String]) -> Result<Option<String>, Pi
         mut checks,
         type_streams,
         ..
-    } = run_frontend(file_paths)?;
+    } = run_frontend(file_paths, sched)?;
     Ok(crate::intern_mode::timed("codegen", || {
-        codegen_mlir_phase(&modules, &mut checks, &type_streams, &subspaces, &session)
+        codegen_mlir_phase(
+            &modules,
+            &mut checks,
+            &type_streams,
+            &subspaces,
+            &session,
+            sched,
+        )
     }))
 }
 
@@ -243,7 +297,7 @@ fn module_path_of(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
+fn parse_phase(file_paths: &[String], sched: Schedule) -> Result<Vec<VxModule>, PipelineError> {
     // Distinct files, one module name: `compute_module_hash` would give both the same word 0, so
     // every symbol in one would shadow or collide with the same-named symbol in the other. Refuse
     // before that becomes a miscompile with no diagnostic.
@@ -258,24 +312,30 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
         }
     }
 
-    let modules: Result<Vec<VxModule>, PipelineError> = file_paths
-        .par_iter()
-        .map(|path| {
-            chatter!("Parsing file: {}", path);
-            let source = std::fs::read_to_string(path)
-                .map_err(|e| PipelineError::IO(format!("Failed to read {}: {}", path, e)))?;
-            let mut lexer = Lexer::new(&source);
-            let tokens = lexer.tokenize();
-            let mut parser = Parser::new(&tokens, &source);
-            let mut program = parser.parse().map_err(|e| {
-                PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
-            })?;
-            program.module_path = module_path_of(path).into();
-            Ok(program)
-        })
-        .collect();
-
-    let parsed_modules = modules?;
+    // One closure, two iterators: the *work* is defined once so the sequential baseline cannot drift
+    // into measuring a different parser. Only the traversal differs, which is the whole point of the
+    // comparison.
+    let parse_one = |path: &String| -> Result<VxModule, PipelineError> {
+        chatter!("Parsing file: {}", path);
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| PipelineError::IO(format!("Failed to read {}: {}", path, e)))?;
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(&tokens, &source);
+        let mut program = parser.parse().map_err(|e| {
+            PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
+        })?;
+        program.module_path = module_path_of(path).into();
+        Ok(program)
+    };
+    let parsed_modules: Vec<VxModule> = if sched.is_seq() {
+        file_paths.iter().map(parse_one).collect::<Result<_, _>>()?
+    } else {
+        file_paths
+            .par_iter()
+            .map(parse_one)
+            .collect::<Result<_, _>>()?
+    };
 
     #[cfg(debug_assertions)]
     verify_phase_1_parse(file_paths, &parsed_modules);
@@ -283,7 +343,10 @@ fn parse_phase(file_paths: &[String]) -> Result<Vec<VxModule>, PipelineError> {
     Ok(parsed_modules)
 }
 
-fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), PipelineError> {
+fn macro_expansion_phase(
+    parsed_modules: &mut [VxModule],
+    sched: Schedule,
+) -> Result<(), PipelineError> {
     // Collecting the macro table stays serial: it is one pass over macro *declarations*, which are
     // few, and it must complete before any expansion since a macro defined in one module is visible
     // to all.
@@ -298,9 +361,12 @@ fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), Pipeline
     // they take `&self`, one expander is shared across the parallel-for and the borrow checker
     // proves the isolation rather than a comment asserting it.
     let expander = MacroExpander::new(&global_macros);
-    parsed_modules
-        .par_iter_mut()
-        .try_for_each(|m| expander.expand_module(m).map_err(PipelineError::Parse))
+    let expand = |m: &mut VxModule| expander.expand_module(m).map_err(PipelineError::Parse);
+    if sched.is_seq() {
+        parsed_modules.iter_mut().try_for_each(expand)
+    } else {
+        parsed_modules.par_iter_mut().try_for_each(expand)
+    }
 }
 
 /// Resolve names, and hand back the symbol map so the freeze point does not rebuild it.
@@ -311,12 +377,18 @@ fn macro_expansion_phase(parsed_modules: &mut [VxModule]) -> Result<(), Pipeline
 /// enums and traits, and `resolve_names` attaches GIDs to type *references*, adding no declarations
 /// and renaming none. Returning it is what makes reusing it obviously safe rather than a claim a
 /// reader has to check.
-fn name_resolution_phase(parsed_modules: &mut Vec<VxModule>) -> crate::resolver::SymbolMap {
+fn name_resolution_phase(
+    parsed_modules: &mut Vec<VxModule>,
+    sched: Schedule,
+) -> crate::resolver::SymbolMap {
     let symbol_map = crate::resolver::build_symbol_map(parsed_modules);
-    parsed_modules
-        .par_iter_mut()
-        .for_each(|m| m.resolve_names(&symbol_map));
-    chatter!("Resolved {} modules in parallel", parsed_modules.len());
+    let resolve = |m: &mut VxModule| m.resolve_names(&symbol_map);
+    if sched.is_seq() {
+        parsed_modules.iter_mut().for_each(resolve);
+    } else {
+        parsed_modules.par_iter_mut().for_each(resolve);
+    }
+    chatter!("Resolved {} modules", parsed_modules.len());
     symbol_map
 }
 
@@ -952,84 +1024,99 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
     }
 }
 
+/// Check one function and lower it — the unit of work the check phase distributes.
+///
+/// Named rather than inlined because it is what must stay identical across four traversals: free
+/// functions and impl methods, each in a parallel and a sequential form. It used to be two verbatim
+/// copies of the same twenty lines, one per item kind, and the sequential baseline would have made
+/// that four.
+fn check_one_function(
+    func: &mut syntax::Function,
+    module_idx: usize,
+    global_session: &std::sync::Arc<GlobalSession>,
+    global_env: &GlobalAstEnv,
+) -> FunctionCheck {
+    let mut worker = LocalWorkerState::new(global_session.clone());
+    let mut checker = TypeChecker::new(global_env, &mut worker);
+    checker.check_function(func);
+
+    let errors = checker.errors;
+    let monos = checker.monomorphized_functions;
+    let gen_structs = checker.generated_structs;
+
+    // Lower this function's type references to the flat GID stream (Phase 3).
+    emit_function_type_gids(func, &mut worker);
+    // Lower the body to flat HIR bytecode; atomic — a no-op for functions outside the supported
+    // subset.
+    let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker);
+    #[cfg(debug_assertions)]
+    crate::hir::flatten::verify_hir_stream(&worker);
+
+    FunctionCheck {
+        diagnostics: errors,
+        monomorphs: monos,
+        worker,
+        module_idx,
+        generated_structs: gen_structs,
+        name: func.name.clone(),
+        lowered,
+    }
+}
+
 fn type_check_phase(
     parsed_modules: &mut Vec<VxModule>,
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
+    sched: Schedule,
 ) -> Result<Vec<FunctionCheck>, PipelineError> {
-    let check_results: Vec<_> = parsed_modules
-        .par_iter_mut()
-        .enumerate()
-        .flat_map(|(module_idx, module)| {
-            let global_session_ref = global_session;
-            let global_env_ref = global_env;
-            let mut func_results = module
-                .functions
-                .par_iter_mut()
-                .map(move |func| {
-                    let mut worker = LocalWorkerState::new(global_session_ref.clone());
-                    let mut checker = TypeChecker::new(global_env_ref, &mut worker);
-                    checker.check_function(func);
-
-                    let errors = checker.errors;
-                    let monos = checker.monomorphized_functions;
-                    let gen_structs = checker.generated_structs;
-
-                    // Lower this function's type references to the flat GID stream (Phase 3).
-                    emit_function_type_gids(func, &mut worker);
-                    // Lower the body to flat HIR bytecode; atomic — a no-op for functions
-                    // outside the supported subset.
-                    let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker);
-                    #[cfg(debug_assertions)]
-                    crate::hir::flatten::verify_hir_stream(&worker);
-
-                    FunctionCheck {
-                        diagnostics: errors,
-                        monomorphs: monos,
-                        worker,
-                        module_idx,
-                        generated_structs: gen_structs,
-                        name: func.name.clone(),
-                        lowered,
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            let impl_results = module
-                .impls
-                .par_iter_mut()
-                .flat_map(|i| {
-                    i.methods.par_iter_mut().map(move |func| {
-                        let mut worker = LocalWorkerState::new(global_session_ref.clone());
-                        let mut checker = TypeChecker::new(global_env_ref, &mut worker);
-                        checker.check_function(func);
-
-                        let errors = checker.errors;
-                        let monos = checker.monomorphized_functions;
-                        let gen_structs = checker.generated_structs;
-
-                        emit_function_type_gids(func, &mut worker);
-                        let lowered = crate::hir::flatten::lower_function_to_hir(func, &mut worker);
-                        #[cfg(debug_assertions)]
-                        crate::hir::flatten::verify_hir_stream(&worker);
-
-                        FunctionCheck {
-                            diagnostics: errors,
-                            monomorphs: monos,
-                            worker,
-                            module_idx,
-                            generated_structs: gen_structs,
-                            name: func.name.clone(),
-                            lowered,
-                        }
+    // The two branches are the same walk in the same order — a module's free functions, then its
+    // impl methods, modules outermost — differing only in `iter_mut` versus `par_iter_mut`. They are
+    // written out rather than abstracted because rayon's iterators share no trait with std's, and an
+    // abstraction that papered over that would hide exactly the thing being measured.
+    let check_results: Vec<FunctionCheck> = if sched.is_seq() {
+        parsed_modules
+            .iter_mut()
+            .enumerate()
+            .flat_map(|(module_idx, module)| {
+                let mut results: Vec<FunctionCheck> = module
+                    .functions
+                    .iter_mut()
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .collect();
+                let impl_results: Vec<FunctionCheck> = module
+                    .impls
+                    .iter_mut()
+                    .flat_map(|i| i.methods.iter_mut())
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .collect();
+                results.extend(impl_results);
+                results
+            })
+            .collect()
+    } else {
+        parsed_modules
+            .par_iter_mut()
+            .enumerate()
+            .flat_map(|(module_idx, module)| {
+                let mut results: Vec<FunctionCheck> = module
+                    .functions
+                    .par_iter_mut()
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env))
+                    .collect();
+                let impl_results: Vec<FunctionCheck> = module
+                    .impls
+                    .par_iter_mut()
+                    .flat_map(|i| {
+                        i.methods
+                            .par_iter_mut()
+                            .map(|f| check_one_function(f, module_idx, global_session, global_env))
                     })
-                })
-                .collect::<Vec<_>>();
-
-            func_results.extend(impl_results);
-            func_results
-        })
-        .collect();
+                    .collect();
+                results.extend(impl_results);
+                results
+            })
+            .collect()
+    };
 
     let mut total_errors = 0;
     for check in &check_results {
@@ -1164,6 +1251,7 @@ fn simd_patch_phase(
     all_type_streams: &mut [(usize, Vec<crate::gid::TypeId>)],
     slow_path_thread_mappings: &[Vec<u64>],
     generics_thread_mappings: &[Vec<u64>],
+    sched: Schedule,
 ) {
     // The pass runs in every mode, and the *classification* decides what work exists. An earlier
     // version of this file early-returned for `locked`, which also skipped patching the slow-path
@@ -1177,9 +1265,8 @@ fn simd_patch_phase(
     chatter!("Executing Phase 6: SIMD Patch Pass over Flat Type Streams");
     use crate::gid::{Word2, Word2Scope};
 
-    all_type_streams
-        .par_iter_mut()
-        .for_each(|(thread_idx, stream)| {
+    let patch = |(thread_idx, stream): &mut (usize, Vec<crate::gid::TypeId>)| {
+        {
             let mapping_slow = &slow_path_thread_mappings[*thread_idx];
             let mapping_generics = &generics_thread_mappings[*thread_idx];
 
@@ -1203,7 +1290,13 @@ fn simd_patch_phase(
                     }
                 }
             }
-        });
+        }
+    };
+    if sched.is_seq() {
+        all_type_streams.iter_mut().for_each(patch);
+    } else {
+        all_type_streams.par_iter_mut().for_each(patch);
+    }
 
     chatter!("SIMD Patch Pass completed. AST is officially lowered to Flat Array.");
 }
@@ -1219,6 +1312,7 @@ fn simd_patch_phase(
 fn route_monomorphs(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
+    sched: Schedule,
 ) -> (Vec<Vec<syntax::Function>>, Vec<Vec<syntax::StructDecl>>) {
     let num_modules = parsed_modules.len();
     let mut module_buckets: Vec<Vec<syntax::Function>> = vec![Vec::new(); num_modules];
@@ -1246,16 +1340,25 @@ fn route_monomorphs(
     #[cfg(debug_assertions)]
     verify_phase_7_routing(&module_buckets, &module_hash_to_index);
 
-    module_buckets
-        .par_iter_mut()
-        .zip(module_struct_buckets.par_iter_mut())
-        .for_each(|(bucket, struct_bucket)| {
+    let dedup =
+        |(bucket, struct_bucket): (&mut Vec<syntax::Function>, &mut Vec<syntax::StructDecl>)| {
             bucket.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             bucket.dedup_by(|a, b| a.name == b.name);
 
             struct_bucket.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             struct_bucket.dedup_by(|a, b| a.name == b.name);
-        });
+        };
+    if sched.is_seq() {
+        module_buckets
+            .iter_mut()
+            .zip(module_struct_buckets.iter_mut())
+            .for_each(dedup);
+    } else {
+        module_buckets
+            .par_iter_mut()
+            .zip(module_struct_buckets.par_iter_mut())
+            .for_each(dedup);
+    }
 
     (module_buckets, module_struct_buckets)
 }
@@ -1290,22 +1393,23 @@ fn codegen_mlir_phase(
     all_type_streams: &[(usize, Vec<crate::gid::TypeId>)],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
     global_session: &std::sync::Arc<GlobalSession>,
+    sched: Schedule,
 ) -> Option<String> {
     // Monomorphs, routed and deduped exactly as `codegen_and_metadata_phase` routes them, then
-    // lowered. Flattened to one list first so the lowering is a single flat `par_iter` rather than
+    // lowered. Flattened to one list first so the lowering is a single flat iteration rather than
     // a nested one whose outer level is as short as the module count.
-    let (module_buckets, _struct_buckets) = route_monomorphs(parsed_modules, check_results);
-    let monos: Vec<(syntax::Function, LocalWorkerState, bool)> = module_buckets
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(|f| {
-            let mut worker = LocalWorkerState::new(global_session.clone());
-            let lowered = crate::hir::flatten::lower_function_to_hir(&f, &mut worker);
-            (f, worker, lowered)
-        })
-        .collect();
+    let (module_buckets, _struct_buckets) = route_monomorphs(parsed_modules, check_results, sched);
+    let flat_monos: Vec<syntax::Function> = module_buckets.into_iter().flatten().collect();
+    let lower_mono = |f: syntax::Function| {
+        let mut worker = LocalWorkerState::new(global_session.clone());
+        let lowered = crate::hir::flatten::lower_function_to_hir(&f, &mut worker);
+        (f, worker, lowered)
+    };
+    let monos: Vec<(syntax::Function, LocalWorkerState, bool)> = if sched.is_seq() {
+        flat_monos.into_iter().map(lower_mono).collect()
+    } else {
+        flat_monos.into_par_iter().map(lower_mono).collect()
+    };
 
     // Pair each check result back to its function by replaying the check-phase walk. The *patched*
     // stream is the type side table, not the worker's own: `extract_type_streams` moved it out, and
@@ -1404,6 +1508,7 @@ fn codegen_mlir_phase(
         &agg_layouts,
         &alias_tables,
         subspaces,
+        sched,
     )?;
     chatter!(
         "Emitted MLIR for {} functions ({} monomorphized, {} shadowed by an earlier definition)",
@@ -1419,7 +1524,8 @@ fn codegen_and_metadata_phase(
     check_results: &mut [FunctionCheck],
     all_type_streams: Vec<(usize, Vec<crate::gid::TypeId>)>,
 ) -> Result<(), PipelineError> {
-    let (module_buckets, module_struct_buckets) = route_monomorphs(parsed_modules, check_results);
+    let (module_buckets, module_struct_buckets) =
+        route_monomorphs(parsed_modules, check_results, Schedule::Parallel);
 
     parsed_modules
         .par_iter_mut()
@@ -1506,7 +1612,7 @@ mod gid_stream_tests {
             }];
             let (_s, arena, offsets, slow, gen) = deduplication_phase(&results, &session);
             let mut streams = extract_type_streams(&mut results);
-            simd_patch_phase(&mut streams, &slow, &gen);
+            simd_patch_phase(&mut streams, &slow, &gen, Schedule::Parallel);
             (streams.remove(0).1, arena, offsets)
         };
 
@@ -2021,7 +2127,7 @@ mod gid_stream_tests {
             parse_only("B", "struct Bar { f: A::Foo }"),
         ];
         // Resolve names across *both* modules (the parallel phase builds one symbol map for all).
-        name_resolution_phase(&mut modules);
+        name_resolution_phase(&mut modules, Schedule::Parallel);
 
         // Builds only if Bar's by-value dependency on A::Foo resolved to a registered node.
         let reg = build_frozen_registry(&modules).expect("cross-module by-value dep resolves");
@@ -2054,7 +2160,7 @@ mod gid_stream_tests {
             parse_only("A", "struct Node { o: B::Other }"),
             parse_only("B", "struct Other { n: A::Node }"),
         ];
-        name_resolution_phase(&mut modules);
+        name_resolution_phase(&mut modules, Schedule::Parallel);
         match build_frozen_registry(&modules) {
             Err(PipelineError::Semantic(msg)) => {
                 assert!(msg.contains("Infinite-sized recursive layout"), "{msg}")
@@ -2073,13 +2179,14 @@ mod gid_stream_tests {
             "m",
             "fn add(a: i32, b: i32) -> i32 { return a + b; }",
         )];
-        name_resolution_phase(&mut modules);
+        name_resolution_phase(&mut modules, Schedule::Parallel);
         let registry = build_frozen_registry(&modules).expect("registry");
         let session = Arc::new(GlobalSession::with_registry(1, registry));
         let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
         let env = GlobalAstEnv::build(&env_mods);
 
-        let results = type_check_phase(&mut modules, &session, &env).expect("type check ok");
+        let results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
+            .expect("type check ok");
         let worker = &results[0].worker;
         let ops: Vec<Opcode> = worker.local_hir_stream.iter().map(|i| i.opcode).collect();
         assert_eq!(
@@ -2113,7 +2220,7 @@ mod gid_stream_tests {
     #[test]
     fn frozen_registry_detects_recursive_enum_by_value() {
         let mut modules = vec![parse_only("m", "enum Tree { Leaf, Node(Tree) }")];
-        name_resolution_phase(&mut modules);
+        name_resolution_phase(&mut modules, Schedule::Parallel);
         match build_frozen_registry(&modules) {
             Err(PipelineError::Semantic(msg)) => {
                 assert!(msg.contains("Infinite-sized recursive layout"), "{msg}")
@@ -2130,7 +2237,7 @@ mod gid_stream_tests {
             parse_only("A", "struct Node { o: B::Other }"),
             parse_only("B", "struct Other { n: &A::Node }"),
         ];
-        name_resolution_phase(&mut modules);
+        name_resolution_phase(&mut modules, Schedule::Parallel);
         let reg =
             build_frozen_registry(&modules).expect("indirection breaks the cross-module cycle");
         assert_eq!(reg.layouts.len(), 2);
@@ -2254,6 +2361,16 @@ mod gid_stream_tests {
         assert_eq!(single, run(8), "emitted MLIR differs across thread counts");
         assert_eq!(single, run(8), "emitted MLIR differs across reruns");
 
+        // The sequential arm has to be the *same compiler*, or the baseline it provides measures
+        // something else and every ratio taken against it is meaningless. Same text, byte for byte.
+        let seq = compile_pipeline_mlir_with(&paths, Schedule::Sequential)
+            .expect("pipeline")
+            .expect("the flat emitter should cover this corpus");
+        assert_eq!(
+            single, seq,
+            "the sequential schedule emits different MLIR than the parallel one"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2360,12 +2477,13 @@ mod gid_stream_tests {
                 .unwrap();
             pool.install(|| {
                 let mut modules = build();
-                name_resolution_phase(&mut modules);
+                name_resolution_phase(&mut modules, Schedule::Parallel);
                 let registry = build_frozen_registry(&modules).expect("registry");
                 let session = Arc::new(GlobalSession::with_registry(1, registry));
                 let env_mods: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
                 let env = GlobalAstEnv::build(&env_mods);
-                let results = type_check_phase(&mut modules, &session, &env).expect("type check");
+                let results = type_check_phase(&mut modules, &session, &env, Schedule::Parallel)
+                    .expect("type check");
                 results
                     .iter()
                     .flat_map(|c| {
