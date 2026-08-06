@@ -142,7 +142,7 @@ pub fn quiet() -> bool {
 
 /// The pipeline's phases, in the order they run. Fixed at compile time so the timer can be a plain
 /// array of atomics indexed by position -- no map, no allocation, no lock.
-pub const PHASES: [&str; 8] = [
+pub const PHASES: [&str; 9] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -151,6 +151,7 @@ pub const PHASES: [&str; 8] = [
     "type_check",
     "dedup_barrier",
     "simd_patch",
+    "codegen",
 ];
 
 static PHASE_NANOS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
@@ -214,6 +215,6 @@ mod tests {
         assert_eq!(phase_index("type_check"), Some(5));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 8);
+        assert_eq!(PHASES.len(), 9);
     }
 }

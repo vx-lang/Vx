@@ -916,29 +916,7 @@ impl CompilerDriver {
                     checker.check_function(f);
                 }
             }
-            subspaces = env
-                .memories
-                .values()
-                .map(|decl| {
-                    let space = crate::syntax::MemorySpace::from_name(decl.name.as_ref());
-                    crate::codegen::flat::SubspaceInfo {
-                        dispatch_id: crate::arch::memory_space_dispatch_id(&space) as u64,
-                        name: space.name(),
-                        within: decl.parent.as_ref().map(|p| p.name()),
-                        granule: decl.granule.as_ref().map(|g| g.0),
-                        capacity: decl.capacity.as_ref().map(|c| c.0),
-                        scope: decl.scope.as_ref().map(|s| {
-                            match s {
-                                crate::syntax::Scope::Device => "device",
-                                crate::syntax::Scope::Sm => "sm",
-                                crate::syntax::Scope::Cta => "cta",
-                                crate::syntax::Scope::Thread => "thread",
-                            }
-                            .to_string()
-                        }),
-                    }
-                })
-                .collect();
+            subspaces = crate::codegen::flat::subspaces_from_env(&env);
         }
 
         // Index every non-generic function by name (the main-module version wins any collision).

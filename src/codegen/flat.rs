@@ -669,6 +669,39 @@ pub struct SubspaceInfo {
     pub scope: Option<String>,
 }
 
+/// Recover the declared memory sub-spaces from a compilation's env, in the shape
+/// [`emit_module_mlir`] wants.
+///
+/// The frozen registry carries no memory declarations, so the env is the only place a flat compile
+/// can get them; without this the `space`/`within`/`granule`/`capacity`/`scope` attributes an
+/// `Opcode::Transfer` should carry are silently dropped on the flat path. Shared by `vxc`'s
+/// `build_flat_module` and the parallel pipeline's codegen phase, so the two cannot disagree about
+/// what a `vx.transfer` is annotated with (P0-1, #311).
+pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
+    env.memories
+        .values()
+        .map(|decl| {
+            let space = crate::syntax::MemorySpace::from_name(decl.name.as_ref());
+            SubspaceInfo {
+                dispatch_id: crate::arch::memory_space_dispatch_id(&space) as u64,
+                name: space.name(),
+                within: decl.parent.as_ref().map(|p| p.name()),
+                granule: decl.granule.as_ref().map(|g| g.0),
+                capacity: decl.capacity.as_ref().map(|c| c.0),
+                scope: decl.scope.as_ref().map(|s| {
+                    match s {
+                        crate::syntax::Scope::Device => "device",
+                        crate::syntax::Scope::Sm => "sm",
+                        crate::syntax::Scope::Cta => "cta",
+                        crate::syntax::Scope::Thread => "thread",
+                    }
+                    .to_string()
+                }),
+            }
+        })
+        .collect()
+}
+
 impl EmitCtx {
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.

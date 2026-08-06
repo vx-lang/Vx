@@ -2230,3 +2230,53 @@ fn flat_reference_returning_call_aliases_the_mutated_local() {
         99,
     );
 }
+
+/// The parallel pipeline's own MLIR, JIT-ed and checked against the AST oracle (#311).
+///
+/// `flat_llvm` above drives the flat emitter through a hand-assembled single-program lowering.
+/// This drives the *pipeline*: real files on disk, parsed in parallel, macro-expanded, name-
+/// resolved, frozen into a registry, type-checked and lowered per function on a rayon pool,
+/// reconciled at the dedup barrier, SIMD-patched, and only then emitted. That is the orchestration
+/// whose scaling is being measured, and until it produced an artifact there was nothing to check it
+/// against. Parity with the AST oracle is what makes a speedup measured on it a statement about
+/// compiling a program rather than about running a frontend.
+///
+/// Two modules, so the phases that only exist because compilation is per-module — the parallel
+/// parse, the routing of results back to their module, the cross-worker reconciliation — are all on
+/// the path. `main` calls into both.
+#[test]
+fn pipeline_emits_mlir_that_matches_the_ast_oracle() {
+    use std::io::Write;
+
+    let a = "fn add(x: i32, y: i32) -> i32 { return x + y; }\n\
+             fn tri(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }\n";
+    let b = "fn twice(n: i32) -> i32 { return n * 2; }\n\
+             fn main() -> i32 { return add(twice(tri(5)), 4); }\n";
+
+    let dir = std::env::temp_dir().join(format!("vx_pipe_mlir_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = Vec::new();
+    for (name, src) in [("a.vx", a), ("b.vx", b)] {
+        let p = dir.join(name);
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(src.as_bytes())
+            .unwrap();
+        paths.push(p.to_string_lossy().to_string());
+    }
+
+    let text = vxc::pipeline::compile_pipeline_mlir(&paths)
+        .expect("pipeline")
+        .expect("the flat emitter covers this corpus");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let context = make_context();
+    let mut module = melior::ir::Module::parse(&context, &text)
+        .unwrap_or_else(|| panic!("pipeline MLIR does not parse:\n{text}"));
+    lower_to_llvm(&context, &mut module).expect("pipeline lower_to_llvm");
+
+    // tri(5) = 0+1+2+3+4 = 10; twice -> 20; add(20, 4) = 24.
+    assert_eq!(exit_code(&module.as_operation().to_string()), 24);
+    assert_eq!(ast_exit_code(&format!("{a}{b}")), 24, "oracle agrees");
+}
