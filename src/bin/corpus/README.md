@@ -21,6 +21,8 @@ Set `VX_PIPELINE_QUIET=1` for any timed run. See "Why quiet matters" below — i
 | `--shared-frac S` | fraction of generic arguments drawn from scalars rather than module-local structs |
 | `--params-per-fn P` | parameter slots per function (constant across density settings) |
 | `--locals-per-module L` | module-local structs: the local half of the argument vocabulary |
+| `--files-per-layer F` | modules per dependency layer; `0` (default) leaves modules independent |
+| `--deps D` | modules from the layer below each module imports a type from and calls into |
 | `--seed`, `--out` | reproducibility |
 
 `intern_bench` accepts comma-separated lists for `--modules`, `--fns`, `--density` and `--threads`
@@ -37,6 +39,33 @@ how many bytes of MLIR it produced; `0 bytes` plus a `NOTE` means the flat emitt
 cell is not a compile measurement. Each phase's share, codegen included, is on the same line — on a
 small corpus codegen is already about half of measured phase time, which is the ratio a frontend-only
 sweep silently assumed away.
+
+## Dependency layers
+
+`--files-per-layer` turns the corpus from a heap of mutually oblivious modules into a layered DAG.
+Module `m` sits in layer `m / F` and draws `--deps` dependencies from the layer below; layer 0 has
+none, which is what makes a cycle impossible by construction.
+
+```
+cargo run --release --bin intern_bench -- \
+    --modules 100 --fns 16 --files-per-layer 10 --deps 3 --threads 1,2,4,8 --reps 9
+```
+
+That is 100 modules, ~21,700 lines, 250 import edges, 1,600 functions, and about 5 MB of emitted
+MLIR. Each dependency produces two edges of different kinds, and both are needed:
+
+- an **imported type** (`import m4::L4_0;`, then `L4_0` in a signature), which goes through
+  `build_symbol_map` and `resolve_nominal` and lands in the frozen registry — the serial spine;
+- a **cross-module call** (`m4_leaf(a)`), which goes through `GlobalAstEnv`: the callee's signature
+  has to be known globally before any worker can check a body that calls it.
+
+A corpus without both measures a parallel frontend on a problem with no cross-module structure to
+serialise on, which flatters it. This mode is off by default because the interning sweeps want the
+modules independent — a dependency edge is work that has nothing to do with interning.
+
+It needs a module to be nameable by an `import`, which the pipeline could not do until the module
+path became the file stem (`d0b86578`). Before that every module was filed under its full filesystem
+path, a key no `import` statement can spell.
 
 ## The carrier is pointer-backed on purpose
 
