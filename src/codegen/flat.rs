@@ -31,6 +31,7 @@ use crate::hir::bytecode::{HirInstruction, Opcode};
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of};
 use crate::registry::ImmutableGlobalRegistry;
 use crate::syntax::{ElementType, Function, Type};
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// The MLIR type string for a scalar element type. Integers are signless (signedness lives in the
@@ -814,41 +815,85 @@ pub fn emit_module_mlir(
             ctx.func_sigs.insert(sig.gid, (params, ret));
         }
     }
+    // Two module-wide numbering schemes are threaded through the per-function emit:
+    //
+    //  - String literals. Each function's literals are numbered from a running module-wide base, so a
+    //    `PrintStr`'s `@".str.<n>"` reference (emitted with the same `str_base`) resolves the global
+    //    emitted here.
+    //  - Alias scopes (M2b-2). 0 is reserved for the shared alias domain; each function reserves a
+    //    contiguous block of `distinct[]` ids for its groups, so scopes stay distinct across functions
+    //    even after inlining. (#275, §5.4)
+    //
+    // Both used to be running `&mut` counters carried through the loop, which forced the per-function
+    // emit -- the actual code generation -- to run one function at a time. Neither *needs* to be
+    // sequential: a function's literal count is `string_tables[fi].len()` and its alias-group count is
+    // `max(group) + 1` over its own alias table, both known before anything is emitted. Turning them
+    // into prefix sums makes the emit a `par_iter` and leaves the output byte-identical, because the
+    // numbering is a function of position, never of arrival order (#311).
+    let mut str_bases: Vec<usize> = Vec::with_capacity(funcs.len());
+    let mut distinct_bases: Vec<u32> = Vec::with_capacity(funcs.len());
+    {
+        let mut str_base = 0usize;
+        let mut distinct_ctr: u32 = 1;
+        for fi in 0..funcs.len() {
+            str_bases.push(str_base);
+            str_base += string_tables.get(fi).copied().unwrap_or(&[]).len();
+            distinct_bases.push(distinct_ctr);
+            distinct_ctr += alias_tables
+                .get(fi)
+                .copied()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(_, g, _)| *g as u32 + 1)
+                .max()
+                .unwrap_or(0);
+        }
+    }
+
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>);
+    let emitted: Vec<Option<FnEmission>> = funcs
+        .par_iter()
+        .enumerate()
+        .map(|(fi, (func, hir, types))| {
+            let mut calls = Vec::new();
+            let mut distinct_ctr = distinct_bases[fi];
+            let text = emit_function_mlir(
+                func,
+                hir,
+                types,
+                &ctx,
+                &mut calls,
+                str_bases[fi],
+                alias_tables.get(fi).copied().unwrap_or(&[]),
+                &mut distinct_ctr,
+            )?;
+            Some((text, calls))
+        })
+        .collect();
+
     let mut out = String::new();
     let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
-    // Each function's string literals are numbered from a running module-wide base, so a `PrintStr`'s
-    // `@".str.<n>"` reference (emitted with the same `str_base`) resolves the global emitted here.
-    let mut str_base = 0usize;
-    // Module-global `distinct[]` counter for alias scopes (M2b-2). 0 is reserved for the shared alias
-    // domain; each function reserves a contiguous block for its groups, so scopes stay distinct across
-    // functions even after inlining. (#275, §5.4)
-    let mut distinct_ctr: u32 = 1;
-    for (fi, (func, hir, types)) in funcs.iter().enumerate() {
-        let alias_stores = alias_tables.get(fi).copied().unwrap_or(&[]);
-        match emit_function_mlir(
-            func,
-            hir,
-            types,
-            &ctx,
-            &mut calls,
-            str_base,
-            alias_stores,
-            &mut distinct_ctr,
-        ) {
-            Some(t) => out += &t,
-            None => {
-                if std::env::var("VX_FLAT_DBG").is_ok() {
-                    eprintln!("[flat-dbg] emit declined for fn {}", func.name.as_ref());
-                }
-                return None;
+    // Reassembly is in `funcs` order, not completion order: the emitted text, the string globals and
+    // the callee list all feed positional output. A decline is likewise reported for the *first*
+    // declining function rather than whichever thread noticed first, so `VX_FLAT_DBG` says the same
+    // thing it always did.
+    for (fi, emission) in emitted.into_iter().enumerate() {
+        let Some((text, fn_calls)) = emission else {
+            if std::env::var("VX_FLAT_DBG").is_ok() {
+                eprintln!(
+                    "[flat-dbg] emit declined for fn {}",
+                    funcs[fi].0.name.as_ref()
+                );
             }
-        }
+            return None;
+        };
+        out += &text;
+        calls.extend(fn_calls);
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
         for (li, s) in strs.iter().enumerate() {
-            globals += &emit_string_global(str_base + li, s);
+            globals += &emit_string_global(str_bases[fi] + li, s);
         }
-        str_base += strs.len();
     }
     // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
     // their implementations; the AST path declares them the same way).
