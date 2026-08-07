@@ -1066,7 +1066,9 @@ impl CompilerDriver {
             }
         };
 
-        let parsed = melior::ir::Module::parse(context, &format!("module {{\n{text}}}\n"));
+        // `emit_module_mlir` returns a complete `module { … }`; wrapping it here would copy the
+        // whole body again (#311).
+        let parsed = melior::ir::Module::parse(context, &text);
         if parsed.is_none() {
             // `emit_module_mlir` returned `Some(text)` — it *claimed* to handle this module — yet the
             // text does not parse. That is an emitter **bug** (a construct emitted invalid MLIR, e.g.

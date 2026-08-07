@@ -140,8 +140,16 @@ fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, Pipe
     // module's signatures, its cost is proportional to the whole program, and it is serial. Left
     // untimed it showed up only as part of the phase table's `unaccounted` remainder, which is where
     // serial work goes to hide from an Amdahl estimate.
+    // A deep clone of every module's signatures, and there is nothing sequential about it: each
+    // module's clone is independent. It stayed serial only because it was written before the phase
+    // had a name, and it did not look like a phase. At 1,000 modules on 48 cores it was 16 ms of a
+    // 265 ms compile -- 6%, entirely on the critical path, for a `map`.
     let env_modules: Vec<VxModule> = timed("sig_clone", || {
-        modules.iter().map(|m| m.clone_signature()).collect()
+        if sched.is_seq() {
+            modules.iter().map(|m| m.clone_signature()).collect()
+        } else {
+            modules.par_iter().map(|m| m.clone_signature()).collect()
+        }
     });
     let mut env = timed("env_build", || GlobalAstEnv::build(&env_modules));
     // `clone_signature` above strips non-generic function bodies, so `build` could not summarize
@@ -1557,7 +1565,7 @@ fn codegen_mlir_phase(
         monos.len(),
         shadowed
     );
-    Some(format!("module {{\n{text}}}\n"))
+    Some(text)
 }
 
 fn codegen_and_metadata_phase(

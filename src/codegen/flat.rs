@@ -978,7 +978,7 @@ pub fn emit_module_mlir(
             });
             Some((text, calls, helpers))
         };
-    let emitted: Vec<Option<FnEmission>> = if sched == crate::pipeline::Schedule::Sequential {
+    let mut emitted: Vec<Option<FnEmission>> = if sched == crate::pipeline::Schedule::Sequential {
         funcs.iter().enumerate().map(emit_one).collect()
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
@@ -996,16 +996,22 @@ pub fn emit_module_mlir(
         .iter()
         .filter_map(|e| e.as_ref().map(|(t, _, _)| t.len()))
         .sum();
-    let mut out = String::with_capacity(out_len);
     let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
-    // Order is `funcs` order, not completion order: the emitted text, the string globals and the
-    // callee list all feed positional output. A decline is likewise reported for the *first*
-    // declining function rather than whichever thread noticed first, so `VX_FLAT_DBG` says the same
-    // thing it always did.
+    // First pass gathers only what the *header* needs -- the callee list, the runtime-helper union
+    // and the string globals. The bodies are deliberately not touched yet.
+    //
+    // The declarations depend on `calls`, not on the assembled text, so they can be built before a
+    // single byte of body is copied. That is what makes one copy enough: the header is finished
+    // first, the final buffer is allocated at its exact size, and the bodies go straight into it.
+    // Assembling bodies first forced the old order -- body, then header, then concatenate -- which
+    // cost a full copy of a multi-megabyte module per concatenation.
+    //
+    // A decline is reported for the *first* declining function rather than whichever thread noticed
+    // first, so `VX_FLAT_DBG` says the same thing it always did.
     let mut helper_mask = 0u16;
-    for (fi, emission) in emitted.into_iter().enumerate() {
-        let Some((text, fn_calls, helpers)) = emission else {
+    for (fi, emission) in emitted.iter_mut().enumerate() {
+        let Some((_, fn_calls, helpers)) = emission.as_mut() else {
             if std::env::var("VX_FLAT_DBG").is_ok() {
                 eprintln!(
                     "[flat-dbg] emit declined for fn {}",
@@ -1014,9 +1020,8 @@ pub fn emit_module_mlir(
             }
             return None;
         };
-        out += &text;
-        calls.extend(fn_calls);
-        helper_mask |= helpers;
+        calls.append(fn_calls);
+        helper_mask |= *helpers;
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
         for (li, s) in strs.iter().enumerate() {
             globals += &emit_string_global(str_bases[fi] + li, s);
@@ -1036,9 +1041,13 @@ pub fn emit_module_mlir(
     // the JIT links the symbol (libm via `-lm`, `libvx_std_core`, ...). Deduped, in first-seen order.
     let defined: std::collections::HashSet<&str> =
         funcs.iter().map(|(f, _, _)| f.name.as_ref()).collect();
-    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Borrows from `calls` rather than cloning each name. The set only needs to answer "seen
+    // already", and a corpus with cross-module calls produces one entry here per call site --
+    // tens of thousands of `String` allocations to record facts about strings that are already in
+    // memory and outlive the loop.
+    let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (name, arg_types, ret) in &calls {
-        if defined.contains(name.as_str()) || !declared.insert(name.clone()) {
+        if defined.contains(name.as_str()) || !declared.insert(name.as_str()) {
             continue;
         }
         let ret_sig = if ret.is_empty() {
@@ -1052,13 +1061,40 @@ pub fn emit_module_mlir(
             arg_types.join(", ")
         );
     }
-    // One allocation for the result rather than two more full copies of it: `globals + &decls + &out`
-    // reallocates `globals` to fit `decls`, then reallocates again to fit `out`, copying the whole
-    // (multi-megabyte) body in the process.
-    let mut module = String::with_capacity(globals.len() + decls.len() + out.len());
+    // One buffer, one copy of each body, exact capacity, wrapper included.
+    //
+    // The module text used to be copied three times before anything could parse it: bodies into
+    // `out`, then `globals + decls + out` into a result, then a `format!` at each call site to wrap
+    // it in `module { … }`. On a 1,000-module corpus that is a 51 MB buffer copied three times and
+    // freed twice, and the cost is not the memcpy -- it is faulting in 150 MB of fresh pages, on the
+    // critical path, at the end of an otherwise well-parallelised phase.
+    //
+    // Emitting the wrapper here rather than leaving it to callers is what removes the last of them:
+    // a caller that has to wrap the return value cannot avoid copying it.
+    const OPEN: &str = "module {\n";
+    const CLOSE: &str = "}\n";
+    let mut module =
+        String::with_capacity(OPEN.len() + globals.len() + decls.len() + out_len + CLOSE.len());
+    module.push_str(OPEN);
     module.push_str(&globals);
     module.push_str(&decls);
-    module.push_str(&out);
+    for emission in emitted.iter().flatten() {
+        module.push_str(&emission.0);
+    }
+    module.push_str(CLOSE);
+    // The per-function texts were copied, not consumed, so their allocations are still live. Freeing
+    // them here rather than during assembly keeps tens of thousands of frees off the critical path,
+    // and every one of them is a *remote* free: built by a worker, released on this thread (#315).
+    // `calls` is one entry per emitted call site -- three heap allocations each, all built by
+    // workers -- so it is the same remote-free problem in miniature and gets the same treatment.
+    // `declared` borrows from it, so this has to come after the declaration loop.
+    if sched == crate::pipeline::Schedule::Sequential {
+        drop(emitted);
+        drop(calls);
+    } else {
+        emitted.into_par_iter().for_each(drop);
+        calls.into_par_iter().for_each(drop);
+    }
     Some(module)
 }
 
@@ -2358,7 +2394,7 @@ mod tests {
         let context = melior::Context::new();
         context.append_dialect_registry(&registry);
         context.load_all_available_dialects();
-        let module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
+        let module = melior::ir::Module::parse(&context, &mlir)
             .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
         assert!(
             module.as_operation().verify(),
@@ -2447,7 +2483,7 @@ mod tests {
         context.append_dialect_registry(&dialects);
         context.load_all_available_dialects();
         crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
-        let module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
+        let module = melior::ir::Module::parse(&context, &mlir)
             .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
         assert!(
             module.as_operation().verify(),

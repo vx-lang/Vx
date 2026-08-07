@@ -456,12 +456,14 @@ fn main() {
                 if !suspect.is_empty() {
                     eprintln!(
                         "  WARNING: thread count(s) {suspect:?} came out slower than a lower one. \
-                         Adding workers cannot lengthen the same work, so those rows measure the \
-                         machine, not the compiler -- on a heterogeneous host (this one is an Apple \
-                         M4: 4 performance + 6 efficiency cores) a small pool that draws efficiency \
-                         cores runs ~1.7x slower for the whole life of the pool, with a tight \
-                         per-rep spread that makes it read like a result. Re-run the cell, or read \
-                         it on homogeneous cores. Do not quote it."
+                         Adding workers cannot lengthen the same work, so such a row is measuring \
+                         something other than the compiler. Two causes seen so far: (a) a \
+                         heterogeneous host, where a small pool that draws efficiency cores runs \
+                         ~1.7x slower for the whole life of the pool with a tight per-rep spread \
+                         that reads exactly like a result; (b) too little work per thread, where the \
+                         corpus is small enough that pool dispatch dominates -- check the corpus \
+                         line above for functions-per-thread before blaming the machine. Re-run the \
+                         cell. Do not quote it."
                     );
                 }
 

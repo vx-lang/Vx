@@ -220,8 +220,7 @@ fn flat_llvm(src: &str) -> Option<String> {
     )?;
 
     let context = make_context();
-    let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{body}}}\n"))
-        .expect("flat MLIR parses");
+    let mut module = melior::ir::Module::parse(&context, &body).expect("flat MLIR parses");
     lower_to_llvm(&context, &mut module).expect("flat lower_to_llvm");
     Some(module.as_operation().to_string())
 }
@@ -1314,8 +1313,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     )
     .expect("flat codegen emits the linked module");
     let context = make_context();
-    let mut module = melior::ir::Module::parse(&context, &format!("module {{\n{mlir}}}\n"))
-        .expect("linked flat MLIR parses");
+    let mut module = melior::ir::Module::parse(&context, &mlir).expect("linked flat MLIR parses");
     lower_to_llvm(&context, &mut module).expect("flat lower_to_llvm");
     assert_eq!(
         exit_code(&module.as_operation().to_string()),
