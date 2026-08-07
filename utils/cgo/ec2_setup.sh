@@ -11,8 +11,15 @@
 # (#295/#296). Mirrors .github/workflows/ci.yml's dependency set, which is the
 # only Linux build recipe this project has that is known to work.
 #
-#   sudo ./ec2_setup.sh                 # deps only
+#   sudo ./ec2_setup.sh                 # deps only -- the usual case
 #   sudo ./ec2_setup.sh --clone <url>   # deps + clone + build
+#
+# Prefer deps-only, then `utils/cgo/push.sh` from your own machine. It carries
+# the working tree over the EC2 keypair, so the instance never holds a git
+# credential -- and this is rented, shared-tenant hardware that gets terminated,
+# so a key that has been on it should be considered disclosed. `--clone` is for a
+# *public HTTPS* URL only; never hand this an `ssh://`/`git@` remote, because
+# that means putting a key on the box.
 #
 # Assumes Ubuntu 24.04. On a different release, the apt.llvm.org script still
 # works but the package names may drift.

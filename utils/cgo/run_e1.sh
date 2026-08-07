@@ -76,8 +76,17 @@ mkdir -p "$OUT"
     echo "reps: $REPS"
     echo "ladder: $THREADS"
     echo "tmpdir: $TMPDIR"
-    echo "commit: $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-    echo "branch: $(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    # A pushed tree has no `.git`, so `rev-parse` cannot answer here. `push.sh`
+    # leaves `PUSHED_FROM` for exactly this: without it a results directory would
+    # record `commit: unknown`, which is a results directory that cannot be
+    # attributed to a source state and therefore cannot be published.
+    if [ -f "$REPO/PUSHED_FROM" ]; then
+        echo "-- pushed tree --"
+        cat "$REPO/PUSHED_FROM"
+    else
+        echo "commit: $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+        echo "branch: $(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    fi
     echo
     lscpu
     echo
@@ -137,6 +146,16 @@ else
     # shows up in first.
     run_cell maxpressure --modules 64 --fns 16 --density 0,1 \
         --params-per-fn 16 --arity 2 --locals-per-module 32
+
+    # The reference large corpus, and the only cell whose ladder means anything
+    # past about eight threads: 1,000 modules, 221k lines, 16k functions, ~1.0 s
+    # sequential. The grid above tops out at 512 modules x 16 functions, which is
+    # 170 functions per thread at 48 cores and falling -- past that the sweep
+    # measures pool dispatch, not the compiler. Layered, so the phases that only
+    # exist because compilation is per-module (the symbol map, the registry
+    # freeze, the global env) have real cross-module work to do rather than none.
+    run_cell large --modules 1000 --fns 16 --density 1 \
+        --files-per-layer 10 --deps 3
 fi
 
 # ---- lock contention --------------------------------------------------------
