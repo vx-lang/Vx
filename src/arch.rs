@@ -32,6 +32,14 @@ pub struct TransferCostGraph {
     /// here.
     edge_rates: HashMap<(MemorySpace, MemorySpace), syntax::Bandwidth>,
 
+    /// The unitless `transfer A -> B : 300` figures, kept apart from the routing weights.
+    ///
+    /// Since edges may now decline to declare a cost, the weight the router uses is not always a
+    /// figure anyone wrote down — a `Derived` edge weighs 1 so hop count breaks ties. Reporting
+    /// that 1 as "the declared cost" would be inventing data, so the two are stored separately and
+    /// the diagnostics record only ever quotes this one.
+    edge_declared: HashMap<(MemorySpace, MemorySpace), u32>,
+
     /// Every topology's descriptor (built-ins plus the user-declared `Topology { ... }` of *this*
     /// compilation), held per-instance rather than in a process-global registry. This is the
     /// data-oriented, lock-free home the parallel pipeline needs (see
@@ -444,6 +452,7 @@ impl Default for TransferCostGraph {
             transfer_edges: HashMap::new(),
             cost_matrix: HashMap::new(),
             edge_rates: HashMap::new(),
+            edge_declared: HashMap::new(),
             descriptors: builtin_descriptors(),
         };
 
@@ -496,6 +505,9 @@ impl TransferCostGraph {
             self.add_transfer_edge(e.from.clone(), e.to.clone(), e.cost.routing_weight());
             if let EdgeCost::Rate(bw) = e.cost {
                 self.edge_rates.insert((e.from.clone(), e.to.clone()), bw);
+            }
+            if let Some(c) = e.cost.declared() {
+                self.edge_declared.insert((e.from.clone(), e.to.clone()), c);
             }
         }
     }
@@ -765,6 +777,62 @@ impl TransferCostGraph {
         self.edge_rates
             .get(&(source.clone(), target.clone()))
             .copied()
+    }
+
+    /// Every space that appears as an endpoint of any declared edge, in a deterministic order.
+    ///
+    /// The graph's node set is wider than any one machine file's `Memory` declarations, because
+    /// the built-in topology seeds edges of its own. A reachability oracle that enumerates only
+    /// the file's spaces is searching a subgraph and will "prove" routes non-minimal that are in
+    /// fact minimal through a space it never looked at (S1, vx-review#9).
+    pub fn nodes(&self) -> Vec<MemorySpace> {
+        let mut out: Vec<MemorySpace> = Vec::new();
+        let mut keys: Vec<&MemorySpace> = self.transfer_edges.keys().collect();
+        keys.sort_by_key(|k| format!("{k:?}"));
+        for k in keys {
+            if !out.contains(k) {
+                out.push(k.clone());
+            }
+            let mut ns: Vec<&MemorySpace> = self.transfer_edges[k].iter().map(|(n, _)| n).collect();
+            ns.sort_by_key(|n| format!("{n:?}"));
+            for n in ns {
+                if !out.contains(n) {
+                    out.push(n.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The unitless cost the file declared for this edge, if it declared one.
+    ///
+    /// `None` for an edge that leaves its cost to be derived — which is not the same as a cost of
+    /// zero or of one, and the diagnostics record says `null` rather than quoting a routing weight
+    /// nobody wrote.
+    pub fn declared_edge_cost(&self, from: &MemorySpace, to: &MemorySpace) -> Option<u32> {
+        self.edge_declared.get(&(from.clone(), to.clone())).copied()
+    }
+
+    /// Whether `from -> to` is a **directly declared** edge, as opposed to merely reachable.
+    ///
+    /// `can_transfer` consults the all-pairs matrix and so is true for multi-hop routes too;
+    /// this is the single-hop question, which is what "every hop in a synthesized path is a
+    /// declared edge" needs in order to mean anything (S1, vx-review#9).
+    pub fn has_direct_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
+        self.transfer_edges
+            .get(from)
+            .is_some_and(|ns| ns.iter().any(|(n, _)| n == to))
+    }
+
+    /// The weight of a directly declared `from -> to` edge, if there is one. When several
+    /// declarations contribute the same edge, the cheapest wins -- which is what the router uses.
+    pub fn direct_edge_weight(&self, from: &MemorySpace, to: &MemorySpace) -> Option<u32> {
+        self.transfer_edges
+            .get(from)?
+            .iter()
+            .filter(|(n, _)| n == to)
+            .map(|(_, w)| *w)
+            .min()
     }
 
     /// Determines if a data transfer between two memory spaces is physically supported.

@@ -48,9 +48,13 @@ use crate::hir::env::{ResidentSet, StagingRoute};
 ///     {
 ///       "path": ["CPU_DRAM", "HBM3e"],
 ///       "edges": [{"from": "CPU_DRAM", "to": "HBM3e", "cost": 300}],
-///       "total_cost": 300,
+///       "total_cost": 300,              // ROUTE-SELECTION weight, not a prediction: it is
+///                                       // unitless, size-independent, and 1 for an edge that
+///                                       // declares no cost. Harvest `derived_cost` instead.
+///       "bytes": 16384,                 // what moved; null for a dynamic shape
 ///       "derived_cost": 128,            // bandwidth roofline, null when not computable
-///       "derived_unit": "cyc"           // "cyc" | "ps"; null iff derived_cost is null
+///       "derived_unit": "cyc",          // "cyc" | "ps"; null iff derived_cost is null
+///       "cost_source": "containment"    // "link_rate" | "containment"; null iff no cost
 ///     }
 ///   ],
 ///   "resident_sets": [                  // working set per space, emitted even when admitted
@@ -175,14 +179,20 @@ fn route_json(r: &StagingRoute) -> String {
         Some(crate::syntax::RatePer::Second) => "\"ps\"",
         None => "null",
     };
+    let source = match r.cost_source {
+        Some(s) => format!("\"{}\"", s.as_str()),
+        None => "null".to_string(),
+    };
     format!(
-        "{{\"path\": [{}], \"edges\": [{}], \"total_cost\": {}, \"derived_cost\": {}, \
-         \"derived_unit\": {}}}",
+        "{{\"path\": [{}], \"edges\": [{}], \"total_cost\": {}, \"bytes\": {}, \
+         \"derived_cost\": {}, \"derived_unit\": {}, \"cost_source\": {}}}",
         path,
         edges,
         r.total_cost,
+        opt_num(r.bytes),
         opt_num(r.derived_cost),
-        unit
+        unit,
+        source
     )
 }
 
@@ -343,6 +353,8 @@ mod tests {
             ],
             edge_costs: vec![Some(300), Some(40)],
             total_cost: 340,
+            bytes: Some(16384),
+            cost_source: Some(crate::hir::env::CostSource::Containment),
             derived_cost: Some(128),
             derived_unit: Some(crate::syntax::RatePer::Cycle),
         };

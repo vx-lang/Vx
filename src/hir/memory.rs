@@ -37,16 +37,37 @@ pub struct DerivedCost {
 /// Picoseconds per second — the scale factor that gives a `B/s` roofline usable integer resolution.
 const PICOS_PER_SEC: u64 = 1_000_000_000_000;
 
+/// Round `bytes` up to a whole number of `granule`s — what a tile actually *occupies* in a space
+/// with an allocation granule, as opposed to what it contains. A 1-byte tile in a 1 KiB-granule
+/// space consumes 1 KiB.
+///
+/// One definition, because there were two: the per-tile capacity check and the working-set sum
+/// each spelled `raw.div_ceil(g) * g` inline, so a change to the rounding rule could have been
+/// applied to one and not the other, and the two answers would have disagreed about the same tile.
+/// `None` or a zero granule means no rounding. Idempotent by construction, which S3 asserts
+/// (vx-review#11).
+pub fn granule_round(bytes: u64, granule: Option<u64>) -> u64 {
+    match granule {
+        Some(g) if g > 0 => bytes.div_ceil(g).saturating_mul(g),
+        _ => bytes,
+    }
+}
+
 /// One hop's roofline cost: `bytes / bandwidth`, in the rate's unit (cycles, or picoseconds).
 ///
-/// The multiply happens before the divide so the scaling does not lose the precision it exists to
-/// buy, and it is checked rather than wrapping: `bytes * 1e12` overflows `u64` above ~18 PiB, which
-/// is beyond any declared capacity but is reachable by a nonsense program, and a wrapped cost would
-/// read as a fast transfer rather than an error.
+/// The multiply happens before the divide so the picosecond scaling does not lose the precision it
+/// exists to buy, and the intermediate is `u128`. `u64` is not enough: `bytes * 1e12` overflows it
+/// at only ~18 MB, so a 64 MiB tile -- an ordinary transfer, and smaller than a single attention
+/// block on the fleet's own corpus -- produced no cost at all. The *result* still fits `u64`
+/// comfortably (64 GiB over a 100 GB/s link is 6.9e10 ps), so only the intermediate needs the
+/// width; the final narrowing is checked rather than truncating.
 pub fn hop_cost(bytes: u64, bw: crate::syntax::Bandwidth) -> Option<u64> {
     match bw.per {
         RatePer::Cycle => Some(bytes.div_ceil(bw.bytes)),
-        RatePer::Second => Some(bytes.checked_mul(PICOS_PER_SEC)?.div_ceil(bw.bytes)),
+        RatePer::Second => {
+            let scaled = (bytes as u128).checked_mul(PICOS_PER_SEC as u128)?;
+            u64::try_from(scaled.div_ceil(bw.bytes as u128)).ok()
+        }
     }
 }
 

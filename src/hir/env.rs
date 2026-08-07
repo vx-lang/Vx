@@ -69,12 +69,42 @@ pub struct StagingRoute {
     /// multi-gigabyte host transfer exceeds, and a saturated cost would read as a slow transfer
     /// rather than a missing one.
     pub derived_cost: Option<u64>,
+    /// Bytes this transfer moves, when the shape is statically known.
+    ///
+    /// Without it a harvested cost cannot be interpreted: "260064 ps" is not a prediction unless
+    /// the size it is a cost *of* travels with it, and comparing predicted against measured needs
+    /// both. `None` for a dynamically-shaped tensor, where no cost is derivable either.
+    pub bytes: Option<u64>,
+    /// Which cost source produced `derived_cost`. The two are mutually exclusive per edge (E6013),
+    /// so this names the one that applied rather than a precedence winner — and it is what tells a
+    /// consumer whether a residual is attributable to a declared link figure or to an inferred
+    /// containment roofline.
+    pub cost_source: Option<CostSource>,
     /// The unit `derived_cost` is in — cycles, or picoseconds. Carried rather than dropped because
     /// one program's routes legitimately mix them: an on-die hop declared `B/cyc` and a host link
     /// declared `GB/s` produce costs of different *dimension*, and a harvested prediction that does
     /// not say which is not a prediction. (The fleet's `HBM->L2` and `L2->SMEM` are exactly this
     /// pair.)
     pub derived_unit: Option<crate::syntax::RatePer>,
+}
+
+/// Where a hop's predicted cost came from. Exactly one applies per edge (E6013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostSource {
+    /// A bandwidth declared on the link itself (`transfer A -> B : 64 GB/s`). Used where the
+    /// endpoints do not nest, so containment can derive nothing — the host↔device seam.
+    LinkRate,
+    /// The roofline derived from the endpoints' own `bandwidth:` figures along the `within:` tree.
+    Containment,
+}
+
+impl CostSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostSource::LinkRate => "link_rate",
+            CostSource::Containment => "containment",
+        }
+    }
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see

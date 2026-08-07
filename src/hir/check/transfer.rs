@@ -403,10 +403,7 @@ impl<'a> TypeChecker<'a> {
                     });
                 return;
             };
-            let rounded = match decl.granule {
-                Some(crate::syntax::ByteSize(g)) if g > 0 => raw.div_ceil(g) * g,
-                _ => raw,
-            };
+            let rounded = crate::hir::memory::granule_round(raw, decl.granule.map(|g| g.0));
             (rounded, cap)
         };
         let (rounded, cap) = sized;
@@ -467,10 +464,7 @@ impl<'a> TypeChecker<'a> {
             let granule = decl.granule.as_ref().map(|g| g.0).filter(|g| *g > 0);
             let total: u64 = tiles
                 .values()
-                .map(|&b| match granule {
-                    Some(g) => b.div_ceil(g) * g,
-                    None => b,
-                })
+                .map(|&b| crate::hir::memory::granule_round(b, granule))
                 .sum();
             // Record the working set whether or not it violates. An *admitted* program emits no
             // capacity diagnostic, so without this its resident set would be absent from the JSON
@@ -736,28 +730,41 @@ impl<'a> TypeChecker<'a> {
             // derived from the endpoints' own bandwidths along the containment tree. The link rate
             // is checked first because it exists precisely where the containment walk cannot help
             // -- a host<->device hop whose endpoints do not nest.
-            let derived: Option<crate::hir::memory::DerivedCost> = Self::tensor_of(&inner_ty)
-                .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d))
-                .and_then(|bytes| {
-                    self.transfer_cost_graph
-                        .link_rate(&source_mem, &target_mem)
-                        .and_then(|bw| {
-                            crate::hir::memory::hop_cost(bytes, bw)
-                                .map(|value| crate::hir::memory::DerivedCost { value, per: bw.per })
-                        })
-                        .or_else(|| {
-                            crate::hir::memory::MemoryHierarchy::build(
-                                self.env.memories.values().copied(),
-                            )
-                            .derived_transfer_cost(
-                                &source_mem,
-                                &target_mem,
-                                bytes,
-                            )
-                        })
-                });
+            // How many bytes this transfer moves. Recorded, not just consumed: a harvested cost is
+            // uninterpretable without the size it is a cost *of*, and S4's freeze artifact is this
+            // record (vx-review#12).
+            let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
+                .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
+
+            // Which of the two cost sources applied. They are mutually exclusive by construction
+            // (E6013), so this names the one that fired rather than a precedence winner.
+            let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+            let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+                link_bw
+                    .and_then(|bw| {
+                        crate::hir::memory::hop_cost(bytes, bw)
+                            .map(|value| crate::hir::memory::DerivedCost { value, per: bw.per })
+                    })
+                    .or_else(|| {
+                        crate::hir::memory::MemoryHierarchy::build(
+                            self.env.memories.values().copied(),
+                        )
+                        .derived_transfer_cost(
+                            &source_mem,
+                            &target_mem,
+                            bytes,
+                        )
+                    })
+            });
             let derived_cost = derived.map(|d| d.value);
             let derived_unit = derived.map(|d| d.per);
+            let cost_source = derived.map(|_| {
+                if link_bw.is_some() {
+                    crate::hir::env::CostSource::LinkRate
+                } else {
+                    crate::hir::env::CostSource::Containment
+                }
+            });
 
             let mut path_result = self
                 .transfer_cost_graph
@@ -806,13 +813,20 @@ impl<'a> TypeChecker<'a> {
                 // single-hop transfers that each re-enter here, so recording it too would count
                 // the same movement twice.
                 if !self.speculating {
+                    // The figure the machine file *declared* for this edge, not the weight the
+                    // router happened to use. Since an edge may now decline to declare a cost
+                    // (leaving it to the endpoints' bandwidths), its routing weight is 1 — and
+                    // reporting that 1 here would put a number nobody wrote into the record a
+                    // measurement campaign harvests.
                     let edge = self
                         .transfer_cost_graph
-                        .transfer_cost(&source_mem, &target_mem);
+                        .declared_edge_cost(&source_mem, &target_mem);
                     self.staging_routes.push(crate::hir::env::StagingRoute {
                         path: path.clone(),
                         edge_costs: vec![edge],
                         total_cost: _cost,
+                        bytes: moved_bytes,
+                        cost_source,
                         derived_cost,
                         derived_unit,
                     });

@@ -7,6 +7,8 @@ mod integration_test {
     mod fuzz;
     mod graph_workload_test;
     mod lint_test;
+    mod memory_algebra_axioms;
+    mod memory_algebra_fleet;
     mod metadata_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
