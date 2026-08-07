@@ -142,7 +142,12 @@ pub fn quiet() -> bool {
 
 /// The pipeline's phases, in the order they run. Fixed at compile time so the timer can be a plain
 /// array of atomics indexed by position -- no map, no allocation, no lock.
-pub const PHASES: [&str; 9] = [
+/// `codegen` is split into its serial prologue and its parallel emit because a phase that is 59% of
+/// a compile deserves to be attributed at finer grain than "codegen". The prologue builds the emit
+/// context from the frozen registry and then walks every function's signature -- work proportional
+/// to the whole program, on the critical path, inside what the phase table otherwise presents as a
+/// parallel-for. Its cost is included in `codegen`, so the three do not sum independently.
+pub const PHASES: [&str; 11] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -152,6 +157,8 @@ pub const PHASES: [&str; 9] = [
     "dedup_barrier",
     "simd_patch",
     "codegen",
+    "  codegen:setup",
+    "  codegen:emit",
 ];
 
 static PHASE_NANOS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
@@ -169,10 +176,16 @@ fn phase_index(name: &str) -> Option<usize> {
 pub fn timed<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     let t = std::time::Instant::now();
     let out = f();
-    if let Some(i) = phase_index(name) {
-        PHASE_NANOS[i].fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    }
+    record(name, t.elapsed());
     out
+}
+
+/// Accumulate an already-measured duration under `name`, for a region that does not fit a closure
+/// — a stretch between two points inside a function whose value is produced later.
+pub fn record(name: &str, elapsed: std::time::Duration) {
+    if let Some(i) = phase_index(name) {
+        PHASE_NANOS[i].fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
 }
 
 /// Drain the accumulated per-phase times, in pipeline order. Resets the counters, so successive
@@ -215,6 +228,6 @@ mod tests {
         assert_eq!(phase_index("type_check"), Some(5));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 9);
+        assert_eq!(PHASES.len(), 11);
     }
 }

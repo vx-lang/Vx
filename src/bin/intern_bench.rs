@@ -124,6 +124,41 @@ fn run_in(
     }
 }
 
+/// The machine's own scaling ceiling: a parallel-for that allocates nothing, touches no shared
+/// state, and fits its whole working set in registers.
+///
+/// Whatever this reaches at N threads is the most *any* phase can reach, so a phase's scaling should
+/// be read as a fraction of it rather than as a fraction of N. Two effects are charged here where
+/// they are visible instead of silently inflating the compiler's apparent serial fraction: clock
+/// scaling (one active core boosts higher than four) and shared cache/bandwidth. Without this
+/// control, "4 threads gave 2.6x" reads as 35% of the compiler failing to parallelise, when much of
+/// it may be a ceiling no program on this machine can beat.
+///
+/// The work is a splitmix64 chain, which is a dependent sequence of integer ops -- no memory
+/// traffic, no branch prediction to win, and impossible to vectorise away. `black_box` on the result
+/// keeps it from being optimised out entirely.
+fn calibrate(pool: Option<&rayon::ThreadPool>, items: usize, iters: u64) -> Duration {
+    use rayon::prelude::*;
+    let burn = |seed: u64| -> u64 {
+        let mut x = seed;
+        for _ in 0..iters {
+            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            x = x.wrapping_add(z ^ (z >> 31));
+        }
+        x
+    };
+    let t = Instant::now();
+    let total: u64 = match pool {
+        Some(p) => p.install(|| (0..items).into_par_iter().map(|i| burn(i as u64)).sum()),
+        None => (0..items).map(|i| burn(i as u64)).sum(),
+    };
+    std::hint::black_box(total);
+    t.elapsed()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let module_counts: Vec<usize> = corpus::arg_list(&args, "--modules", vec![64]);
@@ -190,6 +225,44 @@ fn main() {
         );
     }
 
+    // Calibrate first, on the same ladder, so every scaling number below can be read against what
+    // this machine can actually deliver rather than against N.
+    {
+        let items = 1600; // one work item per function in the default corpus
+        let mut cal: Vec<(usize, f64)> = Vec::new();
+        for &t in &ladder {
+            let pool = (t > 0).then(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(t)
+                    .build()
+                    .expect("thread pool")
+            });
+            let _ = calibrate(pool.as_ref(), items, 4_000); // warm up
+            let mut xs: Vec<f64> = (0..5)
+                .map(|_| calibrate(pool.as_ref(), items, 4_000).as_secs_f64() * 1e3)
+                .collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            cal.push((t, xs[xs.len() / 2]));
+        }
+        let base = cal[0].1;
+        eprint!("machine ceiling (pure compute, no allocation):");
+        for (t, ms) in &cal {
+            eprint!(
+                "  {}={:.2}x",
+                if *t == 0 {
+                    "seq".to_string()
+                } else {
+                    format!("t{t}")
+                },
+                base / ms
+            );
+        }
+        eprintln!(
+            "\n  Read every phase speedup below as a fraction of this, not of the thread \
+                   count: clock scaling and shared cache are charged here, where they belong."
+        );
+    }
+
     println!(
         "mode,modules,fns,density,generic_slots,distinct_keys,threads,median_ms,q1_ms,q3_ms,reps"
     );
@@ -207,6 +280,13 @@ fn main() {
 
                 let mut medians: std::collections::HashMap<(&str, usize), f64> =
                     std::collections::HashMap::new();
+                // Per-phase medians, so each phase gets its own scaling curve. The total's speedup
+                // says only *that* something is not parallelising; this says *which*, and a phase
+                // whose own curve is flat is a different problem from one that scales but is small.
+                let mut phase_medians: std::collections::HashMap<
+                    (&str, usize),
+                    Vec<(&'static str, f64)>,
+                > = std::collections::HashMap::new();
 
                 // Thread count outermost, modes paired inside it. One pool per cell, and every mode
                 // in the cell runs in that pool, alternating rep by rep -- so whatever placement the
@@ -271,6 +351,7 @@ fn main() {
                             c.generic_slots, c.distinct_keys
                         );
                         let ph = phase_report(std::mem::take(&mut phase_samples[i]));
+                        phase_medians.insert((label, t), ph.clone());
                         let total: f64 = ph.iter().map(|(_, v)| v).sum();
                         let share = |name: &str| -> f64 {
                             let v: f64 =
@@ -309,13 +390,13 @@ fn main() {
                 // weaker claim and the header says which is in force.
                 let at = |mm: &str, t: usize| medians.get(&(mm, t)).copied().unwrap_or(f64::NAN);
                 let base_key = ladder[0];
+                let base_tag = if base_key == 0 {
+                    "sequential, no rayon"
+                } else {
+                    "1 thread (rayon)"
+                };
                 eprintln!(
-                    "  threads  sp(deferred)  sp(content)   ms(deferred/content)   [baseline: {}]",
-                    if base_key == 0 {
-                        "sequential, no rayon"
-                    } else {
-                        "1 thread (rayon)"
-                    }
+                    "  threads  sp(deferred)  sp(content)   ms(deferred/content)   [baseline: {base_tag}]"
                 );
                 let base = |mm: &str| at(mm, base_key);
                 let mut suspect = Vec::new();
@@ -381,6 +462,84 @@ fn main() {
                          cores runs ~1.7x slower for the whole life of the pool, with a tight \
                          per-rep spread that makes it read like a result. Re-run the cell, or read \
                          it on homogeneous cores. Do not quote it."
+                    );
+                }
+
+                // Per-phase scaling. The total's speedup says only *that* something is not
+                // parallelising; this says which. A phase that scales but is tiny and a phase that
+                // is large and flat both show up as "the total fell short", and they are entirely
+                // different problems -- the first is nothing to do, the second is the whole job.
+                //
+                // `unaccounted` is the wall clock the phase timers do not name. It is not a rounding
+                // artifact to be ignored: work outside every `timed()` region is invisible to the
+                // attribution, so a large unaccounted share means the phase table is answering a
+                // narrower question than it appears to.
+                for &(label, _) in &modes {
+                    let Some(base_ph) = phase_medians.get(&(label, base_key)) else {
+                        continue;
+                    };
+                    eprintln!("\n  per-phase scaling [{label}], baseline = {}:", base_tag);
+                    eprint!("  {:<16}", "phase");
+                    for &t in &ladder {
+                        eprint!(
+                            "{:>9}",
+                            if t == 0 {
+                                "seq".to_string()
+                            } else {
+                                format!("t{t}")
+                            }
+                        );
+                    }
+                    eprintln!("{:>9}{:>10}", "sp(max)", "share");
+                    // Sub-phases are indented and nested *inside* their parent, so they must not
+                    // join the total or the shares exceed 100% and `unaccounted` goes negative.
+                    let top = |p: &Vec<(&'static str, f64)>| -> f64 {
+                        p.iter()
+                            .filter(|(n, _)| !n.starts_with(' '))
+                            .map(|(_, v)| v)
+                            .sum()
+                    };
+                    let base_total: f64 = top(base_ph);
+                    let max_t = *ladder.last().unwrap();
+                    for (name, base_ms) in base_ph {
+                        eprint!("  {name:<16}");
+                        for &t in &ladder {
+                            let v = phase_medians
+                                .get(&(label, t))
+                                .and_then(|p| p.iter().find(|(n, _)| n == name))
+                                .map(|(_, v)| *v)
+                                .unwrap_or(f64::NAN);
+                            eprint!("{v:>9.1}");
+                        }
+                        let at_max = phase_medians
+                            .get(&(label, max_t))
+                            .and_then(|p| p.iter().find(|(n, _)| n == name))
+                            .map(|(_, v)| *v)
+                            .unwrap_or(f64::NAN);
+                        eprintln!(
+                            "{:>9.2}{:>9.1}%",
+                            base_ms / at_max,
+                            if base_total > 0.0 {
+                                base_ms / base_total * 100.0
+                            } else {
+                                0.0
+                            }
+                        );
+                    }
+                    eprint!("  {:<16}", "unaccounted");
+                    for &t in &ladder {
+                        let named = phase_medians.get(&(label, t)).map(top).unwrap_or(f64::NAN);
+                        eprint!("{:>9.1}", at(label, t) - named);
+                    }
+                    let named_base: f64 = base_total;
+                    let named_max: f64 = phase_medians
+                        .get(&(label, max_t))
+                        .map(top)
+                        .unwrap_or(f64::NAN);
+                    eprintln!(
+                        "{:>9.2}{:>9.1}%",
+                        (at(label, base_key) - named_base) / (at(label, max_t) - named_max),
+                        (at(label, base_key) - named_base) / at(label, base_key) * 100.0
                     );
                 }
             }

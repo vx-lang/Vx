@@ -804,6 +804,7 @@ pub fn emit_module_mlir(
     subspaces: &[SubspaceInfo],
     sched: crate::pipeline::Schedule,
 ) -> Option<String> {
+    let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry);
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
@@ -865,6 +866,8 @@ pub fn emit_module_mlir(
     // `max(group) + 1` over its own alias table, both known before anything is emitted. Turning them
     // into prefix sums makes the emit a `par_iter` and leaves the output byte-identical, because the
     // numbering is a function of position, never of arrival order (#311).
+    crate::intern_mode::record("  codegen:setup", setup.elapsed());
+    let emit_start = std::time::Instant::now();
     let mut str_bases: Vec<usize> = Vec::with_capacity(funcs.len());
     let mut distinct_bases: Vec<u32> = Vec::with_capacity(funcs.len());
     {
@@ -907,12 +910,24 @@ pub fn emit_module_mlir(
     } else {
         funcs.par_iter().enumerate().map(emit_one).collect()
     };
+    crate::intern_mode::record("  codegen:emit", emit_start.elapsed());
 
-    let mut out = String::new();
+    // Reassembly is serial by necessity -- the output is ordered -- so it is the one part of codegen
+    // that cannot be parallelised, and it is therefore the one part whose constant factor matters
+    // most. Sizing the buffer up front is not a micro-optimisation here: a `String::new()` growing
+    // to the several megabytes a real corpus emits reallocates ~20 times, and every reallocation
+    // memcpys everything appended so far, so the append loop costs on the order of twice the output
+    // size in pure copying. That cost lands entirely on the critical path and grows with the program
+    // being compiled, which is exactly the shape that flattens a scaling curve.
+    let out_len: usize = emitted
+        .iter()
+        .filter_map(|e| e.as_ref().map(|(t, _)| t.len()))
+        .sum();
+    let mut out = String::with_capacity(out_len);
     let mut globals = String::new();
     let mut calls: Vec<(String, Vec<String>, String)> = Vec::new();
-    // Reassembly is in `funcs` order, not completion order: the emitted text, the string globals and
-    // the callee list all feed positional output. A decline is likewise reported for the *first*
+    // Order is `funcs` order, not completion order: the emitted text, the string globals and the
+    // callee list all feed positional output. A decline is likewise reported for the *first*
     // declining function rather than whichever thread noticed first, so `VX_FLAT_DBG` says the same
     // thing it always did.
     for (fi, emission) in emitted.into_iter().enumerate() {
@@ -972,7 +987,14 @@ pub fn emit_module_mlir(
             arg_types.join(", ")
         );
     }
-    Some(globals + &decls + &out)
+    // One allocation for the result rather than two more full copies of it: `globals + &decls + &out`
+    // reallocates `globals` to fit `decls`, then reallocates again to fit `out`, copying the whole
+    // (multi-megabyte) body in the process.
+    let mut module = String::with_capacity(globals.len() + decls.len() + out.len());
+    module.push_str(&globals);
+    module.push_str(&decls);
+    module.push_str(&out);
+    Some(module)
 }
 
 /// Emit the module-level `llvm.mlir.global` for a string literal: an internal constant array holding
