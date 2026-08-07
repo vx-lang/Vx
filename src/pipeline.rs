@@ -136,13 +136,19 @@ fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, Pipe
     #[cfg(debug_assertions)]
     verify_phase_2_registry(&session.registry);
 
-    let env_modules: Vec<VxModule> = modules.iter().map(|m| m.clone_signature()).collect();
+    // Timed separately from `env_build` rather than folded into it: this is a deep clone of every
+    // module's signatures, its cost is proportional to the whole program, and it is serial. Left
+    // untimed it showed up only as part of the phase table's `unaccounted` remainder, which is where
+    // serial work goes to hide from an Amdahl estimate.
+    let env_modules: Vec<VxModule> = timed("sig_clone", || {
+        modules.iter().map(|m| m.clone_signature()).collect()
+    });
     let mut env = timed("env_build", || GlobalAstEnv::build(&env_modules));
     // `clone_signature` above strips non-generic function bodies, so `build` could not summarize
     // their return provenance (#243). Refill from the full modules (bodies intact) before the
     // parallel check reads it. The map is frozen after this point — the per-function checkers only
     // read it, preserving the lock-free `type_check_phase`.
-    env.annotate_return_provenances(&modules);
+    timed("return_prov", || env.annotate_return_provenances(&modules));
 
     let mut checks = timed("type_check", || {
         type_check_phase(&mut modules, &session, &env, sched)
@@ -150,7 +156,7 @@ fn run_frontend(file_paths: &[String], sched: Schedule) -> Result<Frontend, Pipe
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
 
-    let mut type_streams = extract_type_streams(&mut checks);
+    let mut type_streams = timed("stream_extract", || extract_type_streams(&mut checks));
     timed("simd_patch", || {
         simd_patch_phase(&mut type_streams, &slow_mappings, &gen_mappings, sched)
     });
@@ -263,9 +269,9 @@ pub fn compile_pipeline_mlir_with(
         subspaces,
         mut checks,
         type_streams,
-        ..
+        merged_arenas,
     } = run_frontend(file_paths, sched)?;
-    Ok(crate::intern_mode::timed("codegen", || {
+    let text = crate::intern_mode::timed("codegen", || {
         codegen_mlir_phase(
             &modules,
             &mut checks,
@@ -274,7 +280,23 @@ pub fn compile_pipeline_mlir_with(
             &session,
             sched,
         )
-    }))
+    });
+    // Freeing a compile is not free, and it is not noise. A compile of this corpus holds ~1,600
+    // `LocalWorkerState`s and every module's AST, all allocated across the worker threads and all
+    // released here on one. It is charged explicitly rather than left in the phase table's
+    // `unaccounted` remainder, because a serial cost proportional to program size is exactly what an
+    // Amdahl estimate needs to see, and because it is the one phase that gets *worse* with more
+    // threads: memory allocated on one thread and freed on another is the expensive case for an
+    // allocator, and more workers means more of it.
+    crate::intern_mode::timed("teardown", move || {
+        drop(checks);
+        drop(modules);
+        drop(type_streams);
+        drop(merged_arenas);
+        drop(subspaces);
+        drop(session);
+    });
+    Ok(text)
 }
 
 /// The module path a file is known by: its stem, so `.../m0.vx` is the module `m0`.
