@@ -108,7 +108,11 @@ echo "   commit $COMMIT ($DIRTY)"
     && find . -mindepth 1 -maxdepth 1 ! -name target ! -name .git ! -name .results-keep \
          -exec rm -rf {} + 2>/dev/null || true"
 
-tar -czf - -T "$FILELIST" | "${SSH[@]}" "$HOST" "tar -xzf - -C '$DEST'"
+# `--no-xattrs` because macOS tar otherwise stamps every file with
+# `com.apple.provenance`, which GNU tar on the far end reports as an unknown
+# header keyword -- one warning line per file, drowning anything real.
+tar --no-xattrs -czf - -T "$FILELIST" 2>/dev/null \
+    | "${SSH[@]}" "$HOST" "tar -xzf - -C '$DEST'"
 
 "${SSH[@]}" "$HOST" "cd '$DEST' && if [ -d .results-keep ]; then \
     mkdir -p utils/cgo/results && cp -R .results-keep/. utils/cgo/results/ && rm -rf .results-keep; fi"

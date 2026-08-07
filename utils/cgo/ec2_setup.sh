@@ -21,8 +21,8 @@
 # *public HTTPS* URL only; never hand this an `ssh://`/`git@` remote, because
 # that means putting a key on the box.
 #
-# Assumes Ubuntu 24.04. On a different release, the apt.llvm.org script still
-# works but the package names may drift.
+# Tested on Ubuntu 24.04 and 26.04. LLVM comes from the distribution when it
+# carries version 22, else from apt.llvm.org.
 #
 #===----------------------------------------------------------------------===#
 set -euo pipefail
@@ -50,17 +50,35 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
     build-essential cmake ninja-build git curl wget z3 lld pkg-config \
-    linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic \
     python3-pip numactl hwloc
+# `perf` ships under a kernel-versioned package that does not always exist for
+# the running kernel on a fresh AMI. Non-fatal: the wall-clock ladder is the
+# primary measurement and does not need perf, and `run_e1.sh` already reports a
+# missing lock profile rather than failing.
+apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic \
+    || echo "WARNING: perf tools unavailable for kernel $(uname -r); lock profiling will be skipped"
 
 echo "== LLVM/MLIR 22 =="
-# Same source and version as CI. MLIR's C API is not stable across major
-# versions, so 22 is not a floor -- melior is built against it specifically.
-wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
-chmod +x /tmp/llvm.sh
-/tmp/llvm.sh 22
-apt-get install -y -qq \
-    llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev
+# MLIR's C API is not stable across major versions, so 22 is not a floor --
+# `mlir-sys = 220.x` is built against it specifically.
+#
+# Prefer the distribution's own packages when it has them (Ubuntu 26.04 does),
+# and fall back to apt.llvm.org otherwise. Fewer moving parts: a third-party apt
+# source is one more thing that can lag a new release, and on a machine rented by
+# the hour "the repo does not publish for this codename yet" is an expensive way
+# to find out.
+LLVM_PKGS="llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev"
+# shellcheck disable=SC2086
+if apt-get install -y -qq $LLVM_PKGS 2>/dev/null; then
+    echo "   from the distribution's own repositories"
+else
+    echo "   not in the distro; falling back to apt.llvm.org"
+    wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+    chmod +x /tmp/llvm.sh
+    /tmp/llvm.sh 22
+    # shellcheck disable=SC2086
+    apt-get install -y -qq $LLVM_PKGS
+fi
 
 echo 'export PATH=/usr/lib/llvm-22/bin:$PATH' > /etc/profile.d/llvm22.sh
 echo 'export LLVM_CONFIG_PATH=llvm-config-22' >> /etc/profile.d/llvm22.sh
