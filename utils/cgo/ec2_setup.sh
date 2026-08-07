@@ -50,7 +50,13 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
     build-essential cmake ninja-build git curl wget z3 lld pkg-config \
-    python3-pip numactl hwloc
+    python3-pip numactl hwloc \
+    libzstd-dev libxml2-dev libz3-dev zlib1g-dev libtinfo-dev libedit-dev libffi-dev
+# Those seven `-dev` packages are what a static LLVM links *against*. Nothing
+# names them: `llvm-config --libs` emits `-lzstd -lxml2 -lz3 -lz -ltinfo`, so the
+# failure surfaces as `rust-lld: error: unable to find library -lzstd` from
+# inside a dependency crate's link step, several minutes into a build, with
+# nothing pointing at the missing package. Installed up front instead.
 # `perf` ships under a kernel-versioned package that does not always exist for
 # the running kernel on a fresh AMI. Non-fatal: the wall-clock ladder is the
 # primary measurement and does not need perf, and `run_e1.sh` already reports a
