@@ -67,7 +67,12 @@ echo "== LLVM/MLIR 22 =="
 # source is one more thing that can lag a new release, and on a machine rented by
 # the hour "the repo does not publish for this codename yet" is an expensive way
 # to find out.
-LLVM_PKGS="llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev"
+# `clang-22` is the compiler *driver*, and it is separate from `libclang-22-dev`,
+# which is only the library. `build.rs` shells out to `clang++` to compile
+# plugin_loader.cpp, so without the driver the build dies in the build script
+# with "Failed to execute clang++" -- after cargo has already compiled the
+# dependency tree, which is a slow way to learn about a missing package.
+LLVM_PKGS="llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev clang-22"
 # shellcheck disable=SC2086
 if apt-get install -y -qq $LLVM_PKGS 2>/dev/null; then
     echo "   from the distribution's own repositories"
