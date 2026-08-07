@@ -2572,8 +2572,8 @@ mod gid_stream_tests {
         use std::io::Write;
         let dir = std::env::temp_dir().join(format!("vx_dup_mod_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir.join("a")).unwrap();
-        std::fs::create_dir_all(&dir.join("b")).unwrap();
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
         let mut paths = Vec::new();
         for sub in ["a", "b"] {
             let p = dir.join(sub).join("m.vx");

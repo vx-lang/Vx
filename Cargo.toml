@@ -81,6 +81,21 @@ path = "utils/update_mlir_test_checks.rs"
 test = false
 bench = false
 
+# The measurement harnesses (#295/#296). Same reasoning as the scratch binaries
+# above: neither contains a `#[test]`, so `cargo test` was building and linking
+# an MLIR-sized test binary for each of them in order to run zero tests.
+[[bin]]
+name = "intern_bench"
+path = "src/bin/intern_bench.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "parallel_demo"
+path = "src/bin/parallel_demo.rs"
+test = false
+bench = false
+
 [profile.release]
 strip = "debuginfo"      # Strip debuginfo but keep symbols for dynamic linking
 lto = "thin"      # Thin LTO drops dead LLVM code without taking 10 minutes to link
