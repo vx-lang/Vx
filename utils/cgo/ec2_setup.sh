@@ -84,10 +84,20 @@ echo 'export PATH=/usr/lib/llvm-22/bin:$PATH' > /etc/profile.d/llvm22.sh
 echo 'export LLVM_CONFIG_PATH=llvm-config-22' >> /etc/profile.d/llvm22.sh
 
 echo "== rust =="
-if ! command -v cargo >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-    echo 'export PATH=$HOME/.cargo/bin:$PATH' > /etc/profile.d/rust.sh
+# Installed for the *invoking* user, not for root. This script needs root for apt
+# and sysctl, but rustup follows $HOME, so installing it here as root would put
+# cargo in /root and leave the login user without it -- and building as root then
+# leaves a root-owned `target/` that the ordinary user cannot rebuild into and
+# `push.sh` cannot manage. The build is not a privileged operation and should not
+# run as one.
+RUST_USER="${SUDO_USER:-root}"
+RUST_HOME="$(getent passwd "$RUST_USER" | cut -d: -f6)"
+if ! sudo -u "$RUST_USER" env HOME="$RUST_HOME" sh -c 'command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]'; then
+    echo "   installing rustup for $RUST_USER ($RUST_HOME)"
+    sudo -u "$RUST_USER" env HOME="$RUST_HOME" sh -c \
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"
 fi
+echo 'export PATH=$HOME/.cargo/bin:$PATH' > /etc/profile.d/rust.sh
 
 echo "== perf permissions =="
 # `perf lock contention -b` is BPF-based (kernel 5.19+) and needs to read kernel

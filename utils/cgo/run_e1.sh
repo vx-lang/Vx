@@ -45,12 +45,19 @@ mapfile -t CORE_CPUS < <(lscpu -p=CPU,CORE | grep -v '^#' | sort -t, -k2,2n -k1,
 PHYS=${#CORE_CPUS[@]}
 echo "physical cores available: $PHYS"
 
+# Powers of two, plus the physical core count itself. A 48-core box would
+# otherwise stop the ladder at 32 and never measure the configuration a user
+# would actually run -- and the last doubling is where a curve either keeps
+# climbing or flattens, which is the whole question.
 LADDER=()
 for t in 1 2 4 8 16 32 64 128; do
     [ "$t" -le "$PHYS" ] || continue
     [ "$MAX_THREADS" -eq 0 ] || [ "$t" -le "$MAX_THREADS" ] || continue
     LADDER+=("$t")
 done
+if [ "$MAX_THREADS" -eq 0 ] || [ "$PHYS" -le "$MAX_THREADS" ]; then
+    [ "${LADDER[-1]:-0}" -eq "$PHYS" ] || LADDER+=("$PHYS")
+fi
 [ ${#LADDER[@]} -gt 0 ] || { echo "no usable thread counts" >&2; exit 1; }
 THREADS=$(IFS=,; echo "${LADDER[*]}")
 MAXT=${LADDER[-1]}
