@@ -289,9 +289,28 @@ pub fn compile_pipeline_mlir_with(
     // threads: memory allocated on one thread and freed on another is the expensive case for an
     // allocator, and more workers means more of it.
     crate::intern_mode::timed("teardown", move || {
-        drop(checks);
-        drop(modules);
-        drop(type_streams);
+        // Free on the threads that allocated, rather than all of it on this one (#315).
+        //
+        // These three hold essentially the whole compile: ~1,600 `LocalWorkerState`s with their HIR
+        // streams, type streams and side tables, every module's AST, and the per-function GID
+        // streams. All of it was allocated across the worker threads. Releasing it on a single
+        // thread makes almost every free a *remote* free -- the block returns to another thread's
+        // list instead of the freeing thread's cache -- which is why teardown was the one phase that
+        // got slower as workers were added.
+        //
+        // `for_each(drop)` hands each element back to a worker to destroy. rayon gives no guarantee
+        // that an element lands on the thread that built it, so this is not a proof of locality; it
+        // is the cheap experiment that says whether locality is what costs, and it spreads the work
+        // regardless.
+        if sched.is_seq() {
+            drop(checks);
+            drop(modules);
+            drop(type_streams);
+        } else {
+            checks.into_par_iter().for_each(drop);
+            modules.into_par_iter().for_each(drop);
+            type_streams.into_par_iter().for_each(drop);
+        }
         drop(merged_arenas);
         drop(subspaces);
         drop(session);

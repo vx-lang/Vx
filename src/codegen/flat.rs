@@ -669,6 +669,23 @@ pub struct SubspaceInfo {
     pub scope: Option<String>,
 }
 
+/// Runtime helpers the JIT links rather than the module defining: a body that calls one gets a
+/// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
+/// these a function called as a bitmask over this array's indices, so inserting in the middle
+/// renumbers existing entries.
+const RUNTIME_HELPERS: [(&str, &str); 10] = [
+    ("printMemrefF32", "(memref<*xf32>)"),
+    ("printMemrefF64", "(memref<*xf64>)"),
+    ("printMemrefI32", "(memref<*xi32>)"),
+    ("printMemrefI64", "(memref<*xi64>)"),
+    ("print_f32", "(f32) -> i32"),
+    ("print_f64", "(f64) -> i32"),
+    ("print_i32", "(i32) -> i32"),
+    ("print_i64", "(i64) -> i32"),
+    ("print_str", "(!llvm.ptr) -> i32"),
+    ("vx_init_signals", "()"),
+];
+
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
 /// [`emit_module_mlir`] wants.
 ///
@@ -905,7 +922,19 @@ pub fn emit_module_mlir(
         }
     }
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>);
+    // Which runtime helpers each function calls, as a bitmask over `RUNTIME_HELPERS`.
+    //
+    // This used to be ten `out.contains(...)` scans over the *whole* concatenated module — on a
+    // corpus emitting 5 MB, fifty megabytes of scanning, serial, after the parallel emit had
+    // finished. `out` is exactly the concatenation of the per-function texts, so asking each
+    // function about its own text gives the identical answer, in parallel, while that text is still
+    // hot in cache. The patterns are built once rather than per function per helper.
+    let helper_pats: Vec<String> = RUNTIME_HELPERS
+        .iter()
+        .map(|(name, _)| format!("@{name}("))
+        .collect();
+
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u16);
     let emit_one =
         |(fi, (func, hir, types)): (usize, &(&Function, &[HirInstruction], &[TypeId]))| {
             let mut calls = Vec::new();
@@ -920,7 +949,14 @@ pub fn emit_module_mlir(
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
-            Some((text, calls))
+            let helpers = helper_pats.iter().enumerate().fold(0u16, |m, (i, pat)| {
+                if text.contains(pat.as_str()) {
+                    m | (1 << i)
+                } else {
+                    m
+                }
+            });
+            Some((text, calls, helpers))
         };
     let emitted: Vec<Option<FnEmission>> = if sched == crate::pipeline::Schedule::Sequential {
         funcs.iter().enumerate().map(emit_one).collect()
@@ -938,7 +974,7 @@ pub fn emit_module_mlir(
     // being compiled, which is exactly the shape that flattens a scaling curve.
     let out_len: usize = emitted
         .iter()
-        .filter_map(|e| e.as_ref().map(|(t, _)| t.len()))
+        .filter_map(|e| e.as_ref().map(|(t, _, _)| t.len()))
         .sum();
     let mut out = String::with_capacity(out_len);
     let mut globals = String::new();
@@ -947,8 +983,9 @@ pub fn emit_module_mlir(
     // callee list all feed positional output. A decline is likewise reported for the *first*
     // declining function rather than whichever thread noticed first, so `VX_FLAT_DBG` says the same
     // thing it always did.
+    let mut helper_mask = 0u16;
     for (fi, emission) in emitted.into_iter().enumerate() {
-        let Some((text, fn_calls)) = emission else {
+        let Some((text, fn_calls, helpers)) = emission else {
             if std::env::var("VX_FLAT_DBG").is_ok() {
                 eprintln!(
                     "[flat-dbg] emit declined for fn {}",
@@ -959,27 +996,18 @@ pub fn emit_module_mlir(
         };
         out += &text;
         calls.extend(fn_calls);
+        helper_mask |= helpers;
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
         for (li, s) in strs.iter().enumerate() {
             globals += &emit_string_global(str_bases[fi] + li, s);
         }
     }
     // Prepend `private` declarations for any runtime print helpers the bodies call (the JIT links
-    // their implementations; the AST path declares them the same way).
+    // their implementations; the AST path declares them the same way). Which ones were determined
+    // per function during the parallel emit; this is the union.
     let mut decls = String::new();
-    for (name, sig) in [
-        ("printMemrefF32", "(memref<*xf32>)"),
-        ("printMemrefF64", "(memref<*xf64>)"),
-        ("printMemrefI32", "(memref<*xi32>)"),
-        ("printMemrefI64", "(memref<*xi64>)"),
-        ("print_f32", "(f32) -> i32"),
-        ("print_f64", "(f64) -> i32"),
-        ("print_i32", "(i32) -> i32"),
-        ("print_i64", "(i64) -> i32"),
-        ("print_str", "(!llvm.ptr) -> i32"),
-        ("vx_init_signals", "()"),
-    ] {
-        if out.contains(&format!("@{name}(")) {
+    for (i, (name, sig)) in RUNTIME_HELPERS.iter().enumerate() {
+        if helper_mask & (1 << i) != 0 {
             decls += &format!("  func.func private @{name}{sig}\n");
         }
     }
