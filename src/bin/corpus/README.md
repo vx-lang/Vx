@@ -113,6 +113,23 @@ It needs a module to be nameable by an `import`, which the pipeline could not do
 path became the file stem (`d0b86578`). Before that every module was filed under its full filesystem
 path, a key no `import` statement can spell.
 
+## The reference large corpus
+
+```
+VX_PIPELINE_QUIET=1 cargo run --release --bin intern_bench -- \
+    --modules 1000 --fns 16 --density 1 --files-per-layer 10 --deps 3 --threads 1,2,4,8 --reps 5
+```
+
+1,000 modules, 221,145 lines, 16,000 functions, 2,715 import edges, ~1.0 s to compile sequentially.
+Use this one for any thread count above about 8. The 100-module corpus has 1,600 functions, which is
+33 per thread at 48 cores — at that point `codegen:emit` falls to a couple of milliseconds and the
+sweep is timing pool dispatch rather than the compiler. Work per thread is the thing to keep above
+the floor, not file count.
+
+It costs nothing to have both: module `m`'s text depends only on `(seed, m)` and the shape
+parameters, so the 1,000-module corpus *contains* the 100-module one. Growing N extends the corpus
+rather than reshuffling it.
+
 ## The carrier is pointer-backed on purpose
 
 A generic carrier is emitted as `struct G<T0> { f0: *mut T0 }`, never `{ f0: T0 }`. `lowered_ty`

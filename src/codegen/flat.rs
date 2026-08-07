@@ -433,23 +433,30 @@ pub fn build_callee_map(
     registry: &ImmutableGlobalRegistry,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
+    sched: crate::pipeline::Schedule,
 ) -> CalleeMap {
-    registry
-        .fn_sigs
-        .iter()
-        .map(|(name, sig)| {
-            (
-                sig.gid,
-                Callee {
-                    name: name.to_string(),
-                    ret: scalar_of(&sig.ret_ty),
-                    ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
-                    ret_ptr: is_ptr_ty(&sig.ret_ty),
-                    ret_void: is_void_ty(&sig.ret_ty),
-                },
-            )
-        })
-        .collect()
+    // A pure map keyed by the callee's GID, so the result does not depend on the order entries are
+    // produced -- which is just as well, since it is built from a `HashMap` whose iteration order was
+    // never defined to begin with. Parallel because this and `build_agg_map` are the last of the
+    // serial codegen prologue (#314): both are folds over the whole frozen registry, on the critical
+    // path, ahead of everything else codegen does.
+    let one = |(name, sig): (&crate::symbol::Symbol, &crate::registry::FnSig)| {
+        (
+            sig.gid,
+            Callee {
+                name: name.to_string(),
+                ret: scalar_of(&sig.ret_ty),
+                ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
+                ret_ptr: is_ptr_ty(&sig.ret_ty),
+                ret_void: is_void_ty(&sig.ret_ty),
+            },
+        )
+    };
+    if sched == crate::pipeline::Schedule::Sequential {
+        registry.fn_sigs.iter().map(one).collect()
+    } else {
+        registry.fn_sigs.par_iter().map(one).collect()
+    }
 }
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
@@ -486,7 +493,10 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// Build the GID→aggregate-layout map from the frozen registry's nominal layouts. Skips a struct
 /// with any by-value nominal field or an unmodelled (0-align stub) layout; a pointer (`Opaque`)
 /// field is modelled as `!llvm.ptr`.
-pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
+pub fn build_agg_map(
+    registry: &ImmutableGlobalRegistry,
+    sched: crate::pipeline::Schedule,
+) -> AggMap {
     use crate::layout::FieldTy;
     // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
     // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
@@ -497,10 +507,12 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
         .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
         .map(|(g, d)| (d.name.as_str(), *g))
         .collect();
-    let mut map = AggMap::new();
-    for (gid, def) in &registry.layouts {
+    // Each layout's entry depends only on the registry and `name_to_gid`, and the key is the layout's
+    // own GID, so the map is the same whatever order the entries are produced in. (See
+    // `build_callee_map` for why this is worth parallelising.)
+    let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
         if def.align_bytes == 0 || def.fields.is_empty() {
-            continue; // unmodelled stub, or an enum/field-less type (no struct body to emit)
+            return None; // unmodelled stub, or an enum/field-less type (no struct body to emit)
         }
         // The declared field types (with generic pointees intact) for pointee resolution; the frozen
         // `layouts` erase them to `Opaque`. GID-keyed since #291 — this loop iterates `layouts`, so
@@ -556,20 +568,25 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry) -> AggMap {
             }
             offsets.push(f.offset as u64);
         }
-        if modelled {
-            map.insert(
-                *gid,
-                AggLayout {
-                    struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-                    offsets,
-                    field_tys,
-                    field_pointee,
-                    field_agg,
-                },
-            );
+        if !modelled {
+            return None;
         }
+        Some((
+            *gid,
+            AggLayout {
+                struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
+                offsets,
+                field_tys,
+                field_pointee,
+                field_agg,
+            },
+        ))
+    };
+    if sched == crate::pipeline::Schedule::Sequential {
+        registry.layouts.iter().filter_map(layout_of).collect()
+    } else {
+        registry.layouts.par_iter().filter_map(layout_of).collect()
     }
-    map
 }
 
 /// The `!llvm.struct<(...)>` MLIR type of a modelled aggregate layout, resolved recursively so a
@@ -722,10 +739,13 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 impl EmitCtx {
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
-    pub fn from_registry(registry: &ImmutableGlobalRegistry) -> Self {
-        let aggs = build_agg_map(registry);
+    pub fn from_registry(
+        registry: &ImmutableGlobalRegistry,
+        sched: crate::pipeline::Schedule,
+    ) -> Self {
+        let aggs = build_agg_map(registry, sched);
         let agg_names = build_agg_names(registry, &aggs);
-        let callees = build_callee_map(registry, &aggs, &agg_names);
+        let callees = build_callee_map(registry, &aggs, &agg_names, sched);
         Self {
             callees,
             aggs,
@@ -822,7 +842,7 @@ pub fn emit_module_mlir(
     sched: crate::pipeline::Schedule,
 ) -> Option<String> {
     let setup = std::time::Instant::now();
-    let mut ctx = EmitCtx::from_registry(registry);
+    let mut ctx = EmitCtx::from_registry(registry, sched);
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
     }
@@ -849,7 +869,7 @@ pub fn emit_module_mlir(
     // returning `Option<i32>` (a data enum) resolves its `ret_agg` only once its layout is present,
     // which happens above — `EmitCtx::from_registry` built the callees before it (#242).
     if !agg_layouts.is_empty() {
-        ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names);
+        ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names, sched);
     }
     // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
     // Built from the module's own functions (each `Function` carries its params); the target must be a
