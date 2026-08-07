@@ -837,19 +837,36 @@ pub fn emit_module_mlir(
     // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
     // Built from the module's own functions (each `Function` carries its params); the target must be a
     // function whose whole signature is modelled (else the FuncConst declines at emit). (#242)
-    for (func, _, _) in funcs {
-        let Some(sig) = registry.fn_sigs.get(func.name.as_ref()) else {
-            continue;
-        };
+    // This is the bulk of the prologue and it was the largest serial section in the whole compile
+    // (#314): `ty_mlir` over every slot of every function is ~11,000 calls on a 1,600-function
+    // corpus, and it sat ahead of the parallel emit doing work proportional to the whole program.
+    //
+    // It parallelises because it is a pure map -- `ty_mlir` reads `aggs`/`agg_names`/`enums`/
+    // `tensors` and never `func_sigs`, so no function's signature depends on another's. The
+    // *insertion* stays serial and in `funcs` order: two functions can resolve to the same GID, and
+    // then which one wins is decided by insertion order. Collecting in completion order would make
+    // that a race.
+    let compute_sig = |(func, _, _): &(&Function, &[HirInstruction], &[TypeId])| {
+        let sig = registry.fn_sigs.get(func.name.as_ref())?;
         let params: Option<Vec<String>> =
             func.params.iter().map(|(_, t)| ty_mlir(t, &ctx)).collect();
         let ret = match &func.return_type {
             Type::Scalar(ElementType::Generic(_)) => None,
             t => ty_mlir(t, &ctx).or(Some("()".to_string())),
         };
-        if let (Some(params), Some(ret)) = (params, ret) {
-            ctx.func_sigs.insert(sig.gid, (params, ret));
+        match (params, ret) {
+            (Some(params), Some(ret)) => Some((sig.gid, (params, ret))),
+            _ => None,
         }
+    };
+    let sigs: Vec<(TypeId, (Vec<String>, String))> =
+        if sched == crate::pipeline::Schedule::Sequential {
+            funcs.iter().filter_map(compute_sig).collect()
+        } else {
+            funcs.par_iter().filter_map(compute_sig).collect()
+        };
+    for (gid, s) in sigs {
+        ctx.func_sigs.insert(gid, s);
     }
     // Two module-wide numbering schemes are threaded through the per-function emit:
     //
