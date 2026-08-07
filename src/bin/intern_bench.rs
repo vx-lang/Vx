@@ -74,11 +74,26 @@ struct Rep {
     mlir_bytes: Option<usize>,
 }
 
-fn run_once(paths: &[String], threads: usize, emit_mlir: bool, sched: Schedule) -> Rep {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("thread pool");
+/// One compile, timed, inside a caller-supplied pool.
+///
+/// The pool is the caller's because thread *placement* is the dominant nuisance variable on a
+/// heterogeneous machine, and it is decided when the pool is built. On an Apple M4 (4 performance +
+/// 6 efficiency cores) a two-thread pool lands either on two P-cores or not, and the difference is a
+/// factor of 1.7 on this corpus -- measured: the same binary, corpus and mode gives a median of
+/// 30 ms in one process and 50 ms in the next, with under 2% spread *within* each. A per-rep pool
+/// makes that draw a hidden per-rep variable; a per-cell pool makes it a constant that every mode in
+/// the cell shares, so a mode comparison is paired against it rather than confounded by it.
+///
+/// This is not hypothetical caution. Running each mode's whole ladder in sequence produced a table
+/// showing deferred gaining nothing from a second core while content gained 1.6x, reproducibly
+/// across reps and across three runs. Both modes show the same bimodality when measured alone: the
+/// effect was the placement draw, not the design.
+fn run_in(
+    pool: Option<&rayon::ThreadPool>,
+    paths: &[String],
+    emit_mlir: bool,
+    sched: Schedule,
+) -> Rep {
     let _ = intern_mode::take_phases(); // drop any timings from a prior rep
     let t = Instant::now();
     let compile = || {
@@ -95,14 +110,13 @@ fn run_once(paths: &[String], threads: usize, emit_mlir: bool, sched: Schedule) 
             None
         }
     };
-    // The sequential arm runs *outside* the pool. Installing into a rayon pool that is then never
+    // The sequential arm runs *outside* any pool. Installing into a rayon pool that is then never
     // asked to do parallel work would still be a rayon run, and the point of the arm is to have
     // rayon nowhere on the path -- otherwise its cost is charged to both sides of the comparison and
     // cancels out of every ratio.
-    let mlir_bytes = if sched == Schedule::Sequential {
-        compile()
-    } else {
-        pool.install(compile)
+    let mlir_bytes = match pool {
+        Some(p) if sched != Schedule::Sequential => p.install(compile),
+        _ => compile(),
     };
     Rep {
         wall: t.elapsed(),
@@ -132,6 +146,25 @@ fn main() {
     let schedule_arg = corpus::arg::<String>(&args, "--schedule", "both".to_string());
     let run_seq = schedule_arg != "par";
     let run_par = schedule_arg != "seq";
+    // Which interning modes to run, and in which order. Both in one process is convenient and
+    // produces the comparison table, but it is also a confound: the second mode's cells run on a
+    // heap the first mode fragmented and a machine the first mode warmed. `--modes content` /
+    // `--modes deferred` puts each in its own process, and `--modes content,deferred` reverses the
+    // order -- between them, whether an effect follows the *mode* or its *position in the run* is
+    // decidable rather than assumed.
+    let modes: Vec<(&str, InternMode)> =
+        corpus::arg::<String>(&args, "--modes", "deferred,content".to_string())
+            .split(',')
+            .filter_map(|m| match m.trim() {
+                "deferred" => Some(("deferred", InternMode::Deferred)),
+                "content" => Some(("content", InternMode::Content)),
+                other => {
+                    eprintln!("unknown --modes entry '{other}', expected deferred or content");
+                    None
+                }
+            })
+            .collect();
+    assert!(!modes.is_empty(), "--modes selected nothing to run");
 
     // The ladder, with `0` standing for the sequential arm: one key space for the medians map, and
     // `0 threads` reads as "no thread pool", which is what it is.
@@ -175,25 +208,40 @@ fn main() {
                 let mut medians: std::collections::HashMap<(&str, usize), f64> =
                     std::collections::HashMap::new();
 
-                for (label, mode) in [
-                    ("deferred", InternMode::Deferred),
-                    ("content", InternMode::Content),
-                ] {
-                    intern_mode::set_mode(mode);
-                    for &t in &ladder {
-                        let sched = if t == 0 {
-                            Schedule::Sequential
-                        } else {
-                            Schedule::Parallel
-                        };
-                        let tag = if t == 0 {
-                            "seq".to_string()
-                        } else {
-                            t.to_string()
-                        };
-                        // One warm-up rep, discarded: the first run pays page faults and
-                        // filesystem-cache misses that have nothing to do with interning.
-                        let warm = run_once(&c.paths, t.max(1), emit_mlir, sched);
+                // Thread count outermost, modes paired inside it. One pool per cell, and every mode
+                // in the cell runs in that pool, alternating rep by rep -- so whatever placement the
+                // pool drew, both modes drew it, and the mode comparison is paired rather than
+                // confounded by a nuisance variable worth 1.7x on this machine. Running each mode's
+                // ladder end to end instead once produced a clean, reproducible, and entirely false
+                // finding; see `run_in`.
+                for &t in &ladder {
+                    let sched = if t == 0 {
+                        Schedule::Sequential
+                    } else {
+                        Schedule::Parallel
+                    };
+                    let tag = if t == 0 {
+                        "seq".to_string()
+                    } else {
+                        t.to_string()
+                    };
+                    let pool = (t > 0).then(|| {
+                        rayon::ThreadPoolBuilder::new()
+                            .num_threads(t)
+                            .build()
+                            .expect("thread pool")
+                    });
+
+                    let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(reps); modes.len()];
+                    let mut phase_samples: Vec<Vec<_>> =
+                        vec![Vec::with_capacity(reps); modes.len()];
+                    let mut mlir_bytes = vec![0usize; modes.len()];
+
+                    // One warm-up rep per mode, discarded: the first run pays page faults and
+                    // filesystem-cache misses that have nothing to do with interning.
+                    for &(_, mode) in &modes {
+                        intern_mode::set_mode(mode);
+                        let warm = run_in(pool.as_ref(), &c.paths, emit_mlir, sched);
                         if warm.mlir_bytes == Some(0) {
                             eprintln!(
                                 "  NOTE: the flat emitter declined this corpus, so every rep below \
@@ -203,22 +251,26 @@ fn main() {
                                  purpose."
                             );
                         }
-                        let mut samples = Vec::with_capacity(reps);
-                        let mut phase_samples = Vec::with_capacity(reps);
-                        let mut mlir_bytes = 0usize;
-                        for _ in 0..reps {
-                            let rep = run_once(&c.paths, t.max(1), emit_mlir, sched);
-                            mlir_bytes = rep.mlir_bytes.unwrap_or(0);
-                            samples.push(rep.wall.as_secs_f64() * 1e3);
-                            phase_samples.push(intern_mode::take_phases());
+                    }
+                    for _ in 0..reps {
+                        for (i, &(_, mode)) in modes.iter().enumerate() {
+                            intern_mode::set_mode(mode);
+                            let rep = run_in(pool.as_ref(), &c.paths, emit_mlir, sched);
+                            mlir_bytes[i] = rep.mlir_bytes.unwrap_or(0);
+                            samples[i].push(rep.wall.as_secs_f64() * 1e3);
+                            phase_samples[i].push(intern_mode::take_phases());
                         }
-                        let (med, q1, q3) = median_iqr(samples);
+                    }
+
+                    for (i, &(label, _)) in modes.iter().enumerate() {
+                        let mlir_bytes = mlir_bytes[i];
+                        let (med, q1, q3) = median_iqr(samples[i].clone());
                         medians.insert((label, t), med);
                         println!(
                             "{label},{n},{m},{d},{},{},{tag},{med:.2},{q1:.2},{q3:.2},{reps}",
                             c.generic_slots, c.distinct_keys
                         );
-                        let ph = phase_report(phase_samples);
+                        let ph = phase_report(std::mem::take(&mut phase_samples[i]));
                         let total: f64 = ph.iter().map(|(_, v)| v).sum();
                         let share = |name: &str| -> f64 {
                             let v: f64 =
@@ -266,8 +318,30 @@ fn main() {
                     }
                 );
                 let base = |mm: &str| at(mm, base_key);
+                let mut suspect = Vec::new();
                 for &t in &ladder {
-                    let flag = if t > cores { "  <- oversubscribed" } else { "" };
+                    // A row slower than a row with *fewer* threads is not a result. More workers
+                    // cannot make the same work take longer, so the row is measuring something other
+                    // than the compiler -- on a heterogeneous machine, almost always which cores the
+                    // pool drew. Flagged rather than silently tabulated, because such a row is
+                    // internally consistent (tight IQR, reproducible across reps) and reads exactly
+                    // like a finding.
+                    let regressed = modes.iter().any(|&(mm, _)| {
+                        ladder
+                            .iter()
+                            .take_while(|&&u| u < t)
+                            .any(|&u| at(mm, t) > at(mm, u) * 1.02)
+                    });
+                    if regressed {
+                        suspect.push(t);
+                    }
+                    let flag = if t > cores {
+                        "  <- oversubscribed"
+                    } else if regressed {
+                        "  <- SUSPECT: slower than a lower thread count"
+                    } else {
+                        ""
+                    };
                     let tag = if t == 0 { "seq".into() } else { t.to_string() };
                     eprintln!(
                         "  {tag:>7}  {:>12.2}  {:>11.2}   {:>8.1}/{:>8.1}{flag}",
@@ -298,6 +372,17 @@ fn main() {
                     base("deferred"),
                     base("content"),
                 );
+                if !suspect.is_empty() {
+                    eprintln!(
+                        "  WARNING: thread count(s) {suspect:?} came out slower than a lower one. \
+                         Adding workers cannot lengthen the same work, so those rows measure the \
+                         machine, not the compiler -- on a heterogeneous host (this one is an Apple \
+                         M4: 4 performance + 6 efficiency cores) a small pool that draws efficiency \
+                         cores runs ~1.7x slower for the whole life of the pool, with a tight \
+                         per-rep spread that makes it read like a result. Re-run the cell, or read \
+                         it on homogeneous cores. Do not quote it."
+                    );
+                }
             }
         }
     }

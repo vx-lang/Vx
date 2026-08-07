@@ -61,6 +61,31 @@ between silently joins the comparison. One binary, one corpus, one flag.
 Note the harness also runs the sequential arm *outside* the rayon pool — installing into a pool that
 is never asked to do parallel work would still be a rayon run.
 
+## Modes are paired inside one thread pool
+
+Thread *placement* is the dominant nuisance variable on a heterogeneous machine, and it is fixed when
+the pool is built. On an Apple M4 (4 performance + 6 efficiency cores) a two-thread pool either lands
+on P-cores or does not, and the difference is **1.7x** on this corpus. Measured, not feared: the same
+binary, corpus and mode gives a median of 30 ms in one process and 50 ms in the next, with under 2%
+spread *within* each. The bad draw is not noise — it is a constant for the life of the pool, so
+repetitions and medians do nothing to it, and the cell comes out tight, reproducible, and wrong.
+
+So the harness builds **one pool per cell** and runs every mode in it, alternating rep by rep.
+Whatever placement the pool drew, both modes drew it, and the mode comparison is paired against it.
+
+This was learned the expensive way. Running each mode's whole ladder end to end instead produced a
+table showing deferred gaining nothing from a second core while content gained 1.6x — reproducible
+across reps and across three separate runs, and completely false. Both modes show the same
+bimodality when measured alone. With pairing they agree to within 1% at every thread count.
+
+Two guards remain in the output:
+
+- A row slower than a row with *fewer* threads is flagged `SUSPECT`. More workers cannot lengthen the
+  same work, so such a row is measuring the machine.
+- `--modes deferred` / `--modes content` runs one mode per process, and `--modes content,deferred`
+  reverses the order — between them, whether an effect follows the mode or its position in the run is
+  decidable rather than assumed.
+
 ## Dependency layers
 
 `--files-per-layer` turns the corpus from a heap of mutually oblivious modules into a layered DAG.
