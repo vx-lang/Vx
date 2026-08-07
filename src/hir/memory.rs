@@ -19,12 +19,35 @@ use crate::syntax::{
 };
 use std::collections::{HashMap, HashSet};
 
-/// A bandwidth-derived transfer cost, in the bandwidth's rate unit (cycles for `B/cyc`,
-/// seconds for `B/s`). This is the paper's roofline: `T = bytes / bandwidth`.
+/// A bandwidth-derived transfer cost, in the bandwidth's rate unit: **cycles** for `B/cyc`,
+/// **picoseconds** for `B/s`. This is the paper's roofline: `T = bytes / bandwidth`.
+///
+/// Time-based costs are picoseconds, not seconds, because the cost is an integer and the
+/// quantities are sub-nanosecond. At whole-second resolution `ceil(bytes / (B/s))` is 1 for every
+/// transfer below one second, which is every transfer any of these machines performs: a 4 KiB tile
+/// and a 64 MiB tile over the same 12 TB/s link both came out as `1`, and a 2.4x spread in declared
+/// L2 bandwidth across the fleet produced no difference at all. Picoseconds keep a 4 KiB tile over
+/// a 16 TB/s link (256 ps) distinguishable from the next size up, and `u64` still spans ~213 days.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct DerivedCost {
     pub value: u64,
     pub per: RatePer,
+}
+
+/// Picoseconds per second — the scale factor that gives a `B/s` roofline usable integer resolution.
+const PICOS_PER_SEC: u64 = 1_000_000_000_000;
+
+/// One hop's roofline cost: `bytes / bandwidth`, in the rate's unit (cycles, or picoseconds).
+///
+/// The multiply happens before the divide so the scaling does not lose the precision it exists to
+/// buy, and it is checked rather than wrapping: `bytes * 1e12` overflows `u64` above ~18 PiB, which
+/// is beyond any declared capacity but is reachable by a nonsense program, and a wrapped cost would
+/// read as a fast transfer rather than an error.
+pub fn hop_cost(bytes: u64, bw: crate::syntax::Bandwidth) -> Option<u64> {
+    match bw.per {
+        RatePer::Cycle => Some(bytes.div_ceil(bw.bytes)),
+        RatePer::Second => Some(bytes.checked_mul(PICOS_PER_SEC)?.div_ceil(bw.bytes)),
+    }
 }
 
 /// Bit width of a tensor element (dense packing, e.g. `I4` = 4 bits) — a thin wrapper over the single
@@ -211,7 +234,7 @@ impl<'a> MemoryHierarchy<'a> {
                 Some(u) if u == bw.per => {}
                 _ => return None, // mixed rate units cannot be summed
             }
-            total = total.saturating_add(bytes.div_ceil(bw.bytes));
+            total = total.saturating_add(hop_cost(bytes, bw)?);
         }
         Some(DerivedCost {
             value: total,

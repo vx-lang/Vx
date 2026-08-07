@@ -16,10 +16,10 @@
 // WARN: runtime value 'n'
 
 Memory HBM {
-  capacity: 32 GB, bandwidth: 1200 GB/s
+  capacity: 32 GiB, bandwidth: 1200 GB/s
 }
 Memory VMEM {
-  within: Memory::HBM, capacity: 64 MB, granule: 4 KB, managed: explicit, scope: sm
+  within: Memory::HBM, capacity: 64 MiB, granule: 4 KiB, managed: explicit, scope: sm
 }
 Topology TensorCore {
   memory: Memory::VMEM,

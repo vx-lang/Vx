@@ -15,7 +15,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory Local_SRAM {
-  scope: sm, capacity: 228 KB
+  scope: sm, capacity: 228 KiB
 }
 
 fn main() -> i32 {

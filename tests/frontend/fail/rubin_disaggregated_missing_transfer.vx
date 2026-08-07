@@ -14,10 +14,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory GDDR7 {
-  capacity: 128 GB, bandwidth: 2 TB/s, managed: explicit
+  capacity: 128 GiB, bandwidth: 2 TB/s, managed: explicit
 }
 Memory HBM4 {
-  capacity: 288 GB, bandwidth: 13 TB/s, managed: explicit
+  capacity: 288 GiB, bandwidth: 13 TB/s, managed: explicit
 }
 Topology RubinCPX {
   memory: Memory::GDDR7,

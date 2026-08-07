@@ -218,14 +218,16 @@ impl<'a> Parser<'a> {
                 let from = self.parse_memory_space()?;
                 self.consume(&TokenType::Arrow, "Expected '->' in transfer clause")?;
                 let to = self.parse_memory_space()?;
-                self.consume(&TokenType::Colon, "Expected ':' before transfer cost")?;
-                let cost_str = match &self.advance().kind {
-                    TokenType::Number(s) => s.to_string(),
-                    _ => return Err(self.error("Expected an integer transfer cost")),
+                // The cost is optional, and when present may be either a link bandwidth
+                // (`: 64 GB/s`) or a unitless relative cost (`: 300`). Omitting it declares
+                // reachability and leaves the cost to the endpoints' bandwidths -- which is the
+                // normal case for a hop between nested spaces, and the only way to avoid declaring
+                // a second cost for an edge that already has a derivable one (E6013).
+                let cost = if self.match_token(&TokenType::Colon) {
+                    self.parse_edge_cost()?
+                } else {
+                    crate::arch::EdgeCost::Derived
                 };
-                let cost: u32 = cost_str
-                    .parse()
-                    .map_err(|_| self.error("Transfer cost must be a non-negative integer"))?;
                 // Optional trailing `relaxed` / `sync` consistency marker.
                 let marker = if let TokenType::Identifier(s) = &self.peek().kind {
                     Some(s.to_string())
@@ -413,17 +415,35 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// A size literal like `256 KB`, normalized to bytes (binary multipliers).
+    /// A size literal like `256 KiB`, normalized to bytes.
+    ///
+    /// SI spellings are decimal, IEC binary. Capacities are usually the IEC case -- a "228 KB"
+    /// shared-memory figure is 228 KiB in fact -- so a file should say `KiB` and mean it rather
+    /// than rely on the reader knowing which convention the parser picked.
     fn parse_byte_size(&mut self) -> ParseResult<'a, crate::syntax::ByteSize> {
-        let value = self.parse_number_f64("a byte size")?;
-        let mult = self.parse_byte_unit()?;
-        Ok(crate::syntax::ByteSize((value * mult as f64).round() as u64))
+        let mantissa = self.parse_number_text("a byte size")?;
+        let unit = self.parse_byte_unit()?;
+        Ok(crate::syntax::ByteSize(self.scaled_bytes(&mantissa, unit)?))
     }
 
     /// A bandwidth literal like `8 TB/s` or `128 B/cyc`.
+    ///
+    /// SI spellings are decimal and IEC binary (`crate::units`), so a figure copied from a vendor
+    /// spec sheet means what the sheet meant. Bandwidth is the case that motivated the rule:
+    /// NVIDIA's "3.35 TB/s" is 3.35e12 B/s, and reading `TB` as 2^40 understated every predicted
+    /// transfer time by 9%.
     fn parse_bandwidth(&mut self) -> ParseResult<'a, crate::syntax::Bandwidth> {
-        let value = self.parse_number_f64("a bandwidth")?;
-        let mult = self.parse_byte_unit()?;
+        let mantissa = self.parse_number_text("a bandwidth")?;
+        let unit = self.parse_byte_unit()?;
+        let per = self.parse_rate_denominator()?;
+        Ok(crate::syntax::Bandwidth {
+            bytes: self.scaled_bytes(&mantissa, unit)?,
+            per,
+        })
+    }
+
+    /// The `/s` or `/cyc` of a rate.
+    fn parse_rate_denominator(&mut self) -> ParseResult<'a, crate::syntax::RatePer> {
         self.consume(
             &TokenType::Slash,
             "Expected '/' in bandwidth (e.g. `8 TB/s`)",
@@ -437,53 +457,100 @@ impl<'a> Parser<'a> {
                 )))
             }
         };
-        let per = match per_str.as_str() {
-            "s" => crate::syntax::RatePer::Second,
-            "cyc" => crate::syntax::RatePer::Cycle,
-            other => {
-                return Err(self.error(&format!(
-                    "bandwidth denominator must be 's' or 'cyc', got '{}'",
-                    other
-                )))
-            }
-        };
-        Ok(crate::syntax::Bandwidth {
-            bytes: (value * mult as f64).round() as u64,
-            per,
+        match per_str.as_str() {
+            "s" => Ok(crate::syntax::RatePer::Second),
+            "cyc" => Ok(crate::syntax::RatePer::Cycle),
+            other => Err(self.error(&format!(
+                "bandwidth denominator must be 's' or 'cyc', got '{}'",
+                other
+            ))),
+        }
+    }
+
+    /// The value after `transfer A -> B :` — either a link bandwidth (`64 GB/s`) or a unitless
+    /// relative cost (`300`).
+    ///
+    /// Disambiguated by whether a byte unit follows the number. The only other things that may
+    /// follow are the `relaxed`/`sync` markers and a `,`, and no unit spelling collides with those.
+    fn parse_edge_cost(&mut self) -> ParseResult<'a, crate::arch::EdgeCost> {
+        let mantissa = self.parse_number_text("a transfer cost or link bandwidth")?;
+        let is_rate = matches!(
+            &self.peek().kind,
+            TokenType::Identifier(s) if crate::units::ByteUnit::parse(s).is_some()
+        );
+        if is_rate {
+            let unit = self.parse_byte_unit()?;
+            let bytes = self.scaled_bytes(&mantissa, unit)?;
+            let per = self.parse_rate_denominator()?;
+            Ok(crate::arch::EdgeCost::Rate(crate::syntax::Bandwidth {
+                bytes,
+                per,
+            }))
+        } else {
+            let cost = mantissa.parse::<u32>().map_err(|_| {
+                self.error(&format!(
+                    "transfer cost must be a non-negative integer or a link bandwidth \
+                     (e.g. `64 GB/s`), got '{mantissa}'"
+                ))
+            })?;
+            Ok(crate::arch::EdgeCost::Fixed(cost))
+        }
+    }
+
+    /// The source text of a number literal, unparsed.
+    ///
+    /// Text rather than `f64` so [`crate::units::to_bytes`] can do exact integer arithmetic: `3.35`
+    /// is not representable in binary floating point, and a parse-multiply-round pipeline is
+    /// correct only for the particular values it happens to be given.
+    fn parse_number_text(&mut self, what: &str) -> ParseResult<'a, String> {
+        match &self.advance().kind {
+            TokenType::Number(s) => Ok(s.to_string()),
+            other => Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        }
+    }
+
+    /// Exact mantissa-times-unit, with the failure reported where the reader can see the figure.
+    fn scaled_bytes(
+        &mut self,
+        mantissa: &str,
+        unit: crate::units::ByteUnit,
+    ) -> ParseResult<'a, u64> {
+        crate::units::to_bytes(mantissa, unit).map_err(|e| {
+            let why = match e {
+                crate::units::UnitError::Malformed => "not a decimal number".to_string(),
+                crate::units::UnitError::Overflow => {
+                    "too large for a 64-bit byte count".to_string()
+                }
+                crate::units::UnitError::NotWholeBytes => format!(
+                    "not a whole number of bytes ({mantissa} x {} does not divide evenly); \
+                     write it in a smaller unit",
+                    unit.factor()
+                ),
+            };
+            self.error(&format!("invalid size '{mantissa}': {why}"))
         })
     }
 
-    fn parse_number_f64(&mut self, what: &str) -> ParseResult<'a, f64> {
-        let s = match &self.advance().kind {
-            TokenType::Number(s) => s.to_string(),
-            other => return Err(self.error(&format!("Expected {}, got {:?}", what, other))),
-        };
-        s.parse::<f64>()
-            .map_err(|_| self.error(&format!("Expected {}, got an invalid number '{}'", what, s)))
-    }
-
-    /// A binary byte-unit suffix: `B`, `KB`, `MB`, `GB`, `TB`.
-    fn parse_byte_unit(&mut self) -> ParseResult<'a, u64> {
+    /// A byte-unit suffix. SI spellings (`GB`) are decimal, IEC (`GiB`) binary -- see
+    /// [`crate::units`] for why both exist and why the distinction is enforced.
+    fn parse_byte_unit(&mut self) -> ParseResult<'a, crate::units::ByteUnit> {
         let unit = match &self.advance().kind {
             TokenType::Identifier(s) => s.to_string(),
             other => {
                 return Err(self.error(&format!(
-                    "Expected a size unit (B/KB/MB/GB/TB), got {:?}",
+                    "Expected a size unit ({}), got {:?}",
+                    crate::units::ByteUnit::ALL,
                     other
                 )))
             }
         };
-        match unit.as_str() {
-            "B" => Ok(1),
-            "KB" => Ok(1024),
-            "MB" => Ok(1024 * 1024),
-            "GB" => Ok(1024 * 1024 * 1024),
-            "TB" => Ok(1024u64 * 1024 * 1024 * 1024),
-            other => Err(self.error(&format!(
-                "Unknown size unit '{}' (expected B/KB/MB/GB/TB)",
-                other
-            ))),
-        }
+        crate::units::ByteUnit::parse(&unit).ok_or_else(|| {
+            self.error(&format!(
+                "Unknown size unit '{}' (expected {})",
+                unit,
+                crate::units::ByteUnit::ALL
+            ))
+        })
     }
 
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {

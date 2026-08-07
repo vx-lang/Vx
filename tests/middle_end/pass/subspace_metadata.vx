@@ -17,10 +17,10 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 Memory GPU_HBM {
-  capacity: 40 GB, bandwidth: 3 TB/s
+  capacity: 40 GiB, bandwidth: 3 TB/s
 }
 Memory SMEM {
-  within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm
+  within: Memory::GPU_HBM, capacity: 228 KiB, granule: 16 KiB, scope: sm
 }
 
 fn main() -> i32 {

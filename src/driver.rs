@@ -546,7 +546,17 @@ impl CompilerDriver {
         // report it before any check that reads the collapsed declaration tables (#281).
         checker.check_declaration_conflicts();
         // Reject/flag incoherent user-defined topology declarations before checking bodies.
-        checker.check_topology_coherence(&ast.topologies);
+        //
+        // Read from the env, not from `ast.topologies`: the latter is the entry program alone, so
+        // a topology arriving via `--machine` was never coherence-checked at all. That is the
+        // primary path -- every `fleet/` SKU declares its topology in the machine file -- so the
+        // checks here (default-visibility, host reachability, relaxed-edge visibility, and the
+        // one-cost-source rule E6013) have never run against the files they most need to run
+        // against. `check_memory_coherence` already reads the env, which is why the *memory*
+        // declarations in those files were checked and the topologies were not.
+        let all_topologies: Vec<crate::arch::TopologyDecl> =
+            env.topologies.values().map(|t| (*t).clone()).collect();
+        checker.check_topology_coherence(&all_topologies);
         // Reject incoherent memory-space declarations (cycles, oversized sub-spaces, ...).
         checker.check_memory_coherence();
 

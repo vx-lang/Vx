@@ -12,7 +12,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory NPU_HBM {
-  capacity: 20 KB, granule: 16 KB
+  capacity: 20 KiB, granule: 16 KiB
 }
 
 fn main() -> i32 {

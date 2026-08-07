@@ -16,29 +16,39 @@
 // spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) --
 // GPU Memory "80GB", GPU Memory Bandwidth "3.35TB/s".
 Memory HBM {
-  capacity: 80 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
 // Modelled as a device-scoped space within HBM: hardware-managed, so `cached`.
 Memory L2 {
-  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+  within: Memory::HBM, capacity: 50 MiB, bandwidth: 12 TB/s, managed: cached, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
 // 228 KB configurable shared memory per SM (up from 164 KB on A100). This is
 // the per-SM maximum, which is what a tile placement must fit.
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
 }
 
 // The staging path a placement crosses: host -> device memory -> on-chip.
-// Costs are relative latencies for path selection; the physical claim is in
-// the `bandwidth:` figures above (see fleet/README.md).
+//
+// Each edge gets exactly ONE cost source (E6013). The on-die hops declare no cost: HBM/L2/SMEM
+// nest via `within:`, so their `bandwidth:` figures above already derive the roofline, and
+// declaring a second number would mean the compiler routes by one and predicts with the other.
+// The host hop is the opposite case -- CPU_DRAM and HBM do not nest, so nothing can be derived and
+// the *link's* bandwidth is declared on the edge itself.
+//
+// spec: PCIe Gen5 x16 = 63.0 GB/s per direction (32 GT/s x 16 lanes x 128b/130b encoding).
+// UNVERIFIED on this SKU: an H100 SXM in an HGX baseboard may reach the host over PCIe Gen5 or,
+// on a Grace-Hopper part, over NVLink-C2C at ~450 GB/s -- a 7x difference that changes every
+// host-seam prediction. Measuring which link is present, and its achieved bandwidth, is
+// experiment M1/M4 in memory-algebra-paper/EXPERIMENTS.md.
 Topology Device {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::L2 : 40,
-  transfer Memory::L2 -> Memory::SMEM : 10
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
 }

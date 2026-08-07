@@ -23,6 +23,15 @@ pub struct TransferCostGraph {
     /// Cached all-pairs shortest paths for data transfers.
     cost_matrix: HashMap<(MemorySpace, MemorySpace), u32>,
 
+    /// Declared *link* bandwidths, for edges whose cost the containment tree cannot derive.
+    ///
+    /// A host↔device hop is the motivating case: `CPU_DRAM` and `HBM` do not nest, so they have no
+    /// nearest common ancestor and the roofline walk returns nothing — which is why that seam, the
+    /// most important one in the model, predicted `null` on every fleet file. Its bandwidth belongs
+    /// to the link (PCIe, C2C), not to either memory, so it is declared on the edge and looked up
+    /// here.
+    edge_rates: HashMap<(MemorySpace, MemorySpace), syntax::Bandwidth>,
+
     /// Every topology's descriptor (built-ins plus the user-declared `Topology { ... }` of *this*
     /// compilation), held per-instance rather than in a process-global registry. This is the
     /// data-oriented, lock-free home the parallel pipeline needs (see
@@ -68,8 +77,55 @@ pub enum Reachability {
 pub struct TransferEdge {
     pub from: MemorySpace,
     pub to: MemorySpace,
-    pub cost: u32,
+    pub cost: EdgeCost,
     pub sync: bool,
+}
+
+/// Where a declared edge's cost comes from. **Exactly one source per edge** — an edge that both
+/// declares a cost and can have one derived from its endpoints' bandwidths is an error (E6013),
+/// because two answers to "what does this hop cost" is not a model, it is a coin flip whose
+/// outcome depends on which consumer asks.
+///
+/// The rule was not free: every fleet file declared `transfer HBM -> L2 : 40` *and* gave `L2` a
+/// bandwidth, so both costs existed for that edge, and the compiler routed by one and reported the
+/// other. Nothing detected it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeCost {
+    /// `transfer A -> B` — the edge asserts reachability only. Its cost is the containment-derived
+    /// roofline from the endpoints' `bandwidth:` figures. This is the normal case for a hop *within*
+    /// a device, where the spaces nest and their bandwidths describe the move.
+    Derived,
+    /// `transfer A -> B : 64 GB/s` — the *link's* own bandwidth. Needed where containment cannot
+    /// derive a cost because the endpoints do not nest: a host↔device link is a property of PCIe or
+    /// C2C, not of either memory it connects.
+    Rate(crate::syntax::Bandwidth),
+    /// `transfer A -> B : 300` — a unitless relative cost. Not a physical prediction, and it does
+    /// not scale with transfer size; kept for edges no bandwidth figure describes, and reported as
+    /// such rather than quoted as a time.
+    Fixed(u32),
+}
+
+impl EdgeCost {
+    /// The weight this edge contributes to route *selection*.
+    ///
+    /// Deliberately not the predicted cost. Route choice happens before a byte count is known, so a
+    /// size-dependent cost cannot decide it; `Derived` and `Rate` edges therefore weigh 1 and the
+    /// route is chosen by hop count among them. That the model's route choice is size-independent
+    /// while the real fastest route is not is a known limit, pre-registered as experiment M5.
+    pub fn routing_weight(self) -> u32 {
+        match self {
+            EdgeCost::Derived | EdgeCost::Rate(_) => 1,
+            EdgeCost::Fixed(c) => c,
+        }
+    }
+
+    /// The declared figure to report as this edge's cost, if it declared one at all.
+    pub fn declared(self) -> Option<u32> {
+        match self {
+            EdgeCost::Fixed(c) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +443,7 @@ impl Default for TransferCostGraph {
         let mut graph = Self {
             transfer_edges: HashMap::new(),
             cost_matrix: HashMap::new(),
+            edge_rates: HashMap::new(),
             descriptors: builtin_descriptors(),
         };
 
@@ -436,7 +493,10 @@ impl TransferCostGraph {
     /// call `precompute_costs` after, or use `seed_from_topology_registry`).
     pub fn apply_descriptor_edges(&mut self, desc: &TopologyDescriptor) {
         for e in &desc.transfers {
-            self.add_transfer_edge(e.from.clone(), e.to.clone(), e.cost);
+            self.add_transfer_edge(e.from.clone(), e.to.clone(), e.cost.routing_weight());
+            if let EdgeCost::Rate(bw) = e.cost {
+                self.edge_rates.insert((e.from.clone(), e.to.clone()), bw);
+            }
         }
     }
 
@@ -687,6 +747,22 @@ impl TransferCostGraph {
     /// Determines the minimum data movement cost between two memory spaces using Dijkstra's algorithm.
     pub fn transfer_cost(&self, source: &MemorySpace, target: &MemorySpace) -> Option<u32> {
         self.cost_matrix
+            .get(&(source.clone(), target.clone()))
+            .copied()
+    }
+
+    /// The bandwidth declared on the `source -> target` link itself, if any.
+    ///
+    /// Takes precedence over the containment-derived roofline: a link rate is a statement about
+    /// *this* hop, while the roofline infers one from the spaces at its ends. The two cannot both
+    /// apply — E6013 rejects an edge that has a declared cost and a derivable one — so this is a
+    /// lookup, not a tie-break.
+    pub fn link_rate(
+        &self,
+        source: &MemorySpace,
+        target: &MemorySpace,
+    ) -> Option<syntax::Bandwidth> {
+        self.edge_rates
             .get(&(source.clone(), target.clone()))
             .copied()
     }
@@ -1330,7 +1406,7 @@ mod tests {
             transfers: vec![TransferEdge {
                 from: MemorySpace::GpuHbm,
                 to: MemorySpace::LocalSRAM,
-                cost: 7,
+                cost: crate::arch::EdgeCost::Fixed(7),
                 sync: true,
             }],
         };
@@ -1358,7 +1434,7 @@ mod tests {
             transfers: vec![TransferEdge {
                 from: MemorySpace::CPUDRAM,
                 to: acme.clone(),
-                cost: 25,
+                cost: crate::arch::EdgeCost::Fixed(25),
                 sync: true,
             }],
         };

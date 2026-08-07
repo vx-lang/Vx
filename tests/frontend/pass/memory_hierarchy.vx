@@ -11,13 +11,13 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 Memory Hbm {
-  capacity: 192 GB, bandwidth: 8 TB/s
+  capacity: 192 GiB, bandwidth: 8 TB/s
 }
 Memory Smem {
-  within: Memory::Hbm, capacity: 228 KB, bandwidth: 128 B/cyc, managed: explicit
+  within: Memory::Hbm, capacity: 228 KiB, bandwidth: 128 B/cyc, managed: explicit
 }
 Memory Tmem {
-  within: Memory::Hbm, capacity: 256 KB, granule: 16 KB, managed: explicit
+  within: Memory::Hbm, capacity: 256 KiB, granule: 16 KiB, managed: explicit
 }
 
 fn main() -> i32 {

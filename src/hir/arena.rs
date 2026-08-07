@@ -84,7 +84,9 @@ pub struct HirSpawnOnExpr {
 pub struct HirTransferExpr {
     pub expr: ExprId,
     pub space: MemorySpace,
-    pub cost: Option<u32>,
+    /// Roofline cost: cycles for a `B/cyc` hop, picoseconds for a `B/s` one. See
+    /// [`crate::hir::memory::DerivedCost`].
+    pub cost: Option<u64>,
     pub span: Span,
 }
 

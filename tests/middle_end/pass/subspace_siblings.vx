@@ -24,13 +24,13 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 Memory GPU_HBM {
-  capacity: 40 GB, bandwidth: 3 TB/s
+  capacity: 40 GiB, bandwidth: 3 TB/s
 }
 Memory SMEM {
-  within: Memory::GPU_HBM, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 16 KB, scope: sm
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 16 KiB, scope: sm
 }
 Memory TMEM {
-  within: Memory::GPU_HBM, capacity: 256 KB, bandwidth: 256 B/cyc, granule: 16 KB, scope: sm
+  within: Memory::GPU_HBM, capacity: 256 KiB, bandwidth: 256 B/cyc, granule: 16 KiB, scope: sm
 }
 
 fn main() -> i32 {
@@ -62,7 +62,9 @@ fn main() -> i32 {
 // CHECK: space = "TMEM"
 // ts: ta -> SMEM (sibling lateral) -> routed via GPU_HBM, costed on both legs.
 // CHECK: vx.transfer
-// CHECK: cost = 192 : i32
+// i64, not i32: a `B/s` seam is costed in picoseconds and overflows i32 at 4.3 ms. Both legs here
+// are `B/cyc`, so the value is unaffected -- 16384/256 + 16384/128 = 192 cycles.
+// CHECK: cost = 192 : i64
 // CHECK: offset = 16384 : i64
 // CHECK: space = "SMEM"
 // ss: sa -> SMEM (same space) -> SMEM's cursor bumps to 32768.

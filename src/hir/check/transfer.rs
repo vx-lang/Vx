@@ -187,6 +187,43 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
+            // S2 (vx-review#10): exactly one cost source per edge. An edge that declares a cost
+            // while its endpoints already supply a derivable one has two, and the compiler used
+            // both -- routing by the declared number and reporting the derived one. Rejected at
+            // declaration time rather than resolved by a precedence rule, because a precedence
+            // rule silently discards a figure someone wrote down on purpose.
+            //
+            // Probed with one byte: derivability is a property of the containment tree and the
+            // presence of `bandwidth:`, not of the transfer size.
+            {
+                let hierarchy =
+                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
+                for edge in &decl.descriptor.transfers {
+                    if edge.cost == crate::arch::EdgeCost::Derived {
+                        continue;
+                    }
+                    if hierarchy
+                        .derived_transfer_cost(&edge.from, &edge.to, 1)
+                        .is_some()
+                    {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6013,
+                            format!(
+                                "topology '{name}': transfer Memory::{} -> Memory::{} declares a \
+                                 cost, but one is already derivable from the `bandwidth:` of the \
+                                 spaces it connects -- an edge gets exactly one cost source. Drop \
+                                 the `: …` to use the bandwidth-derived cost, or remove the \
+                                 `bandwidth:` from a space if the declared figure is the one you \
+                                 mean.",
+                                edge.from.name(),
+                                edge.to.name()
+                            ),
+                            None,
+                        );
+                    }
+                }
+            }
+
             // Consistency obligation, discharged via the seam engine: a relaxed edge that
             // carries a payload does not preserve the buffer's visibility.
             for edge in &decl.descriptor.transfers {
@@ -694,13 +731,33 @@ impl<'a> TypeChecker<'a> {
             // memory declarations make it computable it becomes the transfer's cost (emitted on
             // `vx.transfer`); otherwise the fixed cost-graph value is kept. This does not touch
             // reachability/seam, which still use `transfer_path` below.
-            let derived_cost: Option<u32> = Self::tensor_of(&inner_ty)
+            // Two ways a hop's cost can be known, and exactly one applies per edge (E6013): a
+            // bandwidth declared on the *link* (`transfer A -> B : 64 GB/s`), or the roofline
+            // derived from the endpoints' own bandwidths along the containment tree. The link rate
+            // is checked first because it exists precisely where the containment walk cannot help
+            // -- a host<->device hop whose endpoints do not nest.
+            let derived: Option<crate::hir::memory::DerivedCost> = Self::tensor_of(&inner_ty)
                 .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d))
                 .and_then(|bytes| {
-                    crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied())
-                        .derived_transfer_cost(&source_mem, &target_mem, bytes)
-                        .map(|dc| dc.value.min(u32::MAX as u64) as u32)
+                    self.transfer_cost_graph
+                        .link_rate(&source_mem, &target_mem)
+                        .and_then(|bw| {
+                            crate::hir::memory::hop_cost(bytes, bw)
+                                .map(|value| crate::hir::memory::DerivedCost { value, per: bw.per })
+                        })
+                        .or_else(|| {
+                            crate::hir::memory::MemoryHierarchy::build(
+                                self.env.memories.values().copied(),
+                            )
+                            .derived_transfer_cost(
+                                &source_mem,
+                                &target_mem,
+                                bytes,
+                            )
+                        })
                 });
+            let derived_cost = derived.map(|d| d.value);
+            let derived_unit = derived.map(|d| d.per);
 
             let mut path_result = self
                 .transfer_cost_graph
@@ -757,6 +814,7 @@ impl<'a> TypeChecker<'a> {
                         edge_costs: vec![edge],
                         total_cost: _cost,
                         derived_cost,
+                        derived_unit,
                     });
                 }
                 // Record the bandwidth-derived roofline cost when the hierarchy provides one;

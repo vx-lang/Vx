@@ -32,7 +32,7 @@ import std::math;
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {
-  within: Memory::CPU_DRAM, capacity: 40 GB, bandwidth: 3 TB/s
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s
 }
 
 fn main() -> i32 {

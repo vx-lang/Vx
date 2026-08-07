@@ -64,7 +64,17 @@ pub struct StagingRoute {
     /// The cost graph's total for the whole route.
     pub total_cost: u32,
     /// Bandwidth-derived (roofline) cost, when the declarations supply bandwidths.
-    pub derived_cost: Option<u32>,
+    ///
+    /// `u64`, not `u32`: a picosecond-resolution time cost overflows `u32` at 4.3 ms, which a
+    /// multi-gigabyte host transfer exceeds, and a saturated cost would read as a slow transfer
+    /// rather than a missing one.
+    pub derived_cost: Option<u64>,
+    /// The unit `derived_cost` is in — cycles, or picoseconds. Carried rather than dropped because
+    /// one program's routes legitimately mix them: an on-die hop declared `B/cyc` and a host link
+    /// declared `GB/s` produce costs of different *dimension*, and a harvested prediction that does
+    /// not say which is not a prediction. (The fleet's `HBM->L2` and `L2->SMEM` are exactly this
+    /// pair.)
+    pub derived_unit: Option<crate::syntax::RatePer>,
 }
 
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see

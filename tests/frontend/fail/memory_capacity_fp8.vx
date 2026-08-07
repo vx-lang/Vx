@@ -12,7 +12,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory NPU_SRAM {
-  capacity: 1 KB
+  capacity: 1 KiB
 }
 
 fn main() -> i32 {

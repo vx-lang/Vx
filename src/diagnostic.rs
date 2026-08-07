@@ -238,6 +238,11 @@ pub enum DiagnosticCode {
     /// `--machine` file and the program). Declarations are name-keyed, so one would silently
     /// shadow the other and the machine model in force would depend on load order (#281).
     E6012,
+    /// A declared `transfer` edge carries an explicit cost *and* has one derivable from its
+    /// endpoints' `bandwidth:` figures. An edge gets exactly one cost source, because two answers
+    /// to "what does this hop cost" is not a model: the compiler routed by the declared number and
+    /// reported the derived one, and nothing detected the disagreement.
+    E6013,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

@@ -164,8 +164,10 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
 
         // The bandwidth-derived roofline cost (set by sema when the memory hierarchy declares
         // bandwidths). Emitting it makes the paper's data-movement cost visible in the IR.
+        // i64, not i32: a picosecond-resolution time cost overflows i32 at 4.3 ms, which any
+        // multi-gigabyte host transfer exceeds.
         if let Some(cost) = self.cost {
-            let cost_attr = IntegerAttribute::new(gen.i32_ty, cost as i64).into();
+            let cost_attr = IntegerAttribute::new(gen.i64_ty, cost as i64).into();
             transfer_builder = transfer_builder
                 .add_attributes(&[(Identifier::new(gen.context, "cost"), cost_attr)]);
         }

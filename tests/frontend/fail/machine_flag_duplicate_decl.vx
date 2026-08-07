@@ -12,12 +12,12 @@
 // property the flag exists to make trustworthy.
 //
 // RUN: mkdir -p %t.d
-// RUN: printf 'Memory HBM {\n  capacity: 1 MB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\n' > %t.d/machine.vx
+// RUN: printf 'Memory HBM {\n  capacity: 1 MiB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\n' > %t.d/machine.vx
 // RUN: not vxc --machine %t.d/machine.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 
 // Conflicts with the machine file's `HBM`.
 Memory HBM {
-  capacity: 8 GB
+  capacity: 8 GiB
 }
 
 fn main() -> i32 {

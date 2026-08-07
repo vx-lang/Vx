@@ -131,7 +131,9 @@ impl SpawnOnExpr {
 pub struct TransferExpr {
     pub expr: Box<Expr>,
     pub space: MemorySpace,
-    pub cost: Option<u32>, // Added by sema
+    /// The bandwidth-derived roofline cost, filled in by sema. Cycles for a `B/cyc` hop,
+    /// picoseconds for a `B/s` one — `u64` because picoseconds overflow `u32` at 4.3 ms.
+    pub cost: Option<u64>,
     pub span: Span,
 }
 

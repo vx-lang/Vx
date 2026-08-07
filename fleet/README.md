@@ -36,6 +36,32 @@ these compose properly; see the note in that file.
 paper's capacity numbers are only as credible as their provenance, so a number without a citation
 is a bug, not a detail.
 
+### Units: SI is decimal, IEC is binary, and the file must say which
+
+`GB` is 10^9; `GiB` is 2^30. Both spellings parse (`src/units.rs`), conversion is exact integer
+arithmetic, and a figure that is not a whole number of bytes is rejected rather than rounded.
+
+The rule exists because breaking it cost 9%. `TB` was previously read as 2^40 while every `spec:`
+line here cites a vendor figure in **decimal** — NVIDIA's "3.35 TB/s" is 3.35e12 B/s, from a
+5120-bit bus at 3.2 Gbps. The compiler therefore treated every link as ~10% faster than its own
+citation claimed and understated every predicted transfer time by **9.05%**. In a calibration study
+that residual would have been charged to the hardware.
+
+Which to write:
+
+| Field | Convention | Why |
+|---|---|---|
+| `bandwidth:` | **SI** (`3.35 TB/s`, `2039 GB/s`) | vendors quote memory bandwidth decimal |
+| `capacity:`, `granule:` | **IEC** (`80 GiB`, `228 KiB`, `1 KiB`) | HBM stacks, caches and SMEM are genuinely powers of two |
+
+Copy the digits from the spec sheet and pick the spelling that matches what the sheet meant — do
+not pre-convert, since a hand-converted figure no longer matches its citation.
+
+Note that whether a *quoted capacity* is decimal or binary is itself contested per SKU (the
+192-vs-180 GiB gap below), and settling it by measurement is experiment **M4** in
+`memory-algebra-paper/EXPERIMENTS.md`. The spellings here record current belief, not a verified
+fact; `spec:` says where the belief came from.
+
 ### Verification status
 
 | Figure class | Status |

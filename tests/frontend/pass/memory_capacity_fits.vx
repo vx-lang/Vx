@@ -11,7 +11,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 Memory NPU_HBM {
-  capacity: 1 MB
+  capacity: 1 MiB
 }
 
 fn main() -> i32 {

@@ -15,7 +15,7 @@
 // WARN: overcommit
 
 Memory Local_SRAM {
-  scope: sm, capacity: 228 KB, overcommit
+  scope: sm, capacity: 228 KiB, overcommit
 }
 
 fn main() -> i32 {

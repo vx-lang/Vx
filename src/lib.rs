@@ -44,6 +44,7 @@ pub mod suggest;
 pub mod symbol;
 pub mod syntax;
 pub mod syntax_printer;
+pub mod units;
 
 /// Convenience API for parsing a string representation of a module into an VxModule (AST).
 /// Useful for unit testing and interactive REPLs.

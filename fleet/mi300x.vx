@@ -20,7 +20,7 @@
 // spec: AMD Instinct MI300X (verified 2026-08-03) -- 192 GB HBM3, peak memory
 // bandwidth 5.3 TB/s.
 Memory HBM {
-  capacity: 192 GB, bandwidth: 5.3 TB/s, managed: explicit, scope: device
+  capacity: 192 GiB, bandwidth: 5.3 TB/s, managed: explicit, scope: device
 }
 
 // spec: AMD Instinct MI300X (verified 2026-08-03) -- 256 MB Infinity Cache.
@@ -28,7 +28,7 @@ Memory HBM {
 // placement decision (device-scoped, hardware-managed, last level before HBM),
 // though architecturally it sits below a smaller per-XCD L2 not modelled here.
 Memory L2 {
-  within: Memory::HBM, capacity: 256 MB, bandwidth: 17 TB/s, managed: cached, scope: device
+  within: Memory::HBM, capacity: 256 MiB, bandwidth: 17 TB/s, managed: cached, scope: device
 }
 
 // spec: AMD CDNA 3 Architecture Whitepaper -- 64 KB LDS per compute unit.
@@ -37,13 +37,17 @@ Memory L2 {
 // fits every NVIDIA SKU can still be rejected here -- exactly the kind of
 // cross-vendor result the matrix should surface rather than hide.
 Memory SMEM {
-  within: Memory::L2, capacity: 64 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::L2, capacity: 64 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
 }
 
 Topology Device {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::L2 : 40,
-  transfer Memory::L2 -> Memory::SMEM : 10
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
+  // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
+  // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.
+  // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
 }

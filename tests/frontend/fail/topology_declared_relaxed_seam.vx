@@ -15,13 +15,13 @@
 // RUN: not vxc %s --verify-seams 2>&1 | FileCheck %s
 
 Memory HBM3e {
-  capacity: 192 GB, bandwidth: 8 TB/s
+  capacity: 192 GiB, bandwidth: 8 TB/s
 }
 Memory SMEM {
-  within: Memory::HBM3e, capacity: 228 KB, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::HBM3e, capacity: 228 KiB, granule: 1 KiB, managed: explicit, scope: sm
 }
 Memory TMEM {
-  within: Memory::HBM3e, capacity: 256 KB, granule: 16 KB, managed: explicit, scope: sm
+  within: Memory::HBM3e, capacity: 256 KiB, granule: 16 KiB, managed: explicit, scope: sm
 }
 Topology TensorCore5 {
   memory: Memory::TMEM,

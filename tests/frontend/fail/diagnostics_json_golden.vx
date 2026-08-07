@@ -19,10 +19,10 @@
 // RUN: not vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
 
 Memory HBM {
-  capacity: 8 GB, bandwidth: 3 TB/s
+  capacity: 8 GiB, bandwidth: 3 TB/s
 }
 Memory SMEM {
-  within: Memory::HBM, capacity: 150 KB, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::HBM, capacity: 150 KiB, granule: 1 KiB, managed: explicit, scope: sm
 }
 Topology TC {
   memory: Memory::SMEM,

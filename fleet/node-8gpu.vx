@@ -25,17 +25,17 @@
 // spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) -- 80 GB
 // HBM3 at 3.35 TB/s. Keep in sync with fleet/h100-sxm.vx.
 Memory HBM {
-  capacity: 80 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
 Memory L2 {
-  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+  within: Memory::HBM, capacity: 50 MiB, bandwidth: 12 TB/s, managed: cached, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 228 KB shared memory per SM.
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
 }
 
 // --- The rest of the node ---------------------------------------------------
@@ -49,7 +49,7 @@ Memory SMEM {
 //
 // spec: derived -- 7 peers x 80 GB (verified per-GPU figure above).
 Memory PEER_HBM {
-  capacity: 560 GB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+  capacity: 560 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
 }
 
 // The node's transfer topology. Three physical tiers, and the whole point of
@@ -64,9 +64,13 @@ Memory PEER_HBM {
 Topology Node {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::L2 : 40,
-  transfer Memory::L2 -> Memory::SMEM : 10,
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
+  // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
+  // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.
+  // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM,
   transfer Memory::HBM -> Memory::PEER_HBM : 60,
   transfer Memory::PEER_HBM -> Memory::HBM : 60,
   transfer Memory::HBM -> Memory::NIC_RAM : 200,

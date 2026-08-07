@@ -14,7 +14,7 @@
 // RUN: not vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory TMEM {
-  within: Memory::GPU_HBM, capacity: 256 KB, granule: 16 KB, managed: explicit
+  within: Memory::GPU_HBM, capacity: 256 KiB, granule: 16 KiB, managed: explicit
 }
 Topology TmemDev {
   memory: Memory::TMEM,

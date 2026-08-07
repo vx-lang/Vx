@@ -17,10 +17,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory GPU_HBM {
-  capacity: 40 GB, bandwidth: 3 TB/s
+  capacity: 40 GiB, bandwidth: 3 TB/s
 }
 Memory PAD {
-  within: Memory::GPU_HBM, capacity: 128 KB, granule: 64 KB
+  within: Memory::GPU_HBM, capacity: 128 KiB, granule: 64 KiB
 }
 
 fn main() -> i32 {

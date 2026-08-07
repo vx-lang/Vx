@@ -337,10 +337,49 @@ mod tests {
             vec![crate::arch::TransferEdge {
                 from: crate::syntax::MemorySpace::GpuHbm,
                 to: crate::syntax::MemorySpace::LocalSRAM,
-                cost: 7,
+                cost: crate::arch::EdgeCost::Fixed(7),
                 sync: true,
             }]
         );
+    }
+
+    /// The three edge-cost forms (vx-review#10). An edge carries exactly one cost source, so the
+    /// grammar has to be able to express "no cost declared" — otherwise a hop whose cost is
+    /// derivable from its endpoints' bandwidths has no legal spelling, and every `fleet/` file was
+    /// forced to declare a second one (E6013).
+    #[test]
+    fn transfer_edges_carry_one_of_three_cost_forms() {
+        use crate::arch::EdgeCost;
+        use crate::syntax::{Bandwidth, RatePer};
+        let edges = |src: &str| {
+            let mut lexer = Lexer::new(src);
+            let tokens = lexer.tokenize();
+            let mut p = Parser::new(&tokens, src);
+            p.parse_topology_decl().unwrap().descriptor.transfers
+        };
+
+        // No cost: reachability only, cost comes from the endpoints' bandwidths.
+        let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::Local_SRAM }");
+        assert_eq!(e[0].cost, EdgeCost::Derived);
+
+        // A link bandwidth: for a hop whose endpoints do not nest, where containment can derive
+        // nothing -- a host<->device link is a property of PCIe, not of either memory.
+        let e = edges(
+            "Topology T { memory: Memory::GPU_HBM, transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 64 GB/s }",
+        );
+        assert_eq!(
+            e[0].cost,
+            EdgeCost::Rate(Bandwidth {
+                bytes: 64_000_000_000,
+                per: RatePer::Second
+            })
+        );
+
+        // A bare integer stays the legacy unitless relative cost, and the `relaxed` marker after
+        // it still parses -- the disambiguation must not swallow the consistency grade.
+        let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::Local_SRAM : 300 relaxed }");
+        assert_eq!(e[0].cost, EdgeCost::Fixed(300));
+        assert!(!e[0].sync);
     }
 
     #[test]
@@ -371,8 +410,8 @@ mod tests {
     fn test_parse_memory_decl_full() {
         use crate::syntax::{Bandwidth, ByteSize, Management, MemorySpace, RatePer};
         let d = parse_memory_decl(
-            "Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KB, \
-             bandwidth: 128 B/cyc, managed: explicit, granule: 16 KB }",
+            "Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KiB, \
+             bandwidth: 128 B/cyc, managed: explicit, granule: 16 KiB }",
         );
         assert_eq!(d.name, crate::symbol::Symbol::from("SMEM"));
         assert_eq!(d.parent, Some(MemorySpace::GpuHbm));
@@ -401,32 +440,58 @@ mod tests {
         assert_eq!(d.managed, Management::Cached);
     }
 
+    /// A novel parent space, and the unit convention that the fleet's provenance depends on:
+    /// **SI spellings are decimal, IEC binary** (`src/units.rs`).
+    ///
+    /// This is the regression test for a 9% error. `TB` was read as 2^40 while every `spec:`
+    /// citation in `fleet/` quotes a vendor decimal figure, so the compiler treated each link as
+    /// ~10% faster than its own citation claimed and understated every predicted transfer time.
+    /// The two assertions below are deliberately spelled as literal products rather than as
+    /// `ByteUnit::factor()` calls, so this test cannot agree with a wrong implementation by
+    /// sharing its arithmetic.
     #[test]
     fn test_parse_memory_decl_custom_parent_and_units() {
         use crate::syntax::{Bandwidth, ByteSize, MemorySpace, RatePer};
-        // A novel parent space and decimal-ish TB/s bandwidth.
         let d = parse_memory_decl(
-            "Memory L2 { within: Memory::AcmePool, capacity: 192 GB, bandwidth: 8 TB/s }",
+            "Memory L2 { within: Memory::AcmePool, capacity: 192 GiB, bandwidth: 8 TB/s }",
         );
         assert_eq!(
             d.parent,
             Some(MemorySpace::Custom(crate::symbol::Symbol::from("AcmePool")))
         );
+        // IEC capacity: binary.
         assert_eq!(d.capacity, Some(ByteSize(192 * 1024 * 1024 * 1024)));
+        // SI bandwidth: decimal. 8 TB/s is 8e12 B/s, which is what a spec sheet means.
         assert_eq!(
             d.bandwidth,
             Some(Bandwidth {
-                bytes: 8 * 1024 * 1024 * 1024 * 1024,
+                bytes: 8_000_000_000_000,
                 per: RatePer::Second
             })
         );
+    }
+
+    /// The same digits under the two spellings must not produce the same bytes -- the property
+    /// whose absence was the bug. Also pins that a fractional mantissa is exact: `3.35 TB/s` is
+    /// 3.35e12 on the nose, not a float-rounded neighbour.
+    #[test]
+    fn si_and_iec_spellings_are_distinct_and_fractions_are_exact() {
+        use crate::syntax::ByteSize;
+        let si = parse_memory_decl("Memory A { capacity: 1 GB }");
+        let iec = parse_memory_decl("Memory A { capacity: 1 GiB }");
+        assert_eq!(si.capacity, Some(ByteSize(1_000_000_000)));
+        assert_eq!(iec.capacity, Some(ByteSize(1_073_741_824)));
+        assert_ne!(si.capacity, iec.capacity);
+
+        let d = parse_memory_decl("Memory B { bandwidth: 3.35 TB/s }");
+        assert_eq!(d.bandwidth.unwrap().bytes, 3_350_000_000_000);
     }
 
     #[test]
     fn test_memory_decl_collected_and_indexed_in_global_env() {
         // A `Memory` decl at top level lands on `Program.memories` (not a global registry),
         // is preserved by clone_signature, and is indexed by GlobalAstEnv for sema.
-        let input = "Memory TMEM { capacity: 256 KB }\nfn main() -> i32 { return 0; }";
+        let input = "Memory TMEM { capacity: 256 KiB }\nfn main() -> i32 { return 0; }";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);

@@ -17,10 +17,10 @@
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory SMEM {
-  within: Memory::GPU_HBM, capacity: 228 KB, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::GPU_HBM, capacity: 228 KiB, granule: 1 KiB, managed: explicit, scope: sm
 }
 Memory L2 {
-  within: Memory::GPU_HBM, capacity: 60 MB, granule: 1 KB, managed: explicit, scope: device
+  within: Memory::GPU_HBM, capacity: 60 MiB, granule: 1 KiB, managed: explicit, scope: device
 }
 Topology SmemDev {
   memory: Memory::SMEM,

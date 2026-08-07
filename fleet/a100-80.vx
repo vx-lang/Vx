@@ -19,24 +19,27 @@
 // spec: NVIDIA A100 product page, 80GB SXM column (verified 2026-08-03) --
 // GPU Memory "80GB HBM2e", GPU Memory Bandwidth "2,039 GB/s".
 Memory HBM {
-  capacity: 80 GB, bandwidth: 2039 GB/s, managed: explicit, scope: device
+  capacity: 80 GiB, bandwidth: 2039 GB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Ampere Architecture Whitepaper -- 40 MB L2 cache.
 Memory L2 {
-  within: Memory::HBM, capacity: 40 MB, bandwidth: 7 TB/s, managed: cached, scope: device
+  within: Memory::HBM, capacity: 40 MiB, bandwidth: 7 TB/s, managed: cached, scope: device
 }
 
 // spec: NVIDIA Ampere Architecture Whitepaper / CUDA C Programming Guide --
 // 164 KB configurable shared memory per SM.
 Memory SMEM {
-  within: Memory::L2, capacity: 164 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
 }
 
 Topology Device {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::L2 : 40,
-  transfer Memory::L2 -> Memory::SMEM : 10
+  // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes, 128b/130b).
+  // UNVERIFIED on this SKU; the host link and its achieved bandwidth are experiment M1/M4.
+  // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
 }

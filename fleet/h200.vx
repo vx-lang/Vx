@@ -19,24 +19,28 @@
 // 4.8 TB/s. The odd capacity is the vendor figure (six stacks of 24 GB HBM3e
 // less reserved), not a typo for 144.
 Memory HBM {
-  capacity: 141 GB, bandwidth: 4.8 TB/s, managed: explicit, scope: device
+  capacity: 141 GiB, bandwidth: 4.8 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
 Memory L2 {
-  within: Memory::HBM, capacity: 50 MB, bandwidth: 12 TB/s, managed: cached, scope: device
+  within: Memory::HBM, capacity: 50 MiB, bandwidth: 12 TB/s, managed: cached, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
 // 228 KB configurable shared memory per SM.
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KB, bandwidth: 128 B/cyc, granule: 1 KB, managed: explicit, scope: sm
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
 }
 
 Topology Device {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 300,
-  transfer Memory::HBM -> Memory::L2 : 40,
-  transfer Memory::L2 -> Memory::SMEM : 10
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
+  // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
+  // a 7x difference in every host-seam prediction. Settling it is experiment M1/M4.
+  // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
 }

@@ -14,8 +14,8 @@
 // fit the 64 GB one, where the program compiles clean.
 //
 // RUN: mkdir -p %t.d
-// RUN: printf 'Memory HBM {\n  capacity: 1 MB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\nTopology Dev {\n  memory: Memory::HBM,\n  visible: [Memory::HBM],\n  transfer Memory::CPU_DRAM -> Memory::HBM : 300\n}\n' > %t.d/small.vx
-// RUN: sed 's/capacity: 1 MB/capacity: 64 GB/' %t.d/small.vx > %t.d/big.vx
+// RUN: printf 'Memory HBM {\n  capacity: 1 MiB, bandwidth: 2 TB/s, managed: explicit, scope: device\n}\nTopology Dev {\n  memory: Memory::HBM,\n  visible: [Memory::HBM],\n  transfer Memory::CPU_DRAM -> Memory::HBM : 300\n}\n' > %t.d/small.vx
+// RUN: sed 's/capacity: 1 MiB/capacity: 64 GiB/' %t.d/small.vx > %t.d/big.vx
 //
 // Rejected against the small SKU...
 // RUN: not vxc --machine %t.d/small.vx %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s

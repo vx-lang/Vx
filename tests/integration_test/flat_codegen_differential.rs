@@ -2172,8 +2172,8 @@ fn flat_carries_subspace_scheduling_metadata() {
     // so the two tiles land at offset 0 and offset 65536, 4 slots each — the same values the AST path
     // assigns (verified byte-identical against `--legacy-codegen`). Mirrors `subspace_schedule.vx`.
     let src = "\
-        Memory GPU_HBM { capacity: 40 GB, bandwidth: 3 TB/s } \
-        Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KB, granule: 16 KB, scope: sm } \
+        Memory GPU_HBM { capacity: 40 GiB, bandwidth: 3 TB/s } \
+        Memory SMEM { within: Memory::GPU_HBM, capacity: 228 KiB, granule: 16 KiB, scope: sm } \
         fn main() -> i32 { \
             let a = Tensor<f32>([128, 128]); \
             let b = Tensor<f32>([128, 128]); \

@@ -10,10 +10,10 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
 Memory SmemBlk {
-  capacity: 228 KB
+  capacity: 228 KiB
 }
 Memory TooBig {
-  within: Memory::SmemBlk, capacity: 512 KB
+  within: Memory::SmemBlk, capacity: 512 KiB
 }
 
 fn main() -> i32 {
