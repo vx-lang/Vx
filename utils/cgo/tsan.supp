@@ -1,0 +1,31 @@
+# ThreadSanitizer suppressions. The goal is an empty file; every entry is a
+# claim that a report is not ours, and needs to say why.
+#
+# ---------------------------------------------------------------------------
+# crossbeam-epoch / crossbeam-deque, reached only through rayon's work-stealing
+# scheduler.
+#
+# What the reports look like: the racing accesses are inside
+# `crossbeam_epoch::internal::Global::{collect,try_advance}`,
+# `crossbeam_epoch::deferred::Deferred::call` (epoch-based reclamation freeing a
+# `Local` or a `SealedBag`) and `crossbeam_deque::Stealer::steal`. Vx symbols
+# appear in the stacks only as the frame that *enters* rayon --
+# `vxc::resolver::build_symbol_map` calling `par_iter`, a test building a pool --
+# never as a participant in the racing access itself. No Vx datum is involved.
+#
+# Why they are not real: crossbeam-epoch synchronises with
+# `atomic::fence(SeqCst)` paired with relaxed loads, and TSan does not fully
+# model `atomic_thread_fence` -- it misses the happens-before edge the fence
+# establishes and reports the pair as a race. This is a known and long-standing
+# limitation of the detector, not of the library.
+#
+# Why suppressing is safe *here*: Vx does not use crossbeam directly. It is
+# reachable only via rayon, so an entry scoped to crossbeam cannot hide a race
+# in compiler code.
+#
+# Note the shape of the evidence: these reports appear when running the **test
+# suite**, which builds and tears down a rayon pool per test and so hammers
+# epoch reclamation. The compiler sweep itself -- 300 modules at 1/8/32/48
+# threads, both interning modes -- reports nothing at all, suppressions or not.
+race:crossbeam_epoch
+race:crossbeam_deque
