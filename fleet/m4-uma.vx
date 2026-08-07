@@ -1,0 +1,75 @@
+//===- m4-uma.vx - Apple M4 (unified memory) machine model ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The Tier-0 machine: the development Mac, for the zero-cost protocol shakedown
+// (vx-review#13) before any cluster is rented. Its job is not to produce data
+// about Apple silicon -- it is to run predict -> measure -> compare end to end so
+// the harness's own bugs surface here rather than on a metered box.
+//
+// This SKU is interesting precisely because it is the degenerate case. There is
+// no discrete device memory: CPU and GPU address the same physical DRAM, so the
+// host<->device "transfer" that dominates every other fleet file is, here, a
+// memcpy within one memory. A model that cannot say something sensible about a
+// seam whose cost is nearly zero is a model that will mispredict the interesting
+// seams too.
+//
+// It also declares the shared vocabulary (`HBM` / `L2` / `SMEM`) like every other
+// fleet file, so the same admission program runs against it unchanged -- which is
+// itself part of what the shakedown checks.
+//
+//===----------------------------------------------------------------------===//
+
+// spec: Apple M4 (MacBook Air, T8132), 10-core (4P+6E), 32 GiB unified memory as
+// configured on the development machine (`sysctl hw.memsize` = 34359738368).
+// UNVERIFIED bandwidth: Apple publishes 120 GB/s for the base M4 (LPDDR5X-7500 on
+// a 128-bit bus). That is the *hardware peak* for the memory system as a whole,
+// not an achievable single-threaded copy rate, and the gap between the two is
+// exactly what experiment M1 measures. Declared as the peak on purpose: the
+// shakedown's error table is only informative if the declared figure is the
+// vendor's claim rather than a number already fitted to the measurement.
+//
+// Named `HBM` rather than `UNIFIED` to keep the fleet's shared space vocabulary
+// (fleet/README.md): one program text, every SKU, swap the flag.
+Memory HBM {
+  capacity: 32 GiB, bandwidth: 120 GB/s, managed: explicit, scope: device
+}
+
+// spec: Apple M4 P-core cluster L2 = 16 MiB (`sysctl hw.perflevel0.l2cachesize`
+// = 16777216, read off the development machine rather than transcribed).
+// UNVERIFIED bandwidth: Apple publishes no L2 bandwidth figure. 400 GB/s is a
+// placeholder of the right order for a shared cluster L2; M1 measures it, and
+// until then no claim rests on it.
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, bandwidth: 400 GB/s, managed: cached, scope: device
+}
+
+// The Apple GPU's threadgroup memory. spec: Apple 9-family threadgroup memory
+// limit is 32 KiB per threadgroup. UNVERIFIED bandwidth: declared in B/cyc to
+// match how every other fleet file describes on-chip scratchpad, so a program
+// that places a tile here is costed in the same units across SKUs.
+Memory SMEM {
+  within: Memory::L2, capacity: 32 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+}
+
+// The degenerate seam. On a discrete part this edge is PCIe or C2C and dominates
+// the staging cost; here the "transfer" is a memcpy inside one physical memory,
+// so its rate is a *copy* rate rather than a link rate.
+//
+// UNVERIFIED, and deliberately declared as the same 120 GB/s peak: the shakedown
+// exists to measure how far that is from the truth. A memcpy both reads and
+// writes, so it moves 2 bytes of traffic per byte copied and cannot exceed half
+// the peak even in principle -- the error table should show the model
+// over-predicting throughput by at least 2x, and if it does not, the harness is
+// wrong rather than the hardware surprising. That is the pre-registered
+// expectation this dry run is testing.
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
+}

@@ -35,6 +35,7 @@ const FLEET: &[&str] = &[
     "fleet/b200.vx",
     "fleet/h100-sxm.vx",
     "fleet/h200.vx",
+    "fleet/m4-uma.vx",
     "fleet/mi300x.vx",
     "fleet/node-8gpu.vx",
 ];

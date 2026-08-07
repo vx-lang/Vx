@@ -19,3 +19,6 @@ AGENTS.md
 .claude/settings.local.json
 temp_hover.vx
 temp.vx
+
+# Shakedown measurement binary (built by utils/memalg/run_shakedown.sh)
+utils/memalg/measure_link
