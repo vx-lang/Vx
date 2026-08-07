@@ -13,11 +13,14 @@
 //
 //===----------------------------------------------------------------------===//
 use std::fs;
-use std::path::PathBuf;
 
 #[test]
 fn test_pipeline_architecture_hooks() -> Result<(), String> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/modules/architecture_test");
+    // A temp dir keyed by process id, not a fixed path inside the repo (#304). Two concurrent
+    // `cargo test` runs -- an editor's and a terminal's, or a TSan build alongside a normal one --
+    // otherwise share one directory: the second `remove_dir_all` deletes the first run's inputs
+    // mid-compile, and the failure looks like a compiler bug rather than a harness bug.
+    let dir = std::env::temp_dir().join(format!("vx_architecture_test_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("Failed to create test dir");
 
@@ -97,7 +100,8 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
 /// `build_symbol_map` unit test in `resolver.rs`.
 #[test]
 fn compile_pipeline_gid_stream_is_deterministic() -> Result<(), String> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/modules/determinism_test");
+    // Process-keyed for the same reason as above (#304).
+    let dir = std::env::temp_dir().join(format!("vx_determinism_test_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("Failed to create test dir");
 

@@ -2350,6 +2350,97 @@ mod gid_stream_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The argument list a generic-instance parameter type keys its identity on, as
+    /// `emit_type_gid` would compute it.
+    fn instantiation_key(src: &str, fn_name: &str) -> Vec<crate::gid::TypeId> {
+        // Resolution first, as the pipeline does it. `nominal_gid` reads the GID `resolve_names`
+        // attaches, and answers `None` for a nominal that has none -- which is the right answer
+        // (an unresolvable argument list must fail rather than silently shrink, which is the whole
+        // point of #305) but means a parse-only module would test the wrong thing.
+        let mut mods = vec![parse_only("m", src)];
+        name_resolution_phase(&mut mods, Schedule::Sequential);
+        let m = &mods[0];
+        let ty = &m
+            .functions
+            .iter()
+            .find(|f| f.name.as_ref() == fn_name)
+            .unwrap_or_else(|| panic!("no fn {fn_name}"))
+            .params[0]
+            .1;
+        let syntax::Type::GenericInstance(_, args) = ty else {
+            panic!("expected a generic instance parameter, got {ty:?}");
+        };
+        args.iter()
+            .map(|a| {
+                nominal_gid(a).unwrap_or_else(|| {
+                    panic!(
+                        "argument {a:?} has no identity -- nominal_gid is \
+                                               supposed to be total for anything that can appear \
+                                               in an argument list"
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// #305: a *nested* generic argument is part of the instantiation's identity.
+    ///
+    /// `nominal_gid` used to answer `None` for a `GenericInstance` argument, and the call site
+    /// dropped it with `filter_map` — so `Foo<Bar<i32>>` and `Foo<Baz<i32>>` both interned the
+    /// **empty** argument list and shared one arena entry. Two different types with one identity is
+    /// a miscompile waiting for a program that stores through one and loads through the other, and
+    /// nothing downstream could have caught it: by then they are the same GID.
+    ///
+    /// Asserting on the argument list rather than on the final GID is deliberate. That list *is*
+    /// the interner's key (`intern_generic` and `deduplication_phase` both key on `Vec<TypeId>`),
+    /// so this is the equality that decides whether two instantiations collide, before any mode's
+    /// choice of arena index or digest enters into it.
+    #[test]
+    fn nested_generic_arguments_are_part_of_instantiation_identity() {
+        let src = "struct Bar<T> { p: *mut T }\n\
+                   struct Baz<T> { p: *mut T }\n\
+                   struct Foo<T> { p: *mut T }\n\
+                   fn f(a: Foo<Bar<i32>>) -> i32 { return 0; }\n\
+                   fn g(a: Foo<Baz<i32>>) -> i32 { return 0; }\n";
+        let f = instantiation_key(src, "f");
+        let g = instantiation_key(src, "g");
+        assert_eq!(f.len(), 1, "one argument each");
+        assert_ne!(
+            f, g,
+            "Foo<Bar<i32>> and Foo<Baz<i32>> produced the same interner key"
+        );
+    }
+
+    /// #309: a *const* generic argument is part of the instantiation's identity.
+    ///
+    /// Same failure as #305 by a different route: `Type::Const` had no `nominal_gid` arm, so
+    /// `Grid<i32, 2, 3>` and `Grid<i32, 4, 5>` keyed on `[i32]` alone. Two differently-sized grids
+    /// sharing one identity is the shape of bug that reads past the end of an allocation.
+    ///
+    /// The rendering is span-free on purpose: `Type::Const`'s `Mangle` arm uses
+    /// `format!("{:?}", expr)`, whose `Debug` output embeds source spans, so the *same* constant
+    /// written at two source locations would otherwise hash differently — the opposite error, and a
+    /// far more confusing one.
+    #[test]
+    fn const_generic_arguments_are_part_of_instantiation_identity() {
+        let src = "struct Grid<T, const R : i32, const C : i32> { p: *mut T }\n\
+                   fn f(a: Grid<i32, 2, 3>) -> i32 { return 0; }\n\
+                   fn g(a: Grid<i32, 4, 5>) -> i32 { return 0; }\n\
+                   fn h(a: Grid<i32, 2, 3>) -> i32 { return 0; }\n";
+        let f = instantiation_key(src, "f");
+        let g = instantiation_key(src, "g");
+        let h = instantiation_key(src, "h");
+        assert_ne!(
+            f, g,
+            "Grid<i32,2,3> and Grid<i32,4,5> produced the same interner key"
+        );
+        assert_eq!(
+            f, h,
+            "the same instantiation written twice must produce the same key -- if this fails the \
+             const rendering is not span-free"
+        );
+    }
+
     /// The determinism claim that actually matters: the **compiler's output**.
     ///
     /// The GID and HIR stream checks either side of this one assert that internal state is

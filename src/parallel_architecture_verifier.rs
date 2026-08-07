@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 #[cfg(debug_assertions)]
 pub mod verify_arch {
-    use crate::gid::{TypeId, INDEX_MASK, IS_GENERIC_INST_FLAG, LOCAL_DEFERRED_BIT};
+    use crate::gid::{TypeId, Word2, Word2Arena, Word2Scope, LOCAL_DEFERRED_BIT};
     use crate::session::{GlobalSession, LocalWorkerState};
     use crate::syntax;
     use rayon::prelude::*;
@@ -52,17 +52,28 @@ pub mod verify_arch {
             );
 
             // INVARIANT 2: Arena Bounding
+            //
+            // Routed through `classify_word2` rather than masking the words here. This was the last
+            // hand-rolled word-2 decoder in the file (#308/#193): re-deriving the index and the
+            // arena from raw bits duplicates the codec, and a duplicated codec is one that drifts --
+            // the escape-hatch and digest encodings are invisible to a bare `& INDEX_MASK`, so this
+            // read would silently treat a content-addressed digest as an arena index the moment the
+            // guard above stopped excluding it.
             for gid in &worker.local_type_stream {
-                if (gid.words[3] & LOCAL_DEFERRED_BIT) != 0 {
-                    let index = (gid.words[2] & INDEX_MASK) as usize;
-                    let arena_len = if (gid.words[3] & IS_GENERIC_INST_FLAG) != 0 {
-                        worker.local_generics_offsets.len()
-                    } else {
-                        worker.local_slow_path_arena.len()
+                if let Word2::Index {
+                    index,
+                    arena,
+                    scope: Word2Scope::Local,
+                } = gid.classify_word2()
+                {
+                    let arena_len = match arena {
+                        Word2Arena::Generics => worker.local_generics_offsets.len(),
+                        Word2Arena::SlowMeta => worker.local_slow_path_arena.len(),
                     };
                     assert!(
-                        index < arena_len,
-                        "FATAL: Local deferred index out of bounds."
+                        (index as usize) < arena_len,
+                        "FATAL: Local deferred index out of bounds ({index} >= {arena_len} in the \
+                         {arena:?} arena)."
                     );
                 }
             }
