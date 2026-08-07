@@ -7,7 +7,7 @@ were *published* before being caught.
 Tracking: #300 (CGO'27). Issues opened this session: #311–#318. Closed: #304, #305, #308, #309,
 #311, #312 (retracted), #314, #315, #316.
 
----
+______________________________________________________________________
 
 ## Headline
 
@@ -24,7 +24,7 @@ verified rather than asserted.**
 | race-freedom | a CI grep for lock keywords | ThreadSanitizer, with a positive control |
 | speedup | unquotable | **5.89× at 48 threads**, knee at ~32 |
 
----
+______________________________________________________________________
 
 ## Part 1 — The measurement failures
 
@@ -153,7 +153,7 @@ under `setarch -R`.
   plus fixing the serial work. The confirmation ladder later showed the knee at ~32 cores, which
   vindicates the revision.
 
----
+______________________________________________________________________
 
 ## Part 2 — What landed
 
@@ -286,7 +286,7 @@ driver, distinct from `libclang-22-dev`, and `build.rs` shells out to `clang++`)
 dependencies (`-lzstd` et al, named by nothing); and a thread ladder of powers of two that skipped
 the machine's own core count.
 
----
+______________________________________________________________________
 
 ## Part 3 — The numbers
 
@@ -309,15 +309,15 @@ Three readings:
 1. **The knee is at ~32 cores.** 32→48 buys 1.5% against hardware that goes 27× → 34×. That is the
    ~10% serial fraction made visible, and it is the argument against reaching for a bigger machine:
    the ceiling is ours.
-2. **The two interning modes are indistinguishable**, within 1% at every point. Content-addressed
+1. **The two interning modes are indistinguishable**, within 1% at every point. Content-addressed
    identity's case is the structural one #307 makes — no barrier, no patch, determinism across any
    scheduling or process boundary. **It never needed a speed claim and does not have one.** The
    earlier claim that it did was §1.1.
-3. **The parallel phases are done.** `codegen:emit` reaches 39.6×, `parse` 29.6×, `type_check` 20.4×.
+1. **The parallel phases are done.** `codegen:emit` reaches 39.6×, `parse` 29.6×, `type_check` 20.4×.
    What remains is serial: reassembly 56 ms, teardown 52 ms, unaccounted 36 ms, `registry_freeze`
    27 ms, `env_build` 20 ms.
 
----
+______________________________________________________________________
 
 ## Part 4 — Where to pick up
 
@@ -338,5 +338,5 @@ Three readings:
 
 1. Pair the comparison inside the shared nuisance variable, and flag any row that is slower than a
    row with fewer threads. Tight variance is not accuracy (§1.1).
-2. Make a measurement prove it can detect what it is looking for before believing its silence —
+1. Make a measurement prove it can detect what it is looking for before believing its silence —
    the positive control in `tsan.sh` is the general form (§1.6).
