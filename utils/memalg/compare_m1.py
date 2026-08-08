@@ -123,7 +123,11 @@ def main():
     print()
     by_seam = defaultdict(list)
     for r in rows:
-        if r["variant"] in ("", "pinned", "l2_resident", "one_block"):
+        # Variants counted in the per-seam summary. A variant missing from this list silently
+        # drops its whole seam from the summary -- renaming the L2 note to l2_read_l1_bypassed did
+        # exactly that on the first H100 run, and the seam just stopped being mentioned. Anything
+        # measured that is not an explicitly excluded control belongs here.
+        if r["variant"] not in ("pageable",):
             by_seam[r["seam"]].append(r["rel_err_pct"])
     for seam, errs in sorted(by_seam.items()):
         lo, hi = min(errs), max(errs)

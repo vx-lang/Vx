@@ -65,8 +65,12 @@ mkdir -p "$OUT"
     echo "sku=$SKU"
     echo "host=$(hostname)"
     echo "uname=$(uname -a)"
-    echo "commit=$(git rev-parse HEAD)"
-    echo "dirty=$(git status --porcelain | wc -l | tr -d ' ')"
+    # Both repos are private, so a rented box cannot clone them without being handed a credential.
+    # Shipping the harness as loose files instead means this may not be a git checkout -- in which
+    # case the operator states the commit via VX_COMMIT rather than the provenance silently going
+    # blank. An empty commit field in a results directory is indistinguishable from a lost one.
+    echo "commit=${VX_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN_NOT_A_GIT_CHECKOUT)}"
+    echo "dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
     echo "predictions_dir=$PRED"
     echo "predictions_commit=$(git -C "$PRED" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "predictions_tag=$(git -C "$PRED" describe --tags --exact-match 2>/dev/null || echo UNTAGGED)"

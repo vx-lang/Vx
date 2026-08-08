@@ -23,9 +23,10 @@
 // Build:  nvcc -O3 -arch=sm_90 measure_device.cu -o measure_device
 // Run:    ./measure_device > measured.csv
 //
-// Compiles clean under nvcc 13.2 for sm_80/90/90a/100/120. It has NOT been executed against a
-// real device yet -- the box it was built on has the toolkit but no GPU -- so the numbers it
-// produces are unverified even though the code that produces them builds.
+// Compiles clean under nvcc 13.2 and 12.8 for sm_80/90/90a/100/120, and has been RUN against an
+// H100 80GB HBM3 (2026-08-08). Two instrument defects that run exposed, both of which produced
+// confident wrong numbers rather than errors, are fixed here and described at their sites:
+// kernel-launch overhead swamping the on-die seams, and grid-stride re-reading serving out of L1.
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -62,11 +63,28 @@ static double median_of(std::vector<double> &v, double *q1, double *q3) {
 // ---- seam 2: L2-resident streaming read ------------------------------------------------------
 // Grid-stride sum over a buffer sized to FIT in L2, so the traffic is L2->SM and not HBM->L2.
 // `float4` because a 128-bit access is what saturates the path; a scalar loop measures issue rate.
-__global__ void l2_stream(const float4 *__restrict__ src, size_t n4, float *__restrict__ sink) {
+// `iters` re-reads the buffer inside the kernel. Without it the measurement is pure launch
+// overhead: a ~10 us floor swamps a 16 MiB L2 read that should take ~1.4 us, and the reported
+// time is then flat across a 4096x size range -- which is exactly what the first run on an H100
+// showed. Amortising is the correct comparison, not a flattering one: the model predicts the time
+// to move bytes, and kernel launch is not part of what it claims.
+//
+// Float addition is not associative, so the compiler cannot fold the repeated passes into a
+// multiply; the loads have to happen every iteration.
+__global__ void l2_stream(const float4 *__restrict__ src, size_t n4, float *__restrict__ sink,
+                          int iters) {
   float acc = 0.f;
-  for (size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += gridDim.x * blockDim.x) {
-    float4 v = src[i];
-    acc += v.x + v.y + v.z + v.w;
+  for (int it = 0; it < iters; ++it) {
+    for (size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += gridDim.x * blockDim.x) {
+      // __ldcg = cache-global: the line is cached in L2 but NOT in L1. Without this the
+      // amortisation defeats itself. Under grid-stride re-reading each block's slice is only
+      // total/num_blocks -- about 12 KB even for a 48 MiB buffer -- so a plain load re-reads out
+      // of L1 no matter how large the buffer is. Measured on an H100 that reported a *rising*
+      // 17.4 -> 29.2 TB/s with size (L1 bandwidth plus parallelism scaling) where the L1-bypassed
+      // walk is flat at ~7.5 TB/s, which is what a bandwidth limit actually looks like.
+      float4 v = __ldcg(&src[i]);
+      acc += v.x + v.y + v.z + v.w;
+    }
   }
   // Keep the loads live without a global reduction: only thread 0 of block 0 can ever store, and
   // the compiler cannot prove it does not.
@@ -215,28 +233,55 @@ int main() {
       size_t n4 = bytes / sizeof(float4);
 
       int block = 256;
-      int grid = p.multiProcessorCount * 32;
+      // Size the grid to the WORK, not to the device. The first H100 run launched 4224 blocks of
+      // 256 threads to read a 4 KiB buffer of 256 float4s, so 99.98% of the threads existed only
+      // to be scheduled. Cap at 32 waves for the buffers big enough to want them.
+      size_t want_blocks = (n4 + block - 1) / block;
+      int max_blocks = p.multiProcessorCount * 32;
+      int grid = (int)(want_blocks < (size_t)max_blocks ? want_blocks : (size_t)max_blocks);
+      if (grid < 1) grid = 1;
+
       cudaEvent_t a, b;
       CK(cudaEventCreate(&a));
       CK(cudaEventCreate(&b));
       // Warm-up doubles as the residency step: it pulls the buffer into L2 so the timed reps
       // measure L2->SM and not the cold HBM fill.
-      l2_stream<<<grid, block>>>(d, n4, sink);
+      l2_stream<<<grid, block>>>(d, n4, sink, 1);
       CK(cudaDeviceSynchronize());
 
-      std::vector<double> s;
-      for (int r = 0; r < REPS; ++r) {
+      // Calibrate `iters` until one batch runs >= 5 ms, the same discipline the UMA shakedown
+      // uses. Below that the launch/sync floor is a first-order term rather than a rounding error.
+      int iters = 1;
+      for (;;) {
         CK(cudaEventRecord(a));
-        l2_stream<<<grid, block>>>(d, n4, sink);
+        l2_stream<<<grid, block>>>(d, n4, sink, iters);
         CK(cudaEventRecord(b));
         CK(cudaEventSynchronize(b));
         float ms = 0.f;
         CK(cudaEventElapsedTime(&ms, a, b));
-        s.push_back((double)ms * 1e9);
+        if (ms >= 5.0f || iters >= (1 << 22)) break;
+        int grow = (int)(6.0f / (ms > 0.01f ? ms : 0.01f)) + 1;
+        iters = iters * (grow > 2 ? grow : 2);
+      }
+
+      std::vector<double> s;
+      for (int r = 0; r < REPS; ++r) {
+        CK(cudaEventRecord(a));
+        l2_stream<<<grid, block>>>(d, n4, sink, iters);
+        CK(cudaEventRecord(b));
+        CK(cudaEventSynchronize(b));
+        float ms = 0.f;
+        CK(cudaEventElapsedTime(&ms, a, b));
+        s.push_back((double)ms * 1e9 / (double)iters);  // ps for ONE pass over the buffer
       }
       double q1, q3, med = median_of(s, &q1, &q3);
-      printf("HBM->L2,%zu,ps,%.0f,%.0f,%.0f,%.2f,%d,l2_resident\n", bytes, med, q1, q3,
-             med > 0 ? (double)bytes / (med / 1000.0) : 0.0, REPS);
+      // L1 is bypassed, so this is an L2 read and is labelled as one. Small buffers still cannot
+      // saturate -- the grid is sized to the work, so a 4 KiB cell runs one block -- and that is a
+      // real property of a small transfer, not an instrument artefact.
+      const char *note = "l2_read_l1_bypassed";
+      fprintf(stderr, "  HBM->L2 %zu B: grid=%d iters=%d\n", bytes, grid, iters);
+      printf("HBM->L2,%zu,ps,%.0f,%.0f,%.0f,%.2f,%d,%s\n", bytes, med, q1, q3,
+             med > 0 ? (double)bytes / (med / 1000.0) : 0.0, REPS, note);
       fflush(stdout);
 
       CK(cudaEventDestroy(a));
