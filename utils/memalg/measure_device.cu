@@ -23,8 +23,9 @@
 // Build:  nvcc -O3 -arch=sm_90 measure_device.cu -o measure_device
 // Run:    ./measure_device > measured.csv
 //
-// NOTE: this file has not been compiled -- it was written on a machine with no CUDA toolchain.
-// `run_m1.sh` builds it as its first step and stops on failure rather than proceeding.
+// Compiles clean under nvcc 13.2 for sm_80/90/90a/100/120. It has NOT been executed against a
+// real device yet -- the box it was built on has the toolkit but no GPU -- so the numbers it
+// produces are unverified even though the code that produces them builds.
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -101,13 +102,20 @@ int main() {
   // Printed to stderr so it lands in the log next to the data without polluting the CSV. Model
   // error is charged against this separately from the declared peak: the gap between achievable
   // and declared belongs to the declaration, not to the model.
+  // CUDA 13 removed cudaDeviceProp::clockRate and ::memoryClockRate. The attribute queries carry
+  // the same values in the same units (kHz) and exist on 11.x/12.x too, so this builds against
+  // whatever toolkit the rented box happens to ship.
+  int mem_clock_khz = 0, sm_clock_khz = 0;
+  CK(cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, dev));
+  CK(cudaDeviceGetAttribute(&sm_clock_khz, cudaDevAttrClockRate, dev));
+
   fprintf(stderr, "GPU: %s (sm_%d%d)\n", p.name, p.major, p.minor);
   fprintf(stderr, "  declared HBM peak    : %.1f GB/s (%d-bit @ %.0f MHz effective)\n",
-          2.0 * p.memoryClockRate * (p.memoryBusWidth / 8) / 1.0e6, p.memoryBusWidth,
-          p.memoryClockRate / 1000.0);
+          2.0 * mem_clock_khz * (p.memoryBusWidth / 8) / 1.0e6, p.memoryBusWidth,
+          mem_clock_khz / 1000.0);
   fprintf(stderr, "  L2 cache             : %d MiB\n", p.l2CacheSize >> 20);
   fprintf(stderr, "  SMEM per block (opt) : %zu KiB\n", p.sharedMemPerBlockOptin >> 10);
-  fprintf(stderr, "  SM clock             : %.0f MHz\n", p.clockRate / 1000.0);
+  fprintf(stderr, "  SM clock             : %.0f MHz\n", sm_clock_khz / 1000.0);
   fprintf(stderr, "  SM count             : %d\n", p.multiProcessorCount);
 
   printf("seam,bytes,unit,median,q1,q3,derived_rate_GBps,reps,note\n");
@@ -157,7 +165,12 @@ int main() {
       CK(cudaEventDestroy(a));
       CK(cudaEventDestroy(b));
       CK(cudaFree(d));
-      pinned ? CK(cudaFreeHost(h)) : (void)free(h);
+      // CK expands to a do{}while(0) statement and cannot appear in a ternary.
+      if (pinned) {
+        CK(cudaFreeHost(h));
+      } else {
+        free(h);
+      }
     }
   }
 

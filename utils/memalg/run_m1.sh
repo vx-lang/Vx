@@ -44,6 +44,17 @@ fi
 command -v nvcc >/dev/null || { echo "FATAL: nvcc not found. Run utils/memalg/setup_h100.sh" >&2; exit 1; }
 command -v nvidia-smi >/dev/null || { echo "FATAL: nvidia-smi not found" >&2; exit 1; }
 
+# nvidia-smi being INSTALLED is not the same as a GPU being present. A GPU-AMI box booted on a
+# CPU-only instance type has the binary, the toolkit and the DKMS module and still has no device --
+# in which case compute_cap comes back empty and the build below would silently become `-arch=sm_`.
+# Caught exactly that way on a c4.8xlarge running a GPU AMI.
+nvidia-smi -L >/dev/null 2>&1 || {
+    echo "FATAL: nvidia-smi is installed but cannot talk to a GPU." >&2
+    echo "  Either the driver module is not loaded, or this instance type has no GPU attached." >&2
+    echo "  Check: lspci | grep -i nvidia   (empty => wrong instance type, not a driver problem)" >&2
+    exit 1
+}
+
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="$ROOT/utils/memalg/results/m1-$SKU-$STAMP"
 mkdir -p "$OUT"
@@ -105,7 +116,11 @@ fi
 
 # ---- build + measure --------------------------------------------------------------------------
 echo "=== building instrument ==="
-ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
+ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
+case "$ARCH" in
+    [0-9][0-9]*) ;;
+    *) echo "FATAL: could not derive compute capability (got '$ARCH')" >&2; exit 1 ;;
+esac
 nvcc -O3 -arch="sm_${ARCH}" utils/memalg/measure_device.cu -o utils/memalg/measure_device
 echo "  built for sm_${ARCH}"
 

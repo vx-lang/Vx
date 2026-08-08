@@ -21,7 +21,23 @@ set -euo pipefail
 
 echo "=== what is already here ==="
 uname -a
-command -v nvidia-smi >/dev/null && nvidia-smi || { echo "FATAL: no nvidia-smi -- not a GPU box"; exit 1; }
+command -v nvidia-smi >/dev/null || { echo "FATAL: nvidia-smi not installed -- not a GPU image"; exit 1; }
+if ! nvidia-smi; then
+    # A GPU AMI on a CPU-only instance type has the toolkit, the driver package and the DKMS
+    # module, and no device. Distinguishing that from a broken driver is the difference between
+    # "relaunch on the right instance type" and "rebuild the kernel module", so check the bus.
+    echo
+    echo "FATAL: nvidia-smi is installed but cannot talk to a driver."
+    if lspci 2>/dev/null | grep -qi nvidia; then
+        echo "  A GPU IS on the PCI bus -- this is a driver problem."
+        echo "  Try: sudo modprobe nvidia   (or rebuild DKMS for $(uname -r))"
+    else
+        echo "  NO GPU on the PCI bus -- this instance type has no GPU attached."
+        echo "  This is not a driver problem. Relaunch on a GPU instance type"
+        echo "  (p5.* for H100, p5e/p5en for H200, p4d/p4de for A100)."
+    fi
+    exit 1
+fi
 echo
 
 CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)
