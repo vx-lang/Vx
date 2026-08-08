@@ -73,7 +73,14 @@ def harvest(vxc, machine, dim, target, workdir):
     if not os.path.exists(js):
         return {"harvest_error": (proc.stderr or proc.stdout).strip()[:400]}
     with open(js) as f:
-        return json.load(f)
+        rec = json.load(f)
+    # The record names the probe by its absolute path, which is wherever this ran. Left in, the
+    # frozen artifact is not byte-reproducible (regenerating elsewhere diffs on every file) and it
+    # commits a local filesystem path into the paper repo. Replaced with the logical cell name,
+    # which is the only part that identifies anything.
+    if "file" in rec:
+        rec["file"] = f"probe_{dim}_{target}.vx"
+    return rec
 
 
 def main():
