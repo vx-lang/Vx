@@ -129,14 +129,33 @@ int main() {
       size_t bytes = SIZES[i];
       char *h = nullptr;
       void *d = nullptr;
+      // Report every refused allocation. A silent `continue` here would drop the PINNED rows --
+      // the headline measurement -- and the run would still exit 0 with a plausible-looking table.
+      // Containers routinely cap locked memory (`ulimit -l`), so this is a live failure mode, not
+      // a theoretical one.
       if (pinned) {
-        if (cudaHostAlloc((void **)&h, bytes, cudaHostAllocDefault) != cudaSuccess) continue;
+        cudaError_t e = cudaHostAlloc((void **)&h, bytes, cudaHostAllocDefault);
+        if (e != cudaSuccess) {
+          fprintf(stderr, "  SKIP pinned %zu B: %s (locked-memory limit? check `ulimit -l`)\n",
+                  bytes, cudaGetErrorString(e));
+          continue;
+        }
       } else {
         h = (char *)malloc(bytes);
-        if (!h) continue;
+        if (!h) {
+          fprintf(stderr, "  SKIP pageable %zu B: host malloc failed\n", bytes);
+          continue;
+        }
       }
-      if (cudaMalloc(&d, bytes) != cudaSuccess) {
-        pinned ? (void)cudaFreeHost(h) : free(h);
+      cudaError_t de = cudaMalloc(&d, bytes);
+      if (de != cudaSuccess) {
+        fprintf(stderr, "  SKIP %s %zu B: cudaMalloc: %s\n", pinned ? "pinned" : "pageable", bytes,
+                cudaGetErrorString(de));
+        if (pinned) {
+          CK(cudaFreeHost(h));
+        } else {
+          free(h);
+        }
         continue;
       }
       memset(h, 0x5a, bytes);

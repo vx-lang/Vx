@@ -137,19 +137,28 @@ def main():
     pin = {r["bytes"]: r["measured"] for r in rows if r["variant"] == "pinned"}
     page = {r["bytes"]: r["measured"] for r in rows if r["variant"] == "pageable"}
     both = sorted(set(pin) & set(page))
-    if both:
-        ratios = [page[b] / pin[b] for b in both if pin[b] > 0]
-        if ratios:
-            worst = max(ratios)
-            print()
-            if worst < 1.05:
-                print(
-                    f"!! CONTROL FAILED: pageable is at most {worst:.2f}x pinned. These paths "
-                    "differ on real hardware; if the instrument cannot tell them apart it is not "
-                    "resolving transfer time. Do not cite this run."
-                )
-            else:
-                print(f"control OK: pageable/pinned up to {worst:.2f}x — the instrument resolves the path")
+    print()
+    ratios = [page[b] / pin[b] for b in both if pin[b] > 0]
+    if ratios:
+        worst = max(ratios)
+        if worst < 1.05:
+            print(
+                f"!! CONTROL FAILED: pageable is at most {worst:.2f}x pinned. These paths "
+                "differ on real hardware; if the instrument cannot tell them apart it is not "
+                "resolving transfer time. Do not cite this run."
+            )
+        else:
+            print(f"control OK: pageable/pinned up to {worst:.2f}x — the instrument resolves the path")
+    else:
+        # Silence would read as success. It is not: a missing control is an unrun control, and the
+        # usual cause is that every pinned allocation was refused (locked-memory limit in a
+        # container), which also removes the headline measurement.
+        print(
+            f"!! CONTROL NOT EVALUATED: {len(pin)} pinned and {len(page)} pageable cells, "
+            f"{len(both)} at a common size. The control did not run, so this run carries no "
+            "evidence that the instrument resolves transfer time. Check measured.log for SKIP "
+            "lines before citing anything."
+        )
 
     if unmatched_pred:
         print(f"\n{len(unmatched_pred)} frozen cell(s) had no measurement:")
