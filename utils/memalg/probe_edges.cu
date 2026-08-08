@@ -81,6 +81,10 @@ static Cell classify(int s, int d) {
   if (d == L_L1 && s == L_L2) return {K_KERNEL, "L1 fill from L2 on a load miss"};
   if (d == L_L1 && s == L_HBM) return {K_COMPOSITE, "load miss fills via L2; no HBM->L1 that skips L2"};
   if (d == L_L1) return {K_NONE, "stores bypass L1; L1 is not a store destination"};
+  // L1 is not a source port: anything leaving it goes through registers. SMEM is the one such
+  // path worth measuring end-to-end, because it is the control for L2->SMEM -- same destination,
+  // same code, source swapped -- which is what separates an L2-delivery limit from a write limit.
+  if (s == L_L1 && d == L_SMEM) return {K_KERNEL, "L1 hit -> REG -> SMEM, measured end-to-end"};
   if (s == L_L1 && d != L_REG) return {K_COMPOSITE, "L1 hit -> REG -> dst; L1 is not a source port"};
   if (s == L_SMEM && d == L_L1) return {K_NONE, "no SMEM->L1 path"};
   if (s == L_HBM && d == L_SMEM) return {K_KERNEL, "composite through L2, measured end-to-end"};
