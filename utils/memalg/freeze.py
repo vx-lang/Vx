@@ -87,6 +87,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vxc", default="target/release/vxc")
     ap.add_argument("--out", required=True, help="directory to write one JSON per cell into")
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="regenerate into a second directory and require the two to be byte-identical",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -166,6 +171,47 @@ def main():
             file=sys.stderr,
         )
         return 1
+
+    if args.verify:
+        # A separate process, because that is the only way to catch the class of bug this check
+        # exists for: Rust randomises `HashMap`'s hasher per process, so two harvests *within* one
+        # process share a seed and would agree even when the compiler is nondeterministic. This is
+        # not hypothetical -- `resident_sets` was emitted in hash order until this check found it,
+        # and the same compiler on the same input produced different JSON on consecutive runs.
+        import filecmp
+        import shutil
+        import tempfile
+
+        print("\n== verify: regenerating in a second process ==")
+        tmp = tempfile.mkdtemp(prefix="memalg-verify-")
+        try:
+            rc = subprocess.run(
+                [sys.executable, __file__, "--vxc", args.vxc, "--out", tmp],
+                capture_output=True,
+                text=True,
+            )
+            if rc.returncode != 0:
+                print(f"verify run failed:\n{rc.stderr}", file=sys.stderr)
+                return 1
+            shutil.rmtree(os.path.join(tmp, ".probes"), ignore_errors=True)
+            a = {f for f in os.listdir(args.out) if f.endswith(".json")}
+            b = {f for f in os.listdir(tmp) if f.endswith(".json")}
+            if a != b:
+                print(f"cell sets differ: {a ^ b}", file=sys.stderr)
+                return 1
+            match, mismatch, errors = filecmp.cmpfiles(args.out, tmp, sorted(a), shallow=False)
+            if mismatch or errors:
+                print(
+                    f"NOT REPRODUCIBLE: {len(mismatch)} of {len(a)} cells differ across runs\n"
+                    f"  first few: {mismatch[:5]}\n"
+                    "The compiler is nondeterministic; a frozen prediction that cannot be\n"
+                    "regenerated is not evidence of anything.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"   reproducible: {len(match)} cells byte-identical across processes")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     return 0
 
 

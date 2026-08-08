@@ -452,7 +452,16 @@ impl<'a> TypeChecker<'a> {
         let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
         // (space, total, cap, tile_count, overcommit, granule)
         let mut violations: Vec<(MemorySpace, u64, u64, usize, bool, Option<u64>)> = Vec::new();
-        for (space, tiles) in &placements {
+        // Sorted, because `placements` is a `HashMap` and Rust randomises its hasher per process.
+        // Iterating it directly made `resident_sets` -- and therefore `--diagnostics-json` --
+        // come out in a different order on every run: the same compiler on the same input emitted
+        // `HBM` before `L2` once and after it the next time. That is a user-visible
+        // nondeterminism in the machine-readable artifact downstream tools consume, and it broke
+        // byte-reproducibility of the frozen predictions (vx-review#14), which is where it was
+        // found. Diagnostics are also emitted in this order, so it decided their order too.
+        let mut placements: Vec<_> = placements.iter().collect();
+        placements.sort_by_key(|(space, _)| space.name());
+        for (space, tiles) in placements {
             let Some(decl) = h.descriptor(space) else {
                 continue;
             };
