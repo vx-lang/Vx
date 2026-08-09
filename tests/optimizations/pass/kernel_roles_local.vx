@@ -1,0 +1,48 @@
+//===- kernel_roles_local.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The operand roles have to resolve for tensors declared inside a function, not
+// only for parameters (#325).
+//
+// A parameter arrives as a buffer and is captured as one, so the matmul's
+// operand is the captured value itself. A local lives in a slot --
+// `memref<memref<?x?xf32>>` -- and the region loads the descriptor out of that
+// slot before use, so the captured value is the slot and the matmul's operand
+// is the load. Resolving only the first case left roles absent on every
+// ordinary program, with nothing to say why: a plugin would see `kind=matmul`,
+// find no roles, and fall back to the outlined loop nest. Silently, and
+// forever.
+//
+// Both operands here are locals, so all six launch operands are slots and the
+// roles are read through the loads. `kernel_kind_matmul.vx` covers the
+// parameter case; between them the two forms of the same program are pinned.
+//
+// The pass pipeline is pinned to the vx lowering alone, since that is where the
+// attribute is created and the later conversion consumes it.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.launch @vx_npu_kernel_0
+// CHECK: vx.kernel_kind = "matmul"
+// CHECK: vx.kernel_out_kind = "slot"
+// CHECK: vx.kernel_roles = "a:0,b:1,out:5"
+//
+// The operands really are slots, which is what makes the indirection necessary
+// rather than incidental.
+// CHECK: memref<memref<?x?xf32>>, memref<memref<?x?xf32>>
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:5\00outkind=slot\00
+
+fn local_gemm() -> f32 {
+  let mut a : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut b : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut c : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  spawn on(Topology::GPU) {
+    c = a @b;
+  }
+  return c[0][0];
+}

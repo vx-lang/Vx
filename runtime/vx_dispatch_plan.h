@@ -136,6 +136,22 @@ static inline int vx_gemm_dtype_supported(int32_t dtype) {
          dtype == VX_DTYPE_F16 || dtype == VX_DTYPE_BF16;
 }
 
+/// The descriptor an operand refers to.
+///
+/// A tensor declared inside a function lives in a slot -- storage holding a
+/// descriptor -- and is captured as that slot, while a function parameter is
+/// captured as the buffer itself. Both are ordinary operands to a matmul; the
+/// tag says which arrived, so one dereference more or less is all that
+/// separates them.
+static inline const void *vx_operand_desc(void **device_args,
+                                          const int32_t *arg_tags, int idx) {
+  const void *desc = *(const void **)device_args[idx];
+  if (desc && VX_ABI_IS_SLOT(arg_tags[idx])) {
+    desc = (const void *)vx_memref_aligned(desc);
+  }
+  return desc;
+}
+
 /// Decode a dispatch into a plan. Returns 1 when the plan is safe to execute,
 /// 0 when the caller should run the outlined kernel instead.
 static inline int vx_gemm_plan_decode(const void *payload, size_t payload_size,
@@ -185,13 +201,12 @@ static inline int vx_gemm_plan_decode(const void *payload, size_t payload_size,
   b_tag = arg_tags[bi];
   o_tag = arg_tags[oi];
 
-  /* The inputs are plain rank-2 buffers of one supported float type. */
+  /* Rank-2 operands of one supported float type. Each may have arrived as a
+     buffer or as the slot holding one; the tag says which, and the element type
+     and rank describe the buffer either way. */
   if (VX_ABI_KIND(a_tag) != VX_ABI_KIND_MEMREF ||
       VX_ABI_KIND(b_tag) != VX_ABI_KIND_MEMREF ||
       VX_ABI_KIND(o_tag) != VX_ABI_KIND_MEMREF) {
-    return 0;
-  }
-  if (VX_ABI_IS_SLOT(a_tag) || VX_ABI_IS_SLOT(b_tag)) {
     return 0;
   }
   if (VX_ABI_RANK(a_tag) != 2 || VX_ABI_RANK(b_tag) != 2 ||
@@ -205,10 +220,9 @@ static inline int vx_gemm_plan_decode(const void *payload, size_t payload_size,
     return 0;
   }
 
-  /* device_args[i] points at the pointer to the descriptor. */
-  a_desc = *(const void **)device_args[ai];
-  b_desc = *(const void **)device_args[bi];
-  o_desc = *(const void **)device_args[oi];
+  a_desc = vx_operand_desc(device_args, arg_tags, ai);
+  b_desc = vx_operand_desc(device_args, arg_tags, bi);
+  o_desc = vx_operand_desc(device_args, arg_tags, oi);
   if (!a_desc || !b_desc || !o_desc) {
     return 0;
   }
@@ -245,22 +259,18 @@ static inline int vx_gemm_plan_decode(const void *payload, size_t payload_size,
   plan->out_row_stride = plan->n;
 
   if (strcmp(outkind, "slot") == 0) {
+    /* Publishing means writing a descriptor, so there has to be storage to
+       write it into -- which is what the slot bit says the argument is. */
     if (!VX_ABI_IS_SLOT(o_tag)) {
       return 0;
     }
-    /* The slot's own descriptor is rank 0; what it points at is the storage
-       the result descriptor must be written into. */
     plan->out_kind = VX_GEMM_OUT_SLOT;
-    plan->out_desc = vx_memref_aligned(o_desc);
-    if (!plan->out_desc) {
-      return 0;
-    }
+    plan->out_desc = (void *)o_desc;
   } else if (strcmp(outkind, "buffer") == 0) {
+    /* Filling a buffer in place. Whether it was captured directly or reached
+       through the slot a local tensor lives in, o_desc describes the buffer. */
     const int64_t *o_sizes = vx_memref_sizes(o_desc);
     const int64_t *o_strides = vx_memref_strides(o_desc, 2);
-    if (VX_ABI_IS_SLOT(o_tag)) {
-      return 0;
-    }
     if (o_strides[1] != 1) {
       return 0;
     }

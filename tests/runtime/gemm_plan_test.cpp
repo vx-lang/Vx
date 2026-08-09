@@ -113,6 +113,14 @@ void test_parse_roles() {
   check(!vx_parse_roles(nullptr, &a, &b, &o), "absent roles");
 }
 
+/// A rank-0 memref: storage holding a descriptor, which is how a tensor
+/// declared inside a function is captured.
+struct SlotDesc {
+  void *allocated;
+  void *aligned;
+  int64_t offset;
+};
+
 /// The shape the compiler actually emits for `c = a @ b`: six launch operands,
 /// of which 0 and 2 are the inputs and 5 is the slot the kernel publishes
 /// through. The others are loop bounds and the fill constant.
@@ -121,12 +129,10 @@ struct SlotCase {
   std::vector<float> b_data;
   Desc2D a_desc;
   Desc2D b_desc;
-  Desc2D result_desc; // storage the slot points at
-  struct {
-    void *allocated;
-    void *aligned;
-    int64_t offset;
-  } slot_desc;
+  Desc2D result_desc; // storage the result slot points at
+  SlotDesc slot_desc;
+  SlotDesc a_slot_desc;
+  SlotDesc b_slot_desc;
 
   int64_t idx0 = 0, idx1 = 1;
   float fill = 0.0f;
@@ -134,6 +140,8 @@ struct SlotCase {
   void *a_ptr;
   void *b_ptr;
   void *slot_ptr;
+  void *a_slot_ptr;
+  void *b_slot_ptr;
   void *i0_ptr;
   void *i1_ptr;
   void *fill_ptr;
@@ -146,9 +154,7 @@ struct SlotCase {
     a_desc = make_2d(a_data.data(), m, k, k);
     b_desc = make_2d(b_data.data(), k, n, n);
     result_desc = make_2d(nullptr, 0, 0, 0);
-    slot_desc.allocated = &result_desc;
-    slot_desc.aligned = &result_desc;
-    slot_desc.offset = 0;
+    slot_desc = {&result_desc, &result_desc, 0};
 
     a_ptr = &a_desc;
     b_ptr = &b_desc;
@@ -164,6 +170,21 @@ struct SlotCase {
             VX_ABI_KIND_I64,
             VX_ABI_KIND_F32,
             VX_ABI_SLOT_TAG(VX_DTYPE_F32, 2)};
+  }
+
+  /// Present the inputs the way local tensors arrive: captured as the slots
+  /// they live in rather than as the buffers themselves. Only a function
+  /// parameter is captured directly, so this is the common case, not the
+  /// exotic one.
+  void inputs_as_locals() {
+    a_slot_desc = {&a_desc, &a_desc, 0};
+    b_slot_desc = {&b_desc, &b_desc, 0};
+    a_slot_ptr = &a_slot_desc;
+    b_slot_ptr = &b_slot_desc;
+    args[0] = &a_slot_ptr;
+    args[2] = &b_slot_ptr;
+    tags[0] = VX_ABI_SLOT_TAG(VX_DTYPE_F32, 2);
+    tags[2] = VX_ABI_SLOT_TAG(VX_DTYPE_F32, 2);
   }
 };
 
@@ -200,6 +221,59 @@ void test_slot_decode() {
         "published extents are M x N");
   check(c.result_desc.strides[0] == 4 && c.result_desc.strides[1] == 1,
         "published strides are row-major");
+}
+
+/// A tensor declared inside a function is captured as the slot it lives in,
+/// so all three operands arrive one indirection further out than a function
+/// parameter would. This is what the compiler emits for the ordinary case, and
+/// it decoding correctly is the difference between a GEMM reaching the GPU and
+/// every dispatch quietly falling back to the host.
+void test_local_operands() {
+  SlotCase c(2, 3, 4);
+  c.inputs_as_locals();
+  std::string payload =
+      payload_of("vx_npu_kernel_0", "matmul", "a:0,b:2,out:5", "slot");
+  vx_gemm_plan plan;
+
+  bool ok = vx_gemm_plan_decode(payload.data(), payload.size(), c.args.data(),
+                                c.tags.data(), (int64_t)c.args.size(), &plan);
+  check(ok, "operands reached through slots decode");
+  if (!ok) {
+    return;
+  }
+
+  check(plan.a_data == c.a_data.data() && plan.b_data == c.b_data.data(),
+        "the data pointers are the buffers, not the slots");
+  check(plan.m == 2 && plan.k == 3 && plan.n == 4,
+        "extents read through the slots");
+  check(plan.out_desc == &c.result_desc, "the result slot still resolves");
+}
+
+/// A result buffer reached through a slot is filled in place, not published:
+/// `outkind` says which of the two the kernel does, and the tag says only how
+/// the argument arrived. The two are independent.
+void test_buffer_through_slot() {
+  SlotCase c(2, 3, 4);
+  c.inputs_as_locals();
+
+  std::vector<float> out((size_t)(2 * 4), 0.0f);
+  Desc2D out_desc = make_2d(out.data(), 2, 4, 4);
+  SlotDesc out_slot = {&out_desc, &out_desc, 0};
+  void *out_slot_ptr = &out_slot;
+  c.args[5] = &out_slot_ptr;
+
+  std::string payload =
+      payload_of("vx_npu_kernel_0", "matmul", "a:0,b:2,out:5", "buffer");
+  vx_gemm_plan plan;
+
+  bool ok = vx_gemm_plan_decode(payload.data(), payload.size(), c.args.data(),
+                                c.tags.data(), (int64_t)c.args.size(), &plan);
+  check(ok, "a buffer reached through a slot decodes");
+  if (ok) {
+    check(plan.out_kind == VX_GEMM_OUT_BUFFER, "still a buffer to fill");
+    check(plan.out_data == out.data(), "the buffer the slot holds");
+    check(plan.out_desc == nullptr, "nothing to publish");
+  }
 }
 
 /// Roles are what make A and B distinguishable. With square operands the
@@ -316,15 +390,6 @@ void test_refusals() {
   }
 
   {
-    SlotCase c(2, 3, 4);
-    std::string p =
-        payload_of("vx_npu_kernel_0", "matmul", "a:0,b:2,out:5", "buffer");
-    check(!vx_gemm_plan_decode(p.data(), p.size(), c.args.data(), c.tags.data(),
-                               (int64_t)c.args.size(), &plan),
-          "outkind=buffer must not name a slot");
-  }
-
-  {
     // K disagrees between the operands, so no GEMM is defined.
     SlotCase c(2, 3, 4);
     c.b_desc.sizes[0] = 5;
@@ -413,6 +478,8 @@ void test_refusals() {
 int main() {
   test_parse_roles();
   test_slot_decode();
+  test_local_operands();
+  test_buffer_through_slot();
   test_roles_beat_order();
   test_buffer_decode();
   test_refusals();

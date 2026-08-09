@@ -138,9 +138,29 @@ static std::string matmulRolesOf(Operation *matmul, Region &body,
     return -1;
   };
 
-  int aIdx = indexOf(matmul->getOperand(0));
-  int bIdx = indexOf(matmul->getOperand(1));
-  int outIdx = indexOf(matmul->getOperand(2));
+  // Where the operand came from, following the one indirection a local tensor
+  // introduces. A tensor declared inside the enclosing function lives in a slot
+  // -- `memref<memref<?x?xf32>>` -- and the region loads the descriptor out of
+  // it before use, so the captured value is the slot and not the buffer. Only
+  // function parameters arrive as buffers directly.
+  //
+  // Without this the roles resolve for parameters and silently do not for
+  // locals, which is the common case: the attribute would simply be absent and
+  // every plugin would fall back, with nothing to indicate why.
+  auto indexOfSource = [&](Value v) -> int {
+    int idx = indexOf(v);
+    if (idx >= 0)
+      return idx;
+    Operation *def = v.getDefiningOp();
+    if (def && def->getName().getStringRef() == "memref.load" &&
+        def->getNumOperands() >= 1)
+      return indexOf(def->getOperand(0));
+    return -1;
+  };
+
+  int aIdx = indexOfSource(matmul->getOperand(0));
+  int bIdx = indexOfSource(matmul->getOperand(1));
+  int outIdx = indexOfSource(matmul->getOperand(2));
   outKind = "buffer";
 
   if (outIdx < 0) {
@@ -162,6 +182,23 @@ static std::string matmulRolesOf(Operation *matmul, Region &body,
 
   if (aIdx < 0 || bIdx < 0 || outIdx < 0)
     return std::string();
+
+  // A plugin reads the operands out of the slots as they stand when the launch
+  // is called, which is before any of the region runs. That matches what the
+  // loads above would have produced only if nothing in the region writes to an
+  // input's slot first. Nothing does today -- the region holds one matmul and
+  // at most a zero fill -- but the reading is only valid while that is true.
+  for (Block &block : body) {
+    for (Operation &opRef : block) {
+      if (opRef.getName().getStringRef() != "memref.store" ||
+          opRef.getNumOperands() < 2) {
+        continue;
+      }
+      int target = indexOf(opRef.getOperand(1));
+      if (target == aIdx || target == bIdx)
+        return std::string();
+    }
+  }
 
   return ("a:" + Twine(aIdx) + ",b:" + Twine(bIdx) + ",out:" + Twine(outIdx))
       .str();
