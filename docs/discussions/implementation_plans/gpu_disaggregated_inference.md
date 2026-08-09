@@ -171,6 +171,18 @@ fix is one more payload entry.
   `--diagnostics-json` prediction captured alongside the run. Two-layer configs are free
   (stories15M is 6 tiny layers; `n_layers=2` clamp available for paper diagrams).
 
+**What "on the A100" will and will not mean at M3.** A dispatch reaches the GPU only if
+the plugin recognises it, which today means a classified matmul routed to cuBLAS.
+Everything else — softmax, RoPE, the FA loop nest, elementwise work — runs on the host
+through libffi, correctly and invisibly. So M3 as written demonstrates placement,
+admission and a GPU-executed GEMM, not a program running end to end on the device.
+
+Closing that gap is kernel emission through NVPTX (#251), currently scheduled as the M6
+performance track. It is worth deciding deliberately whether run-1's generality claim
+needs it, because "Vx placed this work on the GPU" and "this work ran on the GPU" are
+different sentences and only the second one needs #251. The address-space groundwork
+(#258) is already in `src/arch.rs`; what is missing is the lowering.
+
 ### M4 — Run-1 disaggregation: prefill on one machine, decode on another (#321)
 
 Design that sidesteps the one-representative-device limit cleanly: **one process per

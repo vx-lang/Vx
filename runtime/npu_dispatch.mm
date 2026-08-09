@@ -227,6 +227,7 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha, float b
 
 
 #include "../include/vx_hardware_runtime.h"
+#include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
 #include <cstdlib>
 
@@ -261,60 +262,78 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   std::string kernel_str(kernel_name);
   assert(kernel_str.find("vx_npu_kernel_") == 0 && "Expected kernel name to start with vx_npu_kernel_");
 
-  // Dynamically scan for all memory reference arguments (arg_tags == 0)
-  // rather than hardcoding exactly 5 arguments (which fluctuates based on MLIR
-  // optimization passes like block size, grid size, or extra scalars).
-  // Selection is unchanged -- every kind-0 argument is collected in order, and
-  // the heuristic below still picks the last three. What is new is that each
-  // one now carries its element type and rank, so the f32/rank-2 layout
-  // MemRef2D assumes can be *checked* before the pointer is reinterpreted
-  // rather than taken on faith. An f16 matmul does execute (#320) and would
-  // otherwise be read as f32 here.
-  std::vector<MemRef2D*> memrefs;
-  std::vector<int32_t> memref_elems;
-  std::vector<int32_t> memref_ranks;
-  printf("[Vx Dispatcher] Scanning %lld args:\n", (long long)num_args);
-  for (int64_t i = 0; i < num_args; i++) {
-    printf("  Arg %lld: tag=%d\n", (long long)i, arg_tags[i]);
-    if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF) {
-      memrefs.push_back(*(MemRef2D**)device_args[i]);
-      memref_elems.push_back(VX_ABI_ELEM(arg_tags[i]));
-      memref_ranks.push_back(VX_ABI_RANK(arg_tags[i]));
+  // A matmul the compiler recognised says so, and says which argument is which
+  // (#325). That replaces what stood here: collect every memref argument, take
+  // the last three, and call them [result, a, b] by convention. The convention
+  // was unfalsifiable -- for square operands every assignment conforms, so a
+  // wrong one produced a plausible matrix rather than a failure -- and it was
+  // wrong for any kernel whose captures did not land in that order.
+  //
+  // The 4x4 check that remains is a real constraint rather than a heuristic:
+  // the ANE primitive is a CoreML model compiled for exactly that shape
+  // (scripts/generate_ane_primitives.py). Anything else has no model to run on.
+  vx_gemm_plan plan;
+  bool is_gemm = vx_gemm_plan_decode(binary_payload, payload_size, device_args,
+                                     arg_tags, num_args, &plan);
+  if (is_gemm) {
+    printf("[Vx Dispatcher] Recognised GEMM %lldx%lldx%lld %s -> %s\n",
+           (long long)plan.m, (long long)plan.n, (long long)plan.k,
+           vx_dtype_name(plan.dtype),
+           plan.out_kind == VX_GEMM_OUT_SLOT ? "slot" : "buffer");
+  }
+
+  if (is_gemm &&
+      plan.dtype == VX_DTYPE_F32 && plan.m == 4 && plan.n == 4 && plan.k == 4 &&
+      plan.a_row_stride == 4 && plan.b_row_stride == 4 &&
+      plan.out_row_stride == 4) {
+    // Every buffer is 16 contiguous floats, which is what the model copies in
+    // and out; a padded row stride would need a strided copy it does not do.
+    // The model computes w @ x, so `w` is A and `x` is B.
+    float *result = (float *)plan.out_data;
+    if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+      // Standing in for the kernel means allocating the result it would have
+      // allocated, and publishing the descriptor it would have stored.
+      result = (float *)malloc(16 * sizeof(float));
+    }
+
+    if (result && vx_dispatch_ane(result, (float *)const_cast<void *>(plan.b_data),
+                                  (float *)const_cast<void *>(plan.a_data), 4, 4)) {
+      if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+        vx_gemm_publish_slot(&plan, result);
+      }
+      return 1;
+    }
+    if (plan.out_kind == VX_GEMM_OUT_SLOT) {
+      free(result);
     }
   }
 
-  // True when the descriptor at `idx` really is the layout MemRef2D describes.
-  // Rank 0 with an unknown element type is an opaque pointer rather than a
-  // ranked memref: the tag encoding gives both kind 0.
-  auto layout_ok = [&](size_t idx) {
-    return memref_elems[idx] == VX_DTYPE_F32 && memref_ranks[idx] == 2;
-  };
+  // The affine pattern (`c[i] = a[i] * alpha + beta`) is not classified, so it
+  // is still recognised by shape. What has changed is how each argument is
+  // read: an operand may arrive as a buffer or as the slot a local tensor lives
+  // in, and vx_operand_desc resolves either to the descriptor itself. The code
+  // here previously assumed every argument was a slot and dereferenced
+  // unconditionally, which was right only while every tensor involved was a
+  // local.
+  std::vector<const void *> memrefs;
+  std::vector<int32_t> memref_elems;
+  printf("[Vx Dispatcher] Scanning %lld args:\n", (long long)num_args);
+  for (int64_t i = 0; i < num_args; i++) {
+    printf("  Arg %lld: tag=%d\n", (long long)i, arg_tags[i]);
+    if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
+      continue;
+    }
+    const void *desc = vx_operand_desc(device_args, arg_tags, (int)i);
+    if (!desc) {
+      continue;
+    }
+    memrefs.push_back(desc);
+    memref_elems.push_back(VX_ABI_ELEM(arg_tags[i]));
+  }
   printf("[Vx Dispatcher] Found %zu MemRefs\n", memrefs.size());
 
-  size_t n_mr = memrefs.size();
-  if (n_mr >= 3 && layout_ok(n_mr - 3) && layout_ok(n_mr - 2) &&
-      layout_ok(n_mr - 1)) {
-    // Conventionally, Vx compiler captures these as [..., res, a, b] based on usage/definition order
-    MemRef2D* res = memrefs[memrefs.size() - 3];
-    MemRef2D* a = memrefs[memrefs.size() - 2];
-    MemRef2D* b = memrefs[memrefs.size() - 1];
-
-    // Ensure pointers are valid before accessing sizes
-    if (res && a && b) {
-      MemRef2D *actual_res = (MemRef2D *)res->aligned;
-      MemRef2D *actual_a = (MemRef2D *)a->aligned;
-      MemRef2D *actual_b = (MemRef2D *)b->aligned;
-
-      // Very basic shape heuristic routing to our universal 4x4 ANE primitive
-      if (actual_res && actual_a && actual_b &&
-          actual_res->sizes[0] == 4 && actual_res->sizes[1] == 4 && actual_a->sizes[0] == 4) {
-          if (vx_dispatch_ane(actual_res->aligned, actual_b->aligned, actual_a->aligned, 4, 4)) {
-            return 1;
-          }
-      }
-    }
-  } else if (n_mr == 2 && memref_elems[0] == VX_DTYPE_F32 &&
-             memref_elems[1] == VX_DTYPE_F32) {
+  if (memrefs.size() == 2 && memref_elems[0] == VX_DTYPE_F32 &&
+      memref_elems[1] == VX_DTYPE_F32) {
     // Affine scalar math pattern: c[i] = a[i] * alpha + beta
     std::vector<float> scalars;
     for (int64_t i = 0; i < num_args; i++) {
@@ -324,17 +343,14 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
 
     if (scalars.size() >= 2) {
-      MemRef1D* res = (MemRef1D*)memrefs[0];
-      MemRef1D* a = (MemRef1D*)memrefs[1];
+      const int64_t *res_sizes = vx_memref_sizes(memrefs[0]);
+      const int64_t *a_sizes = vx_memref_sizes(memrefs[1]);
 
-      if (res && a) {
-        MemRef1D *actual_res = (MemRef1D *)res->aligned;
-        MemRef1D *actual_a = (MemRef1D *)a->aligned;
-
-        if (actual_res && actual_a && actual_res->sizes[0] == 4 && actual_a->sizes[0] == 4) {
-          if (vx_dispatch_ane_affine(actual_res->aligned, actual_a->aligned, scalars[0], scalars[1], 4)) {
-            return 1;
-          }
+      if (res_sizes[0] == 4 && a_sizes[0] == 4) {
+        if (vx_dispatch_ane_affine((float *)vx_memref_aligned(memrefs[0]),
+                                   (float *)vx_memref_aligned(memrefs[1]),
+                                   scalars[0], scalars[1], 4)) {
+          return 1;
         }
       }
     }
