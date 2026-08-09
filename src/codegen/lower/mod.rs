@@ -648,7 +648,27 @@ pub(crate) fn lower_print_call<'c>(
     // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors,
     // so a bare scalar (`print(x)` where x : f32/f64/i32/i64) must route through the
     // scalar `print_*` runtime helpers instead of the memref path below.
-    let arg_ty_str = arg_ty.to_string();
+    // Narrow scalars have no print helper of their own, so widen to one that
+    // does rather than falling through to the memref path, which rejects a bare
+    // scalar type and reports it as an unsupported element type (#320). f16
+    // arithmetic, tensors and matmul all execute; only printing was missing.
+    let mut arg_ty_str = arg_ty.to_string();
+    let widened: Option<(&str, &str)> = match arg_ty_str.as_str() {
+        "f16" | "bf16" => Some(("arith.extf", "f32")),
+        "i8" | "i16" => Some(("arith.extsi", "i32")),
+        _ => None,
+    };
+    if let Some((op_name, wide_ty_str)) = widened {
+        let wide_ty = Type::parse(gen.context, wide_ty_str)
+            .ok_or_else(|| LowerError::ParseType(wide_ty_str.to_string()))?;
+        let cast_op = OperationBuilder::new(op_name, gen.loc())
+            .add_operands(&[arg_val])
+            .add_results(&[wide_ty])
+            .build()?;
+        arg_val = block.append_operation(cast_op).result(0)?.into();
+        arg_ty_str = wide_ty_str.to_string();
+    }
+
     let scalar_print_fn = match arg_ty_str.as_str() {
         "i32" => Some("print_i32"),
         "i64" => Some("print_i64"),
@@ -678,8 +698,13 @@ pub(crate) fn lower_print_call<'c>(
                 .add_regions([melior::ir::Region::new()])
                 .build()?;
             gen.module.body().append_operation(func_decl);
+            // Record the widened parameter type, not the source scalar's, or a
+            // later call would be checked against a signature the declaration
+            // does not have.
+            let recorded_ty = Type::parse(gen.context, &arg_ty_str)
+                .ok_or_else(|| LowerError::ParseType(arg_ty_str.clone()))?;
             gen.functions
-                .insert(fn_name.to_string().into(), (gen.i32_ty, vec![arg_ty]));
+                .insert(fn_name.to_string().into(), (gen.i32_ty, vec![recorded_ty]));
         }
         let call_op = block.append_operation(
             OperationBuilder::new("func.call", gen.loc())
