@@ -116,7 +116,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    return Type::Scalar(ElementType::F32); // Fallback to prevent panic
+                    // An undefined variable has already been reported, so this only needs to
+                    // avoid a panic. `Unknown` is the poison type for exactly that (#294) and
+                    // suppresses downstream mismatches; claiming f32 instead invents a type the
+                    // program never had and turns one root-cause error into a cascade of
+                    // mismatches against it.
+                    return Type::Unknown;
                 }
 
                 match lookup_res {
@@ -557,8 +562,24 @@ impl<'a> TypeChecker<'a> {
                     // tensor cannot say how many indices exhaust it, and `t[i]` yielding a row
                     // view rather than an element is a separate question (#324).
                     Type::Scalar(el_ty)
+                } else if base == Type::Unknown {
+                    // Already-reported failure upstream; stay quiet (#294).
+                    Type::Unknown
                 } else {
-                    Type::Scalar(ElementType::F32)
+                    // Never guess an element type. Defaulting to f32 here is what let #324
+                    // hide: indexing produced f32 for every tensor whose element was not
+                    // f32, and because f32 is the common case the wrong answer usually
+                    // matched the right one. A wrong type that is right often enough is
+                    // worse than an error, because it is discovered by the numbers being
+                    // wrong somewhere else entirely.
+                    if !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3004,
+                            format!("Cannot index a value of type {:?}", base),
+                            None,
+                        );
+                    }
+                    Type::Unknown
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
