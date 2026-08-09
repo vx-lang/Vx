@@ -164,10 +164,8 @@ w : &TransformerWeights) -> *mut f32 {
       let rms_w_off : i32 = l * dim;
       let rms_w : *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
 
-      // Note: Vx doesn't have 'as f32' yet natively for casting integers.
-      // We assume dim=256 for Stories15M.
-      let dim_f : f32 = 256.0;
-      let hidden_dim_f : f32 = 512.0;
+      let dim_f : f32 = dim as f32;
+      let hidden_dim_f : f32 = hidden_dim as f32;
 
       let status1 : i32 = rmsnorm(s.xb, x, rms_w, dim, dim_f);
 
@@ -194,7 +192,13 @@ w : &TransformerWeights) -> *mut f32 {
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
         if rem == 0 {
-          let fcr : f32 = vx_get_rope_freq(pos, i, head_size);
+          // The rotation frequency depends on the index *within* the head, so
+          // every head repeats the same frequency ladder. Passing the global
+          // index instead pushes each subsequent head far down the ladder.
+          let head_idx : i32 = i / head_size;
+          let head_base : i32 = head_idx * head_size;
+          let head_dim : i32 = i - head_base;
+          let fcr : f32 = vx_get_rope_freq(pos, head_dim, head_size);
           let fci : f32 = fcr.cos();
           let fsi : f32 = fcr.sin();
 
@@ -232,7 +236,7 @@ w : &TransformerWeights) -> *mut f32 {
             score += qv * kv;
           }
 
-          let head_size_f : f32 = 32.0; // 256/8 = 32
+          let head_size_f : f32 = head_size as f32;
           let factor : f32 = 1.0 / head_size_f.sqrt();
           score = score * factor;
           att_h[t] = score;
@@ -249,7 +253,11 @@ w : &TransformerWeights) -> *mut f32 {
         let mut sum : f32 = 0.0;
         for t in 0..pos_1 {
           let val : f32 = att_h[t];
-          let exp_val : f32 = val - max_val.exp();
+          // `val - max_val.exp()` parses as `val - exp(max_val)`: the method
+          // call binds tighter than the subtraction, so this was not a softmax
+          // at all. Subtract first, then exponentiate.
+          let shifted : f32 = val - max_val;
+          let exp_val : f32 = shifted.exp();
           att_h[t] = exp_val;
           sum += exp_val;
         }
@@ -320,7 +328,7 @@ w : &TransformerWeights) -> *mut f32 {
       }
     }
 
-    let dim_f : f32 = 256.0;
+    let dim_f : f32 = dim as f32;
     let status10 : i32 = rmsnorm(x, x, w.rms_final_weight, dim, dim_f);
     let status11 : i32 = matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
   };
