@@ -133,12 +133,75 @@ must install is LLVM's command-line tools, because JIT execution shells out to
 `VX_DISPATCH_LIB` overrides the dispatch library baked in at build time, since a
 compiler copied onto another machine must be pointed at a backend built there.
 
-## What the A100 is actually for
+## First light, same day
 
-Everything above is checked. What is not, and cannot be without hardware:
+An A100-SXM4-80GB on RunPod (driver 580.159.04, compute 8.0, **CUDA 12.8** — a different
+toolkit from the build box's 13.2, which is exactly why the dispatch library is built on
+the pod rather than shipped). Ubuntu 24.04. Bundle transferred, `setup_gpu_pod.sh` run,
+everything removed afterwards.
 
-1. cuBLAS produces the same numbers as the host path for `gpu_matmul_roles.vx`.
-1. The staging and writeback work against real device memory.
-1. Whether the per-dispatch H2D/D2H shows up as expected — it will be slower than the
-   CPU at these sizes, which is why M2 (residency) exists and why no performance number
-   is published before it lands.
+Every check passed on the first attempt that got as far as executing:
+
+| Program | Result | Routed |
+|---|---|---|
+| `gpu_matmul_roles.vx` | `38 56 83 128 9 7 10` | `GEMM 2x4x3 f32 -> slot`, `GEMM 3x3x3 f32 -> slot` |
+| `gpu_matmul_dtypes.vx` | `19 50 197 4032` | `GEMM 2x2x2 f64 -> slot`, `GEMM 64x64x64 f32 -> slot` |
+| 512x512 identity | `3593 262143` | `GEMM 512x512x512 f32 -> slot` |
+
+The square 3x3 case is the one carrying the weight: A·B, B·A and (A·B)^T are three
+different answers there, and cuBLAS produced A·B. So the roles were read correctly, the
+row-major-as-transpose call convention is right, and the descriptor published into the
+slot was correct enough to index afterwards. The 64x64 and 512x512 identity cases say the
+same thing at sizes where a transposed call has somewhere to hide.
+
+Two things did not work first time, both packaging rather than compiler:
+`libmlir_c_runner_utils.so` lives in `libmlir-22-dev`, which `setup_gpu_pod.sh` did not
+install, and `libvx_std_core.so` is a build artefact the bundle did not carry.
+
+### The one measurement worth taking
+
+20 dispatches of a 512x512 GEMM, differenced against a single-dispatch run of the same
+program to remove JIT compile time, same binary both ways with the device hidden by
+`CUDA_VISIBLE_DEVICES=""`:
+
+- **A100: ~0 ms marginal per dispatch** — 2292 ms for 20 against 2363 ms for 1, a
+  difference below noise. A 512³ GEMM *plus* staging both operands across PCIe and the
+  result back costs less than the measurement can see.
+- **host: 479 ms per dispatch**
+
+This is **not** a CPU-versus-GPU number and must not be quoted as one: the host side is
+our `-O0` scalar triple loop, not a tuned CPU GEMM. What it does establish is that naive
+per-dispatch staging is not catastrophic at this size, and that the work really is
+happening on the device — a silent fallback would have cost 479 ms.
+
+At Llama decode shapes the ratio inverts, since a matvec moves nearly as many bytes as a
+GEMM and does far less arithmetic with them. That is what M2 is for, and why no
+performance number gets published before it lands.
+
+### Admission, against the part we rented
+
+`nvidia-smi` reported 81920 MiB, so `fleet/a100-80.vx` is the honest column. The same
+60 GB program against the two A100 descriptions:
+
+```
+a100-40: Error[E6009]: transferred tensor needs 60000000000 bytes but memory space
+         'HBM' has capacity 42949672960 bytes
+a100-80: admitted -- capacity = 85899345920, space = "HBM", scope = "device"
+```
+
+A real admit/reject boundary, decided at compile time, against a machine model checked
+against the hardware in front of us.
+
+It also turned up **#334**: the check fires for `transfer()` and for `Ref`/`Pinned`
+annotations but not for `.with_memory()` on an un-annotated binding — the same placement,
+expressed two ways, admitted one way and not the other. My first attempt used the
+unchecked spelling and compiled clean at 60 GB against a 40 GB part.
+
+## What M1 leaves open
+
+1. `outkind=buffer` is decoded and implemented but appears unreachable from surface Vx:
+   `c = a @ b` always allocates, so every placed matmul publishes through a slot.
+1. Device residency — every dispatch still stages operands across and back (M2).
+1. f16, blocked on #333.
+1. Anything that is not a recognised GEMM still runs on the host (#251), which is the
+   ceiling on what run 1 can claim about generality.

@@ -63,8 +63,13 @@ report() {
   command -v clang++ >/dev/null 2>&1 && clang++ --version | head -1 || echo "absent"
   echo -n "libffi:         "
   ls /usr/lib/x86_64-linux-gnu/libffi.so >/dev/null 2>&1 && echo "present" || echo "absent"
+  echo -n "MLIR runner:    "
+  ls /usr/lib/llvm-$LLVM_VERSION/lib/libmlir_c_runner_utils.so >/dev/null 2>&1 &&
+    echo "present" || echo "absent"
   echo -n "vxc:            "
   [ -x "$BUNDLE_DIR/vxc" ] && echo "present" || echo "absent"
+  echo -n "vx_std_core:    "
+  [ -f "$BUNDLE_DIR/target/release/libvx_std_core.so" ] && echo "present" || echo "absent"
 }
 
 if [ "${1:-}" = "--check" ]; then
@@ -91,8 +96,13 @@ if ! command -v mlir-translate >/dev/null 2>&1; then
   wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
   chmod +x /tmp/llvm.sh
   $SUDO /tmp/llvm.sh $LLVM_VERSION
-  $SUDO apt-get install -y -qq "mlir-$LLVM_VERSION-tools"
 fi
+
+# mlir-*-tools provides mlir-translate; libmlir-*-dev provides the runner-utils
+# libraries that a JIT-linked program needs for printing memrefs. Missing the
+# second one fails at link time, not at setup time, which is a worse place to
+# find out.
+$SUDO apt-get install -y -qq "mlir-$LLVM_VERSION-tools" "libmlir-$LLVM_VERSION-dev"
 
 # vxc finds its tools through PATH, so the versioned directory has to lead.
 echo "export PATH=/usr/lib/llvm-$LLVM_VERSION/bin:\$PATH" > "$BUNDLE_DIR/env.sh"

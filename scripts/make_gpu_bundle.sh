@@ -59,9 +59,20 @@ esac
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 BUNDLE="$STAGE/vx-gpu-bundle"
-mkdir -p "$BUNDLE/runtime" "$BUNDLE/include"
+mkdir -p "$BUNDLE/runtime" "$BUNDLE/include" "$BUNDLE/target/release"
 
 cp "$VXC" "$BUNDLE/vxc"
+
+# The JIT links every program against the Vx standard library, by a path
+# relative to the compiler's working directory. It is a build output rather
+# than a source file, so it has to travel with the compiler: without it the
+# link fails on the pod, after setup has appeared to succeed.
+STD_CORE="$REPO_ROOT/target/release/libvx_std_core.so"
+if [ ! -f "$STD_CORE" ]; then
+  echo "error: no $STD_CORE -- run 'cargo build --release --workspace' first" >&2
+  exit 1
+fi
+cp "$STD_CORE" "$BUNDLE/target/release/"
 cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" \
    "$REPO_ROOT/runtime/vx_dispatch_plan.h" \
    "$REPO_ROOT/runtime/vx_host_call.h" "$BUNDLE/runtime/"
