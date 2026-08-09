@@ -100,6 +100,17 @@ too slow for CI.
 
 ### M1 — CUDA plugin: first light on the A100
 
+**Prerequisite found 2026-08-08: the dispatch ABI carries no element type, rank or
+shape.** `abiTagForType` (`src/dialect/VxLowering.cpp:297`) describes a memref as tag
+`0` and nothing more; the descriptor pointer is opaque. cuBLAS selects its kernel by
+dtype and needs M/N/K, so library routing cannot be written against the current
+boundary — `runtime/npu_dispatch.h` only appears to manage it by hardcoding `float *`,
+rank 2 and 4x4. So M1 begins with an ABI extension (dtype + rank + dims per memref
+argument), which is entirely CPU-testable and also fixes a latent bug, since an f16
+placed matmul is today handed to a dispatcher that assumes f32. Device memory
+operations take explicit byte counts and are unaffected, so residency work and a
+transfer-only `cuda_dispatch.cpp` can proceed in parallel. See #321 for the full note.
+
 - `runtime/cuda_dispatch.cpp` implementing the existing ABI, modelled on
   `npu_dispatch.mm`'s memref/arg-tag unpacking: `cudaMalloc`/`cudaMemcpy`, cuBLAS for
   GEMM-shaped kernels, cuDNN fused SDPA for the attention kernel (FlashAttention-2
