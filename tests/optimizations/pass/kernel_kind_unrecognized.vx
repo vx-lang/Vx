@@ -1,0 +1,40 @@
+//===- kernel_kind_unrecognized.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The other half of `kernel_kind_matmul.vx` (#325): a region the compiler cannot
+// classify carries no label and dispatches exactly as before. Routing to a
+// vendor kernel is an optimisation, so a kernel that is not recognised is not an
+// error -- it takes the existing path.
+//
+// This matters more than a usual negative test. A label is a claim the runtime
+// acts on: it will hand the buffers to cuBLAS and let the library decide what to
+// compute. Labelling a region that is *not* a plain GEMM would produce a
+// confidently wrong answer rather than a crash, so over-eager classification is
+// the dangerous direction and is what this pins.
+//
+// A hand-written loop nest is the case that matters in practice, since
+// tests/backend/pass/llama2.vx writes its matmuls that way. Recognising loop
+// nests as GEMMs is loop-idiom recognition and deliberately out of scope; the
+// serving program should use `@`.
+//
+// The `vx.launch` check is not decoration: without it, a run that emitted no
+// kernel at all would satisfy CHECK-NOT and pass for the wrong reason.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.launch
+// CHECK-NOT: vx.kernel_kind
+
+fn copy_rows(a : Tensor<f32>, c : Tensor<f32>) -> i32 {
+  spawn on(Topology::GPU) {
+    for i in 0..2 {
+      for j in 0..2 {
+        c[i][j] = a[i][j];
+      }
+    }
+  }
+  return 0;
+}

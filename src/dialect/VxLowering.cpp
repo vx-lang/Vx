@@ -33,6 +33,72 @@ using namespace mlir::vx;
 
 namespace {
 
+// Classify what an outlined region computes, for plugins that route to vendor
+// kernels (#325). Returns "" when the region is not a single recognised
+// operation, which is the common case and carries no attribute.
+//
+// Deliberately conservative: it counts the payload operations in the region and
+// classifies only when exactly one is present, because a library call replaces
+// the whole kernel. A matmul with a bias add fused around it is not something a
+// plain GEMM call can stand in for.
+static bool isZeroConstant(Value v) {
+  Operation *def = v.getDefiningOp();
+  if (!def || def->getName().getStringRef() != "arith.constant")
+    return false;
+  auto attr = def->getAttrOfType<FloatAttr>("value");
+  return attr && attr.getValue().isZero();
+}
+
+static StringRef kernelKindOf(Region &body) {
+  Operation *matmul = nullptr;
+  Operation *fill = nullptr;
+  unsigned otherPayload = 0;
+
+  // Only the region's own operations, not a deep walk: a linalg op carries its
+  // arithmetic in a nested region, and descending into it would count that
+  // op's `linalg.yield` as separate payload and classify nothing.
+  for (Block &block : body) {
+    for (Operation &opRef : block) {
+      Operation *op = &opRef;
+      StringRef name = op->getName().getStringRef();
+      // Structural and bookkeeping operations are not the payload.
+      if (name == "vx.yield" || name == "vx.return" ||
+          name.starts_with("arith.") || name.starts_with("memref.") ||
+          name.starts_with("llvm.") || name.starts_with("scf.") ||
+          name.starts_with("cf.") || name.starts_with("builtin.")) {
+        continue;
+      }
+      if (name == "linalg.matmul" && !matmul) {
+        matmul = op;
+        continue;
+      }
+      if (name == "linalg.fill" && !fill) {
+        fill = op;
+        continue;
+      }
+      ++otherPayload;
+    }
+  }
+
+  if (!matmul || otherPayload > 0)
+    return StringRef();
+
+  // `c = a @ b` emits a zero-fill of the accumulator followed by the matmul,
+  // which is precisely GEMM with beta = 0 -- a library call subsumes both. The
+  // fill has to be zeroing *this* matmul's output for that to hold: filling
+  // with a non-zero v computes A*B + v, which no beta = 0 GEMM reproduces.
+  if (fill) {
+    if (fill->getNumOperands() < 2 || matmul->getNumOperands() < 3)
+      return StringRef();
+    if (fill->getOperand(1) != matmul->getOperand(2))
+      return StringRef();
+    if (!isZeroConstant(fill->getOperand(0)))
+      return StringRef();
+  }
+
+  return "matmul";
+}
+
 // Lower `vx.spawn` to `async.execute` for CPU topologies, or an outlined
 // kernel + `vx.launch` for NPU/AccCore topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
@@ -133,6 +199,26 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
 
+    // Name what the region computes, so a plugin can route it to a vendor
+    // kernel instead of inferring the operation from buffer shapes (#325).
+    // Shape conformance alone cannot do it: for square operands every operand
+    // assignment conforms, and swapping them yields a plausible matrix of wrong
+    // numbers rather than a failure.
+    //
+    // Matched on the operation name rather than through the Linalg headers, to
+    // avoid taking a dialect dependency here for what is a single string
+    // comparison. Only a region whose whole job is the one op is classified: a
+    // matmul with other computation around it is not a matmul the runtime can
+    // hand to cuBLAS wholesale.
+    //
+    // A kernel that is not recognised carries no attribute and dispatches
+    // exactly as before -- routing is an optimisation, and a kernel the
+    // compiler cannot classify is not an error.
+    StringRef kernelKind = kernelKindOf(spawnBody);
+    if (!kernelKind.empty()) {
+      kernelOp->setAttr("vx.kernel_kind", rewriter.getStringAttr(kernelKind));
+    }
+
     // Clone the entire region to avoid leaving SpawnOp with an invalid empty
     // region
     Region &kernelRegion = kernelOp.getBody();
@@ -181,6 +267,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto launchOp = rewriter.create<vx::LaunchOp>(
         op.getLoc(), resultTypes,
         SymbolRefAttr::get(rewriter.getContext(), funcName), launchOperands);
+
+    // Carried on the launch as well as the kernel: the launch is what lowers to
+    // the dispatch call, so this is where the fact has to be to reach a plugin.
+    if (!kernelKind.empty()) {
+      launchOp->setAttr("vx.kernel_kind", rewriter.getStringAttr(kernelKind));
+    }
 
     rewriter.replaceOp(op, launchOp.getResults());
     return success();
