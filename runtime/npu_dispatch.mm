@@ -244,7 +244,9 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 // Map a Vx ABI type tag (see abiTagForType in src/dialect/VxLowering.cpp) to a
 // libffi type. Keep this switch in sync with the producer's encoding.
 static ffi_type *vx_abi_ffi_type(int32_t tag) {
-  switch (tag) {
+  // Only the kind byte affects the calling convention; a memref's element type
+  // and rank ride in the high bytes (see vx_hardware_runtime.h).
+  switch (VX_ABI_KIND(tag)) {
   case 1:
     return &ffi_type_uint8; // i1
   case 2:
@@ -287,17 +289,36 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // Dynamically scan for all memory reference arguments (arg_tags == 0)
   // rather than hardcoding exactly 5 arguments (which fluctuates based on MLIR
   // optimization passes like block size, grid size, or extra scalars).
+  // Selection is unchanged -- every kind-0 argument is collected in order, and
+  // the heuristic below still picks the last three. What is new is that each
+  // one now carries its element type and rank, so the f32/rank-2 layout
+  // MemRef2D assumes can be *checked* before the pointer is reinterpreted
+  // rather than taken on faith. An f16 matmul does execute (#320) and would
+  // otherwise be read as f32 here.
   std::vector<MemRef2D*> memrefs;
+  std::vector<int32_t> memref_elems;
+  std::vector<int32_t> memref_ranks;
   printf("[Vx Dispatcher] Scanning %lld args:\n", (long long)num_args);
   for (int64_t i = 0; i < num_args; i++) {
     printf("  Arg %lld: tag=%d\n", (long long)i, arg_tags[i]);
-    if (arg_tags[i] == 0) {
+    if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_MEMREF) {
       memrefs.push_back(*(MemRef2D**)device_args[i]);
+      memref_elems.push_back(VX_ABI_ELEM(arg_tags[i]));
+      memref_ranks.push_back(VX_ABI_RANK(arg_tags[i]));
     }
   }
+
+  // True when the descriptor at `idx` really is the layout MemRef2D describes.
+  // Rank 0 with an unknown element type is an opaque pointer rather than a
+  // ranked memref: the tag encoding gives both kind 0.
+  auto layout_ok = [&](size_t idx) {
+    return memref_elems[idx] == VX_DTYPE_F32 && memref_ranks[idx] == 2;
+  };
   printf("[Vx Dispatcher] Found %zu MemRefs\n", memrefs.size());
 
-  if (memrefs.size() >= 3) {
+  size_t n_mr = memrefs.size();
+  if (n_mr >= 3 && layout_ok(n_mr - 3) && layout_ok(n_mr - 2) &&
+      layout_ok(n_mr - 1)) {
     // Conventionally, Vx compiler captures these as [..., res, a, b] based on usage/definition order
     MemRef2D* res = memrefs[memrefs.size() - 3];
     MemRef2D* a = memrefs[memrefs.size() - 2];
@@ -317,11 +338,12 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
           }
       }
     }
-  } else if (memrefs.size() == 2) {
+  } else if (n_mr == 2 && memref_elems[0] == VX_DTYPE_F32 &&
+             memref_elems[1] == VX_DTYPE_F32) {
     // Affine scalar math pattern: c[i] = a[i] * alpha + beta
     std::vector<float> scalars;
     for (int64_t i = 0; i < num_args; i++) {
-      if (arg_tags[i] == 6) { // f32
+      if (VX_ABI_KIND(arg_tags[i]) == VX_ABI_KIND_F32) {
         scalars.push_back(*(float*)device_args[i]);
       }
     }

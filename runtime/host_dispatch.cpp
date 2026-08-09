@@ -8,8 +8,8 @@
 //
 // Provider of the vx_plugin_* ABI (include/vx_hardware_runtime.h) for platforms
 // with no accelerator backend compiled in. Without it, a program containing a
-// non-CPU `spawn on` has no definition for vx_plugin_dispatch_async and fails to
-// link — which is the state Linux was in before this file existed (build.rs
+// non-CPU `spawn on` has no definition for vx_plugin_dispatch_async and fails
+// to link — which is the state Linux was in before this file existed (build.rs
 // compiled the dispatcher only on macOS).
 //
 // Execution semantics: kernels outlined by VxLowering run on the host CPU
@@ -50,9 +50,11 @@ bool verbose() {
 
 // Map a Vx ABI type tag (abiTagForType in src/dialect/VxLowering.cpp) to a
 // libffi type. Keep this switch in sync with the producer's encoding and with
-// the copy in runtime/npu_dispatch.mm.
+// the copy in runtime/npu_dispatch.mm. Only the kind byte participates: a
+// memref's element type and rank ride in the high bytes and do not change how
+// the argument is passed.
 ffi_type *abi_ffi_type(int32_t tag) {
-  switch (tag) {
+  switch (VX_ABI_KIND(tag)) {
   case 1:
     return &ffi_type_uint8; // i1
   case 2:
@@ -96,6 +98,32 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   if (verbose()) {
     fprintf(stderr, "[Vx Dispatcher] host execution of %s (%lld args)\n",
             kernel_name, static_cast<long long>(num_args));
+    for (int64_t i = 0; i < num_args; ++i) {
+      int32_t tag = arg_tags[i];
+      if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {
+        fprintf(stderr, "  arg %lld: scalar kind=%d\n", (long long)i,
+                VX_ABI_KIND(tag));
+        continue;
+      }
+      int32_t rank = VX_ABI_RANK(tag);
+      int32_t elem = VX_ABI_ELEM(tag);
+      if (rank == 0 && elem == VX_DTYPE_UNKNOWN) {
+        // Kind 0 covers both a ranked memref and the pointer fallback in
+        // abiTagForType; only the latter carries no element type or rank.
+        fprintf(stderr, "  arg %lld: opaque ptr\n", (long long)i);
+        continue;
+      }
+      const void *desc = *(const void **)device_args[i];
+      fprintf(stderr, "  arg %lld: memref %s rank=%d shape=[", (long long)i,
+              vx_dtype_name(elem), rank);
+      if (desc) {
+        const int64_t *sizes = vx_memref_sizes(desc);
+        for (int32_t d = 0; d < rank; ++d) {
+          fprintf(stderr, "%s%lld", d ? "x" : "", (long long)sizes[d]);
+        }
+      }
+      fprintf(stderr, "] elem_bytes=%zu\n", vx_dtype_bytes(elem));
+    }
   }
 
   char ciface_name[256];
@@ -123,7 +151,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
   // The kernel C-interface returns void; results flow through memref captures.
-  ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr, device_args);
+  ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr,
+           device_args);
   return 1;
 }
 

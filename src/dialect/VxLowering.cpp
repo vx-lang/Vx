@@ -124,8 +124,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     }
 
     // Create the kernel op. The counter is process-global (kernel names must be
-    // unique across the module) and the test harness compiles files in parallel,
-    // so it must be atomic to avoid a data race / duplicate names.
+    // unique across the module) and the test harness compiles files in
+    // parallel, so it must be atomic to avoid a data race / duplicate names.
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
     static std::atomic<int> kernelIdx{0};
     std::string funcName =
@@ -133,7 +133,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
 
-    // Clone the entire region to avoid leaving SpawnOp with an invalid empty region
+    // Clone the entire region to avoid leaving SpawnOp with an invalid empty
+    // region
     Region &kernelRegion = kernelOp.getBody();
     rewriter.cloneRegionBefore(spawnBody, kernelRegion, kernelRegion.end());
 
@@ -143,7 +144,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       entryBlock.addArgument(type, op.getLoc());
     }
 
-    // Replace usages of captured variables inside the region with the block arguments
+    // Replace usages of captured variables inside the region with the block
+    // arguments
     for (auto [cap, arg] : llvm::zip(captures, entryBlock.getArguments())) {
       Value capVal = cap;
       rewriter.replaceUsesWithIf(capVal, arg, [&](OpOperand &use) {
@@ -153,9 +155,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
 
     // Replace vx.yield with vx.return
     SmallVector<vx::YieldOp> yieldsToErase;
-    kernelRegion.walk([&](vx::YieldOp yieldOp) {
-      yieldsToErase.push_back(yieldOp);
-    });
+    kernelRegion.walk(
+        [&](vx::YieldOp yieldOp) { yieldsToErase.push_back(yieldOp); });
     for (auto y : yieldsToErase) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(y);
@@ -163,7 +164,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       rewriter.eraseOp(y);
     }
 
-    // If the region has no terminator in the last block (e.g. empty spawn), add vx.return
+    // If the region has no terminator in the last block (e.g. empty spawn), add
+    // vx.return
     for (Block &block : kernelRegion) {
       if (block.empty() || !block.back().hasTrait<OpTrait::IsTerminator>()) {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -316,6 +318,39 @@ static int32_t abiTagForType(Type t) {
   return 0; // pointer (memref descriptor) and fallback
 }
 
+// Element type code for a memref's element, packed into the high bytes of the
+// argument tag. Keep in sync with the VX_DTYPE_* enum in
+// include/vx_hardware_runtime.h.
+//
+// This is what a plugin needs in order to interpret the descriptor it receives:
+// without it, a runtime can only assume a layout, which is why the Apple path
+// hardcodes float and rank 2 and would silently misread an f16 buffer.
+static int32_t elemDtypeCode(Type t) {
+  if (isa<Float32Type>(t))
+    return 6;
+  if (isa<Float64Type>(t))
+    return 7;
+  if (isa<Float16Type>(t))
+    return 8;
+  if (isa<BFloat16Type>(t))
+    return 9;
+  if (auto it = dyn_cast<IntegerType>(t)) {
+    switch (it.getWidth()) {
+    case 1:
+      return 1;
+    case 8:
+      return 2;
+    case 16:
+      return 3;
+    case 32:
+      return 4;
+    default:
+      return 5;
+    }
+  }
+  return 0; // unknown
+}
+
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
 
@@ -359,7 +394,8 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     //      - memref param -> pointer to the (pointer-to-descriptor)
     int numArgs = op.getNumOperands();
     Value countVal = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI32Type, rewriter.getI32IntegerAttr(numArgs > 0 ? numArgs : 1));
+        loc, llvmI32Type,
+        rewriter.getI32IntegerAttr(numArgs > 0 ? numArgs : 1));
     Value argsArray = rewriter.create<LLVM::AllocaOp>(
         loc, llvmPtrType, llvmPtrType, countVal, /*alignment=*/0);
     Value tagsArray = rewriter.create<LLVM::AllocaOp>(
@@ -387,16 +423,21 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       Value valuePtr;
       int32_t tag;
       if (isa<MemRefType>(originalTy)) {
-        // The C-interface passes a memref as a pointer to its descriptor, so the
-        // arg value is that descriptor pointer; device_args[i] points to it.
-        Value descAlloc = rewriter.create<LLVM::AllocaOp>(loc, llvmPtrType, argTy,
-                                                          one, /*alignment=*/0);
+        // The C-interface passes a memref as a pointer to its descriptor, so
+        // the arg value is that descriptor pointer; device_args[i] points to
+        // it.
+        Value descAlloc = rewriter.create<LLVM::AllocaOp>(
+            loc, llvmPtrType, argTy, one, /*alignment=*/0);
         rewriter.create<LLVM::StoreOp>(loc, arg, descAlloc);
         Value descPtrAlloc = rewriter.create<LLVM::AllocaOp>(
             loc, llvmPtrType, llvmPtrType, one, /*alignment=*/0);
         rewriter.create<LLVM::StoreOp>(loc, descAlloc, descPtrAlloc);
         valuePtr = descPtrAlloc;
-        tag = 0;
+        // Kind stays 0 so the calling convention is unchanged; rank and element
+        // type ride in the high bytes for plugins that route to vendor kernels.
+        auto memrefTy = cast<MemRefType>(originalTy);
+        tag = (static_cast<int32_t>(memrefTy.getRank()) << 16) |
+              (elemDtypeCode(memrefTy.getElementType()) << 8);
       } else {
         // Scalar: device_args[i] points directly to the value.
         Value scalarAlloc = rewriter.create<LLVM::AllocaOp>(
