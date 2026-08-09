@@ -1,0 +1,81 @@
+//===- gpu_matmul_dtypes.vx - Vx Compiler ------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A placed matmul in each element type a vendor library has a separate entry
+// point for, and at a size past the one a 2x2 example can hide mistakes in
+// (#321). Like gpu_matmul_roles.vx, the expected numbers are the answer and say
+// nothing about which backend produced them: the host loop nest and cuBLAS have
+// to agree.
+//
+// The dtypes matter because the routing splits on them -- cublasSgemm and
+// cublasDgemm are different calls, and a plugin that reads an f64 buffer as f32
+// gets a valid pointer and wrong numbers. Values are small integers, exact in
+// both types here, so a mismatch means a wrong kernel rather than rounding.
+//
+// f16 is missing deliberately and is the one that most wants covering: a placed
+// f16 matmul crashes today (#333). Its zero fill passes a half by value, which
+// `abiTagForType` has no tag for, so the argument is described as a pointer and
+// the calling convention comes apart. Not an f16 arithmetic problem -- the
+// unplaced form works and f16_execution.vx covers it -- and the fix is to stop
+// capturing constants rather than to invent a tag libffi cannot express.
+//
+// The 64x64 case is the one that catches a transposed call. Identity times B is
+// B, so every entry is its own coordinate: r[3][5] is 197 where a transposed
+// result would give 323. At 2x2 with symmetric operands that distinction does
+// not exist, which is how a column-major library gets shipped with the operands
+// the wrong way round.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 19 50 197 4032
+
+fn main() -> i32 {
+  // f64: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
+  let mut ad : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  let mut bd : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      ad[i][j] = (i * 2 + j + 1) as f64;
+      bd[i][j] = (i * 2 + j + 5) as f64;
+    }
+  }
+
+  let mut cd : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  spawn on(Topology::GPU) {
+    cd = ad @bd;
+  }
+
+  print(cd[0][0]);
+  print!(" ");
+  print(cd[1][1]);
+  print!(" ");
+
+  // 64x64: identity times B is B, so a transposed result is a different number
+  // at every off-diagonal coordinate rather than the same one.
+  let mut e : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
+  let mut b : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
+  for i in 0..64 {
+    for j in 0..64 {
+      e[i][j] = 0.0;
+      b[i][j] = (i * 64 + j) as f32;
+    }
+  }
+  for i in 0..64 {
+    e[i][i] = 1.0;
+  }
+
+  let mut r : Tensor<f32> = Tensor<f32>([ 64, 64 ]);
+  spawn on(Topology::GPU) {
+    r = e @b;
+  }
+
+  print(r[3][5]);
+  print!(" ");
+  print(r[63][0]);
+
+  return 0;
+}
