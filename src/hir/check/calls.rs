@@ -577,7 +577,7 @@ impl<'a> TypeChecker<'a> {
                 } else if let Some((ret_ty, is_unsafe, param_types, req_topology, _, _)) =
                     self.env.functions.get(resolved_name.as_ref())
                 {
-                    if (*req_topology != self.active_topology) && !self.speculating {
+                    if !req_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
@@ -627,7 +627,7 @@ impl<'a> TypeChecker<'a> {
                     .iter()
                     .find(|f| f.0.name == resolved_name)
                 {
-                    if (func.0.topology != self.active_topology) && !self.speculating {
+                    if !func.0.topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(

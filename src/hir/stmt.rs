@@ -748,7 +748,7 @@ impl<'a> TypeChecker<'a> {
             (Topology::CpuNeon, Topology::CpuNeon) => true,
             (Topology::AMX, Topology::AMX) => true,
             (Topology::ANE, Topology::ANE) => true,
-            (Topology::GPU, Topology::GPU) => true,
+            (Topology::GPU(expr_a), Topology::GPU(expr_b)) => self.exprs_equal(expr_a, expr_b),
             (Topology::Current, Topology::Current) => true,
             (Topology::NPU(expr_a), Topology::NPU(expr_b)) => self.exprs_equal(expr_a, expr_b),
             (Topology::AccCore(expr_a), Topology::AccCore(expr_b)) => {

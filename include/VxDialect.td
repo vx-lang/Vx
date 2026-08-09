@@ -53,7 +53,12 @@ def Vx_DispatchOp : Vx_Op<"dispatch"> {
 // A launch operation to launch a hardware kernel
 def Vx_LaunchOp : Vx_Op<"launch"> {
     let summary = "Launches an outlined hardware kernel.";
-    let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
+    // `topology` is the device this launch targets, the same id `vx.kernel`
+    // carries. The launch is what becomes the call into a plugin, so a plugin
+    // could not tell one device from another without it -- which is the whole
+    // of disaggregated execution (#331).
+    let arguments = (ins FlatSymbolRefAttr:$callee, I32Attr:$topology,
+                         Variadic<AnyType>:$operands);
     let results = (outs Variadic<AnyType>:$results);
     let assemblyFormat = "$callee `(` $operands `)` attr-dict `:` functional-type($operands, results)";
 }

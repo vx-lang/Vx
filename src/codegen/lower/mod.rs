@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(topology_to_i32(&Topology::AccCore(make_num_expr("5"))), 205);
         assert_eq!(topology_to_i32(&Topology::AMX), 300);
         assert_eq!(topology_to_i32(&Topology::ANE), 400);
-        assert_eq!(topology_to_i32(&Topology::GPU), 500);
+        assert_eq!(topology_to_i32(&Topology::gpu(0)), 500);
         assert_eq!(topology_to_i32(&Topology::CpuAvx512), 600);
         assert_eq!(topology_to_i32(&Topology::CpuNeon), 700);
         assert_eq!(topology_to_i32(&Topology::Current), 0);

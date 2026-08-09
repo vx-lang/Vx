@@ -935,7 +935,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::GpuHbm => Topology::GPU,
+                    MemorySpace::GpuHbm => Topology::gpu(0),
                     MemorySpace::CPUDRAM => Topology::CPU,
                     // A value in a user-defined memory space is pinned on the like-named
                     // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
@@ -972,7 +972,7 @@ impl<'a> TypeChecker<'a> {
                             span: Span::default(),
                         })))
                     }
-                    MemorySpace::GpuHbm => Topology::GPU,
+                    MemorySpace::GpuHbm => Topology::gpu(0),
                     MemorySpace::CPUDRAM => Topology::CPU,
                     // A value in a user-defined memory space is pinned on the like-named
                     // custom topology (naming convention: Memory::Foo <-> Topology::Foo).
@@ -1063,10 +1063,13 @@ impl<'a> TypeChecker<'a> {
                         let _t2 = self.check_expr_type(end);
                     }
                     // No index expression to validate (Custom carries only a name).
+                    Topology::GPU(e) => {
+                        let _t = self.check_expr_type(e);
+                    }
+                    // No index expression to validate (Custom carries only a name).
                     Topology::CPU
                     | Topology::AMX
                     | Topology::ANE
-                    | Topology::GPU
                     | Topology::CpuAvx512
                     | Topology::CpuNeon
                     | Topology::Custom(_)

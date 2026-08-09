@@ -1,0 +1,53 @@
+//===- two_gpu_devices.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Two GPUs, named apart, and the difference surviving all the way to the call a
+// plugin receives (#331).
+//
+// Until `Topology::GPU` took a device index this program was a parse error, and
+// with it the whole idea of disaggregated execution: prefill on one device and
+// decode on another is a program that says which device each stage runs on, and
+// `GPU` denoted one anonymous device. `NPU[i]` and `AccCore[i]` had indices;
+// GPU did not.
+//
+// The dispatch id bands a kind with a device index (src/arch.rs
+// `topology_dispatch_id`), so GPU[0] is 500 and GPU[1] is 501. The kernels are
+// checked in emission order, which is the reverse of source order here since
+// outlining prepends.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.kernel @vx_npu_kernel_0(501)
+// CHECK: vx.kernel @vx_npu_kernel_1(500)
+//
+// Reaching the plugin is the half that matters at run time: the launch is what
+// becomes the dispatch call, so the device rides in its payload. Without it
+// every dispatch arrives identically and a backend can only use whichever
+// device happens to be current.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: topo=501
+// PAYLOAD: topo=500
+
+fn prefill() -> f32 {
+  let mut a : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut b : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut c : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  spawn on(Topology::GPU[0]) {
+    c = a @b;
+  }
+  return c[0][0];
+}
+
+fn decode() -> f32 {
+  let mut p : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut q : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut r : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  spawn on(Topology::GPU[1]) {
+    r = p @q;
+  }
+  return r[0][0];
+}

@@ -188,6 +188,37 @@ struct SlotCase {
   }
 };
 
+/// The device a launch targets rides in the same payload, and a plugin turns
+/// the topology id into a device ordinal. Getting this wrong in a disaggregated
+/// run means the right answer computed on the wrong half of the machine.
+void test_topology() {
+  std::string p0 = payload_of("k", "matmul", "a:0,b:2,out:5", "slot") +
+                   std::string("topo=500\0", 10);
+  std::string p1 = payload_of("k", "matmul", "a:0,b:2,out:5", "slot") +
+                   std::string("topo=501\0", 10);
+
+  check(vx_payload_topology(p0.data(), p0.size()) == 500, "topo= is read back");
+  check(vx_payload_topology(p1.data(), p1.size()) == 501, "a second device");
+
+  // Absent means a producer predating the entry, which is not device 0: a
+  // plugin that conflated them would set the device from nothing at all.
+  std::string none = payload_of("k", "matmul", "a:0,b:2,out:5", "slot");
+  check(vx_payload_topology(none.data(), none.size()) == -1, "absent is not 0");
+
+  check(vx_topology_device_index(500, VX_TOPO_GPU_BASE) == 0, "GPU[0]");
+  check(vx_topology_device_index(501, VX_TOPO_GPU_BASE) == 1, "GPU[1]");
+  check(vx_topology_device_index(507, VX_TOPO_GPU_BASE) == 7, "GPU[7]");
+
+  // Another kind's band is not this one's. Reading an NPU id as a GPU ordinal
+  // would silently pick a device for hardware the launch was never meant for.
+  check(vx_topology_device_index(100, VX_TOPO_GPU_BASE) == -1,
+        "NPU is not GPU");
+  check(vx_topology_device_index(0, VX_TOPO_GPU_BASE) == -1, "CPU is not GPU");
+  check(vx_topology_device_index(600, VX_TOPO_GPU_BASE) == -1, "past the band");
+  check(vx_topology_device_index(101, VX_TOPO_NPU_BASE) == 1,
+        "NPU[1] in its own band");
+}
+
 void test_slot_decode() {
   SlotCase c(2, 3, 4);
   std::string payload =
@@ -477,6 +508,7 @@ void test_refusals() {
 
 int main() {
   test_parse_roles();
+  test_topology();
   test_slot_decode();
   test_local_operands();
   test_buffer_through_slot();

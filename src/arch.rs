@@ -263,7 +263,7 @@ pub fn topology_dispatch_id(top: &Topology) -> i32 {
         Topology::AccCore(e) => 200 + topology_index(e),
         Topology::AMX => 300,
         Topology::ANE => 400,
-        Topology::GPU => 500,
+        Topology::GPU(e) => 500 + topology_index(e),
         Topology::CpuAvx512 => 600,
         Topology::CpuNeon => 700,
         // A slice is identified by (base topology, extent): `NPU[0..144]` and `NPU[0..72]` are
@@ -972,7 +972,7 @@ mod tests {
         assert_eq!(g.default_memory_for(&Topology::CPU), MemorySpace::CPUDRAM);
         // A discrete GPU's home memory is its own device HBM (not host DRAM):
         // the host<->device boundary is a real seam, checked by the per-seam obligation.
-        assert_eq!(g.default_memory_for(&Topology::GPU), MemorySpace::GpuHbm);
+        assert_eq!(g.default_memory_for(&Topology::gpu(0)), MemorySpace::GpuHbm);
         assert_eq!(g.default_memory_for(&Topology::AMX), MemorySpace::CPUDRAM);
         assert_eq!(g.default_memory_for(&Topology::ANE), MemorySpace::NPUHBM);
         assert_eq!(g.default_memory_for(&make_npu()), MemorySpace::NPUHBM);
@@ -1000,13 +1000,13 @@ mod tests {
         // fallback: each has a visibility edge to CPUDRAM).
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ty));
-        assert!(graph.is_type_accessible(&Topology::GPU, &Topology::CPU, &ty));
+        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &ty));
 
         // ANE defaults to NPUHBM, which Host can see, so Host can read an ANE var.
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ty));
         // A discrete GPU's var lives in GPU HBM, which the host CANNOT see directly:
         // the host<->device boundary is exactly the seam the obligation guards.
-        assert!(!graph.is_type_accessible(&Topology::CPU, &Topology::GPU, &ty));
+        assert!(!graph.is_type_accessible(&Topology::CPU, &Topology::gpu(0), &ty));
     }
 
     #[test]
@@ -1038,7 +1038,7 @@ mod tests {
         // DRAM reachable by Host, AMX, GPU, ANE
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::ANE, &ref_dram));
-        assert!(graph.is_type_accessible(&Topology::GPU, &Topology::ANE, &ref_dram));
+        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ref_dram));
         // NPU doesn't directly reach DRAM in this default unified memory model
         assert!(!graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_dram));
@@ -1269,7 +1269,7 @@ mod tests {
         let ref_sram = Type::Ref(Box::new(make_tensor()), MemorySpace::LocalSRAM);
         // GPU only sees CPUDRAM; LocalSRAM is only accessible by AccCore
         // Use AccCore as var_topology to avoid the host unified memory fallback
-        assert!(!graph.is_type_accessible(&Topology::GPU, &make_acc_core(), &ref_sram));
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &make_acc_core(), &ref_sram));
     }
 
     #[test]
@@ -1332,7 +1332,7 @@ mod tests {
         let graph = TransferCostGraph::default();
         let ref_hbm = Type::Ref(Box::new(make_tensor()), MemorySpace::NPUHBM);
         // GPU can see CPUDRAM only, not NPU_HBM
-        assert!(!graph.is_type_accessible(&Topology::GPU, &make_npu(), &ref_hbm));
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &make_npu(), &ref_hbm));
     }
 
     #[test]
@@ -1347,7 +1347,7 @@ mod tests {
     fn test_reachable_same_topology_is_visible() {
         let graph = TransferCostGraph::default();
         assert_eq!(
-            graph.reachable(&Topology::GPU, &Topology::GPU, &make_tensor()),
+            graph.reachable(&Topology::gpu(0), &Topology::gpu(0), &make_tensor()),
             Reachability::Visible
         );
     }
@@ -1358,7 +1358,7 @@ mod tests {
         // A discrete-GPU value lives in GPU HBM, not visible from the host: a transfer
         // path exists (GpuHbm -> CPUDRAM, cost 50), so the verdict is NeedsSeam.
         assert_eq!(
-            graph.reachable(&Topology::CPU, &Topology::GPU, &make_tensor()),
+            graph.reachable(&Topology::CPU, &Topology::gpu(0), &make_tensor()),
             Reachability::NeedsSeam { cost: 50 }
         );
     }
@@ -1370,7 +1370,7 @@ mod tests {
         // the host. Use a non-CPU var_topology to avoid the host-unified-memory shortcut.
         let ref_remote = Type::Ref(Box::new(make_tensor()), MemorySpace::RemoteHbm);
         assert_eq!(
-            graph.reachable(&Topology::CPU, &Topology::GPU, &ref_remote),
+            graph.reachable(&Topology::CPU, &Topology::gpu(0), &ref_remote),
             Reachability::Unreachable
         );
     }
@@ -1435,7 +1435,7 @@ mod tests {
         assert!(graph.is_type_accessible(&top, &Topology::CPU, &ref_sram));
         // ...but not a space it does not list.
         let ref_gpu = Type::Ref(Box::new(make_tensor()), MemorySpace::GpuHbm);
-        assert!(!graph.is_type_accessible(&top, &Topology::GPU, &ref_gpu));
+        assert!(!graph.is_type_accessible(&top, &Topology::gpu(0), &ref_gpu));
     }
 
     #[test]

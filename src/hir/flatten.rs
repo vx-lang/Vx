@@ -4472,7 +4472,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             spawn.imm,
-            crate::arch::topology_dispatch_id(&crate::syntax::Topology::GPU) as u64
+            crate::arch::topology_dispatch_id(&crate::syntax::Topology::gpu(0)) as u64
         );
         assert!(
             count(&w, Opcode::Add) >= 1,

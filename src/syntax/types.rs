@@ -31,7 +31,14 @@ pub enum Topology {
     AccCore(Box<Expr>),
     AMX,
     ANE,
-    GPU,
+    /// A discrete GPU, by device index. Bare `Topology::gpu(0)` in source means
+    /// device 0; `Topology::gpu(0)[1]` names the second.
+    ///
+    /// The index is what makes more than one of them nameable. Until it existed
+    /// a program could not say "prefill here, decode there" at all -- every
+    /// `spawn on(Topology::gpu(0))` denoted the same anonymous device, and
+    /// `Topology::gpu(0)[1]` was a parse error.
+    GPU(Box<Expr>),
     CpuAvx512,
     CpuNeon,
     Slice(Box<Topology>, Box<Expr>, Box<Expr>), // For NPU[0..4] etc.
@@ -101,6 +108,20 @@ pub enum TopologyKind {
 }
 
 impl Topology {
+    /// `Topology::gpu(0)[index]`.
+    ///
+    /// Most callers want device 0 -- a site that has no device to name, or a
+    /// test that does not care which one. Spelling it out keeps those honest:
+    /// picking 0 is a choice, and one that is wrong on a machine where the
+    /// program meant a particular device.
+    pub fn gpu(index: i64) -> Topology {
+        Topology::GPU(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+            index.to_string(),
+            None,
+            crate::syntax::Span::default(),
+        ))))
+    }
+
     pub fn kind(&self) -> TopologyKind {
         match self {
             Topology::CPU => TopologyKind::CPU,
@@ -108,7 +129,7 @@ impl Topology {
             Topology::AccCore(_) => TopologyKind::AccCore,
             Topology::AMX => TopologyKind::AMX,
             Topology::ANE => TopologyKind::ANE,
-            Topology::GPU => TopologyKind::GPU,
+            Topology::GPU(_) => TopologyKind::GPU,
             Topology::CpuAvx512 => TopologyKind::CpuAvx512,
             Topology::CpuNeon => TopologyKind::CpuNeon,
             Topology::Slice(..) => TopologyKind::Slice,
@@ -121,6 +142,39 @@ impl Topology {
         self.kind() == other.kind()
     }
 
+    /// The literal device index, when the topology has one and it is a literal.
+    pub fn device_index(&self) -> Option<i64> {
+        let literal = |e: &Expr| match e {
+            Expr::Number(n) => n.value.parse::<i64>().ok(),
+            _ => None,
+        };
+        match self {
+            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => literal(e),
+            _ => None,
+        }
+    }
+
+    /// Whether two topologies denote the same device.
+    ///
+    /// Not the derived `PartialEq`, which compares the index *expression* --
+    /// span and inferred type included -- so the same topology written in two
+    /// places can compare unequal while naming one device. `Topology::GPU` in a
+    /// function signature and at its call site produced exactly that: identical
+    /// text, one index stamped `i32` and one not.
+    ///
+    /// Kind first, then index by value when both are literals. A non-literal
+    /// index is not resolvable here, so those fall back to structural equality
+    /// rather than being assumed equal.
+    pub fn same_device(&self, other: &Self) -> bool {
+        if self.kind() != other.kind() {
+            return false;
+        }
+        match (self.device_index(), other.device_index()) {
+            (Some(a), Some(b)) => a == b,
+            _ => self == other,
+        }
+    }
+
     /// Substitute const generics into this topology's *index* expressions, so `NPU[R]` in a
     /// `shard<const R : i32>` body becomes `NPU[5]` at the `shard<5>` instantiation. Without this
     /// a monomorphized index stayed a bare identifier, `topology_dispatch_id` fell back to device
@@ -131,6 +185,7 @@ impl Topology {
     pub fn substitute(&self, mapping: &std::collections::HashMap<Symbol, Type>) -> Topology {
         match self {
             Topology::NPU(e) => Topology::NPU(Box::new(e.substitute(mapping))),
+            Topology::GPU(e) => Topology::GPU(Box::new(e.substitute(mapping))),
             Topology::AccCore(e) => Topology::AccCore(Box::new(e.substitute(mapping))),
             Topology::Slice(base, start, end) => Topology::Slice(
                 Box::new(base.substitute(mapping)),
@@ -159,7 +214,7 @@ impl Topology {
             Topology::AccCore(e) => format!("AccCore[{}]", idx(e)),
             Topology::AMX => "AMX".to_string(),
             Topology::ANE => "ANE".to_string(),
-            Topology::GPU => "GPU".to_string(),
+            Topology::GPU(e) => format!("GPU[{}]", idx(e)),
             Topology::CpuAvx512 => "CpuAvx512".to_string(),
             Topology::CpuNeon => "CpuNeon".to_string(),
             Topology::Slice(base, start, end) => {
@@ -679,8 +734,8 @@ mod tests {
 
     #[test]
     fn test_type_topology_tensor_with_topology() {
-        let ty = Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU));
-        assert_eq!(ty.topology(), Some(Topology::GPU));
+        let ty = Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)));
+        assert_eq!(ty.topology(), Some(Topology::gpu(0)));
     }
 
     #[test]
@@ -700,8 +755,8 @@ mod tests {
         // CPU, CpuAvx512, CpuNeon are all distinct TopologyKinds
         assert!(Topology::CPU.is_same_kind(&Topology::CPU));
         assert!(!Topology::CPU.is_same_kind(&Topology::CpuAvx512));
-        assert!(!Topology::CPU.is_same_kind(&Topology::GPU));
-        assert!(Topology::GPU.is_same_kind(&Topology::GPU));
+        assert!(!Topology::CPU.is_same_kind(&Topology::gpu(0)));
+        assert!(Topology::gpu(0).is_same_kind(&Topology::gpu(0)));
     }
 
     fn make_npu_expr(idx: &str) -> Box<Expr> {
@@ -722,7 +777,7 @@ mod tests {
         );
         assert_eq!(Topology::AMX.kind(), TopologyKind::AMX);
         assert_eq!(Topology::ANE.kind(), TopologyKind::ANE);
-        assert_eq!(Topology::GPU.kind(), TopologyKind::GPU);
+        assert_eq!(Topology::gpu(0).kind(), TopologyKind::GPU);
         assert_eq!(Topology::CpuAvx512.kind(), TopologyKind::CpuAvx512);
         assert_eq!(Topology::CpuNeon.kind(), TopologyKind::CpuNeon);
         assert_eq!(Topology::Current.kind(), TopologyKind::Current);
@@ -757,14 +812,14 @@ mod tests {
         let ty = Type::Tensor(
             ElementType::Generic("T".into()),
             vec![],
-            Some(Topology::GPU),
+            Some(Topology::gpu(0)),
         );
         let mut mapping = HashMap::new();
         mapping.insert("T".into(), Type::Scalar(ElementType::F32));
         let result = ty.substitute(&mapping);
         assert_eq!(
             result,
-            Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU))
+            Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)))
         );
     }
 
@@ -782,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_mangle_tensor_ignores_topology() {
-        let ty_with = Type::Tensor(ElementType::F32, vec![], Some(Topology::GPU));
+        let ty_with = Type::Tensor(ElementType::F32, vec![], Some(Topology::gpu(0)));
         let ty_without = Type::Tensor(ElementType::F32, vec![], None);
         // Topology is intentionally not included in mangling
         assert_eq!(ty_with.mangle(), ty_without.mangle());

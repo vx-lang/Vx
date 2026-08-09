@@ -10,7 +10,11 @@ fn main() -> i32 {
     // This is illegal! GPU cannot natively access NPU HBM directly.
     // CHECK: E6003
     // CHECK-SAME: 't_npu' lives in NPU_HBM
-    // CHECK-SAME: GPU sees only [GPU_HBM, CPU_DRAM]
+    // The device is named, not just the kind: `GPU[0]`, as `NPU[0]` always
+    // was. Now that a program can say `Topology::GPU[1]`, which GPU cannot
+    // reach the buffer is part of the diagnostic rather than context the reader
+    // has to supply.
+    // CHECK-SAME: GPU[0] sees only [GPU_HBM, CPU_DRAM]
     // CHECK-SAME: insert an explicit transfer to GPU_HBM
     let invalid = t_npu;
   }

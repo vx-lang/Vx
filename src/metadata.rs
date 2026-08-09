@@ -17,7 +17,7 @@ use crate::hir::bytecode::{HirInstruction, Opcode, Register, TypeIdx};
 use crate::layout::{FieldLayout, FieldTy};
 use crate::registry::{FnBody, FnSig, ImmutableGlobalRegistry, StructFields, TypeDefinition};
 use crate::symbol::Symbol;
-use crate::syntax::{ElementType, MemorySpace, Topology, Type};
+use crate::syntax::{ElementType, Expr, MemorySpace, Topology, Type};
 use rustc_hash::FxHashMap;
 use std::fs;
 use std::io;
@@ -93,7 +93,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v6";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v7";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -368,16 +368,31 @@ fn read_opt_memory_space(r: &mut Reader) -> Result<Option<MemorySpace>, String> 
     })
 }
 
-/// Only the data-free topology variants (plus the named `Custom`) are encodable so far; the ones
-/// carrying a dimension `Expr` (`NPU`/`AccCore`/`Slice`) return `Err`, which fails the whole enclosing
-/// type closed rather than dropping the count.
+/// Only the data-free topology variants (plus the named `Custom` and an indexed `GPU`) are
+/// encodable so far; the ones carrying a dimension `Expr` (`NPU`/`AccCore`/`Slice`) return `Err`,
+/// which fails the whole enclosing type closed rather than dropping the count.
+///
+/// `GPU` gained a device index, so tag 3 now carries one. A literal index is written; anything
+/// else joins the `Err` group, since a device chosen at run time is not an interface fact. The
+/// format tag is bumped alongside, so an artifact written before this is detected as stale rather
+/// than read as `GPU[0]` followed by whatever came next.
 fn write_topology(w: &mut Writer, t: &Topology) -> Result<(), String> {
     use Topology::*;
     match t {
         CPU => w.u8(0),
         AMX => w.u8(1),
         ANE => w.u8(2),
-        GPU => w.u8(3),
+        GPU(e) => {
+            let Expr::Number(n) = &**e else {
+                return Err("vxlib: GPU device index is not a literal".into());
+            };
+            let idx: i64 = n
+                .value
+                .parse()
+                .map_err(|_| "vxlib: GPU device index is not an integer".to_string())?;
+            w.u8(3);
+            w.u64(idx as u64);
+        }
         CpuAvx512 => w.u8(4),
         CpuNeon => w.u8(5),
         Current => w.u8(6),
@@ -400,7 +415,7 @@ fn read_topology(r: &mut Reader) -> Result<Topology, String> {
         0 => CPU,
         1 => AMX,
         2 => ANE,
-        3 => GPU,
+        3 => Topology::gpu(r.u64()? as i64),
         4 => CpuAvx512,
         5 => CpuNeon,
         6 => Current,

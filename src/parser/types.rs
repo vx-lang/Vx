@@ -54,7 +54,27 @@ impl<'a> Parser<'a> {
             }
             "AMX" => Ok(Topology::AMX),
             "ANE" => Ok(Topology::ANE),
-            "GPU" => Ok(Topology::GPU),
+            "GPU" => {
+                // The index is optional, unlike NPU's: bare `Topology::GPU` predates
+                // multi-device support and means device 0, which is what every program
+                // written against it meant.
+                if self.match_token(&TokenType::LeftBracket) {
+                    let mut expr = self.parse_expr()?;
+                    super::expr::stamp_dim_literals(&mut expr);
+                    self.consume(&TokenType::RightBracket, "Expected ']'")?;
+                    if let Expr::Range(RangeExpr { start, end, .. }) = expr {
+                        Ok(Topology::Slice(
+                            Box::new(Topology::GPU(start.clone())),
+                            start,
+                            end,
+                        ))
+                    } else {
+                        Ok(Topology::GPU(Box::new(expr)))
+                    }
+                } else {
+                    Ok(Topology::gpu(0))
+                }
+            }
             "CpuAvx512" | "CPU_AVX512" => Ok(Topology::CpuAvx512),
             "CpuNeon" | "CPU_Neon" => Ok(Topology::CpuNeon),
             // Any other identifier is a user-defined topology, kept as a bare name here; its

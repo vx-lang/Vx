@@ -168,7 +168,13 @@ impl SmtProver {
                     }
                     Topology::AMX => "Topology_AMX".to_string(),
                     Topology::ANE => "Topology_ANE".to_string(),
-                    Topology::GPU => "Topology_GPU".to_string(),
+                    Topology::GPU(e) => {
+                        if let Expr::Number(n) = &**e {
+                            format!("Topology_GPU_{}", n.value)
+                        } else {
+                            "Topology_GPU".to_string()
+                        }
+                    }
                     _ => "Topology_Complex".to_string(),
                 };
                 self.declarations.insert(name.clone());

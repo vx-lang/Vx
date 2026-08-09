@@ -381,7 +381,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     SmallVector<Value> launchOperands(captures.begin(), captures.end());
     auto launchOp = rewriter.create<vx::LaunchOp>(
         op.getLoc(), resultTypes,
-        SymbolRefAttr::get(rewriter.getContext(), funcName), launchOperands);
+        SymbolRefAttr::get(rewriter.getContext(), funcName),
+        rewriter.getI32IntegerAttr(topology), launchOperands);
 
     // Carried on the launch as well as the kernel: the launch is what lowers to
     // the dispatch call, so this is where the fact has to be to reach a plugin.
@@ -605,6 +606,15 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload += outAttr.getValue().str();
       payload.push_back('\0');
     }
+
+    // The device this launch targets. Without it every dispatch reaches a
+    // plugin identically and a program cannot say "prefill here, decode there"
+    // -- the runtime half of #331. The value is the same topology id
+    // `vx.kernel` carries (src/arch.rs `topology_dispatch_id`); a plugin turns
+    // it into a device ordinal with vx_topology_device_index().
+    payload += "topo=";
+    payload += std::to_string(op.getTopology());
+    payload.push_back('\0');
 
     std::string globalName = (callee + "_str").str();
     LLVM::GlobalOp globalOp = module.lookupSymbol<LLVM::GlobalOp>(globalName);

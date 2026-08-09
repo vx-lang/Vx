@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h> /* vx_payload_topology: strtol */
 #include <string.h> /* vx_payload_field: strlen, memcmp */
 
 #ifdef __cplusplus
@@ -237,6 +238,44 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   }
 
   return NULL;
+}
+
+/// Topology id bands, mirroring `topology_dispatch_id` in src/arch.rs. An id is
+/// a kind plus a device index, so `Topology::GPU[1]` is 501.
+///
+/// A plugin needs the *index* -- which of the devices it serves this launch is
+/// for -- and decoding the band by hand in each backend would put the same
+/// arithmetic in every one of them, to drift the first time a band moves. Hence
+/// one decoder here, next to the producer it has to agree with.
+#define VX_TOPO_CPU 0
+#define VX_TOPO_NPU_BASE 100
+#define VX_TOPO_ACCCORE_BASE 200
+#define VX_TOPO_AMX 300
+#define VX_TOPO_ANE 400
+#define VX_TOPO_GPU_BASE 500
+#define VX_TOPO_BAND 100
+
+/// The device ordinal within `base`'s band, or -1 when the id is not in it.
+///
+/// Returning -1 rather than 0 is the point: "not a GPU id" and "GPU 0" are
+/// different answers, and a plugin that conflated them would set the current
+/// device from a topology meant for other hardware.
+static inline int vx_topology_device_index(int32_t topology_id, int32_t base) {
+  if (topology_id < base || topology_id >= base + VX_TOPO_BAND) {
+    return -1;
+  }
+  return (int)(topology_id - base);
+}
+
+/// The `topo=` payload entry as an integer, or -1 when absent. Absence means a
+/// producer predating the entry, not device 0.
+static inline int32_t vx_payload_topology(const void *payload,
+                                          size_t payload_size) {
+  const char *value = vx_payload_field(payload, payload_size, "topo=");
+  if (!value || value[0] == '\0') {
+    return -1;
+  }
+  return (int32_t)strtol(value, NULL, 10);
 }
 
 /// 2. Asynchronous Execution

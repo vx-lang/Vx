@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(parse_topology("Topology::CPU"), Topology::CPU);
         assert_eq!(parse_topology("Topology::AMX"), Topology::AMX);
         assert_eq!(parse_topology("Topology::ANE"), Topology::ANE);
-        assert_eq!(parse_topology("Topology::GPU"), Topology::GPU);
+        assert_eq!(parse_topology("Topology::GPU"), Topology::gpu(0));
         assert_eq!(parse_topology("Topology::Current"), Topology::Current);
         assert_eq!(parse_topology("Topology::CpuAvx512"), Topology::CpuAvx512);
         assert_eq!(parse_topology("Topology::CPU_AVX512"), Topology::CpuAvx512);
@@ -614,7 +614,7 @@ mod tests {
         let ty = parse_type("Pinned<i32, Topology::GPU>");
         if let Type::Pinned(inner, top) = ty {
             assert_eq!(*inner, Type::Scalar(ElementType::I32));
-            assert_eq!(top, Topology::GPU);
+            assert_eq!(top, Topology::gpu(0));
         } else {
             panic!("Expected Pinned type, got {:?}", ty);
         }

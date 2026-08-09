@@ -97,6 +97,37 @@ bool cuda_available() {
   return available;
 }
 
+/// Select the device this launch targets, and report whether it exists.
+///
+/// The topology id says which GPU the program asked for -- `Topology::GPU[1]`
+/// is 501 -- and honouring it is the whole of running prefill on one device and
+/// decode on another. A launch that names a device this machine does not have
+/// is a mistake worth stopping for: silently running it on device 0 would
+/// produce a correct-looking answer from the wrong half of a disaggregated run.
+///
+/// An absent or out-of-band id leaves the current device alone, which is what a
+/// producer predating the entry means and what a non-GPU topology means.
+bool select_device(int32_t topology_id) {
+  int index = vx_topology_device_index(topology_id, VX_TOPO_GPU_BASE);
+  if (index < 0) {
+    return true;
+  }
+
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || index >= count) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: launch targets GPU %d, but this machine has %d\n",
+            index, count);
+    abort();
+  }
+
+  VX_CUDA_CHECK(cudaSetDevice(index));
+  if (verbose()) {
+    fprintf(stderr, "[Vx CUDA] device %d\n", index);
+  }
+  return true;
+}
+
 /// One handle for the process, created on first use.
 cublasHandle_t cublas_handle() {
   static cublasHandle_t handle = [] {
@@ -353,6 +384,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   vx_gemm_plan plan;
   if (vx_gemm_plan_decode(binary_payload, payload_size, device_args, arg_tags,
                           num_args, &plan)) {
+    if (cuda_available()) {
+      select_device(vx_payload_topology(binary_payload, payload_size));
+    }
     if (run_gemm(plan)) {
       return 1;
     }
