@@ -1,0 +1,91 @@
+//===- gpu_matmul_roles.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A placed `c = a @ b` has to produce the same numbers whoever runs it: the
+// outlined loop nest on the host, or cuBLAS on a GPU when the CUDA backend is
+// built in (#321, #325). The expected output below is therefore deliberately
+// backend-independent -- it is the answer, and which machine computed it is not
+// something the test knows or should.
+//
+// The operands are chosen so that a plugin misreading the dispatch is caught
+// rather than accommodated:
+//
+//   - The first case is 2x3 by 3x4. Rectangular operands make a swapped A and B
+//     inconsistent, so the shapes alone disagree.
+//   - The second is 3x3 by a 3x3 diagonal, where every operand assignment
+//     conforms and only the roles the compiler stated distinguish them. A*B
+//     scales the columns and B*A the rows, so the two differ everywhere the
+//     matrix is not symmetric. The three printed entries also separate A*B from
+//     its own transpose, which is the other way a column-major library gets
+//     this wrong: A*B gives 9, 7, 10 where B*A gives 3, 21, 10 and (A*B)^T
+//     gives 7, 9, 10.
+//
+// The result is not written into a buffer the kernel was handed. `c = a @ b`
+// allocates inside the region and stores the descriptor through a captured
+// slot, so a plugin computing this itself has to publish one -- and reading
+// c[1][3] afterwards only works if the extents and strides it wrote are right.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 38 56 83 128 9 7 10
+
+fn main() -> i32 {
+  // A 2x3 times a 3x4, both filled in row-major reading order.
+  let mut a : Tensor<f32> = Tensor<f32>([ 2, 3 ]);
+  let mut b : Tensor<f32> = Tensor<f32>([ 3, 4 ]);
+  for i in 0..2 {
+    for j in 0..3 {
+      a[i][j] = (i * 3 + j + 1) as f32;
+    }
+  }
+  for i in 0..3 {
+    for j in 0..4 {
+      b[i][j] = (i * 4 + j + 1) as f32;
+    }
+  }
+
+  let mut c : Tensor<f32> = Tensor<f32>([ 2, 4 ]);
+  spawn on(Topology::GPU) {
+    c = a @b;
+  }
+
+  print(c[0][0]);
+  print!(" ");
+  print(c[0][3]);
+  print!(" ");
+  print(c[1][0]);
+  print!(" ");
+  print(c[1][3]);
+  print!(" ");
+
+  // A 3x3 times a 3x3 diagonal. Square operands are the case shapes cannot
+  // settle: swapping them still conforms, and gives different numbers.
+  let mut p : Tensor<f32> = Tensor<f32>([ 3, 3 ]);
+  let mut q : Tensor<f32> = Tensor<f32>([ 3, 3 ]);
+  for i in 0..3 {
+    for j in 0..3 {
+      p[i][j] = (i * 3 + j + 1) as f32;
+      q[i][j] = 0.0;
+    }
+  }
+  for i in 0..3 {
+    q[i][i] = (i + 1) as f32;
+  }
+
+  let mut r : Tensor<f32> = Tensor<f32>([ 3, 3 ]);
+  spawn on(Topology::GPU) {
+    r = p @q;
+  }
+
+  print(r[0][2]);
+  print!(" ");
+  print(r[2][0]);
+  print!(" ");
+  print(r[1][1]);
+
+  return 0;
+}

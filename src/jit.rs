@@ -54,7 +54,13 @@ pub fn execute_mlir(
 
     // Runtime functions are now loaded via libvx_std_core.dylib
 
-    let lib_npu = std::env!("NPU_SHARED_LIB_PATH").to_string();
+    // The dispatch backend built alongside this compiler, overridable at run
+    // time. The compile-time path names a file in the build machine's OUT_DIR,
+    // which is the right answer when the compiler runs where it was built and
+    // no answer at all when it does not: a vxc copied onto a rented GPU box has
+    // to be pointed at a backend built there, against that box's CUDA.
+    let lib_npu = std::env::var("VX_DISPATCH_LIB")
+        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
 
     let mlir_translate_path =
         std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());

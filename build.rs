@@ -25,6 +25,45 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Where a usable CUDA toolkit lives, as (root, library directory), or `None`
+/// to build the portable host shim instead.
+///
+/// A GPU is not required here and deliberately not looked for: the build host
+/// and the run host are different machines in this project's workflow, and the
+/// backend decides at run time whether a device is present (see
+/// `cuda_available()` in runtime/cuda_dispatch.cpp). What must be present to
+/// build is the toolkit -- headers plus libcudart and libcublas.
+///
+/// Set VX_DISABLE_CUDA to build the host shim on a machine that has CUDA.
+fn cuda_root() -> Option<(PathBuf, PathBuf)> {
+    if env::var_os("VX_DISABLE_CUDA").is_some() {
+        return None;
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for var in ["CUDA_HOME", "CUDA_PATH"] {
+        if let Some(dir) = env::var_os(var) {
+            candidates.push(PathBuf::from(dir));
+        }
+    }
+    candidates.push(PathBuf::from("/usr/local/cuda"));
+    candidates.push(PathBuf::from("/usr"));
+
+    for root in candidates {
+        if !root.join("include/cuda_runtime.h").exists() {
+            continue;
+        }
+        for lib in ["lib64", "lib/x86_64-linux-gnu", "lib"] {
+            let libdir = root.join(lib);
+            if libdir.join("libcudart.so").exists() {
+                return Some((root, libdir));
+            }
+        }
+    }
+
+    None
+}
+
 fn main() {
     // Ensure llvm-config is in PATH because the `melior` and `tblgen` dependencies require it.
     let llvm_configs = [
@@ -224,17 +263,30 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
         println!("cargo:rustc-link-lib=framework=CoreML");
     } else {
-        // No accelerator backend on this platform, but a program containing a
-        // non-CPU `spawn on` still needs a provider for the vx_plugin_* ABI or
-        // it will not link. Build the portable host shim, which runs outlined
-        // kernels on the CPU through libffi. See runtime/host_dispatch.cpp.
+        // A program containing a non-CPU `spawn on` needs a provider for the
+        // vx_plugin_* ABI or it will not link, so one is always built. Which
+        // one depends on what the machine has: the CUDA backend where a toolkit
+        // is installed (runtime/cuda_dispatch.cpp), and otherwise the portable
+        // shim that runs outlined kernels on the CPU through libffi
+        // (runtime/host_dispatch.cpp). Both fall back to the host for anything
+        // they cannot route, so the choice affects speed, not results.
         println!("cargo:rerun-if-changed=runtime/host_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/cuda_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/vx_dispatch_plan.h");
+        println!("cargo:rerun-if-changed=runtime/vx_host_call.h");
         println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
+
+        let cuda = cuda_root();
+        let (source, lib_stem) = match cuda {
+            Some(_) => ("runtime/cuda_dispatch.cpp", "vx_cuda_dispatch"),
+            None => ("runtime/host_dispatch.cpp", "vx_host_dispatch"),
+        };
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let lib_shared_path = PathBuf::from(&out_dir).join(format!(
-            "{}vx_host_dispatch{}",
+            "{}{}{}",
             std::env::consts::DLL_PREFIX,
+            lib_stem,
             std::env::consts::DLL_SUFFIX
         ));
 
@@ -246,27 +298,43 @@ fn main() {
         clang_shared_cmd.args([
             "-shared",
             "-fPIC",
-            "runtime/host_dispatch.cpp",
+            source,
             "-lffi",
             "-o",
             lib_shared_path.to_str().unwrap(),
         ]);
         clang_shared_cmd.args(&cxxflags);
 
+        if let Some((root, libdir)) = &cuda {
+            // The rpath matters because this library is loaded by the programs
+            // vxc links, not by vxc itself: without it a program would have to
+            // be run with the toolkit on LD_LIBRARY_PATH.
+            clang_shared_cmd.arg(format!("-I{}/include", root.display()));
+            clang_shared_cmd.arg(format!("-L{}", libdir.display()));
+            clang_shared_cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
+            clang_shared_cmd.args(["-lcudart", "-lcublas"]);
+        }
+
         let status = clang_shared_cmd
             .status()
-            .unwrap_or_else(|_| panic!("Failed to execute {} for host_dispatch", cxx));
-        assert!(
-            status.success(),
-            "{} failed to build the portable host dispatch shim",
-            cxx
-        );
+            .unwrap_or_else(|_| panic!("Failed to execute {} for {}", cxx, source));
+        assert!(status.success(), "{} failed to build {}", cxx, source);
 
         println!(
             "cargo:rustc-env=NPU_SHARED_LIB_PATH={}",
             lib_shared_path.display()
         );
-        println!("cargo:warning=No accelerator backend on this platform; built the portable host dispatch shim (kernels run on the CPU via libffi).");
+        match &cuda {
+            Some((root, _)) => println!(
+                "cargo:warning=Built the CUDA dispatch backend against {}; \
+                 recognised matmuls run on the GPU, everything else on the CPU.",
+                root.display()
+            ),
+            None => println!(
+                "cargo:warning=No accelerator backend on this platform; built the portable \
+                 host dispatch shim (kernels run on the CPU via libffi)."
+            ),
+        }
     }
 
     // --- Compile MLIR Pass Plugin Loader Wrapper ---

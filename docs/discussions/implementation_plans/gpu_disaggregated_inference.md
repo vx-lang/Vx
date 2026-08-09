@@ -101,28 +101,54 @@ too slow for CI.
 ### M1 — CUDA plugin: first light on the A100
 
 **Prerequisite found 2026-08-08: the dispatch ABI carries no element type, rank or
-shape.** `abiTagForType` (`src/dialect/VxLowering.cpp:297`) describes a memref as tag
-`0` and nothing more; the descriptor pointer is opaque. cuBLAS selects its kernel by
-dtype and needs M/N/K, so library routing cannot be written against the current
-boundary — `runtime/npu_dispatch.h` only appears to manage it by hardcoding `float *`,
-rank 2 and 4x4. So M1 begins with an ABI extension (dtype + rank + dims per memref
-argument), which is entirely CPU-testable and also fixes a latent bug, since an f16
-placed matmul is today handed to a dispatcher that assumes f32. Device memory
-operations take explicit byte counts and are unaffected, so residency work and a
-transfer-only `cuda_dispatch.cpp` can proceed in parallel. See #321 for the full note.
+shape.** `abiTagForType` described a memref as tag `0` and nothing more; the descriptor
+pointer was opaque. cuBLAS selects its kernel by dtype and needs M/N/K, so library
+routing could not be written against that boundary — `npu_dispatch.mm` only appeared to
+manage it by hardcoding `float *`, rank 2 and 4x4, and by reinterpreting the last three
+memref arguments as `[result, a, b]` by convention.
 
-- `runtime/cuda_dispatch.cpp` implementing the existing ABI, modelled on
-  `npu_dispatch.mm`'s memref/arg-tag unpacking: `cudaMalloc`/`cudaMemcpy`, cuBLAS for
-  GEMM-shaped kernels, cuDNN fused SDPA for the attention kernel (FlashAttention-2
-  library as fallback option), libffi CPU fallback otherwise.
+**Built, on the CPU, before renting anything** (all of it testable without a GPU):
+
+- The tag now carries element type and rank (8708f73b), and bit 24 says the argument is
+  a *slot* — storage holding a descriptor rather than elements, which is what
+  `c = a @ b` publishes its result through (e5d94139). A slot described verbatim is a
+  rank-0 memref with no element type, byte-identical to an opaque pointer, so a plugin
+  computing the result itself could not have known what to write there.
+- The payload names the operation (`kind=matmul`, b6850f27) and which operand plays
+  which role (`roles=a:0,b:2,out:5` plus `outkind=slot|buffer`, f0581473). Shapes cannot
+  answer the second question: for square operands every assignment of A and B conforms,
+  and swapping them yields a plausible matrix of wrong numbers.
+- `runtime/vx_dispatch_plan.h` decodes a dispatch into a GEMM plan, with no vendor API
+  in it so the decision is testable on any machine, and refuses on every axis where the
+  facts do not line up. `tests/runtime/gemm_plan_test.cpp` exercises it against
+  hand-built descriptors in the exact shape the compiler emits.
+- `runtime/cuda_dispatch.cpp`: `cudaMalloc`/`cudaMemcpy2D` staging, cuBLAS `Sgemm`,
+  `Dgemm` and `GemmEx` for f16/bf16 with f32 accumulation, the row-major-as-transpose
+  call convention, descriptor writeback into the slot, and the libffi host path for
+  everything unrecognised. `build.rs` selects it wherever a CUDA toolkit is installed;
+  no GPU is needed to build it, and a build with it runs correctly on a machine without
+  one.
+- `tests/backend/pass/gpu_matmul_roles.vx` is the acceptance test and is
+  backend-independent by construction: the same expected numbers whether the host loop
+  nest or cuBLAS computed them. Its operands are chosen so a plugin that swaps A and B,
+  or transposes the result, prints different numbers.
+
+**Remaining, and what actually needs the A100:**
+
+- Run the acceptance test on hardware and confirm cuBLAS produces the same numbers as
+  the host path.
+- cuDNN fused SDPA for the attention kernel (FlashAttention-2 library as fallback).
 - `src/plugin/cuda.rs`, mirroring `apple_npe.rs`.
-- Fix **#320** (f16/bf16 scalar codegen) — batch-1 decode is bandwidth-bound; f32
-  concedes 2x before the race starts.
-- Generalize kernel→library routing keyed on the outlined kernel's structure — do not
-  extend the hardcoded 4x4 shape-matching in the ANE path.
-- macOS CI stays green: `REQUIRES: cuda` gating in `compile_test.rs`.
+- Replace the Apple path's `[result, a, b]` convention and 4x4 shape match with the same
+  decoder now that the facts exist.
+- macOS CI stays green: `REQUIRES: cuda` gating in `compile_test.rs` if any test needs
+  a GPU (none does so far, which is the point).
 - **Acceptance:** placed FA and a placed matmul produce GPU-executed results matching the
   CPU oracle, with no fallback message.
+
+**Found along the way, not blocking M1:** dispatch carries no device index (#331), so a
+plugin cannot tell `Topology::GPU[0]` from `GPU[1]`. That is the whole of M4, and the
+fix is one more payload entry.
 
 ### M2 — Device residency (the performance gate)
 
