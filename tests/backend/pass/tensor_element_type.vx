@@ -1,0 +1,77 @@
+//===- tensor_element_type.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Indexing a tensor yields its declared element type (#324).
+//
+// It used to yield `f32` for every element type. A dynamically shaped
+// `Tensor<T>` carries no dims, so the rank-reduction branch in
+// check_indexaccess_expr took `dims.len() > 1` as false and the *first* index
+// already produced `Scalar(T)`. The second index of `t[i][j]` then arrived with
+// a scalar base, matched no branch, and fell through to a
+// `Type::Scalar(ElementType::F32)` default.
+//
+// This reads as an f16 bug and is not one: `i32` and `f64` were retyped exactly
+// the same way. It went unnoticed because f32 tensors are the common case and
+// there the wrong answer coincides with the right one, and because the code
+// already in the tree only ever stored *literals* into non-f32 tensors -- an
+// unsuffixed literal infers to whatever the target wants, so no mismatch is
+// visible until a variable of the element type meets an indexed element.
+//
+// So this covers the class rather than the symptom: one element type per
+// numeric family, each loaded back into a variable of that exact type, which is
+// what forces the checker to commit. f32 is included precisely because it
+// cannot fail -- if it ever does, the change was to indexing itself and not to
+// the element type.
+//
+// Statically shaped tensors always worked (`Tensor<f16, [2, 2]>` has dims, so
+// the rank-reduction branch is taken), which is why one is checked here too:
+// the two paths reach the element type differently and both should agree.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+fn main() -> i32 {
+  // Dynamically shaped: the case that was broken.
+  let mut h : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  h[0][0] = 1.5;
+  let hv : f16 = h[0][0];
+  print(hv);
+  print!(" ");
+
+  let mut d : Tensor<f64> = Tensor<f64>([ 2, 2 ]);
+  d[0][0] = 2.5;
+  let dv : f64 = d[0][0];
+  print(dv);
+  print!(" ");
+
+  let mut n : Tensor<i32> = Tensor<i32>([ 2, 2 ]);
+  n[0][0] = 7;
+  let nv : i32 = n[0][0];
+  print(nv);
+  print!(" ");
+
+  let mut f : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  f[0][0] = 3.25;
+  let fv : f32 = f[0][0];
+  print(fv);
+  print!(" ");
+
+  // Statically shaped: reaches the element type by the other branch.
+  let mut s : Tensor<f16, [ 2, 2 ]> = Tensor<f16>([ 2, 2 ]);
+  s[1][1] = 4.5;
+  let sv : f16 = s[1][1];
+  print(sv);
+  print!(" ");
+
+  // A loaded element must combine with a variable of the same type. This is the
+  // form a hand-written half-precision kernel needs -- accumulate in a register,
+  // store back -- and the one that could not be written at all.
+  let mut acc : f16 = 0.0;
+  acc = acc + h[0][0] * s[1][1];
+  print(acc);
+  return 0;
+}
+
+// EXPECT: 1.5 2.5 7 3.25 4.5 6.75

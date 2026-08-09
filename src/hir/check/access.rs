@@ -543,6 +543,20 @@ impl<'a> TypeChecker<'a> {
                     // `data` pointer. `v[i]` on a `Vec<i32>` is `i32`, not the `f32` this used to
                     // default to (a bug coercion hid, #240).
                     elem
+                } else if let Type::Scalar(el_ty) = base {
+                    // A dynamically shaped `Tensor<T>` carries no dims, so the branch above
+                    // takes `dims.len() > 1` as false and the *first* index already yields
+                    // `Scalar(T)`. The second index of `t[i][j]` therefore arrives here with a
+                    // scalar base, and used to fall through to the F32 default below --
+                    // silently retyping the element of every tensor whose element is not f32.
+                    // f32 tensors never revealed it because the wrong answer matched the right
+                    // one, which is why this reads as an f16 bug (#324) and is not one.
+                    //
+                    // Carrying the element type through is what a further index of an
+                    // already-elemental value means. It does not model rank: a rank-unknown
+                    // tensor cannot say how many indices exhaust it, and `t[i]` yielding a row
+                    // view rather than an element is a separate question (#324).
+                    Type::Scalar(el_ty)
                 } else {
                     Type::Scalar(ElementType::F32)
                 }

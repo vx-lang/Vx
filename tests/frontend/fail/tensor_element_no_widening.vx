@@ -1,0 +1,33 @@
+//===- tensor_element_no_widening.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The negative direction of #324: an indexed element does not silently widen to
+// the annotated type. Under the Rust numeric model (#240) there are no implicit
+// scalar conversions, so binding an `f16` element to an `f32` is an error and
+// the programmer writes `as f32`.
+//
+// This is the direction worth pinning. The bug being fixed was that indexing
+// *always* produced `f32`, and the obvious repair -- widen the element to
+// whatever the context asks for -- would make every case in
+// tests/backend/pass/tensor_element_type.vx pass while restoring exactly the
+// silent retyping that hid the defect for so long. A test that only checks the
+// element type arrives correctly cannot tell those two implementations apart;
+// this one can.
+//
+// f32 is deliberately the annotation here, because f32 is where the original
+// bug was invisible: if the element type is ever defaulted again, this is the
+// case that stays quiet.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Type mismatch in variable declaration
+fn main() -> i32 {
+  let mut h : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  h[0][0] = 1.5;
+  let widened : f32 = h[0][0];
+  print(widened);
+  return 0;
+}
