@@ -79,6 +79,25 @@ the rented pod (see "Build & deployment discipline" below).
 - **Acceptance:** `flash_attention_placed.vx` and the Llama program generate correct
   output on the EC2 CPU, from the packaged artifact rather than the source tree.
 
+**Status: done except the executing-test item (2026-08-08).** Linux port landed in
+5e83aa6a; it needed a portable dispatch shim (no provider for
+`vx_plugin_dispatch_async` existed off macOS at all), a PATH-resolved `llvm-config`,
+`-rdynamic` so `dlsym` can see outlined kernels in ELF, and `symbol-dce` before memref
+finalization to stop dead `extern` declarations minting one dangling `@malloc_N` per
+allocation site.
+
+The Llama base changed as a result of what running it revealed. `llama2_v2.vx` prints
+token pointers rather than text (#323), so `tests/backend/pass/llama2.vx` became the
+reference program; 997d3d87 fixed four numerical defects in it and it now matches
+llama2.c **token for token** (64/64 ids, greedy, from BOS). Prompted parity is blocked
+by a character-level tokenizer, not by the transformer — see #323. The benchmark copies
+still carry all four defects (#322).
+
+Remaining: promoting it to an executing CI test needs a per-test environment mechanism.
+The `EXPECT:` path JITs in-process, so it cannot set `LLAMA_TOKENS_CONFIG` the way a
+`// RUN:` line (which goes through `sh -c`) can, and the default 1000-token budget is
+too slow for CI.
+
 ### M1 — CUDA plugin: first light on the A100
 
 - `runtime/cuda_dispatch.cpp` implementing the existing ABI, modelled on
