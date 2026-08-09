@@ -1,0 +1,57 @@
+//===- f16_execution.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// #320 reported f16 as declare-and-admit only, unable to execute, and priced a
+// 2x memory-bandwidth penalty on serving in f32 instead. Measurement showed the
+// compute path already worked and only printing did not, so this pins the part
+// that was already true -- otherwise the claim rests on a probe someone ran
+// once rather than on anything the suite would notice regressing.
+//
+// Covered here: f16 scalar arithmetic, f16 tensor store and load, and an f16
+// matmul through the `@` operator (which lowers to `linalg.matmul`).
+//
+// Results are read back through `as f32` rather than printed as f16 tensors:
+// `printMemrefBF16` is absent from the MLIR runner utils on Linux, so printing
+// a half-precision *tensor* fails to link there for reasons unrelated to
+// arithmetic. Scalars are fine -- they widen (see scalar_print_narrow.vx).
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+fn main() -> i32 {
+  // Scalar arithmetic in f16.
+  let x : f16 = 1.5;
+  let y : f16 = 2.5;
+  let sum : f16 = x + y;
+  print(sum);
+  print!(" ");
+
+  // Store and load through an f16 tensor.
+  let mut t : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      t[i][j] = 1.5;
+    }
+  }
+  let loaded : f32 = t[1][1] as f32;
+  print(loaded);
+  print!(" ");
+
+  // f16 matmul. Every entry of a 2x2 of 1.0 times a 2x2 of 3.0 is 6.0.
+  let mut a : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  let mut b : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = 1.0;
+      b[i][j] = 3.0;
+    }
+  }
+  let c : Tensor<f16> = a @b;
+  let prod : f32 = c[0][0] as f32;
+  print(prod);
+  return 0;
+}
+
+// EXPECT: 4 1.5 6

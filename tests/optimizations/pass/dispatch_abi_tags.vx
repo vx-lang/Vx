@@ -1,0 +1,58 @@
+//===- dispatch_abi_tags.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The per-argument tag handed to `vx_plugin_dispatch_async` carries a memref's
+// element type and rank, so a plugin can tell what it was given (#321). Before
+// this every memref was tag 0 plus an opaque descriptor pointer -- enough to
+// pass the argument, not enough to route it to a vendor kernel, since cuBLAS
+// picks its kernel by dtype and needs M/N/K.
+//
+// Layout, from include/vx_hardware_runtime.h:
+//
+//   bits [7:0]    kind, 0 for a memref (unchanged, so the calling convention
+//                 and the libffi mapping are untouched)
+//   bits [15:8]   element type code
+//   bits [23:16]  rank
+//
+// So an f16 rank-2 memref is (2 << 16) | (8 << 8) = 133120, and an f32 rank-2
+// memref is (2 << 16) | (6 << 8) = 132608. Checking the literals is the point:
+// the runtimes decode these by hand, so an encoding change not mirrored in the
+// header would otherwise surface only as a plugin misreading a buffer at run
+// time -- silently, since the pointer would still be valid.
+//
+// This lives under optimizations/ rather than middle_end/ because the tag is
+// materialized by `vx-to-llvm`, and the middle-end runner checks the module as
+// it stands *before* the lowering pipeline. It also needs real FileCheck for
+// CHECK-DAG: the two kernels may be emitted in either order.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK-DAG: llvm.mlir.constant(133120 : i32)
+// CHECK-DAG: llvm.mlir.constant(132608 : i32)
+
+fn half_kernel(a : Tensor<f16>) -> Tensor<f16> {
+  let mut c : Tensor<f16> = Tensor<f16>([ 2, 2 ]);
+  spawn on(Topology::GPU) {
+    for i in 0..2 {
+      for j in 0..2 {
+        c[i][j] = a[i][j];
+      }
+    }
+  }
+  return c;
+}
+
+fn single_kernel(a : Tensor<f32>) -> Tensor<f32> {
+  let mut c : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  spawn on(Topology::GPU) {
+    for i in 0..2 {
+      for j in 0..2 {
+        c[i][j] = a[i][j];
+      }
+    }
+  }
+  return c;
+}

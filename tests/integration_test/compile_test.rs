@@ -172,6 +172,25 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    // This runner implements only plain `// CHECK:`, matched in order. A file
+    // written against real FileCheck's directives would otherwise contribute no
+    // checks at all and pass vacuously, which is indistinguishable from passing
+    // for the right reason. Refuse it instead and say where such a test goes:
+    // tests/optimizations/ runs its RUN line through real FileCheck.
+    if let Some(bad) = source
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("// CHECK-") && !line.starts_with("// CHECK-LABEL:"))
+    {
+        return Err(format!(
+            "{:?} uses `{}`, which this runner does not implement -- it reads only \
+             `// CHECK:`, so the file would pass without checking anything. Use plain \
+             `// CHECK:` lines, or move the test to tests/optimizations/pass/ where the \
+             RUN line is executed through real FileCheck.",
+            path, bad
+        ));
+    }
+
     // Extract // CHECK: lines
     let check_lines: Vec<String> = source
         .lines()

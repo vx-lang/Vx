@@ -1,0 +1,36 @@
+//===- scalar_print_narrow.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// #320: the sibling of `scalar_print.vx` (#185) for the narrow scalars. The
+// scalar fast-path in `lower_print_call` knew only f32/f64/i32/i64, so anything
+// narrower fell through to the `printMemref*` path, whose element-type
+// extraction requires a `memref<...>`/`tensor<...>` wrapper and rejected a bare
+// scalar with `Unsupported MLIR element type in: f16`.
+//
+// There is no print helper for these widths and no `printMemrefF16`, so the fix
+// widens instead: `arith.extf` to f32 for f16/bf16, `arith.extsi` to i32 for
+// i8/i16. The values below are chosen to survive that widening exactly -- 4.5
+// and 2.5 are representable in both f16 and bf16, and 300 needs the full i16
+// range so a truncation to i8 would be visible.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+fn main() -> i32 {
+  let a : f16 = 4.5;
+  print(a);
+  print!(" ");
+  let b : bf16 = 2.5;
+  print(b);
+  print!(" ");
+  let c : i8 = 7;
+  print(c);
+  print!(" ");
+  let d : i16 = 300;
+  print(d);
+  return 0;
+}
+
+// EXPECT: 4.5 2.5 7 300
