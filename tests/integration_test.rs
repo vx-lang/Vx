@@ -5,6 +5,7 @@ mod integration_test {
     mod compile_test;
     mod flat_codegen_differential;
     mod fuzz;
+    mod gemm_plan_test;
     mod graph_workload_test;
     mod lint_test;
     mod memory_algebra_axioms;

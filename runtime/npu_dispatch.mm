@@ -227,6 +227,7 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha, float b
 
 
 #include "../include/vx_hardware_runtime.h"
+#include "vx_host_call.h"
 #include <cstdlib>
 
 extern "C" {
@@ -239,32 +240,6 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     memcpy(ptr, host_ptr, bytes);
   }
   return ptr;
-}
-
-// Map a Vx ABI type tag (see abiTagForType in src/dialect/VxLowering.cpp) to a
-// libffi type. Keep this switch in sync with the producer's encoding.
-static ffi_type *vx_abi_ffi_type(int32_t tag) {
-  // Only the kind byte affects the calling convention; a memref's element type
-  // and rank ride in the high bytes (see vx_hardware_runtime.h).
-  switch (VX_ABI_KIND(tag)) {
-  case 1:
-    return &ffi_type_uint8; // i1
-  case 2:
-    return &ffi_type_sint8; // i8
-  case 3:
-    return &ffi_type_sint16; // i16
-  case 4:
-    return &ffi_type_sint32; // i32
-  case 5:
-    return &ffi_type_sint64; // i64
-  case 6:
-    return &ffi_type_float; // f32
-  case 7:
-    return &ffi_type_double; // f64
-  case 0:
-  default:
-    return &ffi_type_pointer; // memref descriptor / fallback
-  }
 }
 
 // Invoke the JIT-compiled kernel through its MLIR C-interface. The producer
@@ -367,31 +342,18 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 
 #ifdef VX_ENABLE_CPU_FALLBACK
   printf("[Vx Dispatcher] Hardware backend unsupported for %s. Falling back to CPU libffi dispatch!\n", kernel_name);
-  char ciface_name[256];
-  snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
 
-  void *kernel = dlsym(RTLD_DEFAULT, ciface_name);
+  void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     printf("DEBUG: Could not find JIT kernel %s, skipping execution\n",
-           ciface_name);
+           kernel_name);
     return 1;
   }
 
-  std::vector<ffi_type *> types(num_args > 0 ? (size_t)num_args : 1);
-  for (int64_t i = 0; i < num_args; ++i) {
-    types[i] = vx_abi_ffi_type(arg_tags[i]);
-  }
-
-  ffi_cif cif;
-  if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned)num_args, &ffi_type_void,
-                   types.data()) != FFI_OK) {
-    printf("ERROR: ffi_prep_cif failed for %s\n", ciface_name);
+  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+    printf("ERROR: could not build a call for %s\n", kernel_name);
     return 0;
   }
-
-  // The kernel C-interface returns void; results flow through memref captures.
-  ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr,
-           device_args);
   return 1;
 #else
   std::cerr << "[Vx Dispatcher] FATAL: Kernel " << kernel_name << " not explicitly handled, and CPU fallback is disabled!" << std::endl;

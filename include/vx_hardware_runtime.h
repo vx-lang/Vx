@@ -137,8 +137,23 @@ static inline const int64_t *vx_memref_strides(const void *desc, int32_t rank) {
 
 /// The data pointer a descriptor points at. For a slot argument
 /// (VX_ABI_IS_SLOT) this is the descriptor the slot holds, not element data.
+///
+/// This is the *base*: the first element sits `offset` elements further on, and
+/// a view into a larger buffer has a non-zero offset. Use vx_memref_data() to
+/// get the element the descriptor's index [0,...] refers to.
 static inline void *vx_memref_aligned(const void *desc) {
   return ((void *const *)desc)[1];
+}
+
+/// Elements between the aligned base and the first element of this view.
+static inline int64_t vx_memref_offset(const void *desc) {
+  return *(const int64_t *)((const char *)desc + 2 * sizeof(void *));
+}
+
+/// Where a descriptor's elements actually start.
+static inline void *vx_memref_data(const void *desc, int32_t dtype) {
+  return (char *)vx_memref_aligned(desc) +
+         vx_memref_offset(desc) * (int64_t)vx_dtype_bytes(dtype);
 }
 
 /// Write a contiguous row-major descriptor for `data` into `desc`.

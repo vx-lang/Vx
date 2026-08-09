@@ -25,15 +25,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "../include/vx_hardware_runtime.h"
+#include "vx_host_call.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
-
-#include <dlfcn.h>
-#include <ffi.h>
 
 namespace {
 
@@ -48,31 +44,42 @@ bool verbose() {
   return on;
 }
 
-// Map a Vx ABI type tag (abiTagForType in src/dialect/VxLowering.cpp) to a
-// libffi type. Keep this switch in sync with the producer's encoding and with
-// the copy in runtime/npu_dispatch.mm. Only the kind byte participates: a
-// memref's element type and rank ride in the high bytes and do not change how
-// the argument is passed.
-ffi_type *abi_ffi_type(int32_t tag) {
-  switch (VX_ABI_KIND(tag)) {
-  case 1:
-    return &ffi_type_uint8; // i1
-  case 2:
-    return &ffi_type_sint8; // i8
-  case 3:
-    return &ffi_type_sint16; // i16
-  case 4:
-    return &ffi_type_sint32; // i32
-  case 5:
-    return &ffi_type_sint64; // i64
-  case 6:
-    return &ffi_type_float; // f32
-  case 7:
-    return &ffi_type_double; // f64
-  case 0:
-  default:
-    return &ffi_type_pointer; // memref descriptor / fallback
+// Describe one argument on stderr, for VX_DISPATCH_VERBOSE. The point is to
+// show what a plugin has to work with: the tag says what each pointer is, and
+// for anything ranked the descriptor says how big it is.
+void describe_arg(int64_t i, int32_t tag, void *arg) {
+  if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {
+    fprintf(stderr, "  arg %lld: scalar kind=%d\n", (long long)i,
+            VX_ABI_KIND(tag));
+    return;
   }
+
+  int32_t rank = VX_ABI_RANK(tag);
+  int32_t elem = VX_ABI_ELEM(tag);
+  if (rank == 0 && elem == VX_DTYPE_UNKNOWN) {
+    // Kind 0 covers both a ranked memref and the pointer fallback in
+    // abiTagForType; only the latter carries no element type or rank.
+    fprintf(stderr, "  arg %lld: opaque ptr\n", (long long)i);
+    return;
+  }
+
+  // A slot holds a descriptor rather than elements, and the tag describes the
+  // one it holds -- so the shape below is read one indirection further in.
+  const void *desc = *(const void **)arg;
+  bool is_slot = VX_ABI_IS_SLOT(tag);
+  if (is_slot && desc) {
+    desc = vx_memref_aligned(desc);
+  }
+
+  fprintf(stderr, "  arg %lld: %s %s rank=%d shape=[", (long long)i,
+          is_slot ? "slot ->" : "memref", vx_dtype_name(elem), rank);
+  if (desc) {
+    const int64_t *sizes = vx_memref_sizes(desc);
+    for (int32_t d = 0; d < rank; ++d) {
+      fprintf(stderr, "%s%lld", d ? "x" : "", (long long)sizes[d]);
+    }
+  }
+  fprintf(stderr, "] elem_bytes=%zu\n", vx_dtype_bytes(elem));
 }
 
 } // namespace
@@ -107,60 +114,22 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             kind ? kind : "<unclassified>", roles ? roles : "-",
             outkind ? outkind : "-");
     for (int64_t i = 0; i < num_args; ++i) {
-      int32_t tag = arg_tags[i];
-      if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {
-        fprintf(stderr, "  arg %lld: scalar kind=%d\n", (long long)i,
-                VX_ABI_KIND(tag));
-        continue;
-      }
-      int32_t rank = VX_ABI_RANK(tag);
-      int32_t elem = VX_ABI_ELEM(tag);
-      if (rank == 0 && elem == VX_DTYPE_UNKNOWN) {
-        // Kind 0 covers both a ranked memref and the pointer fallback in
-        // abiTagForType; only the latter carries no element type or rank.
-        fprintf(stderr, "  arg %lld: opaque ptr\n", (long long)i);
-        continue;
-      }
-      const void *desc = *(const void **)device_args[i];
-      fprintf(stderr, "  arg %lld: memref %s rank=%d shape=[", (long long)i,
-              vx_dtype_name(elem), rank);
-      if (desc) {
-        const int64_t *sizes = vx_memref_sizes(desc);
-        for (int32_t d = 0; d < rank; ++d) {
-          fprintf(stderr, "%s%lld", d ? "x" : "", (long long)sizes[d]);
-        }
-      }
-      fprintf(stderr, "] elem_bytes=%zu\n", vx_dtype_bytes(elem));
+      describe_arg(i, arg_tags[i], device_args[i]);
     }
   }
 
-  char ciface_name[256];
-  snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
-
-  void *kernel = dlsym(RTLD_DEFAULT, ciface_name);
+  void *kernel = vx_host_kernel_symbol(kernel_name);
   if (!kernel) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: outlined kernel %s not found\n",
-            ciface_name);
+            kernel_name);
     abort();
   }
 
-  std::vector<ffi_type *> types(num_args > 0 ? static_cast<size_t>(num_args)
-                                             : 1);
-  for (int64_t i = 0; i < num_args; ++i) {
-    types[i] = abi_ffi_type(arg_tags[i]);
-  }
-
-  ffi_cif cif;
-  if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, static_cast<unsigned>(num_args),
-                   &ffi_type_void, types.data()) != FFI_OK) {
-    fprintf(stderr, "[Vx Dispatcher] FATAL: ffi_prep_cif failed for %s\n",
-            ciface_name);
+  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+    fprintf(stderr, "[Vx Dispatcher] FATAL: could not build a call for %s\n",
+            kernel_name);
     abort();
   }
-
-  // The kernel C-interface returns void; results flow through memref captures.
-  ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr,
-           device_args);
   return 1;
 }
 
