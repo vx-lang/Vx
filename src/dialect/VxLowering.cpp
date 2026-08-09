@@ -147,14 +147,55 @@ static std::string matmulRolesOf(Operation *matmul, Region &body,
   // Without this the roles resolve for parameters and silently do not for
   // locals, which is the common case: the attribute would simply be absent and
   // every plugin would fall back, with nothing to indicate why.
+  // The single value stored into `slot` within the region, if there is exactly
+  // one. More than one and the slot's contents at the matmul are not decidable
+  // by inspection, so no role is claimed.
+  auto soleStoreInto = [&](Value slot) -> Value {
+    Value stored;
+    unsigned count = 0;
+    for (Block &block : body) {
+      for (Operation &opRef : block) {
+        if (opRef.getName().getStringRef() != "memref.store" ||
+            opRef.getNumOperands() < 2) {
+          continue;
+        }
+        if (opRef.getOperand(1) == slot) {
+          stored = opRef.getOperand(0);
+          ++count;
+        }
+      }
+    }
+    return count == 1 ? stored : Value();
+  };
+
   auto indexOfSource = [&](Value v) -> int {
     int idx = indexOf(v);
     if (idx >= 0)
       return idx;
+
     Operation *def = v.getDefiningOp();
-    if (def && def->getName().getStringRef() == "memref.load" &&
-        def->getNumOperands() >= 1)
-      return indexOf(def->getOperand(0));
+    if (!def || def->getName().getStringRef() != "memref.load" ||
+        def->getNumOperands() < 1) {
+      return -1;
+    }
+
+    // A tensor declared in the enclosing function lives in a slot --
+    // `memref<memref<?x?xf32>>` -- and the region loads the descriptor out of
+    // it, so the captured value is the slot rather than the buffer.
+    Value slot = def->getOperand(0);
+    idx = indexOf(slot);
+    if (idx >= 0)
+      return idx;
+
+    // Or the buffer itself was captured and the outliner re-homed it into a
+    // slot of the kernel's own: `store %capture, %local ; load %local`. The
+    // slot is then local and names nothing, so follow the store that filled it.
+    // Both shapes occur -- which one depends on how the tensor was bound in the
+    // caller -- and resolving only the first left roles absent on the other,
+    // silently, with every plugin falling back and nothing to say why.
+    if (Value stored = soleStoreInto(slot))
+      return indexOf(stored);
+
     return -1;
   };
 

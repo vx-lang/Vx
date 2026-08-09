@@ -1,0 +1,68 @@
+//===- matvec_view_routing.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The whole path a model's arithmetic has to take, end to end, in the shape it
+// actually has (#321).
+//
+// A weight matrix living in foreign memory becomes a tensor with no copy
+// (#336), is read without being consumed (#335), multiplies a column vector on
+// a named device (#331), and the result is classified as a GEMM with its
+// operand roles so a plugin can route it to a vendor kernel (#325). Each of
+// those was a separate hole; this is the composition, which is what matters.
+//
+// The shape is `W[d,n] @ x[n,1]`, which is every matmul in a decoder: 4x3 by
+// 3x1 here. That the trailing dimension is 1 is the point -- a matvec still
+// classifies, since a GEMM with N = 1 is what a vendor library is given anyway.
+//
+// The role resolution has to see through two indirections, and which one occurs
+// depends on how the tensor was bound in the caller: either the capture is the
+// slot the tensor lives in and the region loads from it, or the buffer itself
+// is captured and the outliner re-homes it into a slot of the kernel's own
+// (`store %capture, %local ; load %local`). Resolving only the first left roles
+// absent on the second -- silently, with every plugin falling back to the
+// outlined loop nest and nothing to say why. This program produces the second.
+//
+// W is 1..12 row-major and x is [1,2,3], so y[0] is 1+4+9 and y[3] is
+// 10+22+36. Backend-independent by construction, as in gpu_matmul_roles.vx:
+// the host loop nest and cuBLAS have to agree.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 14 68
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(12) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(3) };
+  unsafe {
+    for i in 0..12 {
+      pw[i] = (i + 1) as f32;
+    }
+    for i in 0..3 {
+      px[i] = (i + 1) as f32;
+    }
+  }
+
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 4, 3) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 3, 1) };
+
+  let mut y : Tensor<f32> = Tensor<f32>([ 4, 1 ]);
+  spawn on(Topology::GPU[0]) {
+    y = &w @ &x;
+  }
+
+  print(y[0][0]);
+  print!(" ");
+  print(y[3][0]);
+
+  unsafe { vx_free_f32(pw, 12); vx_free_f32(px, 3); }
+  return 0;
+}

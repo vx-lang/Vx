@@ -141,6 +141,36 @@ pub extern "C" fn trace_end() {
 // Memory & Pointers
 // ============================================================================
 
+/// A zeroed buffer of `n` f32s, for code that then hands the pointer to
+/// something expecting foreign memory -- a tensor view over it, say (#336).
+///
+/// The runtime already produces such buffers (`vx_load_weights` mmaps a model
+/// and returns `*mut f32`); this is the same thing without a file behind it, so
+/// the pointer-facing paths can be exercised on their own.
+#[no_mangle]
+pub extern "C" fn vx_alloc_f32(n: i32) -> *mut f32 {
+    if n <= 0 {
+        return ptr::null_mut();
+    }
+    let mut buf = vec![0.0f32; n as usize];
+    let p = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    p
+}
+
+/// Free a buffer from `vx_alloc_f32`. The length is required because the
+/// allocation is a `Vec`, and reconstructing one needs the capacity it was
+/// created with.
+#[no_mangle]
+pub extern "C" fn vx_free_f32(p: *mut f32, n: i32) {
+    if p.is_null() || n <= 0 {
+        return;
+    }
+    unsafe {
+        drop(Vec::from_raw_parts(p, n as usize, n as usize));
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
     unsafe { p.add(offset as usize) }

@@ -1,0 +1,76 @@
+//===- tensor_view_2d.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A rank-2 tensor over memory it does not own, with no copy (#336).
+//
+// The only bridge from a pointer to a tensor was `Tensor::from_ptr_2d`, which
+// allocates and copies element by element. That is fine once at startup and
+// impossible per token, and a scalar copy loop is not something a later pass
+// removes. A memref *is* a descriptor -- {allocated, aligned, offset, sizes,
+// strides} -- so pointing one at existing storage is the natural operation; it
+// simply had no spelling.
+//
+// This matters because of what it unlocks rather than for its own sake. A model
+// whose weights are `*mut f32` offsets into an mmap'd blob could not use the
+// tensor operators, so its matmuls were hand-written loops, so they were not
+// eligible for the GEMM routing that sends a `@` to cuBLAS (#325). A view is
+// the missing link in that chain.
+//
+// Aliasing is the property under test, and the reason the last two numbers are
+// here: after writing through the pointer, the view must show the new value. A
+// copy would not, and every other check in this file would pass anyway.
+//
+// Unsafe by construction: nothing verifies that the extents describe the memory
+// truthfully. That is the same claim `*mut T` indexing already makes.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 1 6 22 28 49 64 21 26
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+  fn vx_free_f32(p : *mut f32, n : i32) -> void;
+}
+
+fn main() -> i32 {
+  // A 2x3 of 1..6 and a 3x2 of 1..6, both in foreign memory.
+  let pa : *mut f32 = unsafe { vx_alloc_f32(6) };
+  let pb : *mut f32 = unsafe { vx_alloc_f32(6) };
+  unsafe { for i in 0..6 { pa[i] = (i + 1) as f32; pb[i] = (i + 1) as f32; } }
+
+  let a : Tensor<f32> = unsafe { tensor_view_2d(pa, 2, 3) };
+  let b : Tensor<f32> = unsafe { tensor_view_2d(pb, 3, 2) };
+
+  // Row-major strides: element 5 of the buffer is a[1][2].
+  print(a[0][0]);
+  print!(" ");
+  print(a[1][2]);
+  print!(" ");
+
+  // [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]] = [[22,28],[49,64]].
+  let c : Tensor<f32> = &a @ &b;
+  print(c[0][0]);
+  print!(" ");
+  print(c[0][1]);
+  print!(" ");
+  print(c[1][0]);
+  print!(" ");
+  print(c[1][1]);
+  print!(" ");
+
+  // Change the underlying memory and multiply again. A view sees it; a copy
+  // taken when the view was made would not. Row 0 becomes [0,2,3], so the
+  // first row of the product becomes [0+6+15, 0+8+18] = [21, 26].
+  unsafe { pa[0] = 0.0; }
+  let d : Tensor<f32> = &a @ &b;
+  print(d[0][0]);
+  print!(" ");
+  print(d[0][1]);
+
+  unsafe { vx_free_f32(pa, 6); vx_free_f32(pb, 6); }
+  return 0;
+}

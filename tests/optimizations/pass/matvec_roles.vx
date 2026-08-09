@@ -1,0 +1,62 @@
+//===- matvec_roles.vx - Vx Compiler ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Operand roles resolve when the outliner re-homes a captured buffer into a
+// slot of the kernel's own (#325).
+//
+// There are two shapes a captured tensor arrives in, and which one occurs
+// depends on how it was bound in the caller:
+//
+//   1. the slot the tensor lives in is captured, and the region loads from it
+//      -- covered by kernel_roles_local.vx
+//   2. the buffer itself is captured, and the outliner stores it into a local
+//      slot before the body reads it back:
+//
+//        %alloca = memref.alloca() : memref<memref<?x?xf32>>
+//        memref.store %arg0, %alloca[]
+//        %0 = memref.load %alloca[]
+//        linalg.matmul ins(%0, %1 ...)
+//
+// In the second, the slot the load names is local and identifies nothing, so
+// following only the load left `a` and `b` unresolved. The kernel was still
+// labelled `matmul` and carried no roles at all -- and a plugin needs the roles,
+// since the operation name alone does not say which buffer is which. It would
+// decline and run the outlined loop nest: correct numbers, never on the
+// accelerator, no diagnostic.
+//
+// A view produces this shape, which is how it was found, and a view is how a
+// model's weights become tensors in the first place (#336).
+//
+// The store that fills the slot has to be the only one, or what it holds at the
+// matmul is not decidable by inspection and no role is claimed.
+//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// CHECK: vx.launch @vx_npu_kernel_0
+// CHECK: vx.kernel_kind = "matmul"
+// CHECK: vx.kernel_out_kind = "slot"
+// CHECK: vx.kernel_roles = "a:0,b:1,out:5"
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: \00kind=matmul\00roles=a:0,b:1,out:5\00outkind=slot\00
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+fn matvec() -> f32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(12) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(3) };
+
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 4, 3) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 3, 1) };
+
+  let mut y : Tensor<f32> = Tensor<f32>([ 4, 1 ]);
+  spawn on(Topology::GPU[0]) {
+    y = &w @ &x;
+  }
+  return y[0][0];
+}

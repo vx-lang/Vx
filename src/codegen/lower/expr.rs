@@ -1788,6 +1788,116 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
     None
 }
 
+/// Lower `tensor_view_2d(ptr, rows, cols)` to a rank-2 memref descriptor built
+/// over `ptr`, with no allocation and no copy (#336).
+///
+/// The descriptor MLIR passes for a ranked memref is
+/// `{allocated, aligned, offset, sizes[rank], strides[rank]}`, so a view is
+/// that struct with both pointers aimed at the caller's storage, a zero offset,
+/// the given extents, and row-major strides. `unrealized_conversion_cast` is
+/// how a built descriptor re-enters memref-typed IR; it is the same
+/// materialization the memref-to-LLVM conversion uses.
+///
+/// Nothing here checks that the extents describe the memory truthfully -- that
+/// is the caller's claim, which is why the surface form requires `unsafe`.
+fn lower_tensor_view_2d<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    args: &[Expr],
+    type_args: Option<&[syntax::Type]>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    if args.len() != 3 {
+        return Err(LowerError::from(
+            "tensor_view_2d expects (ptr, rows, cols)".to_string(),
+        ));
+    }
+
+    let elem_str = match type_args {
+        Some(tys) if !tys.is_empty() => gen.lower_type_str(&tys[0])?,
+        _ => "f32".to_string(),
+    };
+
+    let (ptr_val, _ptr_ty, block) = gen.generate_expr(&args[0], block)?;
+    let (rows_val, rows_ty, block) = gen.generate_expr(&args[1], block)?;
+    let (cols_val, cols_ty, block) = gen.generate_expr(&args[2], block)?;
+
+    let i64_ty =
+        Type::parse(gen.context, "i64").ok_or_else(|| LowerError::ParseType("i64".to_string()))?;
+    let to_i64 = |gen: &mut MeliorGenerator<'c>,
+                  v: Value<'c, 'c>,
+                  t: Type<'c>,
+                  b: &melior::ir::BlockRef<'c, 'c>|
+     -> Result<Value<'c, 'c>, LowerError> {
+        if t == i64_ty {
+            return Ok(v);
+        }
+        let ext = OperationBuilder::new("arith.extsi", gen.loc())
+            .add_operands(&[v])
+            .add_results(&[i64_ty])
+            .build()?;
+        Ok(b.append_operation(ext).result(0)?.into())
+    };
+    let rows_i64 = to_i64(gen, rows_val, rows_ty, &block)?;
+    let cols_i64 = to_i64(gen, cols_val, cols_ty, &block)?;
+
+    let const_i64 = |gen: &mut MeliorGenerator<'c>,
+                     n: i64,
+                     b: &melior::ir::BlockRef<'c, 'c>|
+     -> Result<Value<'c, 'c>, LowerError> {
+        let op = OperationBuilder::new("arith.constant", gen.loc())
+            .add_results(&[i64_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(i64_ty, n).into(),
+            )])
+            .build()?;
+        Ok(b.append_operation(op).result(0)?.into())
+    };
+    let zero = const_i64(gen, 0, &block)?;
+    let one = const_i64(gen, 1, &block)?;
+
+    let desc_ty_str = "!llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>".to_string();
+    let desc_ty = Type::parse(gen.context, &desc_ty_str)
+        .ok_or_else(|| LowerError::ParseType(desc_ty_str.clone()))?;
+
+    let undef = OperationBuilder::new("llvm.mlir.undef", gen.loc())
+        .add_results(&[desc_ty])
+        .build()?;
+    let mut desc: Value = block.append_operation(undef).result(0)?.into();
+
+    // Fields in order: allocated, aligned, offset, sizes[0..1], strides[0..1].
+    // Row-major, so the row stride is the column count and the column stride 1.
+    let fields: [(Value, &[i64]); 7] = [
+        (ptr_val, &[0]),
+        (ptr_val, &[1]),
+        (zero, &[2]),
+        (rows_i64, &[3, 0]),
+        (cols_i64, &[3, 1]),
+        (cols_i64, &[4, 0]),
+        (one, &[4, 1]),
+    ];
+    for (val, position) in fields {
+        let pos_attr = melior::ir::attribute::DenseI64ArrayAttribute::new(gen.context, position);
+        let insert = OperationBuilder::new("llvm.insertvalue", gen.loc())
+            .add_operands(&[desc, val])
+            .add_attributes(&[(Identifier::new(gen.context, "position"), pos_attr.into())])
+            .add_results(&[desc_ty])
+            .build()?;
+        desc = block.append_operation(insert).result(0)?.into();
+    }
+
+    let memref_ty_str = format!("memref<?x?x{}>", elem_str);
+    let memref_ty = Type::parse(gen.context, &memref_ty_str)
+        .ok_or_else(|| LowerError::ParseType(memref_ty_str.clone()))?;
+    let cast = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
+        .add_operands(&[desc])
+        .add_results(&[memref_ty])
+        .build()?;
+    let view: Value = block.append_operation(cast).result(0)?.into();
+
+    Ok((view, memref_ty, block))
+}
+
 /// Load a tensor descriptor out of the slot holding it, if that is what the
 /// operand is.
 ///
@@ -1890,6 +2000,23 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if matches!(name.as_ref(), "dot" | "sum" | "max" | "min") {
             return lower_slice_reduction(gen, name.as_ref(), args, block);
         }
+        // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
+        // does not own, with no copy (#336).
+        //
+        // The alternative is `Tensor::from_ptr_2d`, which allocates and copies
+        // element by element. That is fine once at startup and impossible per
+        // token, and a scalar copy loop is not something a later pass removes.
+        // A memref *is* a descriptor, so pointing one at existing storage is
+        // the natural operation; it just had no spelling.
+        //
+        // Built here rather than in the stdlib because it has to construct the
+        // descriptor `{allocated, aligned, offset, sizes, strides}` directly:
+        // `*mut f32` lowers to `!llvm.ptr`, and no memref op takes a bare
+        // pointer as its source.
+        if name.as_ref() == "tensor_view_2d" {
+            return lower_tensor_view_2d(gen, args, type_args.as_deref(), block);
+        }
+
         if name.as_ref() == "Tensor" {
             let mlir_ty_str = if let Some(tys) = type_args {
                 if !tys.is_empty() {

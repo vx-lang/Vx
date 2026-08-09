@@ -432,8 +432,11 @@ impl<'a> TypeChecker<'a> {
                 // consume the linear tensor, so the same slice can feed several reductions.
                 let is_slice_reduction =
                     matches!(resolved_name.as_ref(), "dot" | "sum" | "max" | "min");
+                // A view reads the pointer it is handed and aliases the
+                // storage behind it; it takes nothing (#336).
                 let is_builtin_ref = resolved_name == "print".into()
                     || resolved_name == "Verified".into()
+                    || resolved_name == "tensor_view_2d".into()
                     || is_slice_reduction;
                 let arg_consume = if is_builtin_ref { false } else { consume };
 
@@ -1177,6 +1180,41 @@ impl<'a> TypeChecker<'a> {
                     .push(format!("Function '{}' expects 1 argument", resolved_name));
             }
             Some(Type::Struct("Option".into(), None))
+        } else if resolved_name == "tensor_view_2d" {
+            // A rank-2 tensor over memory it does not own, with no copy (#336).
+            // The element type comes from the pointer, so the view cannot
+            // reinterpret f32 storage as f64 by accident.
+            //
+            // Unsafe because nothing checks that the extents describe the
+            // memory truthfully -- the same claim `*mut T` indexing already
+            // makes, and the reason the view exists is to wrap foreign buffers.
+            if args.len() != 3 {
+                self.errors
+                    .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
+            }
+            if !self.in_unsafe_block && !self.speculating {
+                self.errors
+                    .push("Viewing raw memory as a tensor requires an unsafe block".to_string());
+            }
+            let elem = match arg_types.first() {
+                Some(Type::Pointer(inner, _, _)) => match inner.as_ref() {
+                    Type::Scalar(e) => Some(e.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match elem {
+                Some(e) => Some(Type::Tensor(e, vec![], None)),
+                None => {
+                    if !self.speculating {
+                        self.errors.push(format!(
+                            "Function 'tensor_view_2d' expects a pointer to a scalar, got {:?}",
+                            arg_types.first()
+                        ));
+                    }
+                    Some(Type::Unknown)
+                }
+            }
         } else if resolved_name == "dot" {
             // Slice reduction (S2): dot(a, b) over two rank-1 f32 slices -> scalar f32.
             // Lowers to vector.load + arith.mulf + vector.reduction<add> (SIMD by construction).
