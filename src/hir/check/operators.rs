@@ -126,7 +126,20 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
+                // A matmul reads its operands and produces a new tensor, so it
+                // does not consume them however it is used. Passing the
+                // caller's flag through marked both sides moved on the
+                // right-hand side of an assignment, which made a tensor usable
+                // as an operand of `@` exactly once in a program (#335) --
+                // enough for a test, never enough for a model, whose weights
+                // are read once per token.
+                //
+                // The operator alone settles it: `@` is only meaningful on
+                // tensors. That matters because the operand types are not known
+                // until the operands have been checked, and checking them is
+                // what marks them consumed.
+                let operands_consumed = consume && *op != BinaryOp::MatMul;
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, operands_consumed);
 
                 // Tensor operator overloading (A * B) -> Matmul
                 if let (

@@ -1,0 +1,78 @@
+//===- matmul_operand_reuse.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A tensor can be an operand of `@` more than once (#335).
+//
+// It could not be. `check_binaryop_expr` passed the caller's `consume` flag
+// through to both operands, and on the right-hand side of an assignment that
+// flag is true, so a matmul marked its inputs moved:
+//
+//   c = a @b;
+//   d = a @b;   // Error[E4001]: Use of moved or consumed linear variable: a
+//
+// A matmul reads its operands and produces a new tensor; reading is not moving.
+// The limit was invisible in tests because a test multiplies once, and absent
+// from llama2.vx because that file does its matmuls as hand-written loops over
+// raw pointers -- which is the same reason none of its arithmetic is eligible
+// for GEMM routing. The two facts look unrelated and are not: the model is not
+// written in tensors because tensors could not express it. Inference reads each
+// weight once per token.
+//
+// Both cases below matter. The first is reuse at all; the second is reuse
+// across two devices, which is what disaggregated inference is -- prefill and
+// decode read the same weights on different GPUs. That case additionally needs
+// `Topology::GPU` to carry a device index (#331).
+//
+// The expected numbers are the answer whichever backend computes them, as in
+// gpu_matmul_roles.vx: the host loop nest and cuBLAS have to agree.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: module
+// EXPECT: 19 22 43 50 19 50 19 50
+
+fn main() -> i32 {
+  let mut a : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut b : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = (i * 2 + j + 1) as f32;
+      b[i][j] = (i * 2 + j + 5) as f32;
+    }
+  }
+
+  // Unplaced, twice over: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]].
+  let c : Tensor<f32> = a @b;
+  let e : Tensor<f32> = a @b;
+  print(c[0][0]);
+  print!(" ");
+  print(c[0][1]);
+  print!(" ");
+  print(e[1][0]);
+  print!(" ");
+  print(e[1][1]);
+  print!(" ");
+
+  // The same two tensors, read by kernels placed on two different GPUs.
+  let mut p : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  let mut q : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
+  spawn on(Topology::GPU[0]) {
+    p = a @b;
+  }
+  spawn on(Topology::GPU[1]) {
+    q = a @b;
+  }
+
+  print(p[0][0]);
+  print!(" ");
+  print(p[1][1]);
+  print!(" ");
+  print(q[0][0]);
+  print!(" ");
+  print(q[1][1]);
+
+  return 0;
+}
