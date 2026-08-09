@@ -22,6 +22,8 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 ///                 own type code (the values below)
 ///   bits [15:8]   element type code, memref arguments only
 ///   bits [23:16]  rank, memref arguments only
+///   bit  [24]     slot: the argument is storage holding a descriptor, and the
+///                 element type and rank above describe that descriptor
 ///
 /// A consumer that only reconstructs the calling convention must mask with
 /// VX_ABI_KIND: the low byte is the original encoding, so tag == 0 still means
@@ -31,11 +33,24 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 /// handed. Without them a plugin can only guess, which is why the Apple path
 /// hardcodes float and rank 2. Shapes need not be transmitted separately --
 /// they live in the descriptor, and rank is what makes them readable.
+///
+/// The slot bit distinguishes the two things a memref argument can be. An
+/// ordinary buffer argument is read and written in place. A slot -- MLIR
+/// `memref<memref<...>>` -- is where a kernel publishes a result it allocated
+/// itself, as `c = a @ b` does. Taken verbatim a slot is a rank-0 memref with
+/// no scalar element type, which is byte-identical to the opaque-pointer
+/// encoding; a plugin substituting for the kernel would have no way to tell it
+/// must allocate and write a descriptor there, nor of what shape. Use
+/// vx_memref_aligned() to reach the descriptor a slot holds.
 #define VX_ABI_KIND(tag) ((tag) & 0xFF)
 #define VX_ABI_ELEM(tag) (((tag) >> 8) & 0xFF)
 #define VX_ABI_RANK(tag) (((tag) >> 16) & 0xFF)
+#define VX_ABI_IS_SLOT(tag) (((tag) >> 24) & 1)
+#define VX_ABI_SLOT_BIT (1 << 24)
 #define VX_ABI_MEMREF_TAG(elem, rank)                                          \
   (((int32_t)(rank) << 16) | ((int32_t)(elem) << 8))
+#define VX_ABI_SLOT_TAG(elem, rank)                                            \
+  (VX_ABI_SLOT_BIT | VX_ABI_MEMREF_TAG(elem, rank))
 
 enum {
   VX_ABI_KIND_MEMREF = 0,
@@ -118,6 +133,41 @@ static inline const int64_t *vx_memref_sizes(const void *desc) {
 
 static inline const int64_t *vx_memref_strides(const void *desc, int32_t rank) {
   return vx_memref_sizes(desc) + rank;
+}
+
+/// The data pointer a descriptor points at. For a slot argument
+/// (VX_ABI_IS_SLOT) this is the descriptor the slot holds, not element data.
+static inline void *vx_memref_aligned(const void *desc) {
+  return ((void *const *)desc)[1];
+}
+
+/// Write a contiguous row-major descriptor for `data` into `desc`.
+///
+/// The counterpart of the reads above, for a plugin that computed a result
+/// itself and must hand it back the way the outlined kernel would have: the
+/// kernel's `memref.alloc` + `memref.store` through the slot becomes an
+/// allocation plus this descriptor. Strides are derived row-major because that
+/// is the layout the compiler's own allocation has.
+static inline void vx_memref_write_desc(void *desc, void *data, int32_t rank,
+                                        const int64_t *sizes) {
+  void **ptrs = (void **)desc;
+  int64_t *fields;
+  int64_t stride;
+  int32_t d;
+
+  ptrs[0] = data; /* allocated */
+  ptrs[1] = data; /* aligned   */
+  fields = (int64_t *)((char *)desc + 2 * sizeof(void *));
+  fields[0] = 0; /* offset */
+
+  for (d = 0; d < rank; ++d) {
+    fields[1 + d] = sizes[d];
+  }
+  stride = 1;
+  for (d = rank - 1; d >= 0; --d) {
+    fields[1 + rank + d] = stride;
+    stride *= sizes[d];
+  }
 }
 
 /// Look up a `key=` entry in a dispatch payload.

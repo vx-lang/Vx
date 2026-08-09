@@ -17,12 +17,21 @@
 //                 and the libffi mapping are untouched)
 //   bits [15:8]   element type code
 //   bits [23:16]  rank
+//   bit  [24]     slot
 //
 // So an f16 rank-2 memref is (2 << 16) | (8 << 8) = 133120, and an f32 rank-2
 // memref is (2 << 16) | (6 << 8) = 132608. Checking the literals is the point:
 // the runtimes decode these by hand, so an encoding change not mirrored in the
 // header would otherwise surface only as a plugin misreading a buffer at run
 // time -- silently, since the pointer would still be valid.
+//
+// The local `c` each kernel writes is captured as a *slot*: storage holding a
+// descriptor, which is what a kernel stores a result it allocated itself
+// through. Described verbatim a slot is a rank-0 memref with no scalar element
+// type, which is byte-identical to the opaque-pointer encoding -- so the bit
+// says it is a slot and the element type and rank describe what it holds, and
+// a plugin computing the result itself knows what to write there. Hence
+// (1 << 24) | (2 << 16) | (8 << 8) = 16910336 for f16 and 16909824 for f32.
 //
 // This lives under optimizations/ rather than middle_end/ because the tag is
 // materialized by `vx-to-llvm`, and the middle-end runner checks the module as
@@ -32,7 +41,9 @@
 // two functions are emitted in, which is the order they are written below.
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK: llvm.mlir.constant(16910336 : i32)
 // CHECK: llvm.mlir.constant(133120 : i32)
+// CHECK: llvm.mlir.constant(16909824 : i32)
 // CHECK: llvm.mlir.constant(132608 : i32)
 
 fn half_kernel(a : Tensor<f16>) -> Tensor<f16> {

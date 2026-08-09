@@ -635,8 +635,29 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         // Kind stays 0 so the calling convention is unchanged; rank and element
         // type ride in the high bytes for plugins that route to vendor kernels.
         auto memrefTy = cast<MemRefType>(originalTy);
-        tag = (static_cast<int32_t>(memrefTy.getRank()) << 16) |
-              (elemDtypeCode(memrefTy.getElementType()) << 8);
+        Type elemTy = memrefTy.getElementType();
+        int32_t rank = static_cast<int32_t>(memrefTy.getRank());
+        int32_t slotBit = 0;
+
+        // A memref whose element is itself a memref is a *slot*: storage
+        // holding a descriptor rather than elements. `c = a @ b` allocates its
+        // result inside the kernel and stores the descriptor through such a
+        // slot, so a plugin standing in for the kernel has to write one there
+        // itself.
+        //
+        // Described verbatim the slot is rank 0 with no scalar element type,
+        // which is exactly the encoding of an opaque pointer -- the compiler
+        // would be discarding the one fact that makes the argument writable.
+        // Describe the pointee instead and set the slot bit to say so. One
+        // level only: a slot of slots leaves the element unknown, which is
+        // honest.
+        if (auto innerTy = dyn_cast<MemRefType>(elemTy)) {
+          slotBit = 1 << 24;
+          rank = static_cast<int32_t>(innerTy.getRank());
+          elemTy = innerTy.getElementType();
+        }
+
+        tag = slotBit | (rank << 16) | (elemDtypeCode(elemTy) << 8);
       } else {
         // Scalar: device_args[i] points directly to the value.
         Value scalarAlloc = rewriter.create<LLVM::AllocaOp>(
