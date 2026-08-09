@@ -698,6 +698,13 @@ fn test_warnings() -> Result<(), String> {
 fn run_optimization_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
+    // Same lit-style gate the middle-end and backend runners apply. A check
+    // against IR that only a macOS-registered plugin can produce is not a
+    // failure elsewhere, it is a test that does not apply.
+    if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
     let run_lines: Vec<_> = source
         .lines()
         .filter(|line| {
