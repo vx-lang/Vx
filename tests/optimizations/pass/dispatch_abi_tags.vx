@@ -26,12 +26,14 @@
 //
 // This lives under optimizations/ rather than middle_end/ because the tag is
 // materialized by `vx-to-llvm`, and the middle-end runner checks the module as
-// it stands *before* the lowering pipeline. It also needs real FileCheck for
-// CHECK-DAG: the two kernels may be emitted in either order.
+// it stands *before* the lowering pipeline.
+//
+// CHECK lines are matched as ordered substrings, so these follow the order the
+// two functions are emitted in, which is the order they are written below.
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
-// CHECK-DAG: llvm.mlir.constant(133120 : i32)
-// CHECK-DAG: llvm.mlir.constant(132608 : i32)
+// CHECK: llvm.mlir.constant(133120 : i32)
+// CHECK: llvm.mlir.constant(132608 : i32)
 
 fn half_kernel(a : Tensor<f16>) -> Tensor<f16> {
   let mut c : Tensor<f16> = Tensor<f16>([ 2, 2 ]);

@@ -92,12 +92,14 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 uint64_t vx_plugin_dispatch_async(const void *binary_payload,
                                   size_t payload_size, void **device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
-  (void)payload_size;
   const char *kernel_name = static_cast<const char *>(binary_payload);
 
   if (verbose()) {
-    fprintf(stderr, "[Vx Dispatcher] host execution of %s (%lld args)\n",
-            kernel_name, static_cast<long long>(num_args));
+    const char *kind = vx_payload_field(binary_payload, payload_size, "kind=");
+    fprintf(stderr,
+            "[Vx Dispatcher] host execution of %s (%lld args), kind=%s\n",
+            kernel_name, static_cast<long long>(num_args),
+            kind ? kind : "<unclassified>");
     for (int64_t i = 0; i < num_args; ++i) {
       int32_t tag = arg_tags[i];
       if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {

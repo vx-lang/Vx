@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h> /* vx_payload_field: strlen, memcmp */
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,6 +118,60 @@ static inline const int64_t *vx_memref_sizes(const void *desc) {
 
 static inline const int64_t *vx_memref_strides(const void *desc, int32_t rank) {
   return vx_memref_sizes(desc) + rank;
+}
+
+/// Look up a `key=` entry in a dispatch payload.
+///
+/// The payload is a NUL-separated blob, bounded by the `payload_size` argument
+/// of vx_plugin_dispatch_async: the first entry is the kernel name, and any
+/// further entries are `key=value`. Reading the payload as a `const char *`
+/// therefore still yields the kernel name, so a consumer that ignores this
+/// function behaves as it always did.
+///
+/// `key` includes the `=` (e.g. "kind="). Returns a pointer to the value, still
+/// within the blob and NUL-terminated, or NULL when absent. A zero size means a
+/// producer that predates the extension: report absence rather than reading a
+/// length that was never written.
+///
+/// The one entry defined today is `kind=`, naming the operation the kernel
+/// computes ("matmul") so a plugin can route it to a vendor library instead of
+/// guessing from buffer shapes -- which cannot be done for square operands,
+/// where every operand assignment conforms. Absent means unclassified, which is
+/// not an error: the kernel takes the ordinary path.
+static inline const char *
+vx_payload_field(const void *payload, size_t payload_size, const char *key) {
+  if (!payload || payload_size == 0 || !key) {
+    return NULL;
+  }
+
+  const char *base = (const char *)payload;
+  size_t key_len = strlen(key);
+  size_t pos = 0;
+
+  /* Skip the kernel name, then walk the remaining NUL-terminated entries. */
+  while (pos < payload_size && base[pos] != '\0') {
+    ++pos;
+  }
+  ++pos;
+
+  while (pos < payload_size) {
+    const char *entry = base + pos;
+    size_t remaining = payload_size - pos;
+    size_t len = 0;
+    while (len < remaining && entry[len] != '\0') {
+      ++len;
+    }
+    if (len == remaining) {
+      /* Unterminated: refuse rather than read past the blob. */
+      return NULL;
+    }
+    if (len > key_len && memcmp(entry, key, key_len) == 0) {
+      return entry + key_len;
+    }
+    pos += len + 1;
+  }
+
+  return NULL;
 }
 
 /// 2. Asynchronous Execution

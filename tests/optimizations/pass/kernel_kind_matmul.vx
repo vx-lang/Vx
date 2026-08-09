@@ -23,9 +23,27 @@
 // there, and the later conversion to a dispatch call consumes it, so a default
 // pipeline would show nothing.
 //
+// The runner matches CHECK lines as ordered substrings, so these follow the
+// emission order: the launch inside the function, then the outlined kernel at
+// module level.
+//
 // RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
-// CHECK-DAG: vx.kernel {{.*}}vx.kernel_kind = "matmul"
-// CHECK-DAG: vx.launch {{.*}}vx.kernel_kind = "matmul"
+// CHECK: vx.launch @vx_npu_kernel_0
+// CHECK: {vx.kernel_kind = "matmul"}
+// CHECK: vx.kernel @vx_npu_kernel_0
+// CHECK: {vx.kernel_kind = "matmul"}
+//
+// The label has to survive to the dispatch call or it cannot reach a plugin.
+// It travels in the payload: a NUL-separated blob whose first entry is the
+// kernel name, so reading it as a `const char *` still yields the name and a
+// consumer predating the extension is unaffected. `payload_size` -- previously
+// passed as 0 -- bounds the walk.
+//
+// The kernel name is left out of this check so it does not depend on the
+// global kernel counter; the NUL-separated entry is what matters.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// PAYLOAD: \00kind=matmul\00
 
 fn gemm(a : Tensor<f32>, b : Tensor<f32>) -> Tensor<f32> {
   let mut c : Tensor<f32> = Tensor<f32>([ 2, 3 ]);

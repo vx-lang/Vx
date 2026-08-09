@@ -461,13 +461,26 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     auto llvmI64Type = IntegerType::get(getContext(), 64);
     auto llvmI32Type = IntegerType::get(getContext(), 32);
 
-    // 1. Create the global string for the kernel name
+    // 1. Create the payload: a NUL-separated blob whose first entry is the
+    //    kernel name, followed by zero or more `key=value` entries, bounded by
+    //    the payload_size argument. Reading it as a `const char *` still yields
+    //    the kernel name exactly as before, so a consumer that predates the
+    //    extra entries is unaffected -- which is why the name leads rather than
+    //    a header. See vx_payload_field() in include/vx_hardware_runtime.h.
+    std::string payload = callee.str();
+    payload.push_back('\0');
+    if (auto kindAttr = op->getAttrOfType<StringAttr>("vx.kernel_kind")) {
+      payload += "kind=";
+      payload += kindAttr.getValue().str();
+      payload.push_back('\0');
+    }
+
     std::string globalName = (callee + "_str").str();
     LLVM::GlobalOp globalOp = module.lookupSymbol<LLVM::GlobalOp>(globalName);
     if (!globalOp) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
-      std::string strWithNull = callee.str() + '\0';
+      std::string strWithNull = payload;
       auto arrayTy = LLVM::LLVMArrayType::get(llvmI8Type, strWithNull.size());
       globalOp = rewriter.create<LLVM::GlobalOp>(
           loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
@@ -568,9 +581,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
           rewriter.create<LLVM::LLVMFuncOp>(loc, dispatchFuncName, funcType);
     }
 
-    // 4. Emit the call
+    // 4. Emit the call. payload_size bounds the blob so a consumer can walk the
+    //    entries past the kernel name without running off the end; it was
+    //    previously passed as 0.
     Value payloadSize = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI64Type, rewriter.getI64IntegerAttr(0));
+        loc, llvmI64Type,
+        rewriter.getI64IntegerAttr(static_cast<int64_t>(payload.size())));
     Value numArgsVal = rewriter.create<LLVM::ConstantOp>(
         loc, llvmI64Type, rewriter.getI64IntegerAttr(numArgs));
     auto callOp = rewriter.create<LLVM::CallOp>(

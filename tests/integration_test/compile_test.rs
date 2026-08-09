@@ -705,6 +705,24 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    // This runner matches CHECK lines as ordered substrings and understands
+    // only `CHECK:` and `CHECK-NOT:` (with an optional --check-prefix). A file
+    // using real FileCheck's other directives, or a `{{...}}` regex hole, would
+    // contribute no checks and pass without testing anything -- which is
+    // indistinguishable from passing for the right reason. Refuse it instead.
+    if let Some(bad) = source.lines().map(str::trim).find(|line| {
+        (line.starts_with("// CHECK-") && !line.starts_with("// CHECK-NOT:"))
+            || (line.starts_with("// CHECK") && line.contains("{{"))
+    }) {
+        return Err(format!(
+            "{:?} uses `{}`. This runner matches ordered substrings and supports only \
+             `CHECK:` / `CHECK-NOT:` -- no CHECK-DAG/NEXT/SAME and no `{{{{...}}}}` holes, \
+             so the file would pass without checking anything. Rewrite it with plain \
+             ordered `CHECK:` lines.",
+            path, bad
+        ));
+    }
+
     let run_lines: Vec<_> = source
         .lines()
         .filter(|line| {
