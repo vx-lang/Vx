@@ -224,8 +224,49 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
         println!("cargo:rustc-link-lib=framework=CoreML");
     } else {
-        println!("cargo:rustc-env=NPU_SHARED_LIB_PATH=");
-        println!("cargo:warning=Vx v2.0 hardware dispatch requires macOS Apple Silicon (AMX). Skipping NPU dispatcher compilation on this OS.");
+        // No accelerator backend on this platform, but a program containing a
+        // non-CPU `spawn on` still needs a provider for the vx_plugin_* ABI or
+        // it will not link. Build the portable host shim, which runs outlined
+        // kernels on the CPU through libffi. See runtime/host_dispatch.cpp.
+        println!("cargo:rerun-if-changed=runtime/host_dispatch.cpp");
+        println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
+
+        let out_dir = env::var("OUT_DIR").unwrap();
+        let lib_shared_path = PathBuf::from(&out_dir).join(format!(
+            "{}vx_host_dispatch{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+
+        let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+        let cxxflags_env = env::var("CXXFLAGS").unwrap_or_else(|_| "-O3".to_string());
+        let cxxflags: Vec<&str> = cxxflags_env.split_whitespace().collect();
+
+        let mut clang_shared_cmd = Command::new(&cxx);
+        clang_shared_cmd.args([
+            "-shared",
+            "-fPIC",
+            "runtime/host_dispatch.cpp",
+            "-lffi",
+            "-o",
+            lib_shared_path.to_str().unwrap(),
+        ]);
+        clang_shared_cmd.args(&cxxflags);
+
+        let status = clang_shared_cmd
+            .status()
+            .unwrap_or_else(|_| panic!("Failed to execute {} for host_dispatch", cxx));
+        assert!(
+            status.success(),
+            "{} failed to build the portable host dispatch shim",
+            cxx
+        );
+
+        println!(
+            "cargo:rustc-env=NPU_SHARED_LIB_PATH={}",
+            lib_shared_path.display()
+        );
+        println!("cargo:warning=No accelerator backend on this platform; built the portable host dispatch shim (kernels run on the CPU via libffi).");
     }
 
     // --- Compile MLIR Pass Plugin Loader Wrapper ---

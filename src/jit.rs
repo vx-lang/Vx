@@ -129,8 +129,11 @@ pub fn execute_mlir(
         "release"
     };
 
-    let llvm_config_path = std::env::var("LLVM_CONFIG_PATH")
-        .unwrap_or_else(|_| "/opt/homebrew/opt/llvm/bin/llvm-config".to_string());
+    // Resolve through PATH by default (config.local puts the intended LLVM
+    // first), matching how build.rs locates the toolchain. Hardcoding a
+    // Homebrew prefix here made the JIT unusable on Linux.
+    let llvm_config_path =
+        std::env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".to_string());
 
     let mut llvm_config_cmd = Command::new(&llvm_config_path);
     llvm_config_cmd.arg("--libdir");
@@ -186,12 +189,22 @@ pub fn execute_mlir(
         ),
     ]);
 
-    if cfg!(target_os = "macos") {
+    // The dispatch runtime provides vx_plugin_dispatch_async, which any program
+    // containing a non-CPU `spawn on` calls. macOS gets the ANE/AMX backend
+    // (runtime/npu_dispatch.mm); other platforms get the portable host shim
+    // (runtime/host_dispatch.cpp). Both call outlined kernels through libffi.
+    if !lib_npu.is_empty() {
         clang_cmd.args([&lib_npu]);
-        // libffi is only pulled in by the (macOS-only) NPU dispatch runtime,
-        // which calls JIT kernels through ffi_call. Linking it unconditionally
-        // would break the JIT link on Linux where libffi need not be present.
         clang_cmd.arg("-lffi");
+
+        // The dispatcher resolves the outlined kernel with
+        // dlsym(RTLD_DEFAULT, "_mlir_ciface_..."), which searches the running
+        // executable's dynamic symbol table. Mach-O exports those symbols
+        // anyway; ELF does not unless asked, so without this the lookup fails
+        // at run time on Linux.
+        if cfg!(target_os = "linux") {
+            clang_cmd.arg("-rdynamic");
+        }
     }
 
     clang_cmd.arg("-lm");

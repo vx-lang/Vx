@@ -1130,6 +1130,12 @@ fn get_optimization_pipeline(
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());
         passes.push("expand-strided-metadata".to_string());
+        // Must precede finalize-memref-to-llvm: an unused `extern` lands as
+        // `func.func private @malloc`, which memref finalization cannot reuse
+        // (it looks for an llvm.func), so it creates its own and the symbol
+        // table uniques the name -- one dangling `@malloc_N` per allocation
+        // site. Keep in sync with the pipeline in src/codegen/mod.rs.
+        passes.push("symbol-dce".to_string());
         passes.push("finalize-memref-to-llvm".to_string());
         passes.push("convert-vector-to-llvm".to_string());
         passes.push("convert-func-to-llvm".to_string());

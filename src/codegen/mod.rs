@@ -123,7 +123,14 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
-    pipeline.push_str("func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
+    // symbol-dce must precede finalize-memref-to-llvm. An unused `extern`
+    // declaration lands as `func.func private @malloc`, which memref
+    // finalization cannot reuse (it looks for an llvm.func), so it creates its
+    // own `@malloc` and the symbol table uniques the name -- one `@malloc_N`
+    // per allocation site, none of which resolves at link time. Importing
+    // std::vec was enough to trigger it. Dropping dead declarations first lets
+    // the lowering define `@malloc` under its own name.
+    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-cf-to-llvm,convert-arith-to-llvm,reconcile-unrealized-casts)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
