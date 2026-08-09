@@ -194,6 +194,30 @@ impl<'a> TypeChecker<'a> {
         Type::Scalar(elem)
     }
 
+    /// The tensor an operand denotes, seen through the wrappers that do not
+    /// change what it is: a borrow, a pointer, a placement, a reference.
+    ///
+    /// `&a @ &b` is the non-consuming spelling of `a @ b` -- both are matmuls
+    /// over the same two tensors, and one reads its operands where the other
+    /// moves them (#335). The wrappers are peeled in a loop rather than once,
+    /// so a borrow of a placed tensor (`&Ref<Tensor<f32>, Memory::GPU_HBM>`,
+    /// which is what a resident weight is) resolves too.
+    pub(crate) fn as_tensor_operand(
+        t: &Type,
+    ) -> Option<(&ElementType, &Vec<crate::syntax::Expr>, &Option<Topology>)> {
+        let mut inner = t;
+        loop {
+            match inner {
+                Type::Tensor(elem, dims, top) => return Some((elem, dims, top)),
+                Type::Borrow { inner: i, .. }
+                | Type::Pointer(i, _, _)
+                | Type::Pinned(i, _)
+                | Type::Ref(i, _) => inner = i.as_ref(),
+                _ => return None,
+            }
+        }
+    }
+
     /// A rank-1 (or, permissively, any-rank) f32 tensor slice, as produced by `q[i]` (S1).
     pub(crate) fn is_f32_slice(t: &Type) -> bool {
         let inner = match t {

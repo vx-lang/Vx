@@ -5,22 +5,25 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //===----------------------------------------------------------------------===//
-// A tensor can be an operand of `@` more than once (#335).
+// A borrowed tensor can be an operand of `@` more than once (#335).
 //
-// It could not be. `check_binaryop_expr` passed the caller's `consume` flag
-// through to both operands, and on the right-hand side of an assignment that
-// flag is true, so a matmul marked its inputs moved:
+// `a @b` moves its operands, as a linear type system says it should: the value
+// is used, and using it again is an error. What was missing was any way to say
+// "read this without taking it". `&a @ &b` did not typecheck, and the stdlib
+// `copy` is a copy-*into* rather than a duplication, so a tensor could be an
+// operand of `@` exactly once in a program and no spelling changed that.
 //
-//   c = a @b;
-//   d = a @b;   // Error[E4001]: Use of moved or consumed linear variable: a
+// That is enough for a test, which multiplies once, and never enough for a
+// model, which reads every weight once per token. It is also why llama2.vx
+// writes its matmuls as hand-written loops over `*mut f32` -- and therefore why
+// none of its arithmetic is eligible for the GEMM routing in #325. The two
+// facts look unrelated and are not: the model is not written in tensors because
+// tensors could not express it.
 //
-// A matmul reads its operands and produces a new tensor; reading is not moving.
-// The limit was invisible in tests because a test multiplies once, and absent
-// from llama2.vx because that file does its matmuls as hand-written loops over
-// raw pointers -- which is the same reason none of its arithmetic is eligible
-// for GEMM routing. The two facts look unrelated and are not: the model is not
-// written in tensors because tensors could not express it. Inference reads each
-// weight once per token.
+// Borrowing rather than a non-consuming `@` keeps the discipline intact and
+// visible: the moving form still moves, and a read says so at the call site.
+// No copy is created, so none has to be elided later, and capacity admission
+// still sees one tensor rather than two.
 //
 // Both cases below matter. The first is reuse at all; the second is reuse
 // across two devices, which is what disaggregated inference is -- prefill and
@@ -45,8 +48,8 @@ fn main() -> i32 {
   }
 
   // Unplaced, twice over: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]].
-  let c : Tensor<f32> = a @b;
-  let e : Tensor<f32> = a @b;
+  let c : Tensor<f32> = &a @ &b;
+  let e : Tensor<f32> = &a @ &b;
   print(c[0][0]);
   print!(" ");
   print(c[0][1]);
@@ -60,10 +63,10 @@ fn main() -> i32 {
   let mut p : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
   let mut q : Tensor<f32> = Tensor<f32>([ 2, 2 ]);
   spawn on(Topology::GPU[0]) {
-    p = a @b;
+    p = &a @ &b;
   }
   spawn on(Topology::GPU[1]) {
-    q = a @b;
+    q = &a @ &b;
   }
 
   print(p[0][0]);

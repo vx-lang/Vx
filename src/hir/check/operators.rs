@@ -126,27 +126,24 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_binaryop_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, span }) => {
-                // A matmul reads its operands and produces a new tensor, so it
-                // does not consume them however it is used. Passing the
-                // caller's flag through marked both sides moved on the
-                // right-hand side of an assignment, which made a tensor usable
-                // as an operand of `@` exactly once in a program (#335) --
-                // enough for a test, never enough for a model, whose weights
-                // are read once per token.
-                //
-                // The operator alone settles it: `@` is only meaningful on
-                // tensors. That matters because the operand types are not known
-                // until the operands have been checked, and checking them is
-                // what marks them consumed.
-                let operands_consumed = consume && *op != BinaryOp::MatMul;
-                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, operands_consumed);
+                let (lhs_ty, rhs_ty) = self.check_operand_pair(lhs, rhs, consume);
 
-                // Tensor operator overloading (A * B) -> Matmul
-                if let (
-                    Type::Tensor(el_ty_l, dims_l, top_l),
-                    Type::Tensor(el_ty_r, dims_r, _top_r),
-                ) = (&lhs_ty, &rhs_ty)
-                {
+                // Tensor operator overloading (A * B) -> Matmul.
+                //
+                // A borrowed operand is the non-consuming spelling: `a @ b`
+                // moves both tensors, `&a @ &b` reads them. Both are matmuls,
+                // so the wrappers are peeled here and the operand's element
+                // type, shape and placement are read through them (#335).
+                //
+                // A tensor could otherwise be an operand of `@` exactly once in
+                // a program, and there was no way to say otherwise -- `&a @ &b`
+                // did not typecheck, and the stdlib `copy` is a copy-*into*
+                // rather than a duplication. That is enough for a test and never
+                // enough for a model, whose weights are read once per token.
+                if let (Some((el_ty_l, dims_l, top_l)), Some((el_ty_r, dims_r, _top_r))) = (
+                    Self::as_tensor_operand(&lhs_ty),
+                    Self::as_tensor_operand(&rhs_ty),
+                ) {
                     if *op == BinaryOp::MatMul {
                         if el_ty_l != el_ty_r {
                             self.errors.error_with_code(

@@ -648,7 +648,7 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
             rhs,
             span: _,
         } = self;
-        let (mut lhs_val, lhs_ty, block) = gen.generate_expr(lhs, block)?;
+        let (mut lhs_val, mut lhs_ty, block) = gen.generate_expr(lhs, block)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
         let (mut rhs_val, mut rhs_ty, block) = gen.generate_expr(rhs, block)?;
@@ -686,6 +686,21 @@ impl<'c> LowerToMelior<'c> for BinaryOpExpr {
                 let res: Value = block.append_operation(arith_op).result(0)?.into();
                 return Ok((res, vec_ty, block));
             }
+        }
+
+        // A borrowed tensor arrives as the slot holding it --
+        // `memref<memref<?x?xf32>>` -- because a borrow is the address and not
+        // the value. `&a @ &b` is the non-consuming spelling of `a @ b` (#335)
+        // and has to lower to the same operation, so load the descriptor out.
+        //
+        // Without this the operand reached `linalg.matmul` as a memref of
+        // memref. The shape check below reads the type as a string and would
+        // have accepted it -- `memref<memref<?x?xf32>>` still yields three parts
+        // once the wrappers are stripped -- so the mistake surfaced as MLIR
+        // verification failing rather than as a rejected program.
+        if op == &BinaryOp::MatMul {
+            lhs_val = load_tensor_slot(gen, &block, lhs_val, &mut lhs_ty)?;
+            rhs_val = load_tensor_slot(gen, &block, rhs_val, &mut rhs_ty)?;
         }
 
         let mut final_ty = lhs_ty;
@@ -1771,6 +1786,39 @@ fn slice_vec_len(ty_str: &str) -> Option<i64> {
         return parts[0].parse().ok();
     }
     None
+}
+
+/// Load a tensor descriptor out of the slot holding it, if that is what the
+/// operand is.
+///
+/// `&a` lowers to the address of `a`, which for a tensor is the rank-0 memref
+/// its descriptor lives in: `memref<memref<?x?xf32>>`. A matmul needs the
+/// descriptor, so it is loaded here and the operand's type updated to match.
+/// Anything else passes through untouched, so the by-value spelling is
+/// unaffected.
+fn load_tensor_slot<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: &mut Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let ty_str = ty.to_string();
+    if !ty_str.starts_with("memref<memref<") {
+        return Ok(val);
+    }
+
+    // Strip one `memref<` ... `>` layer to name the descriptor's own type.
+    let inner_str = &ty_str["memref<".len()..ty_str.len() - 1];
+    let inner_ty = Type::parse(gen.context, inner_str)
+        .ok_or_else(|| LowerError::ParseType(inner_str.to_string()))?;
+
+    let load_op = OperationBuilder::new("memref.load", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[inner_ty])
+        .build()?;
+    let loaded: Value = block.append_operation(load_op).result(0)?.into();
+    *ty = inner_ty;
+    Ok(loaded)
 }
 
 /// Whether an operand should drive the slice-elementwise (S3) vector path: a `vector<...>`
