@@ -96,10 +96,16 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 
   if (verbose()) {
     const char *kind = vx_payload_field(binary_payload, payload_size, "kind=");
+    const char *roles =
+        vx_payload_field(binary_payload, payload_size, "roles=");
+    const char *outkind =
+        vx_payload_field(binary_payload, payload_size, "outkind=");
     fprintf(stderr,
-            "[Vx Dispatcher] host execution of %s (%lld args), kind=%s\n",
+            "[Vx Dispatcher] host execution of %s (%lld args), kind=%s "
+            "roles=%s outkind=%s\n",
             kernel_name, static_cast<long long>(num_args),
-            kind ? kind : "<unclassified>");
+            kind ? kind : "<unclassified>", roles ? roles : "-",
+            outkind ? outkind : "-");
     for (int64_t i = 0; i < num_args; ++i) {
       int32_t tag = arg_tags[i];
       if (VX_ABI_KIND(tag) != VX_ABI_KIND_MEMREF) {

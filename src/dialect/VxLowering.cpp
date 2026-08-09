@@ -49,7 +49,9 @@ static bool isZeroConstant(Value v) {
   return attr && attr.getValue().isZero();
 }
 
-static StringRef kernelKindOf(Region &body) {
+static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
+  if (payloadOut)
+    *payloadOut = nullptr;
   Operation *matmul = nullptr;
   Operation *fill = nullptr;
   unsigned otherPayload = 0;
@@ -96,7 +98,73 @@ static StringRef kernelKindOf(Region &body) {
       return StringRef();
   }
 
+  // Only on success, so a caller cannot read a payload op out of a region that
+  // was ultimately rejected.
+  if (payloadOut)
+    *payloadOut = matmul;
+
   return "matmul";
+}
+
+// Describe which launch operand plays which role in a recognised matmul, as
+// `a:<i>,b:<j>,out:<k>`, indexing the operand list the launch is built from.
+//
+// This is the half that actually resolves the ambiguity #325 exists for. The
+// operation name alone tells a plugin it has a GEMM; it does not say which
+// buffer is which, and for square operands nothing about the shapes can, since
+// every assignment conforms. linalg names them -- `ins` in order, `outs` -- so
+// the mapping is read off rather than guessed.
+//
+// The result buffer is normally *not* a capture: `c = a @ b` allocates inside
+// the kernel and stores the pointer through a captured slot, so `out:` names
+// that slot and `outkind=slot` says so. A plugin then knows it must publish the
+// result by writing a descriptor there rather than filling a buffer it was
+// handed. When the buffer is captured directly, `outkind=buffer`.
+//
+// Returns "" unless every role resolves. A partial mapping is worse than none:
+// it invites a plugin to fill in the rest by convention, which is the guessing
+// this is meant to replace.
+static std::string matmulRolesOf(Operation *matmul, Region &body,
+                                 const SetVector<Value> &captures,
+                                 StringRef &outKind) {
+  if (!matmul || matmul->getNumOperands() < 3)
+    return std::string();
+
+  auto indexOf = [&](Value v) -> int {
+    for (auto en : llvm::enumerate(captures)) {
+      if (en.value() == v)
+        return static_cast<int>(en.index());
+    }
+    return -1;
+  };
+
+  int aIdx = indexOf(matmul->getOperand(0));
+  int bIdx = indexOf(matmul->getOperand(1));
+  int outIdx = indexOf(matmul->getOperand(2));
+  outKind = "buffer";
+
+  if (outIdx < 0) {
+    // Follow the store that publishes the locally allocated result.
+    Value resultBuf = matmul->getOperand(2);
+    for (Block &block : body) {
+      for (Operation &opRef : block) {
+        if (opRef.getName().getStringRef() != "memref.store" ||
+            opRef.getNumOperands() < 2) {
+          continue;
+        }
+        if (opRef.getOperand(0) == resultBuf) {
+          outIdx = indexOf(opRef.getOperand(1));
+          outKind = "slot";
+        }
+      }
+    }
+  }
+
+  if (aIdx < 0 || bIdx < 0 || outIdx < 0)
+    return std::string();
+
+  return ("a:" + Twine(aIdx) + ",b:" + Twine(bIdx) + ",out:" + Twine(outIdx))
+      .str();
 }
 
 // Lower `vx.spawn` to `async.execute` for CPU topologies, or an outlined
@@ -214,9 +282,19 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // A kernel that is not recognised carries no attribute and dispatches
     // exactly as before -- routing is an optimisation, and a kernel the
     // compiler cannot classify is not an error.
-    StringRef kernelKind = kernelKindOf(spawnBody);
+    Operation *payloadOp = nullptr;
+    StringRef kernelKind = kernelKindOf(spawnBody, &payloadOp);
+    StringRef outKind;
+    std::string kernelRoles =
+        matmulRolesOf(payloadOp, spawnBody, captures, outKind);
     if (!kernelKind.empty()) {
       kernelOp->setAttr("vx.kernel_kind", rewriter.getStringAttr(kernelKind));
+      if (!kernelRoles.empty()) {
+        kernelOp->setAttr("vx.kernel_roles",
+                          rewriter.getStringAttr(kernelRoles));
+        kernelOp->setAttr("vx.kernel_out_kind",
+                          rewriter.getStringAttr(outKind));
+      }
     }
 
     // Clone the entire region to avoid leaving SpawnOp with an invalid empty
@@ -272,6 +350,12 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // the dispatch call, so this is where the fact has to be to reach a plugin.
     if (!kernelKind.empty()) {
       launchOp->setAttr("vx.kernel_kind", rewriter.getStringAttr(kernelKind));
+      if (!kernelRoles.empty()) {
+        launchOp->setAttr("vx.kernel_roles",
+                          rewriter.getStringAttr(kernelRoles));
+        launchOp->setAttr("vx.kernel_out_kind",
+                          rewriter.getStringAttr(outKind));
+      }
     }
 
     rewriter.replaceOp(op, launchOp.getResults());
@@ -472,6 +556,16 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (auto kindAttr = op->getAttrOfType<StringAttr>("vx.kernel_kind")) {
       payload += "kind=";
       payload += kindAttr.getValue().str();
+      payload.push_back('\0');
+    }
+    if (auto rolesAttr = op->getAttrOfType<StringAttr>("vx.kernel_roles")) {
+      payload += "roles=";
+      payload += rolesAttr.getValue().str();
+      payload.push_back('\0');
+    }
+    if (auto outAttr = op->getAttrOfType<StringAttr>("vx.kernel_out_kind")) {
+      payload += "outkind=";
+      payload += outAttr.getValue().str();
       payload.push_back('\0');
     }
 
