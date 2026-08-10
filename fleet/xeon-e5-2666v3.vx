@@ -1,0 +1,120 @@
+//===- xeon-e5-2666v3.vx - Intel Xeon E5-2666 v3 host model -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The x86 column of the combo run (#319): a CPU host, admitted against the same
+// way every accelerator is. Every other file in fleet/ models an accelerator --
+// m4-uma.vx included, which is the Apple NPE's memory rather than an arm64 host
+// -- so until this one existed a program could be admitted against an H100 and
+// not against the machine compiling it (#341).
+//
+// This is the build box the campaign already uses, so every figure below can be
+// re-read from the hardware rather than transcribed.
+//
+// A CPU is the *other* degenerate case, and more degenerate than m4-uma. There
+// the host and device share one physical memory; here the device is the host, so
+// a `transfer` to `Memory::HBM` moves data from DRAM to the same DRAM. What the
+// model still has to get right is the hierarchy underneath: the last-level cache
+// is real, and a tile that fits in it is worth knowing about. A model that says
+// nothing sensible about a machine whose seam costs nothing will not be trusted
+// about a machine whose seam costs everything.
+//
+// `HBM` and `L2` keep the fleet's shared vocabulary (fleet/README.md): one
+// program text, every SKU, swap the flag. On this part the memory is DDR4 and
+// there is no HBM anywhere near it -- the name says which role the space plays,
+// not what it is made of, and a last-level cache is a last-level cache whether
+// it is called L2 or L3.
+//
+// `SMEM` is absent, because a scratchpad is not a role this machine has anything
+// to play. See the note where it would have been.
+//
+//===----------------------------------------------------------------------===//
+
+// spec: `/proc/meminfo` MemTotal = 61768396 kB (58.9 GiB) on the build box, and
+// the AWS C4 specification for the instance this part identifies (36 vCPU / 60
+// GiB; the E5-2666 v3 is the custom Haswell-EP part built for that family).
+//
+// 60 GiB is declared rather than the 58.9 GiB the kernel reports, per
+// fleet/README.md: declared capacity is the device, not the deployment budget.
+// The ~1.1 GiB difference is firmware and kernel reservation, and it is the same
+// class of gap as the reserved fraction of a GPU's HBM.
+//
+// UNVERIFIED bandwidth, and derived rather than quoted: the E5-2600 v3 family
+// has 4 DDR4 channels per socket at up to 2133 MT/s, so
+//   4 channels x 2133 MT/s x 8 B = 68.3 GB/s per socket, 136.5 GB/s for two.
+// That is the memory controllers' peak, not an achievable copy rate. Nothing
+// rests on it until measured; see the seam note below.
+Memory HBM {
+  capacity: 60 GiB, bandwidth: 136 GB/s, managed: explicit, scope: device
+}
+
+// The last-level cache, which on this part is L3 rather than L2 -- the fleet's
+// `L2` names the role (last level on die), not the level number.
+//
+// spec: `lscpu -C` on the build box -- L3, ONE-SIZE 25M, 20-way, 2 instances
+// (one per socket), 64 B line. 25 MiB is declared rather than the 50 MiB both
+// sockets hold, because a tile is resident in one socket's LLC; the other
+// socket's copy is a coherence problem, not extra capacity.
+//
+// UNVERIFIED bandwidth: Intel publishes no L3 bandwidth figure for this part.
+// 200 GB/s is a placeholder of the right order for a ring-interconnect LLC and
+// no claim rests on it.
+Memory L2 {
+  within: Memory::HBM, capacity: 25 MiB, bandwidth: 200 GB/s, managed: cached, scope: device
+}
+
+// There is no `SMEM` here, and that is the point rather than an omission.
+//
+// The fleet's third space is a *scratchpad*: per-SM shared memory, allocated
+// because a program put something there. x86 has nothing of the kind. The
+// nearest thing is the per-core L2 -- 256 KiB, 8-way, one per core by
+// `lscpu -C` -- and that is a cache. A tile "placed" in it is resident only
+// while the hardware has no better use for the lines, under pressure from every
+// other access in flight.
+//
+// Declaring it anyway, as a cached space of 256 KiB, would keep the shared
+// vocabulary complete and would be a category error: a program that places a
+// tile in `Memory::SMEM` would be *admitted* against this machine and would have
+// been told something false, because nothing here guarantees residency. The
+// capacity check would pass on a number that does not mean what it means on
+// every other SKU.
+//
+// Leaving it out makes the compiler say what is true:
+//
+//   Error: Cannot transfer from CPUDRAM to Custom("SMEM"): no hardware path
+//   exists
+//
+// A program that wants a scratchpad cannot have one here, and finds out at
+// compile time. That is the whole claim this fleet exists to support, and it
+// would be odd to weaken it to keep a table tidy.
+//
+// The per-core L2 is still worth modelling one day -- a tile that fits in it
+// really is faster -- but under a name that says "cache", not one that says
+// "scratchpad".
+
+// The degenerate seam, taken further than m4-uma's. There the host and the
+// device share one physical memory and a transfer is a memcpy; here the device
+// *is* the host, and `Memory::CPU_DRAM` and `Memory::HBM` name the same DRAM.
+//
+// UNVERIFIED, and declared at the same 136 GB/s peak deliberately, for the
+// reason m4-uma.vx records: a memcpy reads and writes, so it moves two bytes of
+// traffic per byte copied and cannot exceed half the peak even in principle.
+// The model should over-predict this edge by at least 2x, and if a measurement
+// says otherwise the harness is wrong rather than the hardware surprising.
+//
+// Two NUMA nodes is what this file does not yet model. `lscpu` reports node0 =
+// CPUs 0-8,18-26 and node1 = 9-17,27-35, so the 60 GiB is two 30 GiB domains
+// with a real cost between them, and `Memory::HBM` here flattens that to one
+// space. A tile larger than one node's share is admitted as though it were
+// local when part of it cannot be. node-8gpu.vx is the shape that models this
+// properly -- several memories with edges between them -- and applying it to a
+// two-socket host is the next step for this file, not a correction to it.
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 136 GB/s,
+  transfer Memory::HBM -> Memory::L2
+}

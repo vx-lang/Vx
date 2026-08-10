@@ -55,6 +55,16 @@
 // MODEL: capacity = 85899345920
 // MODEL: scope = "device"
 // MODEL: space = "HBM"
+//
+// The same text against a different machine, which is the property the whole
+// fleet arrangement exists for: only the flag changes. The x86 host declares 60
+// GiB rather than 80 GB, and its seam is a memcpy within one DRAM rather than a
+// PCIe crossing, so the capacity and the cost both change and nothing else does.
+//
+// RUN: vxc %s --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
+// HOST: capacity = 64424509440
+// HOST: cost = 118
+// HOST: scope = "device"
 
 fn main() -> i32 {
   let mut a = Tensor<f32>([ 2, 2 ]);

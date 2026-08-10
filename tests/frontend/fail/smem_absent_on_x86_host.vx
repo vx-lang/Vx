@@ -1,0 +1,37 @@
+//===- smem_absent_on_x86_host.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// Asking for a scratchpad on a machine that has none is a compile error (#341).
+//
+// The fleet's `SMEM` is per-SM shared memory: storage a program allocates
+// because it put something there. x86 has nothing of the kind. The nearest
+// thing is the per-core L2, which is a cache -- a tile is resident there only
+// while the hardware has no better use for the lines.
+//
+// So fleet/xeon-e5-2666v3.vx declares no `SMEM`, and this is what that buys.
+// The alternative was to declare the per-core L2 under that name to keep the
+// shared vocabulary complete, which would have *admitted* this program on a
+// capacity number that does not mean what it means on any other SKU. The
+// program would have been told it had a scratchpad and been given a hope.
+//
+// A machine file is a description of hardware before it is a row in a table. If
+// the hardware does not have it, the file does not declare it, and the compiler
+// says so before anything is rented.
+//
+// The same program compiles against fleet/a100-80.vx, which does have one --
+// that half is checked in tests/optimizations/pass/device_transfer_plugin.vx,
+// since a test in this directory has to fail.
+//
+// RUN: not vxc %s --machine fleet/xeon-e5-2666v3.vx 2>&1 | FileCheck %s
+// CHECK: Cannot transfer from CPUDRAM to Custom("SMEM")
+// CHECK-SAME: no hardware path exists
+
+fn main() -> i32 {
+  let mut tile = Tensor<f32>([ 64, 64 ]);
+  let tile_s = transfer(tile, Memory::SMEM);
+  return 0;
+}

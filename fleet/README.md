@@ -17,7 +17,25 @@ Every SKU declares the **same space names**, so one program text can reference t
 
 A program that places a tile in `Memory::HBM` therefore means "this SKU's device memory", and the
 capacity check resolves that to whichever number the selected machine file declares. Adding a SKU
-means adding a file with these three spaces, not touching any program.
+means adding a file with these spaces, not touching any program.
+
+**A SKU declares a space only if the hardware has one.** The vocabulary is shared so that programs
+are portable, not so that every file is the same length, and a machine file is a description of
+hardware before it is a row in a table. `xeon-e5-2666v3.vx` declares no `SMEM`, because x86 has no
+software-managed scratchpad: the nearest thing is a per-core cache, and a tile is resident there
+only while the hardware has no better use for the lines.
+
+Declaring it anyway would make a program that places a tile in `Memory::SMEM` *admitted* against
+that machine, on a capacity number that does not mean what it means on every other SKU. Omitting it
+makes the compiler say what is true:
+
+```
+Error: Cannot transfer from CPUDRAM to Custom("SMEM"): no hardware path exists
+```
+
+A program that needs a scratchpad cannot run on a machine without one, and finds that out at
+compile time. That is the claim this directory exists to support, and it is not worth weakening to
+keep a table rectangular.
 
 To turn an admission verdict into an engine launch command, see
 [`utils/vllm/map_admission.py`](../utils/vllm/). It reads the `--diagnostics-json` record, not these
