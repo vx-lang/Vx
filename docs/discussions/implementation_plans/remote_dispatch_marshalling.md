@@ -272,13 +272,7 @@ Putting it above the ABI is the least flexible option and the one to avoid: it f
 mechanism for every backend at once and creates a second source of truth about where a
 buffer lives, which is the thing `vx_plugin_*` exists to be.
 
-### Guard gaps, as an invariant rather than an accident
-
-**Regions are never adjacent in the synthetic space.** Interval lookup only catches an
-out-of-bounds `vx_advance_ptr` if there is somewhere for the out-of-bounds address to
-land, and if the allocator happens to pack regions end to end then an offset that runs
-past the end of `wq` resolves cleanly into `wk` — a valid handle for the wrong buffer,
-which is worse than a miss and produces plausible numbers.
+### Region layout and sizing
 
 **Not fixed-size slots.** An earlier draft of this section put one region in each fixed
 2^32 slot, so the address would decompose by bit-extraction with no search. That caps a
@@ -329,16 +323,70 @@ round trip and at maximum a network one. The O(1) decode was never worth a cap.
 There is no region size limit below 128 TiB, and if one worker ever needs more than that,
 the worker field has spare values and a region can span several.
 
-This is the guard-page argument and should be spelled the same way: the protection comes
-from the layout, not from remembering to check.
+Why the gaps are there at all is the next section, and it is not the reason a first
+reading suggests.
+
+### Bounds, and why a gap is not the mechanism
+
+Two failure modes get confused here, and the non-canonical range only handles one of them.
+
+**Dereferencing a handle on the host.** Handled, and handled completely: the range is
+non-canonical, so the access faults at the instruction. Nothing else is needed and a
+guard *page* would be redundant — there is no mapping to guard, and the fault is the
+point.
+
+**Naming the wrong region.** Not handled by any of the above, because no access occurs:
+
+```
+let bad : *mut f32 = vx_advance_ptr(w.wq, wrong_offset);   // host arithmetic, no fault
+let t : Tensor<f32> = tensor_view_2d(bad, d, n);           // still no fault
+spawn on(Topology::DecodeWorker) { matmul_into(...) }      // resolved on the worker
+```
+
+The address is computed, passed as an operand, and resolved by the plugin. If it lands
+inside the *next* region, the dispatch reads the wrong buffer and returns plausible
+numbers. Nothing faults on either machine.
+
+**The invariant is the bounds check, not the gap.** Resolution finds the region with the
+greatest `base <= addr` and then must assert
+
+```
+addr - base < size
+```
+
+failing the dispatch by name if it does not hold. This is mandatory and is what makes an
+out-of-bounds handle detectable at all; the binary search alone would happily return a
+neighbour.
+
+**What the gap adds on top of that** is one specific case the bounds check cannot catch
+by itself: an overrun that reaches the next region's `base`. With regions packed end to
+end, an offset overshooting by exactly `size` lands on the neighbour at offset 0, passes
+the bounds check against *that* region, and is indistinguishable from a correct handle.
+
+That is not a contrived overrun. It is the off-by-one this program is shaped to produce:
+
+```
+vx_advance_ptr(w.wq, l * dim * dim)     // l == n_layers rather than n_layers - 1
+```
+
+overshoots by precisely one region. So a gap of at least `max(region_size, 4 GiB)` after
+each region turns the single likeliest aliasing bug into a lookup miss, and widens the
+window for every smaller one. It is defence in depth over the bounds check rather than a
+substitute for it, and it costs a percent of an address space with no other use.
+
+**Not a guard page.** The analogy misleads, because a guard page works by faulting on
+access and nothing here ever accesses. What the gap does is keep two *names* from being
+confusable — closer to leaving unused values between enum discriminants than to leaving
+an unmapped page between mappings.
 
 ### What still has to be checked
 
-Pointer arithmetic that leaves a region — `vx_advance_ptr(w.wq, huge)` — must not silently
-resolve into the *next* region. Interval lookup gives this for free if regions are not
-made adjacent in the synthetic space; leaving a guard gap between them turns an
-out-of-bounds offset into a lookup miss instead of a valid handle for the wrong buffer.
-This is the same argument as a guard page and should be spelled the same way.
+Whether the bounds check should *abort* or merely refuse to route. Refusing means the
+dispatch falls back to running the outlined kernel on the host — which for a handle the
+host cannot dereference is a fault rather than a wrong answer, so it is survivable, but
+it converts a clear diagnostic into a segfault at an unrelated place. Aborting with the
+worker's name and the offending offset is almost certainly right, and matches what
+`select_device` does when a launch names a GPU that does not exist.
 
 ## The agent
 
@@ -401,5 +449,6 @@ up front rather than discovering it as a porting cost.
   the thing to fix, probably by leaving the result resident and returning a handle.
 
 Two questions that were open here are now decided above: the region table is a shared
-vendor-free header rather than per-backend or above the ABI, and guard gaps are an
-invariant enforced by fixed-size slots rather than a property of the allocator.
+vendor-free header rather than per-backend or above the ABI, and out-of-bounds handles are
+caught by a mandatory bounds check at resolution, with inter-region gaps as defence in
+depth for the one case the check cannot see by itself.
