@@ -1,0 +1,62 @@
+//===- device_transfer_plugin.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A transfer into a device space becomes real data movement (#319).
+//
+// `vx.transfer` used to lower to `memref.alloc` + `memref.copy` -- a host
+// allocation, whatever placement the program declared. So the compiler planned
+// movement that never happened, nothing was ever device-resident, and every
+// dispatch staged its operands across the bus again. That is the item #319
+// calls the critical path, on the grounds that without it the demo is slower
+// than the CPU it is meant to beat.
+//
+// It now calls `vx_plugin_alloc_and_transfer`, and the compiler never names
+// CUDA: that entry point is the vendor-neutral plugin ABI, answered by
+// cudaMalloc and an H2D copy where the CUDA backend is linked, by malloc and
+// memcpy in the portable shim. The same program is correct on a laptop and
+// resident on a GPU.
+//
+// Three transfers, three calls. Checked against a machine model rather than in
+// the abstract, because the space, its capacity and the topology that can see
+// it are all things fleet/a100-80.vx declares -- `Memory::HBM` and
+// `Topology::Device` are its names, not built-ins.
+//
+// The checks are in emission order: the payload string is a module-level global
+// and so precedes the calls inside `main`.
+//
+// The matmul reaching the device is the other half -- a transfer that moved
+// nothing useful would still emit the calls below.
+//
+// RUN: vxc %s --machine fleet/a100-80.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=DEVICE
+// DEVICE: kind=matmul
+// DEVICE: llvm.call @vx_plugin_alloc_and_transfer
+// DEVICE: llvm.call @vx_plugin_alloc_and_transfer
+// DEVICE: llvm.call @vx_plugin_alloc_and_transfer
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([ 2, 2 ]);
+  let mut e = Tensor<f32>([ 2, 2 ]);
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = (i * 2 + j + 1) as f32;
+      e[i][j] = 0.0;
+    }
+  }
+  for i in 0..2 {
+    e[i][i] = 1.0;
+  }
+
+  let a_d = transfer(a, Memory::HBM);
+  let e_d = transfer(e, Memory::HBM);
+  let mut r = Tensor<f32>([ 2, 2 ]);
+  let mut r_d = transfer(r, Memory::HBM);
+
+  spawn on(Topology::Device) {
+    matmul_into(&mut r_d, &a_d, &e_d);
+  }
+  return 0;
+}

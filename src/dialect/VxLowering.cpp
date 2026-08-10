@@ -49,6 +49,22 @@ static bool isZeroConstant(Value v) {
   return attr && attr.getValue().isZero();
 }
 
+// Whether a transfer moves data to a topology other than the host.
+//
+// `target_topology` is the id `topology_dispatch_id` assigns, and the host is 0
+// (src/arch.rs), so a non-zero target is a device by construction. The `scope`
+// attribute would read better but is not always attached -- it appears when the
+// capacity check ran and not when only a cost was computed -- and a lowering
+// that quietly did the wrong thing for half the transfers is exactly the class
+// of bug this whole line of work has been removing.
+static bool isDeviceTransfer(vx::TransferOp op) {
+  if (auto topo = op->getAttrOfType<IntegerAttr>("target_topology"))
+    return topo.getInt() != 0;
+  if (auto scope = op->getAttrOfType<StringAttr>("scope"))
+    return scope.getValue() == "device";
+  return false;
+}
+
 static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
   if (payloadOut)
     *payloadOut = nullptr;
@@ -464,6 +480,13 @@ struct TransferOpLowering : public OpRewritePattern<TransferOp> {
     LLVM_DEBUG(llvm::errs() << "[VxLowering] TransferOp lowering from "
                             << srcType << " to " << targetType << "\n");
 
+    // A transfer into a device space is not a host allocation and a copy. It
+    // is the plugin's allocate-and-transfer, so leave the op alone here and let
+    // the LLVM stage emit that call -- getting a raw pointer out of a memref is
+    // not something this stage can express.
+    if (isDeviceTransfer(op))
+      return failure();
+
     // Extract dynamic sizes from the source memref
     SmallVector<Value> dynamicSizes;
     for (int i = 0; i < srcType.getRank(); ++i) {
@@ -605,6 +628,122 @@ static int32_t elemDtypeCode(Type t) {
   }
   return 0; // unknown
 }
+
+// Lower a transfer into a device space to the plugin's allocate-and-transfer.
+//
+// This is what makes a `transfer` mean something physical. It used to lower to
+// `memref.alloc` + `memref.copy` -- a host allocation, whatever placement the
+// program declared -- so the compiler planned data movement that never
+// happened, and every dispatch then staged its operands across the bus again
+// because nothing was ever resident (#319).
+//
+// The compiler emits a call to the vendor-neutral plugin ABI and never names
+// CUDA: `cuda_dispatch.cpp` answers it with cudaMalloc and an H2D copy, the
+// Apple path with its own, the portable shim with malloc and memcpy. The same
+// program is correct on a laptop and resident on a GPU.
+//
+// The result is a descriptor over the returned pointer, carrying the source's
+// extents and strides. It points at device memory, which the host must not
+// dereference -- that is what the placement rules in the checker are for
+// (E6003 refuses a device buffer read from the wrong topology).
+struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
+  const LLVMTypeConverter &typeConverter;
+
+  TransferToPluginLowering(const LLVMTypeConverter &typeConverter,
+                           MLIRContext *context)
+      : OpRewritePattern<vx::TransferOp>(context),
+        typeConverter(typeConverter) {}
+
+  LogicalResult matchAndRewrite(vx::TransferOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isDeviceTransfer(op))
+      return failure();
+
+    Location loc = op.getLoc();
+    Value src = op.getOperand();
+    auto srcType = dyn_cast<MemRefType>(src.getType());
+    if (!srcType)
+      return failure();
+
+    int64_t rank = srcType.getRank();
+    auto llvmPtrType = LLVM::LLVMPointerType::get(getContext());
+    auto llvmI64Type = IntegerType::get(getContext(), 64);
+    auto llvmI32Type = IntegerType::get(getContext(), 32);
+
+    Type convertedSrc = typeConverter.convertType(srcType);
+    if (!convertedSrc)
+      return failure();
+    Value desc =
+        rewriter.create<UnrealizedConversionCastOp>(loc, convertedSrc, src)
+            .getResult(0);
+
+    // Field 1 of {allocated, aligned, offset, sizes, strides} is where the
+    // elements are; the plugin copies from there.
+    Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(
+        loc, llvmPtrType, desc, ArrayRef<int64_t>{1});
+
+    // Bytes, read off the descriptor rather than the type, so a dynamic extent
+    // costs nothing extra and no shape is assumed.
+    unsigned elemBits = srcType.getElementType().getIntOrFloatBitWidth();
+    Value bytes = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI64Type, rewriter.getI64IntegerAttr((elemBits + 7) / 8));
+    for (int64_t d = 0; d < rank; ++d) {
+      Value dim = rewriter.create<LLVM::ExtractValueOp>(
+          loc, llvmI64Type, desc, ArrayRef<int64_t>{3, d});
+      bytes = rewriter.create<LLVM::MulOp>(loc, bytes, dim);
+    }
+
+    // Which device, as the machine model named it.
+    int32_t topology = 0;
+    if (auto topoAttr = op->getAttrOfType<IntegerAttr>("target_topology"))
+      topology = static_cast<int32_t>(topoAttr.getInt());
+    Value topoVal = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI32Type, rewriter.getI32IntegerAttr(topology));
+
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    StringRef allocName = "vx_plugin_alloc_and_transfer";
+    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(allocName)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto fnTy = LLVM::LLVMFunctionType::get(
+          llvmPtrType, {llvmI64Type, llvmPtrType, llvmI32Type}, false);
+      rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
+    }
+    auto callOp = rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{llvmPtrType},
+        SymbolRefAttr::get(rewriter.getContext(), allocName),
+        ValueRange{bytes, alignedPtr, topoVal});
+    Value devicePtr = callOp.getResult();
+
+    // Rebuild a descriptor over the device pointer, keeping the source's shape.
+    Value newDesc = rewriter.create<LLVM::UndefOp>(loc, convertedSrc);
+    newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, devicePtr,
+                                                   ArrayRef<int64_t>{0});
+    newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, devicePtr,
+                                                   ArrayRef<int64_t>{1});
+    Value zero = rewriter.create<LLVM::ConstantOp>(
+        loc, llvmI64Type, rewriter.getI64IntegerAttr(0));
+    newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, zero,
+                                                   ArrayRef<int64_t>{2});
+    for (int64_t d = 0; d < rank; ++d) {
+      Value size = rewriter.create<LLVM::ExtractValueOp>(
+          loc, llvmI64Type, desc, ArrayRef<int64_t>{3, d});
+      Value stride = rewriter.create<LLVM::ExtractValueOp>(
+          loc, llvmI64Type, desc, ArrayRef<int64_t>{4, d});
+      newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, size,
+                                                     ArrayRef<int64_t>{3, d});
+      newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, stride,
+                                                     ArrayRef<int64_t>{4, d});
+    }
+
+    Value result = rewriter
+                       .create<UnrealizedConversionCastOp>(
+                           loc, op.getResult().getType(), newDesc)
+                       .getResult(0);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
 
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
@@ -871,6 +1010,10 @@ struct ConvertVxToLLVMPass
     target.addLegalDialect<cf::ControlFlowDialect>();
     target.addLegalDialect<async::AsyncDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
+    // A device transfer reaches this stage unlowered by design (the standard
+    // stage defers it); marking it illegal is what makes the pattern run. Host
+    // transfers were already lowered there, so none should be left.
+    target.addIllegalOp<vx::TransferOp>();
     target.addIllegalOp<vx::LaunchOp>();
     target.addIllegalOp<vx::KernelOp>();
     target.addIllegalOp<vx::ReturnOp>();
@@ -878,6 +1021,7 @@ struct ConvertVxToLLVMPass
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
     patterns.add<LaunchOpLowering>(typeConverter, &getContext());
+    patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
 
