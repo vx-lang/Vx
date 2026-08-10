@@ -1,3 +1,16 @@
-export CARGO_HOME="{{PROJECT_DIR}}/.cargo"
-export RUSTUP_HOME="{{PROJECT_DIR}}/.rustup"
-export PATH="{{LLVM_PATH}}:$PATH"
+# Cargo's state: the registry cache, .cargo/config.toml's aliases, the extra
+# subcommands in .cargo/bin, and rustup's toolchains. setup.sh points these at
+# the checkout's own .cargo/.rustup when it has them, and at the user's
+# otherwise.
+export CARGO_HOME="{{CARGO_DIR}}"
+export RUSTUP_HOME="{{RUSTUP_DIR}}"
+
+# The tools themselves. LLVM leads so the unsuffixed names (llvm-config,
+# mlir-translate, clang++) resolve to the version mlir-sys is pinned against
+# rather than to whatever the system carries.
+#
+# The cargo directories are here because setting CARGO_HOME does not put cargo
+# on PATH -- they are different trees, and the driver usually lives in the one
+# rustup installed. Without this, sourcing this file on a machine whose shell rc
+# has not already done the job leaves `cargo` unresolvable.
+export PATH="{{LLVM_PATH}}:{{CARGO_BIN}}:$PATH"
