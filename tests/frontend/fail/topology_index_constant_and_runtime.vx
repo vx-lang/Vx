@@ -50,12 +50,34 @@ fn runtime_index(n : i32) -> i32 {
   return 0;
 }
 
+// The same two behaviours on GPU. Written out rather than left to the NPU cases
+// because they were not the same: `non_constant_index` matched NPU and AccCore
+// and fell through on GPU, so a runtime GPU index took the device-0 fallback
+// without a word (#345). Nothing about a device index is kind-specific, which is
+// exactly why the omission survived -- the NPU tests passed throughout.
+fn gpu_shard<const R : i32>() -> i32 {
+  spawn on(Topology::GPU[R]) {
+    let _k = 10;
+  }
+  return R;
+}
+
+fn gpu_runtime_index(n : i32) -> i32 {
+  spawn on(Topology::GPU[n]) {
+    let _k = 11;
+  }
+  return 0;
+}
+
 fn main() -> i32 {
   let a = shard<3>();
   let b = shard<5>();
   let c = scaled<2>();
   let d = runtime_index(1);
-  return a + b + c + d;
+  let e = gpu_shard<0>();
+  let f = gpu_shard<1>();
+  let g = gpu_runtime_index(1);
+  return a + b + c + d + e + f + g;
 }
 
 // Distinct constant indices reach codegen as distinct devices: NPU[3] -> 103,
@@ -64,8 +86,12 @@ fn main() -> i32 {
 // IDS-DAG: topology(105)
 // IDS-DAG: topology(104)
 
+// And on GPU: GPU[0] -> 500, GPU[1] -> 501. This pair is what a disaggregated
+// placement is made of (#319) -- prefill and decode are the same code on two
+// devices, and two distinct ids here are the only reason that is true.
+// IDS-DAG: topology(500)
+// IDS-DAG: topology(501)
+
 // The runtime index warns, and names the value so the fix is obvious.
-// WARN: W1030
-// WARN-SAME: 'NPU[n]'
-// WARN-SAME: runtime value 'n'
-// WARN-SAME: falls back to index 0
+// WARN-DAG: W1030{{.*}}'NPU[n]'{{.*}}runtime value 'n'{{.*}}falls back to index 0
+// WARN-DAG: W1030{{.*}}'GPU[n]'{{.*}}runtime value 'n'{{.*}}falls back to index 0

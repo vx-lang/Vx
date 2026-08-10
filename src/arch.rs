@@ -249,7 +249,10 @@ pub fn const_topology_index(expr: &crate::syntax::Expr) -> Option<i32> {
 /// programs that compile today.
 pub fn non_constant_index(top: &Topology) -> Option<&crate::syntax::Expr> {
     match top {
-        Topology::NPU(e) | Topology::AccCore(e) => {
+        // Every indexed kind, and the list must stay that way: an omission here is not a missing
+        // warning but a wrong placement reported as a right one. GPU was omitted while the comment
+        // above used `GPU[i]` as its example (#345).
+        Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
             const_topology_index(e).is_none().then_some(&**e)
         }
         Topology::Slice(base, start, end) => non_constant_index(base)
