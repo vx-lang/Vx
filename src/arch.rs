@@ -140,6 +140,16 @@ impl EdgeCost {
 pub struct TopologyDescriptor {
     pub default_space: MemorySpace,
     pub visibility: Vec<MemorySpace>,
+    /// The instruction set this topology executes -- `arch: x86_64` in the declaration.
+    ///
+    /// A machine description that does not say this cannot answer what code to emit for it,
+    /// and nothing else in the file implies it: a filename and a comment are not readable by
+    /// the compiler. It is what a target triple is derived from (#342), which is why there is
+    /// no separate `--target` to disagree with it.
+    ///
+    /// `None` where a declaration predates the field; required of a host, which is the
+    /// machine the program itself runs on.
+    pub arch: Option<crate::symbol::Symbol>,
     /// Transfer edges (morphisms) this topology contributes to the cost graph. Seeded into
     /// a `TransferCostGraph` via `seed_from_topologies`.
     pub transfers: Vec<TransferEdge>,
@@ -424,6 +434,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
     use crate::syntax::TopologyKind as K;
     use MemorySpace::*;
     let d = |default_space: MemorySpace, visibility: &[MemorySpace]| TopologyDescriptor {
+        arch: None,
         default_space,
         visibility: visibility.to_vec(),
         transfers: Vec::new(), // built-in transfer edges live in TransferCostGraph::default
@@ -1396,6 +1407,7 @@ mod tests {
         TopologyDecl {
             name: crate::symbol::Symbol::from(name),
             descriptor: TopologyDescriptor {
+                arch: None,
                 default_space: default_space.clone(),
                 visibility: vec![default_space],
                 transfers: Vec::new(),
@@ -1469,6 +1481,7 @@ mod tests {
         // No direct GpuHbm -> LocalSRAM edge in the built-in graph.
         let before = graph.transfer_path(&MemorySpace::GpuHbm, &MemorySpace::LocalSRAM);
         let desc = TopologyDescriptor {
+            arch: None,
             default_space: MemorySpace::LocalSRAM,
             visibility: vec![MemorySpace::LocalSRAM],
             transfers: vec![TransferEdge {
@@ -1497,6 +1510,7 @@ mod tests {
         let acme = MemorySpace::Custom(crate::symbol::Symbol::from("AcmeSRAM"));
         let mut graph = TransferCostGraph::default();
         let desc = TopologyDescriptor {
+            arch: None,
             default_space: acme.clone(),
             visibility: vec![acme.clone()],
             transfers: vec![TransferEdge {
@@ -1519,6 +1533,7 @@ mod tests {
         // An island: a custom memory space with no edge from the host is unreachable.
         let island = MemorySpace::Custom(crate::symbol::Symbol::from("IslandRAM"));
         let bad = TopologyDescriptor {
+            arch: None,
             default_space: island.clone(),
             visibility: vec![island.clone()],
             transfers: Vec::new(),
@@ -1529,6 +1544,7 @@ mod tests {
 
         // default_space not in visibility -> DefaultNotVisible.
         let bad2 = TopologyDescriptor {
+            arch: None,
             default_space: MemorySpace::LocalSRAM,
             visibility: vec![MemorySpace::CPUDRAM],
             transfers: Vec::new(),
@@ -1537,6 +1553,7 @@ mod tests {
 
         // A built-in-backed topology reachable from host is coherent.
         let good = TopologyDescriptor {
+            arch: None,
             default_space: MemorySpace::NPUHBM,
             visibility: vec![MemorySpace::NPUHBM],
             transfers: Vec::new(),

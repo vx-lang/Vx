@@ -46,6 +46,8 @@ Memory SMEM {
 // host-seam prediction. Measuring which link is present, and its achieved bandwidth, is
 // experiment M1/M4 in memory-algebra-paper/EXPERIMENTS.md.
 Topology Device {
+  // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
+  arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,

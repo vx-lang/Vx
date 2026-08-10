@@ -205,6 +205,8 @@ impl<'a> Parser<'a> {
         )?;
 
         let mut default_space: Option<MemorySpace> = None;
+
+        let mut arch: Option<crate::symbol::Symbol> = None;
         let mut visibility: Vec<MemorySpace> = Vec::new();
         let mut visible_given = false;
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
@@ -265,6 +267,21 @@ impl<'a> Parser<'a> {
             };
             self.consume(&TokenType::Colon, "Expected ':' after topology field")?;
             match field.as_str() {
+                // The instruction set this topology executes. A machine description that
+                // does not say this cannot answer what code to emit for it, and nothing
+                // else in the file implies it -- a filename and a comment are not readable
+                // by the compiler.
+                "arch" => {
+                    arch = Some(match &self.advance().kind {
+                        TokenType::Identifier(s) => crate::symbol::Symbol::from(&**s),
+                        other => {
+                            return Err(self.error(&format!(
+                                "`arch:` expects an identifier (x86_64, aarch64, nvptx64, amdgcn), got {:?}",
+                                other
+                            )))
+                        }
+                    });
+                }
                 "memory" => default_space = Some(self.parse_memory_space()?),
                 "visible" => {
                     visible_given = true;
@@ -302,6 +319,7 @@ impl<'a> Parser<'a> {
         Ok(crate::arch::TopologyDecl {
             name,
             descriptor: crate::arch::TopologyDescriptor {
+                arch,
                 default_space,
                 visibility,
                 transfers,

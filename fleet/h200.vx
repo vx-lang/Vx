@@ -34,6 +34,8 @@ Memory SMEM {
 }
 
 Topology Device {
+  // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
+  arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).

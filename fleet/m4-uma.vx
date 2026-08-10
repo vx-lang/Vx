@@ -67,6 +67,12 @@ Memory SMEM {
 // wrong rather than the hardware surprising. That is the pre-registered
 // expectation this dry run is testing.
 Topology Device {
+  // The Apple GPU. Named, and deliberately not an LLVM target triple: there is
+  // no upstream backend for this ISA, and Vx does not emit code for it -- the
+  // part is reached through CoreML behind the plugin ABI (runtime/npu_dispatch.mm).
+  // So a triple derived from this must be refused rather than guessed at, which is
+  // the honest answer for a machine that is dispatched to rather than compiled for.
+  arch: applegpu,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,

@@ -52,3 +52,19 @@
 Memory CPU_DRAM {
   bandwidth: 136 GB/s, managed: explicit
 }
+
+// A host is a device too: the one that drives the others. It gets a topology so
+// it can say what it executes, which is the whole reason this file exists -- the
+// filename says x86 and a filename is not readable by the compiler.
+//
+// `arch:` is what a target triple is derived from (#342). There is no separate
+// `--target` to disagree with it: the host *is* the target, and a program's
+// `main`, its dispatch calls and its outlined kernels' C interfaces are all code
+// for this machine.
+//
+// spec: Intel Xeon E5-2666 v3, Haswell-EP, x86-64.
+Topology Host {
+  arch: x86_64,
+  memory: Memory::CPU_DRAM,
+  visible: [Memory::CPU_DRAM]
+}

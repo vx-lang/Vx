@@ -62,6 +62,8 @@ Memory PEER_HBM {
 // spec: PCIe Gen5 x16 -- 64 GB/s unidirectional (128 GB/s bidirectional).
 // spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port.
 Topology Node {
+  // spec: Eight NVIDIA parts; the node's compute ISA is theirs.
+  arch: nvptx64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).

@@ -113,6 +113,8 @@ Memory L2 {
 // properly -- several memories with edges between them -- and applying it to a
 // two-socket host is the next step for this file, not a correction to it.
 Topology Device {
+  // spec: Intel Haswell-EP, as a compute target rather than a host.
+  arch: x86_64,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2],
   transfer Memory::CPU_DRAM -> Memory::HBM : 136 GB/s,
