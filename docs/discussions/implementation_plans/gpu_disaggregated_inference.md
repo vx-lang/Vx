@@ -236,6 +236,55 @@ the host (#251), so the KV cache's working copy is host memory and the outer leg
 handoff exist only because of that; strided sub-views of a placed tensor (#344) are what
 would put the cache on the device and read it there.
 
+**Run, 2026-08-10: 2x H100 80GB HBM3 on RunPod, NVLink NV18, CUDA 12.8, driver 580.126.09.**
+64 tokens, stories15M, greedy.
+
+| | device 0 | device 1 | KV transfer |
+|---|---|---|---|
+| `VX_LLAMA_DISAGG=0` | 2775 | **0** | `peer 0 -> 0, 442368 bytes` x2 |
+| `VX_LLAMA_DISAGG=1` | 1601 | **1174** | `peer 0 -> 1, 442368 bytes` x2 |
+
+Tokens identical between the two runs, and identical to macOS CPU and Linux CPU. The
+single-device row showing zero device-1 dispatches is what makes the second row evidence
+rather than a plugin that always reports two devices.
+
+The transfer size is byte-exact against the compile-time figure: `n_layers x seq_len x kv_dim x 4` = `6 x 64 x 288 x 4` = 442,368, twice, for keys and values. The dispatch counts
+close too — 43 GEMMs per token x 64 tokens + 14 weight-staging allocations + 4 transfer and
+free calls = 2775 in both runs, split 37 prefill tokens and 27 decode, consistent with a
+38-token character-level tokenization of the prompt.
+
+The handoff is load-bearing on hardware as it is on CPU: deleting it and rerunning on the
+two GPUs produced *Later that day, Timmy and his friends were all over the playground*
+instead of the correct continuation — the same wrong answer the CPU gives, from the same
+cause, an empty KV cache on the decode device.
+
+**Disaggregation was slower, 2707 ms against 2437 ms.** That is the expected result and not
+a defect. At batch 1 the run pays for the handoff and a second weight staging and gains
+nothing, because there is no concurrent load for prefill and decode to stop competing over;
+disaggregation buys throughput under load, which a single request cannot demonstrate.
+Quoting this figure as a performance result would be quoting it backwards.
+
+**The declared interconnect was wrong by 7x, in the right direction.**
+fleet/node-2gpu-h100.vx declares the peer edge at 63 GB/s (PCIe Gen5, chosen before the pod
+was rented because a pod does not say what it will give you); `nvidia-smi topo -m` reported
+NV18, eighteen bonded NVLink 4 links at roughly 450 GB/s per direction. The declaration has
+not been corrected to match, and the observation is recorded beside it in the file. A bound
+the hardware beats is the correct kind of wrong for a refusal to be trustworthy, and
+editing it afterwards would destroy the only property that makes the number worth anything:
+that it was written down before the machine was seen.
+
+**One instrument defect, worth recording because the failure mode is the dangerous one.**
+scripts/run_disagg_demo.sh read the plugin's traces from stderr, which is where the C++
+writes them — but `vxc --run` executes the program it just built, and the executed
+program's stderr arrives on vxc's stdout. So all 5,529 `[Vx CUDA]` lines landed in the token
+file, and the harness reported "DIFFER — this is a failure" and "the handoff did not
+happen" for a run whose tokens matched exactly and whose KV cache had crossed. An
+experiment that worked, reported as one that failed. The script now splits the streams by
+line prefix rather than by file descriptor, which does not care how many processes are
+involved, and refuses outright if a trace contains no dispatches at all — otherwise every
+check passes by vacuity and "zero device-1 dispatches" reads as *no disaggregation* rather
+than as *no data*.
+
 ### M5 — Run-1 finale: the combo relay {H100 → A100 → MI300X → x86}
 
 - `runtime/rocm_dispatch.cpp`: hipBLAS port of the CUDA plugin, same ABI, same shape.

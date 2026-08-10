@@ -1,0 +1,114 @@
+//===- node-2gpu-h100.vx - two H100 SXM5 80 GB parts in one box -*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The Hopper sibling of fleet/node-2gpu-a100.vx: two H100 SXM5 80 GB parts,
+// one running prefill and one running decode, with the edge between them
+// declared (#347).
+//
+//   vxc prog.vx --machine fleet/node-2gpu-h100.vx --host fleet/host-x86-e5-2666v3.vx
+//
+// The two files exist as a pair on purpose. Same capacity, different generation:
+// 80 GiB either way, so every *admission verdict* is identical and only the
+// predicted costs move. That makes the pair a control -- a placement that is
+// admitted here and refused there, or vice versa, would mean something is
+// reading bandwidth where it should read capacity.
+//
+// See fleet/node-2gpu-a100.vx for why a second device needs its own declared
+// space rather than `--machine` being passed twice, and why PEER_HBM here is
+// one device rather than an aggregate.
+//
+// **On the H100 PCIe variant.** It carries the same 80 GB at 2 TB/s instead of
+// 3.35 TB/s. Capacity is what admission checks, so this file admits and refuses
+// exactly as it would for that part; only the roofline differs. If a rented pod
+// turns out to be PCIe, the verdicts stand and the cost predictions are
+// optimistic by ~40% on the HBM roofline -- worth recording next to a run
+// rather than silently tolerating.
+
+// --- The prefill device -----------------------------------------------------
+
+// spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) --
+// GPU Memory "80GB", GPU Memory Bandwidth "3.35TB/s".
+// Keep in sync with fleet/h100-sxm.vx.
+Memory HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.
+Memory L2 {
+  within: Memory::HBM, capacity: 50 MiB, bandwidth: 12 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
+// 228 KB configurable shared memory per SM (up from 164 KB on A100).
+Memory SMEM {
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+}
+
+// --- The decode device ------------------------------------------------------
+
+// The second H100's HBM. Identical silicon, so identical figures; what makes it
+// worth declaring is that it is a *different* space, and the KV cache crossing
+// from one to the other is an edge with a cost rather than a free assignment.
+//
+// No L2 or SMEM of its own, for the same reason as in the A100 file: those
+// describe the on-die hierarchy of whichever device is executing, and nothing
+// in a disaggregated placement reaches into a peer's cache.
+//
+// spec: as HBM above -- the same part.
+Memory PEER_HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+Topology Node {
+  // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes,
+  // 128b/130b). UNVERIFIED on the rented part, as in fleet/h100-sxm.vx: an SXM
+  // part in an HGX baseboard may instead reach the host over NVLink-C2C at
+  // ~450 GB/s on a Grace-Hopper module.
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM,
+
+  // The disaggregation edge, declared at the pessimistic end for the same
+  // reason as on the A100: a rented pod does not say what it gave you, and a
+  // bound the hardware can only beat is the right direction for a refusal to be
+  // trustworthy.
+  //
+  //   NVLink 4      : 900 GB/s bidirectional, 450 GB/s per direction
+  //   PCIe Gen5 x16 : 63 GB/s per direction
+  //
+  // The spread here is 7x rather than the A100's 8x, and it is the single
+  // figure the disaggregated demo actually rests on. `nvidia-smi topo -m`
+  // settles it, and scripts/setup_gpu_pod.sh records the matrix next to the run
+  // so the declared figure and the observed one are archived together rather
+  // than one being quietly corrected to match.
+  //
+  // spec: NVIDIA H100 Datasheet -- NVLink 4 at 900 GB/s bidirectional, modelled
+  // as 450 GB/s unidirectional (see fleet/README.md on halving). Not declared
+  // here; recorded so the optimistic bound is on the page next to the
+  // pessimistic one that is.
+  //
+  // OBSERVED 2026-08-10, RunPod 2xH100 80GB HBM3, driver 580.126.09:
+  // `nvidia-smi topo -m` reports NV18 between GPU0 and GPU1 -- eighteen bonded
+  // NVLink 4 links, so ~450 GB/s per direction and a direct peer path with no
+  // host staging. The declaration below is wrong by about 7x, in the direction
+  // a bound is supposed to be wrong in.
+  //
+  // It is deliberately NOT being corrected to match. This figure is a bound
+  // across the pods this file might be pointed at, not a fact about the one
+  // that happened to be rented on a Sunday; the next H100 pair may be PCIe. A
+  // declaration edited after the fact to agree with one measurement is the
+  // failure mode fleet/README.md's provenance policy exists to prevent, and it
+  // would quietly destroy the property that makes the refusals worth anything --
+  // that the number was written down before the machine was seen.
+  transfer Memory::HBM -> Memory::PEER_HBM : 63 GB/s,
+  transfer Memory::PEER_HBM -> Memory::HBM : 63 GB/s
+}

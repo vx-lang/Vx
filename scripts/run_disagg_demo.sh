@@ -79,20 +79,48 @@ fi
 # plugin that always reports two.
 echo "==> Run 1: both phases on GPU 0"
 VX_LLAMA_DISAGG=0 VX_DISPATCH_VERBOSE=1 ./vxc "$PROGRAM" --run \
-  > "$OUTDIR/raw-single.txt" 2> "$OUTDIR/trace-single.txt"
+  > "$OUTDIR/raw-single.txt" 2> "$OUTDIR/compiler-single.txt"
 single_status=$?
 
 # --- 2. Prefill on GPU 0, decode on GPU 1 -----------------------------------
 echo "==> Run 2: prefill on GPU 0, decode on GPU 1"
 VX_LLAMA_DISAGG=1 VX_DISPATCH_VERBOSE=1 ./vxc "$PROGRAM" --run \
-  > "$OUTDIR/raw-disagg.txt" 2> "$OUTDIR/trace-disagg.txt"
+  > "$OUTDIR/raw-disagg.txt" 2> "$OUTDIR/compiler-disagg.txt"
 disagg_status=$?
 
-strip_noise() {
-  grep -v '^Expanding macro call:\|^\[JIT\]\|^\[flat-codegen\]' "$1"
+# Both streams arrive on stdout, so they are separated here rather than by the
+# shell.
+#
+# The plugin writes its narration to stderr and this script originally read the
+# traces from there. That is the wrong end: `vxc --run` compiles, links and then
+# *executes* the program, and the executed program's stderr is merged into vxc's
+# stdout. The redirection above therefore captured only the compiler's own
+# warnings, and every `[Vx CUDA]` line landed in the token file. The first run of
+# this script reported "DIFFER -- this is a failure" and "the handoff did not
+# happen" on a run where the tokens matched exactly and the KV cache had crossed
+# -- an instrument failure reported as an experimental one, which is the worst
+# way for a harness to be wrong.
+#
+# Splitting by prefix instead of by file descriptor is also more robust: it does
+# not care how many processes are involved or which of them owns which stream.
+split_streams() {
+  grep    '^\[Vx CUDA\]' "$1" > "$2" || true
+  grep -v '^\[Vx CUDA\]\|^Expanding macro call:\|^\[JIT\]\|^\[flat-codegen\]' "$1" > "$3" || true
 }
-strip_noise "$OUTDIR/raw-single.txt" > "$OUTDIR/tokens-single.txt"
-strip_noise "$OUTDIR/raw-disagg.txt" > "$OUTDIR/tokens-disagg.txt"
+split_streams "$OUTDIR/raw-single.txt" "$OUTDIR/trace-single.txt" "$OUTDIR/tokens-single.txt"
+split_streams "$OUTDIR/raw-disagg.txt" "$OUTDIR/trace-disagg.txt" "$OUTDIR/tokens-disagg.txt"
+
+# A trace with no dispatches in it means the prefix moved or the plugin never
+# ran, and every check below would then pass by vacuity -- zero device-1
+# dispatches in both runs reads as "no disaggregation" rather than as "no data".
+for run in single disagg; do
+  if [ ! -s "$OUTDIR/trace-$run.txt" ]; then
+    echo "error: no [Vx CUDA] lines in the $run run." >&2
+    echo "       Either VX_DISPATCH_VERBOSE was not honoured or the plugin did" >&2
+    echo "       not load. The checks below cannot mean anything; stopping." >&2
+    exit 1
+  fi
+done
 
 echo
 echo "=== Exit status ==="
