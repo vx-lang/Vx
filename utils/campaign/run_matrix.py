@@ -132,13 +132,26 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
             "stderr": proc.stderr[-2000:], "returncode": proc.returncode,
         }
     rec = json.loads(cell_json.read_text())
+    codes = [d["code"] for d in rec["diagnostics"] if d.get("code", "").startswith("E")]
+    # The JSON's verdict is "rejected iff error_count > 0", so a *configuration*
+    # error -- E6014 (no host named), E6012 (a machine file passed as --host) --
+    # also reads "rejected". A cell is a rejection only if every error it
+    # carries is capacity arithmetic; anything else is the fabricated-agreement
+    # trap described above, including mixed cases: a cell lost to manual review
+    # is cheaper than a contaminated one.
+    if rec["verdict"] == "rejected" and any(c not in ("E6009", "E6010") for c in codes):
+        return {
+            "cell": cfg.cell_id, "sku": sku, "verdict": "TOOLCHAIN_ERROR",
+            "error_codes": codes, "stderr": proc.stderr[-2000:],
+            "note": "non-capacity diagnostics present -- config error, not a capacity verdict",
+        }
     resident = next((r for r in rec.get("resident_sets", []) if r["space"] == "HBM"), None)
     return {
         "cell": cfg.cell_id,
         "sku": sku,
         "config": asdict(cfg),
         "verdict": rec["verdict"],
-        "error_codes": [d["code"] for d in rec["diagnostics"] if d.get("code", "").startswith("E")],
+        "error_codes": codes,
         "resident_bytes": resident["total_bytes"] if resident else None,
         "capacity_bytes": resident["capacity_bytes"] if resident else None,
         "utilization": resident["utilization"] if resident else None,
