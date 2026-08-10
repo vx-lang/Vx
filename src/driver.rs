@@ -167,11 +167,6 @@ pub struct DriverOptions {
     #[arg(long = "emit-seam-certs")]
     pub emit_seam_certs: bool,
 
-    /// Target backend for emitted LLVM IR: tags the module with the target triple and
-    /// data layout (x86_64, aarch64, nvptx64, amdgcn). Affects `--emit-llvm` output.
-    #[arg(long = "target")]
-    pub target: Option<String>,
-
     /// Disable Vx optimizations
     #[arg(long = "disable-vx-optimizations")]
     pub disable_vx_optimizations: bool,
@@ -859,27 +854,17 @@ impl CompilerDriver {
                 // MLIR. Asking for a concrete backend (`--target`) means you want real IR for
                 // it: set that target's triple / data layout as real module attributes (which
                 // `mlir-translate` propagates to the `.ll`) and translate to actual `.ll`.
-                if self.options.action == Action::EmitLlvm {
-                    if let Some(target) = &self.options.target {
-                        if let Some((triple, datalayout)) = target_triple_and_datalayout(target) {
-                            use melior::ir::operation::OperationMutLike;
-                            module.as_operation_mut().set_attribute(
-                                "llvm.target_triple",
-                                melior::ir::attribute::StringAttribute::new(&context, triple)
-                                    .into(),
-                            );
-                            module.as_operation_mut().set_attribute(
-                                "llvm.data_layout",
-                                melior::ir::attribute::StringAttribute::new(&context, datalayout)
-                                    .into(),
-                            );
-                        }
-                        let mlir_str = format!("{}", module.as_operation());
-                        let llvm_ir = translate_to_llvm_ir(&mlir_str, main_file)?;
-                        println!("{}", llvm_ir);
-                        return Ok(());
-                    }
-                }
+                // `--emit-llvm` prints the LLVM-dialect MLIR. It does not tag a triple or
+                // data layout: those describe the machine the code runs on, which `--host`
+                // names and `--machine` names for a device. A separate `--target` flag was a
+                // third opinion that could disagree with both, and did -- `--target nvptx64`
+                // stamped `nvptx64-nvidia-cuda` onto a module containing `main` and the host
+                // dispatch calls, which NVPTX has no notion of. Deriving the triple from the
+                // machine descriptions instead is #342.
+                //
+                // Translating on to real `.ll` went with it, having only ever been reachable
+                // by naming a target. It wants to be its own action rather than a side
+                // effect of that.
                 println!("{}", module.as_operation());
             }
             Action::RunJit => {
@@ -1277,29 +1262,12 @@ pub fn apply_mlir_opt(
     Ok(out_str)
 }
 
-/// The LLVM target triple and data layout for a named backend.
-fn target_triple_and_datalayout(target: &str) -> Option<(&'static str, &'static str)> {
-    match target {
-        "x86_64" | "x86-64" | "x86" => Some((
-            "x86_64-unknown-linux-gnu",
-            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
-        )),
-        "aarch64" | "arm64" => Some((
-            "aarch64-unknown-linux-gnu",
-            "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
-        )),
-        "nvptx64" | "nvptx" => Some((
-            "nvptx64-nvidia-cuda",
-            "e-i64:64-i128:128-v16:16-v32:32-n16:32:64",
-        )),
-        "amdgcn" | "amdgpu" => Some((
-            "amdgcn-amd-amdhsa",
-            "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8:9",
-        )),
-        _ => None,
-    }
-}
-
+/// Run `mlir-translate --mlir-to-llvmir` over LLVM-dialect MLIR to get real `.ll`.
+///
+/// No caller reaches this from the CLI now: it was only ever invoked when `--target`
+/// named a backend, and that flag is gone (#342). Kept because translating to `.ll`
+/// is a thing the compiler should be able to do -- it wants to be its own action
+/// rather than a side effect of naming a target.
 pub fn translate_to_llvm_ir(
     mlir_src: &str,
     _main_file: &std::path::Path,

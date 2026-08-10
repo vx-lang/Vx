@@ -220,34 +220,46 @@ code path to keep in agreement with the first.
 
 ______________________________________________________________________
 
-## Where this is going: the target follows from the machine
+## The target *is* the host
 
-A machine model already says everything an LLVM target triple says, and more. The flags should
-therefore *imply* the triple and data layout rather than sitting beside a separate switch.
+There is no `--target`. There was, and it was the source of a confusion worth recording, because
+GCC and clang have both carried the same one.
 
-Today they do not. `--target` exists and is independent:
+"Target" was coined when a compilation had one machine to name: the one the output runs on. A
+heterogeneous program has two, and the word stops being able to pick one. Vx names them:
 
-```rust
-// src/driver.rs — set from --target alone
-fn target_triple_and_datalayout(target: &str) -> Option<(&'static str, &'static str)> {
-    match target {
-        "x86_64" => Some(("x86_64-unknown-linux-gnu", "e-m:e-p270:32:32-...")),
-        "aarch64" => Some(("aarch64-unknown-linux-gnu", "e-m:e-i8:8:32-...")),
-        "nvptx64" => Some(("nvptx64-nvidia-cuda", "e-i64:64-i128:128-...")),
-        "amdgcn"  => Some(("amdgcn-amd-amdhsa", "e-p:64:64-p1:64:64-...")),
-        _ => None,
-    }
-}
+| | runs what | classical name |
+|---|---|---|
+| `--host` | `main`, the dispatch calls, the outlined kernels' C interfaces | **the target** |
+| `--machine` | the device kernels, once emission lands (#251) | the *offload* target |
+
+The host is the target. It is the machine the program runs on and drives the rest of the system
+from; everything else is a machine it dispatches to. Clang reached the same shape from the other
+direction -- `-triple` plus `-aux-triple`/`--offload-arch` -- because one flag cannot describe two
+machines.
+
+### What the flag did, and why it went
+
+`--target` tagged the *whole module* with one triple, whichever machine that triple named:
+
+```
+$ vxc prog.vx --emit-llvm --target nvptx64
+target triple = "nvptx64-nvidia-cuda"
 ```
 
-Nothing relates that to the machine or the host, so this is accepted:
+on a module containing `main` and two calls to `vx_plugin_dispatch_async`. NVPTX has no `main` and
+no libffi dispatch. The deleted test `llvm_backends.vx` asserted exactly this as correct
+behaviour —
 
 ```
-vxc prog.vx --host <an x86 host file> --target aarch64
+// NVPTX: target triple = "nvptx64-nvidia-cuda"
+// NVPTX: define i32 @main
 ```
 
-— a program admitted against one machine and emitted for another. The compiler holds both beliefs
-at once and compares them never.
+— so the confusion was not only in the flag; it was pinned as expected. Nothing related the flag to
+`--machine` or `--host` either, so `--host <x86 file> --target aarch64` was accepted: a program
+admitted against one machine and emitted for another, with the compiler holding both beliefs and
+comparing them never.
 
 ### What it should be
 
