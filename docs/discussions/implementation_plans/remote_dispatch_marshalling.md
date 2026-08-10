@@ -96,17 +96,107 @@ would be the second place the argument layout is written down, and the two would
 
 ## Handles
 
-A handle is an opaque `uint64_t` minted by the *worker* and meaningless anywhere else.
-Not an address: an address invites the host to dereference it, and the compiler's
-`is_device_ptr` check would answer wrongly for a remote one.
+**Not a pointer on the remote device, and not an opaque token either.** The first draft
+of this document said "opaque `uint64_t`", which is wrong for a reason that only shows up
+by reading the program it has to support.
 
-That last point is the one to get right. `is_device_ptr(p)` currently asks CUDA whether
-`p` is device memory; for a remote handle it will say no, and the plugin will then try to
-*stage* it — reading host memory at an address that is really a handle. So handles must
-be distinguishable before that question is asked. Tagging the high bits is the obvious
-mechanism and the obvious hazard; the safer form is a per-topology handle table in the
-plugin, consulted by `(topology_id, value)` rather than by value alone, since the plugin
-already knows which topology a dispatch names.
+### The constraint the program imposes
+
+`llama2.vx` does pointer arithmetic on staged pointers, seven times per layer:
+
+```
+let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, topology_id);
+...
+let wq_l : *mut f32 = vx_advance_ptr(w.wq, wq_off);   // this layer's slice
+```
+
+`w.wq` *is* `d_wq`. The seven weight blobs are contiguous and the per-layer slicing is a
+host-side offset computation on a device address, which works today because a CUDA device
+pointer is a real address in a unified space and `+ offset` means what it says.
+
+An opaque handle has no meaningful `+ offset`. Adding a byte offset to a table index
+produces either a different valid handle or a lookup miss, and the first is worse. Since
+the acceptance criterion for #348 is that this program runs *unchanged*, any handle design
+that cannot be offset is disqualified before it is evaluated.
+
+### Why not simply the worker's own pointer
+
+Tempting — it fits in 64 bits, needs no table, and offsets natively. Four reasons not to:
+
+1. **Indistinguishable from a host pointer.** `is_device_ptr(p)` asks CUDA whether `p` is
+   device memory. For a remote address it answers *no*, so the plugin stages it — reading
+   host memory at an address that is really a remote one. Silent, and the read succeeds.
+1. **Stale handles look live.** A buffer freed on the worker leaves an address that is
+   still a plausible address. With an indirection, a freed handle is a lookup miss and can
+   abort naming the worker.
+1. **It pins the representation.** The worker can never relocate, spill or re-place a
+   buffer without the caller knowing, which is precisely the transparency this is for.
+1. **Not unique across workers.** Two workers independently allocate the same numeric
+   value. Identity is `(topology_id, value)` and never `value` alone, so any cache keyed on
+   the value would alias two machines' memory.
+
+### What it is
+
+**A worker-assigned address in a synthetic 64-bit space, partitioned per worker**, with
+the plugin resolving `(topology_id, address)` to a region by interval lookup — the
+containing region plus the offset within it. Offsetting is plain integer addition, so
+`vx_advance_ptr` and every existing pointer expression keep working untouched, while the
+worker keeps an indirection it can move bytes behind.
+
+**Mint them non-canonical** — bits 48..63 set. On x86-64 and AArch64 an address with a
+non-canonical top half is never returned by `malloc`, `cudaMalloc`, or `mmap`, so:
+
+- Collision with a genuine pointer is impossible *by construction*, not by convention,
+  which is what makes the `is_device_ptr` hazard above go away rather than being
+  documented around.
+- An accidental host dereference **faults immediately** instead of reading garbage. That
+  matters more than it sounds: the `matmul_ane` segfault in M2/M3 was a host loop
+  dereferencing a staged device pointer, and the only reason it was diagnosable is that it
+  faulted. A remote handle that is a plausible host address would have read whatever was
+  there and produced wrong numbers.
+
+The offset arithmetic stays inside the region's span, so it does not disturb the tag: a
+region is at most a few GiB and the tag lives 48 bits up.
+
+### Is this a GID?
+
+The question a reader of this codebase will ask, and the answer is *structurally yes,
+semantically no* — worth writing down because reusing `Gid` would be a plausible-looking
+mistake.
+
+The shape is shared: a wide integer standing in for a thing resolved through a registry
+rather than dereferenced, with bit-fields carrying provenance. And one GID rule should be
+copied outright: **one codec, the only place the word is read or written**. That rule
+exists in `gid.rs` because word 2 got triple-booked with two disagreeing flags (#193), and
+a handle packing a partition tag beside an address is the identical hazard.
+
+The two defining GID properties are ones a handle must not have:
+
+| | GID | remote handle |
+|---|---|---|
+| minting | content-addressed; workers agree *without coordinating* | authority-minted by one worker |
+| same value in two places | the same entity, by construction | *different memory on different machines* |
+| lifetime | immutable identity | allocated then freed; can dangle |
+| arithmetic | meaningless | required, by `vx_advance_ptr` |
+
+A GID answers *what is this thing, canonically, everywhere*. A handle answers *where are
+these bytes, on one machine, right now* — identity against location.
+`content_addressed_workers_agree_without_coordinating` is the GID system's headline
+guarantee and is exactly what must be **false** here: two workers allocating independently
+must produce values meaning different memory, which is why identity is
+`(topology_id, address)` and never the address alone.
+
+So: borrow the codec discipline and the registry pattern; do not borrow the identity
+model. Reusing `Gid` would import content-addressing into something that must be
+authority-minted, and the failure mode is silent aliasing between two machines' memory.
+
+### What still has to be checked
+
+Pointer arithmetic that leaves a region — `vx_advance_ptr(w.wq, huge)` — must not silently
+resolve into the *next* region. Interval lookup gives this for free if regions are not
+made adjacent in the synthetic space; leaving a guard gap between them turns an
+out-of-bounds offset into a lookup miss instead of a valid handle for the wrong buffer.
+This is the same argument as a guard page and should be spelled the same way.
 
 ## The agent
 
@@ -150,6 +240,12 @@ The compiler. No new syntax, no new placement rule, no change to admission. A pr
 that runs on two GPUs in one box should run on two machines with a different machine
 file and an unchanged source, and if any part of this design requires editing
 `llama2.vx`, that part is wrong.
+
+That is not a slogan; it has already done work. The first draft of the handles section
+said "opaque `uint64_t`", and the thing that refuted it was reading the program: seven
+`vx_advance_ptr` calls per layer, doing arithmetic on a staged pointer. The criterion
+found the defect before any code was written, which is the argument for stating it
+up front rather than discovering it as a porting cost.
 
 ## Open questions
 
