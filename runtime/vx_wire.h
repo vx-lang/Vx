@@ -397,6 +397,68 @@ static inline int vx_wire_get_dispatch(vx_wire_reader *r,
   return 1;
 }
 
+/// What a dispatch produced: one entry per slot argument, in the order the
+/// slots appeared.
+///
+/// A slot is the storage a kernel publishes an allocated result through, and
+/// that storage is on the *host* -- it is the caller's own memory, which the
+/// outlined kernel would have stored a descriptor into. So the result cannot
+/// come back by the worker writing through it; the worker has nothing that
+/// points there.
+///
+/// Instead the reply names the result and the host writes the descriptor
+/// itself, with the handle where a pointer would be. That descriptor is then
+/// exactly as usable as a local one -- it can be passed to the next dispatch,
+/// which sends the handle onward -- and exactly as unusable by host code, which
+/// faults on the non-canonical address rather than reading a wrong answer out
+/// of it. See vx_remote_region.h.
+typedef struct {
+  uint64_t handle;
+  int32_t rank;
+  int64_t sizes[VX_ABI_MAX_RANK];
+} vx_wire_result;
+
+static inline void vx_wire_put_results(vx_wire_writer *w, int32_t status,
+                                       const vx_wire_result *results,
+                                       int64_t count) {
+  vx_wire_put_i32(w, status);
+  vx_wire_put_i64(w, count);
+  for (int64_t i = 0; i < count; ++i) {
+    vx_wire_put_u64(w, results[i].handle);
+    vx_wire_put_i32(w, results[i].rank);
+    for (int32_t j = 0; j < results[i].rank; ++j) {
+      vx_wire_put_i64(w, results[i].sizes[j]);
+    }
+  }
+}
+
+static inline int vx_wire_get_results_header(vx_wire_reader *r, int32_t *status,
+                                             int64_t *count) {
+  if (!vx_wire_get_i32(r, status) || !vx_wire_get_i64(r, count)) {
+    return 0;
+  }
+  if (*count < 0 || (uint64_t)*count * 12 > r->len - r->pos) {
+    return 0;
+  }
+  return 1;
+}
+
+static inline int vx_wire_get_result(vx_wire_reader *r, vx_wire_result *out) {
+  memset(out, 0, sizeof(*out));
+  if (!vx_wire_get_u64(r, &out->handle) || !vx_wire_get_i32(r, &out->rank)) {
+    return 0;
+  }
+  if (out->rank < 0 || out->rank > VX_ABI_MAX_RANK) {
+    return 0;
+  }
+  for (int32_t i = 0; i < out->rank; ++i) {
+    if (!vx_wire_get_i64(r, &out->sizes[i])) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static inline void vx_wire_put_free(vx_wire_writer *w, uint64_t handle) {
   vx_wire_put_u64(w, handle);
 }
