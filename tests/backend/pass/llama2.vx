@@ -121,18 +121,52 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
     let p12 : *mut f32 = vx_advance_ptr(p11, seq_len * head_size);
     let wcls_ptr : *mut f32 = p0; // assuming shared weights
 
+    // Stage the projection weights into the memory of the topology that reads
+    // them, once, before any token is generated.
+    //
+    // These seven blobs are the only weights a `spawn` touches -- the norms and
+    // the embedding table are read by host code, so they stay where they are.
+    // Moving those too would put them out of the host's reach, which on a real
+    // device means a bad dereference rather than a slow one.
+    //
+    // Once, not per call, is the whole point. `matmul` is invoked seven times
+    // per layer per token; staging inside it would move `wq` across the bus
+    // 6 x N times for an N-token generation. A pointer into device memory
+    // instead means the plugin finds the operand already where it needs to be
+    // (`is_device_ptr` in runtime/cuda_dispatch.cpp) and stages nothing.
+    //
+    // The per-layer slicing below is unchanged: these are contiguous blobs, and
+    // `vx_advance_ptr` offsets into device memory exactly as it did into host
+    // memory. What changed is which memory it is.
+    let f32_bytes : i64 = 4;
+    let wq_n : i64 = (n_layers * dim * n_heads * head_size) as i64;
+    let wk_n : i64 = (n_layers * dim * n_kv_heads * head_size) as i64;
+    let wv_n : i64 = (n_layers * dim * n_kv_heads * head_size) as i64;
+    let wo_n : i64 = (n_layers * n_heads * head_size * dim) as i64;
+    let w1_n : i64 = (n_layers * dim * hidden_dim) as i64;
+    let w2_n : i64 = (n_layers * hidden_dim * dim) as i64;
+    let w3_n : i64 = (n_layers * dim * hidden_dim) as i64;
+
+    let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, 500);
+    let d_wk : *mut f32 = vx_plugin_alloc_and_transfer(wk_n * f32_bytes, p3, 500);
+    let d_wv : *mut f32 = vx_plugin_alloc_and_transfer(wv_n * f32_bytes, p4, 500);
+    let d_wo : *mut f32 = vx_plugin_alloc_and_transfer(wo_n * f32_bytes, p5, 500);
+    let d_w1 : *mut f32 = vx_plugin_alloc_and_transfer(w1_n * f32_bytes, p7, 500);
+    let d_w2 : *mut f32 = vx_plugin_alloc_and_transfer(w2_n * f32_bytes, p8, 500);
+    let d_w3 : *mut f32 = vx_plugin_alloc_and_transfer(w3_n * f32_bytes, p9, 500);
+
     TransformerWeights {
       token_embedding_table:
       p0, rms_att_weight : p1,
-      wq : p2,
-      wk : p3,
-      wv : p4,
-      wo : p5,
+      wq : d_wq,
+      wk : d_wk,
+      wv : d_wv,
+      wo : d_wo,
       rms_ffn_weight : p6,
-      w1 : p7,
-      w2 : p8,
+      w1 : d_w1,
+      w2 : d_w2,
       w3
-      : p9,
+      : d_w3,
       rms_final_weight : p10,
       wcls : wcls_ptr
     }

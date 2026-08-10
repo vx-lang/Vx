@@ -28,6 +28,18 @@ extern {
   fn vx_load_weights(filepath : *const i8) -> *mut f32;
   fn vx_advance_ptr_const(ptr : *const f32, offset : i32) -> *const f32;
   fn vx_advance_ptr(ptr : *mut f32, offset : i32) -> *mut f32;
+
+  // Move a weight blob into the memory of the topology that will read it, once,
+  // and get back a pointer into that memory. The plugin ABI
+  // (include/vx_hardware_runtime.h) rather than a CUDA call: the CUDA backend
+  // answers it with cudaMalloc and an H2D copy, a CPU backend with an aligned
+  // allocation and a memcpy, so the same program is correct on either.
+  //
+  // Weights are read once per token. Staging them per dispatch would move the
+  // whole matrix across the bus for every projection of every layer, which is
+  // what makes a naive GPU port slower than the CPU it replaced.
+  fn vx_plugin_alloc_and_transfer(bytes : i64, host_ptr : *mut f32,
+  topology_id : i32) -> *mut f32;
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)
   -> *mut i8;
