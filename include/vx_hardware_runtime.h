@@ -53,6 +53,21 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
 #define VX_ABI_SLOT_TAG(elem, rank)                                            \
   (VX_ABI_SLOT_BIT | VX_ABI_MEMREF_TAG(elem, rank))
 
+/// The largest rank a consumer must be able to hold.
+///
+/// The tag's rank field is eight bits wide, so 255 is what it can *encode*;
+/// this is what a runtime is required to *accept*. The distinction matters
+/// where rank arrives from outside the process and then indexes an array --
+/// runtime/vx_wire.h decodes a rank off a socket -- because an unchecked value
+/// there writes past whatever it indexes. Bounding it once, here, means the
+/// check reads the same in every consumer instead of each inventing a limit.
+///
+/// Eight is chosen against what the compiler emits (rank 1 and 2 today) with
+/// room for the batched and blocked layouts a serving program would add.
+/// Raising it is a recompile; a memref that exceeds it is refused, never
+/// truncated.
+#define VX_ABI_MAX_RANK 8
+
 enum {
   VX_ABI_KIND_MEMREF = 0,
   VX_ABI_KIND_I1 = 1,
