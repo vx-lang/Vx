@@ -202,6 +202,40 @@ device 0). One program text; the role (prefill | decode) picked at runtime.
 - **Acceptance:** same tokens as the single-machine reference; both processes admitted at
   compile time; KV handoff size and latency logged, predicted vs measured recorded.
 
+**M4 splits in two, and the in-process half is built (2026-08-10, #347).** The plan above
+is the *network* form: two processes, one GPU each via `CUDA_VISIBLE_DEVICES`, KV shipped
+over TCP in Vx source. That remains the stronger claim and the one that generalises to two
+rented pods. But it hides something, and the something is why an in-process step came
+first: under `CUDA_VISIBLE_DEVICES` every process sees exactly one GPU at index 0, so each
+role is a single-device program — the case that already worked. A second device is never
+named, and nothing about naming one is tested.
+
+Naming one turned out to be broken in four places, none of which failed loudly:
+
+- `W1030` never fired for `Topology::GPU`, so a runtime device index became device 0 in
+  silence (#345, 81af092b) — while the comment above the code used `GPU[i]` as its example.
+- The cuBLAS handle was process-wide and bound to the device current at `cublasCreate`, so
+  a dispatch to GPU 1 selected device 1, printed `device 1`, and computed on device 0.
+- `vx_plugin_alloc_and_transfer` discarded its `topology_id` outright.
+- Nothing in the plugin ABI could express a movement between two devices at all.
+
+All four are fixed in fcfd81cf, which adds `vx_plugin_transfer_peer` (`cudaMemcpyPeer`, so
+one implementation serves an NVLink pod and a PCIe-only one). 1e89612c makes `transformer`
+and `matmul` const-generic over the device index — `transformer<0>` and `transformer<1>`
+are one body, emitting payloads that differ only in `topo=500` against `topo=501` — and
+splits the generation loop at the prompt boundary with `handoff_kv` between the halves.
+
+The handoff is load-bearing by construction: the two phases hold separate `RunState`s and
+therefore separate KV caches, and decode's is filled only by the transfer. Deleting it
+changes the generated text, which is the acceptance test. Host-side parity against the
+pre-change program is byte-identical on 64 tokens.
+
+Remaining for the network form: `std::net` accept/read/write, the KV wire header, and
+per-role admission. Remaining for either: attention, softmax, RoPE and RMSNorm still run on
+the host (#251), so the KV cache's working copy is host memory and the outer legs of the
+handoff exist only because of that; strided sub-views of a placed tensor (#344) are what
+would put the cache on the device and read it there.
+
 ### M5 — Run-1 finale: the combo relay {H100 → A100 → MI300X → x86}
 
 - `runtime/rocm_dispatch.cpp`: hipBLAS port of the CUDA plugin, same ABI, same shape.

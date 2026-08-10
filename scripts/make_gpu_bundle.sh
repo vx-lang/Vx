@@ -26,6 +26,18 @@
 #   source env.sh && ./vxc gpu_matmul_roles.vx --run
 #   cd .. && rm -rf vx-gpu-bundle vx-gpu-bundle.tar.gz
 #
+# For the disaggregated run on a two-GPU pod (#347), build the bundle with the
+# model assets and the imported module, then run the demo rather than vxc:
+#
+#   scripts/make_gpu_bundle.sh tests/backend/pass/llama2.vx \
+#     --with tests/modules/llama_rt.vx \
+#     --with tests/backend/pass/stories15M.bin \
+#     --with tests/backend/pass/tokenizer.bin \
+#     --with tests/backend/pass/prompt.txt \
+#     --with fleet
+#   # on the pod, after ./setup_gpu_pod.sh:
+#   ./run_disagg_demo.sh -t 64
+#
 #===----------------------------------------------------------------------===#
 
 set -euo pipefail
@@ -84,6 +96,12 @@ cp "$REPO_ROOT/runtime/cuda_dispatch.cpp" \
    "$REPO_ROOT/runtime/vx_host_call.h" "$BUNDLE/runtime/"
 cp "$REPO_ROOT/include/vx_hardware_runtime.h" "$BUNDLE/include/"
 cp "$REPO_ROOT/scripts/setup_gpu_pod.sh" "$BUNDLE/"
+
+# The disaggregated run and the files that make it checkable (#347). Carried
+# unconditionally rather than behind a flag: it costs a few kilobytes, and a
+# run whose evidence-gathering was left behind on the build box is a run that
+# has to be paid for twice.
+cp "$REPO_ROOT/scripts/run_disagg_demo.sh" "$BUNDLE/"
 
 # Programs keep their repository-relative path, and the standard library comes
 # along. Module imports resolve against `stdlib/std`, `stdlib` and the working
