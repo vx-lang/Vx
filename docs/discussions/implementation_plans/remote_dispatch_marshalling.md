@@ -424,6 +424,26 @@ Step 4 is what makes the claim. Steps 1 through 3 are what make step 4 not a deb
 session on rented hardware — which is the lesson M1 through M4 kept re-teaching, most
 expensively when an instrument reported a working run as a failed one.
 
+**Step 1 is done** (312d4267, 8a88eeeb, 77ba5686): `runtime/vx_remote_region.h`,
+`runtime/vx_wire.h`, `runtime/vx_agent.h` and three test suites, all vendor-free and all
+clean under `-fsanitize=address,undefined`. A dispatch goes out, resolves its handles,
+runs the GEMM the compiler described, publishes into a slot, replies, and comes back with
+the right numbers.
+
+Building it refuted three things this document asserted, which is the argument for having
+built it before renting anything:
+
+- A handle **cannot be opaque** — `llama2.vx` offsets one seven times per layer.
+- A **4 GiB region cap** is contradicted by `fleet/admit.vx`, which declares a single
+  120 GiB tensor.
+- `device_args[i]` points at a *pointer* to a descriptor, and a slot is
+  `memref<memref<...>>` needing both halves built. Neither mistake produced a diagnostic;
+  the dispatch simply refused.
+
+What is left of step 2 is transport rather than format: framing over a socket, a manifest
+mapping `toponame=DecodeWorker` to an endpoint, and shipping the artifact so the worker
+has the same outlined kernels.
+
 ## What this does not change
 
 The compiler. No new syntax, no new placement rule, no change to admission. A program
