@@ -143,8 +143,9 @@ containing region plus the offset within it. Offsetting is plain integer additio
 `vx_advance_ptr` and every existing pointer expression keep working untouched, while the
 worker keeps an indirection it can move bytes behind.
 
-**Mint them non-canonical** — bits 48..63 set. On x86-64 and AArch64 an address with a
-non-canonical top half is never returned by `malloc`, `cudaMalloc`, or `mmap`, so:
+**Mint them non-canonical.** On x86-64 and AArch64 an address whose bits 63:47 are
+neither all-zeros nor all-ones is never returned by `malloc`, `cudaMalloc`, or `mmap` —
+see the layout under "Guard gaps" below for the exact field assignment — so:
 
 - Collision with a genuine pointer is impossible *by construction*, not by convention,
   which is what makes the `is_device_ptr` hazard above go away rather than being
@@ -155,8 +156,9 @@ non-canonical top half is never returned by `malloc`, `cudaMalloc`, or `mmap`, s
   faulted. A remote handle that is a plausible host address would have read whatever was
   there and produced wrong numbers.
 
-The offset arithmetic stays inside the region's span, so it does not disturb the tag: a
-region is at most a few GiB and the tag lives 48 bits up.
+Offsetting stays within the worker's own 128 TiB span, so no amount of `vx_advance_ptr`
+can walk out of the tagged range and start looking like a host pointer. Regions inside
+that span are variably sized and have no cap.
 
 ### The struct, and where it goes
 
@@ -278,28 +280,54 @@ land, and if the allocator happens to pack regions end to end then an offset tha
 past the end of `wq` resolves cleanly into `wk` — a valid handle for the wrong buffer,
 which is worse than a miss and produces plausible numbers.
 
-The simplest form that makes this structural rather than a property of the allocator:
-**one region per fixed-size slot**, so the address decomposes without a search.
+**Not fixed-size slots.** An earlier draft of this section put one region in each fixed
+2^32 slot, so the address would decompose by bit-extraction with no search. That caps a
+single region at 4 GiB, and the cap is not close to acceptable — it is contradicted by
+two things already in this repository:
+
+- `fleet/admit.vx` declares the weights of its 70B configuration as **one** tensor,
+  `[12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]`, which at
+  `admit<80, 64, 8, 128, 4096, 1, 1>` is `[7864320, 8192]` in f16 — about **120 GiB in a
+  single object**.
+- `llama2.vx` stages each projection as one blob spanning *all* layers —
+  `wq_n = n_layers * dim * n_heads * head_size` — and slices it per layer with
+  `vx_advance_ptr`. At 70B scale that single blob is **10.7 GB at f16**. It is precisely
+  the allocation whose offsetting this whole design exists to preserve.
+
+So the cap would be violated by a factor of thirty by a configuration the admission
+matrix runs today. The mistake was optimising the wrong thing: bit-extraction saves
+nanoseconds on a path whose next step is a network round trip, and it bought them with a
+size limit on the objects being served.
+
+**Variable-size regions, allocated with explicit gaps, resolved by interval lookup.**
+Address space is the cheap resource here, so spend it:
 
 ```
- 63          48 47        32 31                             0
-+--------------+------------+--------------------------------+
-| non-canonical|  slot index|   byte offset within the slot  |
-|   + partition|            |                                |
-+--------------+------------+--------------------------------+
+ 63      56 55      48 47  46                                0
++----------+----------+---+---------------------------------+
+|   0x00   | worker   | 0 |   offset within the worker's    |
+| (marker) | 1..255   |   |   space -- 47 bits, 128 TiB     |
++----------+----------+---+---------------------------------+
 ```
 
-An offset in `[0, size)` is valid; one in `[size, 4 GiB)` lands in the gap and misses;
-one beyond 4 GiB changes the slot index and is caught by the generation and dtype
-recorded there. No two regions are adjacent because the slot boundary always separates
-them, and the gap costs nothing — address space is the resource being spent, and there
-are 2^32 slots per partition of it.
+Bits 63:56 zero and 55:48 non-zero and bit 47 zero makes bits 63:47 neither all-zeros nor
+all-ones, so every such value is **non-canonical** on x86-64 and AArch64: it cannot
+collide with a user pointer (top bits zero) or a kernel one (top bits set), and
+dereferencing it faults. The worker field means two workers' spaces never overlap and the
+plugin can route without consulting the table at all.
 
-The cost is a **4 GiB cap on a single region**, which is worth stating rather than
-discovering. Individual weight tensors are far below it — llama2's whole `wq` blob is
-2 MB, and a 70B-class per-tensor weight is under a gigabyte — but a program that placed
-one enormous contiguous buffer would hit it, and the escape is a wider slot in the codec
-rather than a special case at the call site.
+Within a worker's 128 TiB, regions are placed in order with a gap after each of at least
+`max(region_size, 4 GiB)`. A gap as large as the region it follows costs half the address
+space and catches any overrun shorter than the region itself; with 128 TiB against
+plausibly a terabyte of resident tensors, that is spending a percent of a resource that
+has no other use.
+
+Resolution is a binary search over sorted `(base, size)` pairs — about seventeen
+comparisons at a hundred thousand regions, against a dispatch that is at minimum a PCIe
+round trip and at maximum a network one. The O(1) decode was never worth a cap.
+
+There is no region size limit below 128 TiB, and if one worker ever needs more than that,
+the worker field has spare values and a region can span several.
 
 This is the guard-page argument and should be spelled the same way: the protection comes
 from the layout, not from remembering to check.
