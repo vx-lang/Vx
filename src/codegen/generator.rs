@@ -647,6 +647,24 @@ impl<'c> MeliorGenerator<'c> {
             for e in &module.enums {
                 self.enums.insert(e.name.clone(), e.variants.clone());
             }
+            // Memories and topologies too. `--machine` loads the SKU as a peer
+            // *module* (driver.rs), so taking these from the main program alone
+            // meant a machine model contributed nothing here: a `vx.transfer`
+            // came out carrying `space` and a cost but no `capacity` and no
+            // `scope`, because the lookup that adds them found no declaration.
+            //
+            // Nothing failed. The attributes a device backend reads to place a
+            // tile were simply absent, and a lowering keyed on `scope` did the
+            // right thing for a program compiled on the flat path -- which does
+            // merge them -- and quietly nothing for the same program on the AST
+            // path.
+            for m in &module.memories {
+                self.memories
+                    .insert(syntax::MemorySpace::from_name(m.name.as_ref()), m.clone());
+            }
+            for t in &module.topologies {
+                self.topologies.insert(t.name.clone(), t.descriptor.clone());
+            }
         }
         for ext in &program.externs {
             let ret_ty = self.lower_type(&ext.return_type)?;

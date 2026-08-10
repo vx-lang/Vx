@@ -49,19 +49,24 @@ static bool isZeroConstant(Value v) {
   return attr && attr.getValue().isZero();
 }
 
-// Whether a transfer moves data to a topology other than the host.
+// Whether a transfer moves data into memory the host cannot reach.
 //
-// `target_topology` is the id `topology_dispatch_id` assigns, and the host is 0
-// (src/arch.rs), so a non-zero target is a device by construction. The `scope`
-// attribute would read better but is not always attached -- it appears when the
-// capacity check ran and not when only a cost was computed -- and a lowering
-// that quietly did the wrong thing for half the transfers is exactly the class
-// of bug this whole line of work has been removing.
+// `scope` is the machine model's own word for it: a space declared
+// `scope: device` in fleet/*.vx is on the far side of a bus, and one declared
+// `sm` or `cta` is inside a device rather than on the host. That is the fact
+// this lowering turns on, so it is the one to ask about.
+//
+// `target_topology` is the fallback for a space that declares no scope at all.
+// The host is 0 by construction in `topology_dispatch_id`, so a non-zero target
+// is another topology; it is a weaker signal because it says where the data is
+// going rather than what kind of memory it lands in.
 static bool isDeviceTransfer(vx::TransferOp op) {
+  if (auto scope = op->getAttrOfType<StringAttr>("scope")) {
+    StringRef s = scope.getValue();
+    return s == "device" || s == "sm" || s == "cta";
+  }
   if (auto topo = op->getAttrOfType<IntegerAttr>("target_topology"))
     return topo.getInt() != 0;
-  if (auto scope = op->getAttrOfType<StringAttr>("scope"))
-    return scope.getValue() == "device";
   return false;
 }
 
@@ -740,6 +745,33 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                        .create<UnrealizedConversionCastOp>(
                            loc, op.getResult().getType(), newDesc)
                        .getResult(0);
+
+    // Release it through the same ABI that allocated it. The host transfer path
+    // emits `memref.dealloc`, which becomes a libc `free` -- correct for a host
+    // allocation and heap corruption for one that came from cudaMalloc. An
+    // allocator and its free have to be the same backend, so the compiler names
+    // neither and calls the plugin.
+    StringRef freeName = "vx_plugin_free";
+    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(freeName)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto freeTy =
+          LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(getContext()),
+                                      {llvmPtrType, llvmI32Type}, false);
+      rewriter.create<LLVM::LLVMFuncOp>(loc, freeName, freeTy);
+    }
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *block = op->getBlock();
+      if (!block->empty() && block->back().hasTrait<OpTrait::IsTerminator>())
+        rewriter.setInsertionPoint(&block->back());
+      else
+        rewriter.setInsertionPointToEnd(block);
+      rewriter.create<LLVM::CallOp>(
+          loc, TypeRange{}, SymbolRefAttr::get(rewriter.getContext(), freeName),
+          ValueRange{devicePtr, topoVal});
+    }
+
     rewriter.replaceOp(op, result);
     return success();
   }

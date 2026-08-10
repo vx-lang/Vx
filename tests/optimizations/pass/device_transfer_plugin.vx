@@ -36,6 +36,25 @@
 // DEVICE: llvm.call @vx_plugin_alloc_and_transfer
 // DEVICE: llvm.call @vx_plugin_alloc_and_transfer
 // DEVICE: llvm.call @vx_plugin_alloc_and_transfer
+//
+// Released through the backend that allocated. A `memref.dealloc` here would
+// become a libc `free` -- right for a host allocation and heap corruption for
+// one from cudaMalloc, which is the sort of mismatch that shows up as a
+// corrupted heap on a rented machine rather than as a compile error.
+// DEVICE: llvm.call @vx_plugin_free
+// DEVICE: llvm.call @vx_plugin_free
+// DEVICE: llvm.call @vx_plugin_free
+//
+// The scope the machine model declared is what drives this, so it has to reach
+// the IR -- and it did not on the AST path: `--machine` loads the SKU as a peer
+// module, and codegen merged a module's structs and enums but not its memories,
+// so a transfer carried `space` and a cost and no `scope` at all. Checked
+// before the lowering consumes it.
+//
+// RUN: vxc %s --machine fleet/a100-80.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=MODEL
+// MODEL: capacity = 85899345920
+// MODEL: scope = "device"
+// MODEL: space = "HBM"
 
 fn main() -> i32 {
   let mut a = Tensor<f32>([ 2, 2 ]);

@@ -271,15 +271,28 @@ fn main() {
         // (runtime/host_dispatch.cpp). Both fall back to the host for anything
         // they cannot route, so the choice affects speed, not results.
         println!("cargo:rerun-if-changed=runtime/host_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/host_dispatch_common.h");
+        println!("cargo:rerun-if-changed=runtime/x86_dispatch.cpp");
+        println!("cargo:rerun-if-changed=runtime/arm64_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/cuda_dispatch.cpp");
         println!("cargo:rerun-if-changed=runtime/vx_dispatch_plan.h");
         println!("cargo:rerun-if-changed=runtime/vx_host_call.h");
         println!("cargo:rerun-if-changed=include/vx_hardware_runtime.h");
 
+        // Which backend answers the plugin ABI. CUDA wins where a toolkit is
+        // installed, since it is the only one of these that can reach an
+        // accelerator; otherwise the target's own CPU backend, and the portable
+        // one for an architecture nobody has looked at yet.
+        //
+        // Every target gets a backend, which is what lets the compiler emit
+        // allocate/transfer/free unconditionally and never name a vendor.
         let cuda = cuda_root();
-        let (source, lib_stem) = match cuda {
-            Some(_) => ("runtime/cuda_dispatch.cpp", "vx_cuda_dispatch"),
-            None => ("runtime/host_dispatch.cpp", "vx_host_dispatch"),
+        let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+        let (source, lib_stem) = match (&cuda, arch.as_str()) {
+            (Some(_), _) => ("runtime/cuda_dispatch.cpp", "vx_cuda_dispatch"),
+            (None, "x86_64") => ("runtime/x86_dispatch.cpp", "vx_x86_dispatch"),
+            (None, "aarch64") => ("runtime/arm64_dispatch.cpp", "vx_arm64_dispatch"),
+            (None, _) => ("runtime/host_dispatch.cpp", "vx_host_dispatch"),
         };
 
         let out_dir = env::var("OUT_DIR").unwrap();
@@ -331,8 +344,8 @@ fn main() {
                 root.display()
             ),
             None => println!(
-                "cargo:warning=No accelerator backend on this platform; built the portable \
-                 host dispatch shim (kernels run on the CPU via libffi)."
+                "cargo:warning=Built the {} dispatch backend; kernels run on the CPU via libffi.",
+                source
             ),
         }
     }
