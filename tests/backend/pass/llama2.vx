@@ -96,9 +96,18 @@ fn malloc_run_state(dim: i32, hidden_dim: i32, n_layers: i32, n_heads: i32, n_kv
   return state;
 }
 
+// `topology_id` is the device whose memory the projection weights are staged
+// into. A disaggregated run calls this twice, once per device, because prefill
+// and decode are two workers each holding a full copy of the model -- that is
+// what disaggregation *is*, as distinct from sharding, where one copy is split
+// and #290's per-instance accounting would be needed to reason about it.
+//
+// Unlike `D` on `matmul`, this is a plain runtime parameter: it selects which
+// memory an allocation lands in, which the plugin decides when the call
+// happens. Only *placement* has to be constant.
 fn memory_map_weights(ptr : *mut f32, dim : i32, hidden_dim : i32,
 n_layers : i32, n_heads : i32, n_kv_heads : i32,
-seq_len : i32, vocab_size : i32) -> TransformerWeights {
+seq_len : i32, vocab_size : i32, topology_id : i32) -> TransformerWeights {
   let head_size : i32 = dim / n_heads;
 
   let w = unsafe {
@@ -147,13 +156,13 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
     let w2_n : i64 = (n_layers * hidden_dim * dim) as i64;
     let w3_n : i64 = (n_layers * dim * hidden_dim) as i64;
 
-    let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, 500);
-    let d_wk : *mut f32 = vx_plugin_alloc_and_transfer(wk_n * f32_bytes, p3, 500);
-    let d_wv : *mut f32 = vx_plugin_alloc_and_transfer(wv_n * f32_bytes, p4, 500);
-    let d_wo : *mut f32 = vx_plugin_alloc_and_transfer(wo_n * f32_bytes, p5, 500);
-    let d_w1 : *mut f32 = vx_plugin_alloc_and_transfer(w1_n * f32_bytes, p7, 500);
-    let d_w2 : *mut f32 = vx_plugin_alloc_and_transfer(w2_n * f32_bytes, p8, 500);
-    let d_w3 : *mut f32 = vx_plugin_alloc_and_transfer(w3_n * f32_bytes, p9, 500);
+    let d_wq : *mut f32 = vx_plugin_alloc_and_transfer(wq_n * f32_bytes, p2, topology_id);
+    let d_wk : *mut f32 = vx_plugin_alloc_and_transfer(wk_n * f32_bytes, p3, topology_id);
+    let d_wv : *mut f32 = vx_plugin_alloc_and_transfer(wv_n * f32_bytes, p4, topology_id);
+    let d_wo : *mut f32 = vx_plugin_alloc_and_transfer(wo_n * f32_bytes, p5, topology_id);
+    let d_w1 : *mut f32 = vx_plugin_alloc_and_transfer(w1_n * f32_bytes, p7, topology_id);
+    let d_w2 : *mut f32 = vx_plugin_alloc_and_transfer(w2_n * f32_bytes, p8, topology_id);
+    let d_w3 : *mut f32 = vx_plugin_alloc_and_transfer(w3_n * f32_bytes, p9, topology_id);
 
     TransformerWeights {
       token_embedding_table:
@@ -174,7 +183,18 @@ seq_len : i32, vocab_size : i32) -> TransformerWeights {
   return w;
 }
 
-fn transformer(token : i32, pos : i32, p : &Config, s : &RunState,
+// One decoder step, on device `D`. Every projection inside forwards `D` to
+// `matmul<D>`, so instantiating this function at 0 and at 1 is what makes
+// prefill and decode run on different GPUs -- there is no other difference
+// between the two phases' arithmetic.
+//
+// Everything that is not a projection still runs on the host: RMSNorm, RoPE,
+// the attention loops, SwiGLU. They are correct and they are invisible in a
+// device trace, which is why the KV cache below lives in host memory and has
+// to be moved explicitly rather than simply being on the right device already.
+// Closing that is kernel emission (#251) and strided views of a placed tensor
+// (#344).
+fn transformer<const D : i32>(token : i32, pos : i32, p : &Config, s : &RunState,
 w : &TransformerWeights) -> *mut f32 {
   unsafe {
     let x : *mut f32 = s.x;
@@ -210,15 +230,15 @@ w : &TransformerWeights) -> *mut f32 {
 
       let wq_off : i32 = l * dim * dim;
       let wq_l : *mut f32 = vx_advance_ptr(w.wq, wq_off);
-      let status2 : i32 = matmul(s.q, s.xb, wq_l, dim, dim);
+      let status2 : i32 = matmul<D>(s.q, s.xb, wq_l, dim, dim);
 
       let wk_off : i32 = l * dim * kv_dim;
       let wk_l : *mut f32 = vx_advance_ptr(w.wk, wk_off);
-      let status3 : i32 = matmul(s_k, s.xb, wk_l, dim, kv_dim);
+      let status3 : i32 = matmul<D>(s_k, s.xb, wk_l, dim, kv_dim);
 
       let wv_off : i32 = l * dim * kv_dim;
       let wv_l : *mut f32 = vx_advance_ptr(w.wv, wv_off);
-      let status4 : i32 = matmul(s_v, s.xb, wv_l, dim, kv_dim);
+      let status4 : i32 = matmul<D>(s_v, s.xb, wv_l, dim, kv_dim);
 
       // RoPE relative positional encoding
       for i in 0..kv_dim {
@@ -320,7 +340,7 @@ w : &TransformerWeights) -> *mut f32 {
       // final matmul
       let wo_off : i32 = l * dim * dim;
       let wo_l : *mut f32 = vx_advance_ptr(w.wo, wo_off);
-      let status5 : i32 = matmul(s.xb2, s.xb, wo_l, dim, dim);
+      let status5 : i32 = matmul<D>(s.xb2, s.xb, wo_l, dim, dim);
 
       for i in 0..dim {
         let x_val : f32 = x[i];
@@ -336,8 +356,8 @@ w : &TransformerWeights) -> *mut f32 {
       let w1_l : *mut f32 = vx_advance_ptr(w.w1, w1_off);
       let w3_off : i32 = l * dim * hidden_dim;
       let w3_l : *mut f32 = vx_advance_ptr(w.w3, w3_off);
-      let status7 : i32 = matmul_ane(s.hb, s.xb, w1_l, dim, hidden_dim);
-      let status8 : i32 = matmul_ane(s.hb2, s.xb, w3_l, dim, hidden_dim);
+      let status7 : i32 = matmul<D>(s.hb, s.xb, w1_l, dim, hidden_dim);
+      let status8 : i32 = matmul<D>(s.hb2, s.xb, w3_l, dim, hidden_dim);
 
       // SwiGLU
       for i in 0..hidden_dim {
@@ -353,7 +373,7 @@ w : &TransformerWeights) -> *mut f32 {
 
       let w2_off : i32 = l * dim * hidden_dim;
       let w2_l : *mut f32 = vx_advance_ptr(w.w2, w2_off);
-      let status9 : i32 = matmul_ane(s.xb, s.hb, w2_l, hidden_dim, dim);
+      let status9 : i32 = matmul<D>(s.xb, s.hb, w2_l, hidden_dim, dim);
 
       for i in 0..dim {
         let x_val : f32 = x[i];
@@ -364,10 +384,56 @@ w : &TransformerWeights) -> *mut f32 {
 
     let dim_f : f32 = dim as f32;
     let status10 : i32 = rmsnorm(x, x, w.rms_final_weight, dim, dim_f);
-    let status11 : i32 = matmul(s.logits, x, w.wcls, p.dim, p.vocab_size);
+    let status11 : i32 = matmul<D>(s.logits, x, w.wcls, p.dim, p.vocab_size);
   };
 
   return s.logits;
+}
+
+// Move the KV cache from the device that produced it to the device that will
+// read it -- the one edge a disaggregated placement is made of (#347).
+//
+// The path is host -> src device -> dst device -> host, and only the middle leg
+// is the interesting one. The two outer legs exist because attention runs on
+// the host (#251), so the cache's working copy is host memory; when the
+// attention loops move onto the device those legs disappear and this becomes a
+// single peer copy. What is already real is that the bytes cross between two
+// devices' memories through `cudaMemcpyPeer`, over whichever link the box
+// actually has.
+//
+// The transfer is *load-bearing*, which is the property that makes this worth
+// showing. `dst` is a second RunState with its own KV arrays, untouched by
+// prefill; decode reads a cache it can only have obtained here. Sharing one
+// array between the phases and copying it device-to-device on the side would
+// produce identical output with this function deleted, and would be theatre.
+// Deleting it now produces garbage, and that is the acceptance test.
+fn handoff_kv(src : &RunState, dst : &RunState, bytes : i64, src_topology : i32,
+dst_topology : i32) -> i32 {
+  unsafe {
+    let d_k_src : *mut f32 =
+    vx_plugin_alloc_and_transfer(bytes, src.key_cache, src_topology);
+    let d_v_src : *mut f32 =
+    vx_plugin_alloc_and_transfer(bytes, src.value_cache, src_topology);
+
+    let d_k_dst : *mut f32 =
+    vx_plugin_transfer_peer(d_k_src, src_topology, dst_topology, bytes);
+    let d_v_dst : *mut f32 =
+    vx_plugin_transfer_peer(d_v_src, src_topology, dst_topology, bytes);
+
+    let k_ok : i32 =
+    vx_plugin_transfer_device_to_host(d_k_dst, dst.key_cache, bytes,
+    dst_topology);
+    let v_ok : i32 =
+    vx_plugin_transfer_device_to_host(d_v_dst, dst.value_cache, bytes,
+    dst_topology);
+
+    // Both staging buffers were ours; the caches they fed are the RunStates'.
+    vx_plugin_free(d_k_src, src_topology);
+    vx_plugin_free(d_v_src, src_topology);
+    vx_plugin_free(d_k_dst, dst_topology);
+    vx_plugin_free(d_v_dst, dst_topology);
+  };
+  return 0;
 }
 
 fn sample_argmax(probabilities : *mut f32, n : i32) -> i32 {
@@ -443,30 +509,25 @@ fn softmax(x : *mut f32, size : i32) -> i32 {
 // read an operand without consuming it (#335). And `xout` is the caller's
 // buffer, which an assignment would rebind rather than fill (#319 Track A), so
 // the result is written in place.
-fn matmul(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
--> i32 {
+//
+// `D` is the device this projection runs on. It is a const generic rather than
+// a parameter because placement is a compile-time fact: `spawn on` has to name
+// a device the compiler can resolve, and an index that arrives at runtime
+// cannot select one -- it silently becomes device 0, which W1030 now says out
+// loud (#345).
+//
+// So prefill and decode are one function body instantiated twice. `matmul<0>`
+// and `matmul<1>` emit two kernels with identical `kind=matmul` and
+// `roles=a:0,b:1,out:2` payloads differing only in `topo=500` against
+// `topo=501`, and that difference is the whole of running the two phases on two
+// devices (#347). One program text, one placement discipline, one index.
+fn matmul<const D : i32>(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32,
+d : i32) -> i32 {
   let wt : Tensor<f32> = unsafe { tensor_view_2d(w, d, n) };
   let xt : Tensor<f32> = unsafe { tensor_view_2d(x, n, 1) };
   let mut yt : Tensor<f32> = unsafe { tensor_view_2d(xout, d, 1) };
-  spawn on(Topology::GPU[0]) {
+  spawn on(Topology::GPU[D]) {
     matmul_into(&mut yt, &wt, &xt);
-  }
-  return 0;
-}
-
-fn matmul_ane(xout : *mut f32, x : *mut f32, w : *mut f32, n : i32, d : i32)
--> i32 {
-  spawn on(Topology::ANE) {
-    for i in 0..d {
-      let mut val : f32 = 0.0;
-      for j in 0..n {
-        let idx : i32 = i * n + j;
-        let w_val : f32 = w[idx];
-        let x_val : f32 = x[j];
-        val += w_val * x_val;
-      }
-      xout[i] = val;
-    }
   }
   return 0;
 }
@@ -488,6 +549,23 @@ fn main() -> i32 {
     let max_tokens : i32 = llama_config[0];
     let steps : i32 = llama_config[1];
 
+    // Which device decodes. `VX_LLAMA_DISAGG=1` puts decode on GPU 1 and leaves
+    // prefill on GPU 0; anything else keeps both on GPU 0.
+    //
+    // The two modes run the *same* code -- same handoff, same two RunStates,
+    // same two weight replicas -- and differ only in whether the destination
+    // index is 1 or 0. So the single-device run is the disaggregated program
+    // with both indices equal, which is what makes it a usable oracle: if the
+    // two modes disagree on a token, the difference is the second device and
+    // nothing else. It also means the default run exercises the handoff, so a
+    // broken transfer fails the existing parity test rather than waiting for a
+    // pod.
+    let disagg : i32 = llama_config[2];
+    let mut decode_topology : i32 = 500;
+    if disagg == 1 {
+      decode_topology = 501;
+    }
+
     let config = Config {
       dim : 288,
       hidden_dim : 768,
@@ -500,13 +578,28 @@ fn main() -> i32 {
 
     let weights_ptr : *mut f32 =
     vx_load_weights("tests/backend/pass/stories15M.bin");
-    let weights = memory_map_weights(
-    weights_ptr, config.dim, config.hidden_dim, config.n_layers,
-    config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size);
 
-    let state = malloc_run_state(config.dim, config.hidden_dim, config.n_layers,
-    config.n_heads, config.n_kv_heads,
-    config.seq_len, config.vocab_size);
+    // Two workers, each with the whole model in its own device's memory. The
+    // second copy is not redundancy: prefill's GPU cannot read decode's HBM, so
+    // a decode step that reached for the prefill replica's `wq` would be
+    // dereferencing an address that is valid on another device.
+    let prefill_weights = memory_map_weights(
+    weights_ptr, config.dim, config.hidden_dim, config.n_layers,
+    config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size, 500);
+    let decode_weights = memory_map_weights(
+    weights_ptr, config.dim, config.hidden_dim, config.n_layers,
+    config.n_heads, config.n_kv_heads, config.seq_len, config.vocab_size,
+    decode_topology);
+
+    // Two RunStates, and specifically two KV caches. See `handoff_kv`: decode's
+    // cache starts empty and is filled only by the transfer, which is what
+    // makes the transfer provable rather than decorative.
+    let prefill_state = malloc_run_state(
+    config.dim, config.hidden_dim, config.n_layers, config.n_heads,
+    config.n_kv_heads, config.seq_len, config.vocab_size);
+    let decode_state = malloc_run_state(
+    config.dim, config.hidden_dim, config.n_layers, config.n_heads,
+    config.n_kv_heads, config.seq_len, config.vocab_size);
 
     let tokenizer_ptr
     : *mut i8 = vx_build_tokenizer("tests/backend/pass/tokenizer.bin",
@@ -523,20 +616,71 @@ fn main() -> i32 {
 
     // We'll generate max_tokens for testing to avoid slowing down cargo test
     let iterations : i32 = max_tokens / steps;
-    for step in 0..iterations {
-      let logits : *mut f32 =
-      transformer(token, pos, &config, &state, &weights);
 
-      let mut next : i32 = 0;
-      if pos < num_prompt_tokens - 1 {
-        // PREFILL: Take the next token from the prompt (shifted by 1 due to
-        // length at index 0)
-        let next_idx : i32 = pos + 2;
-        next = prompt_tokens[next_idx];
+    // Where the phases divide. Prefill consumes the prompt, so it runs for as
+    // many steps as it takes `pos` to reach the last prompt token; decode runs
+    // the rest. This is the same boundary the original single-phase loop tested
+    // for on every iteration -- it has only been lifted out, because a phase
+    // boundary that a *placement* changes at has to be a boundary between
+    // loops rather than a branch inside one.
+    let prefill_span : i32 = num_prompt_tokens - 1 + steps - 1;
+    let mut prefill_iterations : i32 = prefill_span / steps;
+    if prefill_iterations > iterations {
+      prefill_iterations = iterations;
+    }
+
+    // --- Prefill, on GPU 0 ---------------------------------------------------
+    for step in 0..prefill_iterations {
+      let logits : *mut f32 =
+      transformer<0>(token, pos, &config, &prefill_state, &prefill_weights);
+
+      // Take the next token from the prompt (shifted by 1: index 0 is the
+      // length).
+      let next_idx : i32 = pos + 2;
+      let next : i32 = prompt_tokens[next_idx];
+
+      let piece : *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
+      let print_status : i32 = print!(piece);
+
+      token = next;
+      pos += steps;
+    }
+
+    // --- The handoff ---------------------------------------------------------
+    //
+    // Everything prefill computed that decode needs is here: `n_layers` x
+    // `seq_len` x `kv_dim` floats of keys and as many of values. Nothing else
+    // crosses -- the weights are already on both devices, and the activations
+    // are per-token scratch.
+    let div_kv : i32 = config.dim * config.n_kv_heads;
+    let kv_dim : i32 = div_kv / config.n_heads;
+    let kv_elems : i64 = (config.n_layers * config.seq_len * kv_dim) as i64;
+    let kv_bytes : i64 = kv_elems * 4;
+    let moved : i32 =
+    handoff_kv(&prefill_state, &decode_state, kv_bytes, 500, decode_topology);
+
+    // The decode worker continues from prefill's last token, so it needs the
+    // running activation too. `x` is rebuilt from the embedding table on every
+    // step, so only the cache above is genuinely state.
+
+    // --- Decode, on GPU 1 (or GPU 0 when not disaggregating) -----------------
+    //
+    // Two calls rather than one because `D` is a compile-time index: both
+    // instantiations are emitted and the runtime picks which to enter. That is
+    // the honest shape of a compile-time placement -- the choice of device is
+    // made when the program is built, and what a flag can choose between is
+    // which built placement runs.
+    for step in prefill_iterations..iterations {
+      let mut logits : *mut f32 = decode_state.logits;
+      if disagg == 1 {
+        logits =
+        transformer<1>(token, pos, &config, &decode_state, &decode_weights);
       } else {
-        // GENERATE: Sample from logits
-        next = sample_argmax(logits, config.vocab_size);
+        logits =
+        transformer<0>(token, pos, &config, &decode_state, &decode_weights);
       }
+
+      let next : i32 = sample_argmax(logits, config.vocab_size);
 
       let piece : *mut i8 = vx_decode_token(tokenizer_ptr, token, next);
       let print_status : i32 = print!(piece);

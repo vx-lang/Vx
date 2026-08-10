@@ -58,8 +58,14 @@ pub extern "C" fn vx_get_env_int(name: *const c_char, default_val: i32) -> i32 {
 }
 
 #[no_mangle]
+/// `[max_tokens, steps, disaggregate]`.
+///
+/// The third element asks whether decode should run on a second device.
+/// It is here rather than behind `vx_get_env_int` so the program reads it the
+/// same way it reads the other two, and so a run's whole configuration comes
+/// from one call.
 pub extern "C" fn vx_get_llama_config() -> *mut i32 {
-    let mut config = vec![1000i32, 1i32];
+    let mut config = vec![1000i32, 1i32, 0i32];
     if let Ok(val) = std::env::var("LLAMA_TOKENS_CONFIG") {
         let parts: Vec<&str> = val.split(';').collect();
         if parts.len() == 2 {
@@ -69,6 +75,14 @@ pub extern "C" fn vx_get_llama_config() -> *mut i32 {
             if let Ok(steps) = parts[1].parse::<i32>() {
                 config[1] = steps;
             }
+        }
+    }
+    // Anything unparseable, or absent, means "one device" -- the mode that runs
+    // everywhere. Asking for two on a box that has one aborts in the plugin
+    // with the device count, which is the right place to find out.
+    if let Ok(val) = std::env::var("VX_LLAMA_DISAGG") {
+        if let Ok(flag) = val.parse::<i32>() {
+            config[2] = flag;
         }
     }
     config.leak().as_mut_ptr()

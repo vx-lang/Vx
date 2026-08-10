@@ -1,0 +1,100 @@
+//===- node-2gpu-a100.vx - two A100 80 GB parts in one box ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// The smallest machine a disaggregated placement can be admitted against: two
+// A100 80 GB parts, one running prefill and one running decode, with the edge
+// between them declared (#347).
+//
+//   vxc prog.vx --machine fleet/node-2gpu-a100.vx --host fleet/host-x86-e5-2666v3.vx
+//
+// Why a separate file rather than `--machine fleet/a100-80.vx` twice. A machine
+// file describes *one* declared space per name, and `--machine` takes a single
+// file (#281); two files each declaring `Memory HBM` is E6012 by design. So a
+// placement that crosses devices needs a model in which the second device has a
+// name -- which is exactly what makes the crossing checkable rather than
+// assumed. See fleet/node-8gpu.vx, which does the same for an HGX node and
+// carries the same duplication for the same reason (declaration import, #224,
+// is what would remove it).
+//
+// The difference from node-8gpu.vx is that PEER_HBM here is *one* device, not
+// an aggregate of seven. That matters: #290 puts per-instance accounting out of
+// scope, so a peer space that aggregates N devices admits a tensor no single
+// peer could hold. With N = 1 there is nothing to aggregate, and the peer
+// budget is the honest one. A two-GPU node is the only multi-device model this
+// version of the memory algebra can be exactly right about.
+
+// --- The prefill device -----------------------------------------------------
+
+// spec: NVIDIA A100 product page, 80GB SXM column (verified 2026-08-03) --
+// GPU Memory "80GB HBM2e", GPU Memory Bandwidth "2,039 GB/s".
+// Keep in sync with fleet/a100-80.vx.
+Memory HBM {
+  capacity: 80 GiB, bandwidth: 2039 GB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Ampere Architecture Whitepaper -- 40 MB L2 cache.
+Memory L2 {
+  within: Memory::HBM, capacity: 40 MiB, bandwidth: 7 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Ampere Architecture Whitepaper / CUDA C Programming Guide --
+// 164 KB configurable shared memory per SM.
+Memory SMEM {
+  within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+}
+
+// --- The decode device ------------------------------------------------------
+
+// The second A100's HBM. Identical silicon, so identical figures; what makes it
+// worth declaring is that it is a *different* space, and the KV cache crossing
+// from one to the other is an edge with a cost rather than a free assignment.
+//
+// Note it carries no L2 or SMEM of its own. Those are declared once above and
+// describe the on-die hierarchy of whichever device is executing; nothing in a
+// disaggregated placement crosses into a peer's cache, so a second copy would
+// add two names that no program can legally mention.
+//
+// spec: as HBM above -- the same part.
+Memory PEER_HBM {
+  capacity: 80 GiB, bandwidth: 2039 GB/s, managed: explicit, scope: device
+}
+
+Topology Node {
+  // spec: NVIDIA Ampere GA100; LLVM's NVPTX target.
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+
+  // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes,
+  // 128b/130b). UNVERIFIED on the rented part, as in fleet/a100-80.vx.
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM,
+
+  // The disaggregation edge, and the one figure in this file that the demo
+  // actually rests on.
+  //
+  // UNVERIFIED, and deliberately declared at the *pessimistic* end. Two A100s
+  // in one box are connected in one of two ways and the difference is a factor
+  // of eight:
+  //
+  //   NVLink 3 bridge : 600 GB/s bidirectional, 300 GB/s per direction
+  //   PCIe Gen4 x16   : 31.5 GB/s per direction, and only if the two parts sit
+  //                     under one switch rather than talking through the root
+  //                     complex
+  //
+  // A rented pod does not say which it gave you. Declaring the PCIe figure
+  // means the prediction is a bound the hardware can only beat, which is the
+  // right direction for a claim that a refusal can be trusted: over-declaring
+  // the link would admit a placement whose handoff does not fit its budget.
+  //
+  // `nvidia-smi topo -m` settles it on the pod, and scripts/setup_gpu_pod.sh
+  // records the matrix next to the run so the declared figure and the observed
+  // one are archived together rather than one being quietly corrected to match.
+  transfer Memory::HBM -> Memory::PEER_HBM : 31.5 GB/s,
+  transfer Memory::PEER_HBM -> Memory::HBM : 31.5 GB/s
+}

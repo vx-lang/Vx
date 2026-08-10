@@ -46,6 +46,18 @@ report() {
   echo -n "nvidia-smi:     "
   if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader | head -1
+    # Every device, not just the first. A disaggregated run needs two and aborts
+    # in the plugin if it named one this box does not have (#347), which is
+    # worth knowing before the run rather than during it.
+    echo "GPUs:           $(nvidia-smi --query-gpu=index,name --format=csv,noheader | wc -l | tr -d ' ')"
+    nvidia-smi --query-gpu=index,name --format=csv,noheader | sed 's/^/                /'
+    # What the link between them actually is. fleet/node-2gpu-a100.vx declares
+    # the PCIe figure because a rented pod does not say, and this is what
+    # settles it -- recorded next to the run so the declared number and the
+    # observed one are archived together rather than one being edited to match
+    # the other.
+    echo "interconnect:"
+    nvidia-smi topo -m 2>/dev/null | sed 's/^/                /' || echo "                unavailable"
   else
     echo "absent"
   fi

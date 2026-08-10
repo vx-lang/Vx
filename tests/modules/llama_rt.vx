@@ -40,6 +40,28 @@ extern {
   // what makes a naive GPU port slower than the CPU it replaced.
   fn vx_plugin_alloc_and_transfer(bytes : i64, host_ptr : *mut f32,
   topology_id : i32) -> *mut f32;
+
+  // The three calls a disaggregated run is made of (#347).
+  //
+  // `transfer_peer` is the one that has no single-device equivalent: it moves a
+  // buffer from the memory of the topology that produced it into the memory of
+  // the topology that will read it, and returns a pointer into the second. A
+  // KV cache computed by prefill on one GPU reaches the GPU that decodes from
+  // it this way and no other. On a machine with one device -- or none -- both
+  // topologies name one memory and the backend answers with a copy, so the
+  // program is correct there too and can be checked against itself.
+  //
+  // `transfer_device_to_host` reads a device buffer back. It names the device
+  // rather than letting the backend infer one from the address, because only
+  // CUDA's unified addressing makes that inference possible.
+  //
+  // `free` returns the allocation to the topology that made it, which is why it
+  // takes one: freeing on the wrong device is not a leak but an error.
+  fn vx_plugin_transfer_peer(src_device_ptr : *mut f32, src_topology_id : i32,
+  dst_topology_id : i32, bytes : i64) -> *mut f32;
+  fn vx_plugin_transfer_device_to_host(device_ptr : *mut f32,
+  host_ptr : *mut f32, bytes : i64, topology_id : i32) -> i32;
+  fn vx_plugin_free(device_ptr : *mut f32, topology_id : i32) -> void;
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)
   -> *mut i8;
