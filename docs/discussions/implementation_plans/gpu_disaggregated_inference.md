@@ -230,8 +230,11 @@ therefore separate KV caches, and decode's is filled only by the transfer. Delet
 changes the generated text, which is the acceptance test. Host-side parity against the
 pre-change program is byte-identical on 64 tokens.
 
-Remaining for the network form: `std::net` accept/read/write, the KV wire header, and
-per-role admission. Remaining for either: attention, softmax, RoPE and RMSNorm still run on
+Remaining for the network form, and the mechanism has changed: see
+[remote_dispatch_marshalling.md](remote_dispatch_marshalling.md). The handoff should not
+be socket code in Vx source but the same `handoff_kv` against a topology that names a
+device on another machine, with the transport below the plugin ABI (#348). `std::net` is
+therefore not on the critical path; marshalling `device_args` is. Remaining for either: attention, softmax, RoPE and RMSNorm still run on
 the host (#251), so the KV cache's working copy is host memory and the outer legs of the
 handoff exist only because of that; strided sub-views of a placed tensor (#344) are what
 would put the cache on the device and read it there.

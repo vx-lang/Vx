@@ -253,6 +253,19 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 #define VX_TOPO_AMX 300
 #define VX_TOPO_ANE 400
 #define VX_TOPO_GPU_BASE 500
+// Network memory, as a `vx.transfer` target. Distinct bands rather than the
+// shared 300 they used to answer, which was `VX_TOPO_AMX` -- a transfer into a
+// peer's memory arrived indistinguishable from a request for Apple's matrix
+// coprocessor, and the two network spaces were indistinguishable from each
+// other (#348).
+#define VX_TOPO_NIC_BASE 800
+#define VX_TOPO_REMOTE_BASE 900
+// Names declared in a machine file (`Topology DecodeWorker { .. }`) hash into
+// 1000..1999, and topology slices into 2000..2999. A name is the identity; the
+// hash is a shortcut, which is why `toponame=` in the payload is what a plugin
+// resolving a worker to an endpoint should key on.
+#define VX_TOPO_NAMED_BASE 1000
+#define VX_TOPO_SLICE_BASE 2000
 #define VX_TOPO_BAND 100
 
 /// The device ordinal within `base`'s band, or -1 when the id is not in it.

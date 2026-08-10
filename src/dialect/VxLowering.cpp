@@ -458,6 +458,16 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
     }
 
+    // The topology's declared name, forwarded from the spawn. Optional by
+    // design: the flat path emits `vx.spawn` from an instruction stream that
+    // carries the dispatch id and not the name, so a launch may legitimately
+    // arrive without one. A plugin then has the id and nothing else, which is
+    // exactly the situation before this existed -- the same way `kind=` and
+    // `roles=` degrade rather than fail (#348).
+    if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
+      launchOp->setAttr("vx.topology_name", topoName);
+    }
+
     rewriter.replaceOp(op, launchOp.getResults());
     return success();
   }
@@ -827,6 +837,20 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     payload += "topo=";
     payload += std::to_string(op.getTopology());
     payload.push_back('\0');
+
+    // The name that id was derived from, when the producer knew it.
+    //
+    // For a topology declared in a machine file the id is `1000 + fnv32(name) %
+    // 1000` -- one-way, and only a thousand wide. A plugin given `topo=1113`
+    // cannot recover `DecodeWorker`, so it cannot resolve the worker against a
+    // fleet manifest to find out which machine it is; and two names can collide
+    // onto one id with nothing to notice. The name is the identity, the id a
+    // shortcut, and this is what a remote placement will key on (#348).
+    if (auto nameAttr = op->getAttrOfType<StringAttr>("vx.topology_name")) {
+      payload += "toponame=";
+      payload += nameAttr.getValue().str();
+      payload.push_back('\0');
+    }
 
     std::string globalName = (callee + "_str").str();
     LLVM::GlobalOp globalOp = module.lookupSymbol<LLVM::GlobalOp>(globalName);

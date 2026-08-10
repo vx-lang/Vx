@@ -69,8 +69,27 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
         let topology_id = topology_to_i32(&self.top);
         let top_attr = IntegerAttribute::new(gen.i32_ty, topology_id as i64).into();
 
+        // The topology's declared spelling, alongside its id.
+        //
+        // The id is a hash for a name declared in a machine file --
+        // `1000 + fnv32(name) % 1000` -- so it is one-way and only 1000 wide. A plugin holding
+        // `topo=1113` cannot recover `DecodeWorker`, so it cannot look the worker up in a fleet
+        // manifest and discover where it lives, which is the whole of resolving a placement to a
+        // machine (#348). Two names can also collide onto one id, and nothing would notice.
+        //
+        // Carrying the name makes it the identity and the id an optimisation. It costs a few bytes
+        // per kernel and lets the compiler stay out of the business of knowing endpoints: the
+        // program names a role, the machine file says what the role is, and the plugin maps the
+        // name to an address.
+        let name_attr =
+            melior::ir::attribute::StringAttribute::new(gen.context, &self.top.display_name())
+                .into();
+
         let mut spawn_builder = OperationBuilder::new("vx.spawn", location)
-            .add_attributes(&[(Identifier::new(gen.context, "topology"), top_attr)])
+            .add_attributes(&[
+                (Identifier::new(gen.context, "topology"), top_attr),
+                (Identifier::new(gen.context, "topology_name"), name_attr),
+            ])
             .add_regions([region]);
 
         // Topology → plugin selection: if a hardware plugin claims this topology, record its

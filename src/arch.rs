@@ -305,8 +305,21 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
         MemorySpace::NPUHBM => 100,    // NPU
         MemorySpace::LocalSRAM => 200, // AccCore
         MemorySpace::GpuHbm => 500,    // GPU
-        // Network memory has no dedicated topology; kept at 300 (overlaps AMX) for now.
-        MemorySpace::NicRam | MemorySpace::RemoteHbm => 300,
+        // Network memory, in bands of its own (#348).
+        //
+        // Both used to answer 300, which is `Topology::AMX`. A `transfer` into remote memory
+        // therefore emitted `target_topology = 300` and a plugin reading it saw a request for
+        // Apple's matrix coprocessor -- not a missing feature but an actively wrong answer, and one
+        // no diagnostic could catch because the number was valid. They also could not be told apart
+        // from each other, so staging into a NIC's buffer and landing in a peer's HBM were one
+        // event.
+        //
+        // These are the last two free 100-bands below the FNV range that `Custom` names occupy
+        // (1000..1999) and slices occupy (2000..2999). Nothing decodes them yet; giving them
+        // distinct identities is what lets a plugin start to (#348 marshalling), and what stops the
+        // collision from being load-bearing in the meantime.
+        MemorySpace::NicRam => 800,
+        MemorySpace::RemoteHbm => 900,
         MemorySpace::Custom(name) => fnv_dispatch_id(name),
     }
 }
@@ -897,6 +910,54 @@ mod tests {
             overcommit: false,
             doc_comment: None,
         }
+    }
+
+    /// #348: a transfer target names one space, and network memory names its own.
+    ///
+    /// `NicRam` and `RemoteHbm` both answered 300, which is `Topology::AMX`'s dispatch id. That is
+    /// not a missing feature but a wrong answer that reads as a valid one: a `transfer` into a
+    /// peer's memory arrived at a plugin as a request for Apple's matrix coprocessor, and no
+    /// diagnostic could object because the number was in range. The two network spaces were also
+    /// indistinguishable from each other, so staging into a NIC buffer and landing in a peer's HBM
+    /// were the same event.
+    ///
+    /// The property under test is uniqueness, not the particular constants: any two spaces that a
+    /// program can name separately must dispatch separately, or the runtime cannot honour a
+    /// distinction the type system spent effort maintaining.
+    #[test]
+    fn every_memory_space_dispatches_distinctly() {
+        let spaces = [
+            MemorySpace::CPUDRAM,
+            MemorySpace::NPUHBM,
+            MemorySpace::LocalSRAM,
+            MemorySpace::GpuHbm,
+            MemorySpace::NicRam,
+            MemorySpace::RemoteHbm,
+        ];
+        for (i, a) in spaces.iter().enumerate() {
+            for b in &spaces[i + 1..] {
+                assert_ne!(
+                    memory_space_dispatch_id(a),
+                    memory_space_dispatch_id(b),
+                    "{a:?} and {b:?} share a dispatch id"
+                );
+            }
+        }
+
+        // And specifically off AMX, which is the collision that existed.
+        assert_ne!(
+            memory_space_dispatch_id(&MemorySpace::NicRam),
+            topology_dispatch_id(&Topology::AMX)
+        );
+        assert_ne!(
+            memory_space_dispatch_id(&MemorySpace::RemoteHbm),
+            topology_dispatch_id(&Topology::AMX)
+        );
+
+        // The bands the header mirrors (VX_TOPO_NIC_BASE / VX_TOPO_REMOTE_BASE). Pinned because a
+        // plugin decodes against those constants, so the two files must not drift.
+        assert_eq!(memory_space_dispatch_id(&MemorySpace::NicRam), 800);
+        assert_eq!(memory_space_dispatch_id(&MemorySpace::RemoteHbm), 900);
     }
 
     /// #258: the built-in spaces map to what they *are*, not to the numbers the old table

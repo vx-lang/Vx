@@ -86,7 +86,7 @@ fn main() -> i32 {
 // CHECK:       func.call @gpu_kernel() : () -> ()
 // CHECK:       %2 = llvm.mlir.constant(0 : i32) : i32
 // CHECK:       vx.yield
-// CHECK:     }
+// CHECK:     } {topology_name = "GPU[0]"}
 // CHECK:     %c0 = arith.constant 0 : index
 // CHECK:     %c500_i32_0 = arith.constant 500 : i32
 // CHECK:     return %c500_i32_0 : i32
@@ -101,7 +101,7 @@ fn main() -> i32 {
 // CHECK:       func.call @ane_kernel() : () -> ()
 // CHECK:       %2 = llvm.mlir.constant(0 : i32) : i32
 // CHECK:       vx.yield
-// CHECK:     } {plugin = "Apple_NPE_v1"}
+// CHECK:     } {plugin = "Apple_NPE_v1", topology_name = "ANE"}
 // CHECK:     %c0_1 = arith.constant 0 : index
 // CHECK:     %c400_i32_2 = arith.constant 400 : i32
 // CHECK:     return %c400_i32_2 : i32
@@ -112,7 +112,7 @@ fn main() -> i32 {
 // CHECK:       func.call @cpu_kernel() : () -> ()
 // CHECK:       %2 = llvm.mlir.constant(0 : i32) : i32
 // CHECK:       vx.yield
-// CHECK:     }
+// CHECK:     } {topology_name = "CPU"}
 // CHECK:     %c0_3 = arith.constant 0 : index
 // CHECK:     %c0_i32 = arith.constant 0 : i32
 // CHECK:     return %c0_i32 : i32

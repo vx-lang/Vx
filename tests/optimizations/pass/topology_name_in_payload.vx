@@ -1,0 +1,113 @@
+//===- topology_name_in_payload.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the BSD 3-Clause License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+// A dispatch carries the topology's declared *name*, not only its id (#348).
+//
+// For a topology declared in a machine file the id is a hash --
+// `1000 + fnv32(name) % 1000` -- so it is one-way and only a thousand wide. A
+// plugin holding `topo=1113` cannot recover `DecodeWorker` from it, and
+// therefore cannot look the worker up in a fleet manifest to discover which
+// machine it names. That lookup is the whole of resolving a placement to a
+// location, which is what makes `spawn on(Topology::DecodeWorker)` mean the
+// same thing whether the worker is the GPU beside this one or a GPU in another
+// rack.
+//
+// Two names can also collide onto one id, with nothing to notice. Carrying the
+// name makes it the identity and leaves the id as a shortcut.
+//
+// This is not hypothetical tidiness. Reading the id-only payload from a
+// two-worker program, the obvious assumption is that the first kernel emitted
+// belongs to the first `spawn` in the source. It does not -- kernels come out
+// in reverse -- so `topo=1669` was read as PrefillWorker when it is
+// DecodeWorker. The name is what settles it.
+//
+// The two workers are declared in this file rather than in a machine file
+// passed with `--machine`. A fleet model is only `.vx` declarations, so a
+// program can carry its own, and doing that here keeps the test self-contained
+// -- the harness compiles every `.vx` in this directory, so a separate fixture
+// would become a test of its own.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+//
+// The id and the name are checked *together*, as one literal, because the
+// pairing is the property: a payload carrying both but crossed over would be
+// worse than one carrying neither. The ids are not magic numbers to be updated
+// when they drift -- they are `1000 + fnv32(name) % 1000` over exactly these
+// two names, so a change here means the derivation changed, which is an ABI
+// change a plugin decodes against and should have to be acknowledged.
+//
+// Written in *emission* order, which is the reverse of source order: the
+// DecodeWorker spawn is second in this file and first in the output. That is
+// not a quirk being worked around, it is the reason the name is carried at all
+// -- reading an id-only payload, `topo=1669` is naturally taken for the first
+// spawn in the source, and it is the second.
+//
+// CHECK: \00topo=1669\00toponame=DecodeWorker\00
+// CHECK: \00topo=1113\00toponame=PrefillWorker\00
+
+extern "C" {
+  fn vx_alloc_f32(n : i32) -> *mut f32;
+}
+
+Memory PREFILL_HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+Memory DECODE_HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+// CPU_DRAM stays visible to both so the test can spawn over host-allocated
+// views without an explicit transfer; the transfer discipline is E6003's
+// subject and is exercised elsewhere.
+Topology PrefillWorker {
+  arch: nvptx64,
+  memory: Memory::PREFILL_HBM,
+  visible: [Memory::PREFILL_HBM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::PREFILL_HBM : 63 GB/s,
+  transfer Memory::PREFILL_HBM -> Memory::DECODE_HBM : 50 GB/s
+}
+
+Topology DecodeWorker {
+  arch: nvptx64,
+  memory: Memory::DECODE_HBM,
+  visible: [Memory::DECODE_HBM, Memory::CPU_DRAM],
+  transfer Memory::CPU_DRAM -> Memory::DECODE_HBM : 63 GB/s,
+  transfer Memory::DECODE_HBM -> Memory::PREFILL_HBM : 50 GB/s
+}
+
+fn gemm_on_prefill() -> i32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let py : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 2, 2) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 2, 1) };
+  let mut y : Tensor<f32> = unsafe { tensor_view_2d(py, 2, 1) };
+  spawn on(Topology::PrefillWorker) {
+    matmul_into(&mut y, &w, &x);
+  }
+  return 0;
+}
+
+fn gemm_on_decode() -> i32 {
+  let pw : *mut f32 = unsafe { vx_alloc_f32(4) };
+  let px : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let py : *mut f32 = unsafe { vx_alloc_f32(2) };
+  let w : Tensor<f32> = unsafe { tensor_view_2d(pw, 2, 2) };
+  let x : Tensor<f32> = unsafe { tensor_view_2d(px, 2, 1) };
+  let mut y : Tensor<f32> = unsafe { tensor_view_2d(py, 2, 1) };
+  spawn on(Topology::DecodeWorker) {
+    matmul_into(&mut y, &w, &x);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = gemm_on_prefill();
+  let b = gemm_on_decode();
+  return a + b;
+}
