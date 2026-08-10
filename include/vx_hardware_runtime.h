@@ -298,9 +298,23 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
 void vx_plugin_await_future(uint64_t future_id);
 
 /// 4. Memory Lifecycle & Teardown
-/// Device to Host read-back (fulfills `.to_host()`).
+/// Device to Host read-back (fulfills `.to_host()`). `topology_id` names the
+/// device being read from, for the same reason the allocation side takes one:
+/// a backend is not required to be able to infer a device from an address.
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
-                                          size_t bytes);
+                                          size_t bytes, uint32_t topology_id);
+
+/// Device to device. Allocates in `dst_topology_id`'s memory, copies `bytes`
+/// there from `src_device_ptr`, and returns the new pointer; the source is left
+/// alone and is the caller's to free.
+///
+/// This is the edge a disaggregated placement is made of (#347): the KV cache
+/// prefill produced on one device has to reach the device that decodes from it,
+/// and no other entry point can express a movement whose two endpoints are both
+/// devices. A backend with a single device answers it with a copy, so a program
+/// that names the movement stays correct on a machine that does not need it.
+void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
+                              uint32_t dst_topology_id, size_t bytes);
 
 /// Frees memory allocated on the device.
 void vx_plugin_free(void *device_ptr, uint32_t topology_id);

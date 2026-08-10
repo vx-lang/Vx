@@ -197,9 +197,28 @@ void vx_plugin_await_future(uint64_t future_id) {
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
-                                          size_t bytes) {
+                                          size_t bytes, uint32_t topology_id) {
+  // One memory, so the topology names it and nothing follows from that.
+  (void)topology_id;
   memcpy(host_ptr, device_ptr, bytes);
   return 1;
+}
+
+void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
+                              uint32_t dst_topology_id, size_t bytes) {
+  // A host backend has one memory, so both topologies name it and the movement
+  // between them is a copy. Answering rather than refusing is what lets a
+  // disaggregated program be developed and tested on a laptop: the same source
+  // that moves a KV cache between two GPUs runs here, and produces the same
+  // tokens, which is how the two-device run gets an oracle to be checked
+  // against (#347).
+  (void)src_topology_id;
+  (void)dst_topology_id;
+  void *dst = malloc(bytes);
+  if (dst && src_device_ptr) {
+    memcpy(dst, src_device_ptr, bytes);
+  }
+  return dst;
 }
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }

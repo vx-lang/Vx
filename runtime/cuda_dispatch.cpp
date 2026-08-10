@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -128,14 +129,39 @@ bool select_device(int32_t topology_id) {
   return true;
 }
 
-/// One handle for the process, created on first use.
+/// One handle per device, created on first use of that device.
+///
+/// A cuBLAS handle belongs to whichever device was current when `cublasCreate`
+/// ran, and using it after `cudaSetDevice` has moved elsewhere does not fail --
+/// it keeps computing in the original device's context. One handle for the
+/// process was therefore correct exactly as long as there was one device. With
+/// two, a dispatch to GPU 1 would call `select_device(501)`, print
+/// `[Vx CUDA] device 1`, and hand the GEMM to device 0: the arithmetic in the
+/// wrong place and every observable saying otherwise (#346).
+///
+/// Keyed by device index rather than topology id. The id is the program's name
+/// for a device and the index is the driver's, and it is the driver that owns a
+/// handle; two topologies that resolved to one device must share one.
+///
+/// Read the current device rather than taking it as an argument, so this cannot
+/// disagree with the `cudaSetDevice` that `select_device` already performed --
+/// the handle is created in the same context the work will run in, by
+/// construction.
 cublasHandle_t cublas_handle() {
-  static cublasHandle_t handle = [] {
-    cublasHandle_t h = nullptr;
-    VX_CUBLAS_CHECK(cublasCreate(&h));
-    return h;
-  }();
-  return handle;
+  static std::unordered_map<int, cublasHandle_t> handles;
+
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+
+  auto it = handles.find(device);
+  if (it != handles.end()) {
+    return it->second;
+  }
+
+  cublasHandle_t h = nullptr;
+  VX_CUBLAS_CHECK(cublasCreate(&h));
+  handles.emplace(device, h);
+  return h;
 }
 
 /// True when the pointer is already device-resident, so staging it would copy
@@ -358,7 +384,6 @@ extern "C" {
 
 void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
                                    uint32_t topology_id) {
-  (void)topology_id;
   if (!cuda_available()) {
     void *ptr = malloc(bytes);
     if (ptr && host_ptr) {
@@ -367,6 +392,13 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
     return ptr;
   }
 
+  // The topology is which device's memory the caller asked for, and honouring
+  // it is the whole meaning of the parameter. It was discarded, so a buffer
+  // "staged onto GPU 1" landed on whichever device happened to be current --
+  // accidentally right while there was one GPU, and wrong in the first
+  // configuration where the answer mattered (#346).
+  select_device((int32_t)topology_id);
+
   void *device_ptr = nullptr;
   VX_CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
   if (host_ptr) {
@@ -374,6 +406,52 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
         cudaMemcpy(device_ptr, host_ptr, bytes, cudaMemcpyHostToDevice));
   }
   return device_ptr;
+}
+
+void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
+                              uint32_t dst_topology_id, size_t bytes) {
+  // No device, or a buffer that never reached one: both topologies name the
+  // same host memory, so the movement is a copy. Keeping this path means a
+  // disaggregated program is still correct on a machine with no GPUs, which is
+  // the property the rest of this ABI already has.
+  if (!cuda_available() || !is_device_ptr(src_device_ptr)) {
+    void *dst = malloc(bytes);
+    if (dst && src_device_ptr) {
+      memcpy(dst, src_device_ptr, bytes);
+    }
+    return dst;
+  }
+
+  int src =
+      vx_topology_device_index((int32_t)src_topology_id, VX_TOPO_GPU_BASE);
+  int dst =
+      vx_topology_device_index((int32_t)dst_topology_id, VX_TOPO_GPU_BASE);
+  if (src < 0 || dst < 0) {
+    // This entry point exists to move between two GPUs. A topology that is not
+    // one has no device index to copy between, and guessing which device was
+    // meant is exactly the class of silence this change removes.
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: peer transfer between topologies %u and %u, "
+            "which are not both GPUs\n",
+            src_topology_id, dst_topology_id);
+    abort();
+  }
+
+  // Allocate in the destination's memory, then copy into it. `cudaMemcpyPeer`
+  // needs no peer access enabled and no P2P path to exist: where NVLink or a
+  // PCIe switch route allows a direct copy it takes it, and otherwise it stages
+  // through the host itself. One call is therefore correct on an NVLink pod and
+  // on a PCIe-only one, which matters because a rented pod does not say which
+  // it gave you.
+  select_device((int32_t)dst_topology_id);
+  void *dst_ptr = nullptr;
+  VX_CUDA_CHECK(cudaMalloc(&dst_ptr, bytes));
+  VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
+
+  if (verbose()) {
+    fprintf(stderr, "[Vx CUDA] peer %d -> %d, %zu bytes\n", src, dst, bytes);
+  }
+  return dst_ptr;
 }
 
 uint64_t vx_plugin_dispatch_async(const void *binary_payload,
@@ -459,8 +537,13 @@ void vx_plugin_await_future(uint64_t future_id) {
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
-                                          size_t bytes) {
+                                          size_t bytes, uint32_t topology_id) {
   if (is_device_ptr(device_ptr)) {
+    // Unified addressing lets the driver infer the device from the pointer, so
+    // this would mostly work without the parameter. It names the device anyway,
+    // because the ABI is the contract a non-CUDA backend implements and nothing
+    // guarantees that backend can infer anything from an address (#346).
+    select_device((int32_t)topology_id);
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
   } else {
@@ -470,11 +553,11 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
-  (void)topology_id;
   if (!device_ptr) {
     return;
   }
   if (is_device_ptr(device_ptr)) {
+    select_device((int32_t)topology_id);
     cudaFree(device_ptr);
   } else {
     free(device_ptr);
